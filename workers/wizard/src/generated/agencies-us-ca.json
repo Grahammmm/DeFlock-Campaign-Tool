@@ -101,6 +101,52 @@
           ]
         },
         {
+          "agency_id": "ca-uc-berkeley-campus-police",
+          "name": "University of California, Berkeley Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "UC (Berkeley)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-east-bay-campus-police",
+          "name": "California State University, East Bay University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (East Bay)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-alameda-police",
           "name": "Alameda Police Department",
           "kind": "police",
@@ -1197,6 +1243,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-chico-campus-police",
+          "name": "California State University, Chico University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Chico)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -3085,6 +3154,29 @@
           ]
         },
         {
+          "agency_id": "ca-csu-fresno-campus-police",
+          "name": "California State University, Fresno University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Fresno)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-clovis-police",
           "name": "Clovis Police Department",
           "kind": "police",
@@ -4065,6 +4157,29 @@
           ]
         },
         {
+          "agency_id": "ca-csu-humboldt-campus-police",
+          "name": "Cal Poly Humboldt University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Humboldt)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-arcata-police",
           "name": "Arcata Police Department",
           "kind": "police",
@@ -5000,6 +5115,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-bakersfield-campus-police",
+          "name": "California State University, Bakersfield University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Bakersfield)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -6178,6 +6316,144 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-uc-los-angeles-campus-police",
+          "name": "University of California, Los Angeles Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "UC (Los Angeles)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-dominguez-hills-campus-police",
+          "name": "California State University, Dominguez Hills University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Dominguez Hills)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-long-beach-campus-police",
+          "name": "California State University, Long Beach University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Long Beach)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-los-angeles-campus-police",
+          "name": "California State University, Los Angeles University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Los Angeles)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-northridge-campus-police",
+          "name": "California State University, Northridge University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Northridge)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-pomona-campus-police",
+          "name": "Cal Poly Pomona University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Pomona)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -10428,6 +10704,29 @@
           ]
         },
         {
+          "agency_id": "ca-uc-merced-campus-police",
+          "name": "University of California, Merced Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "UC (Merced)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-atwater-police",
           "name": "Atwater Police Department",
           "kind": "police",
@@ -11087,6 +11386,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-monterey-bay-campus-police",
+          "name": "California State University, Monterey Bay University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Monterey Bay)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -12258,6 +12580,52 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-uc-irvine-campus-police",
+          "name": "University of California, Irvine Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "UC (Irvine)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-fullerton-campus-police",
+          "name": "California State University, Fullerton University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Fullerton)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -14079,6 +14447,29 @@
           ]
         },
         {
+          "agency_id": "ca-uc-riverside-campus-police",
+          "name": "University of California, Riverside Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "UC (Riverside)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-banning-police",
           "name": "Banning Police Department",
           "kind": "police",
@@ -15098,6 +15489,29 @@
           ]
         },
         {
+          "agency_id": "ca-csu-sacramento-campus-police",
+          "name": "California State University, Sacramento University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Sacramento)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-citrus-heights-police",
           "name": "Citrus Heights Police Department",
           "kind": "police",
@@ -15635,6 +16049,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-san-bernardino-campus-police",
+          "name": "California State University, San Bernardino University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (San Bernardino)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -16522,6 +16959,75 @@
           ]
         },
         {
+          "agency_id": "ca-uc-san-diego-campus-police",
+          "name": "University of California, San Diego Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "UC (San Diego)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-san-diego-campus-police",
+          "name": "California State University, San Diego University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (San Diego)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-san-marcos-campus-police",
+          "name": "California State University, San Marcos University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (San Marcos)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-carlsbad-police",
           "name": "Carlsbad Police Department",
           "kind": "police",
@@ -17242,6 +17748,52 @@
           ]
         },
         {
+          "agency_id": "ca-uc-san-francisco-campus-police",
+          "name": "University of California, San Francisco Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "UC (San Francisco)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-san-francisco-campus-police",
+          "name": "California State University, San Francisco University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (San Francisco)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-san-francisco-police",
           "name": "San Francisco Police Department",
           "kind": "police",
@@ -17779,6 +18331,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-san-luis-obispo-campus-police",
+          "name": "Cal Poly University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (San Luis Obispo)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -19110,6 +19685,29 @@
           ]
         },
         {
+          "agency_id": "ca-uc-santa-barbara-campus-police",
+          "name": "University of California, Santa Barbara Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "UC (Santa Barbara)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-buellton-city-council",
           "name": "Buellton City Council",
           "kind": "city_council",
@@ -19479,6 +20077,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-san-jose-campus-police",
+          "name": "California State University, San José University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (San José)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -20176,6 +20797,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-uc-santa-cruz-campus-police",
+          "name": "University of California, Santa Cruz Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "UC (Santa Cruz)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -21176,6 +21820,29 @@
           ]
         },
         {
+          "agency_id": "ca-csu-maritime-academy-campus-police",
+          "name": "California State University, Maritime Academy University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Maritime Academy)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-benicia-police",
           "name": "Benicia Police Department",
           "kind": "police",
@@ -21591,6 +22258,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-sonoma-campus-police",
+          "name": "California State University, Sonoma University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Sonoma)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -22058,6 +22748,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-csu-stanislaus-campus-police",
+          "name": "California State University, Stanislaus University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Stanislaus)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -23578,6 +24291,29 @@
           ]
         },
         {
+          "agency_id": "ca-csu-channel-islands-campus-police",
+          "name": "California State University, Channel Islands University Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "CSU (Channel Islands)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-camarillo-city-council",
           "name": "Camarillo City Council",
           "kind": "city_council",
@@ -24016,6 +24752,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-uc-davis-campus-police",
+          "name": "University of California, Davis Police Department",
+          "kind": "campus_police",
+          "jurisdiction_name": "UC (Davis)",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
