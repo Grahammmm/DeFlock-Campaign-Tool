@@ -204,6 +204,9 @@ def ingest(args, root):
     if getattr(args, "eml", None) is not None:
         from .ingest_eml import ingest_eml
         return ingest_eml(args, root)
+    if getattr(args, "mbox", None) is not None:
+        from .ingest_mbox import ingest_mbox
+        return ingest_mbox(args, root)
     source = Path(args.file)
     if source.is_symlink() or not source.is_file():
         raise ValueError("Input must be a regular, non-symlink file")
@@ -720,6 +723,8 @@ def main():
                                 "never extracted to disk; nested archives are stored, not opened")
             source.add_argument("--eml", help="One emailed production .eml: message stored as is, each attachment "
                                 "stored and linked to it; headers never printed")
+            source.add_argument("--mbox", help="One local mbox export: each message stored like --eml, linked to "
+                                "the mailbox; headers never printed")
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
             cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")

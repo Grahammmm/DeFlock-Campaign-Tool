@@ -100,10 +100,8 @@ def _payload(part):
     return part.get_payload(decode=True) or b""
 
 
-def ingest_eml(args, root):
-    """Store the message, then each attachment; print the listing (dry run: write nothing)."""
-    data = _read_message(args.eml)
-    name = os.path.basename(os.path.abspath(args.eml))
+def _extract(data, name):
+    """(found, parts): (unique label, decoded bytes) per attachment and the MIME part count; ValueError if unusable."""
     try:
         message, count = _parse(data, name)
         found, taken = [], set()
@@ -114,6 +112,29 @@ def ingest_eml(args, root):
             found.append((_unique(label, taken), _payload(part)))
     except (errors.MessageError, LookupError, TypeError, IndexError, AttributeError) as exc:
         raise ValueError(f"malformed MIME ({type(exc).__name__}); nothing was imported") from None
+    return found, count
+
+
+def _store_message(store, data, name, found, contained_in=None):
+    """Store the message as receipt `name`, then each attachment as `name/<label>` linked to it."""
+    container = store(data, name, contained_in)
+    attachments, skipped = [], []
+    for label, blob in found:
+        code = "empty" if not blob else "too_large" if len(blob) > MAX_PART_BYTES else None
+        if code:
+            skipped.append({"name": label, "code": code})
+            continue
+        result = store(blob, f"{name}/{label}", (container["sha256"], label))
+        attachments.append({"name": label, "sha256": result["sha256"], "outcome": result["outcome"]})
+    return {"message": {k: container[k] for k in ("sha256", "receipt_id", "outcome")},
+            "attachments": attachments, "skipped": skipped}
+
+
+def ingest_eml(args, root):
+    """Store the message, then each attachment; print the listing (dry run: write nothing)."""
+    data = _read_message(args.eml)
+    name = os.path.basename(os.path.abspath(args.eml))
+    found, count = _extract(data, name)
     dry = getattr(args, "dry_run", False)
     if dry:
         known, close = _ledger_lookup(root)
@@ -125,19 +146,10 @@ def ingest_eml(args, root):
         def store(blob, receipt_name, contained_in=None):
             return _store_bytes(db, root, blob, args.source_id, receipt_name, contained_in)
     try:
-        container = store(data, name)
-        attachments, skipped = [], []
-        for label, blob in found:
-            code = "empty" if not blob else "too_large" if len(blob) > MAX_PART_BYTES else None
-            if code:
-                skipped.append({"name": label, "code": code})
-                continue
-            result = store(blob, f"{name}/{label}", (container["sha256"], label))
-            attachments.append({"name": label, "sha256": result["sha256"], "outcome": result["outcome"]})
+        report = _store_message(store, data, name, found)
     finally:
         close()
-    report = {"message": {k: container[k] for k in ("sha256", "receipt_id", "outcome")},
-              "attachments": attachments, "skipped": skipped, "parts": count}
+    report["parts"] = count
     print(json.dumps({**report, **({"dry_run": True} if dry else {})}, indent=2))
     if dry:
         print("Dry run: nothing was written.")
