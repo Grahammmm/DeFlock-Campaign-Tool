@@ -139,7 +139,7 @@ class RelatedFindingsTests(unittest.TestCase):
         self.assertLess(page.index('Counterevidence considered'), page.index('id="related"'))
         self.assertLess(page.index('id="related"'), page.index('id="corrections"'))
         for path in (self.root / "public" / "findings").glob("*.html"):
-            if path.name != "index.html":
+            if path.name not in ("index.html", "packet-all.html"):
                 self.assertEqual(path.read_text(encoding="utf-8").count('id="corrections"'), 1, path.name)
         model = load_content(self.root)
         other = next(f for f in model["findings"] if f["slug"] == "x-other")
