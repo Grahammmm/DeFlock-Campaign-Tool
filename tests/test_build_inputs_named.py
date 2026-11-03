@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "fictional-campaign"
 CONFIG = json.loads((EXAMPLE / "map-config.json").read_text())
 CARDS = json.loads((EXAMPLE / "agency-cards.json").read_text())
-AGENCY_PREFIX = "f2ab83435cea4374"  # pragma: allowlist secret -- SHA-256 prefix of public generated agency cards, not a credential
+AGENCY_PREFIX = "78b7f3e442ea21de"  # pragma: allowlist secret -- SHA-256 prefix of public generated agency cards, not a credential
 
 
 def payload():

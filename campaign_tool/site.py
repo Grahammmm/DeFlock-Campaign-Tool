@@ -541,7 +541,9 @@ class Site:
                 '<p class="city-meta"><span class="status-pill" id="city-status"></span> <span class="city-vendor" id="city-vendor"></span> '
                 '<span id="city-camera-count" hidden></span></p><p class="city-summary" id="city-summary"></p>'
                 '<ul class="city-facts" id="city-facts"></ul><p><a class="text-link" id="city-records-link" href="sources.html#library">' + e(self.site["source_link_label"]) + '</a> <a class="text-link" id="city-flock-link" rel="noopener noreferrer" hidden>'
-                f'{self.t("agency.flock_portal")}</a></p></div><aside class="city-watch"><p class="eyebrow">{self.t("eyebrow.open_questions")}</p><p id="city-open"></p>'
+                f'{self.t("agency.flock_portal")}</a> <a class="text-link" id="city-agency-link"'
+                + (f' data-label="{self.t("agency.page")}"' if self.agency_pages() else '')
+                + f' hidden></a></p></div><aside class="city-watch"><p class="eyebrow">{self.t("eyebrow.open_questions")}</p><p id="city-open"></p>'
                 '<div class="policy-flags" id="city-flags"></div></aside></article>')
 
     def map_section(self):
@@ -1097,6 +1099,9 @@ class Site:
             if not entry["facts"]:
                 findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
                 entry["facts"] = [f["title"] for f in findings] or ["No published findings for this agency yet."]
+            if agency["agency_id"] in self.agency_pages():
+                entry["agencyPage"] = self.agency_pages()[agency["agency_id"]]
+                entry["findingCount"] = sum(f["agency_id"] == agency["agency_id"] for f in self.model["findings"])
             cities[agency["slug"]] = entry
         if self.map:
             slug = self.map["controller"]["group_slug"]
