@@ -604,6 +604,25 @@ class Site:
             links.append(f'<a href="{e(agency["flock_transparency_url"])}" rel="noopener noreferrer">{self.t("agency.flock_portal")}</a>')
         return links
 
+    def agency_blocks(self, agency, findings):
+        """Confirmed / not known / asked, from organizer content only; awaiting with no update → the build date."""
+        profile, asked = agency["profile"], []
+        sentences = {"awaiting_response": "No written response recorded as of{day}.", "answered": "Answered{day}.",
+                     "acknowledged": "Acknowledged{day}; no records yet.", "partly_answered": "Partly answered{day}.",
+                     "declined_in_writing": "Declined in writing{on}.", "withdrawn": "We withdrew this request{day}."}
+        confirmed = [e(fact) for fact in profile["facts"]] + [f"{len(findings)} published finding(s) with sources"] * bool(findings)
+        unknown = [e(text) for text in [profile["open"]] * bool(profile["open"]) + profile["flags"]]
+        for item in sorted(agency.get("asked", []), key=lambda row: row["asked_on"], reverse=True):
+            when = item.get("updated_on") or (self.today.isoformat() if item["state"] == "awaiting_response" else "")
+            day, on = (f" {date_label(when)}", f" on {date_label(when)}") if when else ("", "")
+            asked.append(f'{e(item["topic"])} — asked {date_label(item["asked_on"])}. ' + sentences[item["state"]].format(
+                day=day, on=on) + (f' {e(item["note"])}' if item.get("note") else ""))
+        return "".join(f'<section class="agency-block"><h4>{title}</h4>' + (
+            "<ul>" + "".join(f"<li>{value}</li>" for value in values) + "</ul>" if values else f"<p>{empty}</p>") + "</section>"
+            for title, values, empty in (("What is confirmed", confirmed, "Nothing is confirmed by a published finding yet."),
+                                         ("What is not known", unknown, "Nothing listed yet."),
+                                         ("What we asked", asked, "No request is listed for this agency yet.")))
+
     def agencies_html(self):
         articles = []
         for agency in self.model["agencies"]:
@@ -619,6 +638,7 @@ class Site:
             body = (f'<p class="eyebrow">{self.t("kind." + agency["kind"])}</p><h3>{e(agency["name"])}</h3>'
                     f'<p>{e(agency["jurisdiction_name"])}</p><p><span class="status-pill">{e(agency["profile"]["status"])}</span></p>'
                     + (f'<p>{e(agency["profile"]["summary"])}</p>' if agency["profile"]["summary"] else "")
+                    + self.agency_blocks(agency, findings)
                     + (f'<p>{self.t("agency.findings", count=len(findings))} ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))

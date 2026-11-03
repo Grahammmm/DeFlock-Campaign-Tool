@@ -548,7 +548,9 @@ def load_sources(document):
 
 AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", "records_email",
                "portal", "selected", "verified", "sources", "slug", "profile", "place_fips",
-               "flock_transparency_slug", "muckrock_agency_id", "notes", "verification"}
+               "flock_transparency_slug", "muckrock_agency_id", "notes", "verification", "asked"}
+ASKED_STATES = ("awaiting_response", "acknowledged", "partly_answered", "answered", "declined_in_writing", "withdrawn")
+ASKED_KEYS, ASKED_TEXT = ("topic", "asked_on", "state", "updated_on", "note"), {"topic": 120, "note": 200}
 CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on"}
 FLOCK_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){0,7}")
 VERIFIED_FIELDS = ("records_email", "records_url", "portal")
@@ -639,7 +641,39 @@ def _agency_slug(agency):
     return _slug(rest, f"agencies[{agency['agency_id']}] derived slug")
 
 
-def load_agencies(document, label):
+def _asked(entry, label, today=None, problems=None):
+    """Organizer-entered requests; every problem goes to ``problems`` (content-check), else the first is raised."""
+    issues, result, values = [], [], entry.get("asked", [])
+    if not isinstance(values, list) or len(values) > 20:
+        issues, values = [f"{label}: must be a list of at most 20 items"], []
+    for index, value in enumerate(values):
+        item, clean = f"{label}[{index}]", {}
+        if not isinstance(value, dict):
+            issues.append(f"{item}: must be an object")
+            continue
+        issues += [f"{item}: unknown field {key!r}" for key in sorted(set(value) - set(ASKED_KEYS))]
+        for key in [key for key in ASKED_KEYS if key in value or key in ("topic", "asked_on", "state")]:
+            try:
+                if key in ASKED_TEXT and len(_text(value, key, item, allow_empty=key == "note")) > ASKED_TEXT[key]:
+                    raise ContentError(f"{item}.{key}: at most {ASKED_TEXT[key]} characters")
+                if key == "state" and value.get(key) not in ASKED_STATES:
+                    raise ContentError(f"{item}.state: choose one of {list(ASKED_STATES)}")
+                if key.endswith("_on") and _calendar_day(value.get(key), f"{item}.{key}") > (today or date.today()):
+                    raise ContentError(f"{item}.{key}: must not be after the build date")
+                clean[key] = value[key]
+            except ContentError as exc:
+                issues.append(str(exc))
+        if clean.get("updated_on", "9") < clean.get("asked_on", ""):
+            issues.append(f"{item}.updated_on: must not be before asked_on")
+        result.append(clean)
+    if problems is not None:
+        problems.extend(issues)
+    elif issues:
+        raise ContentError(issues[0])
+    return result
+
+
+def load_agencies(document, label, today=None):
     if not isinstance(document, list) or len(document) > 500:
         raise ContentError(f"{label}: must be a list of agencies")
     agencies, ids, slugs = [], set(), set()
@@ -676,6 +710,7 @@ def load_agencies(document, label):
                        "url": _https(portal.get("url"), f"{item}.portal.url", allow_none=True)},
             "verified": entry.get("verified") is True,
             "verification": _verification(entry, item),
+            "asked": _asked(entry, f"{item}.asked", today) if label == "content/agencies.json" else [],
             "flock_transparency_url": _flock_url(entry, item),
             "contract": _contract(profile.get("contract"), f"{item}.profile.contract"),  # kept out of card JS
             "alpr_policy": _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy"),  # likewise
@@ -983,7 +1018,7 @@ def load_content(root, today=None):
 
     agencies_path = content_dir / "agencies.json"
     if agencies_path.is_file():
-        agencies = load_agencies(_read_json(agencies_path), "content/agencies.json")
+        agencies = load_agencies(_read_json(agencies_path), "content/agencies.json", today)
     else:
         agencies = default_agencies(root)
 

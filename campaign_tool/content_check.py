@@ -6,7 +6,7 @@ metadata (build's ``image_meta.check_asset``). Cross-file rules use loaded files
 """
 from pathlib import Path
 
-from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, _bounds, _read_json,
+from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, _asked, _bounds, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, default_agencies, load_agencies,
                       load_finding, load_map, load_meeting, load_site, load_snapshot, load_sources, plain_text)
 from .finding_law import check_findings, jurisdiction, package_line
@@ -164,6 +164,11 @@ def content_problems(root, limit=LIMIT):
 
     agencies_path = content_dir / "agencies.json"
     if agencies_path.is_file():
+        document = _attempt(problems, "content/agencies.json", lambda: _read_json(agencies_path))
+        if isinstance(document, list):
+            for index, entry in enumerate(document):
+                if isinstance(entry, dict) and entry.get("selected", True) is True:
+                    _asked(entry, f"content/agencies.json[{index}].asked", problems=problems)
         agencies = _attempt(problems, "content/agencies.json",
                             lambda: load_agencies(_read_json(agencies_path), "content/agencies.json"))
     else:
