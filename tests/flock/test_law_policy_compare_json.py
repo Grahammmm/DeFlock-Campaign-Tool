@@ -97,9 +97,9 @@ class CompareJsonTest(unittest.TestCase):
         s = str(self.store)
         for args in (["compare", s, "--on", ON, "--json", "--json"], ["compare", s, "--json", "--on", ON, "--json"],
                      ["compare", s, "--json"], ["compare", s, "--on", "--json", ON, "--types"],
-                     ["governing", s, "--on", ON, "--json"], ["gaps", s, "--on", ON, "--json"],
-                     ["changes", s, "--json"], ["coverage", s, "--json"], ["review", s, "--json"],
-                     ["stale", s, "--max-age-days", "5", "--json"], ["versions", s, "--agency", SA, "--json"]):
+                     ["governing", s, "--on", ON, "--json", "--json"], ["gaps", s, "--on", ON, "--json", "--json"],
+                     ["changes", s, "--json", "--json"], ["coverage", s, "--json", "--json"], ["review", s, "--json", "--json"],
+                     ["stale", s, "--max-age-days", "5", "--json", "--json"], ["versions", s, "--agency", SA, "--json"]):
             code, out, err = run(*args)
             self.assertEqual((code, out), (2, ""), args)
             self.assertTrue(err.startswith("usage:"), args)
