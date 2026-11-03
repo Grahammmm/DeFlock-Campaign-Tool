@@ -184,7 +184,6 @@ class VerdictCases(Base):
 class SubprocessDiscipline(unittest.TestCase):
     def fake(self, result=None, exc=None):
         calls = []
-
         def run(argv, **kw):
             calls.append((argv, kw))
             if exc:
