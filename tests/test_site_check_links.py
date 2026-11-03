@@ -108,8 +108,8 @@ class BuiltSiteTests(unittest.TestCase):
     def run_build(self, inject=None):
         real = site.build_site
 
-        def build_then_edit(root, today=None):
-            written = real(root, today)
+        def build_then_edit(root, today=None, **kwargs):
+            written = real(root, today, **kwargs)
             if inject:
                 inject(self.public)
             return written
@@ -135,8 +135,9 @@ class BuiltSiteTests(unittest.TestCase):
         self.assertEqual(err, "")
         self.assertIn("Public tree check passed (pattern scan and internal links; human review still required).", out)
         hrefs = "".join(p.read_text(encoding="utf-8") for p in self.public.rglob("*.html"))
-        for expected in ('href="/findings/"', 'href="/agencies.html#', 'href="/sources.html#', "#past-meetings"):
+        for expected in ('href="/findings/"', 'href="/agencies/', 'href="/sources.html#', "#past-meetings"):
             self.assertIn(expected, hrefs)
+        self.assertIn('href="#content"', (self.public / "index.html").read_text(encoding="utf-8"))  # skip link
         self.assertEqual(check_links(self.public), [])
 
     def test_missing_finding_target_is_named_and_fails(self):
@@ -148,8 +149,7 @@ class BuiltSiteTests(unittest.TestCase):
 
     def test_agency_fragment_checked_against_agencies_page(self):
         self.run_build()
-        slugs = re.findall(r'href="/agencies\.html#([^"]+)"', "".join(
-            p.read_text(encoding="utf-8") for p in self.public.rglob("*.html")))
+        slugs = re.findall(r'<article id="([^"]+)"', (self.public / "agencies.html").read_text(encoding="utf-8"))
         self.assertTrue(slugs)
 
         def inject(public):
