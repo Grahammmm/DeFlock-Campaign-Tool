@@ -162,8 +162,7 @@ counts it and exits 3: stated date passed — the agency's own date; provisional
 ## Clarification requested (kit requests)
 
 `kit-response --kind clarification_requested` records the agency asking you to clarify or narrow a request (not after
-`produced`, `denied` or `closed`; one open at a time); `--kind clarified` records your reply and is refused when no
-clarification request is open. While one is open, `kit-status` shows `waiting_on_you_since`, `kit due` lists the
-request as `waiting_on_you` (counted in `waiting_on_you`, not as past due or stated date passed, never exit 3 by
-itself; the provisional date is still shown) and `kit-followup` stops with exit 3 and writes nothing. The tool makes
-no claim that a clarification pauses any legal period.
+`produced`, `denied` or `closed`; one open at a time); `--kind clarified` records your reply, refused with none open.
+While one is open, `kit-status` shows `waiting_on_you_since`, `kit due` lists it as `waiting_on_you` (counted apart,
+never past due, stated date passed or exit 3; the provisional date still shown) and `kit-followup` stops with exit 3,
+writing nothing. The tool makes no claim that a clarification pauses any legal period.
