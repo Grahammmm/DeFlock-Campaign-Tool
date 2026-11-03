@@ -28,6 +28,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -357,6 +358,145 @@ def diff(archive, root, expected_manifest_sha256=None):
     more = {key: len(names) - DIFF_NAME_CAP for key, names in lists.items() if len(names) > DIFF_NAME_CAP}
     if more:
         result["more"] = more
+    return result
+
+
+DRILL_STEPS = ("verify", "restore", "store_check", "doctor")
+
+
+_ABS_PATH = re.compile(
+    r"(?<![\w>.<])/[^\s'\"<>:;,)]+"          # POSIX absolute
+    r"|(?<![\w])[A-Za-z]:[\\/][^\s'\"<>;,)]+"  # Windows drive
+    r"|\\\\[^\s'\"<>;,)]+")                 # Windows UNC
+
+
+def _drill_detail(exc, tmp, archive=None):
+    """Failure text for a receipt: no absolute paths, no temp path, no member digests, bounded."""
+    text = f"{type(exc).__name__}: {exc}".replace(tmp, "<copy>")
+    if archive is not None:
+        archive = Path(archive)
+        for shown in {str(archive), str(archive.absolute()), str(archive.resolve())}:
+            text = text.replace(shown, archive.name)
+    text = _ABS_PATH.sub("<path>", text)
+    return re.sub(r"[0-9a-fA-F]{64}", "<sha256>", text)[:300]
+
+
+def drill(archive, expected_manifest_sha256=None, *, doctor=None, store_check=None, tmp_parent=None):
+    """Restore ``archive`` into a fresh temp dir, check the copy, remove it; returns a receipt.
+
+    Only the archive is read: the source campaign directory is never opened.
+    """
+    if store_check is None:
+        from .store_check import check_store as store_check
+    if doctor is None:
+        from .cli import doctor_report as doctor
+    archive = Path(archive)
+    if not archive.is_file():
+        raise BackupError(f"{archive.name}: archive not found")
+    steps = []
+    receipt = {"schema": "deflock-backup-drill-v1", "archive_name": archive.name, "manifest_sha256": None,
+               "created_at": None, "drilled_at": _now(), "engine_version": None, "files": None,
+               "passed": False, "steps": steps}
+    with tempfile.TemporaryDirectory(prefix="deflock-drill-", dir=tmp_parent) as tmp:
+        copy = Path(tmp) / "campaign"
+
+        def run_verify():
+            report = verify(archive, expected_manifest_sha256=expected_manifest_sha256)
+            receipt.update({key: report[key] for key in ("manifest_sha256", "created_at", "engine_version", "files")})
+            return f"{report['verified']} of {report['files']} files re-hashed"
+
+        def run_store_check():
+            count = len(store_check(copy)["problems"])
+            return count == 0, f"{count} problem" + ("" if count == 1 else "s")
+
+        def run_doctor():
+            report = doctor(copy)
+            return report.get("config_readable") is True, {
+                "law_package_status": report.get("law_package_status"),
+                "agencies_selected": report.get("agencies_selected")}
+
+        actions = {"verify": lambda: (True, run_verify()),
+                   "restore": lambda: (True, f"{restore(archive, copy)['files']} files restored to a temp copy"),
+                   "store_check": run_store_check, "doctor": run_doctor}
+        for name in DRILL_STEPS:
+            if steps and steps[-1]["ok"] is not True:
+                steps.append({"step": name, "ok": None, "detail": "not run"})
+                continue
+            try:
+                ok, detail = actions[name]()
+            except Exception as exc:  # a drill records every failure instead of stopping
+                ok, detail = False, _drill_detail(exc, tmp, archive)
+            steps.append({"step": name, "ok": ok, "detail": detail})
+    receipt["passed"] = all(step["ok"] is True for step in steps)
+    return receipt
+
+
+KEEP_LIMITS = {"keep_daily": 366, "keep_weekly": 260}
+
+
+def keep_count(top):
+    """argparse type for --keep-daily/--keep-weekly: an integer 0..top, else ValueError (exit 2)."""
+    def count(text):
+        if not 0 <= int(text) <= top:
+            raise ValueError(f"must be 0-{top}")
+        return int(text)
+    return count
+
+
+def _created(report):
+    """The manifest's created_at as an aware UTC datetime; BackupError when it is not one."""
+    try:
+        when = datetime.fromisoformat(report["created_at"])
+    except (TypeError, ValueError):
+        when = None
+    if when is None or when.tzinfo is None:
+        raise BackupError("invalid_manifest: created_at is not an ISO time with a UTC offset")
+    return when.astimezone(timezone.utc)
+
+
+def list_archives(folder, keep_daily=None, keep_weekly=None):
+    """Re-verify every ``*.tar`` directly in ``folder`` and name what a keep rule would keep; writes nothing."""
+    folder = Path(folder)
+    if folder.is_symlink() or not folder.is_dir():
+        raise BackupError(f"{folder}: not a directory (a symlink is refused)")
+    for key, value in (("keep_daily", keep_daily), ("keep_weekly", keep_weekly)):
+        if value is not None and (type(value) is not int or not 0 <= value <= KEEP_LIMITS[key]):
+            raise BackupError(f"{key} must be an integer 0-{KEEP_LIMITS[key]}")
+    good, failed, skipped = [], [], []
+    with os.scandir(folder) as entries:
+        entries = sorted(entries, key=lambda entry: entry.name)
+    for entry in entries:
+        if not entry.name.lower().endswith(".tar"):
+            continue
+        if entry.is_symlink():
+            skipped.append({"name": entry.name, "reason": "symlink"})
+            continue
+        if not entry.is_file(follow_symlinks=False):
+            continue
+        item = {"name": entry.name, "bytes": entry.stat(follow_symlinks=False).st_size, "created_at": None,
+                "manifest_sha256": None, "engine_version": None, "files": None}
+        try:
+            report = verify(entry.path)
+            when = _created(report)
+        except (BackupError, tarfile.TarError, OSError, ValueError) as exc:
+            failed.append(dict(item, verify="failed", reason=str(exc).replace(entry.path, entry.name)[:200]))
+            continue
+        item.update({key: report[key] for key in ("created_at", "manifest_sha256", "engine_version", "files")})
+        good.append((when, dict(item, verify="ok")))
+    good.sort(key=lambda pair: pair[0], reverse=True)  # stable: equal times stay in name order
+    result: dict = {"archives": [item for _, item in good] + failed, "skipped": skipped}
+    if keep_daily is None and keep_weekly is None:
+        return result
+    keep = set()
+    for count, period in ((keep_daily, lambda when: when.date()), (keep_weekly, lambda when: when.isocalendar()[:2])):
+        newest = {}
+        for when, item in good:  # newest first, so the first archive seen in a period is its newest
+            newest.setdefault(period(when), item["name"])
+        keep.update(list(newest.values())[:count or 0])
+    result["rule"] = {"keep_daily": keep_daily, "keep_weekly": keep_weekly,
+                      "keep": [item["name"] for _, item in good if item["name"] in keep],
+                      "would_not_keep": [item["name"] for _, item in good if item["name"] not in keep],
+                      "failed_never_kept": [item["name"] for item in failed]}
     return result
 
 

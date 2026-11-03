@@ -99,8 +99,22 @@ Python API: `backup.diff(archive, root, expected_manifest_sha256=None) -> report
   per day (idempotency key `backup:<day>:<email>`). The runner (not yet built, see
   [ROADMAP.md](ROADMAP.md)) is expected to execute `export_hosted(client, out)` and store the
   archive where the organizer configured, with the manifest counts and archive hash in the
-  job outputs. Until then the job sits queued and `export_hosted` can be run by hand with a
-  client bound to the runner token.
+  job outputs. Until then the job sits queued. For a manual export, G runs the following
+  **on the runner host**, using its existing `WORKSPACE_URL` and `RUNNER_TOKEN` environment:
+
+  ```sh
+  python3 -m runner export-hosted --out /private-backups/hosted.tar
+  ```
+
+  No token argument is accepted, and the token and remote error bodies are never printed.
+  The command writes a new private (0600) archive, verifies it, then prints JSON with
+  `manifest_sha256` and `objects`. Record that digest separately and verify after copying:
+  `python3 -m campaign_tool verify --file /private-backups/hosted.tar --expect-manifest-sha256 <digest>`.
+  Existing output files are never overwritten. Fetch/hash/size failures stop with exit 1
+  and remove the incomplete new archive; missing environment/invalid arguments exit 2.
+  This command only reads the hosted API and writes locally: it does not enqueue jobs,
+  send mail, publish, encrypt, or upload the backup. Raw `mail/` originals are included
+  through their original rows, fetched by hash just like other originals.
 
 ## Flock store
 
@@ -114,13 +128,22 @@ first with `kind: "flock-store"`, members 0600 uid/gid 0); local files only, no 
 python3 tools/flock_backup.py create STORE --out FILE.tar
 python3 tools/flock_backup.py verify FILE.tar [--manifest-sha256 HEX]
 python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR
+python3 tools/flock_backup.py restore FILE.tar --into EMPTY_OR_ABSENT_DIR --agency SLUG
+python3 tools/flock_backup.py diff FILE.tar --store STORE [--manifest-sha256 HEX]
+python3 tools/flock_backup.py list FILE.tar [--manifest-sha256 HEX] [--json]   # verify, then files/bytes per agency, regions, LAW.csv
 ```
 
 `create` refuses a store inside the repo and an `--out` that exists or lies in the store or repo; it
 writes a temp file, verifies it, then links it into place, leaving nothing on failure. Record the
 printed `manifest_sha256` elsewhere. `verify` and `restore` name each bad member (codes as above, plus
 `duplicate_member`) and exit 1; `restore` verifies first, never overwrites, extracts 0700/0600 and
-re-hashes on disk. Output is counts only; file names appear only in errors.
+re-hashes on disk. Their output is counts only; file names appear only in errors. `diff` verifies the archive
+first (a bad one stops, exit 1, no diff), then prints JSON naming store files `added`, `removed` or
+`changed` (sha256 or size) since it, each capped at 200 (rest under `more`), plus `unchanged` and
+`store_skipped`; names only, nothing written. Exit 0 when `current`, 3 on drift (a new backup is due).
+`restore --agency SLUG` still verifies the whole archive first (a bad member anywhere refuses it), then extracts and
+re-hashes only `agencies/SLUG/` and prints `restored agency=SLUG files=N bytes=M`; an agency not in the archive exits 1
+and creates nothing. It never writes into a live store: copy the restored folder back by hand.
 
 ## Limits and cautions
 
@@ -135,8 +158,27 @@ provide a transaction spanning mutable `content/` and `kit/` files, an inventory
 of the full records runtime, or recovery of hosted derived R2 text. The records
 recovery-v2 library has a separate declared-profile and caller-quiescence contract.
 
+## Restore drill
+
+`python3 -m campaign_tool backup-drill --file ARCHIVE [--expect-manifest-sha256 D] [--receipt OUT.json]`
+proves an archive restores into a working campaign without touching the source: it verifies the
+archive, restores it into a fresh `deflock-drill-*/campaign` temp directory, runs the store check
+(`status --check`) and `doctor` on that copy, then removes the copy. It prints one receipt JSON
+(archive basename, manifest digest, per-step result; no paths or file digests); `--receipt` also
+writes it with mode 0600 and never overwrites. Exit 0 pass, 3 fail, 1 when the archive is missing.
+
+## Archive inventory and keep rule
+
+`python3 -m campaign_tool backup-list --dir DIR [--keep-daily N] [--keep-weekly M]` re-verifies every
+`*.tar` directly in `DIR` (symlinks are listed under `skipped` and never opened; other files and
+subfolders are ignored) and prints each archive's `created_at`, size, manifest digest and verify
+result, newest first, failed ones last. With a keep rule it also names, among verified archives,
+the newest per UTC day for the `N` most recent days and the newest per ISO week for the `M` most
+recent weeks (`keep`), the rest (`would_not_keep`) and the failed ones (`failed_never_kept`). It is a
+report only: nothing is deleted, renamed or written. Exit 0, 3 when any archive failed, 1 for a bad folder.
+
 ## Not done
 
 Encryption inside the tool, incremental or scheduled backups from cron, restore of a hosted
 campaign back into D1 and R2 (the export is readable JSON and hash-named objects, so a restore
-script is straightforward but not written), and retention policy.
+script is straightforward but not written), and retention deletion (`backup-list` only reports).

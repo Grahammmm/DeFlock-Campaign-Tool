@@ -31,11 +31,33 @@ export function fullState(): WizardState {
 }
 
 describe("plan", () => {
+  it("mail-off creates no mail steps or mailbox secrets", () => {
+    const s = fullState();
+    s.accounts!.mailbox = { mode: "none", address: "", imap_password: "synthetic-stale", smtp_password: "synthetic-stale" }; // pragma: allowlist secret -- synthetic stale credentials only
+    const ids = buildPlan(s).map((p) => p.id);
+    expect(ids.some((id) => id.startsWith("email."))).toBe(false);
+    expect(ids.some((id) => /^secret\.(IMAP|SMTP)_/.test(id))).toBe(false);
+  });
+
+  it("uses an explicit first-level workspace host everywhere, preserving the default", () => {
+    const s = fullState();
+    expect(planNames(s).workspaceHostname).toBe("workspace.campaign.example.invalid");
+    s.campaign!.domain = "tool.example.invalid";
+    s.campaign!.workspace_hostname = "tool-workspace.example.invalid";
+    const host = "tool-workspace.example.invalid";
+    expect(planNames(s).workspaceHostname).toBe(host);
+    const plan = buildPlan(s);
+    expect(plan.find((p) => p.id === "access.app")!.body).toMatchObject({ domain: host });
+    expect(plan.find((p) => p.id === "dns.workspace")!.body).toMatchObject({ name: host });
+    expect(plan.find((p) => p.id === "route.workspace")!.body).toMatchObject({ pattern: host + "/*" });
+    expect(seedSql(s)).toContain("'" + host + "'");
+  });
+
   it("lists every resource with its API call and rollback", () => {
     const s = fullState();
     const plan = buildPlan(s);
     const ids = plan.map((p) => p.id);
-    for (const id of ["token.verify", "zone.verify", "d1.create", "r2.originals", "r2.public", "kv.create", "queue.create", "worker.public", "worker.workspace", "d1.migrate", "d1.seed", "dns.public", "dns.workspace", "route.public", "route.workspace", "access.app", "access.policy", "email.enable", "email.rule", "secret.CAMPAIGN_ID", "secret.ACCESS_AUD", "secret.RUNNER_TOKEN", "secret.DOWNLOAD_SIGNING_KEY", "secret.BREVO_API_KEY", "secret.MODEL_API_KEY", "cron.workspace"]) {
+    for (const id of ["token.verify", "zone.verify", "d1.create", "r2.originals", "r2.public", "kv.create", "worker.public", "worker.workspace", "d1.migrate", "d1.seed", "dns.public", "dns.workspace", "route.public", "route.workspace", "access.app", "access.policy", "email.enable", "email.rule", "secret.CAMPAIGN_ID", "secret.ACCESS_AUD", "secret.RUNNER_TOKEN", "secret.DOWNLOAD_SIGNING_KEY", "secret.BREVO_API_KEY", "secret.MODEL_API_KEY", "cron.workspace"]) {
       expect(ids).toContain(id);
     }
     expect(ids.indexOf("d1.create")).toBeLessThan(ids.indexOf("worker.workspace"));
@@ -44,7 +66,7 @@ describe("plan", () => {
     expect(n.originalsBucket).toBe("campaign-originals");
     expect(n.publicBucket).toBe("campaign-public");
     const created = plan.filter((p) => p.rollback);
-    expect(created.length).toBeGreaterThanOrEqual(12);
+    expect(created.length).toBeGreaterThanOrEqual(11);
     const cron = plan.find((p) => p.id === "cron.workspace")!;
     expect(cron.body).toEqual([{ cron: "0 7,13 * * *" }, { cron: "30 20 * * *" }]);
     // secrets are redacted in the displayed plan and the token never appears in it
@@ -77,11 +99,76 @@ describe("plan", () => {
 });
 
 describe("apply", () => {
+  it.each(["other.invalid", "ample.invalid", "", undefined])("rejects an unrelated or missing zone name (%s) before any create", async (zoneName) => {
+    const client = new CloudflareClient("t", { dryRun: true, dryResult: () => ({ name: zoneName }) });
+    const r = await applyPlan(buildPlan(fullState()), { client, bundles: BUNDLES });
+    expect(r.status).toBe("failed");
+    expect(r.failed_step).toBe("zone.verify");
+    expect(r.error).toContain("zone does not serve");
+    expect(r.receipts.map((receipt) => [receipt.step_id, receipt.ok])).toEqual([["token.verify", true], ["zone.verify", false]]);
+    expect(r.rollback).toEqual([]);
+    expect(client.calls.every((call) => call.method === "GET")).toBe(true);
+  });
+
+  it.each(["campaign.example.invalid", "example.invalid"])("accepts a matching zone (%s)", async (zoneName) => {
+    const client = new CloudflareClient("t", { dryRun: true, dryZoneName: zoneName });
+    const r = await applyPlan(buildPlan(fullState()), { client, bundles: BUNDLES });
+    expect(r.status).toBe("applied");
+    expect(r.outputs.zone_name).toBe(zoneName);
+  });
+
+  it.each([
+    ["workspace.example.invalid", "example.invalid", "applied"],
+    ["workspace.other.invalid", "example.invalid", "failed"],
+    ["workspace.example.invalid", "campaign.example.invalid", "failed"],
+  ])("checks sibling workspace %s against zone %s", async (hostname, zoneName, status) => {
+    const s = fullState();
+    s.campaign!.workspace_hostname = hostname;
+    const client = new CloudflareClient("t", { dryRun: true, dryZoneName: zoneName });
+    const r = await applyPlan(buildPlan(s), { client, bundles: BUNDLES });
+    expect(r.status).toBe(status);
+    if (status === "failed") {
+      expect(r.failed_step).toBe("zone.verify");
+      expect(r.receipts.map((receipt) => receipt.step_id)).toEqual(["token.verify", "zone.verify"]);
+      expect(r.rollback).toEqual([]);
+      expect(client.calls.every((call) => call.method === "GET")).toBe(true);
+    }
+  });
+
+  it("fails closed on a mismatched zone from the HTTP client before writes", async () => {
+    const methods: string[] = [];
+    const client = new CloudflareClient("t", { dryRun: false, fetcher: (async (_url, init) => {
+      methods.push(String(init?.method));
+      return Response.json({ success: true, errors: [], result: { name: "other.invalid" } });
+    }) as typeof fetch });
+    const r = await applyPlan(buildPlan(fullState()), { client, bundles: BUNDLES });
+    expect(r.failed_step).toBe("zone.verify");
+    expect(r.receipts.at(-1)?.ok).toBe(false);
+    expect(r.rollback).toEqual([]);
+    expect(methods).toEqual(["GET", "GET"]);
+  });
+
+  it("imap_smtp applies only consumed Worker configuration, using the D1 job store", async () => {
+    const s = fullState();
+    s.accounts!.mailbox = { mode: "imap_smtp", address: "requests@campaign.example.invalid", imap_host: "imap.example.invalid", smtp_host: "smtp.example.invalid" };
+    const client = new CloudflareClient("t", { dryRun: true, dryZoneName: "example.invalid" });
+    const r = await applyPlan(buildPlan(s), { client, bundles: BUNDLES });
+    expect(r.status).toBe("applied");
+    expect(client.calls.some((call) => call.path.endsWith("/queues"))).toBe(false);
+    const upload = client.calls.find((call) => call.path.endsWith("/campaign-workspace") && call.method === "PUT")!;
+    const metadata = (upload.body as { metadata: { bindings: { type: string; name: string }[] } }).metadata;
+    expect(metadata.bindings.find((binding) => binding.name === "DB")?.type).toBe("d1");
+    expect(metadata.bindings.some((binding) => binding.type === "queue")).toBe(false);
+    const names = client.calls.filter((call) => call.path.endsWith("/secrets")).map((call) => (call.body as { name: string }).name);
+    expect(names).toContain("RUNNER_TOKEN");
+    expect(names.some((name) => /^(IMAP|SMTP)_/.test(name))).toBe(false);
+  });
+
   it("DRY_RUN records every call, performs none, and produces receipts plus a rollback list", async () => {
     const s = fullState();
     const plan = buildPlan(s);
     let network = 0;
-    const client = new CloudflareClient("t", { dryRun: true, fetcher: (async () => { network += 1; return new Response("{}"); }) as unknown as typeof fetch });
+    const client = new CloudflareClient("t", { dryRun: true, dryZoneName: "campaign.example.invalid", fetcher: (async () => { network += 1; return new Response("{}"); }) as unknown as typeof fetch });
     const r = await applyPlan(plan, { client, bundles: BUNDLES });
     expect(network).toBe(0);
     expect(r.status).toBe("applied");
@@ -106,7 +193,7 @@ describe("apply", () => {
     const [first] = Object.keys(s.requests);
     s.requests[first] = { ...s.requests[first], body_md: s.requests[first].body_md + "\nToken: {{generated.runner_token}} and {{d1_id}}" };
     const plan = buildPlan(s);
-    const client = new CloudflareClient("t", { dryRun: true, fetcher: (async () => new Response("{}")) as unknown as typeof fetch });
+    const client = new CloudflareClient("t", { dryRun: true, dryZoneName: "campaign.example.invalid", fetcher: (async () => new Response("{}")) as unknown as typeof fetch });
     const r = await applyPlan(plan, { client, bundles: BUNDLES });
     expect(r.status).toBe("applied");
     const seed = client.calls.filter((c) => c.path.endsWith("/query")).at(-1)!; // d1.migrate then d1.seed

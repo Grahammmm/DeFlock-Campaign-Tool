@@ -21,6 +21,8 @@ env:
     runner/outbox_gateway.py
     campaign_tool/__init__.py
     campaign_tool/outbox.py
+    campaign_tool/outbox_batch.py
+    campaign_tool/approval.py
     campaign_tool/review.py
     campaign_tool/records/__init__.py
     campaign_tool/records/export_clearance.py

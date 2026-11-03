@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deflock-campaign-tool.invalid/schemas/findings-open-data.schema.json",
+  "title": "Published findings open data (public/data/findings.json)",
+  "description": "Only the fields a published finding page already shows. Never author, state, internal rule fields or full hashes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "campaign": {"type": "string", "minLength": 1},
+    "generated_from": {"const": "content/findings"},
+    "base_url": {"type": ["string", "null"]},
+    "url_kind": {"enum": ["absolute", "relative"]},
+    "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}}
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "slug", "title", "summary", "body_md", "classification", "confidence", "event_date",
+                   "published_at", "updated_at", "agency_id", "sources", "limitations", "counterevidence",
+                   "corrections", "url"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
+        "slug": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "body_md": {"type": "string"},
+        "classification": {"enum": ["agency_assertion", "apparent_conflict", "confirmed_conflict", "documented_fact",
+                                    "information_gap", "no_conflict", "redaction"]},
+        "confidence": {"enum": ["likely", "verified"]},
+        "event_date": {"type": "string"},
+        "published_at": {"type": "string"},
+        "updated_at": {"type": ["string", "null"]},
+        "agency_id": {"type": ["string", "null"]},
+        "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+        "limitations": {"type": "array", "items": {"type": "string"}},
+        "counterevidence": {"type": "array", "items": {"type": "string"}},
+        "corrections": {"type": "array", "items": {"$ref": "#/$defs/correction"}},
+        "url": {"type": "string", "pattern": "^(https?://.+)?/findings/[^/]+\\.html$"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256_prefix", "title", "locator", "rule_id"],
+      "properties": {
+        "sha256_prefix": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
+        "title": {"type": "string"},
+        "locator": {"type": "string", "minLength": 1},
+        "rule_id": {"type": ["string", "null"]}
+      }
+    },
+    "correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["date", "note"],
+      "properties": {
+        "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "note": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

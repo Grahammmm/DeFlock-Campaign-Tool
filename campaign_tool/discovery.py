@@ -25,11 +25,12 @@ RESOURCE_ROOT = Path(__file__).resolve().parent / "_resources"
 SEED_DIR = RESOURCE_ROOT / "data" / "agencies"
 SEED_SCHEMA = RESOURCE_ROOT / "schemas" / "agency-seed.schema.json"
 GEOCODER = "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress"
-COUNTY_KINDS = ("sheriff", "county_board", "district_attorney", "chp")
+COUNTY_KINDS = ("sheriff", "county_board", "district_attorney", "chp", "campus_police")
 CITY_KINDS = ("police", "city_council")
-LAW_ENFORCEMENT_KINDS = ("sheriff", "police", "chp")
+LAW_ENFORCEMENT_KINDS = ("sheriff", "police", "chp", "campus_police")
 DEFAULT_INCLUDE = ("sheriff", "police", "county_board", "city_council",
                    "district_attorney", "chp")
+OPT_IN_KINDS = ("campus_police",)  # seeded but never in a kit unless --include names it
 STATE_FIPS = {"CA": "06"}
 
 
@@ -220,9 +221,10 @@ def agencies_for(location, seed, include=DEFAULT_INCLUDE):
     agencies in seed order. Within a group, ``include`` order is kept.
     """
     include = tuple(include)
-    unknown = sorted(set(include) - set(DEFAULT_INCLUDE) - {"other"})
+    allowed = DEFAULT_INCLUDE + OPT_IN_KINDS
+    unknown = sorted(set(include) - set(allowed) - {"other"})
     if unknown:
-        raise ValueError(f"Unknown agency kind(s) {unknown}; choose from {list(DEFAULT_INCLUDE)}")
+        raise ValueError(f"Unknown agency kind(s) {unknown}; choose from {list(allowed)}")
     county = county_for(location, seed)
     rank = {kind: index for index, kind in enumerate(include)}
 

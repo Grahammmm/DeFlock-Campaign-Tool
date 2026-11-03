@@ -1,6 +1,7 @@
-"""Flock store backup: create, verify and restore one uncompressed tar of a private flock store (agencies/, regions/,
-LAW.csv) with a SHA-256 manifest (docs/BACKUP.md "Flock store"). Local files only: no network, upload or encryption."""
-import argparse, contextlib, hashlib, io, json, os, shutil, stat, sys, tarfile, tempfile
+"""Flock store backup: create, verify, list and restore one uncompressed tar of a private flock store (agencies/,
+regions/, LAW.csv) with a SHA-256 manifest (docs/BACKUP.md "Flock store"). Local files only: no network, upload or
+encryption. list shows per-agency, regions and LAW.csv file and byte counts of a verified archive, never a file name."""
+import argparse, contextlib, hashlib, io, json, os, re, shutil, stat, sys, tarfile, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,6 +10,8 @@ MANIFEST, SCHEMA_VERSION, KIND = "manifest.json", 1, "flock-store"
 TOP_DIRS, TOP_FILES = ("agencies", "regions"), ("LAW.csv",)
 MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 HEX = frozenset("0123456789abcdef")
+SLUG = re.compile(r"[a-z0-9-]{1,60}")
+LIST_SLUG, CREATED_AT = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*"), re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\+00:00|Z)")
 
 class Fail(Exception): """Refused or failed (exit 1); nothing partial is left behind by create."""
 
@@ -132,17 +135,49 @@ def verify(path, expected_manifest_sha256=None):
         problems += [_shown(name) + ": missing_member" for name in sorted(set(files) - seen)]
     return manifest, digest, problems
 
-def restore(path, into):
+def listing(manifest, digest):
+    """flock-backup-list-v1 of a verified manifest: counts per agency slug (else "?"), regions and LAW.csv; no names."""
+    agencies, regions, created = {}, {"files": 0, "bytes": 0}, manifest.get("created_at")
+    for name, entry in manifest["files"].items():
+        parts = name.split("/")
+        if parts[0] == "agencies":
+            slot = agencies.setdefault(parts[1] if LIST_SLUG.fullmatch(parts[1]) else "?", {"files": 0, "bytes": 0})
+        elif parts[0] == "regions": slot = regions
+        else: continue
+        slot["files"] += 1
+        slot["bytes"] += entry["bytes"]
+    return {"schema": "flock-backup-list-v1", "review_required": True, "manifest_sha256": digest,
+            "created_at": created if isinstance(created, str) and CREATED_AT.fullmatch(created) else None,
+            "totals": {"files": manifest["counts"]["files"], "bytes": manifest["counts"]["bytes"]},
+            "agencies": [dict(slug=slug, **agencies[slug]) for slug in sorted(agencies, key=lambda s: (s == "?", s))],
+            "regions": regions, "law_csv": "LAW.csv" in manifest["files"]}
+
+def _list_text(report):
+    totals, agencies, regions = report["totals"], report["agencies"], report["regions"]
+    law_bytes = totals["bytes"] - regions["bytes"] - sum(a["bytes"] for a in agencies)
+    lines = ["backup | created_at=%s files=%d bytes=%d" % (report["created_at"] or "-", totals["files"], totals["bytes"])]
+    lines += ["backup | agency | %s | files=%d bytes=%d" % (a["slug"], a["files"], a["bytes"]) for a in agencies]
+    lines.append("backup | regions | files=%d bytes=%d" % (regions["files"], regions["bytes"]))
+    lines.append("backup | LAW.csv | files=%d bytes=%d" % (int(report["law_csv"]), law_bytes))
+    return "\n".join(lines)
+
+def restore(path, into, agency=None):
+    """Verify the whole archive, then extract all of it, or only agencies/<agency>/ when agency is set."""
+    if agency is not None and not SLUG.fullmatch(agency): raise Fail("--agency is not a slug")
     into = _abs(into)
     if _inside(into, REPO): raise Fail("--into inside repository")
     if os.path.islink(into): raise Fail("--into is a symlink")
     if os.path.lexists(into) and (not into.is_dir() or any(into.iterdir())): raise Fail("--into is not an empty folder")
     manifest, _, problems = verify(path)
     if problems: raise Fail("archive refused, nothing extracted: " + "; ".join(problems))
+    prefix = "" if agency is None else "agencies/%s/" % agency  # trailing slash: "b" never matches "b-two"
+    wanted = {name: entry for name, entry in manifest["files"].items() if name.startswith(prefix)}
+    if agency is not None and not wanted: raise Fail("agency not in archive")
     into.mkdir(mode=0o700, exist_ok=True)
     os.chmod(into, 0o700)
     with tarfile.open(path, mode="r:") as tar:
         for member in tar.getmembers()[1:]:
+            if not member.name.startswith(prefix): continue
             parts, folder = member.name.split("/"), into
             for part in parts[:-1]:
                 folder = folder / part
@@ -152,11 +187,32 @@ def restore(path, into):
             fd = os.open(folder / parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "wb") as out: shutil.copyfileobj(tar.extractfile(member), out)
     bad = []
-    for name, entry in sorted(manifest["files"].items()):  # re-hash what is now on disk
+    for name, entry in sorted(wanted.items()):  # re-hash what is now on disk
         with open(into.joinpath(*name.split("/")), "rb") as handle:
             if _hash(handle) != entry["sha256"]: bad.append(_shown(name) + ": hash_mismatch_on_disk")
     if bad: raise Fail("restored files do not match: " + "; ".join(bad))
-    return manifest["counts"]
+    if agency is None: return manifest["counts"]
+    return {"files": len(wanted), "bytes": sum(entry["bytes"] for entry in wanted.values())}
+
+def diff(path, store, expected_manifest_sha256=None):
+    """Names added, removed or changed in STORE since the archive at PATH (re-verified first). Writes nothing."""
+    store = Path(store).resolve()
+    if not store.is_dir(): raise Fail("store is not a folder")
+    if _inside(store, REPO): raise Fail("store inside repository")
+    manifest, _, problems = verify(path, expected_manifest_sha256)
+    if problems: raise Fail("archive refused: " + "; ".join(problems))
+    (found, skipped), old, live = collect(store), manifest["files"], {}
+    for name, file in found:
+        with open(file, "rb") as handle: live[name] = (_hash(handle), os.fstat(handle.fileno()).st_size)
+    both = set(live) & set(old)
+    lists = {"added": sorted(set(live) - set(old)), "removed": sorted(set(old) - set(live)),
+             "changed": sorted(n for n in both if live[n] != (old[n]["sha256"], old[n]["bytes"]))}
+    report = {"archive_created_at": manifest.get("created_at"), "current": not any(lists.values()),
+              "unchanged": len(both) - len(lists["changed"]), "store_skipped": skipped}
+    report.update({key: [_shown(n) for n in names[:200]] for key, names in lists.items()})
+    if any(len(names) > 200 for names in lists.values()):
+        report["more"] = {key: max(len(names) - 200, 0) for key, names in lists.items()}
+    return report
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -165,22 +221,37 @@ def main(argv=None):
     p.add_argument("store"); p.add_argument("--out", required=True)
     p = sub.add_parser("verify", help="re-hash every member against the manifest (and the manifest against HEX)")
     p.add_argument("file"); p.add_argument("--manifest-sha256", metavar="HEX")
+    p = sub.add_parser("list", help="verify, then show file and byte counts per agency, regions and LAW.csv")
+    p.add_argument("file"); p.add_argument("--manifest-sha256", metavar="HEX")
+    p.add_argument("--json", action="store_true", help="print one flock-backup-list-v1 object")
     p = sub.add_parser("restore", help="verify, then extract into an empty or absent --into folder (0700/0600)")
     p.add_argument("file"); p.add_argument("--into", required=True)
+    p.add_argument("--agency", metavar="SLUG", help="extract only agencies/SLUG/ (the whole archive is still verified)")
+    p = sub.add_parser("diff", help="verify FILE, then name --store files added, removed or changed since it (exit 3)")
+    p.add_argument("file"); p.add_argument("--store", required=True); p.add_argument("--manifest-sha256", metavar="HEX")
     args = parser.parse_args(argv)
     try:
         if args.command == "create":
             counts, digest = create(args.store, args.out)
             print("created files=%d bytes=%d manifest_sha256=%s" % (counts["files"], counts["bytes"], digest))
-        elif args.command == "verify":
-            manifest, _, problems = verify(args.file, args.manifest_sha256)
+        elif args.command in ("verify", "list"):
+            manifest, digest, problems = verify(args.file, args.manifest_sha256)
             if problems:
                 print("\n".join(problems), file=sys.stderr)
                 return 1
-            print("verified files=%d bytes=%d" % (manifest["counts"]["files"], manifest["counts"]["bytes"]))
+            if args.command == "verify":
+                print("verified files=%d bytes=%d" % (manifest["counts"]["files"], manifest["counts"]["bytes"]))
+            elif args.json: print(json.dumps(listing(manifest, digest), indent=2, sort_keys=True))
+            else: print(_list_text(listing(manifest, digest)))
+        elif args.command == "diff":
+            report = diff(args.file, args.store, args.manifest_sha256)
+            print(json.dumps(report, indent=2, sort_keys=True))
+            if not report["current"]: return 3
         else:
-            counts = restore(args.file, args.into)
-            print("restored files=%d bytes=%d" % (counts["files"], counts["bytes"]))
+            counts = restore(args.file, args.into, args.agency)
+            if args.agency is not None:
+                print("restored agency=%s files=%d bytes=%d" % (args.agency, counts["files"], counts["bytes"]))
+            else: print("restored files=%d bytes=%d" % (counts["files"], counts["bytes"]))
     except (Fail, OSError, tarfile.TarError) as err:
         print(err if isinstance(err, Fail) else "io error: %s" % type(err).__name__, file=sys.stderr)
         return 1

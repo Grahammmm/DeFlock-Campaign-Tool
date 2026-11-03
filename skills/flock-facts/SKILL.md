@@ -19,7 +19,7 @@ store (outside the repo). No model step: the tool validates, it does not read do
   becomes an `UNREADABLE` row with page and sha256, for the extraction owner.
 - Verify the store: `python3 tools/flock_facts.py --check STORE`; exit 0 only. It also names a `policy` fact not citing its agency's POLICY.csv `doc_sha256` and a `law` fact not citing a LAW.csv `text_sha256`.
 - Treat a clean check as machine-valid and review-required, not accepted.
-- Whole-store check, read-only: `python3 tools/flock_store_check.py STORE [--backups DIR --max-backup-age-days N]`; exit 0 only (docs/FLOCK-FACTS.md "Store check").
+- Whole-store check, read-only: `python3 tools/flock_store_check.py STORE [--backups DIR --max-backup-age-days N] [--json | --json-out NEWFILE]`; exit 0 only; `--json-out` (new 0600 file outside store, backups, repo) is its only write (docs/FLOCK-FACTS.md "Store check").
 
 ## Import
 - Import: `python3 tools/flock_facts.py import SRC.csv --store STORE --added-by NAME`.

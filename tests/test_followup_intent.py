@@ -6,6 +6,18 @@ from pathlib import Path
 from campaign_tool.outbox import (AmbiguousFailure, Blocked, Outbox, ProviderReceipt,
                                   RequestDraft, idempotency_key)
 
+from tests.approval_signing import Approvers
+
+APPROVERS = Approvers("owner@example.invalid")
+
+
+def setUpModule():
+    APPROVERS.start()
+
+
+def tearDownModule():
+    APPROVERS.stop()
+
 
 class FollowupIntentTests(unittest.TestCase):
     def test_later_followup_same_scope_is_distinct_but_replay_is_not(self):
@@ -22,7 +34,7 @@ class FollowupIntentTests(unittest.TestCase):
                     draft = RequestDraft('request', 'agency', 1, 'email', intent,
                         'Synthetic follow-up '+intent, 'records@example.invalid',
                         kind='send_followup', intent_id=intent)
-                    row = box.propose(draft); box.approve(row['idempotency_key'], 'owner@example.invalid')
+                    row = box.propose(draft); APPROVERS.approve(box, row['idempotency_key'], 'owner@example.invalid')
                     box.send(row['idempotency_key'], send)
                     box.send(row['idempotency_key'], send)
                 self.assertEqual(calls, ['followup-one', 'followup-two'])
@@ -37,7 +49,7 @@ class FollowupIntentTests(unittest.TestCase):
                 for intent in ['one', 'two']:
                     draft = RequestDraft('request', 'agency', 1, 'email', intent, intent,
                         'records@example.invalid', kind='send_followup', intent_id=intent)
-                    row = box.propose(draft); box.approve(row['idempotency_key'], 'owner@example.invalid')
+                    row = box.propose(draft); APPROVERS.approve(box, row['idempotency_key'], 'owner@example.invalid')
                     if intent == 'one':
                         def uncertain(_):
                             raise AmbiguousFailure('synthetic uncertain provider')
@@ -68,11 +80,11 @@ class FollowupIntentTests(unittest.TestCase):
                 try:
                     first = RequestDraft('request', 'agency', 1, 'email', 'first', 'first',
                         'records@example.invalid', kind='send_followup', intent_id='' if legacy else 'one')
-                    row = box.propose(first); box.approve(row['idempotency_key'], 'owner@example.invalid')
+                    row = box.propose(first); APPROVERS.approve(box, row['idempotency_key'], 'owner@example.invalid')
                     box.send(row['idempotency_key'], lambda _: ProviderReceipt('email', 'synthetic-first'))
                     second = RequestDraft('request', 'agency', 1, 'email', 'second', 'second',
                         'records@example.invalid', kind='send_followup', intent_id='two')
-                    row = box.propose(second); box.approve(row['idempotency_key'], 'owner@example.invalid')
+                    row = box.propose(second); APPROVERS.approve(box, row['idempotency_key'], 'owner@example.invalid')
                     with self.assertRaises(Blocked) as held:
                         box.send(row['idempotency_key'], lambda _: self.fail('no second call'))
                     self.assertEqual(held.exception.reason, 'legacy_followup_intent_unresolved' if legacy else 'daily_agency_cap')

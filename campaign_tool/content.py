@@ -14,7 +14,7 @@ belong in ``content/``.
 """
 import json
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -25,7 +25,8 @@ from .review import CLASSIFICATIONS, review_blockers
 CONFIDENCE = ("verified", "likely", "needs_attorney_review")
 SIGNUP_MODES = ("none", "brevo_hosted")
 SIGNUP_HOST_SUFFIXES = (".sibforms.com",)
-AGENCY_KINDS = ("sheriff", "police", "chp", "district_attorney", "county_board", "city_council", "other")
+AGENCY_KINDS = ("sheriff", "police", "chp", "campus_police", "district_attorney", "county_board", "city_council",
+                "other")
 CITY_KINDS = ("police", "city_council")
 PORTAL_VENDORS = ("nextrequest", "govqa", "justfoia", "none", "unknown")
 SLUG = re.compile(r"[a-z][a-z0-9-]{0,63}")
@@ -113,6 +114,12 @@ def _timestamp(value, label, date_only=False):
     return value
 
 
+def utc_moment(value):
+    """An ISO timestamp as an aware datetime; a zone-less value is read as UTC."""
+    moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
 def _slug(value, label):
     if not isinstance(value, str) or not SLUG.fullmatch(value):
         raise ContentError(f"{label}: must be a lowercase slug (a-z, 0-9, hyphen)")
@@ -131,12 +138,94 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice"}
+             "font_family", "not_legal_advice", "brand"}
+BRAND_KEYS = {"logo", "logo_alt", "accent", "ink", "favicon"}
+HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")
+ASSET_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")  # site._asset_plan's plain-name rule
+TEXT_BACKGROUNDS = {"cream": "#fff8ec", "paper": "#f3eee4"}  # styles.css.tmpl --cream / --paper
+BRAND_CONTRAST = (("ink", ("cream", "paper")), ("accent", ("cream",)))  # the text pairs the stylesheet uses
+MIN_CONTRAST, LOGO_MAX_SIDE = 4.5, 2000
+NO_SVG = "SVG files need the SVG safety check (DF2037-03), which this build does not have; use PNG or WebP"
 PROFILE_KEYS = {"vendor", "status", "summary", "cameraCount", "facts", "open", "flags"}
 SIGNUP_KEYS = {"mode", "form_html_allowlisted_url", "label", "note"}
 
 
-def load_site(document):
+def _luminance(colour):
+    channels = [int(colour[at:at + 2], 16) / 255 for at in (1, 3, 5)]
+    red, green, blue = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def contrast(first, second):
+    """WCAG 2.x contrast ratio of two ``#rrggbb`` colours (1.0 to 21.0)."""
+    light, dark = sorted((_luminance(first), _luminance(second)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def _brand_asset(value, assets_dir, label, suffixes):
+    """(width, height) of a PNG/WebP public asset (None for .ico or without ``assets_dir``); the value is never shown."""
+    from . import image_meta  # local: image_meta imports this module
+    parts = value.split("/") if isinstance(value, str) else []
+    if not parts or len(parts) > 8 or any(not ASSET_PART.fullmatch(part) for part in parts):
+        raise ContentError(f"{label}: use a plain file name inside content/public-assets/")
+    suffix = Path(value).suffix.lower()
+    if suffix == ".svg":
+        raise ContentError(f"{label}: {NO_SVG}")
+    if suffix not in suffixes:
+        raise ContentError(f"{label}: use a {' or '.join(suffixes)} file")
+    if assets_dir is None:  # callers that render no page (meeting packs) check everything but the file
+        return None
+    chain = [Path(assets_dir).joinpath(*parts[:depth]) for depth in range(len(parts) + 1)]
+    if any(step.is_symlink() for step in chain):
+        raise ContentError(f"{label}: is or sits under a symlink; use a regular file in content/public-assets/")
+    path = chain[-1]
+    if not path.is_file() or path.stat().st_size > image_meta.MAX_BYTES:
+        raise ContentError(f"{label}: file not found in content/public-assets/ or over 5 MiB")
+    if suffix not in image_meta.FORMATS:
+        return None
+    data = path.read_bytes()
+    kinds, size = image_meta.metadata_kinds(data, suffix), image_meta.image_size(data, suffix)
+    if kinds and kinds != [image_meta.UNREADABLE]:
+        raise ContentError(f"{label}: image metadata ({', '.join(kinds)}); run content strip-metadata")
+    if kinds or size is None:
+        raise ContentError(f"{label}: {image_meta.UNREADABLE} (no readable width and height)")
+    return size
+
+
+def load_brand(value, assets_dir=None):
+    """site.json.brand: optional logo (+ required logo_alt), accent/ink colours and favicon; refusals name the field."""
+    label = "site.json.brand"
+    _require_keys(value, BRAND_KEYS, set(), label)
+    brand = {}
+    for key in ("accent", "ink"):
+        if key in value:
+            if not isinstance(value[key], str) or not HEX_COLOUR.fullmatch(value[key]):
+                raise ContentError(f"{label}.{key}: use a #rrggbb hex colour")
+            brand[key] = value[key].lower()
+    for key, backgrounds in BRAND_CONTRAST:
+        for name in backgrounds if key in brand else ():
+            ratio = contrast(brand[key], TEXT_BACKGROUNDS[name])
+            if ratio < MIN_CONTRAST:  # shown rounded down, so a refused ratio never prints as 4.50
+                raise ContentError(f"{label}.{key}: contrast {int(ratio * 100) / 100:.2f}:1 against {name} "
+                                   f"({TEXT_BACKGROUNDS[name]}); needs {MIN_CONTRAST}:1")
+    if "logo_alt" in value and "logo" not in value:
+        raise ContentError(f"{label}.logo_alt: set only together with logo")
+    if "logo" in value:
+        alt = value.get("logo_alt")
+        if not plain_text(alt) or not alt.strip() or len(alt) > 120:
+            raise ContentError(f"{label}.logo_alt: required with logo, 1-120 characters of plain text")
+        size = _brand_asset(value["logo"], assets_dir, f"{label}.logo", (".png", ".webp"))
+        if size and not all(1 <= side <= LOGO_MAX_SIDE for side in size):
+            raise ContentError(f"{label}.logo: {size[0]}x{size[1]} px; each side must be 1-{LOGO_MAX_SIDE} px")
+        brand.update(logo=value["logo"], logo_alt=alt, logo_size=size)
+    if "favicon" in value:
+        _brand_asset(value["favicon"], assets_dir, f"{label}.favicon", (".ico", ".png"))
+        brand["favicon"] = value["favicon"]
+    return brand
+
+
+def load_site(document, assets_dir=None):
+    """``assets_dir`` (content/public-assets) lets ``brand`` check its logo and favicon files."""
     _require_keys(document, SITE_KEYS, {"schema_version", "tagline", "about_md"}, "site.json")
     if type(document["schema_version"]) is not int or document["schema_version"] != 1:
         raise ContentError("site.json: unsupported schema_version")
@@ -198,6 +287,7 @@ def load_site(document):
                                   default="This is not legal advice. Findings describe records and "
                                           "published rules as of the event date; consult counsel "
                                           "before relying on them."),
+        **({"brand": load_brand(document["brand"], assets_dir)} if "brand" in document else {}),
     }
 
 
@@ -245,14 +335,26 @@ def load_finding(document, label):
             "title": _text(source, "title", f"{label}.sources[{index}]", default="Source record"),
             "rule_id": _text(source, "rule_id", f"{label}.sources[{index}]", required=False, default=None),
         })
+    published_at = _timestamp(document["published_at"], f"{label}.published_at")
+    published_day = datetime.fromisoformat(published_at.replace("Z", "+00:00")).date()
     corrections = []
     for index, correction in enumerate(document["corrections"]):
         _require_keys(correction, CORRECTION_KEYS, CORRECTION_KEYS, f"{label}.corrections[{index}]")
         corrections.append({"date": _timestamp(correction["date"], f"{label}.corrections[{index}].date", date_only=True),
                             "note": _text(correction, "note", f"{label}.corrections[{index}]", allow_empty=False)})
+        if datetime.strptime(corrections[-1]["date"], "%Y-%m-%d").date() < published_day:
+            raise ContentError(f"{label}.corrections[{index}].date: is before the publication date {published_day}")
+    updated_at = _timestamp(document["updated_at"], f"{label}.updated_at") if document.get("updated_at") else None
+    if updated_at and utc_moment(updated_at) < utc_moment(published_at):
+        raise ContentError(f"{label}.updated_at: {updated_at} is before published_at {published_at}")
     agency_id = document.get("agency_id")
     if agency_id is not None and (not isinstance(agency_id, str) or not AGENCY_ID.fullmatch(agency_id)):
         raise ContentError(f"{label}.agency_id: invalid agency identifier")
+    rule_ids = _text_list(document, "rule_ids", label)
+    if any(not item.strip() or len(item) > 120 for item in rule_ids):
+        raise ContentError(f"{label}.rule_ids: each rule id must be a non-empty string of at most 120 characters")
+    if len(set(rule_ids)) != len(rule_ids):
+        raise ContentError(f"{label}.rule_ids: duplicate rule id")
     return {
         "id": finding_id,
         "title": _text(document, "title", label, allow_empty=False),
@@ -263,13 +365,14 @@ def load_finding(document, label):
         "confidence": document["confidence"],
         "event_date": _timestamp(document["event_date"], f"{label}.event_date", date_only=True),
         "sources": sources,
-        "published_at": _timestamp(document["published_at"], f"{label}.published_at"),
-        "updated_at": _timestamp(document["updated_at"], f"{label}.updated_at") if document.get("updated_at") else None,
+        "published_at": published_at,
+        "updated_at": updated_at,
         "corrections": corrections,
         "author": _text(document, "author", label, allow_empty=False),
         "limitations": _text_list(document, "limitations", label),
         "counterevidence": _text_list(document, "counterevidence", label),
         "agency_id": agency_id,
+        "rule_ids": rule_ids,
         "rule_version": _text(document, "rule_version", label, required=False, default=None),
         "duty": _text(document, "duty", label, required=False, default=None),
         "exceptions": (_text_list(document, "exceptions", label) if isinstance(document.get("exceptions"), list)
@@ -277,12 +380,29 @@ def load_finding(document, label):
     }
 
 
+def load_finding_preview(document, label, now=None):
+    """``load_finding`` for a draft preview (DF1822-02). A draft not yet at ``state: published`` is read as
+    ``finding publish`` would write it (publication fields replaced: published, ``published_at`` = the preview
+    time, no corrections), for validation and rendering only; every refusal is ``load_finding``'s own."""
+    if not isinstance(document, dict):
+        raise ContentError(f"{label}: expected an object")
+    if document.get("state") != "published":
+        when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        document = {key: value for key, value in document.items()
+                    if key not in ("state", "published_at", "updated_at", "corrections")}
+        document.update(state="published", published_at=when, corrections=[])
+    return load_finding(document, label)
+
+
 # --- meetings --------------------------------------------------------------
 
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
-                "status", "participation"}
+                "status", "participation", "outcome"}
 MEETING_STATUSES = ("scheduled", "cancelled")
-PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "source_url", "verified_by", "verified_at"}
+OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
+OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote"}
+PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
+                      "verified_at"}
 
 
 def load_participation(value, starts_at, label, today=None):
@@ -308,13 +428,40 @@ def load_participation(value, starts_at, label, today=None):
     for key, part in (("remote", remote), ("written_comment", written)):
         if part and len(part["how"]) > 200:
             raise ContentError(f"{label}.{key}.how: at most 200 characters")
+    minutes = value.get("speaker_minutes")  # per-speaker limit from the same official source; never assumed
+    if minutes is not None and (type(minutes) is not int or not 1 <= minutes <= 10):
+        raise ContentError(f"{label}.speaker_minutes: must be a whole number of minutes from 1 to 10, or null")
     verified_at = _timestamp(value["verified_at"], f"{label}.verified_at", date_only=True)
     checked = datetime.strptime(verified_at, "%Y-%m-%d").date()
     if checked > (today or date.today()) or (starts.date() - checked).days > 30:
         raise ContentError(f"{label}.verified_at: must not be in the future or more than 30 days before the meeting")
     return {"in_person": in_person, "remote": remote, "written_comment": written,
             "source_url": _https(value["source_url"], f"{label}.source_url"),
-            "verified_by": _text(value, "verified_by", label, allow_empty=False), "verified_at": verified_at}
+            "verified_by": _text(value, "verified_by", label, allow_empty=False), "verified_at": verified_at,
+            **({"speaker_minutes": minutes} if minutes is not None else {})}
+
+
+def load_outcome(value, starts_at, status, label, today=None):
+    """Organizer-verified result of a past meeting (DF2237-11), read from an official https record."""
+    if status == "cancelled":
+        raise ContentError(f"{label}: a cancelled meeting has no outcome")
+    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote"}, label)
+    if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
+        raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
+    held, now = starts_at[:10], (today or date.today()).isoformat()
+    for key, earliest in (("on", held), ("verified_at", value["on"])):
+        day = _timestamp(value[key], f"{label}.{key}", date_only=True)
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) or not earliest <= day <= now:
+            raise ContentError(f"{label}.{key}: must be a YYYY-MM-DD date from {earliest} to {now}")
+    for key in ("verified_by", "vote"):
+        text = value.get(key, "-")
+        if (not isinstance(text, str) or not plain_text(text) or not text.strip() or len(text) > 120
+                or "\n" in text or "\t" in text):
+            raise ContentError(f"{label}.{key}: must be 1 to 120 characters of plain text "
+                               "(no angle brackets or control characters)")
+    return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
+            "verified_by": value["verified_by"], "verified_at": value["verified_at"],
+            **({"vote": value["vote"]} if "vote" in value else {})}
 
 
 def load_meeting(document, label, today=None):
@@ -340,12 +487,29 @@ def load_meeting(document, label, today=None):
         "status": status,
         "participation": (load_participation(document["participation"], starts_at, f"{label}.participation", today)
                           if document.get("participation") is not None else None),
+        "outcome": (load_outcome(document["outcome"], starts_at, status, f"{label}.outcome", today)
+                    if "outcome" in document else None),
     }
 
 
 # --- sources.json ----------------------------------------------------------
 
-LIBRARY_KEYS = {"sha256", "title", "agency_id", "received_at", "public_url", "fragment", "pages", "note"}
+LIBRARY_KEYS = {"sha256", "title", "agency_id", "received_at", "public_url", "fragment", "pages", "note", "public_copy"}
+COPY_REASONS = ("redacted", "converted", "unknown")
+
+
+def _public_copy(entry, label):
+    """Optional organizer check of the linked public copy (DF2037-05): {matches, checked_on, reason iff differing}."""
+    value, label = entry["public_copy"], f"{label}.public_copy"
+    if entry["public_url"] is None:
+        raise ContentError(f"{label}: needs a public_url")
+    _require_keys(value, {"matches", "checked_on", "reason"}, {"matches", "checked_on"}, label)
+    if type(value["matches"]) is not bool:
+        raise ContentError(f"{label}.matches: must be true or false")
+    _timestamp(value["checked_on"], f"{label}.checked_on", date_only=True)
+    if value["matches"] == ("reason" in value) or value.get("reason", "redacted") not in COPY_REASONS:
+        raise ContentError(f"{label}.reason: one of {', '.join(COPY_REASONS)}, present only when matches is false")
+    return {key: value[key] for key in ("matches", "checked_on", "reason") if key in value}
 
 
 def load_sources(document):
@@ -375,6 +539,7 @@ def load_sources(document):
             "fragment": fragment,
             "pages": entry.get("pages") if type(entry.get("pages")) is int and entry.get("pages") >= 0 else None,
             "note": _text(entry, "note", label, default=""),
+            **({"public_copy": _public_copy(entry, label)} if "public_copy" in entry else {}),
         })
     return entries
 
@@ -383,8 +548,78 @@ def load_sources(document):
 
 AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", "records_email",
                "portal", "selected", "verified", "sources", "slug", "profile", "place_fips",
-               "flock_transparency_slug", "muckrock_agency_id", "notes"}
+               "flock_transparency_slug", "muckrock_agency_id", "notes", "verification"}
+CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on"}
 FLOCK_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){0,7}")
+VERIFIED_FIELDS = ("records_email", "records_url", "portal")
+
+
+def _verification(entry, item):
+    """Where and when an organizer checked the contact; required when ``verified`` is true, never fetched."""
+    value = entry.get("verification")
+    label = f"{item}.verification"
+    if value is None:
+        if entry.get("verified") is True:
+            raise ContentError(f"{label}: verified:true needs source_url and checked_on")
+        return None
+    _require_keys(value, {"source_url", "checked_on", "fields"}, {"source_url", "checked_on"}, label)
+    source_url = _https(value["source_url"], f"{label}.source_url")
+    checked_on = _timestamp(value["checked_on"], f"{label}.checked_on", date_only=True)
+    checked = datetime.strptime(checked_on, "%Y-%m-%d").date()
+    if checked.isoformat() != checked_on or checked > date.today():
+        raise ContentError(f"{label}.checked_on: must be a YYYY-MM-DD date not after the build date")
+    fields = value.get("fields", [])
+    if (not isinstance(fields, list) or any(name not in VERIFIED_FIELDS for name in fields)
+            or len(set(fields)) != len(fields)):
+        raise ContentError(f"{label}.fields: list names from {list(VERIFIED_FIELDS)} only, each once")
+    return {"source_url": source_url, "checked_on": checked_on, "fields": list(fields)}
+
+
+def _calendar_day(value, label):
+    day = datetime.strptime(_timestamp(value, label, date_only=True), "%Y-%m-%d").date()
+    if day.isoformat() != value:
+        raise ContentError(f"{label}: must be a YYYY-MM-DD date")
+    return day
+
+
+def _contract(value, label):
+    """An organizer-checked contract term (``profile.contract``) from its official source; never fetched."""
+    if value is None:
+        return None
+    if isinstance(value, dict) and not {"source_url", "checked_on"} <= set(value):
+        raise ContentError(f"{label}: needs source_url and checked_on")
+    _require_keys(value, CONTRACT_KEYS, CONTRACT_KEYS - {"renewal_note"}, label)
+    vendor, note = _text(value, "vendor", label, allow_empty=False), _text(value, "renewal_note", label)
+    for key, text, limit in (("vendor", vendor, 80), ("renewal_note", note, 200)):
+        if len(text) > limit:
+            raise ContentError(f"{label}.{key}: at most {limit} characters")
+    start, end = _calendar_day(value["start"], f"{label}.start"), _calendar_day(value["end"], f"{label}.end")
+    if end < start:
+        raise ContentError(f"{label}.end: must not be before start")
+    if _calendar_day(value["checked_on"], f"{label}.checked_on") > date.today():
+        raise ContentError(f"{label}.checked_on: must not be after the build date")
+    return {"vendor": vendor, "start": value["start"], "end": value["end"], "renewal_note": note,
+            "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
+
+
+ALPR_POLICY_KEYS = {"url", "source_url", "checked_on"}
+
+
+def _alpr_policy(value, label):
+    """A posted ALPR usage policy an organizer found (``profile.alpr_policy``); linked only, never fetched or judged."""
+    if value is None:
+        return None
+    if isinstance(value, dict) and not ALPR_POLICY_KEYS <= set(value):
+        raise ContentError(f"{label}: needs url, source_url and checked_on")
+    _require_keys(value, ALPR_POLICY_KEYS, ALPR_POLICY_KEYS, label)
+    try:
+        checked = _calendar_day(value["checked_on"], f"{label}.checked_on")
+    except ContentError:
+        checked = None
+    if checked is None or checked > date.today():
+        raise ContentError(f"{label}.checked_on: must be a YYYY-MM-DD date not after the build date")
+    return {"url": _https(value["url"], f"{label}.url"),
+            "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
 
 
 def _flock_url(entry, item):
@@ -423,7 +658,7 @@ def load_agencies(document, label):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS, set(), f"{item}.profile")
+        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -440,7 +675,10 @@ def load_agencies(document, label):
             "portal": {"vendor": portal["vendor"],
                        "url": _https(portal.get("url"), f"{item}.portal.url", allow_none=True)},
             "verified": entry.get("verified") is True,
+            "verification": _verification(entry, item),
             "flock_transparency_url": _flock_url(entry, item),
+            "contract": _contract(profile.get("contract"), f"{item}.profile.contract"),  # kept out of card JS
+            "alpr_policy": _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy"),  # likewise
             "profile": {
                 "vendor": _text(profile, "vendor", f"{item}.profile", default="Not yet documented"),
                 "status": _text(profile, "status", f"{item}.profile", default="Records requested"),
@@ -516,6 +754,24 @@ def _validate_cameras(document, label):
     return len(document["features"])
 
 
+SNAPSHOT_KEYS = {"schema_version", "osm_base", "source"}
+OSM_BASE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def load_snapshot(path):
+    """map/snapshot.json from tools/fetch_osm_alprs.py -> the OSM data day "YYYY-MM-DD", or None for a null osm_base."""
+    document = _read_json(path, 4096)
+    _require_keys(document, SNAPSHOT_KEYS, SNAPSHOT_KEYS, "map/snapshot.json")
+    version, base = document["schema_version"], document["osm_base"]
+    if type(version) is not int or version != 1:
+        raise ContentError("map/snapshot.json.schema_version: must be 1")
+    if base is not None and not (isinstance(base, str) and OSM_BASE.fullmatch(base)):
+        raise ContentError("map/snapshot.json.osm_base: must be a UTC timestamp YYYY-MM-DDTHH:MM:SSZ or null")
+    if document["source"] not in ("overpass", "saved_file"):
+        raise ContentError("map/snapshot.json.source: must be 'overpass' or 'saved_file'")
+    return base[:10] if base else None
+
+
 def load_map(content_dir):
     map_dir = Path(content_dir) / "map"
     config_path = map_dir / "map-config.json"
@@ -574,6 +830,7 @@ def load_map(content_dir):
     for slug in controller["bounding_box_fallbacks"]:
         if slug not in cities:
             raise ContentError(f"map/map-config.json.bounding_box_fallbacks: {slug!r} has no bounds in map/cities.json")
+    snapshot_path = map_dir / "snapshot.json"  # optional: a map fetched before DF1507-09 has none
     return {
         "controller": controller,
         "county_bounds": _bounds(document["county_bounds"], "map/map-config.json.county_bounds"),
@@ -588,12 +845,104 @@ def load_map(content_dir):
         "boundary_path": boundary_file,
         "county_boundary_path": county_boundary if county_boundary.is_file() else None,
         "cities": cities,
+        "snapshot_date": load_snapshot(snapshot_path) if snapshot_path.is_file() else None,
     }
+
+
+# --- explainer pages (DF2237-07): content/pages/<slug>.json -> /<slug>.html ----
+PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
+RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
+                                       "agency-cards", "app", "data", "vendor", "meetings", "methods"}  # generated top-level names
+
+
+def _page_string(document, key, label, limit, required):
+    value = document.get(key, "")
+    if not isinstance(value, str) or len(value) > limit or (required and not value.strip()):
+        kind = "non-empty string" if required else "string"
+        raise ContentError(f"{label}.{key}: must be a {kind} of at most {limit} characters")
+    return value
+
+
+def load_pages(content_dir, finding_slugs):
+    """Pages sorted by slug, ``[]`` without the folder; non-``.json`` names ignored. Text is escaped at render."""
+    folder = Path(content_dir) / "pages"
+    if folder.is_symlink():
+        raise ContentError("pages: the folder must not be a symlink")
+    paths = sorted(path for path in folder.iterdir() if path.name.endswith(".json")) if folder.is_dir() else []
+    if len(paths) > MAX_PAGES:
+        raise ContentError(f"pages: at most {MAX_PAGES} page files")
+    pages = []
+    for path in paths:
+        label, slug = "pages/" + path.name, path.stem
+        if path.is_symlink() or not path.is_file():
+            raise ContentError(f"{label}: must be a regular file, not a symlink or folder")
+        if slug in RESERVED_PAGE_SLUGS or slug in finding_slugs:
+            raise ContentError(f"{label}: slug {slug} is reserved")
+        _slug(slug, f"{label} filename")
+        document = _read_json(path)
+        _require_keys(document, PAGE_KEYS, {"title", "body_md"}, label)
+        if not isinstance(document.get("nav", False), bool):
+            raise ContentError(f"{label}.nav: must be true or false")
+        pages.append({"slug": slug, "title": _page_string(document, "title", label, 120, True),
+                      "description": _page_string(document, "description", label, 300, False),
+                      "body_md": _page_string(document, "body_md", label, 200 * 1024, True),
+                      "nav": document.get("nav", False)})
+    if sum(page["nav"] for page in pages) > MAX_NAV_PAGES:
+        raise ContentError(f"pages: at most {MAX_NAV_PAGES} pages may set nav: true")
+    return pages
+
+
+OFFICIALS_KEYS = {"schema_version", "bodies"}
+OFFICIAL_KEYS = {"name", "role", "profile_url", "source_url", "checked_on"}
+CONTACT_LIKE = re.compile(r"@|\d(?:[\s().+-]*\d){6}")  # an address or a phone-like run of 7+ digits
+
+
+def load_officials(document, agencies, today):
+    """``content/officials.json`` (DF2237-13): organizer-checked decision makers per loaded agency, ``{agency_id: [..]}``.
+
+    No contact fields exist; each ``checked_on`` must fall within the 365 days up to ``today``. Never fetched."""
+    _require_keys(document, OFFICIALS_KEYS, OFFICIALS_KEYS, "officials.json")
+    if document["schema_version"] != 1:
+        raise ContentError("officials.json.schema_version: must be 1")
+    bodies = document["bodies"]
+    if not isinstance(bodies, list) or len(bodies) > 100:
+        raise ContentError("officials.json.bodies: must be a list of at most 100 bodies")
+    known, result = {agency["agency_id"] for agency in agencies}, {}
+    for index, body in enumerate(bodies):
+        label = f"officials.json.bodies[{index}]"
+        _require_keys(body, {"agency_id", "officials"}, {"agency_id", "officials"}, label)
+        if not isinstance(body["agency_id"], str) or body["agency_id"] not in known:
+            raise ContentError(f"{label}.agency_id: not a loaded agency")
+        if body["agency_id"] in result:
+            raise ContentError(f"{label}.agency_id: listed more than once")
+        people = body["officials"]
+        if not isinstance(people, list) or not 1 <= len(people) <= 30:
+            raise ContentError(f"{label}.officials: must list 1 to 30 officials")
+        result[body["agency_id"]] = []
+        for number, person in enumerate(people):
+            item = f"{label}.officials[{number}]"
+            _require_keys(person, OFFICIAL_KEYS, OFFICIAL_KEYS - {"profile_url"}, item)
+            for key in ("name", "role"):
+                text = _text(person, key, item, allow_empty=False)
+                if len(text) > 120:
+                    raise ContentError(f"{item}.{key}: at most 120 characters")
+                if CONTACT_LIKE.search(text):
+                    raise ContentError(f"{item}.{key}: no contact details in officials.json")
+            checked = _calendar_day(person["checked_on"], f"{item}.checked_on")
+            if checked > today:
+                raise ContentError(f"{item}.checked_on: must not be after the build date")
+            if (today - checked).days > 365:
+                raise ContentError(f"{item}.checked_on: older than 365 days; re-check on the official site")
+            result[body["agency_id"]].append({
+                "name": person["name"], "role": person["role"],
+                "profile_url": _https(person.get("profile_url"), f"{item}.profile_url", allow_none=True),
+                "source_url": _https(person["source_url"], f"{item}.source_url"), "checked_on": person["checked_on"]})
+    return result
 
 
 # --- assembly ---------------------------------------------------------------
 
-def load_content(root):
+def load_content(root, today=None):
     """Return the validated content model for ``root`` or None when no content/ exists."""
     root = Path(root)
     content_dir = root / "content"
@@ -602,7 +951,7 @@ def load_content(root):
     site_path = content_dir / "site.json"
     if not site_path.is_file():
         raise ContentError("content/site.json is required when content/ exists")
-    site = load_site(_read_json(site_path))
+    site = load_site(_read_json(site_path), content_dir / "public-assets")
 
     findings, slugs, ids = [], set(), set()
     for path in sorted((content_dir / "findings").glob("*.json")) if (content_dir / "findings").is_dir() else []:
@@ -612,12 +961,20 @@ def load_content(root):
         slugs.add(finding["slug"])
         ids.add(finding["id"])
         findings.append(finding)
+    from .finding_law import check_findings  # local: finding_law imports this module
+    law_problems = check_findings(root, findings)
+    if law_problems:
+        raise ContentError(law_problems[0])
     findings.sort(key=lambda f: (f["published_at"], f["slug"]), reverse=True)
 
-    meetings = []
+    meetings, meeting_ids = [], {}
     for path in sorted((content_dir / "meetings").glob("*.json")) if (content_dir / "meetings").is_dir() else []:
         meeting = load_meeting(_read_json(path), "meetings/" + path.name)
         meeting["id"] = meeting["id"] or _slug(path.stem, "meetings/" + path.name + " filename")
+        if meeting["id"] in meeting_ids:  # each id names one meetings/<id>.html page
+            raise ContentError(f"meetings/{path.name}: duplicate meeting id {meeting['id']!r} "
+                               f"(also meetings/{meeting_ids[meeting['id']]})")
+        meeting_ids[meeting["id"]] = path.name
         meetings.append(meeting)
     meetings.sort(key=lambda m: m["starts_at"])
 
@@ -652,9 +1009,19 @@ def load_content(root):
             if path.is_file() and not path.is_symlink():
                 public_assets.append(path)
 
-    return {
+    from .labels import DEFAULTS, MAX_LABELS_BYTES, load_labels  # local: labels imports this module
+    labels_path = content_dir / "labels.json"  # optional; a symlink is refused by _read_json
+    labels = (load_labels(_read_json(labels_path, MAX_LABELS_BYTES))
+              if labels_path.is_file() or labels_path.is_symlink() else dict(DEFAULTS))
+    redirects_path = content_dir / "redirects.json"
+    officials_path = content_dir / "officials.json"  # optional; a symlink is refused by _read_json
+    officials = (load_officials(_read_json(officials_path), agencies, today or date.today())
+                 if officials_path.is_file() or officials_path.is_symlink() else {})
+
+    model = {
         "site": site,
         "findings": findings,
+        "pages": load_pages(content_dir, slugs),
         "meetings": meetings,
         "sources": sources,
         "agencies": agencies,
@@ -662,4 +1029,11 @@ def load_content(root):
         "vendor": vendor,
         "public_assets": public_assets,
         "assets_dir": assets_dir,
+        "labels": labels,
+        "officials": officials,
     }
+    # content/redirects.json (DF2037-16): the key is present exactly when the file is, so a parsed JSON null is still
+    # checked (and refused) by site against the pages it writes; without the file there is no key.
+    if redirects_path.is_file() or redirects_path.is_symlink():
+        model["redirects"] = _read_json(redirects_path)
+    return model

@@ -18,6 +18,7 @@ from templates/records-request.md with a banner when it does not.
 """
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -40,6 +41,77 @@ NEXT_STEPS = [
     "Fill the date range and requester block in each kit/requests/*.md draft.",
     "Send nothing from this tool; sending happens only after an organizer approval outside it.",
 ]
+SETTINGS_NAME = "request-settings.json"
+SETTINGS_KEYS = ("schema_version", "requester", "fee_cap_usd", "date_from", "date_to")
+
+
+def _next_steps(filled):
+    """NEXT_STEPS without the fee/date/requester hand edits that request-settings.json already made."""
+    missing = [word for key, word in (("date_range", "date range"), ("requester_block", "requester block"))
+               if key not in filled]
+    fill = [f"Fill the {' and '.join(missing)} in each kit/requests/*.md draft."] if missing else []
+    return NEXT_STEPS[:2] + ([] if "fee_cap" in filled else NEXT_STEPS[2:3]) + fill + NEXT_STEPS[4:]
+
+
+def _bad_setting(key, reason):
+    return ValueError(f"kit/{SETTINGS_NAME}: {key}: {reason}")
+
+
+def _settings_day(value, key, today):
+    try:
+        day = date.fromisoformat(value) if isinstance(value, str) and DATE.fullmatch(value) else None
+    except ValueError:
+        day = None
+    if day is None or day > today:
+        raise _bad_setting(key, "must be a real YYYY-MM-DD date, not after today")
+    return day
+
+
+def load_request_settings(kit_dir, today=None):
+    """Render keywords from kit/request-settings.json; {} when absent. Errors name the key, never the value."""
+    path, today = Path(kit_dir) / SETTINGS_NAME, today or date.today()
+    if not os.path.lexists(path):
+        return {}
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
+        raise _bad_setting("file", "must be a regular file (not a symlink) of at most 64 KiB")
+    try:
+        document = json.loads(path.read_bytes().decode("utf-8"))
+    except (ValueError, RecursionError) as exc:
+        reason = "must be UTF-8" if isinstance(exc, UnicodeDecodeError) else "must be valid JSON"
+        raise _bad_setting("file", reason) from None
+    if not isinstance(document, dict):
+        raise _bad_setting("file", "must be a JSON object")
+    for key in document:
+        if key not in SETTINGS_KEYS:
+            raise _bad_setting(key if re.fullmatch(r"[A-Za-z0-9_]{1,40}", key) else "(unnamed)", "unknown key")
+    if type(document.get("schema_version")) is not int or document["schema_version"] != 1:
+        raise _bad_setting("schema_version", "must be 1")
+    settings, lines, cap = {}, document.get("requester"), document.get("fee_cap_usd")
+    if "requester" in document:
+        if not isinstance(lines, list) or not 1 <= len(lines) <= 8 or not all(
+                isinstance(line, str) and 1 <= len(line) <= 120
+                and not any(ord(c) < 32 or 127 <= ord(c) < 160 for c in line) for line in lines):
+            raise _bad_setting("requester", "must be 1-8 lines of 1-120 characters without control characters")
+        settings["requester_block"] = "\n".join(lines)
+    if "fee_cap_usd" in document:
+        # Range first: math.isfinite() overflows on a huge JSON integer such as 10**400.
+        if type(cap) not in (int, float) or not 0 <= cap <= 10000 or not math.isfinite(cap):
+            raise _bad_setting("fee_cap_usd", "must be a number from 0 to 10000")
+        settings["fee_cap"] = "$" + format(cap, ",.2f")
+    if "date_to" in document and "date_from" not in document:
+        raise _bad_setting("date_to", "needs date_from")
+    if "date_from" in document:
+        start, end = _settings_day(document["date_from"], "date_from", today), document.get("date_to", "today")
+        if end != "today" and _settings_day(end, "date_to", today) < start:
+            raise _bad_setting("date_to", "must not be before date_from")
+        settings["date_range"] = f"{document['date_from']} through {end}"
+    return settings
+
+
+def fee_cap_cents(kit_dir, today=None):
+    """``fee_cap_usd`` in whole cents, as the drafts print it; None when no cap is set (same validation)."""
+    cap = load_request_settings(kit_dir, today).get("fee_cap")
+    return None if cap is None else int(cap.lstrip("$").replace(",", "").replace(".", ""))
 
 
 def _read_json(path):
@@ -126,9 +198,11 @@ def _clean_agency_name(name):
 
 
 def render_combined_request(package, agency, requester_block=DEFAULT_REQUESTER,
-                            fee_cap=DEFAULT_FEE_CAP, date_range="[date range, e.g. 2023-01-01 through today]"):
-    """One draft covering every request scope in the law package."""
+                            fee_cap=DEFAULT_FEE_CAP, date_range="[date range, e.g. 2023-01-01 through today]",
+                            scopes=None):
+    """One draft covering every request scope in the law package, or only ``scopes`` (package order)."""
     name = _clean_agency_name(agency["name"])
+    chosen = [scope for scope in package["request_scopes"] if scopes is None or scope["scope_id"] in scopes]
     custodian = agency.get("records_email") or "[official records custodian - verify on the agency's website]"
     law_info = package["records_law"]
     rules = {rule["rule_id"]: rule for rule in package["rules"]}
@@ -147,7 +221,7 @@ def render_combined_request(package, agency, requester_block=DEFAULT_REQUESTER,
         "records, if any, concerning the following. If your agency holds no responsive",
         "records for a section, please say so for that section.",
     ]
-    for scope in package["request_scopes"]:
+    for scope in chosen:
         lines += ["", f"## {scope['title']}", ""]
         lines += [f"- {item}" for item in scope["items"]]
     lines += [
@@ -170,7 +244,7 @@ def render_combined_request(package, agency, requester_block=DEFAULT_REQUESTER,
         "Rules the scopes relate to:",
     ]
     cited = []
-    for scope in package["request_scopes"]:
+    for scope in chosen:
         for rule_id in scope["rule_ids"]:
             if rule_id in rules and rule_id not in cited:
                 cited.append(rule_id)
@@ -185,11 +259,15 @@ def render_combined_request(package, agency, requester_block=DEFAULT_REQUESTER,
     return "\n".join(lines)
 
 
-def render_template_request(agency, template_path=TEMPLATE_PATH):
+def render_template_request(agency, template_path=TEMPLATE_PATH, requester_block=None, fee_cap=None,
+                            date_range=None):
     """Fallback draft from templates/records-request.md when no law package exists."""
     name = _clean_agency_name(agency["name"])
     template = Path(template_path).read_text(encoding="utf-8")
     body = template.replace("[agency]", name)
+    for slot, value in (("[date range]", date_range), ("[narrow date range]", date_range),
+                        ("[explicit approved cap]", fee_cap), ("[requester-approved contact details]", requester_block)):
+        body = body.replace(slot, value) if value is not None else body
     banner = [
         "# Draft records request: " + name,
         "",
@@ -222,9 +300,10 @@ def _load_existing(path):
     return existing
 
 
-def _write_readme(kit_dir, location, package_status):
+def _write_readme(kit_dir, location, package_status, scopes=None):
     where = (f"{location.place_name} ({location.county_name} County)" if location.match_kind == "city"
              else f"{location.county_name} County")
+    chosen = f"\n- Drafts cover only the request scopes chosen with `--scope`: {', '.join(scopes)}." if scopes else ""
     text = f"""# Organizer kit for {where}
 
 Generated offline by `campaign_tool kit`. Nothing in this folder has been sent
@@ -238,7 +317,9 @@ plate readers. Every agency entry is a suggestion from the shared seed
   fresh suggestions to `agencies.suggested.json`.
 - `requests/` holds one draft per selected law-enforcement agency. Fill the
   date range, fee cap and requester block before anyone sends it. Re-running
-  `kit` keeps drafts you edited and puts the fresh draft in `requests.suggested/`.
+  `kit` keeps drafts you edited and puts the fresh draft in `requests.suggested/`.{chosen}
+- `request-settings.json` (optional, private) fills every draft, e.g. `{{"schema_version": 1, "requester":
+  ["A. Organizer", "a@example.org"], "fee_cap_usd": 50, "date_from": "2023-01-01", "date_to": "today"}}`.
 - `governing-bodies.json` lists boards, councils and district attorneys for
   meeting and oversight follow-up; they receive no records request draft.
 - `law.json` summarizes the jurisdiction law package (status: {package_status}).
@@ -250,7 +331,7 @@ this tool. See docs/AGENCY-DISCOVERY.md.
     _write_text(kit_dir / "README.md", text)
 
 
-def build_kit(root, online=False, include=None, seed=None, law_base=None):
+def build_kit(root, online=False, include=None, seed=None, law_base=None, scopes=None):
     """Build ``<root>/kit``; returns the summary dict. Raises ValueError on bad input."""
     from .cli import read_config  # local import: cli imports this module lazily too
     root = Path(root)
@@ -267,11 +348,17 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
     except ValueError as exc:
         package, package_status = None, "missing"
         package_error = str(exc)
+    if scopes:  # validated before any write; package order, deduped
+        if package is None:
+            raise ValueError(f"--scope needs a law package; none found for {jurisdiction}")
+        wanted = {law.request_scope(package, scope_id)["scope_id"] for scope_id in scopes}
+        scopes = [s["scope_id"] for s in package["request_scopes"] if s["scope_id"] in wanted]
 
     kit_dir = root / "kit"
     requests_dir = kit_dir / "requests"
     suggested_dir = kit_dir / "requests.suggested"
     _kit_folder(kit_dir)
+    settings = load_request_settings(kit_dir)
     _kit_folder(requests_dir)
     _kit_folder(suggested_dir)
 
@@ -300,7 +387,8 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
 
     def render(entry, quiet=False):
         try:
-            return render_combined_request(package, entry) if package else render_template_request(entry)
+            return (render_combined_request(package, entry, scopes=scopes or None, **settings) if package
+                    else render_template_request(entry, **settings))
         except ValueError:
             if not quiet:
                 raise
@@ -379,10 +467,13 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None):
         "agencies_preserved": agencies_preserved,
         "suggestion_diff_count": diff_count,
         "include": list(include),
-        "next_steps": NEXT_STEPS,
+        "scopes": scopes or "all",
+        "request_settings": {"requester": "requester_block" in settings, "fee_cap": "fee_cap" in settings,
+                             "date_range": "date_range" in settings},
+        "next_steps": _next_steps(settings),
     }
     _write_json(kit_dir / "summary.json", summary)
-    _write_readme(kit_dir, location, package_status)
+    _write_readme(kit_dir, location, package_status, scopes)
 
     cfg["location"] = {"county_fips": location.county_fips, "county_name": location.county_name,
                        "place_fips": location.place_fips, "place_name": location.place_name,
@@ -455,3 +546,35 @@ def kit_status(root):
         except (ValueError, OSError):
             report["kit_error"] = "kit/agencies.json is not readable JSON"
     return report
+
+
+def stale_contacts(root, max_age_days, today=None):
+    """Selected, verified kit agencies whose verification.checked_on is more than max_age_days old (read-only).
+
+    Missing kit/agencies.json -> []; unreadable -> None (doctor already reports kit_error). A verified entry with a
+    missing or unparseable checked_on is listed with nulls (first): it cannot be shown fresh. doctor caps the list."""
+    path = Path(root) / "kit" / "agencies.json"
+    if not path.is_file():
+        return []
+    try:
+        agencies = _read_json(path)
+    except (ValueError, OSError):
+        return None
+    if not isinstance(agencies, list):
+        return []
+    today = today or date.today()
+    stale = []
+    for entry in agencies:
+        if not (isinstance(entry, dict) and entry.get("selected") is True and entry.get("verified") is True):
+            continue
+        verification = entry.get("verification")
+        raw = verification.get("checked_on") if isinstance(verification, dict) else None
+        try:
+            checked = date.fromisoformat(raw) if isinstance(raw, str) and DATE.fullmatch(raw) else None
+        except ValueError:
+            checked = None
+        age = (today - checked).days if checked else None
+        if age is None or age > max_age_days:
+            stale.append({"agency_id": str(entry.get("agency_id")), "checked_on": checked and raw, "age_days": age})
+    stale.sort(key=lambda item: (item["age_days"] is not None, -(item["age_days"] or 0), item["agency_id"]))
+    return stale

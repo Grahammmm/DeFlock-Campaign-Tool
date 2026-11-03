@@ -36,9 +36,11 @@ class FlockTransparencyTests(unittest.TestCase):
     def write_agency(self, **fields):
         path = self.root / "content" / "agencies.json"
         agencies = json.loads((EXAMPLE / "content" / "agencies.json").read_text())
-        agency = {"agency_id": "ca-example-police", "slug": "example", "name": "Example PD (fictional)",
+        agency: dict = {"agency_id": "ca-example-police", "slug": "example", "name": "Example PD (fictional)",
                   "kind": "police", "jurisdiction_name": "Example"}
         agency.update(fields)
+        if agency.get("verified") is True:  # DF1737-10: verified:true needs provenance
+            agency.setdefault("verification", {"source_url": "https://example.org/contact", "checked_on": "2026-01-15"})
         path.write_text(json.dumps(agencies + [agency]))
 
     def build(self):

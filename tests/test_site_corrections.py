@@ -22,7 +22,7 @@ BUILD_DAY = date(2026, 10, 20)
 ROWS = re.compile(r'<li><time datetime="([^"]+)">\1</time> · <a href="/findings/([^"]+)\.html#corrections">([^<]*)</a>: ([^<]*)</li>')
 PILL = re.compile(r'<span class="status-pill">Corrected <time datetime="([^"]+)">\1</time></span>')
 FOOTER_LINKS = ('<p><a href="/feed.xml">Findings feed</a> · <a href="/corrections.html">Corrections</a> · '
-                '<a href="/sitemap.xml">Sitemap</a></p>')
+                '<a href="/sitemap.xml">Sitemap</a> · <a href="/methods.html">How to read our findings</a></p>')
 
 
 class SiteCorrectionsTests(unittest.TestCase):
@@ -58,7 +58,7 @@ class SiteCorrectionsTests(unittest.TestCase):
     @staticmethod
     def pills(html, slug):
         start = html.index(f'<a href="/findings/{slug}.html">')
-        item = html[html.rindex("<li>", 0, start):html.index("</li>", start)]
+        item = html[html.rindex("<li", 0, start):html.index("</li>", start)]
         return PILL.findall(item)
 
     def test_all_corrections_newest_first_with_links(self):
@@ -84,7 +84,7 @@ class SiteCorrectionsTests(unittest.TestCase):
 
     def test_order_ignores_file_and_publication_order(self):
         self.only(("beta", [("2026-01-02", "b-old"), ("2026-06-30", "b-new")], None, "2026-01-01T00:00:00+00:00"),
-                  ("alpha", [("2026-06-30", "a-new")], None, "2026-07-01T00:00:00+00:00"))
+                  ("alpha", [("2026-06-30", "a-new")], None, "2026-06-30T12:00:00+00:00"))
         self.build()
         self.assertEqual([r[2] for r in self.rows()], ["a-new", "b-new", "b-old"])
 

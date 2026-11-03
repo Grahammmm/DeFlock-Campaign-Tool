@@ -290,6 +290,7 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
         lines.append(f"Agenda item: {_clean(meeting['agenda_item'])}")
     lines.append("")
     lines.append("## Two-minute comment")
+    start = len(lines)
     lines.append(f"Good evening. My name is [name] and I live in [city]. I am speaking with "
                  f"{_clean(campaign_name)} about automated license plate readers.")
     if findings:
@@ -307,12 +308,60 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
     lines.append("We are not asking you to take our word for it. Every claim links to the record it came "
                  "from. Please read them before this item moves forward.")
     lines.append("")
+    minutes = (meeting.get("participation") or {}).get("speaker_minutes")
+    if type(minutes) is int and 1 <= minutes <= 10:  # organizer-verified limit only; never assumed
+        budget, body = 130 * minutes, lines[start:-1]  # 130 spoken words a minute
+        words = lambda rows: sum(len(row.split()) for row in rows)  # noqa: E731
+        while words(body) > budget and any(row.startswith("- ") for row in body):  # whole bullets, from the end
+            del body[max(i for i, row in enumerate(body) if row.startswith("- "))]
+        lines.append(f"## Spoken comment ({minutes} minute{'' if minutes == 1 else 's'}, about {budget} words)")
+        if words(body) > budget:
+            lines.append("The speaker limit is too short for this kit; use the first sentence and one ask.")
+        else:
+            lines.extend(body + [f"Word count: {words(body)} of {budget}."])
+        lines.append("")
+
+    def due_text(written):  # "YYYY-MM-DD HH:MM (UTC±hh:mm)" in the deadline's own offset; "" when not stated
+        due = written.get("deadline")
+        due = datetime.fromisoformat(due.replace("Z", "+00:00")) if due else None
+        return f"{due:%Y-%m-%d %H:%M} (UTC{due.isoformat()[-6:]})" if due else ""
+
+    asks = [ASKS.get(meeting.get("relevance") or "", DEFAULT_ASK),
+            "Require an annual public audit of searches, retention and outside-agency sharing, "
+            "presented at a noticed meeting.",
+            "Answer in writing which agencies can query this data today and under what written agreement."]
     lines.append("## Three asks")
-    lines.append("- " + ASKS.get(meeting.get("relevance") or "", DEFAULT_ASK))
-    lines.append("- Require an annual public audit of searches, retention and outside-agency sharing, "
-                 "presented at a noticed meeting.")
-    lines.append("- Answer in writing which agencies can query this data today and under what written agreement.")
+    lines.extend("- " + ask for ask in asks)
     lines.append("")
+    letter_for = (meeting.get("participation") or {}).get("written_comment")
+    if letter_for:  # a letter to adapt and send by hand; no recipient or address is ever added here
+        letter = [f"Send by: {due_text(letter_for) or 'deadline not stated by the source'}",
+                  f"How: {_clean(letter_for.get('how'))}", f"To the {_clean(meeting.get('body'))},"]
+        if meeting.get("agenda_item"):
+            letter.append(f"Re: {_clean(meeting['agenda_item'])}")
+        letter.append(f"I live in [city] and write with {_clean(campaign_name)} about automated license plate "
+                      "readers. " + ("Each finding below links to its published page and to the first 12 "
+                                     "characters of the SHA-256 hash of every source record, so you can check "
+                                     "each claim yourself." if findings else "We have requested the policy, the "
+                                     "vendor agreement and the sharing records and will publish what we receive."))
+        for finding in findings:
+            path = str(finding.get("path") or "")
+            link = _clean((base_url.rstrip("/") + path) if base_url else path)
+            hashes = [_clean(s.get("sha256"))[:12] for s in finding.get("sources") or [] if isinstance(s, dict)]
+            refs = "; ".join([link] * bool(link) + ["sources " + ", ".join(h for h in hashes if h)] * any(hashes))
+            title, note = _clean(finding.get("title")), fixed(finding)
+            letter.append(f"- {title + ': ' if title else ''}{_clean(finding.get('summary'))}"
+                          + (f" ({refs})" if refs else "") + (f" (corrected {note})" if note else ""))
+        letter.append("I ask you to:")
+        letter.extend(f"{n}. {ask}" for n, ask in enumerate(asks, 1))
+        letter.extend(["Sincerely,", "[name]", "[city]"])
+        words = lambda rows: sum(len(row.split()) for row in rows)  # noqa: E731
+        while words(letter) > 400 and any(row.startswith("- ") for row in letter):  # whole bullets, from the end
+            del letter[max(i for i, row in enumerate(letter) if row.startswith("- "))]
+        if words(letter) > 400:  # body, agenda item or campaign name alone over the cap: no letter, say so
+            letter = letter[:2] + ["The letter would be over 400 words for this meeting; write a short one by "
+                                   "hand from the three asks above."]
+        lines.extend(["## Written comment"] + letter + [""])
     lines.append("## How to take part")
     part = meeting.get("participation")
     if not part:
@@ -325,10 +374,8 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
             how = _clean(remote.get("how")) if remote.get("available") else ""
             lines.append("- Remote: " + ("yes" if remote.get("available") else "no") + (f", {how}" if how else ""))
         if written:
-            due = written.get("deadline")
-            due = datetime.fromisoformat(due.replace("Z", "+00:00")) if due else None
-            lines.append(f"- Written comment: {_clean(written.get('how'))}"
-                         + (f", by {due:%Y-%m-%d %H:%M} (UTC{due.isoformat()[-6:]})" if due else ""))
+            due = due_text(written)
+            lines.append(f"- Written comment: {_clean(written.get('how'))}" + (f", by {due}" if due else ""))
         lines.append(f"Source: {_clean(part.get('source_url'))} (checked {_clean(part.get('verified_at'))})")
     lines.append("")
     lines.append("## Sources")

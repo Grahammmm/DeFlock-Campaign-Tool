@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Private LAW.csv + per-agency POLICY.csv: --check, versions, governing (each agency on a date), gaps, changes (policy-kind
-FACTS types that differ between consecutive adopted versions) and coverage (us-ca package rules with no LAW row).
-Prints ids, labels, dates, fact types, counts only."""
+FACTS types that differ between consecutive adopted versions), coverage (us-ca package rules with no LAW row) and compare
+(agencies' governing policy facts on one date grouped into value classes by fact id) and stale (LAW rows whose text was
+accessed more than N days before today, or after it). Prints ids, labels, dates, fact types, counts only."""
 import csv
 import hashlib
 import importlib.util
@@ -212,6 +213,17 @@ def coverage(law_rows, rules, on=None):  # per package rule (sorted id): no LAW 
     return out + [f"rules={total} covered={total - len(flagged)} " + " ".join(f"{k}={v}" for k, v in n.items())
                   + " | research view, not a legal conclusion"]
 
+def stale(law_rows, today, max_age):  # per LAW row (rule_id, then CSV row): accessed > max_age days before today, or after
+    out, n = [], {"stale": 0, "future": 0}
+    for _, r in sorted(law_rows, key=lambda x: (x[1]["rule_id"], x[0])):
+        age = (today - day(r["accessed"])).days
+        kind = "stale" if age > max_age else "future" if age < 0 else None
+        if kind:
+            out.append(f"{kind} | {r['rule_id']} | accessed {r['accessed']} | {age} days | {r['status']}"
+                       " | research view, not a legal conclusion")
+            n[kind] += 1
+    return out + [f"law={len(law_rows)} stale={n['stale']} future={n['future']} max_age_days={max_age} today={today}"]
+
 def policy_facts(store, agencies):  # -> ({slug: policy-kind FACTS rows}, errors); a folder without FACTS.csv has none
     spec = importlib.util.spec_from_file_location("_flock_facts", Path(__file__).resolve().parent / "flock_facts.py")
     tool, out, errs = importlib.util.module_from_spec(spec), {}, []  # the sibling tool by file path, never a copy
@@ -260,9 +272,44 @@ def changes(policy_rows, facts):  # per agency + policy_id: fact types differing
     return out + [f"agencies={len({a for a, _ in groups})} policies={len(groups)} "
                   + " ".join(f"{k}={v}" for k, v in n.items()) + " | ids only, review-required"]
 
+def compare(policy_rows, facts, on, types=None):  # per fact type: agencies grouped by governing-policy value class on `on`
+    out, kept, n = [], {}, {"agencies": 0, "governed": 0, "ungoverned": 0, "types": 0, "differ": 0, "agree": 0,
+                            "disputed_skipped": 0}
+    agencies = sorted({slug(r["agency"]) for _, r in policy_rows})
+    for a in agencies:  # kept[a] = {fact type: [facts]} from documents governing on `on`; disputed ones counted, not used
+        docs, kept[a] = {r["doc_sha256"] for r in governs_on(policy_rows, a, on)}, {}
+        if not docs:
+            out.append(f"compare | {a} | no governing adopted policy on {on}")
+        n["governed" if docs else "ungoverned"] += 1
+        for f in facts.get(a, []):
+            if f["source_sha256"].strip() in docs and f["status"] == "disputed":
+                n["disputed_skipped"] += 1
+            elif f["source_sha256"].strip() in docs:
+                kept[a].setdefault(" ".join(f["fact_type"].split()), []).append(f)
+    wanted = sorted({" ".join(t.split()) for t in types} if types else {t for k in kept.values() for t in k})
+    for t in wanted:
+        classes, undocumented = {}, []
+        for a in agencies:  # classes numbered in order of their first agency slug
+            if t not in kept[a]:
+                undocumented.append(a)
+                continue
+            key = tuple(sorted(" ".join(f["value"].split()).casefold() for f in kept[a][t]))
+            classes.setdefault(key, []).append(f"{a} ({';'.join(sorted(f['fact_id'] for f in kept[a][t]))})")
+        parts = [f"class {i}: " + ", ".join(members) for i, members in enumerate(classes.values(), 1)]
+        parts += [f"undocumented: {', '.join(undocumented)}"] if undocumented else []
+        verdict = "differ" if len(classes) >= 2 else \
+            "agree" if len(classes) == 1 and len(next(iter(classes.values()))) >= 2 and not undocumented else ""
+        if verdict:
+            parts.append(verdict)
+            n[verdict] += 1
+        out.append(f"compare | {t} | " + " | ".join(parts))
+    n.update(agencies=len(agencies), types=len(wanted))
+    return out + [" ".join(f"{k}={v}" for k, v in n.items()) + " | ids only, research view, not a legal conclusion"]
+
 USAGE = ("usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD]"
          " | governing STORE --on YYYY-MM-DD | gaps STORE --on YYYY-MM-DD | changes STORE [--agency SLUG]"
-         " | coverage STORE [--on YYYY-MM-DD]")
+         " | coverage STORE [--on YYYY-MM-DD] | compare STORE --on YYYY-MM-DD [--types T1,T2]"
+         " | stale STORE --max-age-days N [--today YYYY-MM-DD]")
 
 def main(argv):
     try:
@@ -302,6 +349,20 @@ def run(argv):
         out = errs or coverage(law_rows, rules, on)
         print("\n".join(out), file=sys.stderr if errs else sys.stdout)
         return 1 if errs else 3 if len(out) > 1 else 0
+    if argv[:1] == ["stale"]:  # STORE a directory with LAW.csv; N 1..3650 days; any load error -> stderr only, exit 1
+        on = argv[5] if len(argv) == 6 else None
+        if len(argv) not in (4, 6) or argv[2] != "--max-age-days" or not re.fullmatch("[0-9]{1,4}", argv[3]) \
+                or not 1 <= int(argv[3]) <= 3650 or (on is not None and (argv[4] != "--today" or not day(on))) \
+                or not Path(argv[1]).is_dir():
+            print(USAGE, file=sys.stderr)
+            return 2
+        if not (Path(argv[1]) / "LAW.csv").is_file():
+            print("store: no LAW.csv", file=sys.stderr)
+            return 1
+        law_rows, _, errs = load_all(argv[1])
+        out = errs or stale(law_rows, day(on) if on else date.today(), int(argv[3]))
+        print("\n".join(out), file=sys.stderr if errs else sys.stdout)
+        return 1 if errs else 3 if len(out) > 1 else 0
     if argv[:1] == ["changes"]:  # a report, not findings: exit 0 clean; any POLICY or in-scope FACTS error -> stderr, exit 1
         if not (len(argv) == 2 or len(argv) == 4 and argv[2] == "--agency" and argv[3] and slug(argv[3]) == argv[3]) \
                 or not Path(argv[1]).is_dir():
@@ -313,6 +374,18 @@ def run(argv):
         out = (errs := errs + more) or changes(rows, facts)
         print("\n".join(out), file=sys.stderr if errs else sys.stdout)
         return 1 if errs else 0
+    if argv[:1] == ["compare"]:  # STORE a directory; POLICY or FACTS errors -> stderr only, exit 1; exit 3 when a type differs
+        opts = dict(zip(argv[2::2], argv[3::2])) if len(argv) in (4, 6) else {}
+        names = [t.strip() for t in opts.get("--types", "x").split(",")]
+        if len(opts) != len(argv) // 2 - 1 or set(opts) - {"--on", "--types"} or not day(opts.get("--on", "")) \
+                or not 0 < len(names) <= 20 or not all(0 < len(t) <= 60 for t in names) or not Path(argv[1]).is_dir():
+            print(USAGE, file=sys.stderr)
+            return 2
+        _, policy_rows, errs = load_all(argv[1])
+        facts, more = ({}, []) if errs else policy_facts(argv[1], sorted({slug(r["agency"]) for _, r in policy_rows}))
+        out = (errs := errs + more) or compare(policy_rows, facts, opts["--on"], names if "--types" in opts else None)
+        print("\n".join(out), file=sys.stderr if errs else sys.stdout)
+        return 1 if errs else 3 if any(x.endswith(" | differ") for x in out[:-1]) else 0
     on = argv[5] if len(argv) == 6 else None
     if len(argv) not in (4, 6) or argv[0] != "versions" or argv[2] != "--agency" or (on and (argv[4] != "--on" or not day(on))):
         print(USAGE, file=sys.stderr)

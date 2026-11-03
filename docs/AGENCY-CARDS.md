@@ -17,6 +17,8 @@ The county profile uses the existing name/vendor/status/summary/cameraCount/fact
 open/flags fields. Source destinations must be local HTML filenames and safe
 fragment slugs. Explicit alias mappings handle a group's differently named source
 section without hard-coding a jurisdiction in the engine.
+A city's empty `cameraCount` is filled by the site build with a computed "N community-mapped points inside city
+limits; ownership unconfirmed" label when the campaign has a map (docs/SITE-CONTENT.md); a typed value is kept.
 `agency_cards.problems(config)` lists every problem at once (sorted, dotted field names such as `county_profile.vendor`, never a value); `render` raises them joined by `; `.
 
 **Check a config.** `python3 -m campaign_tool.agency_cards --check cards.json` (≤ 2 MB UTF-8 JSON object;
@@ -34,6 +36,15 @@ before this compatibility global is retired.
 
 The synthetic example makes no real agency allegation and supplies no real
 contact address, subscriber, production configuration or private record.
+
+## Agency contract term
+
+An agency's `profile.contract` is `{vendor, start, end, renewal_note?, source_url, checked_on}`, checked by an organizer
+on the official source and never fetched. `vendor` (≤ 80) and `renewal_note` (≤ 200) are plain text; `start`/`end` are
+YYYY-MM-DD dates with `end` not before `start`; `source_url` is https; `checked_on` is not after the build date. A
+contract without `source_url` or `checked_on` stops the build. `agencies.html` shows it on the card; the home page lists
+contracts ending within 180 days of the build date, soonest first; `doctor` reports `contracts_ending` within 90 days.
+It never enters the CITIES card config, and `site.json` `county_profile` has no `contract` key.
 
 ## Pilot preservation and remaining work
 

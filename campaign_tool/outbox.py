@@ -8,7 +8,11 @@ versioned, approved intent identity; replay never becomes another send.
 Safeguards, all enforced in
 :meth:`Outbox.send`:
 
-* nothing sends unless the row is ``approved`` with an ``approved_by``;
+* nothing sends unless the row is ``approved`` AND its stored approval
+  evidence still verifies for this exact draft (see :mod:`campaign_tool.approval`):
+  an owner's SSH signature checked against the root-owned trust file, or, inside
+  the hosted gateway only, the gateway's attested frame. A typed name, or a row
+  edited to 'approved' in SQLite, never sends;
 * one send per agency per UTC day;
 * the request's fee cap must be within the campaign cap;
 * a send that ended in an ambiguous state (``sending`` with no provider
@@ -22,7 +26,7 @@ never read them from the environment. Workspace executors in a later phase
 mirror this journal; the CLI below is for an organizer's own machine.
 
 Usage:
-    python3 -m campaign_tool.outbox propose|approve|send|reconcile|list ...
+    python3 -m campaign_tool.outbox propose|payload|approve|send|reconcile|list ...
 """
 import argparse
 import datetime as dt
@@ -33,11 +37,14 @@ import os
 import smtplib
 import ssl
 import sqlite3
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 from pathlib import Path
+
+from campaign_tool import approval
 
 STATES = ("proposed", "approved", "sending", "sent", "failed", "blocked")
 KINDS = ("send_request", "send_followup")
@@ -56,6 +63,7 @@ CREATE TABLE IF NOT EXISTS outbox (
   state TEXT NOT NULL,
   approved_by TEXT,
   approved_at TEXT,
+  approval_evidence TEXT,
   sending_at TEXT,
   sent_at TEXT,
   provider_receipt TEXT,
@@ -260,8 +268,18 @@ def file_muckrock(draft, token, base_url="https://www.muckrock.com/api_v2", open
     return ProviderReceipt("muckrock", str(first["id"]), url=url, raw={"status": first.get("status")})
 
 
+def preview(draft_json):
+    """Human-readable text of exactly what would be sent, plus the journal record it is bound to."""
+    d = RequestDraft.from_json(draft_json)
+    head = [f"Kind: {d.kind}", f"Channel: {d.channel}", f"To: {d.to}", f"From: {d.from_addr}",
+            f"Request: {d.request_id}", f"Agency: {d.agency_id}", f"Scope version: {d.scope_version}",
+            f"Fee cap (cents): {d.fee_cap_cents}", f"In-Reply-To: {d.in_reply_to}", f"Follow-up intent: {d.intent_id}",
+            f"Subject: {d.subject}"]
+    return "\n".join(head) + "\n\n" + d.body + "\n--- journal record (draft_json) ---\n" + draft_json + "\n"
+
+
 class Outbox:
-    def __init__(self, path, campaign_fee_cap_cents=0, daily_agency_cap=DAILY_AGENCY_CAP, clock=None):
+    def __init__(self, path, campaign_fee_cap_cents=0, daily_agency_cap=DAILY_AGENCY_CAP, clock=None, attestor=None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.path.parent, 0o700)
@@ -269,11 +287,16 @@ class Outbox:
         self.db = sqlite3.connect(self.path, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        if "approval_evidence" not in {c[1] for c in self.db.execute("PRAGMA table_info(outbox)")}:
+            # Rows approved before DF-2 carry no evidence and therefore stay unsendable.
+            self.db.execute("ALTER TABLE outbox ADD COLUMN approval_evidence TEXT")
         if not existed or (os.stat(self.path).st_mode & 0o777) != 0o600:
             os.chmod(self.path, 0o600)
         self.campaign_fee_cap_cents = None if campaign_fee_cap_cents is None else int(campaign_fee_cap_cents)
         self.daily_agency_cap = int(daily_agency_cap)
         self.clock = clock or now_iso
+        # Only the hosted gateway passes an attestor (its signed approval frames); the CLI never does.
+        self.attestor = attestor
 
     def close(self):
         self.db.close()
@@ -305,17 +328,57 @@ class Outbox:
             (key, draft.kind, draft.request_id, draft.agency_id, int(draft.scope_version), draft.channel, draft.to_json(), int(draft.fee_cap_cents), stamp, stamp))
         return self.row(key)
 
-    def approve(self, key, approved_by):
-        if not approved_by:
-            raise OutboxError("approval requires an identity")
+    # -- approval ------------------------------------------------------------
+    def _round(self, key):
+        return self.db.execute("SELECT count(*) FROM outbox_retry_approval WHERE idempotency_key=?", (key,)).fetchone()[0]
+
+    @staticmethod
+    def _retryable(row):
+        """A definite failure with no delivery evidence: the only state approve_retry accepts."""
+        return row["state"] == "failed" and not (row["provider_receipt"] or row["sending_at"] or row["sent_at"])
+
+    def approval_payload(self, key, round_=None):
+        """The exact bytes an owner reads and signs: the full outgoing text plus the journal record.
+
+        By default the round is the one the next approval needs: the next retry round after a
+        definite failure, otherwise the current round. A signature over one round never fits another.
+        """
+        row = self.row(key)
+        if not row:
+            raise OutboxError("unknown outbox row")
+        if round_ is None:
+            round_ = self._round(key) + (1 if self._retryable(row) else 0)
+        return approval.payload("outbox", key, preview(row["draft_json"]), round_)
+
+    def _verify(self, row, evidence, round_):
+        """Return the verified approver for ``evidence`` on this row's exact draft, or raise OutboxError."""
+        if not isinstance(evidence, dict):
+            raise OutboxError("approval requires signed evidence, not a name")
+        try:
+            if evidence.get("kind") == "ssh" and set(evidence) == {"kind", "signature"}:
+                data = approval.payload("outbox", row["idempotency_key"], preview(row["draft_json"]), round_)
+                return approval.verify(data, evidence["signature"])
+            if evidence.get("kind") == "gateway" and self.attestor is not None:
+                return self.attestor(row, evidence)
+        except approval.ApprovalError as exc:
+            raise OutboxError(f"approval refused: {exc}") from exc
+        raise OutboxError("approval evidence kind not accepted here")
+
+    def approve(self, key, evidence):
+        """Approve a proposed row with verified evidence; the approver recorded is the verified principal."""
         row = self.row(key)
         if not row:
             raise OutboxError("unknown outbox row")
         if row["state"] != "proposed":
             raise OutboxError(f"row is {row['state']}, not proposed")
+        approved_by = self._verify(row, evidence, self._round(key))
         stamp = self.clock()
-        self.db.execute("UPDATE outbox SET state='approved', approved_by=?, approved_at=?, updated_at=? WHERE idempotency_key=?",
-                        (approved_by, stamp, stamp, key))
+        done = self.db.execute("UPDATE outbox SET state='approved', approved_by=?, approved_at=?, approval_evidence=?, "
+                               "updated_at=? WHERE idempotency_key=? AND state='proposed' AND draft_json=?",
+                               (approved_by, stamp, json.dumps(evidence, sort_keys=True), stamp, key,
+                                row["draft_json"])).rowcount
+        if done != 1:
+            raise OutboxError("row changed while approving")
         return self.row(key)
 
     def _set(self, key, **fields):
@@ -323,35 +386,36 @@ class Outbox:
         cols = ", ".join(f"{k}=?" for k in fields)
         self.db.execute(f"UPDATE outbox SET {cols} WHERE idempotency_key=?", (*fields.values(), key))
 
-    def approve_retry(self, key, approved_by, approved_at):
-        """Trusted caller's new approval after definite failure; never clear uncertainty.
+    def approve_retry(self, key, evidence, approved_at=None):
+        """A fresh verified approval after a definite failure; never clears uncertainty.
 
         This does not send. The usual send caps and unresolved-request check remain.
-        The caller must authenticate the approver and bind approval to this draft.
+        The evidence must cover the next approval round, so the first approval cannot be replayed.
         """
-        if not isinstance(approved_by, str) or not approved_by.strip():
-            raise OutboxError("retry approval requires an identity")
+        approved_at = approved_at or self.clock()
         try:
             if not isinstance(approved_at, str) or len(approved_at) > 40 or not approved_at.endswith("Z"):
                 raise ValueError("UTC approval required")
-            approval = dt.datetime.fromisoformat(approved_at.replace("Z", "+00:00"))
+            approval_time = dt.datetime.fromisoformat(approved_at.replace("Z", "+00:00"))
         except (TypeError, ValueError) as exc:
             raise OutboxError("invalid retry approval time") from exc
         self.db.execute("BEGIN IMMEDIATE")
         try:
             row = self.row(key)
-            if not row or row["state"] != "failed" or row["provider_receipt"] or row["sending_at"] or row["sent_at"]:
+            if not row or not self._retryable(row):
                 raise OutboxError("retry requires a definite failure without delivery evidence")
             failed = dt.datetime.fromisoformat(row["updated_at"].replace("Z", "+00:00"))
-            if approval <= failed:
+            if approval_time <= failed:
                 raise OutboxError("retry approval must follow the failure")
+            approved_by = self._verify(row, evidence, self._round(key) + 1)
             stamp = self.clock()
             self.db.execute("INSERT INTO outbox_retry_approval (idempotency_key, prior_approved_by, prior_approved_at, "
                 "failed_at, prior_error, resolved_by, approved_by, approved_at, recorded_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (key, row["approved_by"], row["approved_at"], row["updated_at"], row["error"], row["resolved_by"],
                  approved_by, approved_at, stamp))
-            self.db.execute("UPDATE outbox SET state='approved', approved_by=?, approved_at=?, error=NULL, updated_at=? "
-                "WHERE idempotency_key=? AND state='failed'", (approved_by, approved_at, stamp, key))
+            self.db.execute("UPDATE outbox SET state='approved', approved_by=?, approved_at=?, approval_evidence=?, "
+                "error=NULL, updated_at=? WHERE idempotency_key=? AND state='failed'",
+                (approved_by, approved_at, json.dumps(evidence, sort_keys=True), stamp, key))
             self.db.execute("COMMIT")
         except BaseException:
             if self.db.in_transaction:
@@ -369,6 +433,12 @@ class Outbox:
             raise Blocked("blocked", row.get("error") or "")
         if row["state"] != "approved" or not row["approved_by"]:
             raise Blocked("not_approved", f"state is {row['state']}")
+        try:  # the state field alone is not trusted: the stored evidence must still verify for this text
+            evidence = json.loads(row["approval_evidence"] or "null")
+            if self._verify(row, evidence, self._round(row["idempotency_key"])) != row["approved_by"]:
+                raise OutboxError("approver mismatch")
+        except (OutboxError, ValueError) as exc:
+            raise Blocked("not_approved", "approval evidence does not verify for this draft") from exc
         unresolved = self.db.execute(
             "SELECT count(*) FROM outbox WHERE request_id=? AND state='sending' AND idempotency_key<>?",
             (row["request_id"], row["idempotency_key"])).fetchone()[0]
@@ -467,8 +537,19 @@ def main(argv=None):
     p.add_argument("--journal", required=True, help="path to outbox.sqlite (private directory)")
     p.add_argument("--fee-cap-cents", type=int, default=0, help="largest fee a draft may offer; 0 (default) blocks any fee")
     sub = p.add_subparsers(dest="command", required=True)
+    pb = sub.add_parser("payload-batch"); pb.add_argument("--out", required=True)
+    pb.add_argument("--agency", action="append")
+    ab = sub.add_parser("approve-batch"); ab.add_argument("--dir", required=True)
     pr = sub.add_parser("propose"); pr.add_argument("draft_json", help="file with RequestDraft fields")
-    ap = sub.add_parser("approve"); ap.add_argument("key"); ap.add_argument("--by", required=True)
+    pl = sub.add_parser("payload", help="print the exact text to read and sign (ssh-keygen -Y sign -n deflock-approval)")
+    pl.add_argument("key")
+    ap = sub.add_parser("approve", help="record a verified owner signature; a typed name is not accepted")
+    ap.add_argument("key")
+    ap.add_argument("--signature", required=True, help="the .sig file from ssh-keygen -Y sign")
+    ar = sub.add_parser("approve-retry", help="after a definite failure: record a verified signature over `payload KEY` "
+                        "(which then prints the next retry round); the original approval cannot be replayed")
+    ar.add_argument("key")
+    ar.add_argument("--signature", required=True, help="the .sig file from ssh-keygen -Y sign")
     se = sub.add_parser("send"); se.add_argument("key")
     se.add_argument("--smtp-host"); se.add_argument("--smtp-port", type=int, default=587)
     se.add_argument("--smtp-user", default=""); se.add_argument("--smtp-password-env", default="OUTBOX_SMTP_PASSWORD")
@@ -482,8 +563,33 @@ def main(argv=None):
             draft = RequestDraft(**json.loads(Path(args.draft_json).read_text(encoding="utf-8")))
             row = box.propose(draft)
             print(json.dumps({"idempotency_key": row["idempotency_key"], "state": row["state"]}))
-        elif args.command == "approve":
-            print(json.dumps({"state": box.approve(args.key, args.by)["state"]}))
+        elif args.command in ("payload-batch", "approve-batch"):
+            from campaign_tool import outbox_batch
+            try:
+                if args.command == "payload-batch":
+                    print(json.dumps(outbox_batch.export(box, args.out, args.agency)))
+                else:
+                    results = outbox_batch.approve_all(box, args.dir)
+                    for result in results:
+                        print(json.dumps(result))
+                    approved = sum(r["state"] == "approved" for r in results)
+                    print(json.dumps({"approved": approved, "skipped": len(results) - approved}))
+                    return 2 if approved != len(results) else 0
+            except OutboxError as exc:
+                print(json.dumps({"state": "refused", "reason": str(exc)}))
+                return 2
+        elif args.command == "payload":
+            if not box.row(args.key):
+                p.error("unknown key")
+            sys.stdout.write(box.approval_payload(args.key).decode("utf-8"))
+        elif args.command in ("approve", "approve-retry"):
+            evidence = {"kind": "ssh", "signature": Path(args.signature).read_text(encoding="utf-8")}
+            try:
+                row = (box.approve if args.command == "approve" else box.approve_retry)(args.key, evidence)
+            except OutboxError as exc:
+                print(json.dumps({"state": "refused", "reason": str(exc)}))
+                return 2
+            print(json.dumps({"state": row["state"], "approved_by": row["approved_by"]}))
         elif args.command == "send":
             row = box.row(args.key)
             if not row:
@@ -516,4 +622,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Run the imported module, not this __main__ copy, so the CLI, Outbox and
+    # outbox_batch share one OutboxError class.
+    from campaign_tool import outbox as _outbox
+    raise SystemExit(_outbox.main())

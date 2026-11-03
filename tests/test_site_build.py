@@ -20,10 +20,11 @@ from campaign_tool.cli import read_config
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 PAGES = ["index.html", "agencies.html", "findings/index.html", "findings/cedar-policy-posted.html",
-         "sources.html", "meetings.html", "about.html", "corrections.html"]
-FILES = PAGES + ["style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+         "sources.html", "meetings.html", "about.html", "corrections.html", "meetings/cedar-council-2026-10.html",
+         "agencies/cedar.html"]  # DF2237-08: Cedar Police has a finding and sources
+FILES = PAGES + ["404.html", "cameras.html", "methods.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                  "site-data.js", "agency-cards.js", "app.js", "data/cameras.geojson",
-                 "data/city-boundaries.geojson"]
+                 "data/city-boundaries.geojson", "findings/agency/cedar.xml", "data/findings.json", "data/sources.json"]
 EXPECTED_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; "
                 "img-src 'self' data: blob: https://tiles.example.invalid; "
                 "connect-src 'self' https://tiles.example.invalid; font-src 'self'; worker-src blob:; "
@@ -90,7 +91,7 @@ class SiteBuildTests(unittest.TestCase):
         self.build()
         page = self.read("findings/cedar-policy-posted.html")
         for needle in ("Documented fact", "Verified against the record", 'datetime="2026-01-15"',
-                       "sha256 cafecafecafe", "page:1-2", 'id="corrections"', "Corrected the policy date",
+                       "Record no. <code>cafecafecafe", "page:1-2", 'id="corrections"', "Corrected the policy date",
                        "This is not legal advice", 'href="/sources.html#cedar-police-records"'):
             self.assertIn(needle, page)
         self.assertNotIn("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe", page)
@@ -131,8 +132,8 @@ class SiteBuildTests(unittest.TestCase):
         cards = self.read("agency-cards.js")
         self.assertIn('slug==="cedar"?"cedar-police-records"', cards)
         self.assertIn('"sources.html#"', cards)
-        self.assertIn("sha256 cafecafecafe", sources)
-        self.assertIn("sha256 beefbeefbeef", sources)
+        self.assertIn("Record no. <code>cafecafecafe", sources)
+        self.assertIn("Record no. <code>beefbeefbeef", sources)
 
     def test_site_data_globals_and_controller_wiring(self):
         self.build()
