@@ -811,6 +811,8 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     sent_p.add_argument("--request", default="main", help="Name of a further request to this agency, drafted in "
                         "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
+    sent_p.add_argument("--reference", metavar="REF", help="The agency's own request number (1-40: A-Z a-z 0-9 - _ # .)")
+    sent_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
@@ -850,6 +852,8 @@ def main():
     response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     response_p.add_argument("--expected-on", metavar="YYYY-MM-DD", help="determination or a later step: the agency's "
                             "own stated production date (provisional, not a legal deadline)")
+    response_p.add_argument("--reference", metavar="REF", help="The agency's own request number, stored once")
+    response_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -1190,7 +1194,8 @@ def main():
         elif args.command == "kit-sent":
             from .kit_track import record_sent
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
-                                         replace=args.replace), indent=2))
+                                         replace=args.replace, reference=args.reference,
+                                         replace_reference=args.replace_reference), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
@@ -1234,7 +1239,8 @@ def main():
         elif args.command == "kit-response":
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
-                                         request=args.request, amount=args.amount, expected_on=args.expected_on),
+                                         request=args.request, amount=args.amount, expected_on=args.expected_on,
+                                         reference=args.reference, replace_reference=args.replace_reference),
                              indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
