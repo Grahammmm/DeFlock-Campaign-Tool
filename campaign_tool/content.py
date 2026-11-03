@@ -300,7 +300,7 @@ FINDING_KEYS = {"id", "title", "slug", "summary", "body_md", "classification", "
 FINDING_REQUIRED = {"id", "title", "slug", "summary", "classification", "confidence",
                     "event_date", "sources", "published_at", "corrections", "state",
                     "author", "limitations", "counterevidence"}
-SOURCE_KEYS = {"sha256", "locator", "title", "rule_id"}
+SOURCE_KEYS = {"sha256", "locator", "title", "rule_id", "page"}
 CORRECTION_KEYS = {"date", "note"}
 
 
@@ -329,11 +329,15 @@ def load_finding(document, label):
         _require_keys(source, SOURCE_KEYS, {"sha256", "locator"}, f"{label}.sources[{index}]")
         if not SHA256.fullmatch(str(source["sha256"])):
             raise ContentError(f"{label}.sources[{index}].sha256: must be 64 lowercase hex characters")
+        page = source.get("page")
+        if "page" in source and not (type(page) is int and 1 <= page <= 100000):
+            raise ContentError(f"{label}.sources[{index}].page: a whole number of 1 or more")
         sources.append({
             "sha256": source["sha256"],
             "locator": _text(source, "locator", f"{label}.sources[{index}]", allow_empty=False),
             "title": _text(source, "title", f"{label}.sources[{index}]", default="Source record"),
             "rule_id": _text(source, "rule_id", f"{label}.sources[{index}]", required=False, default=None),
+            "page": page,
         })
     published_at = _timestamp(document["published_at"], f"{label}.published_at")
     published_day = datetime.fromisoformat(published_at.replace("Z", "+00:00")).date()
@@ -542,6 +546,24 @@ def load_sources(document):
             **({"public_copy": _public_copy(entry, label)} if "public_copy" in entry else {}),
         })
     return entries
+
+
+def check_source_pages(findings, sources):
+    """DF2037-04: problem lines for finding ``sources[].page`` against the library (build and content-check)."""
+    problems = []
+    for finding in findings:
+        for index, source in enumerate(finding["sources"]):
+            if source.get("page") is None:
+                continue
+            where = f"findings/{finding['slug']}.sources[{index}].page"
+            entry = next((s for s in sources if s["sha256"] == source["sha256"]), None)  # as site.finding_html
+            if entry is None:
+                problems.append(f"{where}: source is not in the library")
+            elif not entry["public_url"]:
+                problems.append(f"{where}: the source has no public copy")
+            elif entry["pages"] and source["page"] > entry["pages"]:
+                problems.append(f"{where}: above the copy's {entry['pages']} pages")
+    return problems
 
 
 # --- agencies --------------------------------------------------------------
@@ -1015,6 +1037,9 @@ def load_content(root, today=None):
 
     sources_path = content_dir / "sources.json"
     sources = load_sources(_read_json(sources_path)) if sources_path.is_file() else []
+    page_problems = check_source_pages(findings, sources)
+    if page_problems:
+        raise ContentError(page_problems[0])
 
     agencies_path = content_dir / "agencies.json"
     if agencies_path.is_file():

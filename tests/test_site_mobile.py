@@ -18,10 +18,10 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples/fictional-campaign"
 # STARTER_SHA re-captured from main a9db9b0c: the only starter CSS change since the
 # mobile pin (5926dda5) is #620's .record-no and .provenance-note rules.
 PRINT_SHA = (
-    "f7818cba38e2d518"  # pragma: allowlist secret
-    "44cff79c0cfc3c58"  # pragma: allowlist secret
-    "6d2514e54ef168aa"  # pragma: allowlist secret
-    "64bda5cc2fd1c252"  # pragma: allowlist secret
+    "e01ceedc11aceb58"  # pragma: allowlist secret
+    "35275988a67a1e2f"  # pragma: allowlist secret
+    "eb29c644d71226a6"  # pragma: allowlist secret
+    "8200fb9eace85d3a"  # pragma: allowlist secret
 )
 # Re-pinned after BF-df-agency-cards-public added only the .agency-block rules to styles.css.tmpl;
 # previous pin 565079ca...2100 (after DF1822-08's .comment-deadline).
