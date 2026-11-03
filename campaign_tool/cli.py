@@ -887,8 +887,9 @@ def main():
         response_p.add_argument(flag, required=True)
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
                                                                "produced", "denied", "closed", "fee_estimate",
-                                                               "clarification_requested", "clarified"))
-    response_p.add_argument("--amount", metavar="USD", help="fee_estimate only: the agency's estimate, 0-100000 "
+                                                               "clarification_requested", "clarified", "fee_paid",
+                                                               "fee_waived"))
+    response_p.add_argument("--amount", metavar="USD", help="fee_estimate (required) or fee_paid (optional): 0-100000 "
                             "(e.g. 245.50); recorded only, nothing is paid")
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
@@ -1272,9 +1273,11 @@ def main():
             report = kit_track_status(root, request=args.request)
             print(json.dumps(report, indent=2))
             for row in report["requests"]:  # a reminder on stderr; stdout stays one JSON document
+                label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
                 if row["over_fee_cap"]:
-                    label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
+                if row["fee_state"] == "unpaid":
+                    print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
