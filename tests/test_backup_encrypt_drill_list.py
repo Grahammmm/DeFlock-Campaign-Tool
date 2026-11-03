@@ -51,9 +51,12 @@ class EncryptedDrillListTests(unittest.TestCase):
         cls.made = cls.base / "made"
         cls.made.mkdir()
         cls.plain = cls.made / "plain.tar"
-        cls.manifest_sha = backup.export(cls.root, cls.plain)["manifest_sha256"]
         cls.enc = cls.made / "enc.tar.gpg"
-        backup.export(cls.root, cls.enc, encrypt_to=cls.pub_a)
+        # One created_at for both exports: a manifest stamps it to the second, so a plain and an
+        # encrypted export that straddle a second boundary carry different manifest_sha256 values.
+        with patch.object(backup, "_now", return_value=backup._now()):
+            cls.manifest_sha = backup.export(cls.root, cls.plain)["manifest_sha256"]
+            backup.export(cls.root, cls.enc, encrypt_to=cls.pub_a)
         cls.for_stranger = cls.made / "stranger.tar.gpg"
         backup.export(cls.root, cls.for_stranger, encrypt_to=cls.pub_b)
 
