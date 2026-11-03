@@ -814,6 +814,9 @@ def main():
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
     due_p.add_argument("--request", help="Only requests with this name (refused when none is recorded)")
+    calendar_p = commands.add_parser("kit-calendar", help="Private .ics of open requests' dates and comment deadlines")
+    for flag in ("--directory", "--out", "--as-of"):  # --as-of YYYY-MM-DD: earlier comment deadlines left out
+        calendar_p.add_argument(flag, required=flag != "--as-of")
     response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
@@ -1200,6 +1203,13 @@ def main():
             report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
             if report["past_due"] + report["stated_date_passed"]:
+                sys.exit(3)
+        elif args.command == "kit-calendar":
+            from .kit_calendar import calendar
+            try:
+                print(json.dumps(calendar(root, args.out, args.as_of), indent=2))
+            except ValueError as exc:
+                print(f"Stopped: {exc}", file=sys.stderr)
                 sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step

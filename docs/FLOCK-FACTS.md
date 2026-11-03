@@ -65,6 +65,7 @@ must be outside the repository, missing or an empty folder, not a link, with an 
 `[a-z0-9]+(-[a-z0-9]+)*`, at most 64 characters, no repeats. Every refusal is named before any write and nothing is
 written (exit 1); the tree is built in `STORE.tmp-<pid>` and renamed into place. Stdout names slugs, never the path. The
 store check passes on the result; import facts with `flock_facts.py import` and back it up with `flock_backup.py`.
+`flock_store_init.py add STORE --agency SLUG [...]` adds empty `agencies/<slug>/` folders to an existing store (each built as `.<slug>.tmp-<pid>`, renamed in); every existing file keeps its bytes and mode. A slug already there (folder, file or link) or a store check exit 2 refuses it, nothing written; check errors are only counted (`errors=E`). A bare `STORE --agency …` is `init`.
 
 ## Report text state
 

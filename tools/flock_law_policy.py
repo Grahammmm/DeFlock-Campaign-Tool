@@ -7,6 +7,7 @@ their age). Prints ids, labels, dates, fact types, counts only."""
 import csv
 import hashlib
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -289,14 +290,13 @@ def changes(policy_rows, facts):  # per agency + policy_id: fact types differing
     return out + [f"agencies={len({a for a, _ in groups})} policies={len(groups)} "
                   + " ".join(f"{k}={v}" for k, v in n.items()) + " | ids only, review-required"]
 
-def compare(policy_rows, facts, on, types=None):  # per fact type: agencies grouped by governing-policy value class on `on`
-    out, kept, n = [], {}, {"agencies": 0, "governed": 0, "ungoverned": 0, "types": 0, "differ": 0, "agree": 0,
-                            "disputed_skipped": 0}
+def _compare(policy_rows, facts, on, types=None):  # per fact type: agencies grouped by governing-policy value class on `on`
+    ungoverned, rows, kept, n = [], [], {}, {"agencies": 0, "governed": 0, "ungoverned": 0, "types": 0, "differ": 0,
+                                             "agree": 0, "disputed_skipped": 0}  # report: slugs, fact ids, counts only
     agencies = sorted({slug(r["agency"]) for _, r in policy_rows})
     for a in agencies:  # kept[a] = {fact type: [facts]} from documents governing on `on`; disputed ones counted, not used
         docs, kept[a] = {r["doc_sha256"] for r in governs_on(policy_rows, a, on)}, {}
-        if not docs:
-            out.append(f"compare | {a} | no governing adopted policy on {on}")
+        ungoverned += [] if docs else [a]
         n["governed" if docs else "ungoverned"] += 1
         for f in facts.get(a, []):
             if f["source_sha256"].strip() in docs and f["status"] == "disputed":
@@ -311,21 +311,29 @@ def compare(policy_rows, facts, on, types=None):  # per fact type: agencies grou
                 undocumented.append(a)
                 continue
             key = tuple(sorted(" ".join(f["value"].split()).casefold() for f in kept[a][t]))
-            classes.setdefault(key, []).append(f"{a} ({';'.join(sorted(f['fact_id'] for f in kept[a][t]))})")
-        parts = [f"class {i}: " + ", ".join(members) for i, members in enumerate(classes.values(), 1)]
-        parts += [f"undocumented: {', '.join(undocumented)}"] if undocumented else []
+            classes.setdefault(key, []).append({"agency": a, "fact_ids": sorted(f["fact_id"] for f in kept[a][t])})
         verdict = "differ" if len(classes) >= 2 else \
-            "agree" if len(classes) == 1 and len(next(iter(classes.values()))) >= 2 and not undocumented else ""
-        if verdict:
-            parts.append(verdict)
-            n[verdict] += 1
-        out.append(f"compare | {t} | " + " | ".join(parts))
+            "agree" if len(classes) == 1 and len(next(iter(classes.values()))) >= 2 and not undocumented else None
+        n.update({verdict: n[verdict] + 1} if verdict else {})
+        rows.append({"fact_type": t, "classes": [{"class": i, "members": m} for i, m in enumerate(classes.values(), 1)],
+                     "undocumented": undocumented, "verdict": verdict})
     n.update(agencies=len(agencies), types=len(wanted))
-    return out + [" ".join(f"{k}={v}" for k, v in n.items()) + " | ids only, research view, not a legal conclusion"]
+    return {"on": on, "types_requested": wanted if types else None, "ungoverned": ungoverned, "types": rows, "counts": n}
+
+def compare_lines(rep):  # the text form of a _compare report
+    out = [f"compare | {a} | no governing adopted policy on {rep['on']}" for a in rep["ungoverned"]]
+    for t in rep["types"]:
+        parts = [f"class {c['class']}: " + ", ".join(f"{m['agency']} ({';'.join(m['fact_ids'])})" for m in c["members"])
+                 for c in t["classes"]] + ([f"undocumented: {', '.join(t['undocumented'])}"] if t["undocumented"] else [])
+        out.append(f"compare | {t['fact_type']} | " + " | ".join(parts + ([t["verdict"]] if t["verdict"] else [])))
+    return out + [" ".join(f"{k}={v}" for k, v in rep["counts"].items()) + " | ids only, research view, not a legal conclusion"]
+
+def compare(policy_rows, facts, on, types=None):
+    return compare_lines(_compare(policy_rows, facts, on, types))
 
 USAGE = ("usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD]"
          " | governing STORE --on YYYY-MM-DD | gaps STORE --on YYYY-MM-DD | changes STORE [--agency SLUG]"
-         " | coverage STORE [--on YYYY-MM-DD] | compare STORE --on YYYY-MM-DD [--types T1,T2]"
+         " | coverage STORE [--on YYYY-MM-DD] | compare STORE --on YYYY-MM-DD [--types T1,T2] [--json]"
          " | stale STORE --max-age-days N [--today YYYY-MM-DD] | review STORE [--agency SLUG] [--today YYYY-MM-DD]")
 
 def main(argv):
@@ -403,7 +411,8 @@ def run(argv):
         print("\n".join(out), file=sys.stderr if errs else sys.stdout)
         return 1 if errs else 0
     if argv[:1] == ["compare"]:  # STORE a directory; POLICY or FACTS errors -> stderr only, exit 1; exit 3 when a type differs
-        opts = dict(zip(argv[2::2], argv[3::2])) if len(argv) in (4, 6) else {}
+        as_json, argv = argv[2:].count("--json"), argv[:2] + [x for x in argv[2:] if x != "--json"]  # --json at most once
+        opts = dict(zip(argv[2::2], argv[3::2])) if len(argv) in (4, 6) and as_json < 2 else {}
         names = [t.strip() for t in opts.get("--types", "x").split(",")]
         if len(opts) != len(argv) // 2 - 1 or set(opts) - {"--on", "--types"} or not day(opts.get("--on", "")) \
                 or not 0 < len(names) <= 20 or not all(0 < len(t) <= 60 for t in names) or not Path(argv[1]).is_dir():
@@ -411,9 +420,14 @@ def run(argv):
             return 2
         _, policy_rows, errs = load_all(argv[1])
         facts, more = ({}, []) if errs else policy_facts(argv[1], sorted({slug(r["agency"]) for _, r in policy_rows}))
-        out = (errs := errs + more) or compare(policy_rows, facts, opts["--on"], names if "--types" in opts else None)
-        print("\n".join(out), file=sys.stderr if errs else sys.stdout)
-        return 1 if errs else 3 if any(x.endswith(" | differ") for x in out[:-1]) else 0
+        if errs := errs + more:
+            print("\n".join(errs), file=sys.stderr)
+            return 1
+        rep = _compare(policy_rows, facts, opts["--on"], names if "--types" in opts else None)
+        print(json.dumps({"schema": "flock-law-policy-compare-v1", "review_required": True, **rep,
+                          "note": "research view, not a legal conclusion"}, sort_keys=True, indent=1, ensure_ascii=False)
+              if as_json else "\n".join(compare_lines(rep)))
+        return 3 if any(t["verdict"] == "differ" for t in rep["types"]) else 0
     on = argv[5] if len(argv) == 6 else None
     if len(argv) not in (4, 6) or argv[0] != "versions" or argv[2] != "--agency" or (on and (argv[4] != "--on" or not day(on))):
         print(USAGE, file=sys.stderr)

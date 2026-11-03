@@ -46,6 +46,17 @@ contract without `source_url` or `checked_on` stops the build. `agencies.html` s
 contracts ending within 180 days of the build date, soonest first; `doctor` reports `contracts_ending` within 90 days.
 It never enters the CITIES card config, and `site.json` `county_profile` has no `contract` key.
 
+## Confirmed, not known, asked
+
+Each agency on `agencies.html` has three blocks after its summary, from organizer-reviewed `content/agencies.json`
+only. "What is confirmed": `profile.facts` plus "N published finding(s) with sources", else "Nothing is confirmed by
+a published finding yet." "What is not known": `profile.open` then `profile.flags`, else "Nothing listed yet." "What
+we asked": each `asked` item, newest `asked_on` first, as "<topic> — asked <date>. <state sentence>", else "No request
+is listed for this agency yet." Wording is neutral and fixed: "No written response recorded as of <updated_on, else
+the build date>", "Acknowledged <date>; no records yet.", "Partly answered <date>.", "Answered <date>.", "Declined in
+writing on <date>.", "We withdrew this request <date>." (without a date when `updated_on` is absent). Never
+"ignored", "refused", "late", "overdue" or "violated"; no legal characterisation is made.
+
 ## Pilot preservation and remaining work
 
 The pilot builds its profile renderer from campaign/agency-cards.json and a pinned

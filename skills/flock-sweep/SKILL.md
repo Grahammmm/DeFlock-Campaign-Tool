@@ -53,6 +53,10 @@ calls kanban or hermes and never writes into the store. Each model run stays its
 - Every agency at once: `python3 tools/flock_agency.py index S [--as-of D] [--json]` prints one status line per agency folder
   (requests, open, last event, next provisional reminder, failing runs, errors per file); links and non-slug folders are `skipped`.
 
+## Dashboard
+- `python3 tools/flock_dashboard.py build --store S --date D --out NEWDIR` writes a private, static snapshot.
+- Rebuild before use; source failures are NOT CURRENT. Sent date and next step are NOT RECORDED until the state contract supplies them.
+
 ## Report
 - Private cited draft: `python3 tools/flock_report.py region --matrix DIR --agency SLUG=CONFIG ... --out DIR2` (one
   `--agency` per column; stale agency drafts are excluded and counted; `--replace` supersedes an earlier draft).

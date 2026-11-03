@@ -38,6 +38,7 @@ PDFs included, are recorded by URL and never fetched. Monitor items are leads, n
   Under the store lock, each relevant item not yet in private `STORE/LEADS.csv` is added as `new` and listed once in
   a trailing `Leads (N new)` section (omitted when N is 0); a link first flagged on an earlier date is never listed again.
   `--unreachable-after N` (2..30, default 3) adds a last `Unreachable` section for pages whose last N logged scans were refused: an unreachable page is a reason to check the agency's site by hand; the monitor never retries or changes the watch list.
+  `--dry-run` prints that digest plus `dry run | would write digest/<date>.md | would add N leads | nothing written`; no lock, folder or file is created or changed.
 
 ## Lead
 

@@ -111,7 +111,19 @@ showing its latest correction date. The starter preview has no such page.
 
 Share previews: every page carries `og:*` and `twitter:card` `summary` tags from its own title and description
 (a finding page: its title and summary, `og:type` `article` with its published/updated times); `og:url` only
-when `site.json.base_url` is set. There is no share image by design and nothing is fetched.
+when `site.json.base_url` is set on non-finding pages. A finding emits `og:url` only for a root HTTPS
+origin (for example `https://example.invalid`, optionally ending in `/`), without credentials, port,
+subpath, query or fragment. Configure that origin for a complete absolute preview; this build does
+not provision one. Accepted non-root base values keep their existing canonical behavior, but no
+finding `og:url` is invented. There is no share image by design and nothing is fetched.
+
+Each finding has a **Share this finding** link to `/findings/<slug>.html`; copy its target with normal
+browser behavior. No clipboard script, send endpoint, tracking or new approval is involved. Preview
+title and description are exactly the validated public title and summary, not private source text.
+A refused rebuild leaves the previous public tree intact: it does not retract an earlier page.
+Removing a finding and successfully rebuilding removes its generated page; slug changes provide no
+redirect or link-durability promise. External approval expiry/revocation and crawler caches remain
+the publication owner's responsibility; rendering neither verifies nor refreshes approval receipts.
 
 ### Agencies, cards and the picker
 
@@ -142,6 +154,13 @@ the build naming `<file>[n].profile.alpr_policy` (and the field); `null` or
 absent shows nothing. `agencies.html` shows "Posted ALPR usage policy (checked
 <date>, where we found it)" on that agency's card only; neither URL is fetched.
 Linking a policy says only that it was posted; it is not a finding about compliance.
+
+An agency's optional `asked` (≤ 20 items) lists what the organizer asked it: `{"topic", "asked_on", "state",
+"updated_on"?, "note"?}`. `topic` ≤ 120 and `note` ≤ 200 plain-text characters; `asked_on`/`updated_on` are real
+YYYY-MM-DD dates not after the build date, `updated_on` not before `asked_on`; `state` is one of `awaiting_response`,
+`acknowledged`, `partly_answered`, `answered`, `declined_in_writing`, `withdrawn`. A bad item stops the build naming
+`content/agencies.json[n].asked[i].<field>`; `content-check` lists every such problem, one line each. Kit agencies
+never carry it. It is shown only on `agencies.html` (docs/AGENCY-CARDS.md), never exported to data or feeds.
 
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
