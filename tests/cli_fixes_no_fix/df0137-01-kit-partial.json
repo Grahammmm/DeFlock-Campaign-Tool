@@ -1,0 +1,5 @@
+{
+  "--partial is only for produced steps": "kit-response --partial message that already names the option and the rule; not in the table",
+  "production already final on 5": "kit-response --partial message that already names the request state that stops the step; not in the table",
+  "records still coming: next installment 5; not passed": "kit-followup message that already names the request state that stops the draft; not in the table"
+}
