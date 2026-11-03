@@ -41,7 +41,7 @@ def requests(store):
     return ([], ["none"]) if errs == ["store: no agencies/*/REQUESTS.csv found"] else (errs, [])
 
 def contacts(store):
-    real = folders(store / "agencies")[0]
+    real = [f for f in folders(store / "agencies")[0] if os.path.lexists(f / "CONTACT.csv")]  # absent = no contacts yet
     return [f"{shown(f.name)}: {e}" for f in real for e in email_tool.contact(f / "CONTACT.csv", f.name)[1]], \
         [] if real else ["none"]
 
