@@ -21,7 +21,7 @@ from campaign_tool.records import mail_poll
 
 REPO = Path(__file__).resolve().parents[2]
 # Built at run time so the synthetic secret is never a committed literal.
-SECRET = "synthetic-pw-" + uuid.uuid4().hex
+SYNTHETIC_CREDENTIAL = "synthetic-cred-" + uuid.uuid4().hex
 SUBJECT, ADDRESS, PHONE, PLATE = "Records Request 4471", "clerk@agency.example", "805-555-0142", "7ABC123"
 
 
@@ -51,7 +51,7 @@ class Box:
 
     def factory(self, config, password):
         self.connects += 1
-        assert password == SECRET
+        assert password == SYNTHETIC_CREDENTIAL
         if self.error:
             raise self.error
         return FakeIMAP(self)
@@ -100,7 +100,7 @@ class MailPollTest(unittest.TestCase):
         self.private.mkdir(mode=0o700)
         self.store = self.root / "store"
         self.pw = self.private / "pw"
-        self.pw.write_text(SECRET + "\n")
+        self.pw.write_text(SYNTHETIC_CREDENTIAL + "\n")
         self.pw.chmod(0o600)
         self.config = self.write_config()
         self.outputs = []
@@ -194,9 +194,9 @@ class MailPollTest(unittest.TestCase):
 
     # 5
     def test_connection_auth_and_tls_failures_are_named_refusals(self):
-        cases = ((ConnectionRefusedError(111, "refused " + SECRET), "connection_refused", 2),
-                 (imaplib.IMAP4.error("LOGIN failed for " + ADDRESS + " " + SECRET), "auth_refused", 1),
-                 (ssl.SSLError("handshake " + SECRET), "tls_unavailable", 1))
+        cases = ((ConnectionRefusedError(111, "refused " + SYNTHETIC_CREDENTIAL), "connection_refused", 2),
+                 (imaplib.IMAP4.error("LOGIN failed for " + ADDRESS + " " + SYNTHETIC_CREDENTIAL), "auth_refused", 1),
+                 (ssl.SSLError("handshake " + SYNTHETIC_CREDENTIAL), "tls_unavailable", 1))
         for error, code_name, connects in cases:
             box = Box({1: message(1)})
             box.error = error
@@ -236,7 +236,7 @@ class MailPollTest(unittest.TestCase):
         link.symlink_to(self.config)
         nopw = self.write_config("nopw.json", password_file=None)
         loose_pw = self.private / "pw2"
-        loose_pw.write_text(SECRET)
+        loose_pw.write_text(SYNTHETIC_CREDENTIAL)
         loose_pw.chmod(0o644)
         weak = self.write_config("weak.json", password_file=str(loose_pw))
         fd, inside = tempfile.mkstemp(dir=REPO, prefix=".mail-poll-test-")
@@ -249,7 +249,7 @@ class MailPollTest(unittest.TestCase):
                 code, line, err = self.run_poll(Box({}), config=path)
                 self.assertEqual((code, line), (1, ""))
                 self.assertIn("refused: " + expected, err)
-                for value in ("imap.example.invalid", ADDRESS, str(self.private), SECRET):
+                for value in ("imap.example.invalid", ADDRESS, str(self.private), SYNTHETIC_CREDENTIAL):
                     self.assertNotIn(value, err)
         finally:
             os.unlink(inside)
@@ -260,27 +260,27 @@ class MailPollTest(unittest.TestCase):
         box = Box({1: message(1), 2: notice(2), 3: message(3)})
         self.run_poll(box)
         self.run_poll(box, "--dry-run")
-        box.error = imaplib.IMAP4.error(SECRET)
+        box.error = imaplib.IMAP4.error(SYNTHETIC_CREDENTIAL)
         self.run_poll(box)
         for text in self.outputs:
-            for value in (SECRET, SUBJECT, ADDRESS, PHONE, PLATE, "Responsive records", "report.pdf"):
+            for value in (SYNTHETIC_CREDENTIAL, SUBJECT, ADDRESS, PHONE, PLATE, "Responsive records", "report.pdf"):
                 self.assertNotIn(value, text)
         poll_files = [self.store / "mail-poll" / "state.json", *(self.store / "mail-poll" / "receipts").glob("*")]
         intake_receipts = list((self.store / "mail-poll" / "mail").rglob("receipt*.json"))
         self.assertEqual(len(intake_receipts), 3)
         for path in poll_files + intake_receipts:
             data = path.read_text()
-            for value in (SECRET, SUBJECT, ADDRESS, PHONE, PLATE, "Responsive records"):
+            for value in (SYNTHETIC_CREDENTIAL, SUBJECT, ADDRESS, PHONE, PLATE, "Responsive records"):
                 self.assertNotIn(value, data)
         for path in poll_files:
             self.assertNotIn("report.pdf", path.read_text())
         for path in self.store.rglob("*"):
             if path.is_file():
-                self.assertNotIn(SECRET.encode(), path.read_bytes())
+                self.assertNotIn(SYNTHETIC_CREDENTIAL.encode(), path.read_bytes())
         for top in ("campaign_tool", "docs", "tests", "tools"):
             for path in (REPO / top).rglob("*"):
                 if path.is_file() and path.suffix in {".py", ".md", ".json", ".txt"}:
-                    self.assertNotIn(SECRET.encode(), path.read_bytes(), str(path))
+                    self.assertNotIn(SYNTHETIC_CREDENTIAL.encode(), path.read_bytes(), str(path))
 
     # 9
     def test_unsafe_attachment_names_refused_message_still_recorded(self):
