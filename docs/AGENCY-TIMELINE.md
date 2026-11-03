@@ -159,6 +159,14 @@ restates it) records the agency's own stated production date; a date before that
 passed with no `produced` step since (closed requests never) under `stated_passed` as `stated_date_passed`,
 counts it and exits 3: stated date passed — the agency's own date; provisional, not a legal deadline.
 
+## Clarification requested (kit requests)
+
+`kit-response --kind clarification_requested` records the agency asking you to clarify or narrow a request (not after
+`produced`, `denied` or `closed`; one open at a time); `--kind clarified` records your reply, refused with none open.
+While one is open, `kit-status` shows `waiting_on_you_since`, `kit due` lists it as `waiting_on_you` (counted apart,
+never past due, stated date passed or exit 3; the provisional date still shown) and `kit-followup` stops with exit 3,
+writing nothing. The tool makes no claim that a clarification pauses any legal period.
+
 ## Private calendar (kit-calendar)
 
 `kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import

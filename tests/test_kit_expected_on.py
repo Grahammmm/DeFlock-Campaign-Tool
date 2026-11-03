@@ -174,7 +174,7 @@ class ExpectedOnTests(unittest.TestCase):
         row = self.row()
         self.assertIsNone(row["stated_production_date"])
         report = self.due("2026-06-01", 0)
-        self.assertEqual(set(report), OLD_DUE_KEYS | {"stated_passed", "stated_date_passed"})
+        self.assertEqual(set(report), OLD_DUE_KEYS | {"stated_passed", "stated_date_passed", "waiting_on_you"})
         self.assertEqual((report["stated_passed"], report["stated_date_passed"], report["note"]),
                          ([], 0, kit_track.NOTE))
         self.assertNotIn("expected_on", self.sent.read_text())

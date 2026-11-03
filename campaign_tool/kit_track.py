@@ -12,7 +12,23 @@ from pathlib import Path
 from . import kit, kit_check, law
 
 CHANNELS = ("email", "portal", "mail")
-KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed", "fee_estimate")
+KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed", "fee_estimate",
+         "clarification_requested", "clarified")
+WAITING = "waiting on you since {} (the agency asked to clarify or narrow the request)"
+WAIT_NOTE = (" Waiting on you: the agency asked to clarify or narrow the request; reply first. Not counted as past"
+             " due; no claim that this pauses any legal period.")
+
+
+def _waiting_since(steps):  # date of the latest clarification_requested not yet clarified (or closed), else None
+    asked = [i for i, s in enumerate(steps) if s.get("kind") == "clarification_requested"]
+    ended = asked and any(s.get("kind") in ("clarified", "closed") for s in steps[asked[-1] + 1:])
+    return steps[asked[-1]].get("on") if asked and not ended else None
+
+
+class WaitingOnYou(ValueError):  # kit-followup refusal while the agency waits on the organizer: exit 3
+    exit_code = 3
+
+
 AMOUNT = re.compile(r"[0-9]{1,6}(\.[0-9]{1,2})?")  # plain USD: no sign, exponent, NaN or thousands separator
 AMOUNT_MAX_CENTS = 10_000_000  # $100,000.00
 OVER_CAP = "over your fee cap: decide before paying"
@@ -267,6 +283,12 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
         raise ValueError(f"{kind} is allowed at most once")
     if kind == "closed" and not kinds:
         raise ValueError("closed needs at least one prior step")
+    if kind == "clarification_requested" and {"produced", "denied"} & set(kinds):
+        raise ValueError("clarification_requested is not allowed after a produced or denied step")
+    if kind == "clarification_requested" and _waiting_since(steps):
+        raise ValueError(f"a clarification request is already open since {_waiting_since(steps)}")
+    if kind == "clarified" and not _waiting_since(steps):
+        raise ValueError("no open clarification request to answer")
     if kind == "fee_estimate" and amount is None:
         raise ValueError("fee_estimate needs --amount USD")
     if kind != "fee_estimate" and amount is not None:
@@ -332,8 +354,9 @@ def status(root, today=None, law_base=None, *, request=None):
                      **({"more": len(linked) - PREFIXES_MAX} if len(linked) > PREFIXES_MAX else {}),
                      "fee_estimate": None if estimate is None else _dollars(estimate),
                      "over_fee_cap": None if estimate is None or cap is None else estimate > cap,
-                     "stated_production_date": stated})
-    return {"requests": rows, "law_package_status": package_status, "note": NOTE}
+                     "stated_production_date": stated, "waiting_on_you_since": _waiting_since(steps)})
+    waiting = any(row["waiting_on_you_since"] for row in rows)
+    return {"requests": rows, "law_package_status": package_status, "note": NOTE + (WAIT_NOTE if waiting else "")}
 
 
 ANSWERED = {"determination", "produced", "denied"}
@@ -428,7 +451,11 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None):
         base = {"agency_id": row["agency_id"], "request": row["request"], "name": row["name"],
                 "sent_on": row["sent_on"]}
         steps = entries.get((row["agency_id"], row["request"]), [])
-        if {s.get("kind") for s in steps} & ANSWERED:
+        if row["waiting_on_you_since"]:  # no claim that this pauses any legal clock; the provisional date stays shown
+            since, due_on = row["waiting_on_you_since"], row["determination_due"]
+            open_rows.append({**base, "due": due_on, "days": due_on and (date.fromisoformat(due_on) - day).days,
+                              "state": "waiting_on_you", "since": since, "note": WAITING.format(since)})
+        elif {s.get("kind") for s in steps} & ANSWERED:
             answered.append({**base, "last_step": row["last_step"]})
             setter = max((i for i, s in enumerate(steps) if "expected_on" in s), default=None)
             stated = row["stated_production_date"]  # a produced step after the step that set it clears it
@@ -443,13 +470,15 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None):
             open_rows.append({**base, "due": row["determination_due"], "days": days,
                               "state": "past_due" if days < 0 else "due_today" if days == 0 else "upcoming"})
     open_rows.sort(key=lambda row: (row["due"] or "", row["agency_id"], row["request"]))
+    waiting = sum(row["state"] == "waiting_on_you" for row in open_rows)  # never sets exit 3 by itself
     stated_passed.sort(key=lambda row: (row["stated"], row["agency_id"], row["request"]))
     missing = report["law_package_status"] == "missing"
     return {"as_of": day.isoformat(), "law_package_status": report["law_package_status"], "open": open_rows,
             "answered": answered, "past_due": sum(row["state"] == "past_due" for row in open_rows),
             "stated_passed": stated_passed, "stated_date_passed": len(stated_passed),
+            "waiting_on_you": waiting,
             "note": ("No law package: determination dates cannot be computed. " if missing else "") + NOTE
-            + (f" {STATED[0].upper()}{STATED[1:]}." if stated_passed else "")}
+            + (f" {STATED[0].upper()}{STATED[1:]}." if stated_passed else "") + (WAIT_NOTE if waiting else "")}
 
 
 def _followup_target(root, name, replace):  # private kit/followups/ (0700); symlinks and silent overwrites refused
@@ -478,6 +507,8 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
     steps = [s for s in entry["steps"] if isinstance(s, dict)]
     if any(s.get("kind") == "closed" for s in steps):
         raise ValueError(f"request for {agency_id} is closed")
+    if _waiting_since(steps):
+        raise WaitingOnYou(f"waiting on you since {_waiting_since(steps)} — reply to the agency's clarification first")
     answer = next((s for s in steps if s.get("kind") in ANSWERED), None)
     if answer:
         raise ValueError(f"request for {agency_id} was answered ({answer['kind']} on {answer.get('on')}); "
