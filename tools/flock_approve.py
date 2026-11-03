@@ -5,8 +5,8 @@
   ssh-keygen -Y sign -f KEY -n deflock-approval payload.txt   (G, by hand; writes payload.txt.sig)
   flock_approve.py approve RUNDIR --signature payload.txt.sig   writes EMAIL-APPROVAL.json only if it verifies
   flock_approve.py verify RUNDIR                       exit 0 only while the stored approval still verifies (run before sending)
-  flock_approve.py status STORE                        flock_email status with every signature checked; exit 1 on any
-                                                       approval that does not verify
+  flock_approve.py status STORE [--json]               flock_email status with every signature checked; exit 1 on any
+                                                       approval that does not verify (--json: flock-email-status-v1)
 
 A signature verifies only against the root-owned trust file in campaign_tool.approval; a typed name cannot approve.
 `verified` is the check flock_email.stage accepts as its verifier; flock_requests open and --check use it too.
@@ -112,8 +112,9 @@ def main(argv):
             if approval.verify(_payload(email, run)[0], rec["signature"]) != rec["approved_by"]:
                 raise ValueError("signer is not the recorded approver")
             return print(f"verify: ok approved_by={rec['approved_by']}") or 0
-        if len(argv) == 2 and argv[0] == "status":
-            return email.check(argv[1], lambda folders: email.status(folders, lambda run, rec: verified(run, rec, email)))
+        if len(argv) in (2, 3) and argv[0] == "status" and argv[2:] in ([], ["--json"]):
+            show = email.status_json if argv[2:] else email.status
+            return email.check(argv[1], lambda folders: show(folders, lambda run, rec: verified(run, rec, email)))
     except FileExistsError:
         return print(f"{argv[0]}: {email.APPROVAL} already exists", file=sys.stderr) or 1
     except (OSError, UnicodeDecodeError, ValueError, approval.ApprovalError) as exc:
