@@ -46,6 +46,23 @@ contract without `source_url` or `checked_on` stops the build. `agencies.html` s
 contracts ending within 180 days of the build date, soonest first; `doctor` reports `contracts_ending` within 90 days.
 It never enters the CITIES card config, and `site.json` `county_profile` has no `contract` key.
 
+## Transparency-portal snapshots
+
+An organizer may transcribe what a verified agency's Flock transparency portal showed on a given day into
+`profile.transparency`: a list of at most 24 snapshots, newest first, each
+`{checked_on, source_url, cameras?, retention_days?, searches_last_30_days?, hotlist_alerts?, shared_with_agencies?}`.
+`checked_on` is the day you looked (YYYY-MM-DD, not after the build date, no two snapshots on the same day);
+`source_url` is exactly `https://transparency.flocksafety.com/<flock_transparency_slug>` (a trailing `/` is allowed), so
+the agency needs `verified: true` and its slug. Each number is a non-negative integer copied as shown, or `null` (or
+left out) when the portal did not show it; `retention_days` is at most 3650. Add a new snapshot at the top; keep older
+ones so the site can show the change. Anything else stops `build` and `content-check` with the same message.
+
+The tool never fetches the portal. The card and the agency page show the newest snapshot under "Reported on the Flock
+transparency portal", one line per number, each with "up N", "down N" or "no change" since the previous snapshot when
+that snapshot has the number, then "as reported by the vendor, checked DATE" linking the portal. These are the vendor's
+own claims: the default wording never calls them verified, confirmed or fact, and reviewed `labels.json` wording must not
+either. Snapshots never enter the card JS config.
+
 ## Confirmed, not known, asked
 
 Each agency on `agencies.html` has three blocks after its summary, from organizer-reviewed `content/agencies.json`
