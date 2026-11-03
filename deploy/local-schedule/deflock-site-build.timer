@@ -1,0 +1,12 @@
+[Unit]
+Description=DeFlock local schedule: site-build daily
+
+[Timer]
+# 21:30 America/Los_Angeles: one hour after the 20:30 records slot.
+OnCalendar=*-*-* 21:30:00 America/Los_Angeles
+Persistent=true
+RandomizedDelaySec=5min
+Unit=deflock-site-build.service
+
+[Install]
+WantedBy=timers.target

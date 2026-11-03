@@ -41,11 +41,14 @@ mail or publishes anything.
 | Flock store check | Read-only run of every flock checker over one private store, agency slugs found in one place but not the others, and the newest backup's age. | `tools/flock_store_check.py` |
 | Agency chain rehearsal | Walks one named agency through every records-chain stage (verified, drafted, approved, sent, response, preserved, extracted, OCR, catalogued, detected, reviewed, published) from recorded fields and writes one private 0600 receipt naming each stage's state, the human step owed and the first break; OCR reads `not-wired`; reads only, sends and publishes nothing. | `tools/rehearse_agency.py`, [OFFLINE-LOCALITY-REHEARSAL.md](OFFLINE-LOCALITY-REHEARSAL.md) |
 | Flock store init | Creates a new empty private store (header-only LAW.csv and per-agency FACTS v2/POLICY, 0700/0600) all-or-nothing; refuses a STORE that exists and is not an empty folder; writes no contacts or requests. | `tools/flock_store_init.py` |
+| Records search | One private local index over the extracted text of every preserved record in a private store; hits cite document id, page, byte offset, request, agency and sha256 and never print document text; every result ends with indexed/no-text/unreadable coverage; the index is refused under a repository or public output path and `tools/check_public_tree.py` refuses its file name; extracted text stays unreviewed. | `tools/records_search.py`, [RECORDS-EXTRACTION.md](RECORDS-EXTRACTION.md#search) |
 | Originals drift check | Read-only, review-required alerts for originals and ledger drift; no repair, schedule or delivery. | `tools/reconcile_auto.py`, [ORIGINAL-RECONCILIATION.md](ORIGINAL-RECONCILIATION.md) |
+| Records host check | Read-only preflight: whether this machine can run the records container, one pass/fail/unknown row per requirement with the attended remedy; installs, pulls and starts nothing. | `tools/records_host_check.py`, [RECORDS-CONTAINER-HOST.md](RECORDS-CONTAINER-HOST.md) |
 | Stale-stage check | Read-only alert when a records stage has not produced in the last N scheduled run reports while it had work, failed or was skipped; reads reports only, installs and sends nothing. | `tools/stage_stale_check.py`, `deploy/records-runtime/README.md` |
 | Offline records pipeline | `records run` preserves intake and advances extract, catalog, detect, review with an independent challenge, compare and privacy in one ledger. This command does not publish or send; approval and publication are separate commands. | `campaign_tool/records/run.py` |
 | Local OCR helper | Bounded local OCR for preserved PDF pages; extracted text remains unreviewed and requires visual review. This shipped helper does not establish live OCR wiring. | `campaign_tool/records/extract/ocr.py`, [RECORDS-OCR.md](RECORDS-OCR.md) |
 | Run report review summary | Read-only summary of a records run report (or a reports directory): machine-valid, stage work (unknown never 0) and human review still owed per gate, kept apart; marks nothing reviewed. | `tools/run_report_review.py`, `deploy/records-runtime/README.md` |
+| Campaign local schedule (not installed) | Six shipped systemd user timer pairs for gate-safe campaign slots (reconcile, stale-check, run-report-review, deadline drafts, site build, backup) and a read-only check of each slot's command, gate safety, time collisions and lock; installs, enables and starts nothing; the install is an attended operator step. | `tools/local_schedule_check.py`, `deploy/local-schedule/install.md` |
 | Offline starter CLI | Agency discovery, request kit, static site build, newsletter drafts, Legistar import, backup/verify/restore. | `README.md`, [LAUNCH.md](../LAUNCH.md) |
 
 ## Offline-only, frozen (G 2026-10-31)
@@ -55,7 +58,7 @@ No new features until a deploy is scheduled; path-scoped CI keeps them tested.
 | Part | State | Evidence |
 | --- | --- | --- |
 | Cloudflare Workers | Setup wizard, organizer workspace and public-site Worker; tested offline, not deployed. | `workers/`, [WORKERS.md](WORKERS.md) |
-| Runner | Container that pulls jobs from the workspace Worker; tested offline with `--fake`, not attached to a deployed workspace. | `runner/`, [RUNNER.md](RUNNER.md) |
+| Runner | Container that pulls jobs from the workspace Worker; tested offline with `--fake`, not attached to a deployed workspace. It answers `newsletter_draft` (draft only) and `backup` (local archive) with a receipt; nothing is sent or uploaded. | `runner/`, `runner/handlers/newsletter_draft.py`, `runner/handlers/backup.py`, [RUNNER.md](RUNNER.md) |
 | Hosted send path | `campaign_tool/outbox.py` journal and the opt-in signed outbox gateway; no Worker sender is registered and no live send has been made. | `campaign_tool/outbox.py`, `runner/outbox_gateway.py`, [OUTBOX.md](OUTBOX.md), [HOSTED-OUTBOX-GATEWAY.md](HOSTED-OUTBOX-GATEWAY.md) |
 | Subscription webhook and list counts | HMAC-verified double opt-in events and our own confirmed `list_count`; counts only on any page; tested offline, no provider configured, sends nothing. | `workers/workspace/src/routes/subscribe_webhook.ts`, `workers/workspace/src/subscribers.ts`, [NEWSLETTER.md](NEWSLETTER.md) |
 
@@ -66,7 +69,6 @@ Only items with no implementation in this repository.
 | Item | Evidence that it is not built |
 | --- | --- |
 | Binding the outbox to the Worker `send_request`/`send_followup` executors | They refuse with `sender_not_configured`: `workers/workspace/src/executors/types.ts` |
-| Runner handlers for `newsletter_draft` and `backup` | No handler in `runner/handlers/`; the jobs are answered `blocked` |
 | Social posting | `post_social` is `not_implemented`: `workers/workspace/src/views/screens.ts` |
 | Independently reviewed state-law packages | California ships `status: draft`: `jurisdictions/us-ca/package.json` |
 | Automatic Legistar polling from the Worker | The CLI import exists; the Worker only lists imported meetings: [MEETINGS.md](MEETINGS.md) |

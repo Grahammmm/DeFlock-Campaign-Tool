@@ -265,23 +265,43 @@ NOT_STATED = ("produced", "denied", "closed")  # kinds that never carry the agen
 STATED = "stated date passed — the agency's own date; provisional, not a legal deadline"
 
 
+def _partial(step):  # a rolling production: more records to come; key absent = final (every older file)
+    return step.get("kind") == "produced" and step.get("partial") is True
+
+
 def _expected_ok(steps):  # expected_on only on the determination or a later restating step; a date not before its own
-    seen = False
+    seen = False  # partial produced: the agency's next installment date, allowed without a determination
     for s in steps:
         seen = seen or s.get("kind") == "determination"
-        if "expected_on" in s and (not seen or s.get("kind") in NOT_STATED or not _day(s["expected_on"])
-                                   or not _day(s.get("on")) or s["expected_on"] < s["on"]):
+        if "partial" in s and not _partial(s):
+            return False
+        if "expected_on" in s and (not (seen or _partial(s)) or (s.get("kind") in NOT_STATED and not _partial(s))
+                                   or not _day(s["expected_on"]) or not _day(s.get("on"))
+                                   or s["expected_on"] < s["on"]):
             return False
     return True
 
 
+def _producing(steps):  # >= 1 partial produced step and no final produced, denied or closed step
+    return any(map(_partial, steps)) and not any(s.get("kind") in ("denied", "closed") or s.get("kind") == "produced"
+                                                 and not _partial(s) for s in steps)
+
+
+def _next_installment(steps):  # the latest expected_on on or after the latest partial step, else None
+    last = max((i for i, s in enumerate(steps) if _partial(s)), default=None)
+    return None if last is None else next((s["expected_on"] for s in reversed(steps[last:]) if "expected_on" in s),
+                                          None)
+
+
 def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None,
-                expected_on=None, reference=None, replace_reference=False):
+                expected_on=None, reference=None, replace_reference=False, partial=False):
     """Append one dated agency response step to a hand-sent request and return the updated entry."""
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
     if kind not in KINDS:
         raise ValueError("--kind must be one of " + ", ".join(KINDS))
+    if partial and kind != "produced":
+        raise ValueError("--partial is only for produced steps")
     records = list(records or ())  # produced only: ledger prefixes; full hashes stored, 12-char prefixes returned
     if records and kind != "produced":
         raise ValueError("--record is only for produced steps")
@@ -327,11 +347,15 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
         raise ValueError(f"a clarification request is already open since {_waiting_since(steps)}")
     if kind == "clarified" and not _waiting_since(steps):
         raise ValueError("no open clarification request to answer")
+    final = [s["on"] for s in steps if s["kind"] == "produced" and not _partial(s)]
+    if partial and final:
+        raise ValueError(f"production already final on {final[-1]}")
     if kind == "fee_estimate" and amount is None:
         raise ValueError("fee_estimate needs --amount USD")
     if kind != "fee_estimate" and amount is not None:
         raise ValueError("--amount is only for fee_estimate steps")
-    if expected_on is not None and (kind in NOT_STATED or (kind != "determination" and "determination" not in kinds)):
+    if expected_on is not None and not partial and (kind in NOT_STATED or (kind != "determination"
+                                                                           and "determination" not in kinds)):
         raise ValueError("--expected-on is for the determination or a later step that restates the date")
     if expected_on is not None and _day(expected_on) is None:
         raise ValueError("--expected-on must be a real YYYY-MM-DD date")
@@ -340,7 +364,8 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     cents = None if amount is None else _amount_cents(amount)  # every refusal above and here writes nothing
     hashes = _resolve_records(root, records, steps) if records else []
     _set_reference(entry, reference, replace_reference)  # last refusal: nothing written on a conflict
-    step = {"on": on, "kind": kind, **({"expected_on": expected_on} if expected_on is not None else {}),
+    step = {"on": on, "kind": kind, **({"partial": True} if partial else {}),
+            **({"expected_on": expected_on} if expected_on is not None else {}),
             **({"amount_cents": cents} if cents is not None else {}),
             **({"note": note} if note else {}), **({"records": hashes} if hashes else {}),
             "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
@@ -376,7 +401,8 @@ def status(root, today=None, law_base=None, *, request=None):
         if not all(_amount_ok(s) and _day(on) for on, _, s in fees) or not _expected_ok(steps):
             raise ValueError(f"kit/sent.json unreadable: malformed steps for {_label(agency_id, name)!r}")
         estimate = max(fees)[2]["amount_cents"] if fees else None  # latest date, then the later recorded step
-        stated = next((s["expected_on"] for s in reversed(steps) if "expected_on" in s), None)  # latest one wins
+        stated = next((s["expected_on"] for s in reversed(steps) if "expected_on" in s and not _partial(s)), None)
+        producing = _producing(steps)  # stated: latest one wins; a partial step's date is the next installment
         if estimate is not None and cap == ():
             cap = kit.fee_cap_cents(root / "kit", today)
         linked = sorted({digest for s in steps for digest in _step_records(s)})
@@ -394,6 +420,7 @@ def status(root, today=None, law_base=None, *, request=None):
                      "fee_estimate": None if estimate is None else _dollars(estimate),
                      "over_fee_cap": None if estimate is None or cap is None else estimate > cap,
                      "stated_production_date": stated, "waiting_on_you_since": _waiting_since(steps),
+                     "producing": producing, "next_installment": _next_installment(steps) if producing else None,
                      "reference": entry.get("reference")})
     waiting = any(row["waiting_on_you_since"] for row in rows)
     return {"requests": rows, "law_package_status": package_status, "note": NOTE + (WAIT_NOTE if waiting else "")}
@@ -495,11 +522,17 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None):
             since, due_on = row["waiting_on_you_since"], row["determination_due"]
             open_rows.append({**base, "due": due_on, "days": due_on and (date.fromisoformat(due_on) - day).days,
                               "state": "waiting_on_you", "since": since, "note": WAITING.format(since)})
+        elif row["producing"]:  # a rolling production stays open, counted against the agency's next installment
+            nxt = row["next_installment"]
+            days = nxt and (date.fromisoformat(nxt) - day).days
+            open_rows.append({**base, "due": nxt, "days": days,
+                              "state": "installment_passed" if nxt and days < 0 else "producing"})
         elif {s.get("kind") for s in steps} & ANSWERED:
             answered.append({**base, "last_step": row["last_step"]})
-            setter = max((i for i, s in enumerate(steps) if "expected_on" in s), default=None)
-            stated = row["stated_production_date"]  # a produced step after the step that set it clears it
-            if setter is not None and not any(s.get("kind") == "produced" for s in steps[setter + 1:]) \
+            setter = max((i for i, s in enumerate(steps) if "expected_on" in s and not _partial(s)), default=None)
+            stated = row["stated_production_date"]  # a final produced step after the step that set it clears it
+            if setter is not None and not any(s.get("kind") == "produced" and not _partial(s)
+                                              for s in steps[setter + 1:]) \
                     and day > date.fromisoformat(stated):
                 stated_passed.append({**base, "state": "stated_date_passed", "stated": stated,
                                       "days": (day - date.fromisoformat(stated)).days})
@@ -516,6 +549,7 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None):
     return {"as_of": day.isoformat(), "law_package_status": report["law_package_status"], "open": open_rows,
             "answered": answered, "past_due": sum(row["state"] == "past_due" for row in open_rows),
             "stated_passed": stated_passed, "stated_date_passed": len(stated_passed),
+            "installment_passed": sum(row["state"] == "installment_passed" for row in open_rows),
             "waiting_on_you": waiting,
             "note": ("No law package: determination dates cannot be computed. " if missing else "") + NOTE
             + (f" {STATED[0].upper()}{STATED[1:]}." if stated_passed else "") + (WAIT_NOTE if waiting else "")}
@@ -550,14 +584,16 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
     if _waiting_since(steps):
         raise WaitingOnYou(f"waiting on you since {_waiting_since(steps)} — reply to the agency's clarification first")
     answer = next((s for s in steps if s.get("kind") in ANSWERED), None)
-    if answer:
+    if answer and not _producing(steps):
         raise ValueError(f"request for {agency_id} was answered ({answer['kind']} on {answer.get('on')}); "
                          "no follow-up drafted")
     row = next((r for r in due(root, day.isoformat(), law_base=law_base)["open"]
                 if (r["agency_id"], r["request"]) == (agency_id, "main")), None)
     if row is None or row["state"] == "no_law_package":
         raise ValueError("no law package: dates cannot be computed")
-    if row["state"] != "past_due":
+    if row["state"] == "producing":
+        raise ValueError(f"records still coming: next installment {row['due'] or 'not stated'}; not passed")
+    if row["state"] not in ("past_due", "installment_passed"):
         raise ValueError(f"not past due: provisional determination date {row['due']}")
     try:
         package = law.load_package(kit._jurisdiction(read_config(root)), law_base)
@@ -567,11 +603,14 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
     statute, name = package["records_law"], row["name"] or agency_id
     extended = " (extended, as the agency noted)" if any(s.get("kind") == "extension" for s in steps) else ""
     subject, first = reference_lines(entry)
+    told = (f"Its provisional determination date{extended} was {row['due']}; the period runs from the agency's "
+            f"receipt of the request. As of {day.isoformat()} we have no record of a determination, records produced "
+            "or a denial.") if row["state"] == "past_due" else (
+        f"We have received part of the records; you said the next installment would come on {row['due']}. As of "
+        f"{day.isoformat()} we have no record of that installment.")
     lines = [f"# Follow-up draft: {name}{subject}", "", "DRAFT — NOT SENT. Review before sending it yourself.", "",
              f"To: {name}, records custodian", "", *([first, ""] if first else []),
-             f"On {entry['sent_on']} we sent a records request by {entry['channel']} to {name}. Its provisional "
-             f"determination date{extended} was {row['due']}; the period runs from the agency's receipt of the "
-             f"request. As of {day.isoformat()} we have no record of a determination, records produced or a denial.",
+             f"On {entry['sent_on']} we sent a records request by {entry['channel']} to {name}. {told}",
              "", f"Please tell us the status of the request under the {statute['name']}, {statute['citation']}, "
              "and when you expect to respond.", "", kit.DEFAULT_REQUESTER, "", "---", ""]
     if package["status"] != "reviewed":
