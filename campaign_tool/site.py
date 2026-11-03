@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import CITY_KINDS, MAX_GEOJSON_BYTES, ContentError, _read_json, load_content, utc_moment
+from .content import CITY_KINDS, MAX_GEOJSON_BYTES, TRANSPARENCY_FIELDS, ContentError, _read_json, load_content, utc_moment
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, KIND_LABELS, html_text
@@ -587,6 +587,26 @@ class Site:
                 + f' ({self.t("agency.checked", date=date_label(contract["checked_on"]))} <a href="{e(contract["source_url"])}" '
                   f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>')
 
+    def transparency_block(self, agency, heading="h4"):
+        """Newest organizer-transcribed portal snapshot, as the vendor reported it, with change since the previous one."""
+        snapshots = agency.get("transparency")
+        if not snapshots:
+            return ""
+        newest, previous, lines = snapshots[0], (snapshots[1:] or [{}])[0], []
+        for key in TRANSPARENCY_FIELDS:
+            if newest[key] is None:
+                continue
+            line, before = self.t(f"agency.transparency_{key}", count=newest[key]), previous.get(key)
+            if before is not None:
+                change = newest[key] - before
+                word = "up" if change > 0 else "down" if change < 0 else "same"
+                line += f' ({self.t("agency.transparency_" + word, count=abs(change), date=time_tag(previous["checked_on"]))})'
+            lines.append(f"<li>{line}</li>")
+        return (f'<section class="agency-transparency"><{heading}>{self.t("agency.transparency_heading")}</{heading}>'
+                + (f'<ul>{"".join(lines)}</ul>' if lines else "")
+                + f'<p><a href="{e(newest["source_url"])}" rel="noopener noreferrer">'
+                + self.t("agency.transparency_checked", date=time_tag(newest["checked_on"])) + '</a></p></section>')
+
     def contracts_section(self):  # contracts ending in [build date, +180 days], soonest first; "" when none
         first, last = self.today.isoformat(), (self.today + timedelta(days=180)).isoformat()
         soon = sorted((a for a in self.model["agencies"] if a["contract"] and first <= a["contract"]["end"] <= last),
@@ -674,7 +694,7 @@ class Site:
                     + (f'<p>{self.t("agency.findings", count=len(findings))} ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
-                    + self.contract_line(agency["contract"])
+                    + self.contract_line(agency["contract"]) + self.transparency_block(agency)
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
@@ -721,7 +741,7 @@ class Site:
                 + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
-                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.who_decides(aid)
+                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.transparency_block(agency, "h3") + self.who_decides(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
