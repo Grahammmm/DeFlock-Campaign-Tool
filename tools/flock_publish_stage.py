@@ -20,6 +20,7 @@ def _content():  # campaign_tool/content.py by file path: its package is registe
         spec.loader.exec_module(sys.modules["campaign_tool"])
     return importlib.import_module("campaign_tool.content")
 content = _content()
+_spec = importlib.util.spec_from_file_location("_publication_gate", REPO / "campaign_tool" / "publication_gate.py"); gate = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(gate)  # noqa: E702
 COPY_REQUIRED = {"title", "slug", "event_date", "limitations", "counterevidence", "author"}
 COPY_OPTIONAL = {"agency_id", "classification"}
 CONFLICTS = ("apparent_conflict", "confirmed_conflict")
@@ -143,7 +144,7 @@ def stage(run, copy, out, repo=REPO, dry_run=False):  # dry_run (out None): ever
         errs.append("--out exists and is not an empty folder")
     if errs:
         return refuse(errs)
-    code, lines, _ = publish.derive(run, "stage")
+    code, lines, fresh = publish.derive(run, "stage")
     if code == 3:  # same-family run: unchanged refusal
         return refuse(lines, 3)
     target, buf = run / "PUBLISH.json", io.StringIO()
@@ -155,6 +156,7 @@ def stage(run, copy, out, repo=REPO, dry_run=False):  # dry_run (out None): ever
         return refuse(buf.getvalue().splitlines() + ["PUBLISH.json: check failed"])
     doc = json.loads(target.read_text(encoding="utf-8"))
     errs, staged, pending = plan(run, copy, doc)
+    errs += gate.entry_refusals(doc["findings"], fresh)  # publication_gate: a named, content-matched approval per entry
     if errs:
         return refuse(errs)
     files, rows = [], []
