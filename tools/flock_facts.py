@@ -223,37 +223,50 @@ def do_import(args):
     return 0
 
 
-def coverage(args):
+def coverage_data(args):
+    """(refusal or None, data) for coverage (RF0740-11): flock-facts-coverage-v1; the sha256 joins only, never shown."""
     slug = slugify(args.agency)
     path = Path(args.store) / "agencies" / slug / "FACTS.csv"
     if not path.is_file():
-        return print("facts: %s has no FACTS.csv" % slug) or 1
+        return "facts: %s has no FACTS.csv" % slug, {}
     errors = check_file(path, slug)
     if errors:
-        return print("facts: %d errors (run --check)" % len(errors)) or 1
+        return "facts: %d errors (run --check)" % len(errors), {}
     with open(args.inventory, encoding="utf-8-sig", newline="") as handle:
         records = list(csv.reader(handle))
     head = records[0] if records else []
     lacks = [c for c in ("request", "doc_id", "sha256", "analysis_only") if c not in head]
     if lacks:
-        return print("inventory: header lacks %s" % ", ".join(lacks)) or 1
+        return "inventory: header lacks %s" % ", ".join(lacks), {}
     docs, facts = {}, {}
     for number, rec in ((n, r) for n, r in enumerate(records[1:], 2) if r):
         if len(rec) != len(head):
-            return print("inventory: row %d: columns have the wrong count" % number) or 1
+            return "inventory: row %d: columns have the wrong count" % number, {}
         docs.setdefault((row := dict(zip(head, rec)))["sha256"].strip(), []).append(row)
     for _, row in load(path, slug)[1]:
         facts.setdefault(row["source_sha256"].strip(), []).append(row)
     withheld = {sha for sha, rows in docs.items() if any(r["analysis_only"] != "no" for r in rows)}
     posted = sorted((rows[0]["request"].strip(), rows[0]["doc_id"].strip(), sha) for sha, rows in docs.items() if sha not in withheld)
     covered = sum(sha in facts for _, _, sha in posted)
-    for request, doc_id, sha in posted:
-        got = facts.get(sha, [])
-        print("coverage | %s | document %s | facts=%d pages=%d unreadable=%d" % (request or "-", doc_id, len(got),
-              len({r["page"].strip() for r in got}), sum(r["value"].strip() == "UNREADABLE" for r in got)))
-    print("documents=%d posted=%d covered=%d uncovered=%d withheld=%d facts_on_withheld=%d orphan_facts=%d"
-          " | fact rows per document, not a review verdict" % (len(docs), len(posted), covered, len(posted) - covered,
-          len(withheld), sum(len(facts.get(s, ())) for s in withheld), sum(len(v) for s, v in facts.items() if s not in docs)))
+    documents = [{"request": request or "-", "doc_id": doc_id, "facts": len(got), "pages": len({r["page"].strip() for r in got}),
+                  "unreadable": sum(r["value"].strip() == "UNREADABLE" for r in got)}
+                 for request, doc_id, got in ((q, d, facts.get(s, [])) for q, d, s in posted)]
+    totals = {"documents": len(docs), "posted": len(posted), "covered": covered, "uncovered": len(posted) - covered,
+              "withheld": len(withheld), "facts_on_withheld": sum(len(facts.get(s, ())) for s in withheld),
+              "orphan_facts": sum(len(v) for s, v in facts.items() if s not in docs)}
+    return None, {"schema": "flock-facts-coverage-v1", "agency": slug, "documents": documents, "totals": totals,
+                  "note": "fact rows per document, not a review verdict"}
+
+
+def coverage(args):
+    refusal, data = coverage_data(args)
+    if refusal:
+        return print(refusal) or 1
+    if args.json:
+        return print(json.dumps(data, indent=2, sort_keys=False, ensure_ascii=True)) or 0
+    for d in data["documents"]:
+        print("coverage | %s | document %s | facts=%d pages=%d unreadable=%d" % tuple(d.values()))
+    print(" ".join("%s=%d" % kv for kv in data["totals"].items()) + " | " + data["note"])
     return 0
 
 
@@ -561,7 +574,7 @@ def main(argv=None):
 
 def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", nargs="*", help="import SRC | coverage --store DIR --agency NAME --inventory CSV"
+    parser.add_argument("command", nargs="*", help="import SRC | coverage --store DIR --agency NAME --inventory CSV [--json]"
                         " | status --store DIR [--agency SLUG] [--list unreviewed|disputed] [--json]"
                         " | quote-check --store DIR --text EXPORT [--agency SLUG]"
                         " | stale --store DIR --date YYYY-MM-DD [--agency SLUG] [--findings FINDINGS.csv]"
@@ -577,8 +590,8 @@ def _main(argv=None):
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    if args.json and args.command[:1] != ["status"]:
-        parser.error("--json belongs to status only")
+    if args.json and args.command[:1] not in (["status"], ["coverage"]):
+        parser.error("--json belongs to status or coverage")
     if args.dry_run and (args.command[:1] != ["import"] or args.check is not None):
         parser.error("--dry-run belongs to import only")
     if args.out is not None and args.command[:1] != ["unreadable"]:
