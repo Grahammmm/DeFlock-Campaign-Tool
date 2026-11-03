@@ -1,0 +1,4 @@
+{
+  "5 needs a fee_estimate earlier on this request": "kit-response fee_paid/fee_waived message that already names the missing step; not in the table",
+  "the 5 estimate is already 5": "kit-response fee_paid/fee_waived message that already names the settled estimate; not in the table"
+}

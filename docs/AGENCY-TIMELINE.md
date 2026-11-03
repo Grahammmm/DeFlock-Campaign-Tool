@@ -179,6 +179,12 @@ writing nothing. The tool makes no claim that a clarification pauses any legal p
 request; a different one exits 3 unless `--replace-reference`. `kit-status`/`kit due` rows show `reference`; the
 followup and denial-reply drafts add `(Your reference REF)` to the title and open `Regarding your reference REF,`.
 
+`kit-response --kind fee_paid [--amount USD]` or `--kind fee_waived` records that the latest `fee_estimate` on that
+request was paid (amount optional, whole cents, 0-100000) or waived; refused with no earlier estimate or when that
+estimate is already settled (a new estimate re-opens it). `kit-status`, its `--csv` and `kit-coverage` show `fee_state`
+(`unpaid`/`paid`/`waived`) beside the estimate and `fee_paid`; `kit-status` names each unpaid estimate on stderr.
+Nothing is paid by the tool; the fee-cap reminder is unchanged.
+
 ## Private calendar (kit-calendar)
 
 `kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import
