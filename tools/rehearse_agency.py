@@ -5,7 +5,9 @@ private store and write one rehearsal receipt naming each stage's state and the 
 Writes NEWDIR/REHEARSAL.md and NEWDIR/rehearsal.json (records-rehearsal-v1, review_required): twelve stage rows in a fixed
 order (stage | state | source | next human step | gate) and a verdict naming the first row that is not done.
 A state is decided from a recorded field (flock_state request and email-run states, CONTACT.csv, FACTS.csv cells, the
-FINDINGS.csv / VERIFY.json / PUBLISH.json files and flock_publish's stage), never from prose or a title. OCR is `not-wired`
+FINDINGS.csv rows, flock_verify's validation of VERIFY.csv and its finish outputs, and flock_publish's stage), never from
+prose, a title or a file merely existing (flock_verify start writes VERIFY.json before any finding is read). A source that
+cannot be loaded (unreadable, undecodable, wrong header, malformed rows) is `unknown` plus a source error. OCR is `not-wired`
 until df-ocr-live lands. Read-only over STORE and the repository: no send, no publish, no network, no write under STORE.
 Next steps are printed as text for a human to run attended, never run here. Ids, slugs, dates, enums and counts only.
 NEWDIR: absolute, normalised, absent, its parent an existing link-free folder, outside the repository and STORE; it is
@@ -28,6 +30,7 @@ def _tool(name):  # siblings are loaded by file path, never copied
 
 state_tool, facts_tool, email_tool = _tool("flock_state"), _tool("flock_facts"), _tool("flock_email")
 publish_tool, privacy = _tool("flock_publish"), _tool("flock_privacy")
+verify_tool = publish_tool.verify_tool  # flock_verify as flock_publish loaded it: one copy of the verification rules
 SCHEMA = "records-rehearsal-v1"
 STAGES = ("agency-verified", "request-drafted", "request-approved", "request-sent", "response-received", "preserved",
           "extracted", "ocr", "catalogued", "detected", "reviewed", "published")
@@ -63,14 +66,22 @@ def guard(text):  # every generated sentence passes the shared privacy patterns 
     return "(withheld by guard)" if privacy.categories(text) or privacy.legal_claims(text) else text
 
 
-def contact_row(folder, slug):
+def contact_row(folder, slug, errors):
     path, src = folder / "CONTACT.csv", "CONTACT.csv via flock_email.contact"
     step = cmd("flock_email.py check STORE") + " after recording the agency's records contact from its official page"
     if not os.path.lexists(path):
         return row("agency-verified", "absent", src, step)
     if path.is_symlink():
         return row("agency-verified", "inconsistent", src + " (link refused)", step)
-    _, errs, _ = email_tool.contact(path, slug)
+    try:  # an unreadable, undecodable or non-CONTACT v1 file is a load failure (unknown), not an inconsistent contact
+        if list(csv.reader(path.read_text(encoding="utf-8").splitlines()))[:1] != [email_tool.COLS]:
+            raise ValueError("header is not CONTACT.csv v1")
+        _, errs, _ = email_tool.contact(path, slug)
+        if any(e.startswith(("contact: CONTACT.csv missing or unreadable", "row 1:")) for e in errs):
+            raise OSError("CONTACT.csv changed while it was read")
+    except ERRORS as exc:
+        errors.append({"source": "CONTACT.csv", "error": type(exc).__name__})
+        return row("agency-verified", "unknown", src + " (failed to load)", step)
     return row("agency-verified", "inconsistent" if errs else "done", src + " (errors=%d)" % len(errs),
                step if errs else "none")
 
@@ -156,6 +167,38 @@ def fact_rows(folder, slug, errors):
                 src + " (unreviewed=%d)" % unreviewed, review if errs or unreviewed else "none")]
 
 
+def verify_row(run, errors):
+    """Row reviewed from flock_verify's own validation of VERIFY.csv and its finish outputs, never from VERIFY.json alone:
+    flock_verify start writes VERIFY.json and a header-only VERIFY.csv before any finding is read."""
+    vsrc, ask = "runs/%s/VERIFY.json" % run.name, "a different-family verifier checks each finding (skills/flock-verify)"
+    if not (run / "VERIFY.json").is_file() or (run / "VERIFY.json").is_symlink():
+        return row("reviewed", "waiting-on-gate", vsrc + " (absent)", ask, "law")
+    vsrc, check = "runs/%s/VERIFY.csv via flock_verify" % run.name, cmd("flock_verify.py --check RUNDIR")
+    try:
+        if any((run / n).is_symlink() for n in ("VERIFY.csv", "PUBLIC-OK.csv", "QUESTIONS.md")):
+            raise ValueError("link refused")
+        refused = verify_tool.family(run)
+        verified = len(verify_tool.rows(run / "VERIFY.csv"))
+        errs, public, questions, _ = verify_tool.outputs(run, None)
+        disk = [] if errs else [verify_tool.on_disk(run, n, t)[1] for n, t in (("PUBLIC-OK.csv", public),
+                                                                              ("QUESTIONS.md", questions))]
+    except ERRORS as exc:
+        errors.append({"source": "VERIFY.csv", "error": type(exc).__name__})
+        return row("reviewed", "unknown", vsrc + " (failed to load)", check, "law")
+    counts = " (rows=%d errors=%d)" % (verified, len(errs))
+    if refused:
+        return row("reviewed", "inconsistent", vsrc + " (family refused)", check, "law")
+    if not verified:  # started, nothing reviewed yet
+        return row("reviewed", "waiting-on-gate", vsrc + counts, ask, "law")
+    if errs:
+        return row("reviewed", "inconsistent", vsrc + counts, check, "law")
+    if "stale" in disk:
+        return row("reviewed", "inconsistent", vsrc + " (finish outputs stale)", cmd("flock_verify.py current RUNDIR"), "law")
+    if "missing" in disk:
+        return row("reviewed", "waiting-on-gate", vsrc + " (finish outputs missing)", cmd("flock_verify.py finish RUNDIR"), "law")
+    return row("reviewed", "done", vsrc + counts, "none", "law")
+
+
 def review_rows(folder, errors):
     """Rows detected, reviewed, published from the latest run holding FINDINGS.csv, its VERIFY.json and PUBLISH.json."""
     runs = folder / "runs"
@@ -173,19 +216,25 @@ def review_rows(folder, errors):
             table = list(csv.reader(fh))
         if not table or table[0] != publish_tool.compare.HEADER:
             raise ValueError("header is not FINDINGS.csv's")
-        findings = [dict(zip(table[0], r)) for r in table[1:] if len(r) == len(table[0])]
+        body = [r for r in table[1:] if any(c.strip() for c in r)]
+        malformed = sum(len(r) != len(table[0]) for r in body)
+        if malformed:  # a short or long row is corrupt input, never silently dropped
+            raise ValueError("FINDINGS.csv has %d malformed rows" % malformed)
+        findings = [dict(zip(table[0], r)) for r in body]
         flagged = sum(bool(privacy.legal_claims(f["claim"] + "\n" + f["next_step"])) for f in findings)
-        detected = row("detected", "done", src + " (findings=%d legal_claim_flags=%d)" % (len(findings), flagged),
-                       "a human reads the %d flagged findings before review" % flagged if flagged else "none")
+        counts = " (findings=%d legal_claim_flags=%d)" % (len(findings), flagged)
+        if not findings:  # a header-only FINDINGS.csv detected nothing: never a pass
+            detected = row("detected", "absent", src + counts, detect)
+        else:
+            detected = row("detected", "done", src + counts,
+                           "a human reads the %d flagged findings before review" % flagged if flagged else "none")
     except ERRORS as exc:
         errors.append({"source": "FINDINGS.csv", "error": type(exc).__name__})
         detected = row("detected", "unknown", src + " (failed to load)", detect)
-    vsrc, psrc = "runs/%s/VERIFY.json" % run.name, "flock_publish.stage runs/%s" % run.name
-    if not (run / "VERIFY.json").is_file() or (run / "VERIFY.json").is_symlink():
-        return [detected, row("reviewed", "waiting-on-gate", vsrc + " (absent)",
-                              "a different-family verifier checks each finding (skills/flock-verify)", "law"),
-                row("published", "absent", psrc, "follows reviewed", "publish")]
-    reviewed = row("reviewed", "done", vsrc, "none", "law")
+    psrc = "flock_publish.stage runs/%s" % run.name
+    reviewed = verify_row(run, errors)
+    if reviewed["state"] == "waiting-on-gate" and reviewed["source"].endswith("(absent)"):
+        return [detected, reviewed, row("published", "absent", psrc, "follows reviewed", "publish")]
     status = cmd("flock_publish.py status STORE")
     try:
         stage, _ = publish_tool.stage(run)
@@ -208,7 +257,7 @@ def rehearse(store, slug, as_of):
         except ERRORS as exc:
             errors.append({"source": name, "error": type(exc).__name__})
     requests, runs = got.get("REQUESTS.csv"), got.get("runs")
-    stages = [contact_row(folder, slug)]
+    stages = [contact_row(folder, slug, errors)]
     if requests is None or runs is None:
         stages += [row(s, "unknown", "flock_state (failed to load)", cmd("flock_state.py state STORE --agency SLUG"), g)
                    for s, g in (("request-drafted", "none"), ("request-approved", "send"), ("request-sent", "send"),

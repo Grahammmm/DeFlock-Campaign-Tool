@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.flock import test_publish as pub
 from tests.flock.approval_field import APPROVAL_LINE, trusted, write_field
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -91,12 +92,15 @@ class RehearseTests(unittest.TestCase):
         self.findings()
 
     # ---- runners ------------------------------------------------------------------------------------------------
-    def run_tool(self, out=None, agency=SLUG, as_of="2026-11-03", store=None, publish=None):
+    def run_tool(self, out=None, agency=SLUG, as_of="2026-11-03", store=None, publish=None, reviewed=False):
         out = out or self.tmp / "out"
         argv = ["--store", str(store or self.store), "--agency", agency, "--out", str(out), "--as-of", as_of]
         buf = io.StringIO()
         patch = mock.patch.object(MOD.publish_tool, "stage", return_value=(publish, None)) if publish else contextlib.nullcontext()
-        with contextlib.redirect_stdout(buf), trusted(), patch:
+        # the synthetic run here is not a real verified run; the real verification path is RehearseVerifyPipelineTests
+        done = MOD.row("reviewed", "done", "simulated validated verification", "none", "law")
+        vpatch = mock.patch.object(MOD, "verify_row", return_value=done) if reviewed else contextlib.nullcontext()
+        with contextlib.redirect_stdout(buf), trusted(), patch, vpatch:
             code = MOD.main(argv)
         return code, buf.getvalue(), out
 
@@ -105,7 +109,8 @@ class RehearseTests(unittest.TestCase):
         doc = json.loads((out / "rehearsal.json").read_text(encoding="utf-8"))
         return code, doc, {r["stage"]: r for r in doc["stages"]}, out
 
-    def tree_hash(self, root):
+    @staticmethod
+    def tree_hash(root):
         h = hashlib.sha256()
         for p in sorted(root.rglob("*")):
             h.update(str(p.relative_to(root)).encode() + oct(p.lstat().st_mode).encode())
@@ -138,13 +143,13 @@ class RehearseTests(unittest.TestCase):
 
     def test_complete_chain_says_machine_valid_not_acceptance(self):
         self.full_chain()
-        code, doc, rows, out = self.receipt(publish="approved")
+        code, doc, rows, out = self.receipt(publish="approved", reviewed=True)
         self.assertEqual(code, 0)
         self.assertEqual({s: r["state"] for s, r in rows.items() if r["state"] != "done"}, {"ocr": "not-wired"})
         # OCR is never a pass, so even a full store names it as the first break
         self.assertEqual(doc["verdict"]["first_break"], "ocr")
         with mock.patch.object(MOD, "OCR", ("done", "df-ocr-live (simulated wiring)", "none")):  # once OCR is wired
-            code, doc, _, out = self.receipt(out=self.tmp / "out2", publish="approved")
+            code, doc, _, out = self.receipt(out=self.tmp / "out2", publish="approved", reviewed=True)
         text = "chain complete for sample-city; machine-valid, not semantic acceptance"
         self.assertEqual((code, doc["verdict"]["text"], doc["verdict"]["first_break"]), (0, text, None))
         self.assertIn(text, (out / "REHEARSAL.md").read_text(encoding="utf-8"))
@@ -184,6 +189,43 @@ class RehearseTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual([rows[s]["state"] for s in STAGES[1:5]], ["unknown"] * 4)
         self.assertEqual(doc["source_errors"], [{"source": "REQUESTS.csv", "error": "Refuse"}])
+
+    def test_corrupt_contact_is_unknown_with_source_error_exit_1(self):  # RETURN item 3
+        (self.folder / "CONTACT.csv").write_bytes(b"\xff\xfe\x00garbage")
+        code, doc, rows, _ = self.receipt()
+        self.assertEqual((code, rows["agency-verified"]["state"]), (1, "unknown"))
+        self.assertEqual(doc["source_errors"], [{"source": "CONTACT.csv", "error": "UnicodeDecodeError"}])
+        (self.folder / "CONTACT.csv").write_text("not,a,contact,header\n", encoding="utf-8")
+        code, doc, rows, _ = self.receipt(out=self.tmp / "o2")
+        self.assertEqual((code, rows["agency-verified"]["state"], doc["source_errors"]),
+                         (1, "unknown", [{"source": "CONTACT.csv", "error": "ValueError"}]))
+        if os.geteuid() != 0:  # root reads a 0000 file, so unreadability cannot be staged there
+            self.contact()
+            os.chmod(self.folder / "CONTACT.csv", 0)
+            self.addCleanup(os.chmod, self.folder / "CONTACT.csv", 0o600)
+            code, doc, rows, _ = self.receipt(out=self.tmp / "o3")
+            os.chmod(self.folder / "CONTACT.csv", 0o600)
+            self.assertEqual((code, rows["agency-verified"]["state"], doc["source_errors"]),
+                             (1, "unknown", [{"source": "CONTACT.csv", "error": "PermissionError"}]))
+        self.contact()  # a readable v1 file with a bad row is still inconsistent, not a load failure
+        with open(self.folder / "CONTACT.csv", "a", encoding="utf-8") as fh:
+            fh.write("Sample City,records,not-an-address,,,,\n")
+        code, doc, rows, _ = self.receipt(out=self.tmp / "o4")
+        self.assertEqual((code, rows["agency-verified"]["state"], doc["source_errors"]), (0, "inconsistent", []))
+
+    def test_malformed_or_empty_findings_never_pass_detection(self):  # RETURN item 2
+        self.findings(verify=False)
+        path = self.folder / "runs" / "2026-10-20" / "FINDINGS.csv"
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("FN-2,retention,short row\n")
+        code, doc, rows, _ = self.receipt()
+        self.assertEqual((code, rows["detected"]["state"]), (1, "unknown"))
+        self.assertEqual(doc["source_errors"], [{"source": "FINDINGS.csv", "error": "ValueError"}])
+        path.write_text(",".join(MOD.publish_tool.compare.HEADER) + "\n\n", encoding="utf-8")  # header only (+ blank line)
+        code, doc, rows, _ = self.receipt(out=self.tmp / "o2")
+        self.assertEqual((code, rows["detected"]["state"], doc["source_errors"]), (0, "absent", []))
+        self.assertIn("findings=0", rows["detected"]["source"])
+        self.assertEqual(doc["verdict"]["first_break"], "agency-verified")
 
     def test_fact_missing_source_sha256_is_inconsistent(self):
         self.facts(sha="")
@@ -282,6 +324,59 @@ class RehearseTests(unittest.TestCase):
                 found.add((node.module or "").split(".")[0])
         self.assertEqual(found & banned, set())
         self.assertNotRegex(TOOL.read_text(encoding="utf-8"), r"\b(?:write_text|write_bytes|unlink|rmtree|os\.rename|os\.replace)\b")
+
+
+class RehearseVerifyPipelineTests(unittest.TestCase):  # RETURN item 1: reviewed follows flock_verify's validation
+    def setUp(self):  # the run is built with the real tools, exactly as tests/flock/test_publish.py builds it
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp, self.store = Path(tmp.name).resolve(), Path(tmp.name).resolve() / "store"
+        self.assertEqual(pub.run("flock_facts.py", "import", str(pub.FIXTURES / "compare-facts.csv"), "--store", str(self.store),
+                                 "--added-by", "tester", "--date", "2026-10-30")[0], 0)
+        shutil.copy(pub.FIXTURES / "law-sample.csv", self.store / "LAW.csv")
+        shutil.copy(pub.FIXTURES / "policy-sample.csv", self.store / "agencies" / pub.AGENCY / "POLICY.csv")
+        self.run_dir = self.store / "agencies" / pub.AGENCY / "runs" / "2026-10-30"
+        self.assertEqual(pub.run("flock_compare.py", "scaffold", "--store", str(self.store), "--agency", pub.AGENCY,
+                                 "--date", "2026-10-30", "--provider", "anthropic", "--model", "claude-opus-5-5",
+                                 "--applicability", "Sample city police")[0], 0)
+        shutil.copy(pub.FIXTURES / "findings-sample.csv", self.run_dir / "FINDINGS.csv")
+        self.rd, self.n = str(self.run_dir), 0
+
+    def reviewed(self):
+        self.n += 1
+        out = self.tmp / ("o%d" % self.n)
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = MOD.main(["--store", str(self.store), "--agency", pub.AGENCY, "--out", str(out), "--as-of", "2026-11-03"])
+        doc = json.loads((out / "rehearsal.json").read_text(encoding="utf-8"))
+        return code, {r["stage"]: r for r in doc["stages"]}["reviewed"], doc["source_errors"]
+
+    def test_verify_json_alone_is_not_review(self):
+        self.assertEqual(self.reviewed()[1]["state"], "waiting-on-gate")
+        self.assertEqual(pub.run("flock_verify.py", "start", self.rd, "--provider", "openai", "--model", "gpt-5-codex")[0], 0)
+        self.assertTrue((self.run_dir / "VERIFY.json").is_file())
+        code, row, errs = self.reviewed()  # start wrote VERIFY.json and a header-only VERIFY.csv: nothing reviewed yet
+        self.assertEqual((code, row["state"], errs), (0, "waiting-on-gate", []))
+        self.assertIn("rows=0", row["source"])
+        with open(pub.FIXTURES / "verify-sample.csv", encoding="utf-8") as fh:
+            sample = fh.read()
+        (self.run_dir / "VERIFY.csv").write_text(sample.replace(",confirm,", ",maybe,", 1), encoding="utf-8")
+        self.assertEqual(self.reviewed()[1]["state"], "inconsistent")  # an invalid verdict row
+        (self.run_dir / "VERIFY.csv").write_text(sample, encoding="utf-8")
+        code, row, _ = self.reviewed()  # every finding verified, but finish has not written its outputs
+        self.assertEqual((row["state"], row["next"]), ("waiting-on-gate", "python3 tools/flock_verify.py finish RUNDIR"))
+        self.assertEqual(pub.run("flock_verify.py", "finish", self.rd), (0, "public_ok=4 questions=2 rejected=1\n"))
+        before = RehearseTests.tree_hash(self.store)
+        code, row, errs = self.reviewed()
+        self.assertEqual((code, row["state"], row["next"], errs), (0, "done", "none", []))
+        self.assertEqual(RehearseTests.tree_hash(self.store), before)  # validation wrote nothing under STORE
+        with open(self.run_dir / "QUESTIONS.md", "a", encoding="utf-8") as fh:
+            fh.write("edited by hand\n")
+        self.assertEqual(self.reviewed()[1]["state"], "inconsistent")  # outputs no longer match a fresh finish
+        (self.run_dir / "VERIFY.json").write_text(json.dumps({"schema": 1, "verifier_provider": "anthropic"}), encoding="utf-8")
+        self.assertIn("family refused", self.reviewed()[1]["source"])
+        (self.run_dir / "VERIFY.csv").write_bytes(b"\xff\xfe\x00garbage")
+        code, row, errs = self.reviewed()
+        self.assertEqual((code, row["state"], errs), (1, "unknown", [{"source": "VERIFY.csv", "error": "UnicodeDecodeError"}]))
 
 
 if __name__ == "__main__":
