@@ -215,7 +215,7 @@ class BackupDrillTests(unittest.TestCase):
             self.assertNotIn(text, out)
         hexes = set(re.findall(r"[0-9a-f]{64}", out))
         self.assertEqual(hexes, {self.manifest_sha})
-        self.assertEqual(set(json.loads(out)), {"schema", "archive_name", "manifest_sha256", "created_at", "drilled_at",
+        self.assertEqual(set(json.loads(out)), {"schema", "archive_name", "encrypted", "manifest_sha256", "created_at", "drilled_at",
                                                 "engine_version", "files", "passed", "steps"})
 
     def test_failure_detail_masks_temp_path_and_digests(self):
