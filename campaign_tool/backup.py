@@ -346,13 +346,14 @@ def export_into(root, folder, encrypt_to=None, now=None):
     mode = os.lstat(folder).st_mode if os.path.lexists(folder) else 0
     if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode) or mode & 0o022:
         raise BackupError("backup: --into: must be an existing real folder that group and others cannot write")
-    try:
-        cfg = json.loads((root / "campaign.json").read_text(encoding="utf-8")).get("backup")
-    except (OSError, ValueError, AttributeError):
-        cfg = None  # export() reports a missing campaign.json
-    key = cfg.get("encrypt_to") if isinstance(cfg, dict) else None
-    if cfg is not None and not (isinstance(cfg, dict) and (key is None or isinstance(key, str))):
-        raise BackupError('campaign.json backup.encrypt_to: "backup" must be an object holding a key-file path')
+    try:  # only an absent "backup"/"encrypt_to" means plain; anything supplied but invalid is refused, never ignored
+        doc = json.loads((root / "campaign.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        doc = None
+    cfg = doc.get("backup", {}) if isinstance(doc, dict) else None
+    if not isinstance(cfg, dict) or not isinstance(cfg.get("encrypt_to", ""), str):
+        raise BackupError('campaign.json backup.encrypt_to: campaign.json must be readable JSON and "backup" an object holding a key-file path')
+    key = cfg.get("encrypt_to")
     if encrypt_to is None and key is not None:
         encrypt_to = root / key
         try:
