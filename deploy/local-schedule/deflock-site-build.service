@@ -1,0 +1,11 @@
+[Unit]
+Description=DeFlock local schedule: site build (build only, never publish)
+# Gate-safe slot. Builds public/ locally; publishing stays a human gate and is never scheduled.
+
+[Service]
+Type=oneshot
+WorkingDirectory=@WORKDIR@
+UMask=0077
+# Per-slot overlap lock: a held lock skips this slot with exit 73, never queues.
+ExecStart=/usr/bin/flock -n -E 73 %t/deflock-site-build.lock @PYTHON@ -B -m campaign_tool build --directory @STORE@
+TimeoutStartSec=40min

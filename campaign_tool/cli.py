@@ -204,6 +204,9 @@ def ingest(args, root):
     if getattr(args, "eml", None) is not None:
         from .ingest_eml import ingest_eml
         return ingest_eml(args, root)
+    if getattr(args, "mbox", None) is not None:
+        from .ingest_mbox import ingest_mbox
+        return ingest_mbox(args, root)
     source = Path(args.file)
     if source.is_symlink() or not source.is_file():
         raise ValueError("Input must be a regular, non-symlink file")
@@ -347,6 +350,11 @@ def status_counts(root):
         db.close()
 
 
+LAW_REVIEW_ACTION = ("reviewed_law_package: false — needs a second reader independent of the author, who checks each "
+                     "rule against its cited primary text and signs reviewed_by in a PR (docs/LAW-PACKAGES.md); "
+                     "build the packet with 'campaign-tool law review-packet'")
+
+
 def law_package_report(cfg):
     """Status of the jurisdiction law package: draft, reviewed or missing."""
     from .law import package_status
@@ -383,6 +391,8 @@ def doctor_report(root, contact_max_age_days=None, stale_days=None):
     }
     if "law_package_error" in law:
         report["law_package_error"] = law["law_package_error"]
+    if law["law_package_status"] == "draft":
+        report["next_actions"].append(LAW_REVIEW_ACTION)
     from .kit import kit_status, stale_contacts
     report.update(kit_status(root))
     if contact_max_age_days is not None and (found := stale_contacts(root, contact_max_age_days)) is not None:
@@ -713,6 +723,8 @@ def main():
                                 "never extracted to disk; nested archives are stored, not opened")
             source.add_argument("--eml", help="One emailed production .eml: message stored as is, each attachment "
                                 "stored and linked to it; headers never printed")
+            source.add_argument("--mbox", help="One local mbox export: each message stored like --eml, linked to "
+                                "the mailbox; headers never printed")
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
             cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")
@@ -886,6 +898,8 @@ def main():
                             "own stated production date (provisional, not a legal deadline)")
     response_p.add_argument("--reference", metavar="REF", help="The agency's own request number, stored once")
     response_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
+    response_p.add_argument("--partial", action="store_true", help="produced only: part of the records; the request "
+                            "stays open (--expected-on: the agency's next installment date)")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -1011,6 +1025,13 @@ def main():
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
     today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
+    law_packet = commands.add_parser("law", help="Law package tools; nothing here marks a package reviewed"
+                                     ).add_subparsers(dest="law_command", required=True).add_parser(
+        "review-packet", help="Private packet for a human law reviewer in a new --out folder; reviews nothing")
+    law_packet.add_argument("--jurisdiction", required=True)
+    law_packet.add_argument("--out", required=True, help="New absolute folder outside the repository")
+    law_packet.add_argument("--as-of", help="Worksheet source ages counted to YYYY-MM-DD (default today)")
+    law_packet.add_argument("--base", help=argparse.SUPPRESS)
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
     pack.add_argument("--directory", required=True)
     pack_which = pack.add_mutually_exclusive_group(required=True)
@@ -1043,6 +1064,9 @@ def main():
             fixes.emit(exc)
             sys.exit(1)
         return
+    if args.command == "law":
+        from .law_packet import main as law_packet_main
+        sys.exit(law_packet_main(args))
     root = Path(args.directory).expanduser().resolve()
     try:
         if args.command == "init":
@@ -1263,7 +1287,7 @@ def main():
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
-            if report["past_due"] + report["stated_date_passed"]:
+            if report["past_due"] + report["stated_date_passed"] + report["installment_passed"]:
                 sys.exit(3)
         elif args.command == "kit-calendar":
             from .kit_calendar import calendar
@@ -1276,7 +1300,8 @@ def main():
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
-                                         reference=args.reference, replace_reference=args.replace_reference),
+                                         reference=args.reference, replace_reference=args.replace_reference,
+                                         partial=args.partial),
                              indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):

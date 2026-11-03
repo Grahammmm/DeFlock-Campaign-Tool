@@ -1,0 +1,12 @@
+[Unit]
+Description=DeFlock local schedule: backup daily
+
+[Timer]
+# 03:00 America/Los_Angeles: four hours before the 07:00 records slot.
+OnCalendar=*-*-* 03:00:00 America/Los_Angeles
+Persistent=true
+RandomizedDelaySec=5min
+Unit=deflock-backup.service
+
+[Install]
+WantedBy=timers.target
