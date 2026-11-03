@@ -66,6 +66,14 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
   then `changed= new= gone= unmatched=` and the totals that moved. Masked labels are counted, never paired; a basis change alone
   is not a change. Exit 0 nothing changed, 3 something changed, 1 a snapshot is not flock-state-v1 (names side and field only).
 
+## Deadlines
+
+- `python3 tools/flock_deadlines.py due --store <store dir> --date D` prints, read-only, each open request against the law
+  package's dated determination rule: `drafted`/`due`, `inside`, `already`, `edited-kept`, `clock-unknown` (no sent date) or
+  `rule-incomplete`. Dates are provisional reminders, not legal due dates, while the package is `draft`.
+- `run --store <store dir> --date D [--out NEWDIR]` drafts one follow-up per passed (request, rule, reminder date) and files
+  it `pending` in `STORE/deadlines/QUEUE.csv`; it never sends or approves (docs/APPROVALS.md). Re-running is safe.
+
 ## Open
 
 - New row from a sent email run: `python3 tools/flock_requests.py open --from-email <run folder> --request-id <id> [--today D]` (flock-email "Open").
