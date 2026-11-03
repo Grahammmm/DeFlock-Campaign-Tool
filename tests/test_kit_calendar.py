@@ -19,7 +19,7 @@ from campaign_tool import cli, kit_calendar, law  # noqa: E402
 from tests.test_kit_check import ready_drafts  # noqa: E402
 
 NOW = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
-HASH = "ab12cd34ef56" + "0" * 52
+HASH = "abcd" * 16  # low-entropy synthetic sha256 so the credential scan stays quiet
 LINE = re.compile(r"[A-Z][A-Z0-9-]*(;[^:\r\n]*)?:[^\r\n]*")
 
 
