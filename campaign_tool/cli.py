@@ -804,6 +804,8 @@ def main():
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
     response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    response_p.add_argument("--expected-on", metavar="YYYY-MM-DD", help="determination or a later step: the agency's "
+                            "own stated production date (provisional, not a legal deadline)")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -848,9 +850,11 @@ def main():
     verify.add_argument("--differs-because", choices=("redacted", "converted", "unknown"), default=None)
     content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
         dest="content_command", required=True)
-    content_cmds.add_parser(
+    content_init = content_cmds.add_parser(
         "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
-    ).add_argument("--directory", required=True)
+    )
+    content_init.add_argument("--directory", required=True)
+    content_init.add_argument("--from", dest="source_campaign")
     strip_p = content_cmds.add_parser("strip-metadata", help="Write <name>.clean<ext> beside a JPEG/PNG/WebP without "
                                       "its EXIF, GPS, XMP, IPTC, comment or text metadata (no re-encode)")
     strip_p.add_argument("file")
@@ -1128,8 +1132,8 @@ def main():
             print(json.dumps(strip_file(args.file, args.out), indent=2))
         elif args.command == "content":
             from .content_init import init_content
-            print(json.dumps(init_content(root), indent=2))
-            print('content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
+            print(json.dumps(init_content(root, args.source_campaign), indent=2))
+            print(f"content/ written from {Path(args.source_campaign).name}. Review every copied page and replace anything specific to the other locality; nothing was built or deployed." if args.source_campaign is not None else 'content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
         elif args.command == "kit-agency":
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
@@ -1174,12 +1178,13 @@ def main():
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
-            if report["past_due"]:
+            if report["past_due"] + report["stated_date_passed"]:
                 sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step
-            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
-                                         records=args.record, request=args.request, amount=args.amount), indent=2))
+            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
+                                         request=args.request, amount=args.amount, expected_on=args.expected_on),
+                             indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
             read_config(root)

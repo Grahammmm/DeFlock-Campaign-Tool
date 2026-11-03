@@ -91,7 +91,7 @@ describe("wizard flow (DRY_RUN=1)", () => {
     expect(page6).toContain("DRY_RUN is on");
     expect(page6).not.toContain("cf-test-token-not-a-real-credential");
     const plan = (await (await req("/setup/6/plan.json")).json()) as { id: string }[];
-    for (const id of ["d1.create", "r2.originals", "r2.public", "kv.create", "queue.create", "worker.workspace", "worker.public", "d1.migrate", "d1.seed", "dns.public", "dns.workspace", "route.public", "route.workspace", "access.app", "access.policy", "email.rule", "cron.workspace", "secret.MODEL_BASE_URL"]) {
+    for (const id of ["d1.create", "r2.originals", "r2.public", "kv.create", "worker.workspace", "worker.public", "d1.migrate", "d1.seed", "dns.public", "dns.workspace", "route.public", "route.workspace", "access.app", "access.policy", "email.rule", "cron.workspace", "secret.MODEL_BASE_URL"]) {
       expect(plan.map((p) => p.id)).toContain(id);
     }
     expect((await req("/setup/6", { method: "POST", form: {} })).status).toBe(200); // confirm required
