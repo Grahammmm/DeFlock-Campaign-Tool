@@ -83,7 +83,7 @@ class MethodsPageTests(unittest.TestCase):
         ids = self.ids()
         pages = ["findings/index.html", "index.html"] + [
             p.relative_to(self.public).as_posix() for p in (self.public / "findings").glob("*.html") if p.name != "index.html"]
-        self.assertEqual(len(pages), 4)
+        self.assertEqual(len(pages), 5)
         seen = set()
         for name in pages:
             html = self.read(name)

@@ -1,5 +1,7 @@
 # Site content model and multi-page build
 
+The findings index links to `/findings/packet-all.html`, a printable summary of all published findings, with source references and corrections. The packet links to each full finding and omits its body. A published finding whose output path conflicts with a generated page causes the build to refuse without changing `public/`.
+
 `campaign_tool build --directory D` renders `D/public/` from `D/campaign.json`
 plus a reviewed `D/content/` directory. Without `content/` the command still
 writes the neutral one-page starter (`index.html`, `style.css`, `_headers`),
