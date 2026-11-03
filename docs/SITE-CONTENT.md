@@ -162,6 +162,14 @@ YYYY-MM-DD dates not after the build date, `updated_on` not before `asked_on`; `
 `content/agencies.json[n].asked[i].<field>`; `content-check` lists every such problem, one line each. Kit agencies
 never carry it. It is shown only on `agencies.html` (docs/AGENCY-CARDS.md), never exported to data or feeds.
 
+`agencies.html` opens with an "At a glance" table (`#at-a-glance`, labels `agencies.glance_*`): one row per agency in
+the list's own order, never sorted by any number, with no ranking, score or "best/worst" wording. Cells: cameras,
+searches in the last 30 days and retention days from the newest `profile.transparency` snapshot (each linked to its
+`source_url`, checked date shown), the posted `alpr_policy` ("posted", linked to the policy), `contract.end` linked
+to the contract source, and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0").
+A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
+No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
+
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
 also the `id` of the matching section in `sources.html`. Agencies without

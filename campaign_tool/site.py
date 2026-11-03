@@ -669,11 +669,37 @@ class Site:
             day, on = (f" {date_label(when)}", f" on {date_label(when)}") if when else ("", "")
             asked.append(f'{e(item["topic"])} — asked {date_label(item["asked_on"])}. ' + sentences[item["state"]].format(
                 day=day, on=on) + (f' {e(item["note"])}' if item.get("note") else ""))
-        return "".join(f'<section class="agency-block"><h4>{title}</h4>' + (
+        return "".join(f'<section class="agency-block"><h4{anchor}>{title}</h4>' + (
             "<ul>" + "".join(f"<li>{value}</li>" for value in values) + "</ul>" if values else f"<p>{empty}</p>") + "</section>"
-            for title, values, empty in (("What is confirmed", confirmed, "Nothing is confirmed by a published finding yet."),
-                                         ("What is not known", unknown, "Nothing listed yet."),
-                                         ("What we asked", asked, "No request is listed for this agency yet.")))
+            for title, values, empty, anchor in (("What is confirmed", confirmed, "Nothing is confirmed by a published finding yet.", ""),
+                                                 ("What is not known", unknown, "Nothing listed yet.", ""),
+                                                 ("What we asked", asked, "No request is listed for this agency yet.",
+                                                  f' id="{e(agency["slug"])}-asked"')))
+
+    def glance_section(self):
+        """DF0137-12: every agency side by side in model order (never sorted by a number); each cell links its source."""
+        unchecked, rows = self.t("agencies.glance_not_checked"), []
+        heads = [self.t(f"agencies.glance_{key}") for key in ("agency", "cameras", "searches_last_30_days",
+                                                               "retention_days", "policy", "contract", "asked")]
+
+        def sourced(url, text, checked_on):
+            return (f'<a href="{e(url)}" rel="noopener noreferrer">{text}</a> '
+                    f'<small>{self.t("agencies.glance_checked", date=time_tag(checked_on))}</small>')
+        for agency in self.model["agencies"]:
+            newest, policy, contract = (agency.get("transparency") or [{}])[0], agency.get("alpr_policy"), agency["contract"]
+            asked, page = len(agency.get("asked", [])), self.agency_pages().get(agency["agency_id"], f'#{agency["slug"]}')
+            cells = [f'<a href="{e(page)}">{e(agency["name"])}</a>'] + [
+                sourced(newest["source_url"], e(newest[key]), newest["checked_on"]) if newest.get(key) is not None
+                else unchecked for key in ("cameras", "searches_last_30_days", "retention_days")]
+            cells += [sourced(policy["url"], self.t("agencies.glance_posted"), policy["checked_on"]) if policy else unchecked,
+                      sourced(contract["source_url"], time_tag(contract["end"]), contract["checked_on"]) if contract else unchecked,
+                      f'<a href="#{e(agency["slug"])}-asked">{asked}</a>' if asked else "0"]
+            rows.append('<tr><th scope="row" data-label="' + heads[0] + f'">{cells[0]}</th>'
+                        + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
+        return (f'<section class="at-a-glance" id="at-a-glance"><h3>{self.t("agencies.glance_heading")}</h3>'
+                f'<p>{self.t("agencies.glance_note")}</p><table class="glance-table"><caption>{self.t("agencies.glance_caption")}'
+                '</caption><thead><tr>' + "".join(f'<th scope="col">{head}</th>' for head in heads) + "</tr></thead><tbody>"
+                + "".join(rows) + "</tbody></table></section>")
 
     def agencies_html(self):
         articles = []
@@ -702,7 +728,8 @@ class Site:
             articles.append(f'<article id="{e(agency["slug"])}">{body}</article>')
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
                 f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")}</p></div>'
-                + ('<div class="agency-list">' + "".join(articles) + '</div>' if articles else f'<p>{self.t("notice.no_agencies")}</p>')
+                + ('<div class="agency-list">' + self.glance_section() + "".join(articles) + '</div>' if articles
+                   else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
         return self.page("agencies", self.labels["title.agencies"], self.labels["title.agencies_description"], "/agencies.html", main)
 
