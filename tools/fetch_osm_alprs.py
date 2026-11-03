@@ -306,13 +306,16 @@ def _utc_day():
 
 
 def _previous_map(campaign):
-    """The map this run replaces, for added/removed: no features when absent, unreadable or behind a symlink (a link
-    is never followed; write_map then refuses it) or not a regular file (never opened)."""
+    """The map this run replaces, for added/removed: None when there is no previous cameras.geojson (a first map,
+    recorded as 0/0 so the baseline is not counted as growth); no features when unreadable or behind a symlink (a
+    link is never followed; write_map then refuses it) or not a regular file (never opened)."""
     path = campaign
     for name in ("content", "map", "cameras.geojson"):
         path = path / name
         if path.is_symlink():
             return {"type": "FeatureCollection", "features": []}
+        if not path.exists():
+            return None
     current = load_current(path) if path.is_file() else None
     return current or {"type": "FeatureCollection", "features": []}
 
@@ -409,7 +412,7 @@ def main(argv=None):
     previous = _previous_map(Path(args.directory))
     try:
         map_dir = write_map(Path(args.directory), collection, args.allow_empty, snapshot=snapshot)
-        changes = diff(previous, collection)
+        changes = {"added": [], "removed": []} if previous is None else diff(previous, collection)
         kept = record_history(map_dir, {
             "recorded_on": (snapshot["osm_base"] or "")[:10] or _utc_day(), "osm_base": snapshot["osm_base"],
             "source": source, "total": len(collection["features"]), "by_city": _by_city(map_dir, collection),

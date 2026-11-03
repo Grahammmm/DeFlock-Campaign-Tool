@@ -82,7 +82,7 @@ class HistoryTests(unittest.TestCase):
         changes = tool.diff(old, tool.to_geojson(second)[0])
         self.assertEqual(self.records(), [
             {"recorded_on": "2026-10-01", "osm_base": OCT, "source": "saved_file", "total": 3, "by_city": None,
-             "added": 3, "removed": 0},
+             "added": 0, "removed": 0},  # first map: no previous cameras.geojson, the baseline is not growth
             {"recorded_on": "2026-11-01", "osm_base": NOV, "source": "saved_file", "total": 4, "by_city": None,
              "added": len(changes["added"]), "removed": len(changes["removed"])}])
         self.assertEqual((len(changes["added"]), len(changes["removed"])), (2, 1))
@@ -178,7 +178,7 @@ class HistoryTests(unittest.TestCase):
     def test_missing_osm_base_uses_utc_run_day(self):
         with mock.patch.object(tool, "_utc_day", return_value="2026-11-03"):
             self.assertEqual(self.run_tool(answer([node(1)], None))[0], 0)
-        self.assertEqual(self.records(), [record("2026-11-03", added=1)])
+        self.assertEqual(self.records(), [record("2026-11-03")])  # a first map records added/removed 0/0
 
     def test_oversize_history_trimmed_to_byte_cap(self):
         big = {f"City {index:03d} " + "x" * 100: index for index in range(500)}  # ~60 KiB per record
