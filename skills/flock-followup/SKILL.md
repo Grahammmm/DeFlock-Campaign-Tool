@@ -38,6 +38,7 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
 - List reminders: `python3 tools/flock_requests.py due <file or store dir>`. One line per open
   row, soonest first, unknown receipts last. With any error it prints nothing and exits 1.
   Relate it to a day: `python3 tools/flock_requests.py due <file or store dir> --as-of YYYY-MM-DD`.
+  One agency only: add `--agency SLUG` (repeatable, any order with `--as-of`; not with `--ics`).
 
 ## Alerts
 
@@ -46,6 +47,7 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
   or with no receipt N+ days after sending. There is no default for --receipt-days; not a legal due date. Exit 3 on any
   action alert, 1 with only a store-error line. An alert clears only when the row changes (record a step); nothing is
   sent, acknowledged or snoozed. `--json-out` writes a new 0600 `flock-alerts-v1` file outside the repository.
+  `--prev OLD.json` (an earlier `--json-out` file) ends each line `| new` or `| still`, lists `alert | cleared | <id>` lines.
 
 ## Summary
 
@@ -59,6 +61,10 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
 - One explicit state per request and email run: `python3 tools/flock_state.py state <store dir> [--json]` prints
   `state | request|run | <slug> | <id or date> | state=<s> | basis=<fields>` lines, then totals. Fields only; never a legal
   status: free text (evidence, a draft body, a `Sent by:` sentence) never changes a state. Exit 1 on any record or run problem.
+- What moved since a saved snapshot: `python3 tools/flock_state.py diff <old.json> <new.json> [--json]` reads two saved
+  `state --json` outputs and prints `diff | request|run | <slug> | <id or date> | <old> -> <new>` (or `new: <s>` / `gone (was <s>)`),
+  then `changed= new= gone= unmatched=` and the totals that moved. Masked labels are counted, never paired; a basis change alone
+  is not a change. Exit 0 nothing changed, 3 something changed, 1 a snapshot is not flock-state-v1 (names side and field only).
 
 ## Open
 
@@ -92,6 +98,7 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
 
 - Before handing any draft folder to G, run `python3 tools/flock_privacy_scan.py <folder>` on the folder first; it prints
   `path:line: category` only and exits 3 on an email/phone/plate. Fix or list each in `--allow FILE`, then rerun.
+  Use `--json-out NEWFILE` (absolute, outside the repo and the folder) for the handoff receipt; re-scan if any sha256 differs.
 
 ## Outputs
 

@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""Flock agency timeline (BF-df-agency-timeline): one agency's history in date order, from the private store's recorded fields.
+  flock_agency.py timeline STORE --agency SLUG [--since YYYY-MM-DD] [--as-of YYYY-MM-DD] [--inventory CSV] [--json]
+With --since or --as-of, events outside the window are counted, not shown (undated events stay); without them all are shown.
+  flock_agency.py index STORE [--as-of YYYY-MM-DD] [--json]
+index (RF2330-7) prints one status line per agency folder (request and open counts, oldest open sent date, last recorded
+event, next provisional reminder, failing email runs, source errors per file) from timeline() itself, then a totals line.
+Requests sent, receipts, extension notices, determinations, productions, closures and withdrawals (REQUESTS.csv and
+REQUEST-STEPS.csv), fee rows (FEES.csv), email-run states (flock_state) and received-document counts (an inventory CSV),
+oldest first, then a "still open" block with each open request's state and provisional reminder date. Ids, counts, enum words
+and amounts only. Prints and reads only. Exit 0 clean; 1 on a store refusal, a source-error or a failing run state; 2 usage.
+JSON schema flock-agency-timeline-v1 is review_required. Fields only; not a legal status; the canonical ledger wins."""
+import collections
+import importlib.util
+import json
+import re
+import sys
+from datetime import date
+from pathlib import Path
+
+TOOLS = Path(__file__).resolve().parent
+REPO = TOOLS.parent
+KINDS = ("sent", "receipt", "extension-notice", "determination", "produced", "closed", "withdrawn", "step", "fee-invoice",
+         "fee-paid", "email-", "documents")
+STEP_KIND = {"receipt": "receipt", "extension": "extension-notice", "determination": "determination", "produced": "produced",
+             "closed": "closed"}
+SLUG = re.compile(r"[a-z0-9-]{1,60}")
+USAGE = ("usage: flock_agency.py timeline STORE --agency SLUG [--since YYYY-MM-DD] [--as-of YYYY-MM-DD] [--inventory CSV] [--json]"
+         "  (one agency's recorded history, oldest first; prints only, writes nothing; with --since or --as-of, events outside"
+         " the window are counted, not shown)\n"
+         "       flock_agency.py index STORE [--as-of YYYY-MM-DD] [--json]  (one status line per agency; prints only)")
+
+
+class Refuse(Exception): pass
+
+
+def _tool(name):  # siblings are loaded by file path, never copied
+    spec = importlib.util.spec_from_file_location("_agency_" + name, TOOLS / (name + ".py"))
+    return spec.loader.exec_module(module := importlib.util.module_from_spec(spec)) or module
+
+
+state = _tool("flock_state")
+rq = state.requests_tool  # the one flock_requests that flock_state already loaded
+
+
+def safe(text):  # a loader reason keeps its plain words; any id, address, hash or banned word in it is masked
+    return " ".join(w if state.SAFE.fullmatch(w.strip("(),:;")) and not state.BANNED.search(w) else "(unsafe-label)"
+                    for w in str(text).split())
+
+
+def kind_rank(kind):
+    return KINDS.index("email-") if kind.startswith("email-") else KINDS.index(kind)
+
+
+def requests_source(folder, errors):
+    """(good rows with their state) from REQUESTS.csv; record-error rows are named as source-errors and left out."""
+    try:
+        states = state.folder_requests(folder)
+    except state.Refuse:
+        return errors.append(("REQUESTS.csv", "unreadable, a link or not v1")) or []
+    rows = rq.load(folder / "REQUESTS.csv", folder.name)[0] if states else []
+    errors += [("REQUESTS.csv", "record-error %s (%s)" % (i, ",".join(b))) for i, s, b in states if s == "record-error"]
+    return [(r, s) for r, (_, s, _) in zip(rows, states) if s != "record-error"]
+
+
+def request_events(good):
+    for r, _ in good:
+        rid = state.label(r["request_id"])
+        yield r["sent"], "sent", rid, ""
+        for field, kind in (("receipt_date", "receipt"), ("extension_notice_date", "extension-notice"),
+                            ("determination_date", "determination")):
+            if r[field]:
+                yield r[field], kind, rid, ""
+        if r["status"] in ("produced", "closed", "withdrawn"):
+            yield None, r["status"], rid, ""  # the status has no date of its own in REQUESTS.csv
+
+
+def steps_events(folder, errors):
+    text, table, bad = rq.read_log(folder / "REQUEST-STEPS.csv")
+    if bad or (text is not None and (table[:1] != [rq.STEP_HEADER] or any(len(c) != 6 for c in table[1:] if c))):
+        return errors.append(("REQUEST-STEPS.csv", safe(bad or "does not match REQUEST-STEPS.csv v1"))) or []
+    out = []
+    for n, c in ((n, c) for n, c in enumerate(table[1:], 2) if c):
+        if not rq.day(c[2]):
+            errors.append(("REQUEST-STEPS.csv", "row %d: date must be YYYY-MM-DD" % n))
+            continue
+        kind = STEP_KIND.get(c[1], "step")
+        out.append((c[2], kind, state.label(c[0]), "" if kind != "step" else state.label(c[1])))
+    return out
+
+
+def fee_events(folder, good, errors):
+    text, table, bad = rq.read_log(folder / "FEES.csv")
+    found = [bad] if bad else rq.fee_errors(table, {r["request_id"]: r for r, _ in good}) if text is not None else []
+    if found:
+        return errors.extend(("FEES.csv", safe(e.removeprefix("FEES.csv "))) for e in found) or []
+    names = {"invoice": ("fee-invoice", ""), "paid": ("fee-paid", ""), "estimate": ("step", "fee-estimate ")}
+    return [(c[3], names[c[1]][0], state.label(c[0]), "%sUSD %d.%02d" % (names[c[1]][1], int(c[2]) // 100, int(c[2]) % 100))
+            for c in table[1:] if c]
+
+
+def run_events(folder):
+    runs = state.folder_runs(folder, state.stage_fn())
+    failing = sum(s in state.FAILING or not mapped for _, s, mapped in runs)
+    return [(d if rq.day(d) else None, "email-" + s, "-", "") for d, s, _ in runs], failing
+
+
+def document_events(path, slug, good, errors):
+    inv, why = rq.inventory(path)
+    if why:
+        return errors.append(("inventory", safe(why))) or []
+    parts = collections.defaultdict(list)
+    for n, rec in inv:
+        parts[str(rq.day(rec.get("date", "").strip()) or "")].append((n, rec))
+    out = []
+    for when, part in sorted(parts.items()):
+        docs, _ = rq.documents({slug: [r for r, _ in good]}, part)  # rows of other agencies' requests are not ours
+        for (_, rid), got in sorted(docs.items()):
+            out.append((when or None, "documents", state.label(rid), "%d received, %d analysis-only" % (len(got), sum(got.values()))))
+    return out
+
+
+def merge(events):
+    """Duplicate facts (same date, kind, request, detail) render once; an undated status a dated step also records is dropped."""
+    counts = collections.Counter(events)
+    dated = {(k, i) for d, k, i, _ in counts if d and k in ("produced", "closed", "withdrawn")}
+    out = []
+    for (d, k, i, detail), n in counts.items():
+        if d is None and (k, i) in dated:
+            continue
+        twice = "" if n == 1 else "(recorded twice)" if n == 2 else "(recorded %d times)" % n
+        out.append({"date": d or "undated", "kind": k, "request": i, "detail": " ".join(filter(None, (detail, twice))) or "-"})
+    return sorted(out, key=lambda e: (e["date"] == "undated", e["date"], kind_rank(e["kind"]), e["request"], e["detail"]))
+
+
+def still_open(good, as_of):
+    out = []
+    for r, s in sorted((g for g in good if g[0]["status"] == "open"), key=lambda g: g[0]["request_id"]):
+        try:
+            line = rq.due([r], as_of)[0]
+        except ValueError:
+            line = ""
+        m = re.search(r"\| determination ([0-9-]{10}) \|", line)
+        dist = line.rpartition(": ")[2].replace("reminder date ", "") if " | as of " in line else ""
+        out.append({"request": state.label(r["request_id"]), "state": s,
+                    "reminder": "reminder %s (provisional)%s" % (m[1] if m else "-", ", " + dist if m and dist else "")})
+    return out
+
+
+def store_base(store):  # the store checks timeline and index share -> the agencies folder
+    given, root = Path(store), Path(store).resolve()
+    if root == REPO or REPO in root.parents:
+        raise Refuse("store is inside the repository")
+    base = root / "agencies"
+    if given.is_symlink() or not root.is_dir() or base.is_symlink() or not base.is_dir():
+        raise Refuse("store is not a folder with an agencies folder")
+    return base
+
+
+def timeline(store, slug, as_of, inventory, private=None):
+    """PRIVATE (a list), when given, receives the good REQUESTS.csv rows: aggregates that need request identity must not
+    join on display labels, which mask distinct ids alike."""
+    folder = store_base(store) / slug
+    if folder.is_symlink() or not folder.is_dir():
+        raise Refuse("agency folder is missing or a link")
+    errors = []
+    good = requests_source(folder, errors)
+    if private is not None:
+        private.extend(good)
+    events = list(request_events(good)) + steps_events(folder, errors) + fee_events(folder, good, errors)
+    runs, failing = run_events(folder)
+    events += runs + (document_events(inventory, slug, good, errors) if inventory else [])
+    return merge(events), still_open(good, as_of), [{"file": f, "reason": r} for f, r in errors], failing
+
+
+def window(events, since, as_of):
+    """(kept, before, after): dated events before SINCE (None: no lower bound) or after AS_OF are counted, not kept."""
+    kept, cut = [], collections.Counter()
+    for e in events:
+        d = rq.day(e["date"])  # "undated" -> None: always kept
+        side = None if d is None else "before" if since and d < since else "after" if d > as_of else None
+        cut[side] += 1
+        kept += [e] if side is None else []
+    return kept, cut["before"], cut["after"]
+
+
+def render(slug, as_of, events, opened, errors, failing, as_json, window=None):
+    shown = slug if not state.BANNED.search(slug) else "(unsafe-label)"
+    cut = {"since": str(window[0]) if window[0] else None, "before": window[1], "after": window[2]} if window else {}
+    if as_json:
+        print(json.dumps({"schema": "flock-agency-timeline-v1", "review_required": True, "agency": shown, "as_of": str(as_of),
+                          "note": state.NOTE, "events": events, "open": opened, "errors": errors,
+                          "failing_runs": failing} | cut, ensure_ascii=True))
+    else:
+        lines = ["agency %s | as of %s | %s" % (shown, as_of, state.NOTE)]
+        lines += ["%s | %s | %s | %s" % (e["date"], e["kind"], e["request"], e["detail"]) for e in events]
+        lines += ["source-error | %s | %s" % (e["file"], e["reason"]) for e in errors]
+        lines += ["still open | %s | %s | %s" % (o["request"], o["state"], o["reminder"]) for o in opened]
+        lines.append("totals | events=%d open=%d errors=%d failing_runs=%d" % (len(events), len(opened), len(errors), failing)
+                     + (" before=%d after=%d" % (cut["before"], cut["after"]) if cut else ""))
+        print("\n".join(lines))
+    return 1 if errors or failing else 0
+
+
+def shown(name):  # flock_store_check.shown(): a folder name is printed only when it looks like a slug; banned words masked
+    name = name if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name) else "?"
+    return "(unsafe-label)" if state.BANNED.search(name) else name
+
+
+def agency_row(store, slug, as_of):
+    row = {"agency": shown(slug), "requests": 0, "open": 0, "oldest_open_sent": "-", "last_event": None, "next_reminder": "-",
+           "failing_runs": 0, "errors": {}}
+    good = []
+    try:
+        events, opened, errors, failing = timeline(store, slug, as_of, None, private=good)
+    except Exception:  # noqa: BLE001 - one agency that cannot be read is its own error; the others still run
+        return row | {"errors": {"agency": 1}}
+    sent = [r["sent"] for r, _ in good if r["status"] == "open" and rq.day(r["sent"])]  # private ids, never labels
+    dated = [e for e in events if e["date"] != "undated" and e["date"] <= str(as_of)]
+    due = [d for d in (rq.day(o["reminder"].split()[1]) for o in opened) if d]
+    return row | {"requests": sum(e["kind"] == "sent" for e in events), "open": len(opened),
+                  "oldest_open_sent": min(sent, default="-"),
+                  "last_event": {"date": dated[-1]["date"], "kind": dated[-1]["kind"]} if dated else None,
+                  "next_reminder": str(min(due)) if due else "-", "failing_runs": failing,
+                  "errors": dict(collections.Counter(e["file"] for e in errors))}
+
+
+def index(store, as_of):
+    """(rows, skipped): timeline() per real slug folder of STORE/agencies (no inventory); links and other names never read."""
+    rows, skipped = [], []
+    for child in sorted(store_base(store).iterdir(), key=lambda p: p.name):
+        if child.is_symlink() or child.is_dir() and not SLUG.fullmatch(child.name):
+            skipped.append({"name": shown(child.name), "reason": "link" if child.is_symlink() else "not a slug"})
+        elif child.is_dir():
+            rows.append(agency_row(store, child.name, as_of))
+    return rows, skipped
+
+
+def render_index(as_of, rows, skipped, as_json):
+    if as_json:
+        print(json.dumps({"schema": "flock-agency-index-v1", "review_required": True, "as_of": str(as_of), "note": state.NOTE,
+                          "agencies": rows, "skipped": skipped}, ensure_ascii=True))
+    else:
+        last = lambda e: "last %s %s" % (e["date"], e["kind"]) if e else "last -"  # noqa: E731
+        lines = ["index | %s | requests=%d open=%d | oldest open sent %s | %s | next reminder %s (provisional) | failing_runs=%d"
+                 " | errors=%d" % (r["agency"], r["requests"], r["open"], r["oldest_open_sent"], last(r["last_event"]),
+                                   r["next_reminder"], r["failing_runs"], sum(r["errors"].values())) for r in rows]
+        lines += ["skipped | %s | %s" % (s["name"], s["reason"]) for s in skipped]
+        lines.append("index | agencies=%d open=%d failing_runs=%d errors=%d skipped=%d | %s" % (
+            len(rows), sum(r["open"] for r in rows), sum(r["failing_runs"] for r in rows),
+            sum(sum(r["errors"].values()) for r in rows), len(skipped), state.NOTE))
+        print("\n".join(lines))
+    return 1 if any(r["errors"] or r["failing_runs"] for r in rows) else 0
+
+
+def index_main(argv):
+    as_json, rest = "--json" in argv, [a for a in argv if a != "--json"]
+    opts = dict(zip(rest[2::2], rest[3::2]))
+    if len(rest) not in (2, 4) or argv.count("--json") > 1 or set(opts) - {"--as-of"}:
+        return print(USAGE, file=sys.stderr) or 2
+    as_of = rq.day(opts.get("--as-of", date.today().isoformat()))
+    if as_of is None:
+        return print("index: --as-of must be a real YYYY-MM-DD date", file=sys.stderr) or 2
+    try:
+        found = index(rest[1], as_of)
+    except (Refuse, OSError) as exc:
+        return print("index: " + (str(exc) if isinstance(exc, Refuse) else "store unreadable (%s)" % type(exc).__name__),
+                     file=sys.stderr) or 1
+    return render_index(as_of, *found, as_json)
+
+
+def main(argv):
+    if argv in (["--help"], ["-h"]):
+        return print(USAGE) or 0
+    if argv[:1] == ["index"]:
+        return index_main(argv)
+    as_json, rest = "--json" in argv, [a for a in argv if a != "--json"]
+    keys, opts = rest[2::2], dict(zip(rest[2::2], rest[3::2]))
+    ok = (len(rest) >= 4 and len(rest) % 2 == 0 and rest[0] == "timeline" and argv.count("--json") <= 1
+          and len(set(keys)) == len(keys) and "--agency" in opts and set(opts) <= {"--agency", "--as-of", "--inventory", "--since"})
+    if not ok:
+        return print(USAGE, file=sys.stderr) or 2
+    slug, as_of = opts["--agency"], rq.day(opts.get("--as-of", date.today().isoformat()))
+    since, windowed = rq.day(opts.get("--since", "")), "--since" in opts or "--as-of" in opts
+    if not SLUG.fullmatch(slug):
+        return print("timeline: --agency must be a folder slug ([a-z0-9-]{1,60})", file=sys.stderr) or 2
+    if as_of is None:
+        return print("timeline: --as-of must be a real YYYY-MM-DD date", file=sys.stderr) or 2
+    if "--since" in opts and since is None:
+        return print("timeline: --since must be a real YYYY-MM-DD date", file=sys.stderr) or 2
+    if since and since > as_of:
+        return print("timeline: --since is after --as-of", file=sys.stderr) or 2
+    try:
+        events, opened, errors, failing = timeline(rest[1], slug, as_of, opts.get("--inventory"))
+    except (Refuse, state.Refuse, OSError) as exc:
+        why = str(exc) if isinstance(exc, (Refuse, state.Refuse)) else "store unreadable (%s)" % type(exc).__name__
+        return print("timeline: " + why, file=sys.stderr) or 1
+    if not windowed:
+        return render(slug, as_of, events, opened, errors, failing, as_json)
+    events, before, after = window(events, since, as_of)
+    return render(slug, as_of, events, opened, errors, failing, as_json, window=(since, before, after))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

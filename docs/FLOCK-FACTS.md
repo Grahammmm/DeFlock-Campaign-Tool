@@ -41,6 +41,10 @@ row to the private `<store>/agencies/<slug>/FACT-REVIEWS.csv` (v1: `fact_id,from
 mode 0600); a fact already at the target is `unchanged` and not logged. `--check` validates the log and names a fact whose
 FACTS status differs from its last logged `to_status` (a hand edit). Ids and counts only; the note is never printed.
 
+**Review history** (`reviews --store DIR --agency SLUG [--fact ID] [--since YYYY-MM-DD]`, read-only): after the same full check as
+`review`, one `reviews | slug | fact_id | from -> to | reviewed_at` line per log row (file order, `--since` inclusive), then counts
+and `reversals` (facts changed into both checked and disputed). No log: zero counts. Never a reviewer, note, value or quote.
+
 **Unreadable pages** (`unreadable --store DIR --out FILE.csv [--agency SLUG]`): writes a new private 0600 CSV `agency,source_sha256,page,fact_rows` (distinct pages with an `UNREADABLE` row; header only when none) outside the repo and `DIR/agencies`; stdout counts agencies checked, pages, documents and rows only.
 
 ## Store check
@@ -49,7 +53,8 @@ FACTS status differs from its last logged `to_status` (a hand edit). Ids and cou
 law/policy, requests, contact, watch list and publish checkers in-process, then `slugs` (a ROSTER slug or WATCHLIST agency
 with no agency folder is an error; a folder in no ROSTER is a note; linked folders are named, never followed) and `backup`
 (the newest `DIR/*.tar` whose first member is a `flock-store` manifest, by `created_at`; hashes are not re-verified, use
-`flock_backup.py verify`). One `<section> | ` block each, at most 20 error lines; exit 0 only with no errors. It writes nothing.
+`flock_backup.py verify`). One `<section> | ` block each, at most 20 error lines; exit 0 only with no errors. `--json` prints the same lines as one `flock-store-check-v1` document; `--json-out NEWFILE` also writes it to a new 0600 file outside STORE, backups and the repo, its only write.
+`--section NAME` (repeatable, no repeats) runs only those checks, in the order above, and the summary reads `sections=K of 8 (<names>)`; `--json` then lists only those sections plus `"selected"`.
 
 ## Report text state
 

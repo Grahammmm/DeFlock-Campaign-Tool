@@ -1,5 +1,12 @@
 # Publication workflow
 
+## Press drafts
+
+`python3 -m campaign_tool press draft --directory D --finding ID [--finding ID] [--date YYYY-MM-DD]`
+creates one private `kit/press/` Markdown draft from published findings only. Review its facts,
+limitations, corrections, links and contact before any use. It sends and publishes nothing.
+Edited drafts are kept; the fresh version goes to `kit/press.suggested/`.
+
 How a finding goes from draft to the public site in the workspace Worker, and how it is
 corrected or withdrawn afterwards. Code: `workers/workspace/src/review_state.ts`,
 `publication.ts`, `manifest.ts`, `executors/publish_finding.ts`, `executors/deploy_site.ts`.
@@ -32,6 +39,14 @@ from all receipts after every submission.
 
 ## Offline review receipts (CLI)
 
+Start a draft with `python3 -m campaign_tool finding new --directory D --agency ID --title T
+[--source PREFIX ...] [--author NAME]`. It writes a new `D/private/drafts/fnd_<12 hex>.json` (directory 0700, file
+0600; never overwrites; a symlinked `private/` or `private/drafts/` is refused) with every required field, the
+agency, and each `--source` (12–64 hex of exactly one `content/sources.json` record) resolved to its hash and
+title. Hand-written fields hold `[EDIT ME: ...]` markers; `review-status` names one `edit_marker:<field>`
+blocker per marked field (`edit_marker:sources[i].locator` for sources), and `build` refuses a published
+finding that still carries one. Nothing is published.
+
     python3 -m campaign_tool finding review DRAFT --directory D --role factual|legal|privacy \
         --decision approve|reject|changes_requested --reviewer NAME --rationale TEXT
     python3 -m campaign_tool finding review-status DRAFT --directory D
@@ -49,6 +64,33 @@ receipt. `finding review-status` is read-only and prints the receipts for the cu
 the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
 and privacy, with no reject or changes_requested on the current content).
 
+Wording: a `title`, `summary` or `body_md` containing `violat*`, `illegal*`, `unlawful*`, `criminal*` or
+"broke the law" (any case; NFKC-normalised with zero-width and soft-hyphen characters removed) adds the blocker
+`legal_conclusion_wording_in_<field>` (the field name only, never the words), so `review-status` lists it and
+`publish` and `build` refuse. The one exception is a `confirmed_conflict` finding with a legal-role approve receipt
+on its current content. Quoting an agency is still flagged: rephrase as "the record shows ...", or classify it
+`confirmed_conflict` and get legal review. This is a wording gate, not legal validation.
+
+Preview before you approve: `finding preview DRAFT --directory D --out DIR` (DIR outside `public/` and `content/`) writes `DIR/findings/<slug>.html` and `DIR/style.css`,
+the page `build` would render, with a "Draft - not published" banner and `noindex`; it never touches `public/`, the feed or the sitemap.
+The draft is rendered alongside the published findings (cited-rule citations and law-package status as build shows them); a slug already used by another finding or a cited rule build would refuse stops the preview.
+
+Sending a packet to an outside reviewer (an attorney or a partner): `finding packet DRAFT --directory D --out DIR` makes a new
+private folder (0700, files 0600; DIR must not exist and must be outside `public/`, `content/` and `private/`) with
+`draft.json`, `preview.html`, each cited record as `records/<sha256>` (re-hashed first), `receipts.json` (its ledger
+receipt rows), `reviews.json`, `review-status.json`, `README.txt` and `MANIFEST.sha256` (`sha256sum -c MANIFEST.sha256`).
+A missing or altered record, a ledger with a journal/WAL file beside it, or records over 500 MiB stop it with nothing
+written. The tool never zips, uploads or sends it: hand it over yourself, privately, and treat it as confidential.
+
+Signed receipts (optional): `finding reviewers add ... --ssh-key FILE.pub` stores an `ssh-ed25519` or
+`ecdsa-sha2-nistp256` key and rewrites `D/private/reviewers.allowed_signers` (0600; principal = name with
+spaces as `_`). `finding review-payload DRAFT` (same flags as `finding review`) prints the exact bytes; sign
+them with `ssh-keygen -Y sign -n deflock-finding-review -f KEY payload` and pass `--signature payload.sig`.
+The tool verifies before writing; `review-status` reports `signed`, `self_asserted` and `bad_signatures`
+(re-verified each time), and `publish` prints the same counts. This trust root is the organizer-held
+campaign file, **weaker than** the root-owned `/etc/deflock` approval file; `approval.verify` and
+`/etc/deflock` are not used or changed. Without `ssh-keygen` (OpenSSH 8.2+) only unsigned review works.
+
     python3 -m campaign_tool finding publish DRAFT --directory D --approved-by NAME
 
 `finding publish` writes `D/content/findings/<slug>.json` with `state: "published"`, `published_at`
@@ -62,6 +104,33 @@ concurrent publishes of the same slug or id only one succeeds. The write is atom
 `{at, action: "publish", id, slug, content_sha256, approved_by}` is appended to
 `D/private/publication-log.jsonl` (0600). It never builds, deploys or contacts anything: run
 `build` and review the site before any deploy.
+
+    python3 -m campaign_tool finding correct ID --directory D --date YYYY-MM-DD --note TEXT [--from DRAFT]
+
+`finding correct` appends one `{date, note}` to the published finding whose `id` is ID (exactly one
+file in `content/findings/`, never a symlink) and sets `updated_at` (now, UTC). The date must be a real
+`YYYY-MM-DD`, not after today (UTC), not before the `published_at` date and not before the last
+correction's date (equal is fine); the note is non-empty, at most 1000 characters, no control characters.
+With `--from DRAFT` the reviewed fields are replaced by the draft's (same id and slug), which must clear
+the same review blockers and cited-record check as `publish`; `id`, `slug`, `published_at` and earlier
+corrections are kept. One `{at, action: "correct", id, slug, date, content_sha256, text_changed}` line is logged.
+
+    python3 -m campaign_tool finding withdraw ID --directory D --reason TEXT
+
+`finding withdraw` moves the one published finding whose `id` is ID from `content/findings/<slug>.json` to
+`D/private/withdrawn/<slug>.json` (folder 0700, file 0600) with `withdrawn: {at, reason}` added, and logs
+`{at, action: "withdraw", id, slug}` (the reason stays in the private copy only). The copy is kept and its id
+and slug stay taken: a later `publish` of either is refused. The next `build` omits it; no notice page is made.
+If the content file cannot be removed both copies remain and the leftover is named. It never builds or deploys.
+
+    python3 -m campaign_tool finding status --directory D [--draft PATH ...] [--json]
+
+`finding status` is read-only (it opens nothing for writing) and prints one row per finding: every
+`D/private/drafts/*.json` (one level, symlinks not followed) and `--draft PATH`, every `content/findings/` file and every
+`private/withdrawn/` copy, with the states above applied to these files, current/stale receipt counts and blocker names
+(never reviewer names, rationales or notes). A draft whose id is published is a second `pending correction` row; a withdrawn
+id wins (a leftover content file is named); an unreadable file is an `unreadable` row with its path and a fixed reason
+(not JSON, a symlink, too large, ...). A reason that can quote the file, such as an unknown key, is withheld. Exit 0.
 
 ## Propose, approve, execute
 
@@ -109,6 +178,10 @@ problem row (finding slug, first 12 hex of the hash, code); `--check` exits 3 wh
 It never reads receipts or re-hashes objects (`status --check` does that). Invalid content stops
 with exit 1.
 
+A finding page shows a "Legal basis" section when the finding cites a rule or sets `rule_version`, `duty` or
+`exceptions`: those fields, then each cited rule's package `citation` (never other package text) and the label
+"draft, not legally reviewed" unless the package status is `reviewed` (then "reviewed on DATE").
+
 ## Corrections and withdrawal
 
 - `POST /findings/:id/correct` with `reason` and optional `replacement_finding_id` (which must
@@ -137,8 +210,34 @@ edited draft is kept and the fresh one goes to `kit/social.suggested/`; drafts f
 longer published are listed as `stale`, never deleted. Nothing is posted and nothing goes
 under `public/`; posting stays an organizer decision outside this tool.
 
+## Reviewer roster (role assignment, not authentication)
+
+`finding reviewers add --directory D --name N --role R [--role R]` (R: factual, legal, privacy) merges
+roles into `private/reviewers.json`, keeping `added_on`; `finding reviewers list` prints it. With a
+roster, `finding review` refuses an unlisted name or unassigned role and `review-status` lists
+`unrostered_receipts`; without one nothing changes. Names stay self-asserted: roles, not identity.
+
 ## Not done
 
-No reviewer directory or role assignment beyond the Access policy; no diff view between
-content versions; no automatic notification to reviewers. The runner that executes
+No reviewer signatures or identity check (roster names are self-asserted); the workspace Worker has
+no reviewer directory or role assignment beyond the Access policy; no automatic notification to
+reviewers. `finding diff ID --directory D --from DRAFT` (or `OLD NEW`) prints a read-only field-level
+diff of the public fields before a correction; exit 3 when they differ. The runner that executes
 `build_site` is a separate component (see [ROADMAP.md](ROADMAP.md)).
+
+The offline starter has a page-level preview: `python3 -m campaign_tool build --directory D --preview`
+renders into memory and prints, as JSON, every `public/` file a rebuild would add, remove or change
+(path and byte delta; equality by SHA-256), then `Preview only; public/ was not changed.` It exits 3
+when anything differs and 0 when the rebuild would be identical. Symlinks inside `public/` are listed
+as `unreadable` and never followed. Nothing is written to the campaign folder.
+
+### Social drafts per platform (never posted)
+
+`social --directory D --platform P` (repeatable: `x`, `bluesky`, `mastodon`; duplicates collapsed,
+order kept) sizes each draft by that platform's own count into `kit/social/<P>/`: X 280 weighted
+(most non-Latin characters and emoji count 2, every link 23), Bluesky 300 code points with the full
+link, Mastodon 500 code points with 23-character links. Only the title is shortened. Every draft for
+every chosen platform is made before anything is written, so one that cannot fit stops the run with
+the platform named. Each folder keeps its own `.written.json`, kept edits go to
+`kit/social/<P>.suggested/` and stale slugs are listed per platform. Without `--platform` the run is
+unchanged (`len()` within 280 into `kit/social/`); `--check` reads that folder only.

@@ -32,6 +32,7 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
   `flock_approve.py approve <run folder> --signature <file>.sig`, which writes `EMAIL-APPROVAL.json` (`"state": "approved"`).
   That field, never a line in the draft, is the approval (docs/APPROVALS.md).
 - Right before sending by hand, `python3 tools/flock_approve.py verify <run folder>` must exit 0. Any edit voids it.
+- An email already marked sent cannot be approved afterwards; flock_email status keeps reporting it as sent without approval.
 
 ## Status
 - After sending by hand, fill `Sent by: <name> YYYY-MM-DD` (the send date); `python3 tools/flock_approve.py status STORE` must exit 0
