@@ -177,8 +177,28 @@ the newest per UTC day for the `N` most recent days and the newest per ISO week 
 recent weeks (`keep`), the rest (`would_not_keep`) and the failed ones (`failed_never_kept`). It is a
 report only: nothing is deleted, renamed or written. Exit 0, 3 when any archive failed, 1 for a bad folder.
 
+## Encrypted archives
+
+`python3 -m campaign_tool backup --directory D --out F --encrypt-to organizer.asc` writes `F` as an
+OpenPGP message encrypted to the public key in `organizer.asc` (GnuPG, the `gpg` binary). The plain
+tar is written and verified only inside a private temp folder; nothing unencrypted is left beside
+`F`, and a failed run leaves no `F`. Encryption uses a fresh empty GnuPG home, so your keyring is
+never read or changed and the private key does not need to be on the backup machine. Make a key
+once on the organizer's own computer and export only the public half:
+
+    gpg --quick-gen-key "Campaign Backups <you@example.org>" default default never
+    gpg --armor --export "Campaign Backups" > organizer.asc
+
+`verify --file F` and `restore --file F --directory NEW` recognise an encrypted archive and decrypt
+it into a private temp copy (removed afterwards) with your normal GnuPG key, or the one in
+`--gnupg-home DIR`. `--expect-manifest-sha256` works as for plain archives. Plain `.tar` archives
+read exactly as before. `backup` names the key's fingerprint instead of the unencrypted warning.
+Decryption needs the private key and its passphrase: keep them apart from the archives. Losing the
+private key loses every backup encrypted to it. `backup-drill`, `backup-list` and `backup-diff` do
+not read encrypted archives yet.
+
 ## Not done
 
-Encryption inside the tool, incremental or scheduled backups from cron, restore of a hosted
+Incremental or scheduled backups from cron, restore of a hosted
 campaign back into D1 and R2 (the export is readable JSON and hash-named objects, so a restore
 script is straightforward but not written), and retention deletion (`backup-list` only reports).
