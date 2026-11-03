@@ -54,13 +54,13 @@ def output_path(raw, store):
     return out
 
 
-def build(store, agency_filter):
+def build(store, agency_filter, run_filter=None):
     agencies = store / 'agencies'
     if agencies.is_symlink() or not agencies.is_dir():
         raise ValueError('store agencies unavailable')
     built = datetime.date.today().isoformat()
     lines = ['Private review queue. Built %s. Approving is a human decision recorded in PUBLISH.json; this file changes nothing.'
-             % built, '']
+             % (built + ('; run ' + run_filter if run_filter else '')), '']
     rows, counts, waiting, blocked = [], collections.Counter(), [], []
     for agency in sorted(agencies.iterdir()):
         if agency_filter and agency.name != agency_filter:
@@ -74,6 +74,8 @@ def build(store, agency_filter):
         if not runs.is_dir():
             continue
         for run in sorted(runs.iterdir()):
+            if run_filter and run.name != run_filter:
+                continue
             target = run / 'PUBLISH.json'
             if run.is_symlink() or target.is_symlink():
                 counts['not_reviewable'] += 1
@@ -156,12 +158,15 @@ def build(store, agency_filter):
                 lines += ['', '**To approve** — human review only: fill approved_by, approved_on and approval_ref,',
                           'and set status to approved in PUBLISH.json per skills/flock-publish.', '']
     lines += ['Approved entries (counted only): %d' % counts['approved'], '']
-    rows.append('queue | waiting=%d needs_review=%d not_reviewable=%d warnings=%d | review-required; only a human approves' %
-                (counts['waiting'], counts['needs_review'], counts['not_reviewable'], counts['warnings']))
+    rows.append('queue | %swaiting=%d needs_review=%d not_reviewable=%d warnings=%d | review-required; only a human approves' %
+                ('run=%s ' % run_filter if run_filter else '', counts['waiting'], counts['needs_review'],
+                 counts['not_reviewable'], counts['warnings']))
     data = {'schema': 'flock-review-queue-v1', 'review_required': True, 'built': built,
             'note': 'only a human approves; this file changes nothing', 'agency_filter': agency_filter or None,
             'waiting': waiting, 'not_reviewable': blocked,
             'counts': {k: counts[k] for k in ('waiting', 'needs_review', 'approved', 'not_reviewable', 'warnings')}}
+    if run_filter:
+        data['run'] = run_filter
     return '\n'.join(lines), rows, bool(counts['not_reviewable'] or counts['warnings']), data
 
 
@@ -188,6 +193,7 @@ def main(argv=None):
     parser.add_argument('command', choices=['show'])
     parser.add_argument('store')
     parser.add_argument('--agency')
+    parser.add_argument('--run', help='one run folder of --agency (STORE/agencies/SLUG/runs/RUN) only')
     parser.add_argument('--out', required=True)
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args(argv)
@@ -197,8 +203,14 @@ def main(argv=None):
             raise ValueError('store inside repository')
         if args.agency and not publish.SLUG.fullmatch(args.agency):
             raise ValueError('invalid agency')
+        if args.run is not None:  # a named, real run folder of the named agency, checked before --out is made
+            if not args.agency or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', args.run):
+                raise ValueError('invalid run')
+            run_dir = store / 'agencies' / args.agency / 'runs' / args.run
+            if linked(run_dir) or not run_dir.is_dir():
+                raise ValueError('run unavailable')
         out = output_path(args.out, store)
-        text, rows, failed, data = build(store, args.agency)
+        text, rows, failed, data = build(store, args.agency, args.run)
         write(out, text, data if args.json else None)
     except (OSError, ValueError, KeyError, TypeError):
         print('queue refused: invalid input or output')

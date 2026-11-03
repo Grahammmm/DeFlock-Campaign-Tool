@@ -3,6 +3,7 @@
 Issue #7 / M6 requires a second California locality. The existing installed-wheel
 smoke exercises Alameda alone; it does not compare an isolated pair of campaigns.
 Run `python3 -B -m tools.rehearse_localities` from the public source checkout.
+To reuse reviewed public branding instead, see [Second locality](SITE-CONTENT.md#second-locality).
 
 The fixed synthetic San Luis Obispo and Alameda journeys reuse CLI initialization,
 offline public agency seeds, kit generation, byte intake, doctor and scanned
