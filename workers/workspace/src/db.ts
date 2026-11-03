@@ -1,6 +1,8 @@
 // Typed D1 repository. One method group per table in workers/schema/d1.sql. Every query is
 // scoped by campaign_id; identities are minted here per docs/CONTRACTS.md.
 import {
+  HEX64,
+  newMeetingId,
   newActionId,
   newCorrectionId,
   newCorrespondenceId,
@@ -188,15 +190,46 @@ export interface MeetingRow {
   campaign_id: string;
   body_name: string;
   agency_id: string | null;
+  /**
+   * NULL exactly when date_state = 'unknown' (schema CHECK). Kept as `string` so the existing
+   * dated readers (comment kit, manifest) compile unchanged; check date_state before using it.
+   */
   starts_at: string;
+  date_state: "known" | "unknown";
   agenda_url: string | null;
   agenda_item: string | null;
   relevance: string | null;
   comment_kit_md: string | null;
   rsvp_count: number;
   source: string | null;
+  source_url: string | null;
+  item_id: string | null;
+  title_sha256: string | null;
+  fetched_at: string | null;
+  revision: number;
+  supersedes: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** Columns that fix a meeting's identity and revision chain; never changed on an existing row. */
+const MEETING_IDENTITY = ["meeting_id", "campaign_id", "source_url", "item_id", "title_sha256", "revision", "supersedes"] as const;
+type MeetingIdentityField = (typeof MEETING_IDENTITY)[number];
+
+/** A polled meeting as filed by fileMeeting / fileMeetingRevision. */
+export interface MeetingFiling {
+  body_name: string;
+  agency_id: string | null;
+  starts_at: string | null;
+  date_state: "known" | "unknown";
+  agenda_url: string | null;
+  agenda_item: string | null;
+  relevance: string | null;
+  source: string | null;
+  source_url: string;
+  item_id: string;
+  title_sha256: string;
+  fetched_at: string;
 }
 
 export type JobKind =
@@ -618,20 +651,84 @@ export class Repo {
   }
 
   // meeting ------------------------------------------------------------------------
+  /** Undated meetings first, then newest first; a superseded revision is listed only via its head. */
   meetings(): Promise<MeetingRow[]> {
-    return this.many<MeetingRow>("SELECT * FROM meeting WHERE campaign_id = ? ORDER BY starts_at DESC", this.campaignId);
+    return this.many<MeetingRow>(
+      "SELECT * FROM meeting m WHERE m.campaign_id = ? AND NOT EXISTS " +
+        "(SELECT 1 FROM meeting n WHERE n.campaign_id = m.campaign_id AND n.supersedes = m.meeting_id) " +
+        "ORDER BY (m.date_state = 'unknown') DESC, m.starts_at DESC",
+      this.campaignId,
+    );
   }
 
   meeting(meetingId: string): Promise<MeetingRow | null> {
     return this.one<MeetingRow>("SELECT * FROM meeting WHERE campaign_id = ? AND meeting_id = ?", this.campaignId, meetingId);
   }
 
-  createMeeting(row: Omit<Insertable<MeetingRow>, "campaign_id">): Promise<MeetingRow> {
-    return this.insert<MeetingRow>("meeting", { ...row, campaign_id: this.campaignId });
+  /** Manual meetings: no source identity (date_state and revision take the schema defaults). */
+  createMeeting(row: Omit<Insertable<MeetingRow>, MeetingIdentityField | "date_state" | "fetched_at"> & { meeting_id: string }): Promise<MeetingRow> {
+    return this.insert<MeetingRow>("meeting", { ...row, campaign_id: this.campaignId } as Insertable<MeetingRow>);
   }
 
-  updateMeeting(meetingId: string, patch: Partial<MeetingRow>): Promise<void> {
+  async updateMeeting(meetingId: string, patch: Partial<Omit<MeetingRow, MeetingIdentityField>>): Promise<void> {
+    const fixed = Object.keys(patch).filter((key) => (MEETING_IDENTITY as readonly string[]).includes(key));
+    if (fixed.length) throw new Error("meeting_identity_immutable: " + fixed.sort().join(","));
     return this.update("meeting", "meeting_id", meetingId, patch);
+  }
+
+  private meetingHead(sourceUrl: string, itemId: string): Promise<MeetingRow | null> {
+    return this.one<MeetingRow>(
+      "SELECT * FROM meeting WHERE campaign_id = ? AND source_url = ? AND item_id = ? ORDER BY revision DESC LIMIT 1",
+      this.campaignId, sourceUrl, itemId,
+    );
+  }
+
+  private meetingFilingRow(input: MeetingFiling, revision: number, supersedes: string | null): Insertable<MeetingRow> {
+    if (!input.source_url || !input.item_id) throw new Error("meeting_identity_required");
+    if (!HEX64.test(input.title_sha256)) throw new Error("meeting_title_sha256_invalid");
+    return {
+      meeting_id: newMeetingId(), campaign_id: this.campaignId, body_name: input.body_name, agency_id: input.agency_id,
+      starts_at: input.starts_at as string, date_state: input.date_state, agenda_url: input.agenda_url,
+      agenda_item: input.agenda_item, relevance: input.relevance, comment_kit_md: null, rsvp_count: 0, source: input.source,
+      source_url: input.source_url, item_id: input.item_id, title_sha256: input.title_sha256, fetched_at: input.fetched_at,
+      revision, supersedes,
+    };
+  }
+
+  /**
+   * File a polled meeting once per (source_url, item_id). A re-file of the unchanged item returns the
+   * current head with inserted: false and writes nothing; a changed title must go through
+   * fileMeetingRevision, so this refuses it rather than hiding the change.
+   */
+  async fileMeeting(input: MeetingFiling): Promise<{ row: MeetingRow; inserted: boolean }> {
+    const existing = async () => {
+      const head = await this.meetingHead(input.source_url, input.item_id);
+      if (head && head.title_sha256 !== input.title_sha256) throw new Error("meeting_revision_required: " + head.meeting_id);
+      return head;
+    };
+    const head = await existing();
+    if (head) return { row: head, inserted: false };
+    try {
+      return { row: await this.insert<MeetingRow>("meeting", this.meetingFilingRow(input, 1, null)), inserted: true };
+    } catch (err) {
+      // Lost a race on the identity index: report the winner. CHECK and other errors propagate.
+      if (!/UNIQUE constraint failed/.test(String(err))) throw err;
+    }
+    const winner = await existing();
+    if (!winner) throw new Error("meeting_file_conflict");
+    return { row: winner, inserted: false };
+  }
+
+  /** New immutable revision of the chain head `previousMeetingId`; the previous row is never touched. */
+  async fileMeetingRevision(previousMeetingId: string, input: MeetingFiling): Promise<MeetingRow> {
+    const previous = await this.meeting(previousMeetingId);
+    if (!previous || previous.source_url === null || previous.item_id === null) throw new Error("meeting_not_filed: " + previousMeetingId);
+    if (previous.source_url !== input.source_url || previous.item_id !== input.item_id) throw new Error("meeting_identity_mismatch");
+    const head = await this.meetingHead(input.source_url, input.item_id);
+    if (head?.meeting_id !== previous.meeting_id) throw new Error("meeting_not_head: " + previousMeetingId);
+    if (previous.title_sha256 === input.title_sha256) throw new Error("meeting_unchanged: " + previousMeetingId);
+    // The unique identity index refuses a concurrent second revision at the same number.
+    return this.insert<MeetingRow>("meeting", this.meetingFilingRow(input, previous.revision + 1, previous.meeting_id));
   }
 
   upcomingMeetings(fromIso: string): Promise<MeetingRow[]> {
