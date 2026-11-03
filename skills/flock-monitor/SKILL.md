@@ -18,7 +18,7 @@ PDFs included, are recorded by URL and never fetched. Monitor items are leads, n
 ## Check
 
 - Check: `python3 tools/flock_monitor.py check WATCHLIST.csv` (no network, no writes): fix every
-  `row N:` error; the `would fetch` lines are exactly the pages `scan` will request.
+  `row N:` error; the `would fetch` lines are exactly the pages `scan` will request. `check --json`: one flock-monitor-check-v1 document (rows, row errors, counts; slugs only).
 
 ## Convert
 

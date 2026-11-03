@@ -1,7 +1,7 @@
 """Flock monitor: scan official agency index pages listed in WATCHLIST.csv into a private MONITOR.csv, and write a daily
 digest. Index pages only: links (PDFs included) are recorded by URL and never fetched.
 leads --store DIR [--state S] [--agency SLUG] [--date D]: read-only LEADS.csv triage list (age, per-state counts)."""
-import argparse, contextlib, csv, datetime, fcntl, hashlib, html.parser, os, re, sys, tempfile, urllib.error, urllib.request
+import argparse, contextlib, csv, datetime, fcntl, hashlib, html.parser, json, os, re, sys, tempfile, urllib.error, urllib.request
 from pathlib import Path
 from urllib.parse import unquote, urldefrag, urljoin, urlsplit
 
@@ -98,6 +98,9 @@ def read_csv(path, header, missing_ok=False):
     return [(n, dict(zip(header, rec))) for n, rec in rows]
 
 def row_errors(row):
+    return ["%s %s" % fault for fault in row_faults(row)]
+
+def row_faults(row):  # (field, why) for every failed check of one watch-list row
     social, url, dom = row["kind"] == "social", row["url"], row["official_domain"]
     checks = (("agency", row["agency"].strip(), "is empty"),
               ("kind", row["kind"] in KINDS, "is not agenda, minutes, news or social"),
@@ -108,7 +111,7 @@ def row_errors(row):
               ("url", social or not absolute(url) or in_scope(url, dom), "host is outside official_domain"),
               ("url", social or not urlsplit(absolute(url)).path.lower().endswith(".pdf"), "is a pdf"),
               ("last_seen_hash", re.fullmatch(r"(?:[0-9a-f]{64})?", row["last_seen_hash"]), "must be empty or 64 lowercase hex"))
-    return ["%s %s" % (field, why) for field, ok, why in checks if not ok]
+    return [(field, why) for field, ok, why in checks if not ok]
 
 def write_atomic(path, text="", header=None, rows=()):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -133,12 +136,28 @@ def _real(path, what):  # a linked or wrong-kind watch list, MONITOR.csv or dige
     if os.path.lexists(path) and not (os.path.isdir if folder else os.path.isfile)(path):
         raise Fail("%s is not a %s" % (what, "folder" if folder else "file"))
 
-def validated(watchlist):  # rows of a valid watch list, else Fail with every row error
+def row_problems(watchlist):  # (rows, [(row, field, why)]); a file-level error raises Fail
     rows = read_csv(watchlist, WATCH_HEADER)
-    errors = ["row %d: %s" % (n, e) for n, row in rows for e in row_errors(row)]
-    if errors:
-        raise Fail("\n".join(errors))
+    return rows, [(n, field, why) for n, row in rows for field, why in row_faults(row)]
+
+def validated(watchlist):  # rows of a valid watch list, else Fail with every row error
+    rows, problems = row_problems(watchlist)
+    if problems:
+        raise Fail("\n".join("row %d: %s %s" % p for p in problems))
     return rows
+
+def check_doc(watchlist):  # flock-monitor-check-v1: check as data; never the agency text, query or last_seen_hash
+    _real(watchlist, "watchlist")  # a linked watch list is refused (as scan does), never followed
+    rows, problems = row_problems(watchlist)
+    social = sum(r["kind"] == "social" for _, r in rows)
+    doc = dict(schema="flock-monitor-check-v1", review_required=True, network=False, valid=not problems,
+               errors=[dict(row=n, field=f, why=w) for n, f, w in problems],
+               counts=dict(rows=len(rows), fetch=sum(r["kind"] in KINDS - {"social"} for _, r in rows), social=social,
+                           errors=len(problems)))
+    if not problems:
+        doc["rows"] = [dict(row=n, agency_slug=slug(r["agency"]), kind=r["kind"], **(dict(action="social", url=None)
+                            if r["kind"] == "social" else dict(action="fetch", url=r["url"]))) for n, r in rows]
+    return doc
 
 def check(watchlist):  # dry run: the pages scan would fetch; no network, no store, no write
     rows = validated(watchlist)
@@ -344,7 +363,9 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     scan_p = sub.add_parser("scan", help="fetch each non-social WATCHLIST index page once and record new links")
     scan_p.add_argument("watchlist")
-    sub.add_parser("check", help="validate WATCHLIST and print the pages scan would fetch (no network, no writes)").add_argument("watchlist")
+    check_p = sub.add_parser("check", help="validate WATCHLIST and print the pages scan would fetch (no network, no writes)")
+    check_p.add_argument("watchlist")
+    check_p.add_argument("--json", action="store_true", help="print one flock-monitor-check-v1 JSON document")
     digest_p = sub.add_parser("digest", help="write <store>/digest/<date>.md; list new relevant items once (LEADS.csv)")
     lead_p = sub.add_parser("lead", help="set a LEADS.csv lead to requested or ignored (who and when recorded)")
     lead_p.add_argument("--item", required=True)
@@ -360,6 +381,10 @@ def main(argv=None):
         p.add_argument("--date", type=datetime.date.fromisoformat, required=required, default=datetime.date.today())
     args = parser.parse_args(argv)
     try:
+        if args.command == "check" and args.json:  # row errors are data here (exit 1); file-level refusals stay text
+            doc = check_doc(args.watchlist)
+            print(json.dumps(doc, sort_keys=True, indent=1, ensure_ascii=False))
+            return 0 if doc["valid"] else 1
         print("\n".join(check(args.watchlist)) if args.command == "check"
               else "\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
               else lead(args.store, args.item, args.state, args.by, args.date.isoformat()) if args.command == "lead"
