@@ -423,7 +423,8 @@ class Site:
         extra = "".join(f'  <link rel="stylesheet" href="{href}">\n' for href in stylesheets)
         extra += "".join(f'  <script defer src="{src}"></script>\n' for src in scripts)
         favicon = self.site.get("brand", {}).get("favicon")
-        icon = f'  <link rel="icon" href="/{e(favicon)}">\n' if favicon else ""
+        svg_icon = ' type="image/svg+xml"' if favicon and favicon.lower().endswith(".svg") else ""
+        icon = f'  <link rel="icon"{svg_icon} href="/{e(favicon)}">\n' if favicon else ""
         return ('  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
                 f'  <meta name="description" content="{e(description)}">\n'
                 + (self.share(title, description, path, kind, published, modified) if index
