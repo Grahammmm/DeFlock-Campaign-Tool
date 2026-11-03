@@ -1,0 +1,3 @@
+{
+  "public tree check found 5; fix content and rebuild": "build --check accessibility failure; each issue is printed above it as public/<page>: <code> <detail>; not in the table"
+}

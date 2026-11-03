@@ -138,7 +138,8 @@ class BuiltSiteTests(unittest.TestCase):
         out, err, error = self.run_build()
         self.assertIsNone(error, err)
         self.assertEqual(err, "")
-        self.assertIn("Public tree check passed (pattern scan and internal links; human review still required).", out)
+        self.assertIn("Public tree check passed (pattern scan, internal links and accessibility pattern lint; "
+                      "not an accessibility audit; human review still required).", out)
         hrefs = "".join(p.read_text(encoding="utf-8") for p in self.public.rglob("*.html"))
         for expected in ('href="/findings/"', 'href="/agencies/', 'href="/sources.html#', "#past-meetings"):
             self.assertIn(expected, hrefs)
@@ -187,7 +188,7 @@ class BuiltSiteTests(unittest.TestCase):
         result = subprocess.run(cmd + ["build", "--directory", str(starter), "--check"],
                                 cwd=REPO_ROOT, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Public tree check passed (pattern scan and internal links", result.stdout)
+        self.assertIn("Public tree check passed (pattern scan, internal links and accessibility", result.stdout)
         self.assertFalse((starter / "content").exists())
         with mock.patch.object(sys, "argv", ["campaign", "build", "--directory", str(self.root), "--check"]), \
                 mock.patch("campaign_tool.site_check.check_links", return_value=[("index.html", "/x.html")]), \

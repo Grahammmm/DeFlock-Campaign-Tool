@@ -129,6 +129,88 @@ def check_links(public: Path) -> list:
     return sorted(broken)
 
 
+HEADINGS = {f"h{n}": n for n in range(1, 7)}
+
+
+class _A11yParser(HTMLParser):
+    """Collects the five mechanical accessibility pattern hits of one page (a lint, not an audit)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hits = set()
+        self.ids = {}
+        self.lang = None  # None: no <html> start tag seen
+        self.heading = None
+        self.link = None  # [href, text parts] of the open <a href>, if any
+
+    def _close_link(self):
+        if self.link is not None and not " ".join("".join(self.link[1]).split()):
+            self.hits.add(("link-text", self.link[0]))
+        self.link = None
+
+    def handle_starttag(self, tag, attrs):
+        values = {}
+        for name, value in attrs:
+            values.setdefault(name, value)
+        if values.get("id"):
+            self.ids[values["id"]] = self.ids.get(values["id"], 0) + 1
+        if tag == "html" and self.lang is None:
+            self.lang = (values.get("lang") or "").strip()
+        elif tag in HEADINGS:
+            level = HEADINGS[tag]
+            if self.heading is not None and level > self.heading + 1:
+                self.hits.add(("heading-skip", f"h{self.heading}\u2192h{level}"))
+            self.heading = level
+        elif tag == "img":
+            if "alt" not in values:
+                src = (values.get("src") or "").strip()
+                external = src.startswith("//") or SCHEME.match(src)
+                self.hits.add(("img-alt", "external" if external else (src.split("#", 1)[0].split("?", 1)[0] or "-")))
+            elif self.link is not None:
+                self.link[1].append(" " + (values["alt"] or ""))
+        elif tag == "a":
+            self._close_link()  # a new <a> implicitly ends an unclosed one
+            label = " ".join(((values.get("aria-label") or "") + " " + (values.get("title") or "")).split())
+            if values.get("href") is not None and not label:
+                self.link = [values["href"], []]
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag):
+        if tag == "a":
+            self._close_link()
+
+    def handle_data(self, data):
+        if self.link is not None:
+            self.link[1].append(data)
+
+    def close(self):
+        super().close()
+        self._close_link()
+        if not self.lang:
+            self.hits.add(("html-lang", "-"))
+        self.hits.update(("duplicate-id", value) for value, count in self.ids.items() if count > 1)
+
+
+def check_accessibility(public: Path) -> list:
+    """Sorted ``(page, code, detail)`` accessibility pattern hits over every ``*.html`` in ``public/``.
+
+    Codes: ``img-alt`` (no ``alt``; ``alt=""`` is decorative and allowed), ``heading-skip``, ``link-text``,
+    ``duplicate-id`` and ``html-lang``. A pattern lint, not an accessibility audit.
+    """
+    public = Path(public)
+    hits = set()
+    for path in sorted(public.rglob("*.html")):
+        if path.is_file() and not path.is_symlink():
+            parser = _A11yParser()
+            parser.feed(path.read_text(encoding="utf-8", errors="replace"))
+            parser.close()
+            page = path.relative_to(public).as_posix()
+            hits.update((page, code, detail) for code, detail in parser.hits)
+    return sorted(hits)
+
+
 ASSET_RELS = {"stylesheet", "preload", "modulepreload"}
 
 
