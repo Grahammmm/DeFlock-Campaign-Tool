@@ -223,10 +223,10 @@ class GateRules(unittest.TestCase):
         self.assertIn("flag:legal_claim", str(caught))
 
     def test_refusal_text_holds_ids_and_enums_only(self):
-        secret = "someone@example.invalid 555-010-0199 ABC1234"
-        caught = refusal(secret, OLD, [approval(artefact_id=secret, note=secret, approved_by="auto")], flags=[secret, "legal_claim"])
+        personal = "someone@example.invalid 555-010-0199 ABC1234"
+        caught = refusal(personal, OLD, [approval(artefact_id=personal, note=personal, approved_by="auto")], flags=[personal, "legal_claim"])
         self.assertEqual(str(caught), "publication refused: artefact #?: approver_unnamed, flag:legal_claim")
-        self.assertEqual(refusal("a1", OLD, [approval(note=secret, approved_by="auto")]).args[0],
+        self.assertEqual(refusal("a1", OLD, [approval(note=personal, approved_by="auto")]).args[0],
                          "publication refused: artefact a1: approver_unnamed")
 
     def test_gate_inputs_are_not_mutated(self):
