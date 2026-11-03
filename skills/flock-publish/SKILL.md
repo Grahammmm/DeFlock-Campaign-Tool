@@ -46,6 +46,9 @@ review-required, not a legal conclusion.
 
 ## Status
 - Any time: `python3 tools/flock_publish.py status STORE` lists every verified run's publication stage (counts only, read-only).
+- `status STORE --json` prints one `flock-publish-status-v1` document (same rows, same exit 0/1/2): `runs` lists `agency`, `run`,
+  `stage`, `findings`, `pending`, `approved`, `errors` (integers, or null where the text shows `-`); `totals` has `runs` and one
+  count per stage (`no_export` … `approved`, plus `link_refused`); `note` is review-required. No agencies folder: `{"error", "schema"}`, exit 2.
 
 ## Brief
 - Private draft (**NEEDS G** before any send): `python3 tools/flock_publish.py brief STORE --agency SLUG --out FILE.md`

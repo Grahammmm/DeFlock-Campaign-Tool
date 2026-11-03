@@ -37,7 +37,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__
+from . import __version__, backup_crypt
 
 SCHEMA_VERSION = 1
 MANIFEST = "manifest.json"
@@ -264,8 +264,12 @@ def _snapshot_ledger(ledger, tmpdir):
     return target
 
 
-def export(root, out_path):
-    """Write the archive; returns the manifest dict. Refuses to overwrite ``out_path``."""
+def export(root, out_path, encrypt_to=None):
+    """Write the archive; returns the manifest dict. Refuses to overwrite ``out_path``.
+
+    With ``encrypt_to`` (a public key file) the plain tar exists only in a private
+    temp dir and ``out_path`` is the OpenPGP message encrypted to that key.
+    """
     root = Path(root).resolve()
     out_path = Path(out_path)
     if not (root / "campaign.json").is_file():
@@ -274,6 +278,8 @@ def export(root, out_path):
         raise BackupError(f"{out_path} exists; choose a new file name")
     if (root / "private").is_symlink():
         raise BackupError("unsafe_private_directory: private must not be a symlink")
+    if encrypt_to is not None:
+        backup_crypt.recipient_ids(encrypt_to)
     files = {}
     with tempfile.TemporaryDirectory(prefix="deflock-backup-") as tmp:
         ledger = root / "private" / "ledger.sqlite"
@@ -305,7 +311,8 @@ def export(root, out_path):
         manifest = _manifest(files, counts, {"kind": "local", "root_name": root.name})
         manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
         manifest["manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
-        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        tar_path = Path(tmp) / "plain.tar" if encrypt_to is not None else out_path
+        fd = os.open(tar_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             with os.fdopen(fd, "wb") as handle, tarfile.open(fileobj=handle, mode="w", format=tarfile.PAX_FORMAT) as tar:
                 _add_bytes(tar, MANIFEST, manifest_bytes)
@@ -317,9 +324,13 @@ def export(root, out_path):
                     with open(path, "rb") as source:
                         tar.addfile(info, source)
             # Detect source files changing between hashing and archive writing.
-            verify(out_path, expected_manifest_sha256=manifest["manifest_sha256"])
+            verify(tar_path, expected_manifest_sha256=manifest["manifest_sha256"])
+            if encrypt_to is not None:
+                manifest["recipient"] = backup_crypt.encrypt(tar_path, out_path, encrypt_to)
+                manifest["encrypted"] = True
         except BaseException:
-            out_path.unlink(missing_ok=True)
+            if encrypt_to is None:
+                out_path.unlink(missing_ok=True)
             raise
     return manifest
 
@@ -583,7 +594,15 @@ def _check_member(member, expected):
     return None
 
 
-def verify(path, expected_manifest_sha256=None):
+def verify(path, expected_manifest_sha256=None, gnupg_home=None):
+    """Verify a plain or OpenPGP-encrypted archive (decrypted with the organizer's key into a temp copy)."""
+    if backup_crypt.is_encrypted(path):
+        with backup_crypt.decrypted(path, gnupg_home) as plain:
+            return dict(_verify_tar(plain, expected_manifest_sha256), path=str(Path(path)), encrypted=True)
+    return _verify_tar(path, expected_manifest_sha256)
+
+
+def _verify_tar(path, expected_manifest_sha256=None):
     """Re-hash every member against the manifest. Returns a report; raises on any problem.
 
     With ``expected_manifest_sha256`` (recorded out of band at export time) a
@@ -640,7 +659,15 @@ def verify(path, expected_manifest_sha256=None):
     return report
 
 
-def restore(path, root):
+def restore(path, root, gnupg_home=None):
+    """Restore a plain or OpenPGP-encrypted archive (decrypted into a temp copy first)."""
+    if backup_crypt.is_encrypted(path):
+        with backup_crypt.decrypted(path, gnupg_home) as plain:
+            return dict(_restore_tar(plain, root), path=str(Path(path)), encrypted=True)
+    return _restore_tar(path, root)
+
+
+def _restore_tar(path, root):
     """Extract into an empty ``root`` with private modes, then re-verify on disk."""
     path = Path(path)
     root = Path(root)

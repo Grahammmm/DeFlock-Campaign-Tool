@@ -55,6 +55,16 @@ with no agency folder is an error; a folder in no ROSTER is a note; linked folde
 (the newest `DIR/*.tar` whose first member is a `flock-store` manifest, by `created_at`; hashes are not re-verified, use
 `flock_backup.py verify`). One `<section> | ` block each, at most 20 error lines; exit 0 only with no errors. `--json` prints the same lines as one `flock-store-check-v1` document; `--json-out NEWFILE` also writes it to a new 0600 file outside STORE, backups and the repo, its only write.
 `--section NAME` (repeatable, no repeats) runs only those checks, in the order above, and the summary reads `sections=K of 8 (<names>)`; `--json` then lists only those sections plus `"selected"`.
+An agency folder with no `CONTACT.csv` adds nothing to `contacts`; with none in any folder it reads `contacts | none`.
+
+## Starting a new store
+
+`python3 tools/flock_store_init.py STORE --agency SLUG [--agency SLUG ...]` creates an empty private store: `STORE/LAW.csv`
+and, per agency, `agencies/<slug>/FACTS.csv` (v2) and `POLICY.csv`, header rows only (folders 0700, files 0600). STORE
+must be outside the repository, missing or an empty folder, not a link, with an existing parent; slugs match
+`[a-z0-9]+(-[a-z0-9]+)*`, at most 64 characters, no repeats. Every refusal is named before any write and nothing is
+written (exit 1); the tree is built in `STORE.tmp-<pid>` and renamed into place. Stdout names slugs, never the path. The
+store check passes on the result; import facts with `flock_facts.py import` and back it up with `flock_backup.py`.
 
 ## Report text state
 
