@@ -156,7 +156,7 @@ describe("delivery verification", () => {
     expect(JSON.parse(text)).toEqual({ error: "bad_signature" });
     expect(text).not.toContain(ADDR);
     expect((await incident("bad_signature"))?.count).toBe(1);
-    await deliver(event("subscribed", ADDR), { secret: "wrong-secret-0123456789" });
+    await deliver(event("subscribed", ADDR), { secret: "wrong-secret-0123456789" }); // pragma: allowlist secret -- synthetic wrong secret only
     expect((await incident("bad_signature"))?.count).toBe(2);
     expect((await env.DB.prepare("SELECT COUNT(*) n FROM incident WHERE fingerprint = 'subscribe_webhook:bad_signature'").first<{ n: number }>())?.n).toBe(1);
     expect(await latestCount()).toBeNull();
@@ -271,7 +271,7 @@ describe("the address stays in the subscriber area", () => {
     await deliver(event("subscribed", ADDR2));
     await deliver(event("bounced", ADDR2));
     await deliver(event("confirmed", ADDR)); // duplicate
-    await deliver(event("subscribed", ADDR), { secret: "wrong-secret-0123456789" });
+    await deliver(event("subscribed", ADDR), { secret: "wrong-secret-0123456789" }); // pragma: allowlist secret -- synthetic wrong secret only
     const confirm = event("confirmed", ADDR2);
     await deliver(confirm);
     await deliver(confirm); // replay
