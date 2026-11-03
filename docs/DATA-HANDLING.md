@@ -27,3 +27,9 @@ merely because an agency supplied them. Public records can still expose private 
 
 Backups and portable exports must preserve originals, hashes, receipt relationships,
 reviews and corrections. A website-only backup is not a records backup.
+
+A subscriber list is personal data we collect from members of the public about their
+interest in police surveillance. The workspace stores each address once, in its
+`subscriber` table, only to enforce double opt-in; it is never published, rendered,
+reported or exported (the D1 export excludes it). Only counts are displayed, and events,
+incidents and logs carry a hash of the address, never the address.
