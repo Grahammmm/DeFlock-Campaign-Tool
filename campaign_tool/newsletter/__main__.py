@@ -74,7 +74,7 @@ def main(argv=None):
     out = {"subject": draft["subject"], "counts": draft["counts"], "excluded": draft["excluded"],
            "written": [str(p) for p in paths], "sent": False, "source": origin, "since_from": since_from}
     if args.site is not None:
-        base_url = manifest.get("campaign", {}).get("base_url")
+        base_url = (manifest.get("campaign") or {}).get("base_url")  # same normalisation as build_draft: "campaign": null is allowed
         links = site_links(draft, base_url)
         missing = [{"link": link, "reason": reason} for link in links if (reason := resolve(Path(args.site), link))]
         for item in missing:

@@ -98,6 +98,15 @@ class SiteLinksTests(unittest.TestCase):
         ok = self.cli("--manifest", self.write_manifest(manifest(None, [FINDING])), "--site", str(self.public))
         self.assertEqual((ok.returncode, json.loads(ok.stdout)["site_links"]["missing"]), (0, []), ok.stderr)
 
+    def test_null_campaign_is_treated_as_no_base_url(self):
+        data = manifest(None, [FINDING, "/findings/gone.html"])
+        data["campaign"] = None
+        result = self.cli("--manifest", self.write_manifest(data), "--site", str(self.public))
+        self.assertEqual(result.returncode, 3, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertEqual(out["site_links"]["checked"], 2)
+        self.assertEqual(out["site_links"]["missing"], [{"link": "/findings/gone.html", "reason": "no_page"}])
+
     def test_other_hosts_counted_never_resolved_or_fetched(self):
         meetings = [{"body": "Cedar Council", "starts_at": "2099-06-02T18:00:00-07:00", "agenda_item": "Item 1",
                      "agenda_url": "https://agenda.example.invalid/a/1"},
