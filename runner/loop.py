@@ -169,13 +169,15 @@ class Context:
 
 
 def default_handlers():
-    from .handlers import build_site, classify_mail, digest, draft_followup, extract
+    from .handlers import backup, build_site, classify_mail, digest, draft_followup, extract, newsletter_draft
     return {
         "classify_mail": classify_mail.run,
         "extract": extract.run,
         "digest": digest.run,
         "draft_followup": draft_followup.run,
         "build_site": build_site.run,
+        "newsletter_draft": newsletter_draft.run,
+        "backup": backup.run,
     }
 
 

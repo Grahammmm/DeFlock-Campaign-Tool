@@ -5,6 +5,34 @@ live profile, image, schedule, timer, board server, provider call or publication
 is added. Tests create no containers. Main owns runtime provisioning and real
 rootless/kernel/systemd acceptance. Worker-lifecycle PR52 remains separate.
 
+## Host preflight
+
+```sh
+python3 tools/records_host_check.py --target RUNTIME_DIR --wrapper RUNTIME_DIR/run-records.sh [--json-out NEWFILE]
+```
+
+Read-only and stdlib only. One row per requirement, in this order, each `pass`,
+`fail` or `unknown` with the measured value, the requirement and the attended
+remedy: `os-kernel` (Linux, kernel 5.11+), `user-namespaces`, `cgroup-v2`,
+`container-runtime` (Docker 20.10+), `rootless-ok` (daemon reports rootless),
+`image-pin` (a local image equal to the wrapper's `EXPECTED_IMAGE`, the run's own
+pin; no pull, no registry call), `parsers` (`requirements-records-parsers.txt`),
+`ocr-engine` (tesseract 5.3), `disk-headroom` (free bytes on `--target` against the
+wrapper's `MIN_FREE_BYTES`, else 2 GiB), `tmp-space`, `locale-utf8`. Blocking rows are
+`os-kernel` to `image-pin` and `disk-headroom`: `host ready` (exit 0) needs each `pass`;
+otherwise `not ready — <first blocking fail>` or `not ready — unverified:
+<row>` (exit 1). `unknown` means not measured and is never a pass. On a non-Linux
+host (macOS) `os-kernel` fails and `user-namespaces`, `cgroup-v2`, `rootless-ok` are
+`unknown`, not `fail`: the answer is that this machine cannot be the records host.
+Version probes are fixed argv with a timeout and byte cap; empty, failed or
+oversized output is `unknown`. `--json-out` writes a `records-host-check-v1` file
+(0600, new, outside the checkout) or prints `NEWFILE: not written` and exits 1.
+
+It cannot establish: that a rootless container actually starts (no container is
+started), seccomp/mount UID access, egress restrictions, or any acceptance above.
+It installs, pulls, starts, restarts, loads and changes nothing; every remedy is
+an attended operator step, and where the pipeline runs is G's decision.
+
 ## Containment and admission
 
 Each run uses a disposable rootless Docker container, exact accepted image,

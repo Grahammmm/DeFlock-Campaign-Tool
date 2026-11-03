@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deflock-campaign-tool.invalid/schemas/records-host-check-v1.json",
+  "title": "Records host check v1",
+  "description": "Written by tools/records_host_check.py --json-out. Read-only host preflight for the records container: one row per requirement in fixed order. unknown means not measured and is never a pass. Carries no host name, user, address, home path, environment value or mount list. Review-required; not acceptance of the host.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "review_required", "ready", "verdict", "rows", "counts", "note"],
+  "properties": {
+    "schema": {"const": "records-host-check-v1"},
+    "review_required": {"const": true},
+    "ready": {"type": "boolean"},
+    "verdict": {"type": "string", "pattern": "^(host ready|not ready — (unverified: )?[a-z0-9-]+)$"},
+    "note": {"type": "string"},
+    "counts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pass", "fail", "unknown", "blocking_fail"],
+      "properties": {
+        "pass": {"type": "integer", "minimum": 0},
+        "fail": {"type": "integer", "minimum": 0},
+        "unknown": {"type": "integer", "minimum": 0},
+        "blocking_fail": {"type": "integer", "minimum": 0}
+      }
+    },
+    "rows": {
+      "type": "array", "minItems": 11,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "state", "measured", "required", "blocking", "remedy"],
+        "properties": {
+          "id": {"enum": ["os-kernel", "user-namespaces", "cgroup-v2", "container-runtime", "rootless-ok", "image-pin",
+                          "parsers", "ocr-engine", "disk-headroom", "tmp-space", "locale-utf8"]},
+          "state": {"enum": ["pass", "fail", "unknown"]},
+          "measured": {"type": "string"},
+          "required": {"type": "string"},
+          "blocking": {"type": "boolean"},
+          "remedy": {"type": "string"}
+        }
+      }
+    }
+  }
+}

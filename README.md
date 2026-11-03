@@ -14,8 +14,9 @@ The individual commands remain available below.
 
 The portable offline starter below requires Python 3.11 or newer and no third-party
 Python packages. Full records intake/extraction has a separate Linux runtime and
-parser requirements; see [Records runtime](docs/RECORDS-RUNTIME.md). Running the
-starter on macOS does not establish support for the full extraction pipeline.
+parser requirements; see [Records runtime](docs/RECORDS-RUNTIME.md). The starter
+running on macOS does not make it a records host: `python3 tools/records_host_check.py
+--target RUNTIME_DIR` answers row by row which requirement a machine fails ([host check](docs/RECORDS-CONTAINER-HOST.md#host-preflight)).
 
 ```sh
 git clone https://github.com/Grahammmm/DeFlock-Campaign-Tool.git
@@ -47,6 +48,8 @@ python3 -m campaign_tool status --directory ../my-campaign --check
 `ingest --zip` stores the archive itself, then each regular member read from it in memory (nothing is extracted to disk), each with its own receipt named `archive.zip/member/path` and a ledger `contains` row linking member to archive. Archives over 200 MiB, files that are not a zip archive and archives with more than 2000 entries are refused before anything is written. Members that are not stored are listed by skip code and the archive is still stored: `directory`; `unsafe_name` (absolute, drive-letter, `..`, empty or NUL name, backslashes counted as separators, or a receipt name over 255 characters); `duplicate_name`; `encrypted`; `symlink`; `too_large` (over 50 MiB, read capped at 50 MiB + 1 byte whatever the header claims); `ratio` (more than 100× its compressed size); `unreadable` (corrupt data, CRC or size not matching the header, or an unsupported method). Nested archives (`.zip`, `.7z`, `.tar.gz`, ...) are stored as ordinary members and never opened.
 
 `ingest --eml` stores the `.eml` message byte for byte, then each attachment (the decoded payload of a part with a filename) as its own object with a receipt named `message.eml/<filename>` and a ledger `contains` row linking it to the message. Filenames are reduced to a basename (`/` and `\` both separators) without control characters, NFC, at most 120 characters; an empty, `.` or `..` name becomes `attachment-<n>` and a repeated name gets `-2`, `-3` before its extension. Body text, HTML alternatives and inline parts without a filename stay only inside the stored message; a forwarded `message/rfc822` part is stored as one `.eml` member and never opened. Messages over 50 MiB, malformed MIME (a multipart without a usable boundary) and messages with more than 200 MIME parts are refused before anything is written; an empty attachment is listed as `empty` and one decoding to over 50 MiB as `too_large`. No header value (Subject, From, To, Date, ...) is ever printed.
+
+`ingest --mbox mailbox.mbox` stores the local mbox export itself, then each message exactly as `--eml` stores one, with a receipt named `mailbox.mbox/message-<n>.eml` and a `contains` row linking it to the mailbox (its attachments are `mailbox.mbox/message-<n>.eml/<filename>`, linked to the message). Messages are split in memory at each line beginning `From ` (that line is not stored; `>From ` lines are kept as they are) and nothing is extracted to disk. A symlink, a non-regular file, a mailbox over 200 MiB, a file not starting with `From ` and a mailbox of more than 500 messages are refused before anything is written; an `empty`, `too_large` (over 50 MiB) or `malformed` message is listed by number and the others are still stored. `--dry-run` works too, and no header value is ever printed.
 
 `status --check` re-hashes every file in `private/objects` against the ledger and names missing, altered, orphaned, leftover `.intake-*` or unexpected entries by hash or file name only. It never writes, moves or deletes; exit 3 means problems were found, 0 a clean store.
 
