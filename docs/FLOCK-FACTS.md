@@ -54,6 +54,7 @@ law/policy, requests, contact, watch list and publish checkers in-process, then 
 with no agency folder is an error; a folder in no ROSTER is a note; linked folders are named, never followed) and `backup`
 (the newest `DIR/*.tar` whose first member is a `flock-store` manifest, by `created_at`; hashes are not re-verified, use
 `flock_backup.py verify`). One `<section> | ` block each, at most 20 error lines; exit 0 only with no errors. `--json` prints the same lines as one `flock-store-check-v1` document; `--json-out NEWFILE` also writes it to a new 0600 file outside STORE, backups and the repo, its only write.
+`--section NAME` (repeatable, no repeats) runs only those checks, in the order above, and the summary reads `sections=K of 8 (<names>)`; `--json` then lists only those sections plus `"selected"`.
 
 ## Report text state
 

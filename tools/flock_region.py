@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Flock region: draft a county region config from the engine agency seed, check it, and scaffold the private store.
   new --county-fips FIPS --region SLUG --out PATH [--jurisdiction us-ca] [--seed-dir DIR]
-  --check CONFIG [--seed-dir DIR]  |  init CONFIG --store DIR [--seed-dir DIR] [--dry-run]  |  coverage CONFIG [--seed-dir DIR]
+  --check CONFIG [--seed-dir DIR] [--json]  |  init CONFIG --store DIR [--seed-dir DIR] [--dry-run]  |  coverage CONFIG [--seed-dir DIR]
   [--json | --json-out NEWFILE]  (a flock-region-coverage-v1 document, review_required; same exit codes)
 init writes agencies/<slug>/ (yes|hold) and regions/<region>/WATCHLIST.csv (F7), ROSTER.csv (F10), PLAN.md; with --dry-run it
 runs the same checks and prints what it would create, write or drop, writing nothing. coverage (read-only) names each seed
@@ -52,9 +52,9 @@ def load_config(path):
         raise Fail("config: agencies is not a list")
     return cfg
 
-def check(cfg, seed_dir):  # -> (errors, F7 watch rows in config order); each error names its agency or 'config'
-    errs, rows, keys, slugs, names = [], [], set(), set(), set()
-    bad = lambda where, field, why: errs.append("%s: %s %s" % (where, field, why))
+def check(cfg, seed_dir, found=None):  # -> (errors, F7 watch rows in config order); each error names its agency or 'config'
+    errs, rows, keys, slugs, names, found = [], [], set(), set(), set(), [] if found is None else found
+    bad = lambda where, field, why: errs.append("%s: %s %s" % (where, field, why)) or found.append((where, field, why))
     seed, county = county_of(text(cfg.get("jurisdiction")), cfg.get("county_fips"), seed_dir)
     package = law.package_status(cfg.get("law_package"))[0] != "missing"  # loads + validates; never raises
     for field, ok, why in (("schema", cfg.get("schema") == 1, "is not 1"),
@@ -98,10 +98,18 @@ def check(cfg, seed_dir):  # -> (errors, F7 watch rows in config order); each er
 
 def cmd_check(args):
     cfg = load_config(args.check)
-    errs, rows = check(cfg, args.seed_dir)
+    found = []  # (where, field, why) of each error, in the order of the text lines
+    errs, rows = check(cfg, args.seed_dir, found)
     scopes = [a.get("in_scope") for a in cfg["agencies"] if isinstance(a, dict)]
-    print("\n".join(errs + ["agencies=%d in_scope=%d hold=%d watch_rows=%d errors=%d" % (
-        len(cfg["agencies"]), scopes.count("yes"), scopes.count("hold"), len(rows), len(errs))]))
+    counts = {"agencies": len(cfg["agencies"]), "in_scope_yes": scopes.count("yes"), "hold": scopes.count("hold"),
+              "no": scopes.count("no"), "watch_rows": len(rows), "errors": len(errs)}
+    if args.json:
+        doc = {"schema": "flock-region-check-v1", "errors": [dict(zip(("where", "field", "why"), e)) for e in found],
+               "counts": counts}
+        print(json.dumps(doc, indent=2, ensure_ascii=True))
+    else:
+        print("\n".join(errs + ["agencies=%d in_scope=%d hold=%d watch_rows=%d errors=%d" % (
+            counts["agencies"], counts["in_scope_yes"], counts["hold"], counts["watch_rows"], counts["errors"])]))
     return 1 if errs else 0
 
 def cmd_new(args):
@@ -281,7 +289,8 @@ def main(argv=None):
         p.add_argument(flag)
     p.add_argument("--jurisdiction", default="us-ca")
     p.add_argument("--dry-run", action="store_true", help="init only: print what init would change; write nothing")
-    p.add_argument("--json", action="store_true", help="coverage only: print only the flock-region-coverage-v1 document")
+    p.add_argument("--json", action="store_true",
+                   help="--check or coverage: print only the flock-region-check-v1 / flock-region-coverage-v1 document")
     p.add_argument("--json-out", help="coverage only: print the text and also write the document to this new file")
     a = p.parse_args(argv)
     need = {None: (a.check,), "new": (a.county_fips, a.region, a.out), "init": (a.config, a.store), "coverage": (a.config,)}
@@ -290,7 +299,9 @@ def main(argv=None):
         p.error("use exactly one of: new, --check CONFIG, init CONFIG, coverage CONFIG")
     if a.dry_run and (a.check or a.command != "init"):
         p.error("--dry-run is valid only with init")
-    if (a.json or a.json_out is not None) and (a.check or a.command != "coverage" or a.json and a.json_out is not None):
+    if a.json and not (a.check or a.command == "coverage"):
+        p.error("--json is valid only with --check or coverage")
+    if a.json_out is not None and (a.check or a.command != "coverage" or a.json):
         p.error("use at most one of --json, --json-out, and only with coverage")
     try:
         return (cmd_check(a) if a.check else cmd_new(a) if a.command == "new" else
