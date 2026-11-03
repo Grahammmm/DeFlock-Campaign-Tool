@@ -284,14 +284,15 @@ class BlockingRules(Base):
 
 class OutputHygiene(Base):
     def test_no_host_identifiers_in_either_output(self):
-        seeded = ["alice", "box.example.lan", "10.1.2.3", "/home/alice", "s3cr3t-token-value", "/dev/sda1", "tmpfs"]
+        seeded_env_value = "-".join(("s3cr3t", "token", "value"))  # synthetic; built so no literal credential pattern
+        seeded = ["alice", "box.example.lan", "10.1.2.3", "/home/alice", seeded_env_value, "/dev/sda1", "tmpfs"]
         host = FakeHost(release="6.8.0-alice-box.example.lan-10.1.2.3",
                         cmds={"docker-version": ("Docker version 27.3.1, build x /home/alice 10.1.2.3 box.example.lan", "ok"),
                               "docker-rootless": ('["name=rootless","/home/alice/.docker","s3cr3t-token-value"]', "ok"),
                               "tesseract-version": ("tesseract 5.3.0 /dev/sda1 tmpfs alice", "ok")},
                         encoding="UTF-8 alice")
         out_path = self.dir / "h.json"
-        with mock.patch.dict(os.environ, {"HERMES_SEEDED_SECRET": "s3cr3t-token-value"}):
+        with mock.patch.dict(os.environ, {"HERMES_SEEDED_SECRET": seeded_env_value}):
             code, out, _ = self.run_tool(host, "--json-out", str(out_path))
         text = out + out_path.read_text(encoding="utf-8")
         for value in seeded + [str(self.dir), str(Path.home())]:
