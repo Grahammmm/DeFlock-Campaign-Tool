@@ -14,6 +14,9 @@ export interface Env {
   /** Opt-in private TLS outbox endpoint and independent signing secret. Both required. */
   OUTBOX_GATEWAY_URL?: string;
   OUTBOX_SIGNING_KEY?: string;
+  /** Optional post_social platform (Mastodon instance https URL) plus its access-token Worker secret. Absent: social_not_configured. */
+  MASTODON_URL?: string;
+  MASTODON_TOKEN?: string;
   /** Test hook: replaces global fetch for the Access certificate download. */
   ACCESS_CERTS_JSON?: string;
 }

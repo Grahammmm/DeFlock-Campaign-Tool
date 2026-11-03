@@ -149,7 +149,7 @@ ${a.state === "approved" ? html`<form method="post" action="/approvals/${a.actio
 </div>`;
   return html`<h1>Approvals</h1>
 ${notice ? html`<p class="notice">${notice}</p>` : ""}
-<p>Every proposed external effect is a card. Only approved cards with an approver identity from Cloudflare Access are executed, and execution records a provider receipt. Executing an executed card again returns the existing receipt. send_request and send_followup fail with <code>sender_not_configured</code> until an outbox sender is registered; post_social is <code>not_implemented</code>; pay_fee is <code>manual_only</code>.</p>
+<p>Every proposed external effect is a card. Only approved cards with an approver identity from Cloudflare Access are executed, and execution records a provider receipt. Executing an executed card again returns the existing receipt. send_request and send_followup fail with <code>sender_not_configured</code> until an outbox sender is registered; post_social posts one approved draft to one platform only when the card's content hash matches the exact text, and fails with <code>social_not_configured</code> (readiness <code>social_posting: not configured</code>) until <code>MASTODON_URL</code> and its token secret are set; pay_fee is <code>manual_only</code>.</p>
 <h2>Waiting (${proposed.length})</h2><div class="cards">${proposed.map(card)}</div>
 <h2>History</h2><div class="cards">${other.map(card)}</div>`;
 }

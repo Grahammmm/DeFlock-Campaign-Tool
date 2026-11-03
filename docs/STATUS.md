@@ -62,7 +62,7 @@ Only items with no implementation in this repository.
 | --- | --- |
 | Binding the outbox to the Worker `send_request`/`send_followup` executors | They refuse with `sender_not_configured`: `workers/workspace/src/executors/types.ts` |
 | Runner handlers for `newsletter_draft` and `backup` | No handler in `runner/handlers/`; the jobs are answered `blocked` |
-| Social posting | `post_social` is `not_implemented`: `workers/workspace/src/views/screens.ts` |
+| Live social posting | `post_social` has one Mastodon adapter behind per-post approval, but no account is configured: `workers/workspace/src/executors/post_social.ts` |
 | Independently reviewed state-law packages | California ships `status: draft`: `jurisdictions/us-ca/package.json` |
 | Brevo webhooks and list counts | Only a schema column exists: `workers/schema/d1.sql` |
 | Automatic Legistar polling from the Worker | The CLI import exists; the Worker only lists imported meetings: [MEETINGS.md](MEETINGS.md) |
