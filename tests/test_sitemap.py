@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 BASE = "https://cedar-records.example.invalid"
 S = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
-FIXED = ["/agencies.html", "/corrections.html", "/sources.html", "/meetings.html", "/about.html"]
+FIXED = ["/agencies.html", "/corrections.html", "/sources.html", "/meetings.html", "/about.html", "/timeline.html"]
 NOTE = "sitemap.xml skipped: content/site.json has no base_url"
 
 
