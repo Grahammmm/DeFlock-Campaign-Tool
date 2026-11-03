@@ -11,6 +11,8 @@ export interface Env {
   DOWNLOAD_SIGNING_KEY: string;
   /** Brevo v3 API key (Worker secret). Absent: send_newsletter cards fail with brevo_not_configured. */
   BREVO_API_KEY?: string;
+  /** HMAC secret for POST /api/webhooks/subscribe (Worker secret). Absent: every delivery is refused not_configured. */
+  SUBSCRIBE_WEBHOOK_SECRET?: string;
   /** Opt-in private TLS outbox endpoint and independent signing secret. Both required. */
   OUTBOX_GATEWAY_URL?: string;
   OUTBOX_SIGNING_KEY?: string;

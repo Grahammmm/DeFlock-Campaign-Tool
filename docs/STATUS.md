@@ -37,6 +37,7 @@ mail or publishes anything.
 | Flock review queue | Private challenge and receipt report for human review; never approves or publishes. | `tools/flock_review_queue.py` |
 | Flock store backup | Local create, verify and restore of the private flock store (agencies/, regions/, LAW.csv) with a SHA-256 manifest; no upload, encryption or schedule. | `tools/flock_backup.py`, [BACKUP.md](BACKUP.md) |
 | Flock store check | Read-only run of every flock checker over one private store, agency slugs found in one place but not the others, and the newest backup's age. | `tools/flock_store_check.py` |
+| Agency chain rehearsal | Walks one named agency through every records-chain stage (verified, drafted, approved, sent, response, preserved, extracted, OCR, catalogued, detected, reviewed, published) from recorded fields and writes one private 0600 receipt naming each stage's state, the human step owed and the first break; OCR reads `not-wired`; reads only, sends and publishes nothing. | `tools/rehearse_agency.py`, [OFFLINE-LOCALITY-REHEARSAL.md](OFFLINE-LOCALITY-REHEARSAL.md) |
 | Flock store init | Creates a new empty private store (header-only LAW.csv and per-agency FACTS v2/POLICY, 0700/0600) all-or-nothing; refuses a STORE that exists and is not an empty folder; writes no contacts or requests. | `tools/flock_store_init.py` |
 | Originals drift check | Read-only, review-required alerts for originals and ledger drift; no repair, schedule or delivery. | `tools/reconcile_auto.py`, [ORIGINAL-RECONCILIATION.md](ORIGINAL-RECONCILIATION.md) |
 | Stale-stage check | Read-only alert when a records stage has not produced in the last N scheduled run reports while it had work, failed or was skipped; reads reports only, installs and sends nothing. | `tools/stage_stale_check.py`, `deploy/records-runtime/README.md` |
@@ -54,6 +55,7 @@ No new features until a deploy is scheduled; path-scoped CI keeps them tested.
 | Cloudflare Workers | Setup wizard, organizer workspace and public-site Worker; tested offline, not deployed. | `workers/`, [WORKERS.md](WORKERS.md) |
 | Runner | Container that pulls jobs from the workspace Worker; tested offline with `--fake`, not attached to a deployed workspace. | `runner/`, [RUNNER.md](RUNNER.md) |
 | Hosted send path | `campaign_tool/outbox.py` journal and the opt-in signed outbox gateway; no Worker sender is registered and no live send has been made. | `campaign_tool/outbox.py`, `runner/outbox_gateway.py`, [OUTBOX.md](OUTBOX.md), [HOSTED-OUTBOX-GATEWAY.md](HOSTED-OUTBOX-GATEWAY.md) |
+| Subscription webhook and list counts | HMAC-verified double opt-in events and our own confirmed `list_count`; counts only on any page; tested offline, no provider configured, sends nothing. | `workers/workspace/src/routes/subscribe_webhook.ts`, `workers/workspace/src/subscribers.ts`, [NEWSLETTER.md](NEWSLETTER.md) |
 
 ## Planned / not started
 
@@ -65,7 +67,6 @@ Only items with no implementation in this repository.
 | Runner handlers for `newsletter_draft` and `backup` | No handler in `runner/handlers/`; the jobs are answered `blocked` |
 | Live social posting | `post_social` has one Mastodon adapter behind per-post approval, but no account is configured: `workers/workspace/src/executors/post_social.ts` |
 | Independently reviewed state-law packages | California ships `status: draft`: `jurisdictions/us-ca/package.json` |
-| Brevo webhooks and list counts | Only a schema column exists: `workers/schema/d1.sql` |
 | Automatic Legistar polling from the Worker | The CLI import exists; the Worker only lists imported meetings: [MEETINGS.md](MEETINGS.md) |
 | Backup encryption, scheduling and hosted restore | `campaign_tool/backup.py` writes a plain tar by hand; encryption and storage are left to the operator |
 | Monitored scheduling and cost controls for the hosted path | No hosted schedule exists; see the frozen rows above |
