@@ -54,6 +54,10 @@ ROWS = (
     (ValueError, _msg(r"public tree check found (\d{1,6}) potential leak\(s\); fix content and rebuild\Z"), lambda m, exc: (
         f"Fix the {m.group(1)} item(s) listed above in the content, rebuild with `build --check`, "
         "and do not publish until it passes.")),
+    (ValueError, _msg(r"public tree check found (?:(\d{1,6}) potential leak\(s\) and )?(\d{1,6}) broken link\(s\); "
+                      r"fix content and rebuild\Z"), lambda m, exc: (
+        f"Fix the {int(m.group(1) or 0) + int(m.group(2))} item(s) listed above (each link must point at a built page "
+        "and an existing #id), rebuild with `build --check`, and do not publish until it passes.")),
     (ValueError, _msg(r"meetings needs --online to query the Legistar Web API, or --from-json with a recorded response\Z"),
      "Add --online, or pass --from-json FILE with a recorded response."),
     (ValueError, _msg(r".* exists; the drill never overwrites a receipt\Z"),

@@ -473,12 +473,21 @@ def build(root, check=False):
     for note in _site_claim_notes(root):  # DF-4 alert-only: notes for the publish gate, never an error or an exit code
         print(note)
     if check:
+        from .site_check import check_links
         hits = check_public_tree(public)
         for path, line, label in hits:
             print(f"public/{path}:{line}: {label}", file=sys.stderr)
+        broken = check_links(public)
+        for page, href in broken:
+            print(f"public/{page}: broken link {href}", file=sys.stderr)
+        if hits and broken:  # both lists are already on stderr; one Stopped: line names both counts
+            raise ValueError(f"public tree check found {len(hits)} potential leak(s) and {len(broken)} broken link(s); "
+                             "fix content and rebuild")
         if hits:
             raise ValueError(f"public tree check found {len(hits)} potential leak(s); fix content and rebuild")
-        print("Public tree check passed (pattern scan only; human review still required).")
+        if broken:
+            raise ValueError(f"public tree check found {len(broken)} broken link(s); fix content and rebuild")
+        print("Public tree check passed (pattern scan and internal links; human review still required).")
 
 
 def backup_cmd(args, root):
@@ -680,7 +689,8 @@ def main():
         if name == "build":
             mode = cmd.add_mutually_exclusive_group()
             mode.add_argument("--check", action="store_true",
-                              help="Scan the generated public/ tree for private paths and credential patterns")
+                              help="Scan the generated public/ tree for private paths and credential patterns, "
+                                   "and fail on site-local links or #fragments that do not resolve")
             mode.add_argument("--preview", action="store_true",
                               help="List files a rebuild would add, remove or change in public/; writes nothing")
         if name == "status":

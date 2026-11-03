@@ -604,7 +604,7 @@ class Site:
         mission = self.md(self.site["mission_md"]) if self.site["mission_md"] else ('<div class="mission-grid">' + "".join(
             f'<article><span>0{n}</span><h3>{self.t(f"intro.step{n}_title")}</h3><p>{self.t(f"intro.step{n}")}</p></article>'
             for n in (1, 2, 3)) + '</div>')
-        cards = (f'    <section class="section cities-section" id="agencies"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
+        cards = (f'    <section class="section cities-section" id="agencies"><div class="section-heading" id="content"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
                  f'<h2>{self.t("heading.agencies_home")}</h2></div><p>{self.t("intro.agencies_home")} '
                  f'<a href="/agencies.html">{self.t("intro.full_agency_list")}</a>.</p></div>'
                  + ('' if self.map else '<div class="city-panel-static">' + self.picker() + '</div>')

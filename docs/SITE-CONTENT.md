@@ -274,7 +274,10 @@ refuses with `data/sources.json: ...` and writes nothing on any other key or a
 `public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan
-over the output and fails on any hit. The command prints a manifest of every
+over the output and fails on any hit, and on any site-local `href`/`src` that
+names no written `public/` file or `#fragment` with no matching `id` on its
+target page (`public/<page>: broken link <href>`; external links are never
+fetched). The command prints a manifest of every
 written file with its size. Meetings on or after the build date (the typed
 `starts_at` date, no time-zone conversion) are upcoming, soonest first (home: next
 three); `meetings.html` then lists `#past-meetings`, most recent first.

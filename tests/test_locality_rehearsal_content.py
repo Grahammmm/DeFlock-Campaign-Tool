@@ -98,6 +98,17 @@ class ContentRehearsalTests(unittest.TestCase):
             with self.subTest(name), patch.object(site, "build_site", build_without(name)):
                 self.assertFailsWith("content_build_missing_page")
 
+    def test_broken_internal_link_with_every_page_present_is_refused(self):
+        def build(root, today=None, notes=None):
+            written = REAL_BUILD_SITE(root, today, notes)
+            if (Path(root) / "content").is_dir():
+                page = Path(root) / "public" / "sources.html"
+                page.write_text(page.read_text(encoding="utf-8").replace(
+                    "</body>", '<a href="/findings/missing.html">x</a></body>'), encoding="utf-8")
+            return written
+        with patch.object(site, "build_site", build):
+            self.assertFailsWith("content_build_check_failed")
+
     def test_content_sites_distinct_and_identical_index_refused(self):
         first, second = self.report["localities"]
         self.assertNotEqual(first["content_public_files"]["index.html"],
