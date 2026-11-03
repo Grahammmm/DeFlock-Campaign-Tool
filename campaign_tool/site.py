@@ -340,10 +340,10 @@ class Site:
         links = "".join(
             f'<a href="{href}"' + (' aria-current="page"' if key == current else "") + f'>{self.t("nav." + label)}</a>'
             for href, label, key in items)
-        links += '<a href="/timeline.html"' + (' aria-current="page"' if current == "timeline" else "") + ">Timeline</a>"
         links += "".join(  # content pages with nav: true (DF2237-07), after About, labelled by their own title
             f'<a href="/{page["slug"]}.html"' + (' aria-current="page"' if current == "page:" + page["slug"] else "")
             + f'>{e(page["title"])}</a>' for page in self.model.get("pages", []) if page["nav"])
+        links += '<a href="/timeline.html"' + (' aria-current="page"' if current == "timeline" else "") + ">Timeline</a>"
         return f'<nav class="site-nav" aria-label="{self.t("nav.label")}">{links}</nav>'
 
     def header(self, current):
