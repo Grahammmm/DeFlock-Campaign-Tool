@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "flags": "i",
+  "alternatives": [
+    "license[ -]?plate",
+    "\\bALPRs?\\b",
+    "\\bFlock\\b",
+    "surveillance"
+  ]
+}
