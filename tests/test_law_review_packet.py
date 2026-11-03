@@ -5,8 +5,10 @@ existing review-sheet output, orders rules by their own ``review`` field, assert
 Run from the repository root: python3 -B -m unittest tests.test_law_review_packet -v
 """
 
+import argparse
 import copy
 import hashlib
+import io
 import json
 import os
 import re
@@ -174,6 +176,27 @@ class ReviewPacketTests(unittest.TestCase):
         missing = self.cli("--jurisdiction", "us-zz", "--out", str(self.tmp / "zz"), returncode=2)
         self.assertTrue(missing.stderr.startswith("Stopped: No law package"))
         self.assertFalse((self.tmp / "zz").exists())
+
+    def test_mid_packet_write_failure_leaves_no_out_and_retry_succeeds(self):
+        out = self.tmp / "nospace"
+        real_open = os.open
+
+        def failing_open(target, *rest):
+            if Path(target).name == "RULES.md":
+                raise OSError(28, "Synthetic no space left on device")
+            return real_open(target, *rest)
+
+        args = argparse.Namespace(jurisdiction="us-ca", out=str(out), as_of=AS_OF, base=None)
+        with mock.patch.object(law_packet.os, "open", failing_open), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as stdout, \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(law_packet.main(args), 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "Stopped: [Errno 28] Synthetic no space left on device\n")
+        self.assertFalse(os.path.lexists(out))
+        _, result = self.packet("nospace")
+        self.assertEqual({p.name for p in out.iterdir()}, FILES)
+        self.assertEqual(result["out"], str(out))
 
     def test_generated_text_asserts_no_breach_and_advises_no_legal_action(self):
         out, _ = self.packet()

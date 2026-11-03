@@ -115,6 +115,19 @@ def _checked_out(out):
     return path
 
 
+def _roll_back(path, created):
+    """Remove only what this invocation created; anything else found in the folder keeps it in place."""
+    for name in created:
+        try:
+            os.unlink(path / name)
+        except OSError:
+            pass
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
+
+
 def build(jurisdiction, out, as_of=None, base=None):
     """Write the four files into a new 0700 folder; everything is built in memory first."""
     path = _checked_out(out)
@@ -126,10 +139,16 @@ def build(jurisdiction, out, as_of=None, base=None):
     texts = (*render(package, counts), sheet.getvalue())
     files = dict(zip(("PACKET.md", "RULES.md", "RETURN.md", "WORKSHEET.csv"), texts))
     path.mkdir(mode=0o700)
-    for name in NAMES:
-        fd = os.open(path / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
-            stream.write(files[name])
+    created = []
+    try:
+        for name in NAMES:
+            fd = os.open(path / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            created.append(name)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+                stream.write(files[name])
+    except BaseException:
+        _roll_back(path, created)
+        raise
     return {"status": "review_required", "jurisdiction": jurisdiction, "package_status": package["status"],
             "as_of": as_of.isoformat(), "out": str(path), "files": list(NAMES), "review_counts": counts,
             "note": "A packet for a human reviewer, not a review; the package is unchanged."}
