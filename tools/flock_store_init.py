@@ -78,7 +78,11 @@ def main(argv=None):
     parser.add_argument("store")
     parser.add_argument("--agency", action="append", default=[], metavar="SLUG")
     args = parser.parse_args(argv)
-    errs, store = refusals(args.store, args.agency)
+    try:  # preflight stat/list errors (e.g. STORE statable but not listable) get the same path-free refusal
+        errs, store = refusals(args.store, args.agency)
+    except OSError as exc:  # the class only, never a path
+        print(f"init refused | io: {type(exc).__name__}\ninit refused | nothing written", file=sys.stderr)
+        return 1
     if errs:
         print("".join(f"init refused | {e}\n" for e in errs) + "init refused | nothing written", file=sys.stderr)
         return 1

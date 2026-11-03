@@ -179,6 +179,20 @@ class StoreInitTests(unittest.TestCase):
         self.assertEqual((code, err), (1, "init refused | io: FileExistsError\ninit refused | nothing written\n"))
         self.assertEqual(((tmp / "keep").read_text(), os.path.lexists(self.store)), ("k", False))
 
+    def test_unlistable_existing_store_is_a_path_free_refusal(self):
+        self.store.mkdir()
+        secret = str(self.store.resolve())
+
+        def unlistable(path):
+            raise PermissionError(13, "Permission denied", secret)
+        with mock.patch.object(init.Path, "iterdir", unlistable):
+            code, out, err = self.init(self.store, "--agency", "a")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "init refused | io: PermissionError\ninit refused | nothing written\n")
+        self.assertNotIn(str(self.tmp), err)
+        self.assertNotIn(secret, err)
+        self.assertEqual((list(self.tmp.iterdir()), list(self.store.iterdir())), ([self.store], []))
+
     def test_stdout_and_stderr_never_contain_the_absolute_path(self):
         code, out, err = self.init(self.store, "--agency", "a")
         self.assertEqual(code, 0)
