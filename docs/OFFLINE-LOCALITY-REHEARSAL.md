@@ -34,3 +34,18 @@ live deployment. M6 remains open. A real organizer, verified local contacts and
 policies, factual/legal/privacy reviews and separately approved activation are
 still needed. Record source revision/interpreter and JSON output with any run;
 a successful rehearsal never supplies those missing approvals.
+
+## Real-agency rehearsal
+
+The locality rehearsal above uses fixed synthetic fixtures. To see where one real
+agency actually stands, the operator runs, attended and against the private store:
+`python3 tools/rehearse_agency.py --store STORE --agency SLUG --out NEWDIR`.
+It reads the store and writes one private receipt (`REHEARSAL.md` and
+`rehearsal.json`, `records-rehearsal-v1`, review required) with one row per stage:
+agency-verified, request-drafted, request-approved, request-sent,
+response-received, preserved, extracted, ocr, catalogued, detected, reviewed and
+published. Each row names its state (from a recorded field, never prose), the file
+or tool it read, the next human step and the human gate it waits on (send, publish
+or law). The verdict names the first break; OCR reads `not-wired` until df-ocr-live
+lands. It sends nothing, publishes nothing and writes nothing under the store, so
+it proves the chain's wiring and its gaps, not delivery.
