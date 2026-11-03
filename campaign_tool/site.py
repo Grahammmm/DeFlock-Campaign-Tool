@@ -713,7 +713,7 @@ class Site:
             agency_line = (f'<p>Agency: <a href="{e(self.agency_pages().get(agency["agency_id"], "/agencies.html#" + agency["slug"]))}">{e(agency["name"])}</a></p>' if agency else '')
             limits = ''.join(f'<li>{e(item)}</li>' for item in f["limitations"]) or '<li>None stated.</li>'
             corrections = ''.join(f'<li>{time_tag(c["date"])}: {e(c["note"])}</li>' for c in sorted(f["corrections"], key=lambda c: c["date"]))
-            corrections = f'<ul>{corrections}</ul>' if corrections else '<p>No corrections have been issued.</p>'
+            corrections = f'<ul>{corrections}</ul>' if corrections else f'<p>{self.t("notice.no_corrections")}</p>'
             updated = f' · Updated {date_label(f["updated_at"])}' if f["updated_at"] else ''
             url = self.base + f'/findings/{f["slug"]}.html'
             articles.append(f'<article class="packet-finding" id="f-{e(f["slug"])}"><h3>{e(f["title"])}</h3>'
@@ -723,7 +723,7 @@ class Site:
                 f'<h4>Corrections</h4>{corrections}<p>Finding {e(f["id"])} · <a href="{e(url)}">{e(url)}</a></p></article>')
         main = (f'<section class="section" id="content"><h2>Findings packet</h2><p>As of {e(self.today.isoformat())} · '
                 f'{len(findings)} published findings · print or save as PDF</p>'
-                + (f'<ol>{contents}</ol>{"".join(articles)}' if findings else '<p>No findings have been published yet.</p>')
+                + (f'<ol>{contents}</ol>{"".join(articles)}' if findings else f'<p>{self.t("notice.no_findings")}</p>')
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", "Findings packet", "Every published finding on one printable page", "/findings/packet-all.html", main)
 
