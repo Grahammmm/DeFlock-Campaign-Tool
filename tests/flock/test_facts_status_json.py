@@ -106,12 +106,12 @@ class FactsStatusJsonTest(unittest.TestCase):
     def test_json_with_other_commands_is_a_usage_error(self):
         self.golden()
         store = str(self.store)
-        for argv in (["coverage", "--store", store, "--agency", "alpha", "--inventory", store],
+        for argv in (["unreadable", "--store", store, "--out", store],
                      ["stale", "--store", store, "--date", "2026-11-01"], ["import", store, "--store", store, "--added-by", "x"],
                      ["--check", store], ["reviews", "--store", store, "--agency", "alpha"]):
             done = subprocess.run([sys.executable, "-B", str(TOOL), *argv, "--json"], capture_output=True, text=True, check=False)
             self.assertEqual((done.returncode, done.stdout), (2, ""), argv)
-            self.assertIn("--json belongs to status only", done.stderr)
+            self.assertIn("--json belongs to status or coverage", done.stderr)
 
     def test_text_without_json_is_byte_identical_to_main(self):
         self.golden()
