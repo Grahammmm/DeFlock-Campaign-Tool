@@ -540,7 +540,7 @@ class Site:
                 f'<p class="eyebrow">{self.t("eyebrow.agency_profile")}</p><h3 id="city-name"></h3>'
                 '<p class="city-meta"><span class="status-pill" id="city-status"></span> <span class="city-vendor" id="city-vendor"></span> '
                 '<span id="city-camera-count" hidden></span></p><p class="city-summary" id="city-summary"></p>'
-                '<ul class="city-facts" id="city-facts"></ul><p><a class="text-link" id="city-records-link" href="sources.html#library"></a> <a class="text-link" id="city-flock-link" rel="noopener noreferrer" hidden>'
+                '<ul class="city-facts" id="city-facts"></ul><p><a class="text-link" id="city-records-link" href="sources.html#library">' + e(self.site["source_link_label"]) + '</a> <a class="text-link" id="city-flock-link" rel="noopener noreferrer" hidden>'
                 f'{self.t("agency.flock_portal")}</a></p></div><aside class="city-watch"><p class="eyebrow">{self.t("eyebrow.open_questions")}</p><p id="city-open"></p>'
                 '<div class="policy-flags" id="city-flags"></div></aside></article>')
 
