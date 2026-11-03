@@ -2,8 +2,7 @@
 """Private CPRA request reminder list (REQUESTS.csv v1): --check, due and summary. Prints only.
 show STORE --agency SLUG --request ID reads one request's row, REQUEST-STEPS.csv steps, FEES.csv rows and reminder.
 draft RUNDIR writes FOLLOWUP-DRAFT.md and due --ics OUT a new private calendar; both must lie outside the repository.
-due PATH --agency SLUG (repeatable, up to 20) lists and totals only those agencies' reminders.
-summary PATH [--inventory CSV] --json prints the same counts as one flock-request-summary-v1 document."""
+due PATH --agency SLUG (repeatable, up to 20) lists and totals only those agencies' reminders."""
 import csv
 import hashlib
 import importlib.util
