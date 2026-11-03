@@ -393,6 +393,46 @@ class CustodyReportTests(unittest.TestCase):
         run("status", "--store", str(self.store.root))
         self.assertEqual(tree_hash(self.store.root), before)
 
+    def test_checkpointed_wal_ledger_gains_no_sidecar(self):
+        self.four()
+        ledger = self.store.root / "private" / "ledger.sqlite"
+        db = sqlite3.connect(ledger)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        db.close()
+        self.assertEqual(ledger.read_bytes()[18:20], b"\2\2")
+        self.assertEqual(sorted(p.name for p in ledger.parent.glob("ledger.sqlite*")), ["ledger.sqlite"])
+        before = tree_hash(self.store.root)
+        doc, _, _ = self.build("fnd_a", expect=0)
+        self.assertEqual(doc["sections"]["sources"][0]["rehash"], "matches")
+        run("status", "--store", str(self.store.root))
+        self.assertEqual(sorted(p.name for p in ledger.parent.glob("ledger.sqlite*")), ["ledger.sqlite"])
+        self.assertEqual(tree_hash(self.store.root), before)
+
+    def test_live_sidecar_is_a_named_error_not_an_open(self):
+        self.store.add(finding("fnd_a"))
+        wal = self.store.root / "private" / "ledger.sqlite-wal"
+        wal.write_bytes(b"")
+        before = tree_hash(self.store.root)
+        doc, _, _ = self.build("fnd_a", expect=1)
+        self.assertEqual(doc["source_errors"], ["ledger: re-hash check could not run"])
+        self.assertEqual(doc["sections"]["sources"][0]["rehash"], "not-checked")
+        self.assertFalse(os.path.lexists(str(wal)[:-4] + "-shm"))
+        self.assertEqual(tree_hash(self.store.root), before)
+
+    def test_recorded_request_id_shown_unless_personal(self):
+        doc_m = finding("fnd_m")
+        self.store.add(doc_m, receipt=False)
+        long_id = "PRA 2026/0117 " + "x" * 80
+        for n, source in enumerate(("PRA 2026/0117 cedar police", long_id, "reply from " + EMAIL, "a\nb")):
+            self.store.sql("INSERT INTO receipts VALUES (?, ?, ?, ?, ?)",
+                           ("rcpt-m%d" % n, sha("fnd_m"), source, "2026-01-20T16:31:00Z", "x.pdf"))
+        doc, page, _ = self.build("fnd_m", expect=0)
+        shown = [r["request_id"] for r in doc["sections"]["receipt_chain"][0]["preservation"]["receipts"]]
+        self.assertEqual(shown, ["PRA 2026/0117 cedar police", long_id, "withheld", "withheld"])
+        self.assertIn("answering PRA 2026/0117 cedar police", page)
+        self.assertNotIn(EMAIL, page)
+
     # 11. static
     def test_static_no_network_subprocess_store_write_or_site_build(self):
         source = TOOL.read_text(encoding="utf-8")

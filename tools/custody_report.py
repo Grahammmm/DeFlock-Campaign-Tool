@@ -5,7 +5,9 @@
   custody_report.py status --store STORE                             one line per published finding; writes nothing
 
 STORE is a campaign folder: content/findings/*.json, content/sources.json, private/ledger.sqlite + objects (re-hashed by
-`status --check`'s check_store), private/reviews/<id>.json and private/publication-log.jsonl. Read-only; marks nothing
+`status --check`'s check_store, fed the rows of an in-memory ledger copy: SQLite never opens the store's ledger file, and a
+journal/WAL sidecar beside it is a named source error), private/reviews/<id>.json and private/publication-log.jsonl.
+Read-only; marks nothing
 reviewed. Every state comes from a recorded field, never from prose. The page carries ids, dates, hashes, enums and the
 reviewer's name as recorded; never a quote, summary, title, rationale, note, file name or record text.
 PRIVATE: NEWDIR must be absolute, normalised, absent, outside the repository and STORE, with a link-free parent; made 0700
@@ -19,6 +21,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 from campaign_tool.findings import DECISIONS, reviewed_hash, reviewed_view  # noqa: E402
 from campaign_tool.review import CLASSIFICATIONS, ROLES, review_blockers  # noqa: E402
+from campaign_tool.ledger_list import _snapshot as snapshot  # noqa: E402
 from campaign_tool.store_check import check_store  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("_custody_privacy", REPO / "tools" / "flock_privacy.py")
@@ -30,6 +33,7 @@ ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 SAFE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 HEX = re.compile(r"[0-9a-f]{64}")
 STAMP = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?)?")
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 WHO = re.compile(r"[A-Za-z][A-Za-z0-9 ._'-]{0,79}")
 STALE = "stale review (content changed after review)"
 ESTABLISH = (
@@ -46,6 +50,14 @@ class _Parser(argparse.ArgumentParser):
 def safe(value, rx=SAFE):
     """A recorded value shown only when it is a plain identifier; anything else is named, never echoed."""
     return "not-recorded" if value is None or value == "" else value if isinstance(value, str) and rx.fullmatch(value) \
+        and not privacy.categories(value) else "withheld"
+
+def recorded(value):
+    """A recorded free-text id (ingest source_id: 1-200 characters, any charset) shown as recorded; withheld only for
+    an email/phone/plate match or a control character (one line on the page), never for its charset or length."""
+    if value is None or value == "":
+        return "not-recorded"
+    return value if isinstance(value, str) and len(value) <= 200 and not CONTROL.search(value) \
         and not privacy.categories(value) else "withheld"
 
 def _json(path):
@@ -82,16 +94,17 @@ def read_store(store, errors):
         errors.append("ledger: private/ledger.sqlite missing; no source was re-hashed")
     else:
         try:
-            db = sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True)
+            db = snapshot(ledger)  # in-memory copy: SQLite never opens the store's ledger file (no -wal/-shm)
             try:
-                objects = {row[0] for row in db.execute("SELECT sha256 FROM objects")}
+                rows = db.execute("SELECT sha256, byte_count FROM objects ORDER BY sha256").fetchall()
+                objects = {row[0] for row in rows}
                 for rid, sha, source, when in db.execute(
                         "SELECT receipt_id, object_sha256, source_id, received_at FROM receipts ORDER BY receipt_id"):
-                    receipts.setdefault(sha, []).append({"receipt_id": safe(rid), "request_id": safe(source),
+                    receipts.setdefault(sha, []).append({"receipt_id": safe(rid), "request_id": recorded(source),
                                                          "preserved_at": safe(when, STAMP)})
             finally:
                 db.close()
-            check = check_store(store)  # status --check's own re-hash; never re-implemented here
+            check = check_store(store, rows=rows)  # status --check's own re-hash, fed the copy's rows
         except (sqlite3.Error, ValueError, OSError):
             errors.append("ledger: re-hash check could not run")
             objects, check = None, None
