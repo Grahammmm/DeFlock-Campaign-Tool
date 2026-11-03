@@ -1,7 +1,7 @@
 """Flock monitor: scan official agency index pages listed in WATCHLIST.csv into a private MONITOR.csv, and write a daily
 digest. Index pages only: links (PDFs included) are recorded by URL and never fetched.
 leads --store DIR [--state S] [--agency SLUG] [--date D]: read-only LEADS.csv triage list (age, per-state counts)."""
-import argparse, contextlib, csv, datetime, fcntl, hashlib, html.parser, os, re, sys, tempfile, urllib.error, urllib.request
+import argparse, contextlib, csv, datetime, fcntl, hashlib, html.parser, json, os, re, sys, tempfile, urllib.error, urllib.request
 from pathlib import Path
 from urllib.parse import unquote, urldefrag, urljoin, urlsplit
 
@@ -98,6 +98,9 @@ def read_csv(path, header, missing_ok=False):
     return [(n, dict(zip(header, rec))) for n, rec in rows]
 
 def row_errors(row):
+    return ["%s %s" % fault for fault in row_faults(row)]
+
+def row_faults(row):  # (field, why) for every failed check of one watch-list row
     social, url, dom = row["kind"] == "social", row["url"], row["official_domain"]
     checks = (("agency", row["agency"].strip(), "is empty"),
               ("kind", row["kind"] in KINDS, "is not agenda, minutes, news or social"),
@@ -108,7 +111,7 @@ def row_errors(row):
               ("url", social or not absolute(url) or in_scope(url, dom), "host is outside official_domain"),
               ("url", social or not urlsplit(absolute(url)).path.lower().endswith(".pdf"), "is a pdf"),
               ("last_seen_hash", re.fullmatch(r"(?:[0-9a-f]{64})?", row["last_seen_hash"]), "must be empty or 64 lowercase hex"))
-    return ["%s %s" % (field, why) for field, ok, why in checks if not ok]
+    return [(field, why) for field, ok, why in checks if not ok]
 
 def write_atomic(path, text="", header=None, rows=()):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -133,12 +136,28 @@ def _real(path, what):  # a linked or wrong-kind watch list, MONITOR.csv or dige
     if os.path.lexists(path) and not (os.path.isdir if folder else os.path.isfile)(path):
         raise Fail("%s is not a %s" % (what, "folder" if folder else "file"))
 
-def validated(watchlist):  # rows of a valid watch list, else Fail with every row error
+def row_problems(watchlist):  # (rows, [(row, field, why)]); a file-level error raises Fail
     rows = read_csv(watchlist, WATCH_HEADER)
-    errors = ["row %d: %s" % (n, e) for n, row in rows for e in row_errors(row)]
-    if errors:
-        raise Fail("\n".join(errors))
+    return rows, [(n, field, why) for n, row in rows for field, why in row_faults(row)]
+
+def validated(watchlist):  # rows of a valid watch list, else Fail with every row error
+    rows, problems = row_problems(watchlist)
+    if problems:
+        raise Fail("\n".join("row %d: %s %s" % p for p in problems))
     return rows
+
+def check_doc(watchlist):  # flock-monitor-check-v1: check as data; never the agency text, query or last_seen_hash
+    _real(watchlist, "watchlist")  # a linked watch list is refused (as scan does), never followed
+    rows, problems = row_problems(watchlist)
+    social = sum(r["kind"] == "social" for _, r in rows)
+    doc = dict(schema="flock-monitor-check-v1", review_required=True, network=False, valid=not problems,
+               errors=[dict(row=n, field=f, why=w) for n, f, w in problems],
+               counts=dict(rows=len(rows), fetch=sum(r["kind"] in KINDS - {"social"} for _, r in rows), social=social,
+                           errors=len(problems)))
+    if not problems:
+        doc["rows"] = [dict(row=n, agency_slug=slug(r["agency"]), kind=r["kind"], **(dict(action="social", url=None)
+                            if r["kind"] == "social" else dict(action="fetch", url=r["url"]))) for n, r in rows]
+    return doc
 
 def check(watchlist):  # dry run: the pages scan would fetch; no network, no store, no write
     rows = validated(watchlist)
@@ -263,22 +282,27 @@ def agency_slug(text):  # --agency: an F1 slug, else argparse usage exit 2
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", text): raise argparse.ArgumentTypeError("is not a lowercase slug")
     return text
 
-def new_leads(path, date, relevant):  # call only under the store lock: add unknown relevant items, list date's leads
-    rows, ids, add = leads_rows(path), set(), []
+def new_leads(path, date, relevant, write=True):  # call only under the store lock (or write=False): (added, lines)
+    rows = leads_rows(path)
+    add, lines = plan_leads(rows, date, relevant)
+    if add and write:
+        write_atomic(path, header=LEADS_HEADER, rows=rows + add)
+    return add, lines
+
+def plan_leads(rows, date, relevant):  # pure: (unknown relevant items to add, date's lead lines); never writes
+    ids, add = set(), []
     known = {r["item_id"] for r in rows}
     for r in relevant:
         if r["item_id"] not in known | ids:
             ids.add(r["item_id"])
             add.append(dict(item_id=r["item_id"], agency=r["agency"], first_seen=date, state="new", state_at=date,
                             state_by="digest"))
-    if add:
-        write_atomic(path, header=LEADS_HEADER, rows=rows + add)
     first, shown = {r["item_id"] for r in rows + add if r["first_seen"] == date}, {}
     for r in relevant:  # a lead first flagged on an earlier date is never listed again, whatever its state
         if r["item_id"] in first:
             shown.setdefault(r["item_id"], " ".join(("- %s: %s %s [%s]" % (r["agency"], r["title"], r["url"],
                                                                            r["item_id"])).split()))
-    return ["", "Leads (%d new)" % len(shown)] + list(shown.values()) if shown else []  # no leads for D: no section
+    return add, ["", "Leads (%d new)" % len(shown)] + list(shown.values()) if shown else []  # no leads for D: no section
 
 def lead(store, item, state, by, date):  # triage one lead: new -> requested|ignored, ignored -> requested
     if not re.fullmatch(r"M-[0-9a-f]{12}", item): raise Fail("lead: --item is not M- and 12 lowercase hex")
@@ -308,11 +332,13 @@ def unreachable(log, date, n):  # pages whose last n log rows with scan_date <= 
             lines.append("- %s: %s (%s, since %s)" % (agency, url, rs[-1]["reason"], rs[-streak]["scan_date"]))
     return ["", "Unreachable (%d pages, last %d scans refused)" % (len(lines), n)] + lines if lines else []
 
-def digest(store, date, after=3):
+def digest(store, date, after=3, dry_run=False):
+    if dry_run:  # no lock (it would create .monitor.lock), no mkdir, no write: the same checks on the store as it is
+        return digest_locked(private_store(store), date, after, write=False)
     with store_lock(store := private_store(store)):  # date filter, relevance match and both writes: one locked pass
         return digest_locked(store, date, after)
 
-def digest_locked(store, date, after=3):  # call only under the store lock; a scan committed before it is always included
+def digest_locked(store, date, after=3, write=True):  # under the store lock unless write=False; a committed scan is included
     path = store / "digest" / (date + ".md")
     rows = [r for _, r in read_csv(store / "MONITOR.csv", MONITOR_HEADER, missing_ok=True) if r["seen_at"] == date]
     pattern = keywords()
@@ -330,7 +356,11 @@ def digest_locked(store, date, after=3):  # call only under the store lock; a sc
                                                  % (len(items) - 38, relevant - sum(items[i][1] for i in keep))]
     down = unreachable(log_rows(store / "SCAN-LOG.csv"), date, after)  # a bad log fails before any write
     _real(path.parent, "digest folder")  # checked before LEADS.csv is touched
-    lines += new_leads(store / "LEADS.csv", date, [r for r, terms in ranked if terms]) + down
+    add, leads_lines = new_leads(store / "LEADS.csv", date, [r for r, terms in ranked if terms], write)
+    lines += leads_lines + down
+    if not write:
+        return "\n".join(lines + ["dry run | would write digest/%s.md | would add %d leads | nothing written"
+                                  % (date, len(add))])
     write_atomic(path, "\n".join(lines) + "\n")
     return path
 
@@ -344,7 +374,9 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     scan_p = sub.add_parser("scan", help="fetch each non-social WATCHLIST index page once and record new links")
     scan_p.add_argument("watchlist")
-    sub.add_parser("check", help="validate WATCHLIST and print the pages scan would fetch (no network, no writes)").add_argument("watchlist")
+    check_p = sub.add_parser("check", help="validate WATCHLIST and print the pages scan would fetch (no network, no writes)")
+    check_p.add_argument("watchlist")
+    check_p.add_argument("--json", action="store_true", help="print one flock-monitor-check-v1 JSON document")
     digest_p = sub.add_parser("digest", help="write <store>/digest/<date>.md; list new relevant items once (LEADS.csv)")
     lead_p = sub.add_parser("lead", help="set a LEADS.csv lead to requested or ignored (who and when recorded)")
     lead_p.add_argument("--item", required=True)
@@ -355,16 +387,21 @@ def main(argv=None):
     leads_p.add_argument("--agency", type=agency_slug)
     digest_p.add_argument("--unreachable-after", type=scans, default=3, metavar="N",
                           help="list pages whose last N logged scans (2..30, default 3) were all refused")
+    digest_p.add_argument("--dry-run", action="store_true", help="print the digest and leads it would write; write nothing")
     for p, required in ((scan_p, False), (digest_p, True), (lead_p, False), (leads_p, False)):
         p.add_argument("--store", required=True)
         p.add_argument("--date", type=datetime.date.fromisoformat, required=required, default=datetime.date.today())
     args = parser.parse_args(argv)
     try:
+        if args.command == "check" and args.json:  # row errors are data here (exit 1); file-level refusals stay text
+            doc = check_doc(args.watchlist)
+            print(json.dumps(doc, sort_keys=True, indent=1, ensure_ascii=False))
+            return 0 if doc["valid"] else 1
         print("\n".join(check(args.watchlist)) if args.command == "check"
               else "\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
               else lead(args.store, args.item, args.state, args.by, args.date.isoformat()) if args.command == "lead"
               else "\n".join(leads(args.store, args.state, args.agency, args.date)) if args.command == "leads"
-              else digest(args.store, args.date.isoformat(), args.unreachable_after))
+              else digest(args.store, args.date.isoformat(), args.unreachable_after, args.dry_run))
     except (Fail, OSError, UnicodeDecodeError, csv.Error, ImportError) as err:  # csv.Error prints "io error: Error"
         print(err if isinstance(err, Fail) else "io error: %s" % ("ImportError" if isinstance(err, ImportError)
                                                                    else type(err).__name__))

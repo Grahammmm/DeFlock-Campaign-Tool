@@ -473,7 +473,18 @@ def build(root, check=False):
 
 
 def backup_cmd(args, root):
-    from .backup import export
+    from .backup import BackupError, export, export_into
+    if args.into is not None:
+        try:
+            name, manifest = export_into(root, args.into, args.encrypt_to)
+        except (OSError, ValueError) as exc:  # one stderr line so cron mail stays one line
+            text = " ".join((str(exc) if isinstance(exc, BackupError) else getattr(exc, "strerror", None) or type(exc).__name__).split())
+            print(text if text.startswith("backup: ") else f"backup failed: {text}", file=sys.stderr)
+            sys.exit(1)
+        counts = manifest["counts"]
+        print(f"backup ok: {name} {'encrypted' if manifest.get('encrypted') else 'UNENCRYPTED'} "
+              f"files={counts['files']} bytes={counts['bytes']} manifest_sha256={manifest['manifest_sha256']}")
+        return
     manifest = export(root, args.out, encrypt_to=args.encrypt_to)
     print(json.dumps({"out": str(args.out), "files": manifest["counts"]["files"], "bytes": manifest["counts"]["bytes"],
                       "objects": manifest["counts"].get("objects", 0), "engine_version": manifest["engine_version"],
@@ -506,7 +517,7 @@ def backup_drill_cmd(args):
     from .backup import drill
     if args.receipt and os.path.lexists(args.receipt):
         raise ValueError(f"{args.receipt} exists; the drill never overwrites a receipt")
-    receipt = drill(args.file, args.expect_manifest_sha256, doctor=doctor_report)
+    receipt = drill(args.file, args.expect_manifest_sha256, doctor=doctor_report, gnupg_home=args.gnupg_home)
     text = json.dumps(receipt, indent=2)
     if args.receipt:
         with os.fdopen(os.open(args.receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as out:
@@ -518,7 +529,7 @@ def backup_drill_cmd(args):
 
 def backup_list_cmd(args):
     from .backup import list_archives
-    report = list_archives(args.dir, args.keep_daily, args.keep_weekly)
+    report = list_archives(args.dir, args.keep_daily, args.keep_weekly, gnupg_home=args.gnupg_home)
     print(json.dumps(report, indent=2) + "\nReport only; nothing was deleted.")
     sys.exit(3 if any(item["verify"] == "failed" for item in report["archives"]) else 0)
 
@@ -697,7 +708,9 @@ def main():
     press_draft.add_argument("--date")
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
-    backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
+    backup_out = backup_p.add_mutually_exclusive_group(required=True)
+    backup_out.add_argument("--out", help="Archive path to create (must not exist)")
+    backup_out.add_argument("--into", help="Existing private folder; writes a new deflock-backup-<UTC stamp>.tar[.gpg] and prints one status line")
     backup_p.add_argument("--encrypt-to", default=None, help="Public key file; the archive is encrypted to it (GnuPG)")
     restore_p = commands.add_parser("restore", help="Restore a backup into an empty directory")
     restore_p.add_argument("--file", required=True)
@@ -715,8 +728,10 @@ def main():
     drill_p.add_argument("--file", required=True)
     drill_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
     drill_p.add_argument("--receipt", help="Also write the receipt JSON here (must not exist)")
-    list_p = commands.add_parser("backup-list", help="Re-verify every *.tar in a folder; report what a keep rule keeps (deletes nothing)")
+    drill_p.add_argument("--gnupg-home", default=None, help="GnuPG home holding the private key (encrypted archives)")
+    list_p = commands.add_parser("backup-list", help="Re-verify every *.tar and *.tar.gpg in a folder; report what a keep rule keeps (deletes nothing)")
     list_p.add_argument("--dir", required=True)
+    list_p.add_argument("--gnupg-home", default=None, help="GnuPG home holding the private key (encrypted archives)")
     from .backup import KEEP_LIMITS, keep_count
     for flag, key, period in (("--keep-daily", "keep_daily", "UTC day"), ("--keep-weekly", "keep_weekly", "ISO week")):
         list_p.add_argument(flag, type=keep_count(KEEP_LIMITS[key]), help=f"Newest per {period}, most recent N (0-{KEEP_LIMITS[key]})")
@@ -799,6 +814,9 @@ def main():
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
     due_p.add_argument("--request", help="Only requests with this name (refused when none is recorded)")
+    calendar_p = commands.add_parser("kit-calendar", help="Private .ics of open requests' dates and comment deadlines")
+    for flag in ("--directory", "--out", "--as-of"):  # --as-of YYYY-MM-DD: earlier comment deadlines left out
+        calendar_p.add_argument(flag, required=flag != "--as-of")
     response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
@@ -1186,6 +1204,13 @@ def main():
             report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
             if report["past_due"] + report["stated_date_passed"]:
+                sys.exit(3)
+        elif args.command == "kit-calendar":
+            from .kit_calendar import calendar
+            try:
+                print(json.dumps(calendar(root, args.out, args.as_of), indent=2))
+            except ValueError as exc:
+                print(f"Stopped: {exc}", file=sys.stderr)
                 sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step

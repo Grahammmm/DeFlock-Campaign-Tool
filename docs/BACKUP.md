@@ -160,18 +160,21 @@ recovery-v2 library has a separate declared-profile and caller-quiescence contra
 
 ## Restore drill
 
-`python3 -m campaign_tool backup-drill --file ARCHIVE [--expect-manifest-sha256 D] [--receipt OUT.json]`
+`python3 -m campaign_tool backup-drill --file ARCHIVE [--expect-manifest-sha256 D] [--receipt OUT.json] [--gnupg-home DIR]`
 proves an archive restores into a working campaign without touching the source: it verifies the
 archive, restores it into a fresh `deflock-drill-*/campaign` temp directory, runs the store check
 (`status --check`) and `doctor` on that copy, then removes the copy. It prints one receipt JSON
 (archive basename, manifest digest, per-step result; no paths or file digests); `--receipt` also
 writes it with mode 0600 and never overwrites. Exit 0 pass, 3 fail, 1 when the archive is missing.
+An encrypted ARCHIVE is decrypted once, with your GnuPG key or the one in `--gnupg-home DIR`, into a
+private temp copy that every step uses and that is removed afterwards; the receipt says
+`"encrypted": true`. A key that cannot decrypt it is a failed `verify` step ("cannot decrypt"), exit 3.
 
 ## Archive inventory and keep rule
 
-`python3 -m campaign_tool backup-list --dir DIR [--keep-daily N] [--keep-weekly M]` re-verifies every
-`*.tar` directly in `DIR` (symlinks are listed under `skipped` and never opened; other files and
-subfolders are ignored) and prints each archive's `created_at`, size, manifest digest and verify
+`python3 -m campaign_tool backup-list --dir DIR [--keep-daily N] [--keep-weekly M] [--gnupg-home DIR]`
+re-verifies every `*.tar` and `*.tar.gpg` directly in `DIR` (symlinks are listed under `skipped` and never opened; other files and
+subfolders are ignored) and prints each archive's `encrypted` flag (read from its content, not its name), `created_at`, size, manifest digest and verify
 result, newest first, failed ones last. With a keep rule it also names, among verified archives,
 the newest per UTC day for the `N` most recent days and the newest per ISO week for the `M` most
 recent weeks (`keep`), the rest (`would_not_keep`) and the failed ones (`failed_never_kept`). It is a
@@ -194,11 +197,41 @@ it into a private temp copy (removed afterwards) with your normal GnuPG key, or 
 `--gnupg-home DIR`. `--expect-manifest-sha256` works as for plain archives. Plain `.tar` archives
 read exactly as before. `backup` names the key's fingerprint instead of the unencrypted warning.
 Decryption needs the private key and its passphrase: keep them apart from the archives. Losing the
-private key loses every backup encrypted to it. `backup-drill`, `backup-list` and `backup-diff` do
-not read encrypted archives yet.
+private key loses every backup encrypted to it. `backup-drill` and `backup-list` read encrypted archives
+(see above); `backup-diff` does not read them yet.
+
+## Scheduled backups
+
+`backup --directory D --into DIR [--encrypt-to KEY]` writes a new `DIR/deflock-backup-<UTC YYYYmmddTHHMMSSZ>.tar`
+(`.tar.gpg` when encrypting) and prints one line, `backup ok: NAME encrypted|UNENCRYPTED files=N bytes=B manifest_sha256=HEX`;
+a failure prints one `backup failed: ...` line on stderr and exits 1, leaving no partial archive. `DIR` must exist, be a
+real folder (not a link) and not be group- or other-writable. It never overwrites; `DIR/.deflock-backup.lock` stops
+overlapping runs (remove it by hand only after a crash). The key is `--encrypt-to`, else `"backup": {"encrypt_to":
+"organizer.asc"}` in `campaign.json` (relative to the campaign folder); with neither the line says `UNENCRYPTED`.
+
+User timer, two files in `~/.config/systemd/user/`
+(then `systemctl --user enable --now deflock-backup.timer`):
+
+    # deflock-backup.service
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/bin/python3 -m campaign_tool backup --directory %h/campaign --into %h/backups
+    WorkingDirectory=%h/DeFlock-Campaign-Tool
+
+    # deflock-backup.timer
+    [Timer]
+    OnCalendar=daily
+    Persistent=true
+    [Install]
+    WantedBy=timers.target
+
+Or one crontab line: `17 2 * * * cd ~/DeFlock-Campaign-Tool && python3 -m campaign_tool backup --directory ~/campaign --into ~/backups`
+
+Keep rule: `python3 -m campaign_tool backup-list --dir ~/backups --keep-daily 7 --keep-weekly 8` shows what it would
+retain. It covers `*.tar` and `*.tar.gpg` (encrypted archives need your GnuPG key or `--gnupg-home DIR`). This installs nothing; deleting stays manual.
 
 ## Not done
 
-Incremental or scheduled backups from cron, restore of a hosted
+Restore of a hosted
 campaign back into D1 and R2 (the export is readable JSON and hash-named objects, so a restore
 script is straightforward but not written), and retention deletion (`backup-list` only reports).

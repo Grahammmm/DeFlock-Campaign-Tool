@@ -166,3 +166,11 @@ counts it and exits 3: stated date passed — the agency's own date; provisional
 While one is open, `kit-status` shows `waiting_on_you_since`, `kit due` lists it as `waiting_on_you` (counted apart,
 never past due, stated date passed or exit 3; the provisional date still shown) and `kit-followup` stops with exit 3,
 writing nothing. The tool makes no claim that a clarification pauses any legal period.
+
+## Private calendar (kit-calendar)
+
+`kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import
+into your own calendar: an all-day event for each open request's provisional determination date (answered requests
+keep only the agency's stated production date) and a timed event for each staged, not cancelled meeting's verified
+written-comment deadline on or after `--as-of`. It holds ids, dates, agency or body names and the official source
+link only. It is refused inside the campaign's `public/` or `content/` and never overwrites: re-run into a new file.

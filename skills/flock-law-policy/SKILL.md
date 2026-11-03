@@ -51,6 +51,7 @@ A clean check is machine-valid and review-required, not legal acceptance.
   normalised value (FACTS ids shown, values never); `undocumented:` lists the rest, and an agency with no governing
   policy is named once. Disputed facts are counted, not used. Exit 3 when any type `differ`s: a prompt to read those
   documents, not a legal conclusion.
+- Machine copy: add `--json` for one `flock-law-policy-compare-v1` document (classes, member slugs, fact ids, verdicts; never values); same exit codes.
 
 ## Outputs
 - Counts `law=L policy=P errors=K`, row numbers, ids, labels and dates. Never duty or evidence text.
