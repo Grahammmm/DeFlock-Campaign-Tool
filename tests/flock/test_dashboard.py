@@ -172,6 +172,98 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('NOT CURRENT: source flock_publish failed', page)
         self.assertIn('NOT CURRENT: source flock_state failed', page)
 
+    def test_actual_publish_approval_then_drift(self):
+        from tests.flock import test_publish as pub
+        fixture = pub.FlockPublishTest(methodName='runTest')
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.assertEqual(fixture.export()[0], 0)
+        doc = json.loads(fixture.out.read_text())
+        for finding in doc['findings']:
+            finding['review'] = {'status': 'approved', 'approved_by': 'G', 'approved_on': '2026-10-30', 'approval_ref': 'G-1'}
+        fixture.out.write_text(json.dumps(doc))
+        self.store = fixture.store.resolve()
+        code, _, _ = self.run_build()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.outputs()[1]['sections']['waiting_publish'], [])
+        shutil.rmtree(self.output)
+        doc['findings'][0]['text'] = 'A synthetic edit.'
+        fixture.out.write_text(json.dumps(doc))
+        self.assertEqual(self.run_build()[0], 0)
+        page, data = self.outputs()
+        self.assertEqual(data['sections']['waiting_publish'][0]['stage'], 'drifted')
+        self.assertIn('<td>drifted</td>', page)
+        self.assertNotIn('A synthetic edit.', page)
+
+    def test_real_unsafe_ids_and_duplicate_source_cannot_bypass_gates(self):
+        self.requests(row('<script>alert(1)</script>'), row('"""onmouseover="'), row('R-1'))
+        fixture = fixture_state.StateTests(methodName='runTest')
+        fixture.tmp, fixture.store, fixture.folder = self.tmp, self.store, self.folder
+        fixture.email('2026-10-02', field=False, body='G APPROVED <script>private</script>')
+        code, _, _ = self.run_build()
+        page, data = self.outputs()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(data['sections']['requests']), 3)
+        self.assertEqual(len(data['sections']['waiting_send']), 1)
+        self.assertEqual(data['sections']['waiting_send'][0]['state'], 'email-drafted')
+        self.assertEqual(sum(r['request_id'] == 'R-1' for r in data['sections']['requests']), 1)
+        for text in ('<script', '<form', 'href=', '<img', '<iframe', '<link', 'onmouseover=', 'G APPROVED'):
+            self.assertNotIn(text, page)
+        self.assertNotIn('private</script>', json.dumps(data))
+
+    def test_malformed_record_and_invalid_dates_are_not_falsely_healthy(self):
+        self.requests(row('R-BAD', sent='2026-10-05', ev='synthetic', rdate='2026-10-02', sha='a' * 64))
+        code, _, _ = self.run_build()
+        page, data = self.outputs()
+        self.assertEqual(code, 1)
+        self.assertEqual(data['sections']['requests'][0]['state'], 'record-error')
+        self.assertIn('NOT CURRENT: source flock_today failed', page)
+        self.assertNotIn('synthetic', page)
+        for date in ('2026-11-31', '2026-1-01', 'words'):
+            with self.subTest(date=date), self.assertRaises(SystemExit) as error, contextlib.redirect_stderr(io.StringIO()):
+                self.run_build(date=date, output=self.tmp / 'invalid-date')
+            self.assertEqual(error.exception.code, 2)
+        self.assertFalse((self.tmp / 'invalid-date').exists())
+
+    def test_incomplete_run_source_never_looks_clear(self):
+        runs = self.folder / 'runs'
+        runs.mkdir()
+        (runs / '2026-10-01').symlink_to(self.tmp / 'missing')
+        code, _, _ = self.run_build()
+        page, data = self.outputs()
+        self.assertEqual(code, 1)
+        self.assertIn('NOT CURRENT: source flock_state failed', page)
+        self.assertNotIn('nothing waiting (source read: flock_state)', page)
+        self.assertIn('flock_state', {e['source'] for e in data['source_errors']})
+
+    def test_source_failures_are_isolated_and_no_output_symlink_followed(self):
+        with mock.patch.object(MOD.today, 'reminders', side_effect=OSError('secret source text')):
+            self.assertEqual(self.run_build()[0], 1)
+        page, data = self.outputs()
+        self.assertIn('NOT CURRENT: source flock_today failed (OSError)', page)
+        self.assertIn('<td>R-1</td>', page)
+        self.assertNotIn('secret source text', page + json.dumps(data))
+        shutil.rmtree(self.output)
+        target = self.tmp / 'not-created'
+        self.output.symlink_to(target, target_is_directory=True)
+        code, out, err = self.run_build()
+        self.assertEqual((code, out), (1, ''))
+        self.assertTrue(err.startswith('dashboard:'))
+        self.assertFalse(target.exists())
+
+    def test_alert_validation_rejects_bad_types_and_unreviewed(self):
+        file = self.tmp / 'invalid-alerts.json'
+        valid = {'schema': 'flock-alerts-v1', 'review_required': True,
+                 'alerts': [{'id': 'A-1', 'kind': 'check', 'source': 'fixture'}]}
+        cases = [{**valid, 'review_required': False}, {**valid, 'alerts': [None]},
+                 {**valid, 'alerts': [{'id': 'A-1', 'kind': 3, 'source': 'fixture'}]},
+                 {**valid, 'alerts': valid['alerts'] * 501}]
+        for n, doc in enumerate(cases):
+            file.write_text(json.dumps(doc))
+            out = self.tmp / ('invalid-alerts-' + str(n))
+            self.assertEqual(self.run_build('--alerts', str(file), output=out)[0], 1)
+            self.assertIn('NOT CURRENT: source alerts failed', (out / 'index.html').read_text())
+
     def test_no_forbidden_direct_imports_and_reviewed_law(self):
         found = set()
         for node in ast.walk(ast.parse((ROOT / 'tools/flock_dashboard.py').read_text())):

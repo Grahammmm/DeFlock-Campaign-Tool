@@ -51,6 +51,7 @@ def source(errors, name, fn):
 
 def collect_state(store):
     reqs, runs = state.collect(store)
+    if any(s in {'run-malformed', 'link-refused'} or not mapped for _, _, s, mapped in runs): raise ValueError('state source incomplete')
     return ([{'agency': a, 'request_id': i, 'state': s, 'sent_date': 'NOT RECORDED', 'next_step': 'NOT RECORDED'} for a, i, s, _ in reqs],
             [{'agency': a, 'run': d, 'state': s} for a, d, s, _ in runs])
 
