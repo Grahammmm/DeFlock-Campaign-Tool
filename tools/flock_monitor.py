@@ -282,22 +282,27 @@ def agency_slug(text):  # --agency: an F1 slug, else argparse usage exit 2
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", text): raise argparse.ArgumentTypeError("is not a lowercase slug")
     return text
 
-def new_leads(path, date, relevant):  # call only under the store lock: add unknown relevant items, list date's leads
-    rows, ids, add = leads_rows(path), set(), []
+def new_leads(path, date, relevant, write=True):  # call only under the store lock (or write=False): (added, lines)
+    rows = leads_rows(path)
+    add, lines = plan_leads(rows, date, relevant)
+    if add and write:
+        write_atomic(path, header=LEADS_HEADER, rows=rows + add)
+    return add, lines
+
+def plan_leads(rows, date, relevant):  # pure: (unknown relevant items to add, date's lead lines); never writes
+    ids, add = set(), []
     known = {r["item_id"] for r in rows}
     for r in relevant:
         if r["item_id"] not in known | ids:
             ids.add(r["item_id"])
             add.append(dict(item_id=r["item_id"], agency=r["agency"], first_seen=date, state="new", state_at=date,
                             state_by="digest"))
-    if add:
-        write_atomic(path, header=LEADS_HEADER, rows=rows + add)
     first, shown = {r["item_id"] for r in rows + add if r["first_seen"] == date}, {}
     for r in relevant:  # a lead first flagged on an earlier date is never listed again, whatever its state
         if r["item_id"] in first:
             shown.setdefault(r["item_id"], " ".join(("- %s: %s %s [%s]" % (r["agency"], r["title"], r["url"],
                                                                            r["item_id"])).split()))
-    return ["", "Leads (%d new)" % len(shown)] + list(shown.values()) if shown else []  # no leads for D: no section
+    return add, ["", "Leads (%d new)" % len(shown)] + list(shown.values()) if shown else []  # no leads for D: no section
 
 def lead(store, item, state, by, date):  # triage one lead: new -> requested|ignored, ignored -> requested
     if not re.fullmatch(r"M-[0-9a-f]{12}", item): raise Fail("lead: --item is not M- and 12 lowercase hex")
@@ -327,11 +332,13 @@ def unreachable(log, date, n):  # pages whose last n log rows with scan_date <= 
             lines.append("- %s: %s (%s, since %s)" % (agency, url, rs[-1]["reason"], rs[-streak]["scan_date"]))
     return ["", "Unreachable (%d pages, last %d scans refused)" % (len(lines), n)] + lines if lines else []
 
-def digest(store, date, after=3):
+def digest(store, date, after=3, dry_run=False):
+    if dry_run:  # no lock (it would create .monitor.lock), no mkdir, no write: the same checks on the store as it is
+        return digest_locked(private_store(store), date, after, write=False)
     with store_lock(store := private_store(store)):  # date filter, relevance match and both writes: one locked pass
         return digest_locked(store, date, after)
 
-def digest_locked(store, date, after=3):  # call only under the store lock; a scan committed before it is always included
+def digest_locked(store, date, after=3, write=True):  # under the store lock unless write=False; a committed scan is included
     path = store / "digest" / (date + ".md")
     rows = [r for _, r in read_csv(store / "MONITOR.csv", MONITOR_HEADER, missing_ok=True) if r["seen_at"] == date]
     pattern = keywords()
@@ -349,7 +356,11 @@ def digest_locked(store, date, after=3):  # call only under the store lock; a sc
                                                  % (len(items) - 38, relevant - sum(items[i][1] for i in keep))]
     down = unreachable(log_rows(store / "SCAN-LOG.csv"), date, after)  # a bad log fails before any write
     _real(path.parent, "digest folder")  # checked before LEADS.csv is touched
-    lines += new_leads(store / "LEADS.csv", date, [r for r, terms in ranked if terms]) + down
+    add, leads_lines = new_leads(store / "LEADS.csv", date, [r for r, terms in ranked if terms], write)
+    lines += leads_lines + down
+    if not write:
+        return "\n".join(lines + ["dry run | would write digest/%s.md | would add %d leads | nothing written"
+                                  % (date, len(add))])
     write_atomic(path, "\n".join(lines) + "\n")
     return path
 
@@ -376,6 +387,7 @@ def main(argv=None):
     leads_p.add_argument("--agency", type=agency_slug)
     digest_p.add_argument("--unreachable-after", type=scans, default=3, metavar="N",
                           help="list pages whose last N logged scans (2..30, default 3) were all refused")
+    digest_p.add_argument("--dry-run", action="store_true", help="print the digest and leads it would write; write nothing")
     for p, required in ((scan_p, False), (digest_p, True), (lead_p, False), (leads_p, False)):
         p.add_argument("--store", required=True)
         p.add_argument("--date", type=datetime.date.fromisoformat, required=required, default=datetime.date.today())
@@ -389,7 +401,7 @@ def main(argv=None):
               else "\n".join(scan(args.watchlist, args.store, args.date.isoformat(), fetch=fetch)) if args.command == "scan"
               else lead(args.store, args.item, args.state, args.by, args.date.isoformat()) if args.command == "lead"
               else "\n".join(leads(args.store, args.state, args.agency, args.date)) if args.command == "leads"
-              else digest(args.store, args.date.isoformat(), args.unreachable_after))
+              else digest(args.store, args.date.isoformat(), args.unreachable_after, args.dry_run))
     except (Fail, OSError, UnicodeDecodeError, csv.Error, ImportError) as err:  # csv.Error prints "io error: Error"
         print(err if isinstance(err, Fail) else "io error: %s" % ("ImportError" if isinstance(err, ImportError)
                                                                    else type(err).__name__))
