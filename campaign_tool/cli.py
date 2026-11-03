@@ -473,13 +473,20 @@ def build(root, check=False, budget=None):
     for note in _site_claim_notes(root):  # DF-4 alert-only: notes for the publish gate, never an error or an exit code
         print(note)
     if check:
-        from .site_check import check_links
+        from .site_check import check_accessibility, check_links
         hits = check_public_tree(public)
         for path, line, label in hits:
             print(f"public/{path}:{line}: {label}", file=sys.stderr)
         broken = check_links(public)
         for page, href in broken:
             print(f"public/{page}: broken link {href}", file=sys.stderr)
+        a11y = check_accessibility(public)  # pattern lint, not an audit
+        for page, code, detail in a11y:
+            print(f"public/{page}: {code} {detail}", file=sys.stderr)
+        if a11y:  # one Stopped: line with a count per kind
+            found = [f"{len(hits)} potential leak(s)"] * bool(hits) + [f"{len(broken)} broken link(s)"] * bool(broken)
+            raise ValueError(f"public tree check found {' and '.join(found + [f'{len(a11y)} accessibility issue(s)'])}; "
+                             "fix content and rebuild")
         if hits and broken:  # both lists are already on stderr; one Stopped: line names both counts
             raise ValueError(f"public tree check found {len(hits)} potential leak(s) and {len(broken)} broken link(s); "
                              "fix content and rebuild")
@@ -487,7 +494,8 @@ def build(root, check=False, budget=None):
             raise ValueError(f"public tree check found {len(hits)} potential leak(s); fix content and rebuild")
         if broken:
             raise ValueError(f"public tree check found {len(broken)} broken link(s); fix content and rebuild")
-        print("Public tree check passed (pattern scan and internal links; human review still required).")
+        print("Public tree check passed (pattern scan, internal links and accessibility pattern lint; "
+              "not an accessibility audit; human review still required).")
     return 0 if budget is None else weight_budget(public, budget)
 
 
