@@ -3,6 +3,7 @@
 ``summary REPORT.json`` / ``summary --dir DIR`` print to stdout and write nothing. No verb records,
 signs or marks a review; output names the review owed per human gate and is never acceptance.
 ``summary … --json`` prints the same values as one run-report-review-v1 document; exit codes are unchanged.
+``--dir … --since S [--until U]`` keeps invalid reports and valid ones started in [S, U); the rest are counted as excluded.
 Exit 1: invalid report, failed work stage, finished after --now, or a run_id with differing
 contents. Exit 2: refused input. Otherwise 0."""
 import argparse
@@ -155,10 +156,16 @@ def list_dir(directory):
     return [read_file(path) for path in paths]
 
 
-def summarise_dir(blobs, now):
-    """Return (entries, counts, status); an entry is (duplicate or None, facts or None) in text order."""
+def summarise_dir(blobs, now, window=None):
+    """Return (entries, counts, status); an entry is (duplicate or None, facts or None) in text order.
+    With window (since, until or None): invalid reports and valid ones started in [since, until) are kept."""
     loaded = [(data, *load(data)) for data in blobs]
     loaded.sort(key=lambda x: (_field(x[1], "started_at", STAMP) or "", _field(x[1], "run_id", RUN_ID) or "", x[0]))
+    total = len(loaded)
+    if window is not None:  # before duplicate detection: an excluded copy is never compared
+        since, until = window  # fixed-width UTC stamps, already strptime-checked: string order is time order
+        loaded = [x for x in loaded if x[2] is not None or since <= x[1]["started_at"] and (
+            until is None or x[1]["started_at"] < until)]
     variants = {}
     for data, report, diag in loaded:
         if diag is None:
@@ -179,10 +186,11 @@ def summarise_dir(blobs, now):
         entries.append(({"run_id": run_id, "kind": "contents differ"} if differ else None, f))
         valid, invalid = (valid + 1, invalid) if diag is None else (valid, invalid + 1)
         status = max(status, code)
-    return entries, {"reports": valid + invalid, "valid": valid, "invalid": invalid, "duplicates": dupes}, status
+    counts = {"reports": valid + invalid, "valid": valid, "invalid": invalid, "duplicates": dupes}
+    return entries, counts if window is None else {**counts, "excluded": total - len(loaded)}, status
 
 
-def dir_lines(entries, counts):
+def dir_lines(entries, counts, window=None):
     lines = []
     for dup, f in entries:
         if f is None:
@@ -192,15 +200,25 @@ def dir_lines(entries, counts):
         if dup is not None:
             block.insert(1, f"review | {dup['run_id']} | DUPLICATE | run_id | contents differ")
         lines += block
+    span = "" if window is None else f" excluded={counts['excluded']} window={window[0]}..{window[1] or 'open'}"
     lines.append(f"review | reports={counts['reports']} valid={counts['valid']} invalid={counts['invalid']} "
-                 f"duplicates={counts['duplicates']} | machine-valid is not reviewed")
+                 f"duplicates={counts['duplicates']}{span} | machine-valid is not reviewed")
     return lines
 
 
-def document(entries, counts):
+def document(entries, counts, window=None):
     return {"schema": "run-report-review-v1", "review_required": True, "reviewed": "none by this tool",
             "reports": [f for _, f in entries if f is not None], "duplicates": [d for d, _ in entries if d is not None],
-            "counts": counts}
+            "counts": counts, **({} if window is None else {"window": {"since": window[0], "until": window[1]}})}
+
+
+def _stamp(name, value):  # the shape check passes 2026-02-30 or 25:00:00; strptime rejects them
+    if value is not None and not STAMP.match(value):
+        raise Refused(f"{name} must be YYYY-MM-DDTHH:MM:SSZ")
+    try:
+        return _parse(value) if value is not None else None
+    except ValueError:
+        raise Refused(f"{name} is not a real UTC date and time") from None
 
 
 def main(argv=None):
@@ -209,20 +227,25 @@ def main(argv=None):
     summary.add_argument("report", nargs="?")
     summary.add_argument("--dir")
     summary.add_argument("--now", help="YYYY-MM-DDTHH:MM:SSZ; adds an AGE line only")
+    summary.add_argument("--since", help="with --dir: only valid reports with started_at >= SINCE (invalid always shown)")
+    summary.add_argument("--until", help="with --since: only started_at < UNTIL")
     summary.add_argument("--json", action="store_true", help="print one run-report-review-v1 document instead")
     args = parser.parse_args(argv)
     try:
         if (args.report is None) == (args.dir is None):
             raise Refused("give exactly one of REPORT.json or --dir")
-        if args.now is not None and not STAMP.match(args.now):
-            raise Refused("--now must be YYYY-MM-DDTHH:MM:SSZ")
-        try:  # the shape check passes 2026-02-30 or 25:00:00; strptime rejects them
-            now = _parse(args.now) if args.now is not None else None
-        except ValueError:
-            raise Refused("--now is not a real UTC date and time") from None
+        now = _stamp("--now", args.now)
+        window = None if args.since is None and args.until is None else (args.since, args.until)
+        if window is not None and args.dir is None:
+            raise Refused("--since and --until need --dir")
+        since, until = _stamp("--since", args.since), _stamp("--until", args.until)
+        if window is not None and since is None:
+            raise Refused("--until needs --since")
+        if until is not None and until <= since:
+            raise Refused("--until must be after --since")
         if args.dir is not None:
-            entries, counts, status = summarise_dir(list_dir(Path(args.dir)), now)
-            lines = dir_lines(entries, counts)
+            entries, counts, status = summarise_dir(list_dir(Path(args.dir)), now, window)
+            lines = dir_lines(entries, counts, window)
         else:
             f, status = facts(*load(read_file(Path(args.report))), now)
             entries, counts, lines = [(None, f)], {"reports": 1, "valid": int(f["valid"]),
@@ -230,7 +253,7 @@ def main(argv=None):
     except (Refused, OSError) as exc:
         print(f"review | refused | {exc if isinstance(exc, Refused) else 'unreadable'}", file=sys.stderr)
         return 2
-    print(json.dumps(document(entries, counts), indent=1, sort_keys=True) if args.json else "\n".join(lines))
+    print(json.dumps(document(entries, counts, window), indent=1, sort_keys=True) if args.json else "\n".join(lines))
     return status
 
 
