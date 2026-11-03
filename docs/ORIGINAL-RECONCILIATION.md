@@ -1,5 +1,14 @@
 # Imported original reconciliation
 
+## Unattended drift check (read-only)
+
+`python3 tools/reconcile_auto.py check --campaign DIR --records-root DIR --flock-store DIR`
+checks any named roots and optionally writes a new `--json-out` alert file.
+It detects drift only: no timer, repair, delivery or legal conclusion. Repair
+remains the separate owner-approved path described below. Alerts are
+review-required and clear only when the underlying condition changes. SQLite
+may create `-shm`/`-wal` sidecars when opening a quiet WAL ledger read-only.
+
 This is an opt-in source API. It does not install a runtime, run a batch, create
 reviewer authority or promote extraction. A matching byte hash establishes byte
 identity; it does not establish role, scope, delivery or substantive review.

@@ -2,7 +2,8 @@
 """Private LAW.csv + per-agency POLICY.csv: --check, versions, governing (each agency on a date), gaps, changes (policy-kind
 FACTS types that differ between consecutive adopted versions), coverage (us-ca package rules with no LAW row) and compare
 (agencies' governing policy facts on one date grouped into value classes by fact id) and stale (LAW rows whose text was
-accessed more than N days before today, or after it). Prints ids, labels, dates, fact types, counts only."""
+accessed more than N days before today, or after it) and review (LAW and POLICY rows still unreviewed or disputed, with
+their age). Prints ids, labels, dates, fact types, counts only."""
 import csv
 import hashlib
 import importlib.util
@@ -224,6 +225,22 @@ def stale(law_rows, today, max_age):  # per LAW row (rule_id, then CSV row): acc
             n[kind] += 1
     return out + [f"law={len(law_rows)} stale={n['stale']} future={n['future']} max_age_days={max_age} today={today}"]
 
+def review(law_rows, policy_rows, agency, today):  # rows still unreviewed or disputed; read-only, never changes a status
+    out, n = [], dict.fromkeys((f"{k}_{s}" for k in ("law", "policy") for s in ("unreviewed", "disputed")), 0)
+    age = lambda r: "(future)" if day(r["added_at"]) > today else f"({(today - day(r['added_at'])).days} days)"  # noqa: E731
+    cut = lambda v: v.replace("|", "/")[:60]  # noqa: E731
+    for _, r in sorted(law_rows, key=lambda x: (x[1]["rule_id"], x[0])):
+        if r["status"] != "checked":
+            out.append(f"review | law | {r['rule_id']} | {r['status']} | added {r['added_at']} {age(r)}")
+            n["law_" + r["status"]] += 1
+    mine = [r for _, r in policy_rows if agency is None or slug(r["agency"]) == agency]
+    for r in sorted(mine, key=lambda r: (slug(r["agency"]), r["policy_id"], r["policy_row_id"])):
+        if r["status"] != "checked":
+            out.append(f"review | policy | {slug(r['agency'])} | {r['policy_row_id']} | {cut(r['policy_id'])} "
+                       f"{cut(r['version_label'])} | {r['status']} | added {r['added_at']} {age(r)}")
+            n["policy_" + r["status"]] += 1
+    return out + [" ".join(f"{k}={v}" for k, v in n.items())]
+
 def policy_facts(store, agencies):  # -> ({slug: policy-kind FACTS rows}, errors); a folder without FACTS.csv has none
     spec = importlib.util.spec_from_file_location("_flock_facts", Path(__file__).resolve().parent / "flock_facts.py")
     tool, out, errs = importlib.util.module_from_spec(spec), {}, []  # the sibling tool by file path, never a copy
@@ -309,7 +326,7 @@ def compare(policy_rows, facts, on, types=None):  # per fact type: agencies grou
 USAGE = ("usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD]"
          " | governing STORE --on YYYY-MM-DD | gaps STORE --on YYYY-MM-DD | changes STORE [--agency SLUG]"
          " | coverage STORE [--on YYYY-MM-DD] | compare STORE --on YYYY-MM-DD [--types T1,T2]"
-         " | stale STORE --max-age-days N [--today YYYY-MM-DD]")
+         " | stale STORE --max-age-days N [--today YYYY-MM-DD] | review STORE [--agency SLUG] [--today YYYY-MM-DD]")
 
 def main(argv):
     try:
@@ -361,6 +378,17 @@ def run(argv):
             return 1
         law_rows, _, errs = load_all(argv[1])
         out = errs or stale(law_rows, day(on) if on else date.today(), int(argv[3]))
+        print("\n".join(out), file=sys.stderr if errs else sys.stdout)
+        return 1 if errs else 3 if len(out) > 1 else 0
+    if argv[:1] == ["review"]:  # STORE a directory; any load error -> stderr only, exit 1; exit 3 when any row waits
+        opts = dict(zip(argv[2::2], argv[3::2]))
+        ag = opts.get("--agency", "x")
+        if len(argv) not in (2, 4, 6) or len(opts) != len(argv) // 2 - 1 or set(opts) - {"--agency", "--today"} \
+                or not ag or slug(ag) != ag or not day(opts.get("--today", "2000-01-01")) or not Path(argv[1]).is_dir():
+            print(USAGE, file=sys.stderr)
+            return 2
+        law_rows, policy_rows, errs = load_all(argv[1])
+        out = errs or review(law_rows, policy_rows, opts.get("--agency"), day(opts.get("--today", "")) or date.today())
         print("\n".join(out), file=sys.stderr if errs else sys.stdout)
         return 1 if errs else 3 if len(out) > 1 else 0
     if argv[:1] == ["changes"]:  # a report, not findings: exit 0 clean; any POLICY or in-scope FACTS error -> stderr, exit 1

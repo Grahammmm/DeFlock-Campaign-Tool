@@ -228,8 +228,9 @@ def documents(groups, inv):
     return docs, named
 
 
-def summary_data(rows, inv=None, named=None):
-    """flock-request-summary-v1: summary()'s counts as one document; unmatched-row text only goes to `named`."""
+def summary_data(rows, inv=None, named=None, as_of=None):
+    """flock-request-summary-v1: summary()'s counts as one document; unmatched-row text only goes to `named`.
+    as_of adds oldest_open_days: calendar days since the recorded sent date; not a legal status."""
     groups, agencies = {}, []
     for r in rows:
         groups.setdefault(slug(r["agency"]), []).append(r)
@@ -241,6 +242,9 @@ def summary_data(rows, inv=None, named=None):
         agencies.append({"slug": key, "label": rs[0]["agency"], "counts": {s: sum(r["status"] == s for r in rs) for s in ORDER},
                          "receipt_unknown": sum(not r["receipt_evidence"] for r in opened),
                          "oldest_open_sent": min((r["sent"] for r in opened), default=None)})
+        if as_of:  # a request sent after the as-of day is counted in totals, never given a negative age
+            aged = [day(r["sent"]) for r in opened if day(r["sent"]) <= as_of]
+            agencies[-1]["oldest_open_days"] = (as_of - min(aged)).days if aged else None
         for r in sorted(rs, key=lambda r: r["request_id"]) if inv is not None else ():
             got = docs.get((key, r["request_id"]), {})
             agencies[-1].setdefault("requests", []).append({"request_id": r["request_id"], "status": r["status"],
@@ -251,23 +255,31 @@ def summary_data(rows, inv=None, named=None):
         reqs = [q for a in agencies for q in a["requests"]]
         totals.update(posted=sum(q["posted"] for q in reqs), withheld=sum(q["withheld"] for q in reqs), unknown_rows=len(lines))
         totals["documents"] = totals["posted"] + totals["withheld"]
+    if as_of:
+        totals.update(oldest_open_days=max((a["oldest_open_days"] for a in agencies if a["oldest_open_days"] is not None),
+                                           default=None), as_of=as_of.isoformat(),
+                      sent_after_as_of=sum(r["status"] == "open" and day(r["sent"]) > as_of for r in rows))
     return {"schema": "flock-request-summary-v1", "review_required": True, "note": "not a legal status; the canonical ledger wins",
             "agencies": agencies, "totals": totals}
 
 
-def summary(rows, inv=None):
+def summary(rows, inv=None, as_of=None):
     """One status line per agency (slug order, first-seen label), then totals. Counts only: no law package, no deadline.
     inv (from inventory()) adds a document-count line per request after its agency and names unmatched rows."""
-    lines, data = [], summary_data(rows, inv, named := [])
+    lines, data = [], summary_data(rows, inv, named := [], as_of)
     for a in data["agencies"]:
         counts, oldest = " ".join(f"{s}={n}" for s, n in a["counts"].items()), a["oldest_open_sent"]
+        age = f" | oldest_open_days {'-' if a['oldest_open_days'] is None else a['oldest_open_days']}" if as_of else ""
         lines.append(f"request status | {a['label']} | {counts} | receipt_unknown={a['receipt_unknown']}"
-                     f" | oldest_open_sent {'-' if oldest is None else oldest}")
+                     f" | oldest_open_sent {'-' if oldest is None else oldest}{age}")
         lines += [f"request docs | {a['label']} | {q['request_id']} | status={q['status']} | posted={q['posted']}"
                   f" withheld={q['withheld']}" for q in a.get("requests", ())]
     t = data["totals"]
     extra = (f" documents={t['documents']} posted={t['posted']} withheld={t['withheld']} unknown_rows={t['unknown_rows']}"
              if inv is not None else "")
+    if as_of:
+        extra += (f" oldest_open_days={'-' if t['oldest_open_days'] is None else t['oldest_open_days']}"
+                  f" sent_after_as_of={t['sent_after_as_of']} as_of={t['as_of']}")
     lines += named
     lines.append(f"request status | agencies={t['agencies']} requests={t['requests']} open={t['open']}"
                  f" receipt_unknown={t['receipt_unknown']}{extra} | {data['note']}")
@@ -787,7 +799,8 @@ def _due_args(rest):
 USAGE = ("usage: flock_requests.py --check PATH | due PATH [--as-of YYYY-MM-DD] [--agency SLUG ...] | "
          "due PATH [--as-of YYYY-MM-DD] [--ics OUT [--today YYYY-MM-DD]] | "
          "summary PATH | draft RUNDIR --requests PATH --from YYYY-MM-DD --to YYYY-MM-DD; "
-         "summary PATH [--inventory CSV] [--json] adds document counts / prints JSON; record STORE --agency SLUG --request ID "
+         "summary PATH [--inventory CSV] [--as-of YYYY-MM-DD] [--json] adds document counts / days waiting / prints JSON; "
+         "record STORE --agency SLUG --request ID "
          "--step receipt|extension|determination|produced|closed --date D --evidence TEXT --sha256 HEX [--today D]; "
          "fees record STORE --agency SLUG --request ID --kind estimate|invoice|paid --amount-cents N --date D "
          "--evidence TEXT --sha256 HEX [--today D]; fees check STORE --cap-cents N (required; there is no default cap); "
@@ -849,11 +862,14 @@ def main(argv):
         return print("\n".join(lines + [f"ics | events={events} receipt_unknown={unknown} | {Path(o['--ics']).name}"])) or 0
     as_of = inv = agencies = None
     as_json = argv[:1] == ["summary"] and "--json" in argv[2:]
-    if argv[:1] == ["summary"] and len(argv) > 2:  # --inventory CSV and --json in any order, each at most once
+    if argv[:1] == ["summary"] and len(argv) > 2:  # --inventory CSV, --as-of D and --json in any order, each at most once
         rest = [a for a in argv[2:] if a != "--json"]
-        if len(argv) - len(rest) > 3 or rest[:1] not in ([], ["--inventory"]) or len(rest) not in (0, 2):
+        o = dict(zip(rest[::2], rest[1::2]))
+        if len(argv) - len(rest) > 3 or len(rest) % 2 or 2 * len(o) != len(rest) or set(o) - {"--inventory", "--as-of"}:
             return print(USAGE, file=sys.stderr) or 2
-        inv, argv = (rest[1] if rest else None), argv[:2]
+        if "--as-of" in o and not day(o["--as-of"]):
+            return print("summary: --as-of must be YYYY-MM-DD", file=sys.stderr) or 2
+        inv, as_of, argv = o.get("--inventory"), day(o.get("--as-of", "")), argv[:2]
     if len(argv) > 2 and argv[0] == "due":  # --as-of and repeatable --agency in any order after PATH
         got = _due_args(argv[2:])
         if got is None or got[0] is False:
@@ -875,8 +891,8 @@ def main(argv):
         table, why = inventory(inv) if inv is not None else (None, None)
         if why:
             return print(f"summary: {why}", file=sys.stderr) or 1
-        print(json.dumps(summary_data(rows, table), ensure_ascii=False, sort_keys=True) if as_json
-              else "\n".join(summary(rows, table)))
+        print(json.dumps(summary_data(rows, table, as_of=as_of), ensure_ascii=False, sort_keys=True) if as_json
+              else "\n".join(summary(rows, table, as_of)))
         return 0
     missing = sorted(set(agencies or ()) - {slug(r["agency"]) for r in rows})
     if missing:  # any status counts: an agency whose requests are all closed still exists
