@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
 from datetime import date
@@ -14,8 +15,8 @@ from unittest import mock
 from campaign_tool import labels as labels_module
 from campaign_tool.cli import read_config
 from campaign_tool.content import ContentError, load_content
-from campaign_tool.labels import DEFAULTS, PLACEHOLDER, html_text, load_labels
-from campaign_tool.site import build_site, preview
+from campaign_tool.labels import DEFAULTS, JS_DEFAULTS, PLACEHOLDER, html_text, load_labels
+from campaign_tool.site import FILTER_JS, build_site, preview
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "fictional-campaign"
 SOON, LATE = date(2026, 10, 1), date(2027, 1, 1)  # LATE: every meeting past, every contract ended
@@ -224,10 +225,10 @@ class LabelsTest(unittest.TestCase):
         # officials.*: the fixture has no officials.json (tests/test_site_officials.py covers those labels).
         absent = ["kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
                   "officials.heading", "officials.listed", "officials.source"]
-        self.assertEqual(sorted(set(DEFAULTS) - seen), absent)
+        self.assertEqual(sorted(set(DEFAULTS) - set(JS_DEFAULTS) - seen), absent)  # js.*: the script tests below
 
     def test_non_page_outputs_and_starter_ignore_labels(self):
-        markers = {key: f"X{key}X" for key in DEFAULTS}
+        markers = {key: f"X{key}X" for key in DEFAULTS if key not in JS_DEFAULTS}  # no js.* key: scripts unchanged
         for name, _, _ in SCENARIOS:
             plain, marked = self.build(name), self.build(name, labels=markers)
             other = [p for p in plain if not p.endswith(".html")]
@@ -237,6 +238,74 @@ class LabelsTest(unittest.TestCase):
         before = hashlib.sha256(preview(cfg)["html"].encode()).hexdigest()
         with mock.patch.dict(labels_module.DEFAULTS, markers):
             self.assertEqual(hashlib.sha256(preview(cfg)["html"].encode()).hexdigest(), before)
+
+
+SPANISH = {"js.filter_count": "Mostrando {shown} de {total}", "js.mapped_point": "{count} punto mapeado",
+           "js.mapped_points": "{count} puntos mapeados", "js.city_no_findings": "Sin hallazgos publicados."}
+SCRIPTS = ("site-data.js", "agency-cards.js", "app.js", "findings/filter.js")
+
+
+class ScriptLabelsTest(unittest.TestCase):
+    """DF0137-14: js.* labels reach the generated scripts through LABELS in site-data.js."""
+    setUp, root, build, refused = LabelsTest.setUp, LabelsTest.root, LabelsTest.build, LabelsTest.refused
+
+    def labels_line(self, files):
+        lines = [line for line in files["site-data.js"].decode().splitlines() if line.startswith("var LABELS=")]
+        self.assertEqual(len(lines), 1)
+        return json.loads(lines[0][len("var LABELS="):-1])
+
+    def test_without_js_labels_scripts_are_todays(self):
+        for name, _, _ in SCENARIOS:
+            with self.subTest(name):
+                files = self.build(name)
+                self.assertNotIn(b"LABELS", b"".join(files[p] for p in SCRIPTS if p in files))
+                if "findings/filter.js" in files:
+                    self.assertEqual(files["findings/filter.js"].decode(), FILTER_JS)
+                    self.assertNotIn("/site-data.js", files["findings/index.html"].decode())
+                self.assertNotIn(b"fill(", files["app.js"])
+
+    def test_some_js_labels_set_rest_keep_english_defaults(self):
+        plain, files = self.build("late"), self.build("late", labels=SPANISH)
+        self.assertEqual(self.labels_line(files), dict(JS_DEFAULTS, **SPANISH))
+        filter_js = files["findings/filter.js"].decode()
+        self.assertNotIn("Showing", filter_js)
+        self.assertIn('LABELS["js.filter_count"]', filter_js)
+        index = files["findings/index.html"].decode()
+        self.assertIn('<script defer src="/site-data.js"></script>\n  <script defer src="/findings/filter.js"></script>', index)
+        app = files["app.js"].decode()
+        for english in ('" mapped point', "could not load", "ALPR point", "not specified", "View source record"):
+            self.assertNotIn(english, app)
+        self.assertNotIn("innerHTML", app)
+        self.assertEqual(files["_headers"], plain["_headers"])  # CSP unchanged: no inline script, same origins
+        changed = sorted(p for p in plain if plain[p] != files[p])
+        self.assertEqual(changed, ["app.js", "findings/filter.js", "findings/index.html", "site-data.js"])
+        self.assertIn(b'"Sin hallazgos publicados."', files["site-data.js"])  # Python-side js.* text goes into CITIES
+
+    def test_quotes_backslash_and_slash_emitted_escaped_and_scripts_parse(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node not installed")
+        self.refused({"js.filter_count": "</script>"}, "labels.json.labels.js.filter_count", "must not contain <")
+        files = self.build("late", labels={"js.filter_count": 'Mostrando "{shown}" \\ de {total} /script/',
+                                           "js.popup_title": 'R&D "x" \\ /'})
+        root = self.tmp / "parse"
+        for name in SCRIPTS:
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(files[name])
+            result = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, f"{name}: {result.stderr}")
+        self.assertIn('"js.filter_count":"Mostrando \\"{shown}\\" \\\\ de {total} /script/"', files["site-data.js"].decode())
+        self.assertEqual(self.labels_line(files)["js.popup_title"], 'R&D "x" \\ /')
+
+    def test_unknown_js_key_or_foreign_placeholder_refused(self):
+        self.refused({"js.filter_cuont": "Mostrando"}, "labels.json.labels.js.filter_cuont: unknown label")
+        self.refused({"js.filter_count": "{count} de {total}"}, "labels.json.labels.js.filter_count", "{count}",
+                     "allowed: {shown}, {total}")
+        self.refused({"js.mapped_point": "{shown} punto"}, "labels.json.labels.js.mapped_point", "allowed: {count}")
+        self.refused({"finding.filter_count": "{shown} de {total}"}, "labels.json.labels.finding.filter_count", "{shown}")
+        self.refused({"js.popup_title": "{count}"}, "labels.json.labels.js.popup_title", "allowed: none")
+        self.refused({"js.map_failed": "Falla {evidence"}, "labels.json.labels.js.map_failed", "unpaired brace {")
 
 
 if __name__ == "__main__":

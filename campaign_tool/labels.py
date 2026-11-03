@@ -104,6 +104,27 @@ DEFAULTS = {
     "signup.provider_note": "Submitting opens the provider's hosted confirmation page.",
     "signup.none": "No email addresses are collected by this site. Follow meetings and findings here or by feed.",
 }
+# DF0137-14: fixed strings the generated scripts write into the page. Defaults are today's exact English; site.py
+# switches the scripts to LABELS lookups (site-data.js) only when a js.* key differs from its default.
+JS_DEFAULTS = {
+    "js.filter_count": "Showing {shown} of {total}",
+    "js.mapped_point": "{count} mapped point", "js.mapped_points": "{count} mapped points",
+    "js.map_failed": "The interactive map could not load in this browser. You can still select a city below, {evidence}, or {source}.",
+    "js.map_evidence": "review the evidence notes", "js.map_source": "open the DeFlock source map",
+    "js.data_failed": "Camera data could not load. {source}", "js.data_source": "Open the DeFlock source map",
+    "js.popup_title": "Community-mapped ALPR point", "js.popup_no_manufacturer": "Manufacturer not specified",
+    "js.popup_no_operator": "Operator not specified", "js.popup_source": "View source record",
+    "js.county_findings": "{count} published finding(s) with hashed sources.",
+    "js.county_no_findings": "No findings have been published yet; records requests are in progress.",
+    "js.city_points_one": "{count} community-mapped point inside city limits; ownership unconfirmed",
+    "js.city_points_many": "{count} community-mapped points inside city limits; ownership unconfirmed",
+    "js.city_no_findings": "No published findings for this agency yet.",
+    "js.group_vendor": "Not applicable", "js.group_status": "Ownership unconfirmed",
+    "js.group_summary": "{name}. Points outside city boundaries without an operator tag are research leads, not evidence of agency ownership.",
+    "js.group_fact": "Community-mapped points; verify with records requests.",
+    "js.group_open": "Which agency, if any, operates these points is unconfirmed.", "js.group_flag": "Unconfirmed",
+}
+DEFAULTS.update(JS_DEFAULTS)
 for _family, _labels in (("classification", CLASSIFICATION_LABELS), ("confidence", CONFIDENCE_LABELS), ("kind", KIND_LABELS)):
     DEFAULTS.update({f"{_family}.{code}": text for code, text in _labels.items()})
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")

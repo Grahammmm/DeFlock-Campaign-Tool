@@ -25,7 +25,7 @@ from . import agency_cards, camera_counts, finding_law, image_meta, law, map_con
 from .content import CITY_KINDS, MAX_GEOJSON_BYTES, ContentError, _read_json, load_content, utc_moment
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
-from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, KIND_LABELS, html_text
+from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
 from .markdown_lite import render as markdown
 from .shell import render
 from .provenance_text import EXPLAINER, source_line
@@ -93,6 +93,17 @@ try{v=decodeURIComponent(kv.slice(1).join("="));}catch(err){continue;}var s=pick
 form.addEventListener("change",function(){apply();});form.hidden=false;apply(!found);
 window.findingFilter={apply:apply};})();
 """
+# DF0137-14: a relabelled site (a js.* label differs from its default) reads the count from LABELS in site-data.js,
+# which the findings index then loads first; the text is set through textContent only.
+FILTER_COUNT_JS = 'count.textContent="Showing "+shown+" of "+items.length;'
+
+
+def filter_js(relabel=False):
+    """findings/filter.js: today's FILTER_JS, or with ``relabel`` the count read from ``LABELS["js.filter_count"]``."""
+    if not relabel:
+        return FILTER_JS
+    return FILTER_JS.replace(FILTER_COUNT_JS, 'count.textContent=String(LABELS["js.filter_count"]).replace(/\\{(shown|total)\\}/g,'
+                             'function(m,k){return k==="shown"?shown:items.length;});')
 # data/findings.json emits only these keys, built field by field (DF2237-09); anything else refuses the build.
 PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
                          "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
@@ -314,6 +325,9 @@ class Site:
         self.map = model["map"]
         self.maplibre = "maplibre-gl.js" in model["vendor"]
         self.labels = model.get("labels") or DEFAULTS  # content/labels.json merged over the English defaults
+        # DF0137-14: the js.* labels passed to the scripts, or None (today's English scripts) when none differs.
+        self.js_labels = ({key: self.labels[key] for key in JS_DEFAULTS}
+                          if any(self.labels[key] != text for key, text in JS_DEFAULTS.items()) else None)
         # DF1822-13: "/<relative>" -> (width, height) of each readable PNG/JPEG/WebP public asset, for markdown images.
         self.image_sizes = {}
         for source in model.get("public_assets", ()):
@@ -745,6 +759,7 @@ class Site:
                 f'{form}{self.findings_list(self.model["findings"], filter_attrs=True)}{empty}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", self.labels["title.findings"], self.labels["title.findings_description"], "/findings/", main,
+                         ["/site-data.js", "/findings/filter.js"] if form and self.js_labels else
                          ["/findings/filter.js"] if form else [])
 
     def packet_html(self):
@@ -1049,8 +1064,8 @@ class Site:
         profile["name"] = self.cfg["county"]
         if not profile["facts"]:
             count = len(self.model["findings"])
-            profile["facts"] = [f"{count} published finding(s) with hashed sources." if count else
-                                "No findings have been published yet; records requests are in progress."]
+            profile["facts"] = [self.labels["js.county_findings"].format(count=count) if count else
+                                self.labels["js.county_no_findings"]]
         return profile
 
     def cards_config(self):
@@ -1093,19 +1108,18 @@ class Site:
             entry.update(agency["profile"], **({"flockTransparencyUrl": agency["flock_transparency_url"]} if agency["flock_transparency_url"] else {}))
             if entry["cameraCount"] == "" and entry["name"] in counts:  # an organizer-typed value always wins
                 n = counts[entry["name"]]
-                entry["cameraCount"] = f"{n} community-mapped point{'' if n == 1 else 's'} inside city limits; ownership unconfirmed"
+                entry["cameraCount"] = self.labels["js.city_points_one" if n == 1 else "js.city_points_many"].format(count=n)
             if not entry["facts"]:
                 findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
-                entry["facts"] = [f["title"] for f in findings] or ["No published findings for this agency yet."]
+                entry["facts"] = [f["title"] for f in findings] or [self.labels["js.city_no_findings"]]
             cities[agency["slug"]] = entry
         if self.map:
-            slug = self.map["controller"]["group_slug"]
+            slug, label = self.map["controller"]["group_slug"], self.labels.__getitem__
             cities[slug] = {"name": self.map["group_label"], "displayName": self.map["group_label"],
-                            "bounds": self.map["county_bounds"], "vendor": "Not applicable",
-                            "status": "Ownership unconfirmed", "summary": self.map["group_label"]
-                            + ". Points outside city boundaries without an operator tag are research leads, not evidence of agency ownership.",
-                            "cameraCount": "", "facts": ["Community-mapped points; verify with records requests."],
-                            "open": "Which agency, if any, operates these points is unconfirmed.", "flags": ["Unconfirmed"]}
+                            "bounds": self.map["county_bounds"], "vendor": label("js.group_vendor"),
+                            "status": label("js.group_status"), "summary": label("js.group_summary").format(name=self.map["group_label"]),
+                            "cameraCount": "", "facts": [label("js.group_fact")],
+                            "open": label("js.group_open"), "flags": [label("js.group_flag")]}
         return cities
 
     def site_data_js(self):
@@ -1114,11 +1128,12 @@ class Site:
         return ("// Generated by campaign_tool build from content/. Reviewed campaign data only.\n"
                 f"var CITIES={js_json(self.cities())};\nvar COUNTY_BOUNDS={js_json(county_bounds)};\n"
                 f"var MAP_STYLE={js_json(style)};\nvar CAMERA_DATA_URL=\"/data/cameras.geojson\";\n"
-                "var BOUNDARY_DATA_URL=\"/data/county.geojson\";\n")
+                "var BOUNDARY_DATA_URL=\"/data/county.geojson\";\n"
+                + (f"var LABELS={js_json(self.js_labels)};\n" if self.js_labels else ""))
 
     def app_js(self):
         if self.map:
-            controller = map_controller.render(self.map["controller"], "")
+            controller = map_controller.render(self.map["controller"], "", relabel=bool(self.js_labels))
             boot = ("document.addEventListener(\"DOMContentLoaded\",function(){"
                     "document.querySelectorAll(\".city-choice\").forEach(function(b){b.addEventListener(\"click\",function(){chooseCity(b.getAttribute(\"data-city\")||null);});});"
                     "chooseCity(null);initMap();});\n")
@@ -1376,7 +1391,7 @@ def _plan_site(root, today=None, notes=None):
         "data/sources.json": site.sources_json(),
     })
     if site.finding_filter():  # written only when the findings index loads it
-        files["findings/filter.js"] = FILTER_JS
+        files["findings/filter.js"] = filter_js(bool(site.js_labels))
     files.update(site.agency_feeds())
     plan = []
     if model["map"]:
