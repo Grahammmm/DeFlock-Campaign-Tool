@@ -121,3 +121,29 @@ not source content or a credential. Failed attempts still consume the global
 budget and do not advance checkpoints; the existing keyed alert identity is
 unchanged. Extending this allowlist requires review, not a pattern-based trust
 rule or blanket acceptance of a project's exception messages.
+
+## Poll step: `records mail-poll`
+
+`python3 -m campaign_tool.records mail-poll --config C --store S [--dry-run]` reads one
+folder once and exits: connect, list, fetch (BODY.PEEK) what the cursor has not seen, hand
+each message to intake (`eml_export`), write a `records-mail-poll-v1` receipt, then advance
+`S/mail-poll/state.json` once, atomically (0600 temp + `os.replace`). It prints one line,
+`mail-poll | new=N already=N conflict=N notices=N skipped=N | review-required; nothing sent`,
+and exits 0, 1 on any refusal (`mail-poll | refused: <code>`; the cursor is unchanged), or 2
+on usage. A crash before the cursor write re-fetches next run; intake writes are idempotent.
+
+Credential rule: no agent handles the mailbox secret. `C` holds only `host`, `port` (993),
+`user`, `password_file` and optional `folder`, `account_id`, `timeout`; both files are
+absolute, outside the repo, regular, owned by the caller, mode 0600 and not symlinks. The
+password is read at connect time and never stored, printed, logged or put in a receipt.
+`tls` may only be `implicit`; plaintext or STARTTLS is refused (`tls_required`). Refusals
+name the field (`config_mode_not_0600`, `config_field:password_file`, ...), never a value.
+At most one reconnect follows a transport failure (`connection_refused`); `auth_refused`
+and `tls_unavailable` are not retried.
+
+The mailbox is selected read-only: nothing is sent, flagged, moved or deleted. Same
+Message-ID and bytes counts `already`; same id, different bytes is a `conflict` held in
+`S/mail-poll/quarantine/` and the first copy is untouched. A message with no attachment and
+a portal `/documents/` link is a notice, not a received file. A message with an attachment
+name containing `/`, `\` or NUL is held whole in quarantine with those parts refused
+(`skipped`). `--dry-run` counts and writes nothing. No timer is installed here.
