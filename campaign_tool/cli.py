@@ -480,9 +480,13 @@ def build(root, check=False):
         broken = check_links(public)
         for page, href in broken:
             print(f"public/{page}: broken link {href}", file=sys.stderr)
-        found = ([f"{len(hits)} potential leak(s)"] if hits else []) + ([f"{len(broken)} broken link(s)"] if broken else [])
-        if found:
-            raise ValueError("public tree check found " + " and ".join(found) + "; fix content and rebuild")
+        if hits and broken:  # both lists are already on stderr; one Stopped: line names both counts
+            raise ValueError(f"public tree check found {len(hits)} potential leak(s) and {len(broken)} broken link(s); "
+                             "fix content and rebuild")
+        if hits:
+            raise ValueError(f"public tree check found {len(hits)} potential leak(s); fix content and rebuild")
+        if broken:
+            raise ValueError(f"public tree check found {len(broken)} broken link(s); fix content and rebuild")
         print("Public tree check passed (pattern scan and internal links; human review still required).")
 
 

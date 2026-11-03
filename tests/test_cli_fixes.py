@@ -30,6 +30,7 @@ SAMPLES = (  # one exception per fix text, in table order
     ValueError("Stored object integrity mismatch; intake stopped"),
     ValueError("ledger has a journal or WAL file beside it; nothing was written"),
     ValueError("public tree check found 4 potential leak(s); fix content and rebuild"),
+    ValueError("public tree check found 4 broken link(s); fix content and rebuild"),
     ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response"),
     ValueError("r.json exists; the drill never overwrites a receipt"), sqlite3.DatabaseError("file is not a database"),
     PermissionError(errno.EACCES, "m", "/t"), OSError(errno.ENOSPC, "m"))
@@ -222,6 +223,8 @@ class FixTests(unittest.TestCase):
         self.assertEqual(fixes.fix_for(ValueError("Alpha limit: 50 MiB per file; original was not imported: sub/a.bin")), texts[6])
         self.assertEqual(fixes.fix_for(ValueError("--dir must be a real directory, not a symlink or a file")), texts[7])
         self.assertEqual(fixes.fix_for(ValueError("Folder changed during the run (not a real directory): a")), texts[7])
+        both = fixes.fix_for(ValueError("public tree check found 3 potential leak(s) and 4 broken link(s); fix content and rebuild"))
+        self.assertEqual(both, str(texts[12]).replace("Fix the 4 ", "Fix the 7 "))
 
     def test_exit_codes_without_fix_are_unchanged(self):
         self.init()

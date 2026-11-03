@@ -17,7 +17,9 @@ Each locality then gets the fixed synthetic `content/` (two published findings,
 one meeting, one agency) and a second checked build. Every public file of that
 site must hold none of the synthetic source bytes, no `private/objects/` text
 and no temporary-root path (`content_private_bytes_in_public`); each finding
-page, `sources.html` and `feed.xml` must exist (`content_build_missing_page`).
+page, `sources.html` and `feed.xml` must exist (`content_build_missing_page`),
+and the `build --check` leak scan and internal-link check must then pass on the
+finished site (`content_build_check_failed`).
 Readiness holds are re-checked and the two content index hashes must differ.
 
 Every campaign must retain draft law-package status, unverified jurisdiction,

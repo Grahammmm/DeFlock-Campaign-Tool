@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from campaign_tool import cli
 from campaign_tool.kit import build_kit
+from campaign_tool.site_check import check_links
 from contextlib import closing
 from tools.synthetic_content import write_synthetic_content
 
@@ -43,10 +44,15 @@ def _check_readiness(root):
 
 
 def _content_build(root, county, workspace, raw):
-    """Publish synthetic findings, rebuild, and scan every public file of the content site."""
+    """Publish synthetic findings, rebuild, and scan every public file of the content site.
+
+    The build runs without --check so a missing page keeps its own reason
+    (content_build_missing_page); the same strict leak and internal-link check
+    then runs on the finished tree and fails as content_build_check_failed.
+    """
     with redirect_stdout(io.StringIO()):
         written = write_synthetic_content(root, "".join(county.split()))
-        cli.build(root, check=True)
+        cli.build(root)
     _check_readiness(root)
     forbidden = [raw, b"private/objects/", str(workspace).encode(), str(workspace.resolve()).encode(),
                  *written["source_bytes"]]
@@ -56,6 +62,8 @@ def _content_build(root, county, workspace, raw):
     expected = [f"findings/{slug}.html" for slug in slugs] + ["sources.html", "feed.xml"]
     require(len(slugs) == written["findings"] and all(name in files for name in expected),
             "content_build_missing_page")
+    require(not cli.check_public_tree(root / "public") and not check_links(root / "public"),
+            "content_build_check_failed")
     return {"content_public_files": files, "content_findings": written["findings"]}
 
 
