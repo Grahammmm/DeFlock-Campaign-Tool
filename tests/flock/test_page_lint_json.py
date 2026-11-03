@@ -14,6 +14,10 @@ def text_of(doc):  # the text form a document stands for: one "<area> <index>: <
     return lines + [" ".join("%s=%d" % (k, doc["counts"][k]) for k in ZERO) + " errors=%d" % doc["errors"]]
 
 
+def lint_lines(out):  # text lint lines without the DF-4 advisory notes, which --json sends to stderr instead
+    return [line for line in out.splitlines() if not line.startswith("review-required:")]
+
+
 class FlockPageLintJsonTest(unittest.TestCase):
     setUp, build, lint, mutations = base.FlockPageTest.setUp, base.FlockPageTest.build, base.FlockPageTest.lint, \
         base.FlockPageTest.mutations
@@ -42,16 +46,19 @@ class FlockPageLintJsonTest(unittest.TestCase):
         story["programStart"] = "2025-02-01"
         code, out, _jcode, doc, _raw = self.both(story)
         self.assertEqual(code, 1, out)
-        self.assertEqual(text_of(doc), out.splitlines())  # same lines, same order, same counts
+        self.assertEqual(text_of(doc), lint_lines(out))  # same lines, same order, same counts
         got = [(p["area"], p["index"], p["rule"]) for p in doc["problems"]]
-        for want in (("findings", 0, "R1"), ("findings", 0, "tone"), ("programEvents", 0, "R2")):
+        for want in (("findings", 0, "R1"), ("programEvents", 0, "R2")):
             self.assertIn(want, got)
+        # DF-4 ruling 1: quote-gated wording ("violated") is an advisory text note, never a JSON problem
+        self.assertNotIn(("findings", 0, "tone"), got)
+        self.assertIn("review-required: findings 0: quote-gated wording", out.splitlines())
         self.assertLess(got.index(("findings", 0, "R1")), got.index(("programEvents", 0, "R2")))
         self.assertTrue(all(isinstance(p["index"], int) for p in doc["problems"]))
         for _want, story, thread, extra in self.mutations():  # every single-mutation error round-trips to its text line
             with self.subTest(want=_want):
                 code, out, _jcode, doc, _raw = self.both(story, thread, *extra)
-                self.assertEqual((code, text_of(doc)), (1, out.splitlines()))
+                self.assertEqual((code, text_of(doc)), (1, lint_lines(out)))
                 self.assertNotIn("input", [p["area"] for p in doc["problems"]])
 
     def test_schema_key_error_parses_as_story_schema(self):

@@ -28,8 +28,12 @@ def family(run, verifier=None):
         return "refused: family unknown"
     return "refused: verifier family equals author family" if fams[0] == fams[1] else None
 
-def banned(text, vigilant_only):  # F3's rules for free text with no quote, so quote-gated words are banned outright
-    return bool(compare.ALWAYS.search(text) or compare.GATED.search(text) or (vigilant_only and compare.FLOCK.search(text)))
+def banned(text, vigilant_only):  # F3's refusing rules for free text; quote-gated words are a note (claim_notes), DF-4 ruling 1
+    return bool(compare.ALWAYS.search(text) or (vigilant_only and compare.FLOCK.search(text)))
+
+def claim_notes(verify):  # DF-4 alert-only: review-required notes naming the finding id and field, never the text; not errors
+    return ["review-required: finding %s: %s quote-gated wording" % (fid if re.fullmatch(r"[A-Za-z0-9_-]{1,32}", fid) else "#%d" % n, k)
+            for n, (fid, v) in enumerate(verify.items(), 1) for k in ("records_sought", "reason") if compare.GATED.search(v[k])]
 
 def write(path, text):
     fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
@@ -127,6 +131,7 @@ def finish(run, golden):
     except BaseException:
         with contextlib.suppress(OSError): os.unlink(run / "PUBLIC-OK.csv")
         raise
+    print("".join(note + "\n" for note in claim_notes(load(run)[3])), end="")  # DF-4 alert-only: QUESTIONS.md wording to read
     return print("public_ok=%d questions=%d rejected=%d" % counts) or 0
 
 def on_disk(run, name, want):  # (bytes or None, state) of one output vs the fresh text; a symlink is never followed
@@ -233,7 +238,7 @@ def main(argv=None):
         if args.command == "current":
             return current(run, args.golden)
         errs, _, _, verify = load(run)
-        return print("\n".join(errs + ["verified=%d errors=%d" % (len(verify), len(errs))])) or (1 if errs else 0)
+        return print("\n".join(claim_notes(verify) + errs + ["verified=%d errors=%d" % (len(verify), len(errs))])) or (1 if errs else 0)
     except (OSError, UnicodeDecodeError, csv.Error) as exc:  # class name only: paths and contents stay out of the output
         return print("io: %s" % type(exc).__name__) or 1
 

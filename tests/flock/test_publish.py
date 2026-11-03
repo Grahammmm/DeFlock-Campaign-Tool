@@ -49,9 +49,20 @@ class FlockPublishTest(unittest.TestCase):
         (self.run_dir / "VERIFY.json").write_text(signed)
         with open(FIXTURES / "findings-sample.csv", newline="") as handle:
             base, doc = list(csv.reader(handle)), {}
-        mutations = [("O1", {"claim": "The sample department admitted outside agencies have query access.",
-                             "quote": "Twelve outside agencies have query access.", "quote_fact_id": "F-76dbe8a9b4ac"}, "gated"),
-                     ("T1", {"claim": "The sample training materials were withheld; ask records@sample.org."}, "email")]
+        o1 = {"claim": "The sample department admitted outside agencies have query access.",
+              "quote": "Twelve outside agencies have query access.", "quote_fact_id": "F-76dbe8a9b4ac"}
+        mutations = [("T1", {"claim": "The sample training materials were withheld; ask records@sample.org."}, "email")]
+        # DF-4 ruling 1 (alert-only): quote-gated wording is a review-required note; the finding is still exported.
+        table = [list(r) for r in base]
+        row = next(r for r in table if r[0] == "O1")
+        for column, value in o1.items():
+            row[base[0].index(column)] = value
+        with open(self.run_dir / "FINDINGS.csv", "w", newline="") as handle:
+            csv.writer(handle, lineterminator="\n").writerows(table)
+        self.assertEqual(run("flock_verify.py", "--check", self.rd)[0], 0)
+        self.assertEqual(self.export(), (0, "review-required: finding O1: quote-gated wording\nexported=4 refused=0\n"))
+        self.assertIn("O1", [f["finding_id"] for f in json.loads(self.out.read_text())["findings"]])
+        self.out.unlink()
         for fid, fields, category in mutations:
             with self.subTest(fid=fid):
                 table = [list(r) for r in base]

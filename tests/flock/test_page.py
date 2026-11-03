@@ -115,10 +115,20 @@ class FlockPageTest(unittest.TestCase):
             ("thread.messages 1: R8", None, thread_hidden, ("--not-posted", "10000003")),
             ("findings 0: R8", card(0, "text", f0 + " See inventory document 10000004."), None, ()),
             ("findings 0: R9", card(0, "text", f0 + " Write to name@city.example today."), None, ()),
-            ("findings 0: tone", card(0, "text", f0 + " The City violated it."), None, ()),
             ("programEvents 0: R2", story(lambda s: s.__setitem__("programStart", "2025-02-01")), None, ()),
             ("keyDates 0: R3", story(lambda s: s["keyDates"][0].__setitem__("date", "2026-02-02")), None, ()),
         ]
+
+    def test_quote_gated_wording_is_a_note_not_an_error(self):  # DF-4 operator ruling 1 (2026-11-02): alert-only, was fail-closed
+        f0 = self.story["findings"][0]["text"]
+        story = json.loads(json.dumps(self.story))
+        story["findings"][0]["text"] = f0 + " The City violated it."
+        code, out = self.lint(story)
+        self.assertEqual(code, 0, out)
+        self.assertIn("review-required: findings 0: quote-gated wording\n", out)
+        self.assertNotIn("findings 0: tone", out)
+        self.assertNotIn("violated", out)
+        self.assertRegex(out.splitlines()[-1], r" errors=0$")
 
     def test_lint_fails_closed_on_each_single_mutation(self):
         for want, story, thread, extra in self.mutations():

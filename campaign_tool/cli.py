@@ -430,8 +430,10 @@ def kit(args, root):
 
 
 def social_cmd(root, platforms=None):
-    from .social import build_social
+    from .social import build_social, review_notes
     print(json.dumps(build_social(root, platforms), indent=2, ensure_ascii=False))
+    for note in review_notes(root):  # DF-4 alert-only: stderr; the stdout summary and exit code are unchanged
+        print(note, file=sys.stderr)
     print("Drafts written to kit/social. Nothing was posted.")
 
 
@@ -445,6 +447,11 @@ def check_public_tree(public):
         elif path.is_file():
             hits.extend(violations(str(path.relative_to(public)), path.read_bytes()))
     return hits
+
+
+def _site_claim_notes(root):
+    from .legal_claims import site_notes
+    return site_notes(root)
 
 
 def build(root, check=False):
@@ -463,6 +470,8 @@ def build(root, check=False):
         total += size
         print(f"  {path.relative_to(public).as_posix():<40} {size:>9} bytes")
     print(f"  {len(written)} files, {total} bytes")
+    for note in _site_claim_notes(root):  # DF-4 alert-only: notes for the publish gate, never an error or an exit code
+        print(note)
     if check:
         hits = check_public_tree(public)
         for path, line, label in hits:

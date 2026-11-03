@@ -96,3 +96,46 @@ class BuildSiteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BuildSiteLegalClaimTests(unittest.TestCase):
+    """DF-4 alert-only: wording that asserts a violation reaches the human deploy gate as notes and never stops the build."""
+
+    ASSERTION = "Cedar Police is out of compliance with SB 34 when it shares the data."  # outside DF2037-02 LEGAL_TERMS (a separate blocker)
+
+    def flagged_inputs(self):
+        inputs = manifest_from_example()
+        inputs["content"]["findings/cedar-policy-posted.json"]["body_md"] += "\n\n" + self.ASSERTION
+        return inputs
+
+    def test_flag_is_carried_on_the_deploy_card_and_the_build_still_completes(self):
+        with tempdir() as tmp:
+            ws = FakeWorkspace()
+            result = build_site.run(context(tmp, job("build_site", self.flagged_inputs()), ws))
+            self.assertEqual(result.status, "done", result.error)
+            self.assertTrue(ws.site_files)
+            proposal = next(iter(ws.proposals.values()))["proposal"]
+            self.assertEqual(proposal["review_flags"], ["review-required: findings/cedar-policy-posted: legal-claim wording (non-compliant)"])
+            self.assertEqual(result.outputs["review_flags"], proposal["review_flags"])
+            self.assertNotIn("Cedar Police is out", json.dumps(proposal))
+
+    def test_unflagged_site_carries_an_empty_list(self):
+        with tempdir() as tmp:
+            ws = FakeWorkspace()
+            result = build_site.run(context(tmp, job("build_site", manifest_from_example()), ws))
+            self.assertEqual(result.status, "done", result.error)
+            self.assertEqual(next(iter(ws.proposals.values()))["proposal"]["review_flags"], [])
+            self.assertEqual(result.outputs["review_flags"], [])
+
+    def test_unscannable_content_is_a_flag_not_a_failure(self):
+        from campaign_tool import legal_claims
+        with tempdir() as tmp:
+            ws = FakeWorkspace()
+            original = legal_claims.legal_notes
+            legal_claims.legal_notes = lambda items: (_ for _ in ()).throw(RuntimeError("guard fault"))
+            try:
+                result = build_site.run(context(tmp, job("build_site", manifest_from_example()), ws))
+            finally:
+                legal_claims.legal_notes = original
+            self.assertEqual(result.status, "done", result.error)
+            self.assertEqual(len(result.outputs["review_flags"]), 1)

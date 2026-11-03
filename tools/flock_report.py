@@ -200,7 +200,7 @@ def lint(c, report, sources_text, marks, body_end, entries, facts, inventory, er
     vigilant = any("vigilant" in v or "motorola" in v for v in vendors) and not any("flock" in v for v in vendors)
     def hits(line):
         found = ["denylisted string"] * any(d in line.lower() for d in deny)
-        found += [name for name, rx in (("always-banned wording", compare.ALWAYS), ("quote-gated wording", compare.GATED),
+        found += [name for name, rx in (("always-banned wording", compare.ALWAYS),  # quote-gated: a note (claim_notes), DF-4
                                         ("email-like string", EMAIL), ("phone-like string", PHONE),
                                         ("plate-like string", PLATE)) if rx.search(line)]
         return found + ["vendor-gated wording"] * bool(vigilant and compare.FLOCK.search(line))
@@ -225,6 +225,10 @@ def write(path, text):  # fresh exclusive 0600 temp (mkstemp: O_EXCL, random nam
     return tmp, path
 def fault(exc): return str(exc) if isinstance(exc, Fail) else "io: %s" % type(exc).__name__
 def summary(errs, n): return "\n".join(errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)])
+def claim_notes(report, sources_text=None):  # DF-4 alert-only: legal-claim and quote-gated wording notes; never errors, never text
+    return privacy.review_notes([("line %d" % i, line) for i, line in enumerate((report or "").splitlines(), 1)] +
+                                [("line %d (SOURCES.json)" % i, line) for i, line in enumerate((sources_text or "").splitlines(), 1)],
+                                compare.GATED)
 def prepare(config, out):  # build and check share it: -> (c, report, sources_text, n, errs); writes nothing
     c, report, sources_text, errs, n = None, None, None, [], Counter({k: 0 for k in COUNTS})
     try:
@@ -247,18 +251,18 @@ def on_disk(path):  # -> bytes, or why not; read-only, O_NOFOLLOW never follows 
                                                                                                % type(exc).__name__)
 FSTATE = (("missing", "missing"), ("is a link", "link"), ("is not a regular", "not-a-file"), ("unreadable", "unreadable"))
 def dump(doc): print(json.dumps(doc, indent=1, sort_keys=True, ensure_ascii=False))
-def _check(config, out):  # check's text and --json forms: -> (code, errs, n, state, files); writes nothing
+def _check(config, out):  # check's text and --json forms: -> (code, errs, n, state, files, notes); writes nothing
     c, report, sources_text, n, errs = prepare(config, out)
     files = dict.fromkeys(("REPORT-DRAFT.md", "SOURCES.json"), "not-checked")  # build errors stop the comparison
     state = disk_state(c, report, sources_text, errs, files)
-    return 1 if (errs := list(dict.fromkeys(errs))) else 0, errs, n, state, files
+    return 1 if (errs := list(dict.fromkeys(errs))) else 0, errs, n, state, files, claim_notes(report, sources_text)
 def check(config, out, as_json=False):  # never writes, never prints draft text: names files, counts and the build errors only
-    code, errs, n, state, files = _check(config, out)
+    code, errs, n, state, files, notes = _check(config, out)
     if as_json:
         dump({"schema": "flock-report-check-v1", "review_required": True, "state": state, "files": files,
               "counts": {k: n[k] for k in COUNTS}, "errors": errs})
     else:
-        print(summary(errs, n) + " state=" + state)
+        print("".join(note + "\n" for note in notes) + summary(errs, n) + " state=" + state)
     return code
 def disk_state(c, report, sources_text, errs, files=None):  # check and region: -> invalid|missing|stale|current; appends check: errors
     state = "invalid"
@@ -295,7 +299,7 @@ def build(config, out):
                 raise
     except (Fail, OSError, ValueError, KeyError, TypeError) as exc:
         errs.append(fault(exc))
-    print(summary(errs := list(dict.fromkeys(errs)), n))
+    print("".join(note + "\n" for note in claim_notes(report, sources_text)) + summary(errs := list(dict.fromkeys(errs)), n))
     return 1 if errs else 0
 ORDER, RNAMES = {"rejected": 0, "weak": 1, "medium": 2, "strong": 3}, ("REGION-REPORT-DRAFT.md", "SOURCES.json")
 RNOTE = ("Ratings come from the cross-agency matrix. Each agency is cited only from its own current findings draft, and only "
@@ -398,6 +402,7 @@ def region(args, parser):  # -> exit code; reads every agency draft, writes noth
             with contextlib.suppress(OSError): os.unlink(tmp)
         print(fault(exc))
         return 1
+    print("".join(note + "\n" for note in claim_notes(report, sources_text)), end="")
     print("region topics=%(topics)d agencies=%(agencies)d current=%(current)d excluded=%(excluded)d sources=%(sources)d" % counts)
     return 0
 def _region_check(args, parser):  # region --check text and --json: -> (code, errs, files, agencies, counts); writes nothing
@@ -405,7 +410,7 @@ def _region_check(args, parser):  # region --check text and --json: -> (code, er
         parser.error("--check and --replace cannot be combined")
     errs, report, sources_text, counts, agencies = _region_build(args, parser)
     if errs:
-        return 1, list(dict.fromkeys(errs)), {}, {}, {}
+        return 1, list(dict.fromkeys(errs)), {}, {}, {}, []
     out, files = Path(os.path.abspath(os.path.expanduser(args.out))), {}
     for name, text in zip(RNAMES, (report, sources_text)):
         got = on_disk(out / name)  # O_NOFOLLOW: a link is named, its target never read; any other non-file is stale
@@ -414,16 +419,17 @@ def _region_check(args, parser):  # region --check text and --json: -> (code, er
     states = Counter(files.values())
     counts = {**{k: states[k] for k in ("current", "stale", "missing", "link")}, "agencies_current": counts["current"],
               "excluded": counts["excluded"]}
-    return 0 if states["current"] == len(RNAMES) else 1, [], files, {slug: a[2] for slug, a in agencies.items()}, counts
+    return (0 if states["current"] == len(RNAMES) else 1, [], files, {slug: a[2] for slug, a in agencies.items()}, counts,
+            claim_notes(report, sources_text))
 def region_check(args, parser):  # read-only: never writes, never creates --out, names files and states only, never draft text
-    code, errs, files, agencies, n = _region_check(args, parser)
+    code, errs, files, agencies, n, notes = _region_check(args, parser)
     if args.json:
         dump({"schema": "flock-report-region-check-v1", "review_required": True, "files": files, "counts": n, "errors": errs,
               "agencies": [{"slug": slug, "state": agencies[slug]} for slug in sorted(agencies)]})
     elif errs:
         print("\n".join(errs + ["region-check: invalid"]))
     else:
-        print("\n".join(["region-check: %s %s" % kv for kv in files.items()] +
+        print("\n".join(notes + ["region-check: %s %s" % kv for kv in files.items()] +
                         ["region-check: agency %s %s" % kv for kv in agencies.items()] +
                         ["region-check: current=%(current)d stale=%(stale)d missing=%(missing)d link=%(link)d agencies_current="
                          "%(agencies_current)d excluded=%(excluded)d | draft vs a fresh build, not a review verdict" % n]))
