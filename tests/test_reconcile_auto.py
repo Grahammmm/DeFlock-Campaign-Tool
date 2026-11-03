@@ -183,6 +183,41 @@ class ReconcileTests(unittest.TestCase):
         link.symlink_to(records, target_is_directory=True)
         self.assertEqual(self.check('--records-root', link)[0], 1)
 
+    def test_real_empty_flock_store_runs_unmocked(self):
+        root = self.base / 'flock-real'
+        agency = root / 'agencies' / 'sample-city-police-department'
+        agency.mkdir(parents=True)
+        fixtures = REPO / 'tests' / 'fixtures' / 'flock'
+        (root / 'LAW.csv').write_bytes((fixtures / 'law-sample.csv').read_bytes())
+        (agency / 'POLICY.csv').write_bytes((fixtures / 'policy-sample.csv').read_bytes())
+        (agency / 'FACTS.csv').write_text(','.join(tool.flock.facts_tool.V2) + '\n')
+        (agency / 'CONTACT.csv').write_text(
+            'agency,role,email,source_url,source_sha256,checked_at,added_by\n'
+            'Sample City Police Department,records,records' + chr(64) + 'city.example,'
+            'https://www.city.example/records,' + 'a' * 64 + ',2026-10-30,t\n')
+        before = self.snapshot(root)
+        code, text = self.check('--flock-store', root)
+        self.assertNotIn('checker-failed', text)
+        self.assertIn('roots=1 alerts=0 info=0 checkers_failed=0', text)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(before, self.snapshot(root))
+        (agency / 'FACTS.csv').write_text('not,a,facts,header\n')
+        code, text = self.check('--flock-store', root)
+        self.assertEqual(code, 3, text)
+        self.assertNotIn('checker-failed', text)
+        self.assertIn('| flock-store-facts | action | count=', text)
+
+    def test_loose_mode_is_an_object_alert_not_checker_failure(self):
+        sha = self.ingest('loose', b'loose mode')
+        os.chmod(self.objects / sha, 0o644)
+        (self.objects / hashlib.sha256(b'orphan').hexdigest()).write_text('orphan')
+        os.chmod(self.objects / hashlib.sha256(b'orphan').hexdigest(), 0o600)
+        code, text = self.check('--campaign', self.campaign)
+        self.assertEqual(code, 3, text)
+        self.assertNotIn('checker-failed', text)
+        self.assertIn('object-loose_mode | action | count=1', text)
+        self.assertIn('object-no_ledger_row | action | count=1', text)
+
     def test_flock_sections_and_failures(self):
         root = self.base / 'flock'
         root.mkdir()

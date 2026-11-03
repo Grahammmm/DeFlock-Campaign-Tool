@@ -57,7 +57,7 @@ def campaign(root):
     except ValueError:
         return [alert('campaign', 'ledger-unreadable')]
     allowed = {'invalid_ledger_row', 'missing_file', 'not_a_regular_file', 'size_mismatch',
-               'hash_mismatch', 'leftover_temp', 'no_ledger_row', 'unexpected_entry'}
+               'hash_mismatch', 'leftover_temp', 'no_ledger_row', 'unexpected_entry', 'loose_mode'}
     codes = Counter(p['problem'] for p in problems)
     if not set(codes) <= allowed:
         raise ValueError('unknown checker code')
@@ -96,7 +96,7 @@ def records(root):
 
 def flock_store(root):
     output = io.StringIO()
-    args = SimpleNamespace(backups=None, max_backup_age_days=None, today=date.today())
+    args = SimpleNamespace(backups=None, max_backup_age_days=None, today=date.today(), section=None, json=False)
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
         flock.run(root, args)
     lines = output.getvalue().splitlines()
