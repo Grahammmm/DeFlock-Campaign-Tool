@@ -44,6 +44,7 @@ is discarded after claim loss. Stop does not forcibly terminate in-process compu
 | `MODEL_BASE_URL` | empty | OpenAI-compatible chat endpoint; empty means detector-only digests and rule-only classification |
 | `MODEL_API_KEY`, `MODEL_ID` | empty, `local` | Sent only to `MODEL_BASE_URL` |
 | `CAMPAIGN_JURISDICTION` | empty | Fallback law package id (`us-ca`) when a job carries none |
+| `CAMPAIGN_ROOT` | empty | Local campaign directory read by `newsletter_draft` and `backup`; unset answers those jobs `campaign_root_missing` |
 | `JURISDICTIONS_DIR` | repo `jurisdictions/` | Where law packages are read from (the image sets `/app/jurisdictions`) |
 | `REDACTION_ALLOWLIST`, `REDACTION_DENYLIST` | empty | Comma-separated terms the redactor must keep / must always mask |
 | `POLL_INTERVAL`, `LEASE_SECONDS` | `15`, `300` | Idle sleep and lease length |
@@ -126,7 +127,15 @@ be loopback or on the tailnet, and the runner refuses to start otherwise.
 | `draft_followup` | request/correspondence fields from the job, `templates/follow-up.md`, law package | nothing | `send_followup` card |
 | `build_site` | content manifest in the job | `sites/<version>/<path>` in the public bucket via `PUT /api/runner/site/…` | `deploy_site` card |
 | `send_request` | — | — | answered `blocked`: sends run in the workspace outbox after approval |
-| `intake`, `newsletter_draft`, `backup` | — | — | answered `blocked` with "no handler in this runner version" |
+| `intake` | — | — | answered `blocked` with "no handler in this runner version" |
+| `newsletter_draft` | the campaign directory (`CAMPAIGN_ROOT`): published findings since the last recorded send | `kit/newsletter-draft.{html,txt,json}` under `$RUNNER_WORKDIR/artifacts/<job_id>/` | nothing; draft only, sending needs approval |
+| `backup` | the campaign directory (`CAMPAIGN_ROOT`) | one verified `deflock-backup-<UTC stamp>.tar[.gpg]` under `$RUNNER_WORKDIR/artifacts/<job_id>/` | nothing; local only, no upload |
+
+`newsletter_draft` and `backup` return `done` with the artefact path and a receipt (ids, counts, hashes; no draft or
+record text), or `failed` with one fixed reason: `campaign_root_missing`, `campaign_unreadable`/`campaign_root_unreadable`,
+`no_published_findings`, `draft_refused`, `archive_exists`, `backup_refused`, `write_refused` and a few siblings. A re-run of
+the same job returns the existing draft with `already: true`; it never overwrites an archive. Encryption follows the
+campaign's `backup.encrypt_to` ([BACKUP.md](BACKUP.md)); the Worker's "Approve & send" screen does not yet read the draft file.
 
 Classification is rule-based (`classify_mail.RULES`, ordered denial → extension → fee
 estimate → partial production → clarification → acknowledgement, with attachments turning a

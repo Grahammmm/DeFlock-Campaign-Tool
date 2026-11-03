@@ -51,7 +51,7 @@ No new features until a deploy is scheduled; path-scoped CI keeps them tested.
 | Part | State | Evidence |
 | --- | --- | --- |
 | Cloudflare Workers | Setup wizard, organizer workspace and public-site Worker; tested offline, not deployed. | `workers/`, [WORKERS.md](WORKERS.md) |
-| Runner | Container that pulls jobs from the workspace Worker; tested offline with `--fake`, not attached to a deployed workspace. | `runner/`, [RUNNER.md](RUNNER.md) |
+| Runner | Container that pulls jobs from the workspace Worker; tested offline with `--fake`, not attached to a deployed workspace. It answers `newsletter_draft` (draft only) and `backup` (local archive) with a receipt; nothing is sent or uploaded. | `runner/`, `runner/handlers/newsletter_draft.py`, `runner/handlers/backup.py`, [RUNNER.md](RUNNER.md) |
 | Hosted send path | `campaign_tool/outbox.py` journal and the opt-in signed outbox gateway; no Worker sender is registered and no live send has been made. | `campaign_tool/outbox.py`, `runner/outbox_gateway.py`, [OUTBOX.md](OUTBOX.md), [HOSTED-OUTBOX-GATEWAY.md](HOSTED-OUTBOX-GATEWAY.md) |
 
 ## Planned / not started
@@ -61,7 +61,6 @@ Only items with no implementation in this repository.
 | Item | Evidence that it is not built |
 | --- | --- |
 | Binding the outbox to the Worker `send_request`/`send_followup` executors | They refuse with `sender_not_configured`: `workers/workspace/src/executors/types.ts` |
-| Runner handlers for `newsletter_draft` and `backup` | No handler in `runner/handlers/`; the jobs are answered `blocked` |
 | Social posting | `post_social` is `not_implemented`: `workers/workspace/src/views/screens.ts` |
 | Independently reviewed state-law packages | California ships `status: draft`: `jurisdictions/us-ca/package.json` |
 | Brevo webhooks and list counts | Only a schema column exists: `workers/schema/d1.sql` |
