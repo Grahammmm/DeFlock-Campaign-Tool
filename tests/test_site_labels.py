@@ -223,7 +223,12 @@ class LabelsTest(unittest.TestCase):
         # Codes the fixture has no finding or agency for; they render through the same t("<family>." + code) call.
         # officials.*: the fixture has no officials.json (tests/test_site_officials.py covers those labels).
         # map.history_*: the fixture has no map/history.json (tests/test_site_cameras_page.py covers those labels).
-        absent = ["kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
+        # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
+        absent = ["agency.transparency_cameras", "agency.transparency_checked", "agency.transparency_down",
+                  "agency.transparency_heading", "agency.transparency_hotlist_alerts", "agency.transparency_retention_days",
+                  "agency.transparency_same", "agency.transparency_searches_last_30_days",
+                  "agency.transparency_shared_with_agencies", "agency.transparency_up",
+                  "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
                   "officials.heading", "officials.listed", "officials.source"]

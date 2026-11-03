@@ -217,6 +217,32 @@ roles into `private/reviewers.json`, keeping `added_on`; `finding reviewers list
 roster, `finding review` refuses an unlisted name or unassigned role and `review-status` lists
 `unrostered_receipts`; without one nothing changes. Names stay self-asserted: roles, not identity.
 
+## Publication gate (one check at every publishing path)
+
+`campaign_tool/publication_gate.py` holds one check, `assert_publishable(artefact_id, content_hash, approvals)`,
+and every path that emits publishable content calls it before writing: `finding publish`
+(`campaign_tool/findings.py`), `flock_publish.py stage` and `flock_publish.py brief`. It returns nothing or
+raises `PublicationRefused` (a `ValueError`) naming the artefact id and one reason:
+
+| Reason | Meaning |
+| --- | --- |
+| `no_approval` | no approval record was given |
+| `approval_for_other_content` | approvals exist, none for this artefact id |
+| `content_changed_after_approval` | the artefact's content hash differs from every approval's (one byte is enough) |
+| `status_not_approved` | the matching approval's `status` is not `approved` |
+| `approver_unnamed` | `approved_by` is empty, a placeholder (`-`, `n/a`, `tbd`, `auto`, `system`, `agent`) or a model or lane name |
+| `approval_consumed` | the matching approval carries a truthy `consumed` |
+| `redaction_unsigned` | the approval carries `redaction_signed` and it is not true |
+
+The gate reads those fields, never prose in the artefact or its file name. `redaction_signed` is set by no path
+yet; it is reachable once a redaction sign-off exists. A legal-claim flag is recorded on a refusal and never causes
+one. A refusal prints only the id and reasons, exits non-zero and writes nothing. No code writes an approval: the
+gate has no writer, and `tests/test_publication_gate.py` fails if any other module writes an approval field outside
+the existing human review surface (Python modules by syntax tree, other languages by a literal pattern).
+For `stage` and `brief` the approval is the `PUBLISH.json` review fields, bound to the entry as filed and compared
+with the entry the run re-derives. A clean gate does not prove an artefact is fit to publish: redaction sign-off, the
+privacy lint and the legal-claim notes are separate conditions. `finding correct` is not gated yet.
+
 ## Not done
 
 No reviewer signatures or identity check (roster names are self-asserted); the workspace Worker has
