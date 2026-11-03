@@ -234,7 +234,9 @@ class BrandSite(unittest.TestCase):
                             "zero.svg": " viewBox='0 0 0 128'", "text.svg": " viewBox='0 0 wide high'",
                             "none.svg": "", "percent.svg": " width='100%' height='50%'",
                             "em.svg": " width='10em' height='4em'", "half.svg": " width='10'",
-                            "huge.svg": " width='1e999' height='5'"}.items():
+                            "huge.svg": " width='1e999' height='5'",
+                            "origin-x.svg": " viewBox='1e999 0 512 128'",
+                            "origin-y.svg": " viewBox='0 -1e999 512 128'"}.items():
             self.svg_file(name, attrs)
             for field, brand in ((".logo", {"logo": name, "logo_alt": "Logo"}), (".favicon", {"favicon": name})):
                 with self.subTest(name=name, field=field):

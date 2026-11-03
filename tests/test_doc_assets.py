@@ -307,7 +307,8 @@ class SvgKindsTests(unittest.TestCase):
                  b' viewBox="0 0 512 128" width="30"': (512, 128),
                  b' viewBox="0 0 512" ': None, b' viewBox="0 0 -4 10"': None, b' viewBox="0 0 0 10"': None,
                  b' viewBox="0 0 4 0"': None, b' viewBox="0 0 a b"': None, b' viewBox="0 0 1e999 5"': None,
-                 b' viewBox="0 0 nan 5"': None, b' viewBox="0 0 4 5 6"': None, b' viewBox=""': None,
+                 b' viewBox="1e999 0 512 128"': None, b' viewBox="0 -1e999 512 128"': None,
+                 b' viewBox="-1e999 0 512 128"': None, b' viewBox="0 0 nan 5"': None, b' viewBox="0 0 4 5 6"': None, b' viewBox=""': None,
                  b' width="100%" height="100%"': None, b' width="10em" height="4em"': None,
                  b' width="10mm" height="4mm"': None, b' width="-3" height="4"': None, b' width="0" height="4"': None,
                  b' width="10"': None, b"": None}

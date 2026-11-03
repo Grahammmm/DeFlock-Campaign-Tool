@@ -11,6 +11,7 @@ the rest of a stream dictionary (a string or comment could hold a decoy ``stream
 leave this module.
 """
 import bisect
+import math
 import re
 import zlib
 from xml.etree import ElementTree
@@ -376,7 +377,10 @@ def svg_size(data):
         parts = re.split(r"[\s,]+", root.attrib.get("viewBox", "").strip())
         if len(parts) != 4 or not all(SVG_NUMBER.fullmatch(part) for part in parts):
             return None
-        values = [float(part) for part in parts[2:]]
+        numbers = [float(part) for part in parts]
+        if not all(math.isfinite(number) for number in numbers):  # an overflowed origin is as unreadable as a side
+            return None
+        values = numbers[2:]
     if not all(0 < value < float("inf") for value in values):
         return None
     return round(values[0]), round(values[1])
