@@ -936,6 +936,18 @@ class Site:
                      + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')
         return self.page("meetings", self.labels["title.meetings"], self.labels["title.meetings_description"], "/meetings.html", main)
 
+    def recorded_votes(self, meeting):
+        """DF0137-07: the organizer-verified per-member votes, read from the outcome's official record; "" without."""
+        votes = (meeting.get("outcome") or {}).get("votes")
+        if not votes:
+            return ""
+        rows = "".join(f'<tr><td>{e(v["name"])}</td><td>{self.t("vote." + v["vote"])}</td></tr>' for v in votes)
+        source = e(meeting["outcome"]["source_url"])
+        return (f'<h3>{self.t("meeting.votes")}</h3><table class="recorded-votes"><thead><tr>'
+                f'<th scope="col">{self.t("meeting.votes_member")}</th><th scope="col">{self.t("meeting.votes_vote")}</th>'
+                f'</tr></thead><tbody>{rows}</tbody></table><p class="notice">{self.t("meeting.votes_source")} '
+                f'<a href="{source}" rel="noopener noreferrer">{source}</a></p>')
+
     def meeting_html(self, meeting):
         """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
         cancelled = meeting.get("status") == "cancelled"
@@ -949,7 +961,8 @@ class Site:
                 + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
                 + (f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
                 + self.who_decides(meeting.get("agency_id"))
-                + (meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else "")
+                + (meeting_outcome_html(meeting) + self.recorded_votes(meeting)
+                   if meeting["starts_at"][:10] < self.today.isoformat() else "")
                 + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'

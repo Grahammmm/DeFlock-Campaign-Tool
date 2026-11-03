@@ -404,7 +404,8 @@ MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment
                 "status", "participation", "outcome"}
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
-OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote"}
+OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes"}
+VOTE_VALUES = ("yes", "no", "abstain", "absent", "recused")
 PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
                       "verified_at"}
 
@@ -449,7 +450,7 @@ def load_outcome(value, starts_at, status, label, today=None):
     """Organizer-verified result of a past meeting (DF2237-11), read from an official https record."""
     if status == "cancelled":
         raise ContentError(f"{label}: a cancelled meeting has no outcome")
-    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote"}, label)
+    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes"}, label)
     if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
         raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
     held, now = starts_at[:10], (today or date.today()).isoformat()
@@ -463,9 +464,23 @@ def load_outcome(value, starts_at, status, label, today=None):
                 or "\n" in text or "\t" in text):
             raise ContentError(f"{label}.{key}: must be 1 to 120 characters of plain text "
                                "(no angle brackets or control characters)")
+    votes = value.get("votes", [])  # DF0137-07: per-member votes; names are cross-checked against officials later
+    if "votes" in value and (not isinstance(votes, list) or not 1 <= len(votes) <= 30):
+        raise ContentError(f"{label}.votes: must list 1 to 30 votes")
+    for index, item in enumerate(votes):
+        where = f"{label}.votes[{index}]"
+        _require_keys(item, {"name", "vote"}, {"name", "vote"}, where)
+        name = _text(item, "name", where, allow_empty=False)
+        if len(name) > 120 or "\n" in name or "\t" in name:
+            raise ContentError(f"{where}.name: at most 120 characters on one line")
+        if any(other["name"] == name for other in votes[:index]):
+            raise ContentError(f"{where}.name: listed twice")
+        if not isinstance(item["vote"], str) or item["vote"] not in VOTE_VALUES:
+            raise ContentError(f"{where}.vote: must be one of {', '.join(VOTE_VALUES)}")
     return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
             "verified_by": value["verified_by"], "verified_at": value["verified_at"],
-            **({"vote": value["vote"]} if "vote" in value else {})}
+            **({"vote": value["vote"]} if "vote" in value else {}),
+            **({"votes": [{"name": v["name"], "vote": v["vote"]} for v in votes]} if "votes" in value else {})}
 
 
 def load_meeting(document, label, today=None):
@@ -1077,6 +1092,12 @@ def load_content(root, today=None):
     officials_path = content_dir / "officials.json"  # optional; a symlink is refused by _read_json
     officials = (load_officials(_read_json(officials_path), agencies, today or date.today())
                  if officials_path.is_file() or officials_path.is_symlink() else {})
+    for meeting in meetings:  # DF0137-07: a stored vote must still name one of the body's listed officials
+        listed = {person["name"] for person in officials.get(meeting["agency_id"], [])}
+        for index, vote in enumerate((meeting["outcome"] or {}).get("votes", [])):
+            if vote["name"] not in listed:
+                raise ContentError(f"meetings/{meeting_ids[meeting['id']]}.outcome.votes[{index}].name: "
+                                   f"not in officials.json for {meeting['agency_id']}")
 
     model = {
         "site": site,

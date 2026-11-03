@@ -178,6 +178,15 @@ the outcome. The site shows `Outcome: <label> on <date> (<vote>) · Official rec
 on past meetings and the meeting page, never on upcoming ones. The tool fetches no minutes and
 says nothing about what an outcome means legally.
 
+`--votes FILE` adds the per-member roll call read from the same `--source` record (votes have no URL of
+their own). FILE is a regular, non-symlink UTF-8 CSV of at most 64 KiB with the header `name,vote` and
+1 to 30 rows; `vote` is `yes`, `no`, `abstain`, `absent` or `recused`, and each name must match that
+meeting's `agency_id` body in `content/officials.json` exactly (case-sensitive; Unicode NFC, runs of
+spaces collapsed). Problems are listed together by file row (the header is row 1), for example
+`votes row 3: unknown name "X" (not in officials.json for <agency_id>)` or `votes row 5: name listed twice`,
+and nothing is written. Votes are never inferred from `--vote`. Changing votes needs `--replace`, and
+`--replace` without `--votes` drops them (`votes: none`). The meeting page shows a "Recorded votes" table.
+
 ## Not done
 
 No automatic Legistar polling from the Worker, no RSVP collection (the `rsvp_count` column is
