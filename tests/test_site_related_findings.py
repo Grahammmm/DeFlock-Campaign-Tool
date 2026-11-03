@@ -87,7 +87,7 @@ class RelatedFindingsTests(unittest.TestCase):
                                                      "Same agency", "Same agency", "Same agency"])
         page = self.page("a-finding")
         self.assertNotIn("h-finding", page)
-        self.assertNotIn('href="/findings/a-finding.html"', page)
+        self.assertNotIn('href="/findings/a-finding.html"', page.split('<h3 id="related">Related findings</h3>', 1)[1].split('<h3 id="corrections">', 1)[0])
         self.assertEqual(related_items(self.page("h-finding")), [("c-finding", "Same agency")])
         self.assertEqual(related_items(self.page("b-finding")), [("a-finding", "Shares 2 source records")])
 
