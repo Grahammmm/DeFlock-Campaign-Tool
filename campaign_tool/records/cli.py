@@ -15,6 +15,7 @@ COMMANDS = {
     "run": ("run", "main"),
     "status": ("run", "status_main"),
     "adopt-mail": ("mail_adoption", "main"),
+    "mail-poll": ("mail_poll", "main"),
     "approve": ("publish", "approve_main"),
     "publish": ("publish", "publish_main"),
     "reopen": ("publish", "reopen_main"),
