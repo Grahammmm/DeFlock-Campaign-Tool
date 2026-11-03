@@ -137,7 +137,7 @@ class DueAsOfTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 done = run("due", path, "--as-of", bad)
                 self.assertEqual((done.returncode, done.stdout, done.stderr), (2, "", "due: --as-of must be YYYY-MM-DD\n"))
-        for args in (("summary", path, "--as-of", "2026-10-31"), ("due", "--as-of", "2026-10-31"),
+        for args in (("summary", path, "--as-of", "2026-10-31", "--as-of", "2026-10-31"), ("due", "--as-of", "2026-10-31"),
                      ("--check", path, "--as-of", "2026-10-31"), ("due", path, "--as-of"),
                      ("due", "--as-of", "2026-10-31", path), ("due", path, "--from", "2026-10-31"),
                      ("due", path, "--as-of", "2026-10-31", "--as-of", "2026-10-30")):

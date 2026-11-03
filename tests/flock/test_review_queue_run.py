@@ -79,7 +79,8 @@ class ReviewQueueRunTest(rq.ReviewQueueTest):
         self.drift(self.second)
         code, stdout = self.run_show(SECOND)
         self.assertEqual(code, 1, stdout)
-        self.assertEqual(stdout.splitlines(), ['queue | run=%s waiting=0 needs_review=0 not_reviewable=1 warnings=0 | '
+        self.assertEqual(stdout.splitlines(), ['queue | %s | %s | not-reviewable | drifted' % (base.AGENCY, SECOND),
+                                               'queue | run=%s waiting=0 needs_review=0 not_reviewable=1 warnings=0 | '
                                                'review-required; only a human approves' % SECOND])
         self.assertIn('## NOT REVIEWABLE: drifted', self.report())
         self.assertNotIn('## finding ', self.report())

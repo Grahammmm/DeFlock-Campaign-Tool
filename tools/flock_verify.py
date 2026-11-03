@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Flock verify: a different-family verifier's confirm/downgrade/reject per finding -> PUBLIC-OK.csv, QUESTIONS.md.
   start RUNDIR --provider P --model M  |  --check RUNDIR  |  finish RUNDIR [--golden CSV]  |  current RUNDIR [--golden CSV]
-  diff OLD NEW  (two runs of one agency: added/removed/changed findings, public-ok lost/gained; read-only)
+  diff OLD NEW [--json]  (two runs of one agency: added/removed/changed findings, public-ok lost/gained; read-only)
 Exit 1 = errors, 2 = usage, 3 = family refusal (equal, missing or unknown); for diff, 3 = a public-ok row was lost.
 Prints ids, labels and counts only.
 start/finish RUNDIR must lie outside the repository."""
@@ -155,35 +155,46 @@ def outcomes(run):  # ({finding_id: (verdict, rating)}, public-ok ids, PUBLIC-OK
     return ({f["finding_id"]: (verify[f["finding_id"]]["verdict"], verify[f["finding_id"]]["new_rating"] or f["rating"]) for f in findings},
             {r[0].strip() for r in list(csv.reader(io.StringIO(public, newline="")))[1:]}, public)
 
-def diff(olddir, newdir):  # read-only: verifier outcomes and public-ok ids of two runs of one agency; ids and labels only
+def _diff(olddir, newdir):  # read-only: (exit code, refusal line or None, report or None) for two runs of one agency
     runs = {"OLD": Path(olddir), "NEW": Path(newdir)}
     if any(p.is_symlink() for p in runs.values()):
-        return print("diff: link refused") or 1
+        return 1, "diff: link refused", None
     runs = {k: p.resolve() for k, p in runs.items()}
     if any(len(p.parents) < 2 or p.parent.name != "runs" for p in runs.values()) or runs["OLD"].parents[1] != runs["NEW"].parents[1]:
-        return print("diff: runs belong to different agencies") or 1
+        return 1, "diff: runs belong to different agencies", None
     for label, run in runs.items():
         refusal = family(run)
         if refusal:
-            return print("diff: %s %s" % (label, refusal)) or 1
+            return 1, "diff: %s %s" % (label, refusal), None
     got = {label: outcomes(run) for label, run in runs.items()}
     for label in (label for label in got if got[label][1] is None):
-        return print("diff: %s has %d error(s); run --check first" % (label, got[label][0])) or 1
+        return 1, "diff: %s has %d error(s); run --check first" % (label, got[label][0]), None
     (a, ok_a, _), (b, ok_b, public) = got["OLD"], got["NEW"]
-    state = on_disk(runs["NEW"], "PUBLIC-OK.csv", public)[1]
-    out = ["diff: NEW PUBLIC-OK.csv on disk is %s; diff uses a fresh finish" % state] * (state != "current")
-    n = dict.fromkeys(("added", "removed", "changed", "public_lost", "public_gained"), 0)
+    n = dict(old=len(a), new=len(b), **dict.fromkeys(("added", "removed", "changed", "public_lost", "public_gained"), 0))
+    found, ok, labels = [], {"lost": sorted(ok_a - ok_b), "gained": sorted(ok_b - ok_a)}, lambda o, f: dict(zip(("verdict", "rating"), o[f])) if f in o else None
     for fid in sorted(set(a) | set(b)):
         kind = "added" if fid not in a else "removed" if fid not in b else "changed" if a[fid] != b[fid] else None
         if kind:
             n[kind] += 1
-            out.append("diff | %s %s%s" % (kind, fid, " %s/%s -> %s/%s" % (a[fid] + b[fid]) if kind == "changed" else ""))
-        for gone, key, word in ((fid in ok_a and fid not in ok_b, "public_lost", "lost"), (fid in ok_b and fid not in ok_a, "public_gained", "gained")):
-            if gone:
-                n[key] += 1
-                out.append("diff | public-ok %s %s" % (word, fid))
-    print("\n".join(out + ["diff | old=%d new=%d %s | ids only, not a review verdict" % (len(a), len(b), " ".join("%s=%d" % kv for kv in n.items()))]))
-    return 3 if n["public_lost"] else 0
+            found.append({"id": fid, "kind": kind, "old": labels(a, fid), "new": labels(b, fid)})
+    n.update(public_lost=len(ok["lost"]), public_gained=len(ok["gained"]))
+    report = {"schema": "flock-verify-diff-v1", "review_required": True, "counts": n, "findings": found, "public_ok": ok,
+              "new_public_ok_on_disk": on_disk(runs["NEW"], "PUBLIC-OK.csv", public)[1]}
+    return 3 if n["public_lost"] else 0, None, report
+
+def diff(olddir, newdir, as_json=False):  # ids and labels only; refusals stay one text line in both forms
+    code, refusal, r = _diff(olddir, newdir)
+    if r is None or as_json:
+        return print(refusal or json.dumps(r, sort_keys=True, indent=1, ensure_ascii=False)) or code
+    state, kinds, c = r["new_public_ok_on_disk"], {f["id"]: f for f in r["findings"]}, r["counts"]
+    out = ["diff: NEW PUBLIC-OK.csv on disk is %s; diff uses a fresh finish" % state] * (state != "current")
+    for fid in sorted(set(kinds) | set(r["public_ok"]["lost"]) | set(r["public_ok"]["gained"])):
+        f = kinds.get(fid)
+        out += ["diff | %s %s%s" % (f["kind"], fid, " %s/%s -> %s/%s" % (*f["old"].values(), *f["new"].values()) if f["kind"] == "changed" else "")] if f else []
+        out += ["diff | public-ok %s %s" % (word, fid) for word in ("lost", "gained") if fid in r["public_ok"][word]]
+    keys = ("added", "removed", "changed", "public_lost", "public_gained")
+    print("\n".join(out + ["diff | old=%d new=%d %s | ids only, not a review verdict" % (c["old"], c["new"], " ".join("%s=%d" % (k, c[k]) for k in keys))]))
+    return code
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
@@ -191,9 +202,10 @@ def main(argv=None):
         parser = argparse.ArgumentParser(prog="flock_verify.py diff", description="diff OLD NEW: two verified runs of one agency")
         parser.add_argument("old")
         parser.add_argument("new")
+        parser.add_argument("--json", action="store_true", help="one flock-verify-diff-v1 document; refusals stay text")
         args = parser.parse_args(argv[1:])
         try:
-            return diff(args.old, args.new)
+            return diff(args.old, args.new, args.json)
         except (OSError, UnicodeDecodeError, csv.Error) as exc:  # class name only
             return print("io: %s" % type(exc).__name__) or 1
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
