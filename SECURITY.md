@@ -1,5 +1,7 @@
 # Security
 
+For adversaries, limitations and trust priorities, see [the threat model](docs/THREAT-MODEL.md).
+
 This is an unvalidated development alpha, not a supported production security boundary.
 Do not expose the local evidence ledger or create a public admin service from it.
 

@@ -661,6 +661,41 @@ def _alpr_policy(value, label):
             "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
 
 
+TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts", "shared_with_agencies")
+
+
+def _transparency(value, label, slug, today=None):
+    """Organizer-transcribed Flock transparency-portal snapshots (``profile.transparency``), newest first; never fetched."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 24:
+        raise ContentError(f"{label}: must be a list of at most 24 snapshots")
+    if value and slug is None:
+        raise ContentError(f"{label}: needs a verified agency with a flock_transparency_slug")
+    result = []
+    for index, snapshot in enumerate(value):
+        item = f"{label}[{index}]"
+        _require_keys(snapshot, {"checked_on", "source_url", *TRANSPARENCY_FIELDS}, {"checked_on", "source_url"}, item)
+        if _calendar_day(snapshot["checked_on"], f"{item}.checked_on") > (today or date.today()):
+            raise ContentError(f"{item}.checked_on: must not be after the build date")
+        if result and snapshot["checked_on"] >= result[-1]["checked_on"]:
+            raise ContentError(f"{item}.checked_on: " + ("duplicate date" if snapshot["checked_on"] == result[-1]["checked_on"]
+                                                          else "snapshots must be listed newest first"))
+        portal = f"https://transparency.flocksafety.com/{slug}"
+        if _https(snapshot["source_url"], f"{item}.source_url") not in (portal, portal + "/"):
+            raise ContentError(f"{item}.source_url: must be {portal}")
+        clean = {"checked_on": snapshot["checked_on"], "source_url": snapshot["source_url"]}
+        for key in TRANSPARENCY_FIELDS:
+            number = snapshot.get(key)
+            if number is not None and (type(number) is not int or number < 0):
+                raise ContentError(f"{item}.{key}: must be null or a non-negative integer")
+            if key == "retention_days" and number is not None and number > 3650:
+                raise ContentError(f"{item}.retention_days: at most 3650")
+            clean[key] = number
+        result.append(clean)
+    return result
+
+
 def _flock_url(entry, item):
     """Transparency-portal link for an organizer-verified slug; built from the slug only, never fetched."""
     slug = entry.get("flock_transparency_slug")
@@ -729,7 +764,7 @@ def load_agencies(document, label, today=None):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy", "transparency"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -751,6 +786,8 @@ def load_agencies(document, label, today=None):
             "flock_transparency_url": _flock_url(entry, item),
             "contract": _contract(profile.get("contract"), f"{item}.profile.contract"),  # kept out of card JS
             "alpr_policy": _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy"),  # likewise
+            "transparency": _transparency(profile.get("transparency"), f"{item}.profile.transparency",  # likewise
+                                          entry.get("flock_transparency_slug") if _flock_url(entry, item) else None, today),
             "profile": {
                 "vendor": _text(profile, "vendor", f"{item}.profile", default="Not yet documented"),
                 "status": _text(profile, "status", f"{item}.profile", default="Records requested"),

@@ -1,0 +1,11 @@
+[Unit]
+Description=DeFlock local schedule: run report review summary (read-only)
+# Gate-safe slot. Read-only: marks nothing reviewed.
+
+[Service]
+Type=oneshot
+WorkingDirectory=@WORKDIR@
+UMask=0077
+# Per-slot overlap lock: a held lock skips this slot with exit 73, never queues.
+ExecStart=/usr/bin/flock -n -E 73 %t/deflock-run-report-review.lock @PYTHON@ -B tools/run_report_review.py summary --dir @REPORTS@
+TimeoutStartSec=40min

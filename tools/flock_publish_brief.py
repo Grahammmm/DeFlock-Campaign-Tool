@@ -9,6 +9,7 @@ TOOLS = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("_flock_publish", TOOLS / "flock_publish.py")
 publish = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(publish)
+_spec = importlib.util.spec_from_file_location("_publication_gate", TOOLS.parent / "campaign_tool" / "publication_gate.py"); gate = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(gate)  # noqa: E702
 FIRST = "DRAFT - not sent - G approval required"
 LAST = "END OF BRIEF DRAFT. Do not send, post or share without G's approval. Contact details are intentionally omitted."
 def name(path):  # a folder name is echoed only when it is a plain short token
@@ -41,7 +42,9 @@ def checked(run):  # -> (skip reason or None, approved entries in file order)
     if failed:
         return "check failed", []
     doc = json.loads(target.read_text(encoding="utf-8"))
-    return None, [f for f in doc["findings"] if f["review"]["status"] == "approved"]
+    bad = gate.entry_refusals(doc["findings"], publish.derive(run, doc["slug"])[2])  # publication_gate, before any brief text
+    print("".join(line + "\n" for line in bad), end="", file=sys.stderr)
+    return ("gate refused", []) if bad else (None, [f for f in doc["findings"] if f["review"]["status"] == "approved"])
 def collect(runs):  # newest run first, file order within a run; the same text twice -> listed once (newest)
     entries, by_text, lines, used, skipped = [], {}, [], 0, 0
     for run in sorted((p for p in runs.iterdir() if p.is_symlink() or os.path.lexists(p / "PUBLISH.json")), reverse=True):
