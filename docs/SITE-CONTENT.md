@@ -92,6 +92,12 @@ Rule check: every id in `rule_ids` (unique, non-empty, at most 120 characters) a
 rule in the campaign's law package (`campaign.json` country-state) in force on `event_date`, or `build` stops and
 `content-check` names it; `content-check` also prints `law package <jurisdiction>: draft|reviewed|missing`.
 
+Optional `sources[].page` (a whole number from 1 to 100000) adds "Open page N of the public copy" under the source,
+linking the library entry's `public_url` with `#page=N` when its path ends in `.pdf` and it has no fragment (otherwise
+the bare URL, "Open the public copy (page N)"). `build` stops and `content-check` names a page on a source that is not
+in `sources.json`, has no `public_url`, or is above the entry's `pages` (when that is above 0). `data/findings.json`
+carries `page` only when it is set.
+
 Every finding page shows the classification, a confidence label, the event
 date, each source with the first 12 characters of its SHA-256 and its locator,
 limitations, counterevidence, a Corrections section and the
