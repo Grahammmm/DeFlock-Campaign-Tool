@@ -159,6 +159,12 @@ restates it) records the agency's own stated production date; a date before that
 passed with no `produced` step since (closed requests never) under `stated_passed` as `stated_date_passed`,
 counts it and exits 3: stated date passed — the agency's own date; provisional, not a legal deadline.
 
+`kit-response --kind produced --partial [--expected-on YYYY-MM-DD]` records a rolling production: the request stays
+open (`producing: true`, `next_installment` in `kit-status`) until a final `produced` (no `--partial`), `denied` or
+`closed` step; a partial after a final one is refused. `kit due` lists it as `producing` (due = the agency's next
+installment date) or, once that date has passed, `installment_passed` (counted, exit 3); `today` shows it and
+`kit-followup` drafts a reminder naming the date. Only a final `produced` step clears a stated production date.
+
 ## Clarification requested (kit requests)
 
 `kit-response --kind clarification_requested` records the agency asking you to clarify or narrow a request (not after

@@ -1,0 +1,12 @@
+[Unit]
+Description=DeFlock local schedule: run-report-review daily
+
+[Timer]
+# 14:00 America/Los_Angeles: one hour after the 13:00 records slot.
+OnCalendar=*-*-* 14:00:00 America/Los_Angeles
+Persistent=true
+RandomizedDelaySec=5min
+Unit=deflock-run-report-review.service
+
+[Install]
+WantedBy=timers.target

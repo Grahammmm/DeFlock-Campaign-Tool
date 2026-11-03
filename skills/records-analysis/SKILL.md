@@ -29,3 +29,10 @@ authorization. A denied access path is a blocker, not permission to switch ident
 
 Stop after bounded retries on denied/expired inputs and record exact missing coverage.
 No requirement for a specific model provider or proprietary entitlement.
+
+## Search
+
+To find which preserved records mention a term, run `tools/records_search.py index` into a
+private folder outside any repository, then `query`. A hit is a pointer (document id, page,
+byte offset, hash), not a finding: open the cited document and read the context yourself.
+Read the closing coverage line; documents with no extracted text were not searched.

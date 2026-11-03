@@ -12,7 +12,8 @@ from pathlib import Path
 from . import findings, kit, kit_track, meeting_stage
 from .content import _read_json, load_agencies, load_meeting
 
-KINDS = ("comment_deadline", "request_past_due", "request_due_today", "finding_ready", "finding_blocked",
+KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
+         "request_installment_due", "finding_ready", "finding_blocked",
          "contract_ending", "stale_comment_kit", "stale_contact", "unreadable")
 WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS = 7, 180, 120
 CONTRACT_DAYS, CONTRACT_ENDED_DAYS = 90, 30
@@ -63,6 +64,11 @@ def _requests(root, as_of, directory, law_base):
                     f"date {row['due']} {-row['days']} day(s) ago")
         elif row["state"] == "due_today":
             what = f"Check on {name}: provisional determination date for the request sent {row['sent_on']} is today"
+        elif row["state"] == "installment_passed":
+            what = f"Check on {name}: the next installment the agency stated for {row['due']} is not recorded yet"
+        elif row["state"] == "producing" and row["days"] == 0:
+            what, row = (f"Check on {name}: the next installment the agency stated for {row['due']} is due today",
+                         {**row, "state": "installment_due"})
         else:
             continue
         items.append(_item("request_" + row["state"], what, f"kit-status --directory {directory}", row["due"],

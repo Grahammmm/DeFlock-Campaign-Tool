@@ -1,0 +1,12 @@
+[Unit]
+Description=DeFlock local schedule: reconcile daily
+
+[Timer]
+# 06:00 America/Los_Angeles: one hour before the 07:00 records slot.
+OnCalendar=*-*-* 06:00:00 America/Los_Angeles
+Persistent=true
+RandomizedDelaySec=5min
+Unit=deflock-reconcile.service
+
+[Install]
+WantedBy=timers.target

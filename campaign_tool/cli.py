@@ -204,6 +204,9 @@ def ingest(args, root):
     if getattr(args, "eml", None) is not None:
         from .ingest_eml import ingest_eml
         return ingest_eml(args, root)
+    if getattr(args, "mbox", None) is not None:
+        from .ingest_mbox import ingest_mbox
+        return ingest_mbox(args, root)
     source = Path(args.file)
     if source.is_symlink() or not source.is_file():
         raise ValueError("Input must be a regular, non-symlink file")
@@ -720,6 +723,8 @@ def main():
                                 "never extracted to disk; nested archives are stored, not opened")
             source.add_argument("--eml", help="One emailed production .eml: message stored as is, each attachment "
                                 "stored and linked to it; headers never printed")
+            source.add_argument("--mbox", help="One local mbox export: each message stored like --eml, linked to "
+                                "the mailbox; headers never printed")
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
             cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")
@@ -893,6 +898,8 @@ def main():
                             "own stated production date (provisional, not a legal deadline)")
     response_p.add_argument("--reference", metavar="REF", help="The agency's own request number, stored once")
     response_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
+    response_p.add_argument("--partial", action="store_true", help="produced only: part of the records; the request "
+                            "stays open (--expected-on: the agency's next installment date)")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -1283,7 +1290,7 @@ def main():
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
-            if report["past_due"] + report["stated_date_passed"]:
+            if report["past_due"] + report["stated_date_passed"] + report["installment_passed"]:
                 sys.exit(3)
         elif args.command == "kit-calendar":
             from .kit_calendar import calendar
@@ -1296,7 +1303,8 @@ def main():
             from .kit_track import record_step
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
-                                         reference=args.reference, replace_reference=args.replace_reference),
+                                         reference=args.reference, replace_reference=args.replace_reference,
+                                         partial=args.partial),
                              indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):

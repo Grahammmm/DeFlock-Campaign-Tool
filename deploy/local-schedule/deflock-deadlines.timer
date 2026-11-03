@@ -1,0 +1,12 @@
+[Unit]
+Description=DeFlock local schedule: deadlines daily
+
+[Timer]
+# 09:00 America/Los_Angeles: two hours after the 07:00 records slot.
+OnCalendar=*-*-* 09:00:00 America/Los_Angeles
+Persistent=true
+RandomizedDelaySec=5min
+Unit=deflock-deadlines.service
+
+[Install]
+WantedBy=timers.target
