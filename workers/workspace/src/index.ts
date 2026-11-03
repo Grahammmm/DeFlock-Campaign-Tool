@@ -18,6 +18,7 @@ import { assembleManifest, type BrevoSettings } from "./manifest.ts";
 import { issueCorrection, proposePublication, submitReview, withdrawFinding, WorkflowError } from "./publication.ts";
 import { recomputeState } from "./review_state.ts";
 import { runnerApi } from "./runner.ts";
+import { subscribeWebhook } from "./routes/subscribe_webhook.ts";
 import { signDownload, verifyDownload } from "./signing.ts";
 import { page } from "./views/layout.ts";
 import * as V from "./views/screens.ts";
@@ -48,6 +49,9 @@ app.get("/api/runner/export.json", (c) => {
   return exportResponse(new Repo(c.env.DB, c.env.CAMPAIGN_ID), c.env.CAMPAIGN_ID);
 });
 app.route("/api/runner", runnerApi);
+
+// Subscription webhook: HMAC-verified provider deliveries only; records events and list counts, never sends.
+app.route("/api/webhooks/subscribe", subscribeWebhook);
 
 // Signed downloads: HMAC link minted by an authenticated organizer; no Access on this path.
 app.get("/dl/:sha256", async (c) => {
@@ -427,6 +431,7 @@ function secretPresence(env: Env): V.SecretPresence[] {
     { name: "ACCESS_AUD", present: Boolean(env.ACCESS_AUD), note: "Access application audience tag" },
     { name: "ACCESS_TEAM_DOMAIN", present: Boolean(env.ACCESS_TEAM_DOMAIN), note: "Access team domain used to fetch signing certificates" },
     { name: "BREVO_API_KEY", present: Boolean(env.BREVO_API_KEY), note: "Brevo v3 key used only by the send_newsletter executor (campaign create + send)" },
+    { name: "SUBSCRIBE_WEBHOOK_SECRET", present: Boolean(env.SUBSCRIBE_WEBHOOK_SECRET), note: "HMAC secret verifying POST /api/webhooks/subscribe deliveries" },
   ];
 }
 
