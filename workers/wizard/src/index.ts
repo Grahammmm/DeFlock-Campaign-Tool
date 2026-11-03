@@ -239,8 +239,14 @@ app.post("/setup/6", async (c) => {
   const f = await c.req.parseBody();
   if (String(f.confirm ?? "") !== "yes") return page(c, 6, S.screenDeploy(s, buildPlan(s), c.env.DRY_RUN === "1"), "confirm the authorization checkbox");
   const dryRun = c.env.DRY_RUN === "1";
-  const client = new CloudflareClient(s.accounts.cloudflare.api_token, { dryRun, base: c.env.CLOUDFLARE_API_BASE });
   const plan = buildPlan(s);
+  // Offline rehearsal assumes a common zone; only a real API response verifies it.
+  const hosts = plan.find((step) => step.id === "zone.verify")!.zone_domains!;
+  let dryZoneName = hosts[0];
+  while (dryZoneName.includes(".") && !hosts.every((host) => host === dryZoneName || host.endsWith("." + dryZoneName))) {
+    dryZoneName = dryZoneName.slice(dryZoneName.indexOf(".") + 1);
+  }
+  const client = new CloudflareClient(s.accounts.cloudflare.api_token, { dryRun, dryZoneName, base: c.env.CLOUDFLARE_API_BASE });
   const result = await applyPlan(plan, { client, bundles: { workspace: WORKSPACE_BUNDLE, public_site: PUBLIC_SITE_BUNDLE, migrations: WORKSPACE_MIGRATIONS } });
   const { generated, ...deploy } = result;
   if (deploy.status !== "applied") {
