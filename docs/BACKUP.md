@@ -228,7 +228,7 @@ User timer, two files in `~/.config/systemd/user/`
 Or one crontab line: `17 2 * * * cd ~/DeFlock-Campaign-Tool && python3 -m campaign_tool backup --directory ~/campaign --into ~/backups`
 
 Keep rule: `python3 -m campaign_tool backup-list --dir ~/backups --keep-daily 7 --keep-weekly 8` shows what it would
-retain. It reads `*.tar` only, so prune `.tar.gpg` by the date in the name. This installs nothing; deleting stays manual.
+retain. It covers `*.tar` and `*.tar.gpg` (encrypted archives need your GnuPG key or `--gnupg-home DIR`). This installs nothing; deleting stays manual.
 
 ## Not done
 
