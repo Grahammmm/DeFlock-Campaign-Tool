@@ -91,6 +91,11 @@ class HandWrittenTreeTests(unittest.TestCase):
         self.assertEqual(self.check(), sorted([("index.html", h) for h in ("/gone.js", "/a.png", "/b.webp", "/c.webp",
                                                                           "/favicon.ico", "/x.html")]))
 
+    def test_srcset_data_url_comma_is_not_a_candidate_separator(self):
+        self.write("index.html", '<img src="/style.css" alt="" srcset="data:image/png;base64,iVBORw0KGgo= 1x, '
+                   '/style.css 2x,/gone.png 3x"><source srcset="/style.css,, data:image/gif;base64,R0lG 2x">')
+        self.assertEqual(self.check(), [("index.html", "/gone.png")])
+
     def test_symlinked_page_is_not_scanned_but_its_links_target_is_broken(self):
         self.write("index.html", '<a href="/alias.html">a</a>')
         os.symlink(self.public / "sources.html", self.public / "alias.html")

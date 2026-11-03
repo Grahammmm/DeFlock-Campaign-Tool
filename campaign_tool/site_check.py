@@ -16,6 +16,28 @@ LINK_ATTRS = {"a": ("href",), "link": ("href",), "script": ("src",), "img": ("sr
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
+def _srcset_urls(value):
+    """Candidate URLs of a srcset, per the HTML parsing rules: a URL keeps its own commas (data: URLs)."""
+    urls, i, n = [], 0, len(value)
+    while i < n:
+        while i < n and (value[i].isspace() or value[i] == ","):
+            i += 1
+        start = i
+        while i < n and not value[i].isspace():
+            i += 1
+        url = value[start:i]
+        if url.endswith(","):
+            url = url.rstrip(",")
+        else:
+            depth = 0
+            while i < n and (value[i] != "," or depth):
+                depth += {"(": 1, ")": -1 if depth else 0}.get(value[i], 0)
+                i += 1
+        if url:
+            urls.append(url)
+    return urls
+
+
 class _PageParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -30,10 +52,7 @@ class _PageParser(HTMLParser):
                 self.ids.add(value)
             if name in LINK_ATTRS.get(tag, ()):
                 if name == "srcset":
-                    for candidate in value.split(","):
-                        parts = candidate.split()
-                        if parts:
-                            self.links.append(parts[0])
+                    self.links.extend(_srcset_urls(value))
                 else:
                     self.links.append(value)
 
