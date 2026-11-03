@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Flock alerts (BF-df-overdue-alerts): provisional reminder alerts for the organizer, as stdout and flock-alerts-v1.
-  reminders --store DIR --date YYYY-MM-DD --receipt-days N [--json-out NEWFILE] [--prev OLD.json] [--agency SLUG]...
+  reminders --store DIR --date YYYY-MM-DD --receipt-days N [--json-out NEWFILE] [--json] [--prev OLD.json] [--agency SLUG]...
 --agency (repeatable, up to 20) keeps only those agencies' alerts and counts; the summary and file name them.
 One alert line per open request whose provisional reminder date is today, passed or within 7 days, and per open
 request with no receipt recorded N or more days after it was sent. N has no default: the organizer chooses it.
 Phrases come from flock_today.reminders; dates come from the us-ca law package and are not legal due dates.
 Nothing is sent, acknowledged or snoozed; an alert clears only when the request row itself changes.
 --json-out writes a new 0600 file outside the repository after the whole run succeeded; otherwise nothing is written.
+--json prints that same flock-alerts-v1 document on stdout instead of the lines; a refusal stays its one plain line, exit 1.
 --prev reads an earlier flock-alerts-v1 file (as_of before --date): each alert line ends `| new` or `| still`, one
 `alert | cleared | <id> | <kind>` line follows per earlier id absent now, and the summary adds new/cleared/since.
 Ids include the kind, so a reminder moving from week to today shows as one new and one cleared alert.
@@ -219,12 +220,16 @@ def reminders(a):
         opened, len(alerts), count["reminder-passed"], count["reminder-today"], count["reminder-week"],
         count["receipt-unknown"], waiting, " agencies=" + ",".join(chosen) if chosen else "", status, extra,
         "recorded fields only; not a legal status; the canonical ledger wins"))
+    data = document(alerts, a.date, status, since, cleared, chosen) if a.json or target else None
     if target:
         try:
-            write_new(target, document(alerts, a.date, status, since, cleared, chosen))
+            write_new(target, data)
         except OSError as exc:
             return print("alert | refused | json-out not written (%s)" % type(exc).__name__) or 1
-    print(*lines, sep="\n")
+    if a.json:
+        sys.stdout.write(data.decode("utf-8"))  # the same bytes --json-out writes, instead of the lines
+    else:
+        print(*lines, sep="\n")
     return 3 if any(x["severity"] == "action" for x in alerts) else 0
 
 
@@ -236,6 +241,7 @@ def main(argv=None):
     p.add_argument("--date", required=True)
     p.add_argument("--receipt-days", required=True, type=receipt_days, help="1..365, required, no default")
     p.add_argument("--json-out", metavar="NEWFILE")
+    p.add_argument("--json", action="store_true", help="print the flock-alerts-v1 document instead of lines")
     p.add_argument("--prev", metavar="OLD.json", help="earlier flock-alerts-v1 file: mark alerts new/still, list cleared")
     p.add_argument("--agency", action="append", metavar="SLUG", help="only this agency (repeatable, up to 20)")
     a = parser.parse_args(argv)
