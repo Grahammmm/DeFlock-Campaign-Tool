@@ -231,8 +231,11 @@ def stage(run):  # RF1130-3 -> (stage, counts); check's per-entry lines are capt
     counts = (n["findings"], n["findings"] - n["approved"], n["approved"], n["errors"])
     return ("invalid" if n["errors"] > n["drift"] else "drifted" if n["drift"] else "pending" if not n["approved"]
             else "approved" if n["approved"] == n["findings"] else "partly-approved"), counts
-def status(store):  # RF1130-3: one publication-stage line per verified run (agencies/*/runs/*), read-only
+def status(store, as_json=False):  # RF1130-3: one publication-stage line per verified run (agencies/*/runs/*), read-only
+    schema, note = "flock-publish-status-v1", "review-required; G decides any site use"  # RF0910-11: --json, same rows and exit
     if (store / "agencies").is_symlink() or not (store / "agencies").is_dir():
+        if as_json:
+            return print(json.dumps({"error": "no agencies folder", "schema": schema}, sort_keys=True)) or 2
         return print("status: no agencies folder", file=sys.stderr) or 2
     name, rows = lambda p: p.name if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", p.name) else "?", []  # noqa: E731
     for agency in sorted(store.joinpath("agencies").iterdir()):
@@ -246,10 +249,15 @@ def status(store):  # RF1130-3: one publication-stage line per verified run (age
             elif run.is_dir() and (run / "VERIFY.json").exists():  # earlier stages belong to flock_sweep
                 rows.append((name(agency), name(run)) + stage(run))
     tally, line = collections.Counter(row[2] for row in rows), "publish | %s | %s | %s | findings=%s pending=%s approved=%s errors=%s"
+    stages, code = ("no-export", "invalid", "drifted", "pending", "partly-approved", "approved"), 1 if tally["invalid"] or tally["drifted"] or tally["link-refused"] else 0
+    if as_json:  # counts are integers, or null where the text shows "-"; link_refused is a JSON-only total
+        keys = ("agency", "run", "stage", "findings", "pending", "approved", "errors")
+        totals = {"runs": len(rows), **{k.replace("-", "_"): tally[k] for k in stages + ("link-refused",)}}
+        doc = {"schema": schema, "runs": [dict(zip(keys, row[:3] + (row[3] or (None,) * 4))) for row in rows], "totals": totals, "note": note}
+        return print(json.dumps(doc, sort_keys=True, ensure_ascii=False)) or code
     print("".join(line % (row[:3] + (row[3] or ("-",) * 4)) + "\n" for row in rows), end="")
-    print("publish | runs=%d %s | review-required; G decides any site use" % (len(rows), " ".join("%s=%d" % (
-        k.replace("-", "_"), tally[k]) for k in ("no-export", "invalid", "drifted", "pending", "partly-approved", "approved"))))
-    return 1 if tally["invalid"] or tally["drifted"] or tally["link-refused"] else 0
+    print("publish | runs=%d %s | %s" % (len(rows), " ".join("%s=%d" % (k.replace("-", "_"), tally[k]) for k in stages), note))
+    return code
 def recheck(run, today, dry):  # DF1537-10: approved entries citing a disputed, missing or expired fact -> needs-review (exit 3)
     target, buf = run / "PUBLISH.json", io.StringIO()
     if target.is_symlink() or not target.is_file():
@@ -326,9 +334,10 @@ def main(argv=None):
     parser.add_argument("--copy"); parser.add_argument("--out")  # stage only (NB-DF-17, tools/flock_publish_stage.py)
     parser.add_argument("--agency")  # brief only (DF1537-12, tools/flock_publish_brief.py; --out FILE)
     parser.add_argument("--today"); parser.add_argument("--dry-run", action="store_true")  # recheck (DF1537-10) or stage without --out (RF0310-7)
+    parser.add_argument("--json", action="store_true")  # status only (RF0910-11)
     for flag in ("--finding", "--on", "--by", "--approval-ref", "--replaced-by"): parser.add_argument(flag)  # noqa: E701 - DF1537-11
     args = parser.parse_args(argv)
-    usage = ("usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR] | status STORE | stage RUNDIR --copy FILE --out DIR"
+    usage = ("usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR] | status STORE [--json] | stage RUNDIR --copy FILE --out DIR"
              " | stage RUNDIR --copy FILE --dry-run | brief STORE --agency SLUG --out FILE | recheck RUNDIR [--today YYYY-MM-DD] [--dry-run]"
              " | withdraw RUNDIR --finding ID --on D --by NAME --approval-ref REF [--dry-run] | correct RUNDIR --finding ID --replaced-by NEWRUNDIR:NEWID"
              " --on D --by NAME --approval-ref REF [--dry-run]")
@@ -341,6 +350,7 @@ def main(argv=None):
         parser.error(usage)
     checking = args.check and args.run != "" and not (args.command or args.rundir or args.site_slug)
     listing = args.command == "status" and args.rundir and (args.check, args.run, args.site_slug) == (None,) * 3
+    if args.json and not listing: parser.error(usage)  # noqa: E701
     briefing = args.command == "brief" and args.rundir and args.agency and args.out and (args.check, args.run, args.site_slug, args.copy) == (None,) * 4
     if (args.copy is not None or args.out is not None) and not (staging or briefing) or args.agency is not None and not briefing: parser.error(usage)  # noqa: E701
     if checking and args.run is None:
@@ -360,7 +370,7 @@ def main(argv=None):
             spec = importlib.util.spec_from_file_location("_flock_publish_" + args.command, Path(__file__).resolve().with_name("flock_publish_%s.py" % args.command))
             spec.loader.exec_module(verb := importlib.util.module_from_spec(spec))
             return verb.brief(run, args.agency, args.out, verify_tool.REPO) if briefing else verb.stage(run, args.copy, args.out, verify_tool.REPO, args.dry_run)
-        return status(run) if listing else check(args.check, run) if checking else export(run, args.site_slug)
+        return status(run, args.json) if listing else check(args.check, run) if checking else export(run, args.site_slug)
     except (OSError, ValueError) as exc:  # the class only, never a path or record text
         return print("io: %s" % type(exc).__name__) or 1
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Flock agency timeline (BF-df-agency-timeline): one agency's history in date order, from the private store's recorded fields.
-  flock_agency.py timeline STORE --agency SLUG [--since YYYY-MM-DD] [--as-of YYYY-MM-DD] [--inventory CSV] [--json]
+  flock_agency.py timeline STORE --agency SLUG [--since YYYY-MM-DD] [--as-of YYYY-MM-DD] [--kind LIST] [--request LIST]
+                  [--inventory CSV] [--json]
 With --since or --as-of, events outside the window are counted, not shown (undated events stay); without them all are shown.
+--kind a,b (email = every email-* stage) and --request R1,R2 then keep only those events (and those requests' still-open rows).
   flock_agency.py index STORE [--as-of YYYY-MM-DD] [--json]
 index (RF2330-7) prints one status line per agency folder (request and open counts, oldest open sent date, last recorded
 event, next provisional reminder, failing email runs, source errors per file) from timeline() itself, then a totals line.
@@ -25,9 +27,10 @@ KINDS = ("sent", "receipt", "extension-notice", "determination", "produced", "cl
 STEP_KIND = {"receipt": "receipt", "extension": "extension-notice", "determination": "determination", "produced": "produced",
              "closed": "closed"}
 SLUG = re.compile(r"[a-z0-9-]{1,60}")
-USAGE = ("usage: flock_agency.py timeline STORE --agency SLUG [--since YYYY-MM-DD] [--as-of YYYY-MM-DD] [--inventory CSV] [--json]"
-         "  (one agency's recorded history, oldest first; prints only, writes nothing; with --since or --as-of, events outside"
-         " the window are counted, not shown)\n"
+FILTER_KINDS = tuple(k for k in KINDS if k != "email-") + ("email",)
+USAGE = ("usage: flock_agency.py timeline STORE --agency SLUG [--since YYYY-MM-DD] [--as-of YYYY-MM-DD] [--kind LIST] [--request LIST]"
+         " [--inventory CSV] [--json]  (one agency's recorded history, oldest first; prints only, writes nothing; with --since or"
+         " --as-of, events outside the window are counted, not shown; --kind/--request keep only the listed kinds/requests)\n"
          "       flock_agency.py index STORE [--as-of YYYY-MM-DD] [--json]  (one status line per agency; prints only)")
 
 
@@ -184,20 +187,21 @@ def window(events, since, as_of):
     return kept, cut["before"], cut["after"]
 
 
-def render(slug, as_of, events, opened, errors, failing, as_json, window=None):
+def render(slug, as_of, events, opened, errors, failing, as_json, window=None, filt=None):
     shown = slug if not state.BANNED.search(slug) else "(unsafe-label)"
     cut = {"since": str(window[0]) if window[0] else None, "before": window[1], "after": window[2]} if window else {}
+    used = ",".join(k for k in ("kind", "request") if filt[k] is not None) if filt else ""
     if as_json:
         print(json.dumps({"schema": "flock-agency-timeline-v1", "review_required": True, "agency": shown, "as_of": str(as_of),
                           "note": state.NOTE, "events": events, "open": opened, "errors": errors,
-                          "failing_runs": failing} | cut, ensure_ascii=True))
+                          "failing_runs": failing} | cut | ({"filter": filt} if filt else {}), ensure_ascii=True))
     else:
         lines = ["agency %s | as of %s | %s" % (shown, as_of, state.NOTE)]
         lines += ["%s | %s | %s | %s" % (e["date"], e["kind"], e["request"], e["detail"]) for e in events]
         lines += ["source-error | %s | %s" % (e["file"], e["reason"]) for e in errors]
         lines += ["still open | %s | %s | %s" % (o["request"], o["state"], o["reminder"]) for o in opened]
         lines.append("totals | events=%d open=%d errors=%d failing_runs=%d" % (len(events), len(opened), len(errors), failing)
-                     + (" before=%d after=%d" % (cut["before"], cut["after"]) if cut else ""))
+                     + (" before=%d after=%d" % (cut["before"], cut["after"]) if cut else "") + (" filtered=" + used if used else ""))
         print("\n".join(lines))
     return 1 if errors or failing else 0
 
@@ -277,11 +281,14 @@ def main(argv):
     as_json, rest = "--json" in argv, [a for a in argv if a != "--json"]
     keys, opts = rest[2::2], dict(zip(rest[2::2], rest[3::2]))
     ok = (len(rest) >= 4 and len(rest) % 2 == 0 and rest[0] == "timeline" and argv.count("--json") <= 1
-          and len(set(keys)) == len(keys) and "--agency" in opts and set(opts) <= {"--agency", "--as-of", "--inventory", "--since"})
+          and len(set(keys)) == len(keys) and "--agency" in opts
+          and set(opts) <= {"--agency", "--as-of", "--inventory", "--since", "--kind", "--request"})
     if not ok:
         return print(USAGE, file=sys.stderr) or 2
     slug, as_of = opts["--agency"], rq.day(opts.get("--as-of", date.today().isoformat()))
     since, windowed = rq.day(opts.get("--since", "")), "--since" in opts or "--as-of" in opts
+    kinds = opts["--kind"].split(",") if "--kind" in opts else None
+    wanted = [state.label(i) for i in opts["--request"].split(",")] if "--request" in opts else None
     if not SLUG.fullmatch(slug):
         return print("timeline: --agency must be a folder slug ([a-z0-9-]{1,60})", file=sys.stderr) or 2
     if as_of is None:
@@ -290,15 +297,27 @@ def main(argv):
         return print("timeline: --since must be a real YYYY-MM-DD date", file=sys.stderr) or 2
     if since and since > as_of:
         return print("timeline: --since is after --as-of", file=sys.stderr) or 2
+    bad = next((k for n, k in enumerate(kinds or []) if k not in FILTER_KINDS or k in kinds[:n]), None)
+    if kinds is not None and (bad is not None or len(kinds) > 12):  # the word is echoed only when plain and not banned wording
+        word = " " + bad if bad and re.fullmatch(r"[a-z-]{1,24}", bad) and not state.BANNED.search(bad) else ""
+        return print("timeline: unknown kind" + word, file=sys.stderr) or 2
+    if wanted is not None and len(wanted) > 20:
+        return print("timeline: --request takes 1 to 20 ids", file=sys.stderr) or 2
     try:
         events, opened, errors, failing = timeline(rest[1], slug, as_of, opts.get("--inventory"))
     except (Refuse, state.Refuse, OSError) as exc:
         why = str(exc) if isinstance(exc, (Refuse, state.Refuse)) else "store unreadable (%s)" % type(exc).__name__
         return print("timeline: " + why, file=sys.stderr) or 1
-    if not windowed:
-        return render(slug, as_of, events, opened, errors, failing, as_json)
-    events, before, after = window(events, since, as_of)
-    return render(slug, as_of, events, opened, errors, failing, as_json, window=(since, before, after))
+    known = {e["request"] for e in events} | {o["request"] for o in opened}
+    if (gone := next((w for w in wanted or [] if w in ("-", "(unsafe-label)") or w not in known), None)) is not None:
+        return print("timeline: unknown request " + gone, file=sys.stderr) or 1
+    cut = window(events, since, as_of) if windowed else (events, 0, 0)
+    filt = {"kind": kinds, "request": wanted} if kinds is not None or wanted is not None else None
+    if filt:
+        keep = lambda e: ((kinds is None or e["kind"] in kinds or "email" in kinds and e["kind"].startswith("email-"))  # noqa: E731
+                          and (wanted is None or e["request"] in wanted))
+        cut, opened = ([e for e in cut[0] if keep(e)],) + cut[1:], [o for o in opened if wanted is None or o["request"] in wanted]
+    return render(slug, as_of, cut[0], opened, errors, failing, as_json, window=(since,) + cut[1:] if windowed else None, filt=filt)
 
 
 if __name__ == "__main__":

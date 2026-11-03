@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Flock review verify: a reproducible verify plan, a plan-coverage check and an upstream-count recheck for one FINDINGS.csv.
   plan FINDINGS.csv --seed N --size K --out PLAN.json
-  check PLAN.json FINDINGS.csv VERIFY.csv [--not-posted ID ...] [--md VERIFY.md]
+  check PLAN.json FINDINGS.csv VERIFY.csv [--not-posted ID ...] [--md VERIFY.md] [--json]
   counts FINDINGS.csv BUILD-REPORT.txt
   agreement PLAN.json FINDINGS.csv VERIFY.csv --max-disagree PCT [--not-posted ID ...] [--md VERIFY.md] [--json-out NEWFILE]
 Priority = every contradicted / not met row; sample = random.Random(seed).sample of the met / cannot tell rows (file order).
@@ -72,7 +72,7 @@ def plan(args):
     print("priority=%d pool=%d sample=%d findings_sha256=%s" % (len(priority), len(pool), len(sample), digest))
     return 0
 
-def _check(args):  # -> (errs, {row_id: result} of the valid rows, check's count line); prints nothing
+def _check(args):  # -> (errs, {row_id: result} of the valid rows, check's count line, its counts); prints nothing
     spec = load_plan(args.plan)
     want, errs, seen, tally, extra, rows, results = spec["priority_ids"] + spec["sample_ids"], [], set(), collections.Counter(), 0, 0, {}
     if sha(args.findings) != spec["findings_sha256"]:
@@ -102,12 +102,18 @@ def _check(args):  # -> (errs, {row_id: result} of the valid rows, check's count
         try: text = Path(path).read_text(encoding="utf-8")
         except OSError: errs.append("%s: file is missing" % label); continue
         if any(i and i in text for i in args.not_posted): errs.append("not-posted: %s contains a configured not-posted id" % label)
-    return errs, results, "planned=%d rows=%d agree=%d disagree=%d needs_source=%d missing=%d extra=%d errors=%d" % (
-        len(want), rows, tally["agree"], tally["disagree"], tally["needs-source"], len(missing), extra, len(errs))
+    counts = {"planned": len(want), "rows": rows, "agree": tally["agree"], "disagree": tally["disagree"],
+              "needs_source": tally["needs-source"], "missing": len(missing), "extra": extra, "errors": len(errs)}
+    keys = ("planned", "rows", "agree", "disagree", "needs_source", "missing", "extra", "errors")
+    return errs, results, " ".join("%s=%d" % (k, counts[k]) for k in keys), counts
 
 def check(args):
-    errs, _, line = _check(args)
-    print("\n".join(errs + [line]))
+    errs, _, line, counts = _check(args)
+    if args.json:  # RF1050-12: the same error lines (ids, labels, counts only) and counts; never reason/basis/quote text
+        doc = {"schema": "flock-review-verify-check-v1", "review_required": True, "clean": counts["errors"] == 0,
+               "counts": counts, "problems": errs}
+        print(json.dumps(doc, sort_keys=True, indent=1))
+    else: print("\n".join(errs + [line]))
     return 1 if errs else 0
 
 def _json_refusal(args):  # RF0450-9: --json-out is judged before any check; a fixed reason word, or None when it may be written
@@ -133,7 +139,7 @@ def _write_new(path, data):  # O_EXCL|O_NOFOLLOW, 0600, written whole; a failed 
 def agreement(args):  # results per plan group and finding verdict; escalate= says which rule fired. Writes only --json-out.
     why = args.json_out and _json_refusal(args)
     if why: return print("agreement: --json-out refused: %s" % why) or 1
-    try: errs, results, _ = _check(args)
+    try: errs, results, _, _ = _check(args)
     except PlanError as exc: errs, results = [str(exc)], {}
     if errs: return print("\n".join(errs + ["agreement: check failed; run check first"])) or 1
     spec, verdict = load_plan(args.plan), {cell(r, "finding_id"): cell(r, "verdict").lower() for r in findings(args.findings)}
@@ -189,6 +195,7 @@ def main(argv=None):
     for name in ("check", "agreement"):
         p = sub.add_parser(name); [p.add_argument(n) for n in ("plan", "findings", "verify")]
         p.add_argument("--not-posted", nargs="*", default=[]); p.add_argument("--md")
+        if name == "check": p.add_argument("--json", action="store_true")  # check only (RF1050-12)
     p.add_argument("--max-disagree", type=int, required=True)  # agreement only; no default: the organizer sets the bar
     p.add_argument("--json-out")  # agreement only (RF0450-9): a new 0600 file outside the repository
     p = sub.add_parser("counts"); p.add_argument("findings"); p.add_argument("report")

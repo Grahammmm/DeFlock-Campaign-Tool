@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Flock page: records-page story data builder + lint for the site rules (G4).
   build --cards C --sources S --location L --thread T --base-sources N --out F [--replace] [--not-posted ID..] [--not-posted-title T..]
-  lint  --story S --location L --thread T --base-sources N [--not-posted ID..] [--not-posted-title T..]
+  lint  --story S --location L --thread T --base-sources N [--not-posted ID..] [--not-posted-title T..] [--json]
   check --cards C --sources S --location L --thread T --base-sources N --story F [--not-posted ID..] [--not-posted-title T..]
 build turns a model-written CARDS.json plus G3's SOURCES.json into <slug>-story.json (the keys of the site's morrobay-story.mjs),
 numbering cites after the page's N base sources; it lints its own result first and writes nothing on any error. lint checks story,
@@ -181,8 +181,21 @@ def assemble(cards, sources, location, base):
     story = {k: meta[k] for k in META}
     story.update(programEvents=cards.get("programEvents") or [], keyDates=cards.get("keyDates") or [], extraSources=lines, **out)
     return {k: story[k] for k in KEYS}, errs
-def report(errs, n, story=None):
-    print("\n".join(claim_notes(story) + errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)]))
+def problem(e, inp=False):  # one error line -> {area, index, rule, why}; an input/io refusal -> area "input", whole line as why
+    m = None if inp else re.fullmatch(r"(\S+) (\d+): (.*)", e)
+    if not m:
+        return dict(area="input", index=0, rule="input", why=e)
+    rule, _, why = m.group(3).partition(" ")
+    return dict(area=m.group(1), index=int(m.group(2)), rule=rule, why=why)
+def report(errs, n, story=None, as_json=False, inp=False):  # lint --json: one flock-page-lint-v1 document from the same errs/n; same exit
+    notes = claim_notes(story)  # DF-4 advisory notes: first text lines; under --json on stderr, so stdout stays one v1 document
+    if as_json:
+        if notes:
+            print("\n".join(notes), file=sys.stderr)
+        print(json.dumps(dict(schema="flock-page-lint-v1", review_required=True, counts={k: n[k] for k in COUNTS}, errors=len(errs),
+                              problems=[problem(e, inp) for e in errs]), sort_keys=True, indent=1, ensure_ascii=False))
+    else:
+        print("\n".join(notes + errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)]))
     return 1 if errs else 0
 def claim_notes(story):  # DF-4 alert-only: legal-claim and quote-gated wording notes; never errors, never text
     return privacy.review_notes((("%s %d" % (area, i), text) for area, i, text in walk(story)), compare.GATED) if isinstance(story, dict) else []
@@ -230,15 +243,17 @@ def build(args):
     return report(errs, n, story)
 def run_lint(args):
     got = {}
+    inp = True  # an error raised before lint returned is an input refusal
     try:
         got = _inputs(args, ("story", "location", "thread"))
         errs, n = _stage("lint", lint, got["story"], got["thread"], got["location"], args.base_sources, args.not_posted,
                          args.not_posted_title)
+        inp = False
     except Fail as exc:
         errs, n = str(exc).splitlines(), dict.fromkeys(COUNTS, 0)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         errs, n = ["io 0: %s" % type(exc).__name__], dict.fromkeys(COUNTS, 0)
-    return report(errs, n, got.get("story"))
+    return report(errs, n, got.get("story"), args.json, inp)
 def superseded(f):  # regular files named <F>.superseded-* beside F; links are not counted
     with contextlib.suppress(OSError):
         return sum(e.name.startswith(f.name + ".superseded-") and e.is_file(follow_symlinks=False) for e in os.scandir(f.parent))
@@ -284,6 +299,8 @@ def main(argv=None):
         p.add_argument("--not-posted-title", nargs="*", default=[], action="extend")
         if name == "build":
             p.add_argument("--replace", action="store_true")
+        if name == "lint":
+            p.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     return {"build": build, "lint": run_lint, "check": check}[args.command](args)
 if __name__ == "__main__":

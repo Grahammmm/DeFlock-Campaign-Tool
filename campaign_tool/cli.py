@@ -483,26 +483,29 @@ def build(root, check=False):
 
 def backup_cmd(args, root):
     from .backup import export
-    manifest = export(root, args.out)
+    manifest = export(root, args.out, encrypt_to=args.encrypt_to)
     print(json.dumps({"out": str(args.out), "files": manifest["counts"]["files"], "bytes": manifest["counts"]["bytes"],
                       "objects": manifest["counts"].get("objects", 0), "engine_version": manifest["engine_version"],
                       "manifest_sha256": manifest["manifest_sha256"]},
                      indent=2))
-    print("Archive is unencrypted; encrypt it before storing it anywhere shared.", file=sys.stdout)
+    if manifest.get("encrypted"):
+        print(f"Archive is encrypted to {manifest['recipient']}; keep the private key and its passphrase apart from the archive.")
+    else:
+        print("Archive is unencrypted; encrypt it before storing it anywhere shared.", file=sys.stdout)
     print("Record manifest_sha256 somewhere other than with the archive and pass it to "
           "`verify --expect-manifest-sha256`: without it verify checks integrity, not tampering.", file=sys.stdout)
 
 
 def restore_cmd(args, root):
     from .backup import restore
-    report = restore(args.file, root)
+    report = restore(args.file, root, gnupg_home=args.gnupg_home)
     print(json.dumps({"restored_to": report["restored_to"], "files": report["files"],
                       "engine_version": report["engine_version"], "created_at": report["created_at"]}, indent=2))
 
 
 def verify_cmd(args):
     from .backup import verify
-    report = verify(args.file, expected_manifest_sha256=args.expect_manifest_sha256)
+    report = verify(args.file, expected_manifest_sha256=args.expect_manifest_sha256, gnupg_home=args.gnupg_home)
     if not args.expect_manifest_sha256:
         report["note"] = "integrity check only; pass --expect-manifest-sha256 <digest from backup> to detect a rewritten archive"
     print(json.dumps(report, indent=2))
@@ -704,12 +707,15 @@ def main():
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
+    backup_p.add_argument("--encrypt-to", default=None, help="Public key file; the archive is encrypted to it (GnuPG)")
     restore_p = commands.add_parser("restore", help="Restore a backup into an empty directory")
     restore_p.add_argument("--file", required=True)
     restore_p.add_argument("--directory", required=True)
+    restore_p.add_argument("--gnupg-home", default=None, help="GnuPG home holding the private key (encrypted archives)")
     verify_p = commands.add_parser("verify", help="Re-hash every member of a backup against its manifest")
     verify_p.add_argument("--file", required=True)
     verify_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`, kept apart from the archive")
+    verify_p.add_argument("--gnupg-home", default=None, help="GnuPG home holding the private key (encrypted archives)")
     diff_p = commands.add_parser("backup-diff", help="List files added/removed/changed since a backup (read-only; exit 3 on drift)")
     diff_p.add_argument("--file", required=True)
     diff_p.add_argument("--directory", required=True)
