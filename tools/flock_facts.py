@@ -276,25 +276,41 @@ def store_files(store, slug):
         ([] if slug else list(agencies.glob("*"))) + files)) if p.is_symlink()]
 
 
-def status(args):
-    """Review state per agency (RF1220-2): counts by kind and status, and ids to review. Read-only; never a value or quote."""
+def status_data(args):
+    """(errors, data) for status (RF0740-10): flock-facts-status-v1 counts, listed ids and totals; never a value, quote or hash."""
     files, errors = store_files(Path(args.store), slugify(args.agency or ""))
     errors = errors or ["file %d: %s" % (n, e) for n, f in enumerate(files, 1) for e in check_file(f, f.parent.name)]
     if errors or not files:
-        return fail(errors or ["no FACTS.csv files in store"])
-    listed, total = [], {"rows": 0, "unreviewed": 0, "disputed": 0}
+        return errors or ["no FACTS.csv files in store"], {}
+    agencies, listed = [], []
     for f in files:
         rows, count = load(f, f.parent.name)[1], {}
         for _, row in rows:
-            for key in ("rows", row["kind"], row["status"]) + ("unreadable",) * (row["value"].strip() == "UNREADABLE"):
+            for key in (row["kind"], row["status"]) + ("unreadable",) * (row["value"].strip() == "UNREADABLE"):
                 count[key] = count.get(key, 0) + 1
-        print(" | ".join([f.parent.name, "rows=%d" % len(rows)] + [" ".join("%s=%d" % (k, count.get(k, 0)) for k in group) for group in (
-            ("record", "policy", "law", "public"), ("unreviewed", "checked", "disputed"), ("unreadable",))]))
-        listed += ["%s | %s | %s | %s | page %s | row %d" % (f.parent.name, r["fact_id"], r["kind"], r["fact_type"], r["page"].strip(), n)
-                   for n, r in rows if r["status"] == args.list]
-        total = {k: v + count.get(k, 0) for k, v in total.items()}
-    print(*listed, sep="\n") if listed else None
-    print("agencies=%d rows=%d unreviewed=%d disputed=%d" % (len(files), total["rows"], total["unreviewed"], total["disputed"]))
+        agencies.append({"agency": f.parent.name, "rows": len(rows), "kinds": {k: count.get(k, 0) for k in (
+            "record", "policy", "law", "public")}, "statuses": {k: count.get(k, 0) for k in ("unreviewed", "checked", "disputed")},
+            "unreadable": count.get("unreadable", 0)})
+        listed += [{"agency": f.parent.name, "fact_id": r["fact_id"], "kind": r["kind"], "fact_type": r["fact_type"],
+                    "page": int(r["page"].strip()), "row": n} for n, r in rows if r["status"] == args.list]
+    totals = {"agencies": len(files), "rows": sum(a["rows"] for a in agencies)}
+    totals.update((k, sum(a["statuses"][k] for a in agencies)) for k in ("unreviewed", "disputed"))
+    return [], {"schema": "flock-facts-status-v1", "agencies": agencies, "listed": listed, "totals": totals, "list": args.list}
+
+
+def status(args):
+    """Review state per agency (RF1220-2): counts by kind and status, and ids to review. Read-only; never a value or quote."""
+    errors, data = status_data(args)
+    if errors:
+        return fail(errors)
+    if args.json:
+        return print(json.dumps(data, indent=2, sort_keys=False, ensure_ascii=True)) or 0
+    for a in data["agencies"]:
+        print(" | ".join([a["agency"], "rows=%d" % a["rows"]] + [" ".join("%s=%d" % kv for kv in group.items()) for group in (
+            a["kinds"], a["statuses"], {"unreadable": a["unreadable"]})]))
+    for r in data["listed"]:
+        print("%s | %s | %s | %s | page %d | row %d" % (r["agency"], r["fact_id"], r["kind"], r["fact_type"], r["page"], r["row"]))
+    print("agencies=%d rows=%d unreviewed=%d disputed=%d" % tuple(data["totals"].values()))
     return 0
 
 
@@ -546,7 +562,7 @@ def main(argv=None):
 def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", nargs="*", help="import SRC | coverage --store DIR --agency NAME --inventory CSV"
-                        " | status --store DIR [--agency SLUG] [--list unreviewed|disputed]"
+                        " | status --store DIR [--agency SLUG] [--list unreviewed|disputed] [--json]"
                         " | quote-check --store DIR --text EXPORT [--agency SLUG]"
                         " | stale --store DIR --date YYYY-MM-DD [--agency SLUG] [--findings FINDINGS.csv]"
                         " | review --store DIR --agency SLUG --ids ID[,ID...] --set checked|disputed --reviewer NAME"
@@ -559,7 +575,10 @@ def _main(argv=None):
     parser.add_argument("--status", default="checked", choices=sorted(STATUSES))
     parser.add_argument("--set", choices=["checked", "disputed"])
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.json and args.command[:1] != ["status"]:
+        parser.error("--json belongs to status only")
     if args.dry_run and (args.command[:1] != ["import"] or args.check is not None):
         parser.error("--dry-run belongs to import only")
     if args.out is not None and args.command[:1] != ["unreadable"]:
