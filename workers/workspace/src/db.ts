@@ -190,10 +190,7 @@ export interface MeetingRow {
   campaign_id: string;
   body_name: string;
   agency_id: string | null;
-  /**
-   * NULL exactly when date_state = 'unknown' (schema CHECK). Kept as `string` so the existing
-   * dated readers (comment kit, manifest) compile unchanged; check date_state before using it.
-   */
+  /** NULL exactly when date_state = 'unknown' (schema CHECK); typed `string` for the dated readers. */
   starts_at: string;
   date_state: "known" | "unknown";
   agenda_url: string | null;
@@ -218,18 +215,9 @@ type MeetingIdentityField = (typeof MEETING_IDENTITY)[number];
 
 /** A polled meeting as filed by fileMeeting / fileMeetingRevision. */
 export interface MeetingFiling {
-  body_name: string;
-  agency_id: string | null;
-  starts_at: string | null;
-  date_state: "known" | "unknown";
-  agenda_url: string | null;
-  agenda_item: string | null;
-  relevance: string | null;
-  source: string | null;
-  source_url: string;
-  item_id: string;
-  title_sha256: string;
-  fetched_at: string;
+  body_name: string; agency_id: string | null; starts_at: string | null; date_state: "known" | "unknown";
+  agenda_url: string | null; agenda_item: string | null; relevance: string | null; source: string | null;
+  source_url: string; item_id: string; title_sha256: string; fetched_at: string;
 }
 
 export type JobKind =
@@ -677,10 +665,7 @@ export class Repo {
   }
 
   private meetingHead(sourceUrl: string, itemId: string): Promise<MeetingRow | null> {
-    return this.one<MeetingRow>(
-      "SELECT * FROM meeting WHERE campaign_id = ? AND source_url = ? AND item_id = ? ORDER BY revision DESC LIMIT 1",
-      this.campaignId, sourceUrl, itemId,
-    );
+    return this.one<MeetingRow>("SELECT * FROM meeting WHERE campaign_id = ? AND source_url = ? AND item_id = ? ORDER BY revision DESC LIMIT 1", this.campaignId, sourceUrl, itemId);
   }
 
   private meetingFilingRow(input: MeetingFiling, revision: number, supersedes: string | null): Insertable<MeetingRow> {
@@ -696,9 +681,8 @@ export class Repo {
   }
 
   /**
-   * File a polled meeting once per (source_url, item_id). A re-file of the unchanged item returns the
-   * current head with inserted: false and writes nothing; a changed title must go through
-   * fileMeetingRevision, so this refuses it rather than hiding the change.
+   * File a polled meeting once per (source_url, item_id): an unchanged re-file writes nothing and
+   * returns inserted: false; a changed title is refused here and goes through fileMeetingRevision.
    */
   async fileMeeting(input: MeetingFiling): Promise<{ row: MeetingRow; inserted: boolean }> {
     const existing = async () => {
@@ -710,8 +694,7 @@ export class Repo {
     if (head) return { row: head, inserted: false };
     try {
       return { row: await this.insert<MeetingRow>("meeting", this.meetingFilingRow(input, 1, null)), inserted: true };
-    } catch (err) {
-      // Lost a race on the identity index: report the winner. CHECK and other errors propagate.
+    } catch (err) { // lost a race on the identity index: report the winner; CHECK and other errors propagate
       if (!/UNIQUE constraint failed/.test(String(err))) throw err;
     }
     const winner = await existing();
