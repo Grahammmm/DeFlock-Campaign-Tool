@@ -143,3 +143,23 @@ accepted synthetic ambient-key test and its exact environment/clean-env assertio
 are preserved; scanner gates remain unchanged. The no-allocation seal regression
 checks exact persistent fields and repeatability, excluding transient control flags.
 Tests create no containers and cannot substitute for real host/systemd acceptance.
+
+## Campaign-side local schedule
+
+The records runtime above has its own three slots (07:00, 13:00, 20:30
+America/Los_Angeles). The campaign side (reconcile, stale-stage check, run report
+review, deadline drafts, site build, backup) ships separately as six systemd **user**
+`.service`/`.timer` templates in `deploy/local-schedule/`, each at least 50 minutes from
+every records slot and from each other, each with its own `flock` lock. Every slot is
+read-only or draft-only: none sends, publishes or spends, and `tools/flock_publish.py`
+is never a slot.
+
+```sh
+python3 -B tools/local_schedule_check.py --store /ABS/STORE
+```
+
+The check is read-only: it reports each slot's resolved command and whether it exists,
+refuses the whole check when a unit carries a send or publish command, and names
+collisions, leftover placeholders and shared locks. It never calls systemd and writes
+nothing. Installing the timers is one attended operator step described in
+`deploy/local-schedule/install.md`; nothing in this repository enables them.

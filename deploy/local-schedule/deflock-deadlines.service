@@ -1,0 +1,11 @@
+[Unit]
+Description=DeFlock local schedule: deadline drafts (draft-only)
+# Gate-safe slot. Draft-only: writes reminder drafts, sends nothing. Reported missing until BF-df-deadline-engine merges.
+
+[Service]
+Type=oneshot
+WorkingDirectory=@WORKDIR@
+UMask=0077
+# Per-slot overlap lock: a held lock skips this slot with exit 73, never queues.
+ExecStart=/usr/bin/flock -n -E 73 %t/deflock-deadlines.lock @PYTHON@ -B tools/flock_deadlines.py run --store @STORE@
+TimeoutStartSec=40min
