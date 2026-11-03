@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Flock review: one agency through the agency-review method as a fixed 28-stage resumable pipeline.
   --check CONFIG [--seed-dir DIR] | run CONFIG [--until STAGE] [--seed-dir DIR] | status CONFIG | mark CONFIG STAGE --provider P --model M
+  status CONFIG --json prints one flock-review-status-v1 document (stages, counts, next, locked; errors when refused), same exit codes.
 Runs the private method scripts and F1/F3 tools, skipping stages whose inputs are unchanged; a wait stage closes only by mark (the card that
 wrote the input states its provider/model). Never runs a model, never deletes (old outputs move to <out>/.review/superseded), no network.
 status ends a stale/waiting/failed/pending line with (<reason>): the changed fingerprint part or output relpath, the wait reason, rc or need.
@@ -361,25 +362,37 @@ def mark(c, sid, provider, model):
     save(c, state)
     print("marked %s files=%d" % (sid, len(files)))
     return 0
-def status(c):  # read-only: no lock, no writes, no .review creation
-    state, dig, nxt = load_state(c), {}, "-"
+def emit(errors=(), **body):  # the --json document; a refusal carries its error lines and no stages
+    body = body or {"stages": [], "counts": None, "next": None, "locked": None}
+    print(json.dumps({"schema": "flock-review-status-v1", "review_required": True, "total": len(STAGES), "errors": list(errors), **body},
+                     indent=1, sort_keys=True, ensure_ascii=False))
+def status(c, as_json=False):  # read-only: no lock, no writes, no .review creation; rows and counts computed once
+    state, dig, nxt, rows = load_state(c), {}, "-", []
     counts = dict.fromkeys(("done", "stale", "waiting", "pending", "failed", "skip"), 0)
     for i, (sid, kind, _) in enumerate(STAGES):
         (word, why, fp), mark = evaluate(c, state, dig, i), (state["stages"].get(sid) or {}).get("mark")
         counts[word], nxt = counts[word] + 1, sid if nxt == "-" and word not in ("done", "skip") else nxt
-        print("%d %s %s %s%s%s" % (i + 1, sid, kind, word, " %s/%s" % (mark["provider"], mark["model"]) if mark else "",
-                                   " (%s)" % r if (r := why or why_not_done(c, state, dig, i, word, fp)) else ""))
-    print("stages=%d %s next=%s locked=%s" % (len(STAGES), " ".join("%s=%d" % kv for kv in counts.items()), nxt,
-                                             {"held": "yes", "stale": "stale"}.get(lock_state(c)[0], "no")))
+        r = why or why_not_done(c, state, dig, i, word, fp) or ""
+        rows.append({"n": i + 1, "id": sid, "kind": kind, "state": word, "reason": r,
+                     "mark": {"provider": mark["provider"], "model": mark["model"]} if mark else None})
+        if not as_json:
+            print("%d %s %s %s%s%s" % (i + 1, sid, kind, word, " %s/%s" % (mark["provider"], mark["model"]) if mark else "", " (%s)" % r if r else ""))
+    held = {"held": "yes", "stale": "stale"}.get(lock_state(c)[0], "no")
+    if as_json: return emit(stages=rows, counts=counts, next=None if nxt == "-" else nxt, locked=held) or 0
+    print("stages=%d %s next=%s locked=%s" % (len(STAGES), " ".join("%s=%d" % kv for kv in counts.items()), nxt, held))
     return 0
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("words", nargs="*", metavar="run|status|mark CONFIG [STAGE]")
     for name in ("--check", "--seed-dir", "--until", "--provider", "--model"): parser.add_argument(name)
+    parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     cmd, rest = (args.words or [""])[0], args.words[1:]
     if not (args.check and not args.words) and not (cmd in ("run", "status") and len(rest) == 1) and not (cmd == "mark" and len(rest) == 2):
         parser.error("usage: --check CONFIG | run CONFIG [--until STAGE] | status CONFIG | mark CONFIG STAGE --provider P --model M")
+    if args.json and (cmd != "status" or args.check):
+        parser.error("usage: --json goes only with status CONFIG")
+    say = emit if args.json else (lambda lines: print("\n".join(lines)))  # noqa: E731
     try:
         if cmd == "mark" and (rest[1] not in IDS or STAGES[IDS.index(rest[1])][1] != "wait" or args.provider not in compare_tool.PROVIDERS
                               or not MODEL.fullmatch(args.model or "")):
@@ -387,14 +400,15 @@ def main(argv=None):
         if args.until is not None and args.until not in IDS: raise Usage("usage: --until is not a stage id")
         c = context(args.check or rest[0])
         errs = check(c, args.seed_dir)
+        if args.json and errs: return say(errs) or 1  # the text lines without their summary line
         if args.check or errs:
             print("\n".join(errs + ["stages=%d skip=%d errors=%d" % (len(STAGES), len(c["skip"]), len(errs))]))
             return 1 if errs else 0
-        if cmd == "status": return status(c)
+        if cmd == "status": return status(c, args.json)
         return locked(c, (lambda: run(c, args.until)) if cmd == "run" else lambda: mark(c, rest[1], args.provider, args.model))
     except Fail as exc:
-        return print(exc) or exc.code
+        return say([str(exc)]) or exc.code
     except OSError as exc:
-        return print("io: %s" % type(exc).__name__) or 1
+        return say(["io: %s" % type(exc).__name__]) or 1
 if __name__ == "__main__":
     sys.exit(main())
