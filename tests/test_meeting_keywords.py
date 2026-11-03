@@ -1,12 +1,5 @@
 """BF-df-meeting-keywords: one ALPR keyword list (data/meeting-keywords.json) for Python and the Workers."""
-import json
-import os
-import re
-import shutil
-import subprocess
-import sys
-import tempfile
-import unittest
+import json, os, re, shutil, subprocess, sys, tempfile, unittest  # noqa: E401
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,17 +19,12 @@ def cases():
     return json.loads(FIXTURE.read_text(encoding="utf-8"))["cases"]
 
 
-def generated_source(text):
-    line = next(l for l in text.splitlines() if l.startswith("export const MEETING_KEYWORDS_SOURCE"))
-    return json.loads(line.split(" = ", 1)[1].rstrip(";"))
-
-
 class ParityTest(unittest.TestCase):
     def test_fixture_covers_the_spec(self):
-        texts = [c["text"] for c in cases()]
+        texts = [c["text"].lower() for c in cases()]
         self.assertGreaterEqual(len(texts), 24)
-        for needle in ("license plate", "license-plate", "licenseplate", "ALPRs", "Flocking", "ALPRX", "surveillance"):
-            self.assertTrue(any(needle.lower() in t.lower() for t in texts), needle)
+        for needle in ("license plate", "license-plate", "licenseplate", "alprs", "flocking", "alprx", "surveillance"):
+            self.assertTrue(any(needle in t for t in texts), needle)
         self.assertIn(False, [c["match"] for c in cases()])
 
     def test_python_verdicts_match_fixture(self):
@@ -48,16 +36,15 @@ class ParityTest(unittest.TestCase):
         spec = json.loads(KEYWORDS_FILE.read_text(encoding="utf-8"))
         self.assertEqual(KEYWORDS.pattern, "|".join(spec["alternatives"]))
         self.assertTrue(KEYWORDS.flags & re.IGNORECASE)
-        self.assertEqual(generated_source((ROOT / GENERATED).read_text(encoding="utf-8")), KEYWORDS.pattern)
+        line = [l for l in (ROOT / GENERATED).read_text(encoding="utf-8").splitlines() if "MEETING_KEYWORDS_SOURCE" in l]
+        self.assertEqual(json.loads(line[0].split(" = ", 1)[1].rstrip(";")), KEYWORDS.pattern)
 
 
 class LoadErrorTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "meeting-keywords.json"
-
-    def tearDown(self):
-        self.tmp.cleanup()
 
     def assert_refused(self, content):
         if content is not None:
@@ -68,7 +55,8 @@ class LoadErrorTest(unittest.TestCase):
 
     def test_missing_malformed_and_invalid_files_raise_naming_the_file(self):
         good = {"schema_version": 1, "flags": "i", "alternatives": ["flock"]}
-        self.assertTrue(load_keywords(self._write(good)).search("FLOCK"))
+        self.path.write_text(json.dumps(good), encoding="utf-8")
+        self.assertTrue(load_keywords(self.path).search("FLOCK"))
         self.path.unlink()
         self.assert_refused(None)
         self.assert_refused("{not json")
@@ -78,10 +66,6 @@ class LoadErrorTest(unittest.TestCase):
                        {"alternatives": ["(unclosed"]}):
             with self.subTest(change=sorted(change)):
                 self.assert_refused(json.dumps({**good, **change}))
-
-    def _write(self, spec):
-        self.path.write_text(json.dumps(spec), encoding="utf-8")
-        return self.path
 
     def test_import_without_the_file_raises_instead_of_falling_back(self):
         root = Path(self.tmp.name).resolve() / "repo"
@@ -100,14 +84,12 @@ class GeneratorTest(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         for name in self.SOURCES:
             (self.root / name).parent.mkdir(parents=True, exist_ok=True)
             (shutil.copytree if (ROOT / name).is_dir() else shutil.copy2)(ROOT / name, self.root / name)
         self.spec = json.loads((self.root / "data" / "meeting-keywords.json").read_text(encoding="utf-8"))
-
-    def tearDown(self):
-        self.tmp.cleanup()
 
     def sync(self, *args, root=None):
         result = subprocess.run([NODE, str((root or self.root) / SYNC), *args], capture_output=True, text=True, timeout=120)
@@ -159,25 +141,17 @@ class OneCopyTest(unittest.TestCase):
         listed = subprocess.run(["git", "ls-files", "-co", "--exclude-standard", "-z"], cwd=ROOT,
                                 capture_output=True, check=True).stdout.decode().split("\0")
         needles = ("license" + "[ -]?plate", "|" + "surveillance", "surveillance" + "|", "\\b" + "ALPRs?")
-        holders = []
-        for name in filter(None, listed):
-            path = ROOT / name
-            if name.startswith(str(GENERATED.parent) + "/") or path.suffix not in {".py", ".ts", ".mjs", ".js", ".json", ".md", ".sql"} \
-                    or not path.is_file():
-                continue
-            if any(n in path.read_text(encoding="utf-8", errors="replace") for n in needles):
-                holders.append(name)
+        holders = [n for n in listed if Path(n).suffix in {".py", ".ts", ".mjs", ".js", ".json", ".md", ".sql"}
+                   and not n.startswith(str(GENERATED.parent) + "/") and (ROOT / n).is_file()
+                   and any(s in (ROOT / n).read_text(encoding="utf-8", errors="replace") for s in needles)]
         self.assertEqual(holders, ["data/meeting-keywords.json"])
-        text = (ROOT / GENERATED).read_text(encoding="utf-8")
-        self.assertTrue(text.startswith("// GENERATED by workers/scripts/sync-data.mjs from data/meeting-keywords.json."
-                                        " Do not edit.\n"))
+        self.assertTrue((ROOT / GENERATED).read_text(encoding="utf-8").startswith(
+            "// GENERATED by workers/scripts/sync-data.mjs from data/meeting-keywords.json. Do not edit.\n"))
 
     def test_planted_contact_data_reaches_no_generated_file(self):
-        for folder in (ROOT / "workers" / "shared" / "src" / "generated", ROOT / "workers" / "wizard" / "src" / "generated"):
-            for path in folder.rglob("*"):
-                if path.is_file():
-                    text = path.read_text(encoding="utf-8", errors="replace")
-                    self.assertFalse([p for p in PLANTED if p in text], path.name)
+        for path in [*(ROOT / "workers").glob("*/src/generated/*")]:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            self.assertFalse([p for p in PLANTED if p in text], path.name)
 
 
 if __name__ == "__main__":
