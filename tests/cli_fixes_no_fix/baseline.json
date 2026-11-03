@@ -46,7 +46,7 @@
   "--record #5: already linked on 5": "kit-response --record message that names the record number and the rule to change; not in the table",
   "--record #5: name": "kit-response --record message that names the record number and the rule to change; not in the table",
   "fee_estimate needs --amount USD": "kit-response --amount message that already names the option and the rule; not in the table",
-  "--amount is only for fee_estimate steps": "kit-response --amount message that already names the option and the rule; not in the table",
+  "--amount is only for fee_estimate and fee_paid steps": "kit-response --amount message that already names the option and the rule; not in the table",
   "--amount must be US dollars like 245 or 245.50 (no sign, commas or exponent)": "kit-response --amount message that already names the option and the rule; not in the table",
   "--amount must be from 0 to 100000": "kit-response --amount message that already names the option and the rule; not in the table",
   "--expected-on is for the determination or a later step that restates the date": "kit-response --expected-on message that already names the option and the rule; not in the table",

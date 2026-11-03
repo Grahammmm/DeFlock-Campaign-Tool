@@ -88,3 +88,37 @@ test('no-map relabelled site: county and city fixed facts come from js.* labels 
   context.chooseCity(bare[0]);
   assert.equal(nodes['city-facts'].innerHTML,'<li>Sin hallazgos publicados.</li>');
 });
+function agencyLink(label='Agency page'){
+  const node={dataset:label===null?{}:{label},removeAttribute(name){delete this[name];}};
+  return node;
+}
+test('agency page link shows label and finding count from data-label and CITIES',()=>{
+  const {context:c,nodes}=setup();nodes['city-agency-link']=agencyLink();
+  c.CITIES.paged={...c.CITIES.cedar,agencyPage:'/agencies/paged.html',findingCount:2};
+  c.setCityText('paged');const a=nodes['city-agency-link'];
+  assert.equal(a.href,'/agencies/paged.html');assert.equal(a.textContent,'Agency page \u00b7 2 published findings');assert.equal(a.hidden,false);
+  c.CITIES.paged.findingCount=1;c.setCityText('paged');assert.equal(a.textContent,'Agency page \u00b7 1 published finding');
+  c.CITIES.paged.findingCount=0;c.setCityText('paged');assert.equal(a.textContent,'Agency page \u00b7 no published findings yet');
+  for(const bad of ['3',-1,1.5,undefined]){c.CITIES.paged.findingCount=bad;c.setCityText('paged');
+    assert.equal(a.textContent,'Agency page',String(bad));assert.equal(a.hidden,false,String(bad));}
+});
+test('agency page link hides for no page, county view and the sequence back',()=>{
+  const {context:c,nodes}=setup();nodes['city-agency-link']=agencyLink();const a=nodes['city-agency-link'];
+  c.CITIES.paged={...c.CITIES.cedar,agencyPage:'/agencies/paged.html',findingCount:2};
+  c.CITIES.other={...c.CITIES.cedar,agencyPage:'/agencies/other.html',findingCount:1};
+  c.setCityText('paged');assert.equal(a.hidden,false);
+  c.setCityText('cedar');assert.equal(a.hidden,true);assert.equal('href' in a,false);assert.equal(a.textContent,'');
+  c.setCityText('paged');c.setCityText(null);assert.equal(a.hidden,true);assert.equal('href' in a,false);
+  c.setCityText('other');assert.equal(a.href,'/agencies/other.html');assert.equal(a.textContent,'Agency page \u00b7 1 published finding');
+});
+test('agency page link rejects unsafe paths and needs the markup label',()=>{
+  const {context:c,nodes}=setup();nodes['city-agency-link']=agencyLink();const a=nodes['city-agency-link'];
+  c.CITIES.paged={...c.CITIES.cedar,findingCount:2};
+  for(const bad of ['javascript:alert(1)','https://evil.example/x','/agencies/../x.html','/agencies/X.html',7]){
+    c.CITIES.paged.agencyPage=bad;c.setCityText('paged');assert.equal(a.hidden,true,String(bad));assert.equal('href' in a,false,String(bad));
+  }
+  const {context:d,nodes:n}=setup();n['city-agency-link']=agencyLink(null);
+  d.CITIES.cedar.agencyPage='/agencies/cedar.html';d.setCityText('cedar');assert.equal(n['city-agency-link'].hidden,true);
+  const {context:e}=setup(false);e.CITIES.cedar.agencyPage='/agencies/cedar.html';assert.doesNotThrow(()=>e.setCityText('cedar'));
+  assert.equal(code.includes('Agency page'),false);assert.equal(code.split('fetch(').length,1);
+});
