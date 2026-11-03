@@ -24,6 +24,13 @@ read-only and exits 0 when clean or without `content/`, 3 when anything is liste
 
 `python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
 
+### Second locality
+
+Initialize the new campaign first, then run `python3 -m campaign_tool content init --directory NEW --from OLD`.
+Only public site text, labels and eligible pages are copied; contact, signup and base URL are reset.
+The summary lists copied files, replacements, skipped entries and text needing review. Review every page and
+all locality-specific claims before any publication; this command builds and deploys nothing.
+
 Finding citations and the source library lead with “From a document we hold”,
 the receipt date and agency when known, and public-copy or private-original status.
 Uncatalogued citations say so without inventing a receipt date. “Record no.” keeps

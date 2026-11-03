@@ -848,9 +848,11 @@ def main():
     verify.add_argument("--differs-because", choices=("redacted", "converted", "unknown"), default=None)
     content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
         dest="content_command", required=True)
-    content_cmds.add_parser(
+    content_init = content_cmds.add_parser(
         "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
-    ).add_argument("--directory", required=True)
+    )
+    content_init.add_argument("--directory", required=True)
+    content_init.add_argument("--from", dest="source_campaign")
     strip_p = content_cmds.add_parser("strip-metadata", help="Write <name>.clean<ext> beside a JPEG/PNG/WebP without "
                                       "its EXIF, GPS, XMP, IPTC, comment or text metadata (no re-encode)")
     strip_p.add_argument("file")
@@ -1128,8 +1130,8 @@ def main():
             print(json.dumps(strip_file(args.file, args.out), indent=2))
         elif args.command == "content":
             from .content_init import init_content
-            print(json.dumps(init_content(root), indent=2))
-            print('content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
+            print(json.dumps(init_content(root, args.source_campaign), indent=2))
+            print(f"content/ written from {Path(args.source_campaign).name}. Review every copied page and replace anything specific to the other locality; nothing was built or deployed." if args.source_campaign is not None else 'content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
         elif args.command == "kit-agency":
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
