@@ -158,3 +158,12 @@ restates it) records the agency's own stated production date; a date before that
 `kit-status` shows the latest one as `stated_production_date`. `kit due` lists a request whose stated date has
 passed with no `produced` step since (closed requests never) under `stated_passed` as `stated_date_passed`,
 counts it and exits 3: stated date passed — the agency's own date; provisional, not a legal deadline.
+
+## Clarification requested (kit requests)
+
+`kit-response --kind clarification_requested` records the agency asking you to clarify or narrow a request (not after
+`produced`, `denied` or `closed`; one open at a time); `--kind clarified` records your reply and is refused when no
+clarification request is open. While one is open, `kit-status` shows `waiting_on_you_since`, `kit due` lists the
+request as `waiting_on_you` (counted in `waiting_on_you`, not as past due or stated date passed, never exit 3 by
+itself; the provisional date is still shown) and `kit-followup` stops with exit 3 and writes nothing. The tool makes
+no claim that a clarification pauses any legal period.

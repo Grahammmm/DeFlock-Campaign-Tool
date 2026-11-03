@@ -803,7 +803,8 @@ def main():
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
-                                                               "produced", "denied", "closed", "fee_estimate"))
+                                                               "produced", "denied", "closed", "fee_estimate",
+                                                               "clarification_requested", "clarified"))
     response_p.add_argument("--amount", metavar="USD", help="fee_estimate only: the agency's estimate, 0-100000 "
                             "(e.g. 245.50); recorded only, nothing is paid")
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
@@ -1215,4 +1216,4 @@ def main():
                 doctor(root, args.contact_max_age_days, args.stale_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
         fixes.emit(exc)
-        sys.exit(1)
+        sys.exit(getattr(exc, "exit_code", 1))  # kit_track.WaitingOnYou: 3

@@ -63,6 +63,8 @@ NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be add
         "acknowledged is allowed only as the first step, once", "extension is allowed only once",
         "extension is not allowed after a determination, produced or denied step", "5 is allowed at most once",
         "closed needs at least one prior step",
+        "clarification_requested is not allowed after a produced or denied step",
+        "a clarification request is already open since 5", "no open clarification request to answer",
     ), "kit-response message that already names the option or the step order rule; not in the table"),
     **dict.fromkeys((
         "--record is only for produced steps", "--record: at most 5 records per step",
