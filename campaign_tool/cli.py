@@ -473,7 +473,18 @@ def build(root, check=False):
 
 
 def backup_cmd(args, root):
-    from .backup import export
+    from .backup import BackupError, export, export_into
+    if args.into is not None:
+        try:
+            name, manifest = export_into(root, args.into, args.encrypt_to)
+        except (OSError, ValueError) as exc:  # one stderr line so cron mail stays one line
+            text = " ".join((str(exc) if isinstance(exc, BackupError) else getattr(exc, "strerror", None) or type(exc).__name__).split())
+            print(text if text.startswith("backup: ") else f"backup failed: {text}", file=sys.stderr)
+            sys.exit(1)
+        counts = manifest["counts"]
+        print(f"backup ok: {name} {'encrypted' if manifest.get('encrypted') else 'UNENCRYPTED'} "
+              f"files={counts['files']} bytes={counts['bytes']} manifest_sha256={manifest['manifest_sha256']}")
+        return
     manifest = export(root, args.out, encrypt_to=args.encrypt_to)
     print(json.dumps({"out": str(args.out), "files": manifest["counts"]["files"], "bytes": manifest["counts"]["bytes"],
                       "objects": manifest["counts"].get("objects", 0), "engine_version": manifest["engine_version"],
@@ -697,7 +708,9 @@ def main():
     press_draft.add_argument("--date")
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
-    backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
+    backup_out = backup_p.add_mutually_exclusive_group(required=True)
+    backup_out.add_argument("--out", help="Archive path to create (must not exist)")
+    backup_out.add_argument("--into", help="Existing private folder; writes a new deflock-backup-<UTC stamp>.tar[.gpg] and prints one status line")
     backup_p.add_argument("--encrypt-to", default=None, help="Public key file; the archive is encrypted to it (GnuPG)")
     restore_p = commands.add_parser("restore", help="Restore a backup into an empty directory")
     restore_p.add_argument("--file", required=True)

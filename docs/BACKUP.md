@@ -197,8 +197,38 @@ Decryption needs the private key and its passphrase: keep them apart from the ar
 private key loses every backup encrypted to it. `backup-drill`, `backup-list` and `backup-diff` do
 not read encrypted archives yet.
 
+## Scheduled backups
+
+`backup --directory D --into DIR [--encrypt-to KEY]` writes a new `DIR/deflock-backup-<UTC YYYYmmddTHHMMSSZ>.tar`
+(`.tar.gpg` when encrypting) and prints one line, `backup ok: NAME encrypted|UNENCRYPTED files=N bytes=B manifest_sha256=HEX`;
+a failure prints one `backup failed: ...` line on stderr and exits 1, leaving no partial archive. `DIR` must exist, be a
+real folder (not a link) and not be group- or other-writable. It never overwrites; `DIR/.deflock-backup.lock` stops
+overlapping runs (remove it by hand only after a crash). The key is `--encrypt-to`, else `"backup": {"encrypt_to":
+"organizer.asc"}` in `campaign.json` (relative to the campaign folder); with neither the line says `UNENCRYPTED`.
+
+User timer, two files in `~/.config/systemd/user/`
+(then `systemctl --user enable --now deflock-backup.timer`):
+
+    # deflock-backup.service
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/bin/python3 -m campaign_tool backup --directory %h/campaign --into %h/backups
+    WorkingDirectory=%h/DeFlock-Campaign-Tool
+
+    # deflock-backup.timer
+    [Timer]
+    OnCalendar=daily
+    Persistent=true
+    [Install]
+    WantedBy=timers.target
+
+Or one crontab line: `17 2 * * * cd ~/DeFlock-Campaign-Tool && python3 -m campaign_tool backup --directory ~/campaign --into ~/backups`
+
+Keep rule: `python3 -m campaign_tool backup-list --dir ~/backups --keep-daily 7 --keep-weekly 8` shows what it would
+retain. It reads `*.tar` only, so prune `.tar.gpg` by the date in the name. This installs nothing; deleting stays manual.
+
 ## Not done
 
-Incremental or scheduled backups from cron, restore of a hosted
+Incremental backups, restore of a hosted
 campaign back into D1 and R2 (the export is readable JSON and hash-named objects, so a restore
 script is straightforward but not written), and retention deletion (`backup-list` only reports).

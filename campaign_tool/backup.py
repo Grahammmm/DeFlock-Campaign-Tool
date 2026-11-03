@@ -335,6 +335,42 @@ def export(root, out_path, encrypt_to=None):
     return manifest
 
 
+def scheduled_name(now=None):
+    return "deflock-backup-" + (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".tar"
+
+
+def export_into(root, folder, encrypt_to=None, now=None):
+    """New timestamped archive in ``folder``, never overwriting; returns ``(name, manifest)``. ``backup: `` messages are whole lines."""
+    folder, root = Path(folder), Path(root)
+    mode = os.lstat(folder).st_mode if os.path.lexists(folder) else 0
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode) or mode & 0o022:
+        raise BackupError("backup: --into: must be an existing real folder that group and others cannot write")
+    try:
+        cfg = json.loads((root / "campaign.json").read_text(encoding="utf-8")).get("backup")
+    except (OSError, ValueError, AttributeError):
+        cfg = None  # export() reports a missing campaign.json
+    key = cfg.get("encrypt_to") if isinstance(cfg, dict) else None
+    if cfg is not None and not (isinstance(cfg, dict) and (key is None or isinstance(key, str))):
+        raise BackupError('campaign.json backup.encrypt_to: "backup" must be an object holding a key-file path')
+    if encrypt_to is None and key is not None:
+        encrypt_to = root / key
+        try:
+            backup_crypt.recipient_ids(encrypt_to)
+        except BackupError as exc:
+            raise BackupError(f"campaign.json backup.encrypt_to: {exc}") from None
+    name, lock = scheduled_name(now) + (".gpg" if encrypt_to else ""), folder / ".deflock-backup.lock"
+    try:
+        os.close(os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        raise BackupError("another backup is running") from None
+    try:
+        if os.path.lexists(folder / name):
+            raise BackupError(f"backup: {name} exists; not overwritten")
+        return name, export(root, folder / name, encrypt_to=encrypt_to)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
 DIFF_NAME_CAP = 200
 
 
