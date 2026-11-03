@@ -150,3 +150,11 @@ When the existing pinned `ledger(path, readonly=True)` opens a quiet
 WAL-mode ledger, SQLite can create its own `-shm` sidecar and an empty
 `-wal` file next to the database. The main file bytes, inode and logical
 content stay unchanged, and the tests assert this.
+
+## Stated production date (kit requests)
+
+`kit-response --kind determination --expected-on YYYY-MM-DD` (or a later step, such as `fee_estimate`, that
+restates it) records the agency's own stated production date; a date before that step's date is refused.
+`kit-status` shows the latest one as `stated_production_date`. `kit due` lists a request whose stated date has
+passed with no `produced` step since (closed requests never) under `stated_passed` as `stated_date_passed`,
+counts it and exits 3: stated date passed — the agency's own date; provisional, not a legal deadline.
