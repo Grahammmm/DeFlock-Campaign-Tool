@@ -279,6 +279,40 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(self.run_build()[0], 0)
         self.assertIn('no reminders (source read: flock_today)', self.outputs()[0])
 
+    def test_unreadable_facts_is_not_current_but_absent_or_valid_facts_is_healthy(self):
+        facts = self.folder / 'FACTS.csv'
+        for name, make in (('absent', lambda: None), ('valid', lambda: facts.write_text(','.join(MOD.today.facts_tool.V2) + '\n'))):
+            make()
+            self.assertEqual(self.run_build(output=self.tmp / name)[0], 0, name)
+            self.assertNotIn('NOT CURRENT', (self.tmp / name / 'index.html').read_text())
+        facts.unlink()
+        facts.mkdir()  # exists but cannot be read as a file
+        code, out, _ = self.run_build()
+        page, data = self.outputs()
+        self.assertEqual(code, 1)
+        self.assertIn('source_errors=1', out)
+        self.assertEqual([e['source'] for e in data['source_errors']], ['flock_facts'])
+        self.assertIn('NOT CURRENT: source flock_facts failed', page)
+        self.assertIn('<td>R-1</td>', page)  # unaffected sections still render
+        self.assertIn('Approve what goes out', page)
+
+    def test_alerts_omitted_empty_and_failed_are_three_distinct_states(self):
+        file = self.tmp / 'alerts.json'
+        file.write_text(json.dumps({'schema': 'flock-alerts-v1', 'review_required': True, 'alerts': []}))
+        self.assertEqual(self.run_build('--alerts', str(file))[0], 0)
+        self.assertIn('0 recorded alerts (source read: alerts)', self.outputs()[0])
+        self.assertEqual(self.outputs()[1]['sections']['alerts'], [])
+        self.assertEqual(self.run_build(output=self.tmp / 'omitted')[0], 0)
+        omitted = (self.tmp / 'omitted' / 'index.html').read_text()
+        self.assertIn('alerts: not provided', omitted)
+        self.assertNotIn('recorded alerts', omitted)
+        file.write_text('{"schema": "other"}')
+        self.assertEqual(self.run_build('--alerts', str(file), output=self.tmp / 'failed')[0], 1)
+        failed = (self.tmp / 'failed' / 'index.html').read_text()
+        self.assertIn('NOT CURRENT: source alerts failed', failed)
+        self.assertNotIn('recorded alerts', failed)
+        self.assertNotIn('not provided', failed)
+
 
 if __name__ == '__main__':
     unittest.main()

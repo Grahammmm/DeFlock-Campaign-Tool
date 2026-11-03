@@ -81,8 +81,7 @@ def collect_publish(store):
 def collect_reminders(store, date):
     if (store / 'agencies').is_symlink() or not (store / 'agencies').is_dir():
         raise ValueError('agencies unavailable')
-    items = today.reminders(store, date)
-    items.sort(key=lambda i: (i[0], i[2], i[3], i[4]))
+    items = sorted(today.reminders(store, date), key=lambda i: (i[0], i[2], i[3], i[4]))
     return [{'kind': x[1], 'date': label(x[2]), 'agency': label(x[3]), 'request_id': label(x[4])} for x in items]
 
 
@@ -154,10 +153,10 @@ def page(data):
     text += '<section id="requests"><h2>Where every request stands</h2><p class="src">Source: flock_state</p>'
     keys = ('agency', 'request_id', 'state', 'sent_date', 'next_step')
     text += fail('flock_state') if 'flock_state' in errors else '<p>open: %s</p>' % s['open_count'] + table(s['requests'], keys) + '<details><summary>Closed and withdrawn</summary>' + table(s['closed'], keys) + '</details>'
-    text += '</section><section id="reminders"><h2>Reminders</h2><p class="src">Source: flock_today</p>'
+    text += '</section><section id="reminders"><h2>Reminders</h2><p class="src">Sources: flock_today, flock_facts</p>'
     text += fail('flock_today') if 'flock_today' in errors else table(s['reminders'], ('kind', 'date', 'agency', 'request_id')) if s['reminders'] else '<p>no reminders (source read: flock_today)</p>'
-    text += (fail('flock_sweep') if 'flock_sweep' in errors else '') + '<p>provisional; not a legal status</p></section><section id="alerts"><h2>Pipeline alerts</h2><p class="src">Source: flock-alerts-v1</p>'
-    text += fail('alerts') if 'alerts' in errors else '<p>alerts: not provided</p>' if s['alerts'] is None else table(s['alerts'], ('id', 'kind', 'source', 'stage', 'agency', 'request_id'))
+    text += ''.join(fail(n) for n in ('flock_facts', 'flock_sweep') if n in errors) + '<p>provisional; not a legal status</p></section><section id="alerts"><h2>Pipeline alerts</h2><p class="src">Source: flock-alerts-v1</p>'
+    text += fail('alerts') if 'alerts' in errors else '<p>alerts: not provided</p>' if s['alerts'] is None else table(s['alerts'], ('id', 'kind', 'source', 'stage', 'agency', 'request_id')) if s['alerts'] else '<p>0 recorded alerts (source read: alerts)</p>'
     return text + '</section></body></html>\n'
 
 
@@ -190,6 +189,7 @@ def main(argv=None):
     reqs, runs = collected if collected is not None else ([], [])
     pubs = source(errors, 'flock_publish', lambda: collect_publish(store)) or []
     reminders = source(errors, 'flock_today', lambda: collect_reminders(store, a.date)) or []
+    source(errors, 'flock_facts', lambda: today.unreviewed(store))  # FACTS read only to prove it is current
     if a.watchlist:
         source(errors, 'flock_sweep', lambda: today.reviews(store, a.watchlist, a.roster, a.date))
     alerts = source(errors, 'alerts', lambda: collect_alerts(a.alerts)) if a.alerts else None
