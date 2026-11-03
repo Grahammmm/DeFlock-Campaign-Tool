@@ -126,7 +126,8 @@ class CompareDiffJsonTest(unittest.TestCase):
         self.assertEqual(self.diff("--json"), (1, "io: UnicodeDecodeError\n"))
 
     def test_json_without_diff_usage_exit_2(self):
-        for extra in (["--json"], ["--json", "--summary", str(self.old)], ["--summary", str(self.old), "--json"],
+        for extra in (["--json"], ["--json", "--summary", str(self.old), "--check", str(self.old)],
+                      ["--summary", str(self.old), "--json", "--diff", str(self.old), str(self.new)],
                       ["--json", "--check", str(self.old)], ["--diff", str(self.old), str(self.new), "--json", "--store", ""],
                       ["scaffold", "--json", "--store", str(self.store), "--agency", base.AGENCY, "--date", "2026-11-01",
                        "--provider", "anthropic", "--model", "m", "--applicability", "x"]):
