@@ -6,7 +6,8 @@ exists, whether it is on the gate-safe allowlist, its OnCalendar time and any
 collision with another slot or a records slot (07:00/13:00/20:30), and whether its
 overlap lock is per-slot. It only reads unit files and checks that paths exist:
 it installs, enables and starts nothing and writes nothing.
-Exit 0 all available and safe; 1 missing, colliding, malformed or gate-unsafe; 2 usage.
+Exit 0 all available and safe; 1 missing (a command, or the records reports directory a
+reading slot needs), colliding, malformed or gate-unsafe; 2 usage.
 """
 import argparse
 import posixpath
@@ -28,10 +29,14 @@ ALLOW = {
     ('-m campaign_tool', 'status'): ('--check',),
     ('-m campaign_tool', 'build'): (),
     ('-m campaign_tool', 'backup'): ('--into',),
-    ('tools/stage_stale_check.py', 'check'): (),
-    ('tools/run_report_review.py', 'summary'): (),
+    ('tools/stage_stale_check.py', 'check'): ('--reports',),
+    ('tools/run_report_review.py', 'summary'): ('--dir',),
     ('tools/flock_deadlines.py', 'run'): (),
 }
+# Slots that read the records run reports (RUNTIME_DIR/<target>/reports/): the flag naming that
+# directory. The slot is only available when the directory exists (a missing one fails every run).
+READS_REPORTS = {('tools/stage_stale_check.py', 'check'): '--reports',
+                 ('tools/run_report_review.py', 'summary'): '--dir'}
 UNSAFE_WORDS = re.compile(r'publish|send|deploy|mail|approve|upload|fix-modes|restore', re.I)
 FORBIDDEN_LINES = re.compile(r'^\s*(User|Group|PermissionsStartOnly)\s*=', re.M)
 
@@ -97,9 +102,19 @@ def apart(a, b):
     return min(gap, 1440 - gap)
 
 
-def check(units_dir, store, rendered):
+def reports_dir(target, sub, args):
+    """The records reports directory a slot reads, or None when the slot reads none."""
+    flag = READS_REPORTS.get((target, sub))
+    if flag is None:
+        return None
+    i = args.index(flag) if flag in args else -1
+    return args[i + 1] if 0 <= i < len(args) - 1 else ''
+
+
+def check(units_dir, store, rendered, reports=''):
     fails, unsafe, slots = [], [], []
-    subst = {} if rendered else {'@STORE@': store, '@PYTHON@': sys.executable, '@WORKDIR@': str(ROOT)}
+    subst = {} if rendered else {'@STORE@': store, '@REPORTS@': reports, '@PYTHON@': sys.executable,
+                                 '@WORKDIR@': str(ROOT)}
     services = {p.stem for p in units_dir.glob('*.service')}
     timers = {p.stem for p in units_dir.glob('*.timer')}
     for stem in sorted(services ^ timers):
@@ -148,8 +163,14 @@ def check(units_dir, store, rendered):
             fails.append(f'{stem}.service: interpreter {python} is not an absolute path')
         rel = 'campaign_tool/__main__.py' if target == '-m campaign_tool' else target.replace('-m ', '')
         path = Path(workdir or '/') / rel
+        reads = reports_dir(target, sub, args)
+        if reads is not None and not reads.startswith('/'):
+            fails.append(f'{stem}.service: reports directory {reads or "(none)"} is not an absolute path')
+        reads_ok = reads is None or (reads.startswith('/') and Path(reads).is_dir()
+                                     and not Path(reads).is_symlink())
         slots.append({'name': stem, 'time': match and f'{match[1]}:{match[2]}', 'lock': lock,
-                      'path': path, 'ok': path.is_file() and Path(python).is_file()})
+                      'path': path, 'reports': reads, 'reports_ok': reads_ok,
+                      'command_ok': path.is_file() and Path(python).is_file()})
     collisions = []
     for i, slot in enumerate(slots):
         if not slot['time']:
@@ -173,23 +194,30 @@ def check(units_dir, store, rendered):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Read-only check of the campaign-side local schedule.', epilog=(
-        'Templates are read from deploy/local-schedule/ with @STORE@/@PYTHON@/@WORKDIR@ filled in memory; '
-        '--installed DIR checks rendered copies, where any leftover placeholder fails. Nothing is installed.'))
+        'Templates are read from deploy/local-schedule/ with @STORE@/@REPORTS@/@PYTHON@/@WORKDIR@ filled in '
+        'memory; --installed DIR checks rendered copies, where any leftover placeholder fails. A slot that '
+        'reads the records run reports is missing while its reports directory is absent. Nothing is installed.'))
     parser.add_argument('--store', required=True, help='absolute campaign store the units run against')
+    parser.add_argument('--reports', required=True, metavar='DIR',
+                        help='absolute records run-report directory, RUNTIME_DIR/<target>/reports')
     parser.add_argument('--installed', metavar='DIR', help='folder of rendered unit copies to check instead')
     args = parser.parse_args(argv)
     units_dir = Path(args.installed) if args.installed else SHIPPED
-    if not args.store.startswith('/') or not units_dir.is_dir():
-        parser.error('--store must be absolute and the units folder must exist')
-    slots, collisions, fails, unsafe = check(units_dir, args.store, bool(args.installed))
-    missing = [slot for slot in slots if not slot['ok']]
+    if not args.store.startswith('/') or not args.reports.startswith('/') or not units_dir.is_dir():
+        parser.error('--store and --reports must be absolute and the units folder must exist')
+    slots, collisions, fails, unsafe = check(units_dir, args.store, bool(args.installed), args.reports)
+    missing = [slot for slot in slots if not (slot['command_ok'] and slot['reports_ok'])]
     if unsafe:
         for line in unsafe:
             print(f'REFUSED gate-unsafe {line}')
     else:
         for slot in slots:
-            state = 'available' if slot['ok'] else 'missing'
-            print(f'slot {slot["name"]} | at {slot["time"]} | {slot["path"]} {state} | gate-safe | lock {slot["lock"]}')
+            # A present command whose reports directory is absent is not available: every run would fail.
+            state = 'missing' if not slot['command_ok'] else 'available' if slot['reports_ok'] else 'unavailable'
+            reads = '' if slot['reports'] is None else \
+                f' | reports {slot["reports"]} {"present" if slot["reports_ok"] else "missing"}'
+            print(f'slot {slot["name"]} | at {slot["time"]} | {slot["path"]} {state} | gate-safe | '
+                  f'lock {slot["lock"]}{reads}')
         for line in collisions:
             print(f'COLLISION {line}')
         for line in fails:

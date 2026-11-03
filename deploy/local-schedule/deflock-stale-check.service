@@ -7,5 +7,5 @@ Type=oneshot
 WorkingDirectory=@WORKDIR@
 UMask=0077
 # Per-slot overlap lock: a held lock skips this slot with exit 73, never queues.
-ExecStart=/usr/bin/flock -n -E 73 %t/deflock-stale-check.lock /bin/sh -c 'exec @PYTHON@ -B tools/stage_stale_check.py check --reports @STORE@/run-reports --now "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)"'
+ExecStart=/usr/bin/flock -n -E 73 %t/deflock-stale-check.lock /bin/sh -c 'exec @PYTHON@ -B tools/stage_stale_check.py check --reports @REPORTS@ --now "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)"'
 TimeoutStartSec=40min

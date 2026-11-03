@@ -49,11 +49,14 @@ class RenderedSet(unittest.TestCase):
         for rel in COMMANDS:
             (self.work / rel).parent.mkdir(parents=True, exist_ok=True)
             (self.work / rel).write_text('', encoding='utf-8')
+        self.reports = self.tmp / 'records-runtime' / 'slo' / 'reports'
+        self.reports.mkdir(parents=True)
         self.units = self.tmp / 'units'
         self.units.mkdir()
         for path in SHIPPED.glob('deflock-*'):
             text = path.read_text(encoding='utf-8').replace('@WORKDIR@', str(self.work))
             text = text.replace('@PYTHON@', sys.executable).replace('@STORE@', '/srv/store')
+            text = text.replace('@REPORTS@', str(self.reports))
             (self.units / path.name).write_text(text, encoding='utf-8')
 
     def edit(self, name, old, new):
@@ -63,7 +66,7 @@ class RenderedSet(unittest.TestCase):
         path.write_text(text.replace(old, new), encoding='utf-8')
 
     def check(self):
-        return run('--store', '/srv/store', '--installed', str(self.units))
+        return run('--store', '/srv/store', '--reports', str(self.reports), '--installed', str(self.units))
 
     def test_all_present_is_clean(self):
         code, out = self.check()
@@ -72,6 +75,37 @@ class RenderedSet(unittest.TestCase):
         for slot in SLOTS:
             self.assertIn(f'slot deflock-{slot} | at ', out)
         self.assertIn(f'{self.work}/tools/stage_stale_check.py available', out)
+        for slot in ('stale-check', 'run-report-review'):
+            self.assertRegex(out, rf'slot deflock-{slot} \| .* available \| .*\| reports {re.escape(str(self.reports))} present\n')
+
+    def test_absent_reports_dir_leaves_both_reading_slots_unavailable(self):
+        self.reports.rmdir()
+        code, out = self.check()
+        self.assertEqual(code, 1, out)
+        for slot, rel in (('stale-check', 'stage_stale_check.py'), ('run-report-review', 'run_report_review.py')):
+            self.assertIn(f'slot deflock-{slot} | at ', out)
+            self.assertRegex(out, rf'{re.escape(str(self.work))}/tools/{rel} unavailable \| gate-safe \| '
+                                  rf'lock \S+ \| reports {re.escape(str(self.reports))} missing\n')
+        self.assertEqual(out.count(' available | gate-safe'), 4)
+        self.assertIn('available=4 missing=2 collisions=0 gate-unsafe=0', out)
+
+    def test_reports_dir_symlink_or_relative_is_not_available(self):
+        real = self.tmp / 'real-reports'
+        real.mkdir()
+        self.reports.rmdir()
+        self.reports.symlink_to(real)
+        code, out = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn('available=4 missing=2', out)  # stage_stale_check refuses a symlinked directory
+        self.setUp()
+        self.edit('deflock-run-report-review.service', f'--dir {self.reports}', '--dir run-reports')
+        code, out = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn('FAIL deflock-run-report-review.service: reports directory run-reports is not an absolute path', out)
+
+    def test_reading_slot_without_its_reports_flag_is_refused(self):
+        self.edit('deflock-run-report-review.service', f'--dir {self.reports}', f'{self.reports}/latest.json')
+        self.assert_refused('deflock-run-report-review.service', 'missing --dir')
 
     def test_one_command_absent_is_missing_and_others_reported(self):
         (self.work / 'tools' / 'run_report_review.py').unlink()
@@ -155,6 +189,8 @@ class RenderedSet(unittest.TestCase):
         self.assertEqual(code, 1)
         for name in ('WORKDIR', 'PYTHON', 'STORE'):
             self.assertIn(f'FAIL deflock-reconcile.service: unsubstituted placeholder @{name}@', out)
+        for name in ('stale-check', 'run-report-review'):
+            self.assertIn(f'FAIL deflock-{name}.service: unsubstituted placeholder @REPORTS@', out)
 
     def test_shared_or_absent_lock_fails(self):
         self.edit('deflock-deadlines.service', '%t/deflock-deadlines.lock', '%t/deflock-stale-check.lock')
@@ -191,7 +227,8 @@ class RenderedSet(unittest.TestCase):
         before = tree_digest(self.tmp)
         for _ in range(2):
             proc = subprocess.run([sys.executable, '-B', str(ROOT / 'tools' / 'local_schedule_check.py'),
-                                   '--store', '/srv/store', '--installed', str(self.units)],
+                                   '--store', '/srv/store', '--reports', str(self.reports),
+                                   '--installed', str(self.units)],
                                   env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn(CLEAN, proc.stdout)
@@ -210,7 +247,8 @@ class ShippedUnits(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertLessEqual(len(text.splitlines()), 20)
                 self.assertNotRegex(text, r'multi-user\.target|^User=|^Group=|\bsudo\b|/etc/')
-                self.assertEqual(set(lsc.PLACEHOLDER.findall(text)) - {'@STORE@', '@PYTHON@', '@WORKDIR@'}, set())
+                self.assertEqual(set(lsc.PLACEHOLDER.findall(text)) - {'@STORE@', '@REPORTS@', '@PYTHON@', '@WORKDIR@'},
+                                 set())
                 if name.endswith('.service'):
                     self.assertEqual(keys['Type'], ['oneshot'])
                     self.assertEqual(keys['WorkingDirectory'], ['@WORKDIR@'])
@@ -223,8 +261,17 @@ class ShippedUnits(unittest.TestCase):
                     hhmm = re.search(r'OnCalendar=\*-\*-\* (\d\d:\d\d):00', text)[1]
                     self.assertIn(f'# {hhmm} America/Los_Angeles', text)
 
+    def test_reading_slots_read_the_records_reports_not_the_store(self):
+        for name, flag in (('deflock-stale-check.service', '--reports'), ('deflock-run-report-review.service', '--dir')):
+            execstart = lsc.parse_unit((SHIPPED / name).read_text(encoding='utf-8'))['ExecStart'][0]
+            with self.subTest(name=name):
+                self.assertIn(f' {flag} @REPORTS@', execstart)
+                self.assertNotIn('@STORE@', execstart)
+                self.assertNotIn('run-reports', execstart)
+
     def test_shipped_templates_report_every_slot(self):
-        code, out = run('--store', '/srv/store')
+        with tempfile.TemporaryDirectory() as reports:
+            code, out = run('--store', '/srv/store', '--reports', reports)
         absent = [rel for rel in COMMANDS if not (ROOT / rel).is_file()]
         self.assertIn(f'missing={len(absent)} collisions=0 gate-unsafe=0 | nothing installed', out)
         self.assertEqual(code, 1 if absent else 0)
@@ -232,11 +279,21 @@ class ShippedUnits(unittest.TestCase):
             self.assertRegex(out, rf'slot deflock-{slot} \| at \d\d:\d\d \| {re.escape(str(ROOT))}/\S+ (available|missing)')
         for rel in absent:
             self.assertIn(f'{ROOT}/{rel} missing', out)
+        self.assertIn(f'| reports {reports} present', out)
+
+    def test_shipped_templates_with_absent_reports_dir_are_not_available(self):
+        absent_reports = '/nonexistent/records-runtime/slo/reports'
+        code, out = run('--store', '/srv/store', '--reports', absent_reports)
+        self.assertEqual(code, 1)
+        self.assertEqual(out.count(f'| reports {absent_reports} missing'), 2)
+        self.assertNotRegex(out, r'(stage_stale_check|run_report_review)\.py available')
 
     def test_usage_errors_exit_2(self):
-        self.assertEqual(run('--store', 'relative/store')[0], 2)
+        self.assertEqual(run('--store', 'relative/store', '--reports', '/r')[0], 2)
+        self.assertEqual(run('--store', '/s', '--reports', 'relative/reports')[0], 2)
+        self.assertEqual(run('--store', '/s')[0], 2)
         self.assertEqual(run()[0], 2)
-        self.assertEqual(run('--store', '/s', '--installed', '/nonexistent/units')[0], 2)
+        self.assertEqual(run('--store', '/s', '--reports', '/r', '--installed', '/nonexistent/units')[0], 2)
 
     def test_checker_never_calls_schedulers_or_network(self):
         source = (ROOT / 'tools' / 'local_schedule_check.py').read_text(encoding='utf-8')

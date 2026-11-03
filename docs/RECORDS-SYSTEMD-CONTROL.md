@@ -155,7 +155,7 @@ read-only or draft-only: none sends, publishes or spends, and `tools/flock_publi
 is never a slot.
 
 ```sh
-python3 -B tools/local_schedule_check.py --store /ABS/STORE
+python3 -B tools/local_schedule_check.py --store /ABS/STORE --reports /ABS/RUNTIME_DIR/TARGET/reports
 ```
 
 The check is read-only: it reports each slot's resolved command and whether it exists,
