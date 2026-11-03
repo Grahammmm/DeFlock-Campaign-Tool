@@ -454,7 +454,7 @@ def _site_claim_notes(root):
     return site_notes(root)
 
 
-def build(root, check=False):
+def build(root, check=False, budget=None):
     from .site import build_site
     public = root / "public"
     notes = []
@@ -488,6 +488,28 @@ def build(root, check=False):
         if broken:
             raise ValueError(f"public tree check found {len(broken)} broken link(s); fix content and rebuild")
         print("Public tree check passed (pattern scan and internal links; human review still required).")
+    return 0 if budget is None else weight_budget(public, budget)
+
+
+def weight_budget(public, budget):
+    from .site_check import page_weights
+    rows = page_weights(public)
+    print("Page weight (first-party: html + referenced site-local css/js/images, uncompressed):")
+    for row in rows:
+        print(f"  {row['page']} {row['total']} bytes")
+    over = [row for row in rows if row["total"] > budget * 1024]
+    for row in over:
+        named = ", ".join(f"{p} {n}" for p, n in sorted(row["assets"], key=lambda a: (-a[1], a[0]))[:3])
+        print(f"over budget: {row['page']} {row['total']} bytes > {budget} KB; largest: {named or '(no assets)'}")
+    if not over:
+        print(f"Page weight within {budget} KB (first-party, uncompressed).")
+    return 3 if over else 0
+
+
+def _positive_kb(value):
+    if not value.isdigit() or int(value) < 1:
+        raise argparse.ArgumentTypeError("must be a positive whole number of KB")
+    return int(value)
 
 
 def backup_cmd(args, root):
@@ -693,6 +715,8 @@ def main():
                                    "and fail on site-local links or #fragments that do not resolve")
             mode.add_argument("--preview", action="store_true",
                               help="List files a rebuild would add, remove or change in public/; writes nothing")
+            cmd.add_argument("--budget", type=_positive_kb, metavar="KB", help="Print each page's first-party "
+                             "weight (html + referenced css/js/images, uncompressed); exit 3 when a page exceeds KB")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
             cmd.add_argument("--fix-modes", action="store_true",
@@ -1002,6 +1026,8 @@ def main():
         parser.error("--json requires --checklist")
     if args.command == "social" and args.check and args.platform:
         parser.error("--check reads kit/social only; it cannot be combined with --platform")
+    if args.command == "build" and args.preview and args.budget is not None:
+        parser.error("--budget measures a written build; it cannot be combined with --preview")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -1043,7 +1069,9 @@ def main():
             print("Preview only; public/ was not changed.")
             sys.exit(3 if report["added"] or report["removed"] or report["changed"] else 0)
         elif args.command == "build":
-            build(root, check=args.check)
+            code = build(root, check=args.check, budget=args.budget)
+            if code:
+                sys.exit(code)
         elif args.command == "backup":
             backup_cmd(args, root)
         elif args.command == "restore":
