@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fetch community-mapped ALPR points from OpenStreetMap for a campaign map.
 
-Standard library only. --bbox and --relation use the network and are never run
-by tests; --from-file reads a saved Overpass answer the organizer reviewed, offline.
+Standard library only (plus this checkout's campaign_tool for history.json). --bbox and --relation use the network
+and are never run by tests; --from-file reads a saved Overpass answer the organizer reviewed, offline.
 
     python3 tools/fetch_osm_alprs.py --directory my-campaign --bbox SOUTH WEST NORTH EAST
     python3 tools/fetch_osm_alprs.py --directory my-campaign --relation 396490
@@ -17,6 +17,9 @@ boundary relation id), and writes:
                                               manufacturer, operator, url
     <directory>/content/map/attribution.txt   the required attribution text
     <directory>/content/map/snapshot.json     the OpenStreetMap data time (osm_base) or null
+    <directory>/content/map/history.json      one dated record per writing run (never --check): osm_base, total,
+                                              per-city counts when city-boundaries.geojson exists, added/removed
+                                              against the map it replaced; the newest 120 records are kept
 
 snapshot.json keeps the answer's osm3s.timestamp_osm_base, which the site shows as "Map data as of
 DATE (OpenStreetMap)"; without a valid one it holds null and the site says "date unknown". The saved
@@ -58,6 +61,7 @@ NODE_URL = re.compile(r"https://www\.openstreetmap\.org/node/[1-9][0-9]{0,18}")
 OSM_BASE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 CHANGE_KINDS = ("added", "removed", "moved", "retagged")
 LIST_LIMIT = 20
+HISTORY_LIMIT, HISTORY_BYTES, HISTORY_CITIES = 120, 256 * 1024, 500  # campaign_tool.content's map/history.json caps
 
 
 class WriteRefused(Exception):
@@ -288,6 +292,74 @@ def print_check(changes):
     return 3 if changes["removed"] else 0
 
 
+def _campaign_tool():
+    """This checkout's campaign_tool (the build's own counting and history rules), importable when run as a script."""
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from campaign_tool import camera_counts, content
+    return camera_counts, content
+
+
+def _utc_day():
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def _previous_map(campaign):
+    """The map this run replaces, for added/removed: no features when absent, unreadable or behind a symlink (a link
+    is never followed; write_map then refuses it) or not a regular file (never opened)."""
+    path = campaign
+    for name in ("content", "map", "cameras.geojson"):
+        path = path / name
+        if path.is_symlink():
+            return {"type": "FeatureCollection", "features": []}
+    current = load_current(path) if path.is_file() else None
+    return current or {"type": "FeatureCollection", "features": []}
+
+
+def _by_city(map_dir, collection):
+    """{city: points inside} by the build's half-open rule when city-boundaries.geojson is a readable regular file,
+    else None."""
+    path = map_dir / "city-boundaries.geojson"
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        raw = path.read_bytes()
+        boundaries = json.loads(raw.decode("utf-8"), parse_constant=_refuse_constant) \
+            if len(raw) <= MAX_ANSWER_BYTES else None
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(boundaries, dict) or boundaries.get("type") != "FeatureCollection":
+        return None  # the build refuses such a boundary file itself
+    counts = _campaign_tool()[0].count_by_name(collection, boundaries)[0]
+    return dict(sorted(counts.items())) if len(counts) <= HISTORY_CITIES else None
+
+
+def record_history(map_dir, record):
+    """Append record to content/map/history.json (a later run on the same day, so the same osm_base too, replaces the
+    last record); keep the newest HISTORY_LIMIT within HISTORY_BYTES. Returns the record count kept."""
+    content = _campaign_tool()[1]
+    path, after = map_dir / "history.json", " (the new cameras.geojson was written)"
+    try:
+        records = content.load_history(path) if content.history_present(path) else []
+    except content.ContentError as exc:  # the build's own refusal, naming the field; never overwritten
+        raise WriteRefused(f"fetch_osm_alprs: history not updated: {exc}{after}") from None
+    if records and record["recorded_on"] < records[-1]["recorded_on"]:
+        raise WriteRefused(f"fetch_osm_alprs: history not updated: the map day is older than its last record{after}")
+    if records and record["recorded_on"] == records[-1]["recorded_on"]:
+        records[-1] = record
+    else:
+        records.append(record)
+    records = records[-HISTORY_LIMIT:]
+    while True:
+        text = json.dumps({"schema_version": 1, "records": records}, indent=1) + "\n"
+        if len(text.encode("utf-8")) <= HISTORY_BYTES or len(records) == 1:
+            break
+        records = records[1:]
+    _write_atomic(path, text, after)
+    return len(records)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--directory", required=True, help="Campaign directory (contains campaign.json)")
@@ -334,8 +406,14 @@ def main(argv=None):
     if args.check:
         return print_check(diff(current, collection, 10.0 if args.move_metres is None else args.move_metres))
     snapshot = {"schema_version": 1, "osm_base": osm_base(answer), "source": source}
+    previous = _previous_map(Path(args.directory))
     try:
         map_dir = write_map(Path(args.directory), collection, args.allow_empty, snapshot=snapshot)
+        changes = diff(previous, collection)
+        kept = record_history(map_dir, {
+            "recorded_on": (snapshot["osm_base"] or "")[:10] or _utc_day(), "osm_base": snapshot["osm_base"],
+            "source": source, "total": len(collection["features"]), "by_city": _by_city(map_dir, collection),
+            "added": len(changes["added"]), "removed": len(changes["removed"])})
     except WriteRefused as exc:
         print(exc, file=sys.stderr)
         return 3 if str(exc) == EMPTY_KEPT else 2
@@ -346,6 +424,7 @@ def main(argv=None):
     print("ATTRIBUTION REQUIRED: " + ATTRIBUTION)
     print("Review the points before building. A mapped camera is not evidence of agency ownership.")
     print(f"snapshot osm_base={snapshot['osm_base'] or 'unknown'}")
+    print(f"history: {kept} records")
     return 0
 
 

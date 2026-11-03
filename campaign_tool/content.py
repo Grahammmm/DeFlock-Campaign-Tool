@@ -829,6 +829,67 @@ def load_snapshot(path):
     return base[:10] if base else None
 
 
+HISTORY_KEYS = {"schema_version", "records"}
+HISTORY_RECORD_KEYS = {"recorded_on", "osm_base", "source", "total", "by_city", "added", "removed"}
+MAX_HISTORY_RECORDS, MAX_HISTORY_BYTES, MAX_HISTORY_CITIES = 120, 256 * 1024, 500
+DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _count(value):
+    return type(value) is int and value >= 0
+
+
+def history_present(path):
+    """map/history.json is optional; any entry under that name, a dangling link too, is loaded and so judged."""
+    return path.is_symlink() or path.exists()
+
+
+def load_history(path):
+    """map/history.json (DF0137-13) -> its validated records, oldest first; a refusal names the field, never a value."""
+    path, label = Path(path), "map/history.json"
+    if path.is_symlink():
+        raise ContentError(f"{label}: symlinks are not read")
+    if not path.is_file():  # a FIFO or directory is never opened
+        raise ContentError(f"{label}: not a regular file")
+    if path.stat().st_size > MAX_HISTORY_BYTES:
+        raise ContentError(f"{label}: file too large (over {MAX_HISTORY_BYTES // 1024} KiB)")
+    document = _read_json(path, MAX_HISTORY_BYTES)
+    _require_keys(document, HISTORY_KEYS, HISTORY_KEYS, label)
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        raise ContentError(f"{label}.schema_version: must be 1")
+    records = document["records"]
+    if not isinstance(records, list) or len(records) > MAX_HISTORY_RECORDS:
+        raise ContentError(f"{label}.records: expected a list of at most {MAX_HISTORY_RECORDS} records")
+    previous = None
+    for index, record in enumerate(records):
+        where = f"{label}.records[{index}]"
+        _require_keys(record, HISTORY_RECORD_KEYS, HISTORY_RECORD_KEYS, where)
+        day, base = record["recorded_on"], record["osm_base"]
+        try:
+            valid_day = isinstance(day, str) and DAY.fullmatch(day) and date.fromisoformat(day)
+        except ValueError:
+            valid_day = False
+        if not valid_day:
+            raise ContentError(f"{where}.recorded_on: must be an ISO date YYYY-MM-DD")
+        if base is not None and not (isinstance(base, str) and OSM_BASE.fullmatch(base) and base[:10] == day):
+            raise ContentError(f"{where}.osm_base: must be null or a UTC timestamp on the recorded_on day")
+        if record["source"] not in ("overpass", "saved_file"):
+            raise ContentError(f"{where}.source: must be 'overpass' or 'saved_file'")
+        for key in ("total", "added", "removed"):
+            if not _count(record[key]):
+                raise ContentError(f"{where}.{key}: must be a non-negative integer")
+        by_city = record["by_city"]
+        if by_city is not None and (not isinstance(by_city, dict) or len(by_city) > MAX_HISTORY_CITIES or any(
+                not (plain_text(name) and name.strip() and len(name) <= 120) or not _count(count)
+                for name, count in by_city.items())):
+            raise ContentError(f"{where}.by_city: must be null or {{city name: non-negative integer}} "
+                               f"(at most {MAX_HISTORY_CITIES} names of plain text)")
+        if previous is not None and day <= previous:
+            raise ContentError(f"{where}.recorded_on: dates must be strictly increasing")
+        previous = day
+    return records
+
+
 def load_map(content_dir):
     map_dir = Path(content_dir) / "map"
     config_path = map_dir / "map-config.json"
@@ -888,6 +949,7 @@ def load_map(content_dir):
         if slug not in cities:
             raise ContentError(f"map/map-config.json.bounding_box_fallbacks: {slug!r} has no bounds in map/cities.json")
     snapshot_path = map_dir / "snapshot.json"  # optional: a map fetched before DF1507-09 has none
+    history_path = map_dir / "history.json"  # optional (DF0137-13): one record per writing fetch
     return {
         "controller": controller,
         "county_bounds": _bounds(document["county_bounds"], "map/map-config.json.county_bounds"),
@@ -903,6 +965,7 @@ def load_map(content_dir):
         "county_boundary_path": county_boundary if county_boundary.is_file() else None,
         "cities": cities,
         "snapshot_date": load_snapshot(snapshot_path) if snapshot_path.is_file() else None,
+        "history": load_history(history_path) if history_present(history_path) else [],
     }
 
 

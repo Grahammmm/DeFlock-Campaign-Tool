@@ -426,6 +426,20 @@ A writing run needs `D/campaign.json` (exit 2 otherwise, before any network call
 replaces a map that has points (exit 3) unless `--allow-empty` is given. Each file is replaced atomically
 through a fresh temp file; a symlinked `content`, `content/map` or output file is refused (exit 2).
 
+Each writing run (never `--check`, never a refused write) also records one dated entry in
+`content/map/history.json` (`{"schema_version": 1, "records": [...]}`): `recorded_on` (the OpenStreetMap data day
+from `osm_base`, else the run's UTC day), `osm_base` (or null), `source`, `total` points, `by_city` (points inside each
+`content/map/city-boundaries.geojson` feature by the build's own boundary rule, or null without that file) and
+`added`/`removed` node counts against the map the run replaced (0/0 for a first map). A later run on the same day
+(so the same `osm_base` too) replaces that day's record; the newest 120 records are kept and the oldest dropped. A
+history file the build would refuse is never overwritten, and a map day older than the last record is not recorded
+(exit 2 for both; the new map is still written). `build` validates
+the file and refuses an unknown key, `schema_version` other than 1, more than 120 records, a non-ISO date, dates
+that do not strictly increase, a negative or non-integer count, a symlink or a file over 256 KiB, naming the field
+and never its value; `content-check` lists the same line. With two or more records `cameras.html` shows "Mapped points
+over time", a plain table (date, total, added, removed, and per-city columns when every record has `by_city`); with
+none or one the built site is unchanged. A mapped point, and a rising count, is not evidence of agency ownership.
+
 The build never downloads MapLibre. To enable the interactive map, copy the
 library into `content/vendor/maplibre-gl.js` and `content/vendor/maplibre-gl.css`
 from the official `maplibre-gl` npm package: the controller is written against
