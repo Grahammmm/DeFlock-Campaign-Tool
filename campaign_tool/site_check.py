@@ -111,22 +111,26 @@ def check_links(public: Path) -> list:
     for page in pages:
         ids_of(page)
         for href in parsed[page].links:
-            if _external_or_empty(href):
-                continue
-            target, _, fragment = href.strip().partition("#")
-            path = target.split("?", 1)[0]
-            rel = page if path == "" else _resolve(public, page, unquote(path))
-            if rel is None:
+            if not _external_or_empty(href) and resolve(public, href, page, ids_of):
                 broken.add((page, href))
-                continue
-            fragment = unquote(fragment)
-            if fragment and rel.endswith((".html", ".htm")):
-                try:
-                    if fragment not in ids_of(rel):
-                        broken.add((page, href))
-                except (OSError, ValueError):
-                    broken.add((page, href))
     return sorted(broken)
+
+
+def resolve(public, href, page="index.html", ids_of=None):
+    """``None`` when a site-local ``href`` on ``page`` reaches a file (and id) in ``public/``, else the reason."""
+    public = Path(public)
+    target, _, fragment = href.strip().partition("#")
+    path = target.split("?", 1)[0]
+    rel = page if path == "" else _resolve(public, page, unquote(path))
+    if rel is None:
+        return "no_page"
+    fragment = unquote(fragment)
+    try:
+        if fragment and rel.endswith((".html", ".htm")) and fragment not in (ids_of or (lambda r: _parse(public / r).ids))(rel):
+            return "no_fragment"
+    except (OSError, ValueError):
+        return "no_fragment"
+    return None
 
 
 HEADINGS = {f"h{n}": n for n in range(1, 7)}
