@@ -347,6 +347,11 @@ def status_counts(root):
         db.close()
 
 
+LAW_REVIEW_ACTION = ("reviewed_law_package: false — needs a second reader independent of the author, who checks each "
+                     "rule against its cited primary text and signs reviewed_by in a PR (docs/LAW-PACKAGES.md); "
+                     "build the packet with 'campaign-tool law review-packet'")
+
+
 def law_package_report(cfg):
     """Status of the jurisdiction law package: draft, reviewed or missing."""
     from .law import package_status
@@ -383,6 +388,8 @@ def doctor_report(root, contact_max_age_days=None, stale_days=None):
     }
     if "law_package_error" in law:
         report["law_package_error"] = law["law_package_error"]
+    if law["law_package_status"] == "draft":
+        report["next_actions"].append(LAW_REVIEW_ACTION)
     from .kit import kit_status, stale_contacts
     report.update(kit_status(root))
     if contact_max_age_days is not None and (found := stale_contacts(root, contact_max_age_days)) is not None:
@@ -1011,6 +1018,13 @@ def main():
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
     today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
+    law_packet = commands.add_parser("law", help="Law package tools; nothing here marks a package reviewed"
+                                     ).add_subparsers(dest="law_command", required=True).add_parser(
+        "review-packet", help="Private packet for a human law reviewer in a new --out folder; reviews nothing")
+    law_packet.add_argument("--jurisdiction", required=True)
+    law_packet.add_argument("--out", required=True, help="New absolute folder outside the repository")
+    law_packet.add_argument("--as-of", help="Worksheet source ages counted to YYYY-MM-DD (default today)")
+    law_packet.add_argument("--base", help=argparse.SUPPRESS)
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
     pack.add_argument("--directory", required=True)
     pack_which = pack.add_mutually_exclusive_group(required=True)
@@ -1043,6 +1057,9 @@ def main():
             fixes.emit(exc)
             sys.exit(1)
         return
+    if args.command == "law":
+        from .law_packet import main as law_packet_main
+        sys.exit(law_packet_main(args))
     root = Path(args.directory).expanduser().resolve()
     try:
         if args.command == "init":

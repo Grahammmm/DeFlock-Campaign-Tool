@@ -126,6 +126,29 @@ today; any refused row stops the run and nothing is written. Edited `duty`,
 `status`, `reviewed_by` or `reviewed_at`: check the result with
 `tools/check_law_review.py`, then record the reviewers through the process above.
 
+## Reviewer packet (not a review)
+
+`python3 -m campaign_tool law review-packet --jurisdiction us-ca --out NEWDIR
+[--as-of YYYY-MM-DD]` writes the one folder to hand a reviewer. NEWDIR must be an
+absolute, normalised path outside the repository that does not exist yet, under an
+existing parent with no symlink in its path; it is created mode 0700 with four 0600
+files, and a refusal prints one line and creates nothing:
+
+- `PACKET.md`: what the package is used for, what independence means here, what
+  signing commits the reviewer to, and that a rule they cannot confirm stays
+  `needs_attorney_review`.
+- `RULES.md`: every rule, ordered by its own `review` field
+  (`needs_attorney_review`, then `likely`, then `verified`), with the reading, the
+  cited sources, the dates and one question; then the `records_law` row.
+- `WORKSHEET.csv`: byte-identical to `review-sheet` for the same `--as-of` (default
+  today), so `apply-sheet` reads the returned file unchanged.
+- `RETURN.md`: the filled worksheet goes back to the maintainer, who opens the PR;
+  the packet names no address.
+
+The packet states no conclusion and changes nothing in the package. While a
+package is `draft`, `doctor` lists the reviewer requirement and this command in
+`next_actions`.
+
 ## Current state
 
 `us-ca` is a draft authored from leginfo.legislature.ca.gov and the California
