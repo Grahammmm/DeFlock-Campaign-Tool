@@ -13,7 +13,7 @@ import areaSource from "../src/subscribers.ts?raw";
 import { ensureSubscriberArea } from "../src/subscribers.ts";
 import { call, runnerHeaders, seedCampaign } from "./helpers.ts";
 
-const SECRET = "test-subscribe-webhook-secret-0123456789";
+const SECRET = "test-subscribe-webhook-secret-0123456789"; // pragma: allowlist secret -- synthetic test secret only
 const URL_ = "https://workspace.example.invalid/api/webhooks/subscribe";
 const ORG: AccessIdentity = { email: "organizer@example.invalid", sub: "o", issued_at: 0, expires_at: 0 };
 const ADDR = "reader.one@example.invalid";
@@ -150,7 +150,7 @@ describe("double opt-in and list_count", () => {
 describe("delivery verification", () => {
   it("an unverified delivery is rejected with no body logged and one deduplicated incident", async () => {
     const payload = event("subscribed", ADDR);
-    const res = await deliver(payload, { secret: "wrong-secret-0123456789" });
+    const res = await deliver(payload, { secret: "wrong-secret-0123456789" }); // pragma: allowlist secret -- synthetic wrong secret only
     expect(res.status).toBe(401);
     const text = await res.text();
     expect(JSON.parse(text)).toEqual({ error: "bad_signature" });
