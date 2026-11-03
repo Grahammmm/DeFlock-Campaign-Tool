@@ -2,7 +2,8 @@
 
 Monthly and post-publication updates to subscribers, sent through Brevo only after an organizer
 approves a `send_newsletter` card. The workspace never imports, lists, exports or edits
-contacts; consent, suppression and unsubscribe stay inside the provider. Code:
+provider contacts; it keeps only the double opt-in record described under Subscriptions below.
+Code:
 `campaign_tool/newsletter/draft.py`, `workers/workspace/src/brevo.ts`,
 `executors/send_newsletter.ts`, `manifest.ts` (`newsletterManifest`), `cron.ts`.
 
@@ -176,11 +177,37 @@ and non-newsletter recovery remain separate acceptance work. The default
 records-request sender is still unconfigured. Synthetic tests do not establish a
 live hosted pilot, and this change does not activate production.
 
+## Subscriptions, double opt-in and list counts
+
+`POST /api/webhooks/subscribe` (`workers/workspace/src/routes/subscribe_webhook.ts`) records
+provider subscription events. It needs no Access identity but trusts nothing unverified: each
+delivery carries `x-subscribe-timestamp` (Unix seconds) and `x-subscribe-signature`, the hex
+HMAC-SHA256 of `<timestamp>.<raw body>` under the `SUBSCRIBE_WEBHOOK_SECRET` Worker secret
+(Brevo's webhook, or a relay in front of it, must sign this way). A delivery outside a
+300-second window, with a bad or missing signature, or re-using a provider event id is refused
+with its reason enum only and raises one deduplicated `subscribe_webhook:<reason>` incident.
+Without the secret every delivery is refused `not_configured`. Bodies, headers and addresses
+are never logged or echoed.
+
+Body: `{"id": ..., "event": ..., "email": ..., "scope"?: ...}`. Double opt-in is enforced:
+`subscribed` records a pending address that never counts; only `confirmed` (of a pending
+address) counts, with its confirmed-at time and scope; `unsubscribed`, `bounced`/`hard_bounce`
+and `complained`/`spam` remove it at once, with no confirmation step. A later `subscribed`
+puts a removed address back to pending only; it counts again after a fresh `confirmed`.
+
+After each accepted event a `list_count` event is written with our own count of confirmed
+addresses and its as-of time; the Subscribers screen shows the newest one. A count in the
+provider payload is ignored.
+
+The address is stored once, in the `subscriber` table (`workers/workspace/src/subscribers.ts`),
+which is not exported, rendered or reported. Events, counts and incidents carry a hash of the
+address only. Nothing in this path sends mail: `send_newsletter` stays behind its approval card
+and still fails `brevo_not_configured` without `BREVO_API_KEY`.
+
 ## Not done
 
-Brevo webhook ingestion for bounces and list counts (the Subscribers screen shows
-`list_count` events if something writes them), A/B or segment sends, and any transactional
-mail. Those stay behind the same approval-card rule when added.
+A/B or segment sends, any transactional mail, subscriber export or deletion requests, and a
+subscriber-facing preference page. Those stay behind the same approval-card rule when added.
 
 ## Consent footer
 
