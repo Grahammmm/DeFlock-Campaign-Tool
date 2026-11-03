@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Flock verify: a different-family verifier's confirm/downgrade/reject per finding -> PUBLIC-OK.csv, QUESTIONS.md.
   start RUNDIR --provider P --model M  |  --check RUNDIR  |  finish RUNDIR [--golden CSV]  |  current RUNDIR [--golden CSV]
+  current RUNDIR [--golden CSV] --json  (one flock-verify-current-v1 document: per-output state, symlink, rows; counts; errors)
   diff OLD NEW [--json]  (two runs of one agency: added/removed/changed findings, public-ok lost/gained; read-only)
 Exit 1 = errors, 2 = usage, 3 = family refusal (equal, missing or unknown); for diff, 3 = a public-ok row was lost.
 Prints ids, labels and counts only.
@@ -138,19 +139,30 @@ def on_disk(run, name, want):  # (bytes or None, state) of one output vs the fre
     data = None if (run / name).is_symlink() or not (run / name).is_file() else (run / name).read_bytes()
     return data, "missing" if data is None else "current" if data == want.encode("utf-8") else "stale"
 
-def current(run, golden):  # read-only: on-disk outputs vs a fresh finish; a symlink is never followed and counts as missing
+NOTE = "outputs vs a fresh finish, not a review verdict"
+
+def current_doc(outs, counts, errors):  # flock-verify-current-v1: ids, labels and counts only (no finding text, cell or path)
+    return json.dumps({"schema": "flock-verify-current-v1", "review_required": True, "note": NOTE, "outputs": outs,
+                       "counts": counts, "errors": errors}, sort_keys=True, indent=1, ensure_ascii=False)
+
+def current(run, golden, as_json=False):  # read-only: on-disk outputs vs a fresh finish; a symlink is never followed and counts as missing
     errs, public, questions, _ = outputs(run, golden)
     if errs:
-        return print("\n".join(errs + ["current refused: errors=%d" % len(errs)])) or 1
-    states, rows = [], lambda b: [r for r in csv.reader(io.StringIO(b.decode("utf-8", "replace"), newline="")) if any(c.strip() for c in r)]
+        return print(current_doc([], None, errs) if as_json else "\n".join(errs + ["current refused: errors=%d" % len(errs)])) or 1
+    found, rows = [], lambda b: [r for r in csv.reader(io.StringIO(b.decode("utf-8", "replace"), newline="")) if any(c.strip() for c in r)]
     for name, want in (("PUBLIC-OK.csv", public), ("QUESTIONS.md", questions)):
-        data, state = on_disk(run, name, want)
-        states.append(state)
-        print("current: %s %s" % (name, "is a symlink (refused)" if (run / name).is_symlink() else states[-1]))
-        if states[-1] == "stale" and name == "PUBLIC-OK.csv":  # undecodable or wrong header: no rows on disk
+        (data, state), link, n = on_disk(run, name, want), (run / name).is_symlink(), None
+        if not as_json:  # state line before any row parsing, so a csv.Error mid-way leaves the same partial text as before
+            print("current: %s %s" % (name, "is a symlink (refused)" if link else state))
+        if state == "stale" and name == "PUBLIC-OK.csv":  # undecodable or wrong header: no rows on disk
             have, need = ([r[0].strip() for r in t[1:]] if t[:1] == [PUBLIC] else [] for t in (rows(data) if data.decode("utf-8", "replace").encode("utf-8") == data else [], rows(want.encode("utf-8"))))
-            print("current: PUBLIC-OK.csv rows on_disk=%d expected=%d missing=%d extra=%d" % (len(have), len(need), len(set(need) - set(have)), len(set(have) - set(need))))
-    return print("current=%d stale=%d missing=%d | outputs vs a fresh finish, not a review verdict" % tuple(map(states.count, ("current", "stale", "missing")))) or int(states != ["current"] * 2)
+            n = {"on_disk": len(have), "expected": len(need), "missing": len(set(need) - set(have)), "extra": len(set(have) - set(need))}
+            if not as_json:
+                print("current: PUBLIC-OK.csv rows on_disk=%(on_disk)d expected=%(expected)d missing=%(missing)d extra=%(extra)d" % n)
+        found.append({"name": name, "state": state, "symlink": link, "rows": n})
+    states = [o["state"] for o in found]
+    counts, code = {k: states.count(k) for k in ("current", "stale", "missing")}, int(states != ["current"] * 2)
+    return print(current_doc(found, counts, []) if as_json else "current=%(current)d stale=%(stale)d missing=%(missing)d | " % counts + NOTE) or code
 
 def outcomes(run):  # ({finding_id: (verdict, rating)}, public-ok ids, PUBLIC-OK text) of a fresh finish, or (error count, None, None)
     errs, public, _, _ = outputs(run, None)
@@ -218,9 +230,10 @@ def main(argv=None):
     parser.add_argument("rundir", nargs="?")
     for name in ("--check", "--golden", "--provider", "--model"):
         parser.add_argument(name)
+    parser.add_argument("--json", action="store_true", help="current only: one flock-verify-current-v1 document")
     args = parser.parse_args(argv)
     target = args.check if not args.command else args.rundir
-    if not target or (args.check and (args.command or args.rundir or args.golden or args.provider or args.model)) or \
+    if not target or (args.json and args.command != "current") or (args.check and (args.command or args.rundir or args.golden or args.provider or args.model)) or \
             (args.command == "start" and (args.golden or not (args.provider or "").strip() or not (args.model or "").strip())) or \
             (args.command in ("finish", "current") and (args.provider or args.model)):
         parser.error("usage: start RUNDIR --provider P --model M | --check RUNDIR | finish RUNDIR [--golden CSV] | current RUNDIR [--golden CSV]")
@@ -229,18 +242,19 @@ def main(argv=None):
         return print("flock-verify: RUNDIR is inside the repository") or 1
     refusal = family(run, args.provider if args.command == "start" else None)
     if refusal:
-        return print(refusal) or 3
+        return print(current_doc([], None, [refusal]) if args.json else refusal) or 3
     try:
         if args.command == "start":
             return start(run, args.provider, args.model.strip())
         if args.command == "finish":
             return finish(run, args.golden)
         if args.command == "current":
-            return current(run, args.golden)
+            return current(run, args.golden, args.json)
         errs, _, _, verify = load(run)
         return print("\n".join(claim_notes(verify) + errs + ["verified=%d errors=%d" % (len(verify), len(errs))])) or (1 if errs else 0)
     except (OSError, UnicodeDecodeError, csv.Error) as exc:  # class name only: paths and contents stay out of the output
-        return print("io: %s" % type(exc).__name__) or 1
+        line = "io: %s" % type(exc).__name__
+        return print(current_doc([], None, [line]) if args.json else line) or 1
 
 if __name__ == "__main__":
     sys.exit(main())
