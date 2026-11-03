@@ -9,17 +9,20 @@ Drafts for slugs that are no longer published are listed as stale, never deleted
 (ok, missing, outdated, edited, not_regular) with problem codes and the stale drafts.
 ``build_social(root, platforms=[...])`` sizes drafts by each platform's own count
 (``post_length``) into ``kit/social/<platform>/``; ``check_social`` reads ``kit/social/`` only.
+``build_meeting_social(root)`` drafts one post per scheduled, upcoming, organizer-verified staged meeting into
+``kit/social/meetings/`` (same rules, never posted); finding drafts and ``check_social`` do not change.
 """
 import hashlib
 import json
 import os
 import re
 import stat
+from datetime import datetime, timedelta, timezone
 
-from .content import load_content
+from .content import ContentError, _read_json, _slug, load_content, load_meeting, load_site
 from .kit import _kit_folder, _write_json, _write_text
 from .legal_claims import legal_notes
-from .site import CLASSIFICATION_LABELS
+from .site import CLASSIFICATION_LABELS, MONTHS, WEEKDAYS
 
 SOCIAL_MAX_CHARS = 280
 # platform: (limit, character rule, link length or None = the link's own length)
@@ -208,3 +211,126 @@ def _write_drafts(social_dir, suggested_dir, drafts):
     new_record.update({slug: record[slug] for slug in stale if slug in record})
     _write_json(record_path, dict(sorted(new_record.items())))
     return {"written": written, "kept_edited": kept, "suggested": len(kept), "stale": stale, "posted": False}
+
+
+# --- meeting drafts (DF1207-11) ---------------------------------------------
+
+SKIP_KEYS = ("cancelled", "past", "outside_window", "unverified", "unreadable")
+
+
+def _when(stamp):
+    """``Wed Oct 14, 6:00 pm UTC-07:00``: the timestamp's own date, time and offset, as the meeting page prints them."""
+    moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    offset = int(moment.utcoffset().total_seconds()) // 60
+    return (f"{WEEKDAYS[moment.weekday()][:3]} {MONTHS[moment.month - 1][:3]} {moment.day}, "
+            f"{(moment.hour - 1) % 12 + 1}:{moment.minute:02d} {'am' if moment.hour < 12 else 'pm'} "
+            f"UTC{'-' if offset < 0 else '+'}{abs(offset) // 60:02d}:{abs(offset) % 60:02d}")
+
+
+def meeting_post_text(meeting, base_url, platform=None):
+    """Return the post for a verified ``meeting``; only ``agenda_item`` is shortened (``platform=None``: legacy ``len()`` cap)."""
+    facts = meeting["participation"]
+    tail, written = "", facts["written_comment"]
+    if written and written["deadline"]:
+        tail += f" Comment in writing by {_when(written['deadline'])}: {written['how']}."
+    remote = facts["remote"] if facts["remote"] and facts["remote"]["available"] else None
+    if facts["in_person"] and remote:
+        tail += f" Attend: in person or remotely: {remote['how']}."
+    elif facts["in_person"]:
+        tail += " Attend: in person."
+    elif remote:
+        tail += f" Attend: remotely: {remote['how']}."
+    if base_url:
+        tail += f" {base_url.rstrip('/')}/meetings/{meeting['id']}.html"
+    head = f"{meeting['body']} meets {_when(meeting['starts_at'])}"
+    item = meeting["agenda_item"]
+    limit = PLATFORMS[platform][0] if platform is not None else SOCIAL_MAX_CHARS
+    for cut in range(len(item), -1, -1) if item else (0,):
+        shown = "" if not item else ": " + (item if cut == len(item) else item[:cut].rstrip() + "\u2026")
+        text = f"{head}{shown}.{tail}"
+        if (post_length(text, platform) if platform is not None else len(text)) <= limit:
+            return text
+    raise ValueError(f"meeting {meeting['id']}: post cannot fit {limit} characters" + (f" on {platform}" if platform else ""))
+
+
+def _meeting_draft(meeting, base_url, platform=None):
+    return f"<!-- DRAFT: not posted. Review before any use. meeting {meeting['id']} -->\n\n{meeting_post_text(meeting, base_url, platform)}\n"
+
+
+def _upcoming_verified(root, within_days, now):
+    """Return ``(meetings, skipped, unreadable_files, base_url)``; an unreadable meeting file is counted and named, never fatal."""
+    if type(within_days) is not int or not 1 <= within_days <= 60:
+        raise ValueError("--within-days must be a whole number from 1 to 60")
+    now = now or datetime.now(timezone.utc)
+    now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    content_dir = root / "content"
+    if not content_dir.is_dir():
+        raise ValueError("social drafts need a content/ directory")
+    try:
+        site_path = content_dir / "site.json"
+        base_url = load_site(_read_json(site_path), content_dir / "public-assets").get("base_url") if site_path.is_file() else None
+    except ContentError as exc:
+        raise ValueError(str(exc)) from None
+    skipped, unreadable, kept, seen = dict.fromkeys(SKIP_KEYS, 0), [], [], set()
+    folder = content_dir / "meetings"
+    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        try:
+            meeting = load_meeting(_read_json(path), "meetings/" + path.name, today=now.date())
+            meeting["id"] = meeting["id"] or _slug(path.stem, "meetings/" + path.name + " filename")
+            if meeting["id"] in seen:
+                raise ContentError(f"duplicate meeting id {meeting['id']!r}")
+        except (ContentError, OSError, ValueError):
+            skipped["unreadable"] += 1
+            unreadable.append(path.name)
+            continue
+        seen.add(meeting["id"])
+        starts = datetime.fromisoformat(meeting["starts_at"].replace("Z", "+00:00"))
+        if meeting["status"] != "scheduled":
+            skipped["cancelled"] += 1
+        elif starts < now:
+            skipped["past"] += 1
+        elif starts > now + timedelta(days=within_days):
+            skipped["outside_window"] += 1
+        elif meeting["participation"] is None:
+            skipped["unverified"] += 1
+        else:
+            kept.append(meeting)
+    return kept, skipped, unreadable, base_url
+
+
+def meeting_review_notes(root, within_days=14, now=None):
+    """DF-4 alert-only: ``review-required`` notes for meeting posts whose wording asserts a violation. Never raises."""
+    try:
+        meetings, _, _, base_url = _upcoming_verified(root, within_days, now)
+        return legal_notes((f"social/meetings/{m['id']}", meeting_post_text(m, base_url)) for m in meetings)
+    except Exception:  # noqa: BLE001 - alert-only; build_meeting_social reports its own refusals
+        return ["review-required: social: legal-claim wording (meeting posts could not be scanned; read them before use)"]
+
+
+def build_meeting_social(root, platforms=None, within_days=14, now=None):
+    """Write meeting drafts into ``kit/social/meetings/`` (``<platform>/`` each with ``platforms``) and return
+    ``{meetings, skipped, unreadable_files, posted}``; ``meetings`` is ``build_social``'s dict (per platform with ``platforms``)."""
+    meetings, skipped, unreadable, base_url = _upcoming_verified(root, within_days, now)
+    kit_dir = root / "kit"
+    social_dir = kit_dir / "social"
+    meeting_dir = social_dir / "meetings"
+    if platforms is None:
+        drafts = {m["id"]: _meeting_draft(m, base_url) for m in meetings}
+        for folder in (kit_dir, social_dir, meeting_dir, social_dir / "meetings.suggested"):
+            if folder in (kit_dir, social_dir) or os.path.lexists(folder):
+                _kit_folder(folder)
+        result = _write_drafts(meeting_dir, social_dir / "meetings.suggested", drafts)
+    else:
+        platforms = list(dict.fromkeys(platforms))
+        unknown = [p for p in platforms if p not in PLATFORMS]
+        if unknown or not platforms:
+            raise ValueError(f"unknown platform: {', '.join(unknown) or 'none given'} (choose from {', '.join(PLATFORMS)})")
+        plan = {p: {m["id"]: _meeting_draft(m, base_url, p) for m in meetings} for p in platforms}
+        folders = [meeting_dir / name for p in platforms for name in (p, p + ".suggested")]
+        for folder in [kit_dir, social_dir, meeting_dir] + folders:
+            if os.path.lexists(folder):
+                _kit_folder(folder)
+        for folder in (kit_dir, social_dir, meeting_dir):
+            _kit_folder(folder)
+        result = {"platforms": {p: _write_drafts(meeting_dir / p, meeting_dir / (p + ".suggested"), plan[p]) for p in platforms}}
+    return {"meetings": result, "skipped": skipped, "unreadable_files": unreadable, "posted": False}
