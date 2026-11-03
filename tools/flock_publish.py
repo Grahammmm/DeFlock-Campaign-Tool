@@ -276,7 +276,7 @@ def gate(run):  # check's lines are captured (ids and rules only) -> (failed, li
     with contextlib.redirect_stdout(buf):
         failed = check(target, run)
     return failed, buf.getvalue().splitlines(), None if failed else json.loads(target.read_text(encoding="utf-8"))
-def change(run, a):  # DF1537-11 withdraw/correct: approved or needs-review -> withdrawn/superseded; change-log row first
+def change(run, a, dry=False):  # DF1537-11 withdraw/correct: approved or needs-review -> withdrawn/superseded; change-log row first
     log, status, replaced = run / CHANGES, "withdrawn" if a.command == "withdraw" else "superseded", ""
     failed, lines, doc = gate(run)
     errs = lines if failed else []
@@ -300,7 +300,9 @@ def change(run, a):  # DF1537-11 withdraw/correct: approved or needs-review -> w
             else ["--replaced-by: text equals the old text"] if compare.squash(other["text"]) == compare.squash(entry["text"]) else []
         replaced = "%s:%s" % (new.name, new_id)
     if errs:
-        return print("\n".join(errs + ["%s refused | nothing written" % a.command])) or 1
+        return print("\n".join(errs + ["%s refused | nothing written%s" % (a.command, " (dry run)" if dry else "")])) or 1
+    if dry:  # RF0910-10: every check above ran; no open, truncate, unlink or write is reached
+        return print("would %s | %s | %s%s\ndry run | nothing written" % (status, short(a.finding), "by %s | " % replaced if replaced else "", a.on)) or 0
     row, before = io.StringIO(), log.read_bytes() if log.exists() else None
     csv.writer(row, lineterminator="\n").writerows(([] if before else [CHANGE_HEADER]) + [[a.finding, a.command, a.on, a.by, a.approval_ref, replaced]])
     with os.fdopen(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600), "ab") as out: out.write(row.getvalue().encode())  # noqa: E701
@@ -324,14 +326,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     usage = ("usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR] | status STORE | stage RUNDIR --copy FILE --out DIR"
              " | stage RUNDIR --copy FILE --dry-run | brief STORE --agency SLUG --out FILE | recheck RUNDIR [--today YYYY-MM-DD] [--dry-run]"
-             " | withdraw RUNDIR --finding ID --on D --by NAME --approval-ref REF | correct RUNDIR --finding ID --replaced-by NEWRUNDIR:NEWID"
-             " --on D --by NAME --approval-ref REF")
+             " | withdraw RUNDIR --finding ID --on D --by NAME --approval-ref REF [--dry-run] | correct RUNDIR --finding ID --replaced-by NEWRUNDIR:NEWID"
+             " --on D --by NAME --approval-ref REF [--dry-run]")
     changing = args.command in ("withdraw", "correct") and args.rundir and None not in (args.finding, args.on, args.by, args.approval_ref) and \
         (args.replaced_by is None) == (args.command == "withdraw") and (args.check, args.run, args.site_slug, args.copy, args.out, args.agency) == (None,) * 6
     if (args.finding, args.on, args.by, args.approval_ref, args.replaced_by) != (None,) * 5 and not changing: parser.error(usage)  # noqa: E701
     rechecking = args.command == "recheck" and args.rundir and (args.check, args.run, args.site_slug, args.copy, args.out, args.agency) == (None,) * 6
     staging = args.command == "stage" and args.rundir and args.copy and (args.out is None) == args.dry_run and (args.check, args.run, args.site_slug) == (None,) * 3
-    if args.today is not None and not rechecking or args.dry_run and not (rechecking or staging) or rechecking and args.today is not None and not iso_day(args.today):
+    if args.today is not None and not rechecking or args.dry_run and not (rechecking or staging or changing) or rechecking and args.today is not None and not iso_day(args.today):
         parser.error(usage)
     checking = args.check and args.run != "" and not (args.command or args.rundir or args.site_slug)
     listing = args.command == "status" and args.rundir and (args.check, args.run, args.site_slug) == (None,) * 3
@@ -349,7 +351,7 @@ def main(argv=None):
         if rechecking:
             return recheck(run, args.today or datetime.date.today().isoformat(), args.dry_run)
         if changing:
-            return change(run, args)
+            return change(run, args, args.dry_run)
         if staging or briefing:  # loaded only for its verb; --out/--copy are refused inside the same repository root
             spec = importlib.util.spec_from_file_location("_flock_publish_" + args.command, Path(__file__).resolve().with_name("flock_publish_%s.py" % args.command))
             spec.loader.exec_module(verb := importlib.util.module_from_spec(spec))

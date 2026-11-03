@@ -169,11 +169,9 @@ def write_atomic(path, rows):
         raise
 
 
-def do_import(args):
+def plan_import(args):
+    """Every import check, no writes (RF0740-9): (errors, source rows by slug, store rows by slug)."""
     store = Path(args.store).resolve()
-    if store == REPO or REPO in store.parents:
-        print("store inside repository")
-        return 1
     v2, rows, errors = load(args.src, kind=args.kind)
     by_slug, old = {}, {}
     for _, row in rows:
@@ -191,21 +189,36 @@ def do_import(args):
         _, found, errs = load(path, slug) if path.exists() else (True, [], [])
         errors += ["store file %d: %s" % (n, e) for e in errs]
         old[slug] = [r for _, r in found]
+    return errors, by_slug, old
+
+
+def do_import(args):
+    store = Path(args.store).resolve()
+    if store == REPO or REPO in store.parents:
+        print("store inside repository")
+        return 1
+    errors, by_slug, old = plan_import(args)
     if errors:
         print("\n".join(errors))
         print("imported=0 duplicates=0 errors=%d" % len(errors))
         return 1
-    imported = duplicates = 0
+    fresh = {}  # per slug: source rows not in the store and not repeated earlier in the source
     for slug, new_rows in by_slug.items():
-        seen, fresh = {dedupe_key(r) for r in old[slug]}, []
+        seen, fresh[slug] = {dedupe_key(r) for r in old[slug]}, []
         for row in new_rows:
-            duplicates += dedupe_key(row) in seen
             if dedupe_key(row) not in seen:
-                fresh.append(row)
+                fresh[slug].append(row)
                 seen.add(dedupe_key(row))
-        if fresh:
-            write_atomic(store / "agencies" / slug / "FACTS.csv", old[slug] + fresh)
-        imported += len(fresh)
+    imported = sum(len(rows) for rows in fresh.values())
+    duplicates = sum(len(rows) for rows in by_slug.values()) - imported
+    if args.dry_run:  # slug and counts only; returns before any write_atomic, so no folder or file is made
+        for slug in sorted(fresh):
+            print("would-import | %s | new=%d duplicates=%d" % (slug, len(fresh[slug]), len(by_slug[slug]) - len(fresh[slug])))
+        print("imported=0 would_import=%d duplicates=%d errors=0 agencies=%d dry_run=1" % (imported, duplicates, len(by_slug)))
+        return 0
+    for slug, rows in fresh.items():
+        if rows:
+            write_atomic(store / "agencies" / slug / "FACTS.csv", old[slug] + rows)
     print("imported=%d duplicates=%d errors=0 agencies=%d" % (imported, duplicates, len(by_slug)))
     return 0
 
@@ -545,7 +558,10 @@ def _main(argv=None):
     parser.add_argument("--kind", default="record", choices=sorted(KINDS))
     parser.add_argument("--status", default="checked", choices=sorted(STATUSES))
     parser.add_argument("--set", choices=["checked", "disputed"])
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if args.dry_run and (args.command[:1] != ["import"] or args.check is not None):
+        parser.error("--dry-run belongs to import only")
     if args.out is not None and args.command[:1] != ["unreadable"]:
         parser.error("--out belongs to unreadable only")
     if (args.fact is not None or args.since is not None) and args.command[:1] != ["reviews"]:
@@ -600,7 +616,7 @@ def _main(argv=None):
         return coverage(args)
     if args.check or args.list is not None or args.command[:1] != ["import"] or len(args.command) != 2 or not args.store \
             or not (args.added_by or "").strip() or not valid_date(args.date):
-        parser.error("usage: import SRC --store DIR --added-by NAME [--date YYYY-MM-DD] | --check PATH"
+        parser.error("usage: import SRC --store DIR --added-by NAME [--date YYYY-MM-DD] [--dry-run] | --check PATH"
                      " | coverage --store DIR --agency NAME --inventory CSV")
     args.src = args.command[1]
     return do_import(args)
