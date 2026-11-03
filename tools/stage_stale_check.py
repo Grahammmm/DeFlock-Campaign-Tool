@@ -1,6 +1,7 @@
 """Name a records-pipeline stage that has stopped producing, from run reports. Read-only and
 stateless: no ledger, no clock (--now is required), no state file, no send. An alert exists exactly
-while the last N scheduled reports satisfy the rule. Exit 3 alerts, 0 none, 1 untrusted, 2 usage."""
+while the last N scheduled reports satisfy the rule; reports dated after --now (started or finished)
+are excluded and counted. Exit 3 alerts, 0 none, 1 untrusted, 2 usage."""
 import argparse
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -96,9 +97,10 @@ def check(loaded, now, runs):
         report, key = members[0][1], order_key(members[0][1])
         try:
             ok = validate_run_report(report, schema) is not None
-        except Exception:  # any validator failure makes the report invalid
-            ok = False
-        if ok and key[0] > now:
+            future = ok and (key[0] > now or parse_stamp(report["finished_at"]) > now)  # started or finished
+        except Exception:  # any validator or timestamp failure makes the report invalid, never recent
+            ok = future = False
+        if future:
             tally["future"] += 1
             continue
         latest = max(latest or (key, ok), (key, ok), key=lambda item: item[0])
