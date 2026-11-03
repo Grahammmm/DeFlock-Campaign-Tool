@@ -111,6 +111,14 @@ def _label(agency_id, request):
     return agency_id if request == "main" else f"{agency_id}/{request}"
 
 
+def _hashes(value):  # the valid full SHA-256 strings in a stored list; [] when it is not a list
+    return [h for h in value if isinstance(h, str) and SHA256.fullmatch(h)] if isinstance(value, list) else []
+
+
+def _corr_ok(value):  # a stored correspondence list: 1..RECORDS_MAX unique full hashes, nothing else
+    return bool(value) and len(value) <= RECORDS_MAX and _hashes(value) == value and len(set(value)) == len(value)
+
+
 def _entry_ok(key, entry):
     parts = _split(key)
     return (parts and kit.AGENCY_ID.match(parts[0]) and isinstance(entry, dict) and _day(entry.get("sent_on"))
@@ -118,7 +126,8 @@ def _entry_ok(key, entry):
             and isinstance(entry.get("draft_sha256"), str) and SHA256.fullmatch(entry["draft_sha256"])
             and _day(entry.get("recorded_at"), STAMP, datetime.fromisoformat) and isinstance(entry.get("steps"), list)
             and ("reference" not in entry or isinstance(entry["reference"], str)
-                 and REFERENCE.fullmatch(entry["reference"])))
+                 and REFERENCE.fullmatch(entry["reference"]))
+            and ("correspondence" not in entry or _corr_ok(entry["correspondence"])))
 
 
 def read_sent(root):
@@ -163,7 +172,7 @@ def _check(root, agency, request):  # main: kit-check's own report; a named requ
 
 
 def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=False, today=None, reference=None,
-                replace_reference=False):
+                replace_reference=False, correspondence=()):
     """Record one hand-sent request in kit/sent.json and return its entry."""
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
@@ -191,6 +200,9 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
         raise ValueError(f"--date {sent_on} must be between 2000-01-01 and today")
     if channel not in CHANNELS:
         raise ValueError("--channel must be one of " + ", ".join(CHANNELS))
+    correspondence = list(correspondence or ())
+    if len(correspondence) > RECORDS_MAX:
+        raise ValueError(f"--correspondence: at most {RECORDS_MAX} per request")
     requests = read_sent(root)
     key, label = _key(agency_id, request), _label(agency_id, request)
     previous = requests.get(key)
@@ -203,10 +215,14 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
     if previous and "reference" in previous:  # a --replace correction keeps the stored reference
         entry["reference"] = previous["reference"]
     _set_reference(entry, reference, replace_reference)
+    if correspondence:  # a new list replaces the stored one; none given keeps it (as reference)
+        entry["correspondence"] = _resolve_hashes(root, correspondence, {}, "correspondence")
+    elif previous and "correspondence" in previous:
+        entry["correspondence"] = previous["correspondence"]
     requests[key] = entry
     kit._write_json(root / "kit" / "sent.json",
                     {"schema_version": 1, "requests": dict(sorted(requests.items()))})
-    return {"agency_id": agency_id, "request": request, **entry}
+    return {"agency_id": agency_id, "request": request, **_shown(entry)}
 
 
 def _clean_note(note):
@@ -220,24 +236,30 @@ def _clean_note(note):
     return text
 
 
-def _step_records(step):  # the valid full record hashes linked on one stored step
-    value = step.get("records", []) if isinstance(step, dict) else []
-    return [h for h in value if isinstance(h, str) and SHA256.fullmatch(h)] if isinstance(value, list) else []
+def _step_records(step):  # the valid full record hashes linked on one stored step (production evidence)
+    return _hashes(step.get("records", []) if isinstance(step, dict) else [])
 
 
-def _resolve_records(root, records, steps):  # every prefix is resolved before anything is written
+def _shown(item):  # a copy with records and correspondence as 12-char prefixes, as printed
+    return {**item, **{k: [h[:12] for h in item[k]] for k in ("records", "correspondence") if k in item}}
+
+
+def _steps_corr_ok(step):
+    return "correspondence" not in step or _corr_ok(step["correspondence"])
+
+
+def _resolve_hashes(root, prefixes, linked, flag):  # every prefix is resolved before anything is written
     from .sources_cmd import resolve_hash
-    linked = {digest: s["on"] for s in steps for digest in _step_records(s)}
     hashes = []
-    for number, prefix in enumerate(records, 1):
+    for number, prefix in enumerate(prefixes, 1):
         try:
             digest = resolve_hash(root, prefix)
         except ValueError as exc:
-            raise ValueError(f"--record #{number}: " + str(exc).removeprefix("--sha256: ")) from None
+            raise ValueError(f"--{flag} #{number}: " + str(exc).removeprefix("--sha256: ")) from None
         if digest in hashes:
-            raise ValueError(f"--record #{number}: the same record is given twice")
+            raise ValueError(f"--{flag} #{number}: the same record is given twice")
         if digest in linked:
-            raise ValueError(f"--record #{number}: already linked on {linked[digest]}")
+            raise ValueError(f"--{flag} #{number}: already linked on {linked[digest]}")
         hashes.append(digest)
     return sorted(hashes)
 
@@ -307,7 +329,7 @@ def _next_installment(steps):  # the latest expected_on on or after the latest p
 
 
 def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None,
-                expected_on=None, reference=None, replace_reference=False, partial=False):
+                expected_on=None, reference=None, replace_reference=False, partial=False, correspondence=()):
     """Append one dated agency response step to a hand-sent request and return the updated entry."""
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
@@ -318,8 +340,10 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     records = list(records or ())  # produced only: ledger prefixes; full hashes stored, 12-char prefixes returned
     if records and kind != "produced":
         raise ValueError("--record is only for produced steps")
-    if len(records) > RECORDS_MAX:
-        raise ValueError(f"--record: at most {RECORDS_MAX} records per step")
+    correspondence = list(correspondence or ())  # any kind: letters and confirmations, never production evidence
+    if len(records) > RECORDS_MAX or len(correspondence) > RECORDS_MAX:
+        raise ValueError(f"--{'record' if len(records) > RECORDS_MAX else 'correspondence'}: "
+                         f"at most {RECORDS_MAX} records per step")
     note = _clean_note(note)
     requests = read_sent(root)
     entry = requests.get(_key(agency_id, request)) if "#" not in agency_id else None
@@ -330,7 +354,7 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     label = _label(agency_id, request)
     steps = entry["steps"]
     if not all(isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) and _amount_ok(s)
-               and _step_records(s) == s.get("records", []) for s in steps) or not _expected_ok(steps):
+               and _step_records(s) == s.get("records", []) and _steps_corr_ok(s) for s in steps) or not _expected_ok(steps):
         raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
     day = _day(on)
     if day is None:
@@ -380,18 +404,23 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     if expected_on is not None and _day(expected_on) < day:
         raise ValueError(f"stated date {expected_on} is before the {kind} on {on}")
     cents = None if amount is None else _amount_cents(amount)  # every refusal above and here writes nothing
-    hashes = _resolve_records(root, records, steps) if records else []
+    linked = {h: f"{entry['sent_on']} as correspondence" for h in entry.get("correspondence", [])}
+    for s in steps:
+        linked.update({h: f"{s['on']} as {k}" for k, key in (("record", "records"), ("correspondence", "correspondence"))
+                       for h in s.get(key, [])})
+    hashes = _resolve_hashes(root, records, linked, "record") if records else []
+    corr = _resolve_hashes(root, correspondence, {**linked, **{h: "this call as record" for h in hashes}},
+                           "correspondence") if correspondence else []
     _set_reference(entry, reference, replace_reference)  # last refusal: nothing written on a conflict
     step = {"on": on, "kind": kind, **({"partial": True} if partial else {}),
             **({"expected_on": expected_on} if expected_on is not None else {}),
             **({"amount_cents": cents} if cents is not None else {}),
             **({"note": note} if note else {}), **({"records": hashes} if hashes else {}),
-            "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+            **({"correspondence": corr} if corr else {}), "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     entry["steps"] = [*steps, step]
     kit._write_json(root / "kit" / "sent.json",
                     {"schema_version": 1, "requests": dict(sorted(requests.items()))})
-    return {"agency_id": agency_id, "request": request, **entry, "steps": [
-        {**s, "records": [h[:12] for h in s["records"]]} if "records" in s else s for s in entry["steps"]]}
+    return {"agency_id": agency_id, "request": request, **_shown(entry), "steps": list(map(_shown, entry["steps"]))}
 
 
 def status(root, today=None, law_base=None, *, request=None):
@@ -416,7 +445,8 @@ def status(root, today=None, law_base=None, *, request=None):
         steps = [s for s in entry["steps"] if isinstance(s, dict)]
         kinds = [s.get("kind") for s in steps]
         fees = [(s.get("on"), i, s) for i, s in enumerate(steps) if "amount_cents" in s or kinds[i] == "fee_estimate"]
-        if not all(_amount_ok(s) and _day(on) for on, _, s in fees) or not _expected_ok(steps):
+        if not all(_amount_ok(s) and _day(on) for on, _, s in fees) or not _expected_ok(steps) \
+                or not all(map(_steps_corr_ok, steps)):
             raise ValueError(f"kit/sent.json unreadable: malformed steps for {_label(agency_id, name)!r}")
         last, settled = _fee(steps)  # the latest estimate: latest date, then the later recorded step
         estimate = None if last is None else steps[last]["amount_cents"]
@@ -426,6 +456,7 @@ def status(root, today=None, law_base=None, *, request=None):
         if estimate is not None and cap == ():
             cap = kit.fee_cap_cents(root / "kit", today)
         linked = sorted({digest for s in steps for digest in _step_records(s)})
+        letters = sorted({*entry.get("correspondence", []), *(h for s in steps for h in s.get("correspondence", []))})
         extended = law.deadline(package, entry["sent_on"], extension=True).isoformat() if package else None
         due = (extended if "extension" in kinds else law.deadline(package, entry["sent_on"]).isoformat()) \
             if package else None
@@ -437,6 +468,8 @@ def status(root, today=None, law_base=None, *, request=None):
                      "last_step": {"on": steps[-1].get("on"), "kind": kinds[-1]} if steps else None,
                      "records": len(linked), "record_prefixes": [h[:12] for h in linked[:PREFIXES_MAX]],
                      **({"more": len(linked) - PREFIXES_MAX} if len(linked) > PREFIXES_MAX else {}),
+                     "correspondence": len(letters), "correspondence_prefixes": [h[:12] for h in letters[:PREFIXES_MAX]],
+                     **({"correspondence_more": len(letters) - PREFIXES_MAX} if len(letters) > PREFIXES_MAX else {}),
                      "fee_estimate": None if estimate is None else _dollars(estimate),
                      "over_fee_cap": None if estimate is None or cap is None else estimate > cap,
                      "stated_production_date": stated, "waiting_on_you_since": _waiting_since(steps),
