@@ -2,6 +2,7 @@
 import copy
 import json
 import random
+import re
 import shutil
 import tempfile
 import unittest
@@ -238,6 +239,115 @@ class TimelineTests(unittest.TestCase):
         page = self.site().timeline_html()["html"]
         for forbidden in ("cafecafe", "beefbeef", "page:1-2", "fnd_000", "private/", "@"):
             self.assertNotIn(forbidden, page)
+
+    # --- DF1207-04: request and decision dates ---------------------------------------------------------
+
+    def ask(self, index, items):
+        path = self.root / "content/agencies.json"
+        agencies = json.loads(path.read_text())
+        agencies[index]["asked"] = items
+        self.write("content/agencies.json", agencies)
+
+    def outcome(self, slug, **changes):
+        path = self.root / f"content/meetings/{slug}.json"
+        doc = json.loads(path.read_text())
+        doc["outcome"] = {"result": "approved", "on": "2026-01-10", "source_url": "https://records.example.org/min?a=1&b=2",
+                          "verified_by": "Synthetic Organizer", "verified_at": "2026-02-15", **changes}
+        self.write(f"content/meetings/{slug}.json", doc)
+
+    def of_kind(self, events, *kinds):
+        return [e for e in events if e["kind"] in kinds]
+
+    def test_asked_item_adds_requested_and_update_events_with_agency_page_sentence(self):
+        self.ask(1, [{"topic": "ALPR policy", "asked_on": "2026-01-05", "state": "declined_in_writing",
+                      "updated_on": "2026-01-25"}])
+        self.build()
+        site = self.site()
+        events = self.of_kind(site.timeline, "records_requested", "request_update")
+        self.assertEqual(events, [
+            {"date": "2026-01-25", "kind": "request_update", "href": "/agencies/cedar.html",
+             "text": "Cedar Police Department (fictional): ALPR policy — Declined in writing on 2026-01-25."},
+            {"date": "2026-01-05", "kind": "records_requested", "href": "/agencies/cedar.html",
+             "text": "Records requested from Cedar Police Department (fictional): ALPR policy"}])
+        self.assertIn("ALPR policy — asked 2026-01-05. Declined in writing on 2026-01-25.",
+                      (self.root / "public/agencies.html").read_text())
+        self.assertIn(LEAD, self.page())
+        self.assertNotIn("not shown here yet", self.page())
+
+    def test_awaiting_without_update_adds_only_the_requested_event(self):
+        self.ask(1, [{"topic": "Sharing list", "asked_on": "2026-01-05", "state": "awaiting_response"}])
+        events = self.of_kind(self.site().timeline, "records_requested", "request_update")
+        self.assertEqual([e["kind"] for e in events], ["records_requested"])
+        self.assertNotIn(TODAY.isoformat(), [e["date"] for e in self.site().timeline])
+        self.ask(1, [{"topic": "Sharing list", "asked_on": "2026-01-05", "state": "awaiting_response",
+                      "updated_on": "2026-01-09"}])
+        events = self.of_kind(self.site().timeline, "request_update")
+        self.assertEqual((events[0]["date"], events[0]["text"][-38:]),
+                         ("2026-01-09", "No written response recorded as of 2026-01-09."[-38:]))
+
+    def test_agency_without_page_links_to_existing_agencies_list_anchor(self):
+        self.ask(2, [{"topic": "Camera count", "asked_on": "2026-01-05", "state": "answered", "updated_on": "2026-01-06"}])
+        self.build()
+        events = self.of_kind(self.site().timeline, "records_requested", "request_update")
+        self.assertEqual({e["href"] for e in events}, {"/agencies.html#" + events[0]["href"].partition("#")[2]})
+        path, _, fragment = events[0]["href"].partition("#")
+        self.assertEqual(path, "/agencies.html")
+        target = (self.root / "public/agencies.html").read_text()
+        self.assertIn(fragment, [a.get("id") for _, a in Tags(target).tags])
+        self.assertIn(f'href="{events[0]["href"]}"', self.page())
+
+    def test_decision_event_only_for_non_cancelled_meeting_with_outcome(self):
+        self.outcome("past")
+        events = self.of_kind(self.site().timeline, "decision")
+        self.assertEqual(events, [{"date": "2026-01-10", "kind": "decision", "text": "Decision at Past body: Approved",
+                                   "href": "/meetings/past.html",
+                                   "source_url": "https://records.example.org/min?a=1&b=2"}])
+        model = self.model()
+        next(m for m in model["meetings"] if m["id"] == "past")["status"] = "cancelled"
+        self.assertEqual(self.of_kind(timeline_events(model, TODAY), "decision"), [])
+        self.assertFalse(any(e["kind"] in ("meeting", "decision") and "Past" in e["text"]
+                             for e in timeline_events(model, TODAY)))
+        model = self.model()
+        next(m for m in model["meetings"] if m["id"] == "past").pop("outcome")
+        self.assertEqual(self.of_kind(timeline_events(model, TODAY), "decision"), [])
+
+    def test_decision_item_has_two_links_and_escapes_text(self):
+        self.outcome("past", result="denied")
+        model = self.model()
+        next(m for m in model["meetings"] if m["id"] == "past")["body"] = "Board <i>& Co"
+        page = self.site(model).timeline_html()["html"]
+        match = re.search(r"<li><time[^>]*>2026-01-10</time> · <a href=\"/meetings/past.html\">.*?</li>", page)
+        self.assertIsNotNone(match)
+        item = match.group(0)
+        self.assertEqual(item.count("<a "), 2)
+        self.assertIn("Decision at Board &lt;i&gt;&amp; Co: Denied</a>", item)
+        self.assertIn(' · <a href="https://records.example.org/min?a=1&amp;b=2" rel="noopener noreferrer">official record</a></li>',
+                      item)
+        self.assertEqual(page.count("official record"), 1)
+
+    def test_requested_topic_is_escaped(self):
+        self.ask(1, [{"topic": "Fees & rates", "asked_on": "2026-01-05", "state": "answered"}])
+        page = self.site().timeline_html()["html"]
+        self.assertIn("Records requested from Cedar Police Department (fictional): Fees &amp; rates</a>", page)
+
+    def test_same_day_request_finding_decision_order_and_builds_identical(self):
+        self.ask(1, [{"topic": "T", "asked_on": "2026-02-02", "state": "answered", "updated_on": "2026-02-02"}])
+        self.outcome("past", on="2026-02-02")
+        events = timeline_events(self.model(), TODAY)
+        same_day = [e["kind"] for e in events if e["date"] == "2026-02-02"]
+        self.assertEqual(same_day, ["finding_published", "records_requested", "request_update", "decision"])
+        self.build()
+        first = self.page()
+        self.build()
+        self.assertEqual(self.page(), first)
+        model = self.model()
+        expected = self.site(model).timeline_html()["html"]
+        rng = random.Random(7)
+        for _ in range(3):
+            shuffled = copy.deepcopy(model)
+            for key in ("agencies", "sources", "findings", "meetings"):
+                rng.shuffle(shuffled[key])
+            self.assertEqual(self.site(shuffled).timeline_html()["html"], expected)
 
 
 if __name__ == "__main__":
