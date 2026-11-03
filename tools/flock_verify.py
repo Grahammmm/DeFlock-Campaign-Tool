@@ -152,14 +152,14 @@ def current(run, golden, as_json=False):  # read-only: on-disk outputs vs a fres
     found, rows = [], lambda b: [r for r in csv.reader(io.StringIO(b.decode("utf-8", "replace"), newline="")) if any(c.strip() for c in r)]
     for name, want in (("PUBLIC-OK.csv", public), ("QUESTIONS.md", questions)):
         (data, state), link, n = on_disk(run, name, want), (run / name).is_symlink(), None
+        if not as_json:  # state line before any row parsing, so a csv.Error mid-way leaves the same partial text as before
+            print("current: %s %s" % (name, "is a symlink (refused)" if link else state))
         if state == "stale" and name == "PUBLIC-OK.csv":  # undecodable or wrong header: no rows on disk
             have, need = ([r[0].strip() for r in t[1:]] if t[:1] == [PUBLIC] else [] for t in (rows(data) if data.decode("utf-8", "replace").encode("utf-8") == data else [], rows(want.encode("utf-8"))))
             n = {"on_disk": len(have), "expected": len(need), "missing": len(set(need) - set(have)), "extra": len(set(have) - set(need))}
-        found.append({"name": name, "state": state, "symlink": link, "rows": n})
-        if not as_json:
-            print("current: %s %s" % (name, "is a symlink (refused)" if link else state))
-            if n is not None:
+            if not as_json:
                 print("current: PUBLIC-OK.csv rows on_disk=%(on_disk)d expected=%(expected)d missing=%(missing)d extra=%(extra)d" % n)
+        found.append({"name": name, "state": state, "symlink": link, "rows": n})
     states = [o["state"] for o in found]
     counts, code = {k: states.count(k) for k in ("current", "stale", "missing")}, int(states != ["current"] * 2)
     return print(current_doc(found, counts, []) if as_json else "current=%(current)d stale=%(stale)d missing=%(missing)d | " % counts + NOTE) or code

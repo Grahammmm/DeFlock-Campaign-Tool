@@ -117,6 +117,13 @@ class VerifyCurrentJsonTest(unittest.TestCase):
         self.assertEqual(self.jcurrent(), (1, doc([], None, ["io: PermissionError"])))
         self.assertEqual(self.current(), (1, "current: PUBLIC-OK.csv current\nio: PermissionError\n"))
 
+    def test_csv_error_prints_state_line_first(self):  # a field over csv.field_size_limit() in a stale PUBLIC-OK.csv
+        self.finished()
+        path = self.run_dir / "PUBLIC-OK.csv"
+        path.write_text(path.read_text(encoding="utf-8") + "N98,\"" + "x" * 200000 + "\"\n", encoding="utf-8")
+        self.assertEqual(self.current(), (1, "current: PUBLIC-OK.csv stale\nio: Error\n"))  # origin/main text
+        self.assertEqual(self.jcurrent(), (1, doc([], None, ["io: Error"])))
+
     def test_json_only_with_current(self):
         self.assertEqual(base.run("flock_verify.py", "start", self.rd, "--provider", "openai", "--model", "gpt-5-codex")[0], 0)
         self.mutate(1)
