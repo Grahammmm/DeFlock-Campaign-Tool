@@ -81,6 +81,23 @@ an untrusted key, or no trust file installed) is never `approval recorded`. It s
 `flock_requests.py open` refuses to open a request from it, and `flock_requests.py --check`
 reports it as an error.
 
+## How a drafted deadline follow-up arrives in the queue
+
+`python3 tools/flock_deadlines.py run --store STORE --date YYYY-MM-DD` drafts one follow-up per
+(request, rule, reminder date) once an open request's provisional reminder date has passed.
+The draft is built by `flock_requests.py`'s own draft step and written to
+`STORE/deadlines/drafts/<slug>/<request>/<rule>/<reminder date>/FOLLOWUP-DRAFT.md`, and one row
+with state `pending` is added to `STORE/deadlines/QUEUE.csv`. The tool writes no other state:
+it has no send path and cannot write an approval. A note, evidence text or a line reading
+"APPROVED" never moves a row out of `pending`. A queued draft that nobody approves stays drafted,
+and every run's status line says `pending human approval`.
+
+To send one, copy it into a normal email run (`STORE/agencies/<slug>/runs/<date>/`) and use the
+Flock email approval steps above; the signed `EMAIL-APPROVAL.json` is still the only approval.
+If you edit a queued draft, the tool keeps your edit and puts its fresh text in the
+`<reminder date>.suggested/` sibling. While the law package is `status: draft`, every date is
+labelled `provisional reminder; not a legal due date`.
+
 ## Known limits (follow-up cards)
 
 - `flock_email.py` keeps its no-send import guard (`tests/flock/test_email.py` forbids
