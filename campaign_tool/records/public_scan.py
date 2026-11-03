@@ -23,12 +23,13 @@ STRICT_PATTERNS = {
 }
 DENIED_PARTS = {"private", "originals", "mail-history", "blobs", "credentials"}
 DENIED_SUFFIXES = {".eml", ".mbox", ".sqlite", ".sqlite3", ".db", ".pem", ".key", ".p12", ".pfx"}
+DENIED_NAMES = {"CUSTODY.md", "custody.json"}  # tools/custody_report.py private artefacts: never in the public tree
 
 
 def violations(path, data, *, strict=False, private_index=None):
     findings = []
     p = Path(path)
-    if (set(p.parts) & DENIED_PARTS or p.suffix.lower() in DENIED_SUFFIXES
+    if (set(p.parts) & DENIED_PARTS or p.suffix.lower() in DENIED_SUFFIXES or p.name in DENIED_NAMES
             or p.name == ".env" or p.name.startswith(".env.") and p.name != ".env.example"):
         findings.append((path, 0, "private_path"))
     patterns = {**PATTERNS, **(STRICT_PATTERNS if strict else {})}
