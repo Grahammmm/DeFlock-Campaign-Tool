@@ -61,15 +61,22 @@ def build(store, agency_filter, run_filter=None):
     built = datetime.date.today().isoformat()
     lines = ['Private review queue. Built %s. Approving is a human decision recorded in PUBLISH.json; this file changes nothing.'
              % (built + ('; run ' + run_filter if run_filter else '')), '']
-    rows, counts, waiting, blocked = [], collections.Counter(), [], []
+    rows, counts, waiting, unreviewable = [], collections.Counter(), [], []
+
+    def blocked(reason, agency, run=None):  # name the agency and run (- for an agency-level link) it could not review
+        counts['not_reviewable'] += 1
+        name = None if run is None else safe_name(run)
+        unreviewable.append({'agency': safe_name(agency), 'run': name, 'reason': reason})
+        lines.extend(['## NOT REVIEWABLE: %s · %s%s — fix with flock_publish recheck before approving'
+                      % (reason, safe_name(agency), '' if name is None else ' · run ' + name), ''])
+        rows.append('queue | %s | %s | not-reviewable | %s' % (safe_name(agency), name or '-', reason))
+
     for agency in sorted(agencies.iterdir()):
         if agency_filter and agency.name != agency_filter:
             continue
         runs = agency / 'runs'
         if agency.is_symlink() or runs.is_symlink():
-            counts['not_reviewable'] += 1
-            blocked.append({'agency': safe_name(agency.name), 'run': None, 'reason': 'link-refused'})
-            lines += ['## NOT REVIEWABLE: link-refused — fix with flock_publish recheck before approving', '']
+            blocked('link-refused', agency.name)
             continue
         if not runs.is_dir():
             continue
@@ -78,17 +85,13 @@ def build(store, agency_filter, run_filter=None):
                 continue
             target = run / 'PUBLISH.json'
             if run.is_symlink() or target.is_symlink():
-                counts['not_reviewable'] += 1
-                blocked.append({'agency': safe_name(agency.name), 'run': safe_name(run.name), 'reason': 'link-refused'})
-                lines += ['## NOT REVIEWABLE: link-refused — fix with flock_publish recheck before approving', '']
+                blocked('link-refused', agency.name, run.name)
                 continue
             if not run.is_dir() or not target.is_file():
                 continue
             stage, _ = publish.stage(run)  # check and re-derive before displaying any entry
             if stage in ('invalid', 'drifted', 'no-export'):
-                counts['not_reviewable'] += 1
-                blocked.append({'agency': safe_name(agency.name), 'run': safe_name(run.name), 'reason': stage})
-                lines += ['## NOT REVIEWABLE: %s — fix with flock_publish recheck before approving' % stage, '']
+                blocked(stage, agency.name, run.name)
                 continue
             doc = json.loads(target.read_text(encoding='utf-8'))
             _, _, _, challenges = verify.load(run)
@@ -163,7 +166,7 @@ def build(store, agency_filter, run_filter=None):
                  counts['not_reviewable'], counts['warnings']))
     data = {'schema': 'flock-review-queue-v1', 'review_required': True, 'built': built,
             'note': 'only a human approves; this file changes nothing', 'agency_filter': agency_filter or None,
-            'waiting': waiting, 'not_reviewable': blocked,
+            'waiting': waiting, 'not_reviewable': unreviewable,
             'counts': {k: counts[k] for k in ('waiting', 'needs_review', 'approved', 'not_reviewable', 'warnings')}}
     if run_filter:
         data['run'] = run_filter
