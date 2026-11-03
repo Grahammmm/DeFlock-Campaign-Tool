@@ -29,6 +29,36 @@ class WaitingOnYou(ValueError):  # kit-followup refusal while the agency waits o
     exit_code = 3
 
 
+class ReferenceConflict(ValueError):  # a different agency reference already stored: exit 3, nothing written
+    exit_code = 3
+
+
+REFERENCE = re.compile(r"[A-Za-z0-9_#.\-]{1,40}")  # the agency's own request number, e.g. R0123-110125
+
+
+def _reference(reference, replace_reference):  # validated before anything is read or written
+    if replace_reference and reference is None:
+        raise ValueError("--replace-reference needs --reference")
+    if reference is not None and (not isinstance(reference, str) or not REFERENCE.fullmatch(reference)):
+        raise ValueError("--reference must be 1-40 letters, digits, - _ # or .")
+    return reference
+
+
+def _set_reference(entry, reference, replace_reference):  # stored once on the entry, never on a step
+    stored = entry.get("reference")
+    if reference is None or reference == stored:
+        return
+    if stored is not None and not replace_reference:
+        raise ReferenceConflict(f"reference already recorded as {stored}; pass --replace-reference to change it")
+    entry["reference"] = reference
+
+
+def reference_lines(entry):
+    """(subject suffix, first body line) quoting the stored agency reference; empty strings when none."""
+    reference = entry.get("reference")
+    return (f" (Your reference {reference})", f"Regarding your reference {reference},") if reference else ("", "")
+
+
 AMOUNT = re.compile(r"[0-9]{1,6}(\.[0-9]{1,2})?")  # plain USD: no sign, exponent, NaN or thousands separator
 AMOUNT_MAX_CENTS = 10_000_000  # $100,000.00
 OVER_CAP = "over your fee cap: decide before paying"
@@ -85,7 +115,9 @@ def _entry_ok(key, entry):
     return (parts and kit.AGENCY_ID.match(parts[0]) and isinstance(entry, dict) and _day(entry.get("sent_on"))
             and entry.get("channel") in CHANNELS and entry.get("draft") == _draft_path(*parts)
             and isinstance(entry.get("draft_sha256"), str) and SHA256.fullmatch(entry["draft_sha256"])
-            and _day(entry.get("recorded_at"), STAMP, datetime.fromisoformat) and isinstance(entry.get("steps"), list))
+            and _day(entry.get("recorded_at"), STAMP, datetime.fromisoformat) and isinstance(entry.get("steps"), list)
+            and ("reference" not in entry or isinstance(entry["reference"], str)
+                 and REFERENCE.fullmatch(entry["reference"])))
 
 
 def read_sent(root):
@@ -129,9 +161,11 @@ def _check(root, agency, request):  # main: kit-check's own report; a named requ
     return {"placeholder_count": len(hits), "ok": not hits and agency.get("verified") is True}
 
 
-def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=False, today=None):
+def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=False, today=None, reference=None,
+                replace_reference=False):
     """Record one hand-sent request in kit/sent.json and return its entry."""
     root, request = Path(root), _request(request)
+    reference = _reference(reference, replace_reference)
     path = root / "kit" / "agencies.json"
     if not path.is_file() or path.is_symlink():
         raise ValueError("run kit first: kit/agencies.json is missing")
@@ -165,6 +199,9 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
         raise ValueError(f"{label} has recorded steps; its entry sent on {previous['sent_on']} cannot be replaced")
     entry = {"sent_on": sent_on, "channel": channel, "draft": draft, "draft_sha256": digest,
              "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "steps": []}
+    if previous and "reference" in previous:  # a --replace correction keeps the stored reference
+        entry["reference"] = previous["reference"]
+    _set_reference(entry, reference, replace_reference)
     requests[key] = entry
     kit._write_json(root / "kit" / "sent.json",
                     {"schema_version": 1, "requests": dict(sorted(requests.items()))})
@@ -239,9 +276,10 @@ def _expected_ok(steps):  # expected_on only on the determination or a later res
 
 
 def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None,
-                expected_on=None):
+                expected_on=None, reference=None, replace_reference=False):
     """Append one dated agency response step to a hand-sent request and return the updated entry."""
     root, request = Path(root), _request(request)
+    reference = _reference(reference, replace_reference)
     if kind not in KINDS:
         raise ValueError("--kind must be one of " + ", ".join(KINDS))
     records = list(records or ())  # produced only: ledger prefixes; full hashes stored, 12-char prefixes returned
@@ -301,6 +339,7 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
         raise ValueError(f"stated date {expected_on} is before the {kind} on {on}")
     cents = None if amount is None else _amount_cents(amount)  # every refusal above and here writes nothing
     hashes = _resolve_records(root, records, steps) if records else []
+    _set_reference(entry, reference, replace_reference)  # last refusal: nothing written on a conflict
     step = {"on": on, "kind": kind, **({"expected_on": expected_on} if expected_on is not None else {}),
             **({"amount_cents": cents} if cents is not None else {}),
             **({"note": note} if note else {}), **({"records": hashes} if hashes else {}),
@@ -354,7 +393,8 @@ def status(root, today=None, law_base=None, *, request=None):
                      **({"more": len(linked) - PREFIXES_MAX} if len(linked) > PREFIXES_MAX else {}),
                      "fee_estimate": None if estimate is None else _dollars(estimate),
                      "over_fee_cap": None if estimate is None or cap is None else estimate > cap,
-                     "stated_production_date": stated, "waiting_on_you_since": _waiting_since(steps)})
+                     "stated_production_date": stated, "waiting_on_you_since": _waiting_since(steps),
+                     "reference": entry.get("reference")})
     waiting = any(row["waiting_on_you_since"] for row in rows)
     return {"requests": rows, "law_package_status": package_status, "note": NOTE + (WAIT_NOTE if waiting else "")}
 
@@ -449,7 +489,7 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None):
         if row["closed"]:
             continue
         base = {"agency_id": row["agency_id"], "request": row["request"], "name": row["name"],
-                "sent_on": row["sent_on"]}
+                "sent_on": row["sent_on"], "reference": row["reference"]}
         steps = entries.get((row["agency_id"], row["request"]), [])
         if row["waiting_on_you_since"]:  # no claim that this pauses any legal clock; the provisional date stays shown
             since, due_on = row["waiting_on_you_since"], row["determination_due"]
@@ -526,8 +566,9 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
     target = _followup_target(root, f"{agency_id}-{day.isoformat()}.md", replace)
     statute, name = package["records_law"], row["name"] or agency_id
     extended = " (extended, as the agency noted)" if any(s.get("kind") == "extension" for s in steps) else ""
-    lines = [f"# Follow-up draft: {name}", "", "DRAFT — NOT SENT. Review before sending it yourself.", "",
-             f"To: {name}, records custodian", "",
+    subject, first = reference_lines(entry)
+    lines = [f"# Follow-up draft: {name}{subject}", "", "DRAFT — NOT SENT. Review before sending it yourself.", "",
+             f"To: {name}, records custodian", "", *([first, ""] if first else []),
              f"On {entry['sent_on']} we sent a records request by {entry['channel']} to {name}. Its provisional "
              f"determination date{extended} was {row['due']}; the period runs from the agency's receipt of the "
              f"request. As of {day.isoformat()} we have no record of a determination, records produced or a denial.",
@@ -539,13 +580,13 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
     return {"written": f"kit/followups/{target.name}", "due": row["due"], "days_past": -row["days"], "note": NOTE}
 
 
-DENIAL_TEMPLATE = """# Denial reply draft: {name}
+DENIAL_TEMPLATE = """# Denial reply draft: {name}{subject}
 
 DRAFT — NOT SENT. Review before sending it yourself.
 
 To: {name}, records custodian
 
-On {sent_on} we sent a records request by {channel} to {name}. On {denied_on} we recorded the agency's response
+{first}On {sent_on} we sent a records request by {channel} to {name}. On {denied_on} we recorded the agency's response
 as a denial. We asked for: [EDIT ME: what you asked for]
 
 Please:
@@ -595,7 +636,9 @@ def denial_reply(root, agency_id, rules=(), *, replace=False, law_base=None):
         if path.is_file() and not path.is_symlink() else {}
     name = names.get(agency_id) or agency_id
     target = _followup_target(root, f"{agency_id}-denial-{denied_on}.md", replace)
+    subject, first = reference_lines(entry)
     kit._write_text(target, DENIAL_TEMPLATE.format(
-        name=name, sent_on=entry["sent_on"], channel=entry["channel"], denied_on=denied_on, status=status,
+        name=name, subject=subject, first=first and first + "\n\n", sent_on=entry["sent_on"],
+        channel=entry["channel"], denied_on=denied_on, status=status,
         citations=f"\nRules we noted for this reply:\n{citations}" if rules else ""))
     return {"written": f"kit/followups/{target.name}", "rules": rules, "law_package_status": status}

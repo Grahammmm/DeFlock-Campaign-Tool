@@ -158,7 +158,8 @@ class ClarificationTests(unittest.TestCase):
         report = self.due(3)
         self.assertEqual((report["waiting_on_you"], report["past_due"], report["note"]), (0, 1, kit_track.NOTE))
         [open_row] = report["open"]
-        self.assertEqual(set(open_row), {"agency_id", "request", "name", "sent_on", "due", "days", "state"})
+        self.assertEqual(set(open_row), {"agency_id", "request", "name", "sent_on", "due", "days", "state",
+                                         "reference"})
         self.assertEqual(open_row["state"], "past_due")
 
 
