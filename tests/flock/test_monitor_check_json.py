@@ -127,7 +127,7 @@ class CheckJsonTests(unittest.TestCase):
         store = self.dir / "store"
         for args in (("scan", str(self.watchlist), "--store", str(store), "--json"),
                      ("digest", "--store", str(store), "--date", "2026-10-30", "--json"),
-                     ("leads", "--store", str(store), "--json")):
+                     ("lead", "--store", str(store), "--item", "M-0000000000a1", "--state", "requested", "--by", "x", "--json")):
             with self.subTest(args[0]), contextlib.redirect_stderr(io.StringIO()), \
                     self.assertRaises(SystemExit) as caught:
                 self.run_main(*args)
