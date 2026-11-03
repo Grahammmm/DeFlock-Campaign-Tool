@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Flock store check: run every flock checker over one private store in-process, name agency slugs that appear in one
-place but not the others, and the age of the newest store backup. Reads only: writes, creates or chmods nothing.
+place but not the others, and the age of the newest store backup. Reads the store and backups only: the one write is
+the optional --json-out file, new, 0600, outside the store, backups and repository.
   python3 tools/flock_store_check.py STORE [--backups DIR --max-backup-age-days N] [--today YYYY-MM-DD]
-Prints row numbers, field names, slugs and counts only. Exit 0 no errors, 1 errors, 2 usage or refusal."""
+                                     [--json | --json-out NEWFILE] [--section NAME ...]
+--section NAME (repeatable) runs only the named checks, still in the fixed section order.
+Prints row numbers, field names, slugs and counts only; --json prints the same lines as one flock-store-check-v1
+document instead, --json-out writes that document as well as the text. Exit 0 no errors, 1 errors, 2 usage or refusal."""
 import argparse, contextlib, csv, importlib.util, io, json, os, re, sys, tarfile
 from datetime import date, datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 CAP = 20
+NOTE = "machine validity only; review-required"
 SECTIONS = ("facts", "law-policy", "requests", "contacts", "watchlists", "publish", "slugs", "backup")
 
 def _tool(name):  # loaded by file path, never copied (tools/flock_compare.py pattern)
@@ -131,21 +136,76 @@ def backups(args):
     line = f"newest is {age} days old (max {n})"
     return ([line + tail], [counts]) if age > n else ([], [line + " ok" + tail, counts])
 
-def run(store, args):
+class Refused(Exception):
+    pass
+
+def _inside(path, base):
+    return path == base or base in path.parents
+
+def _json_target(value, store, backups_dir):  # tools/flock_alerts.py json_target(), plus STORE and --backups
+    path = Path(value)
+    if not path.is_absolute():
+        raise Refused("not an absolute path")
+    if os.path.lexists(path):
+        raise Refused("already exists")
+    if any(os.path.islink(p) for p in [path.parent, *path.parent.parents]):
+        raise Refused("parent is a symlink")
+    if not path.parent.is_dir():
+        raise Refused("parent is not a folder")
+    real = path.parent.resolve() / path.name
+    for base, where in ((REPO, "the repository"), (store, "STORE"), (backups_dir, "--backups")):
+        if base is not None and _inside(real, base):
+            raise Refused("inside " + where)
+    return path
+
+def _write_new(path, data):  # tools/flock_alerts.py write_new(): O_EXCL|O_NOFOLLOW, 0600; a failed write leaves no file
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+    except BaseException:
+        os.unlink(path)
+        raise
+
+def collect(store, args):
     checks = {"facts": lambda s: (facts_tool.check_path(s), []), "law-policy": lambda s: (law_policy.load_all(s)[2], []),
               "requests": requests, "contacts": contacts,
               "watchlists": watchlists, "publish": publish_runs, "slugs": slugs, "backup": lambda _: backups(args)}
-    total, notes = 0, 0
-    for section in SECTIONS:
+    out = []
+    for section in [s for s in SECTIONS if not args.section or s in args.section]:
         try:
             errs, info = checks[section](store)
         except RAISED as exc:  # the class only, never a path or record text
             errs, info = [f"failed: {type(exc).__name__}"], []
         lines = errs[:CAP] + ([f"… and {len(errs) - CAP} more"] if len(errs) > CAP else []) + info
-        print("".join(f"{section} | {line}\n" for line in lines + [f"errors={len(errs)}"]), end="")
-        total += len(errs)
-        notes += sum(line.startswith("note:") for line in info)
-    print(f"store check | sections={len(SECTIONS)} errors={total} notes={notes} | machine validity only; review-required")
+        out.append({"name": section, "errors": len(errs), "notes": sum(ln.startswith("note:") for ln in info),
+                    "lines": lines})
+    return out
+
+def document(sections, today, selected=None):  # "selected" only with --section, so the default stays byte-identical
+    totals = {"sections": len(sections), "errors": sum(s["errors"] for s in sections),
+              "notes": sum(s["notes"] for s in sections)}
+    doc = {"schema": "flock-store-check-v1", "review_required": True, "today": today.isoformat(), "sections": sections,
+           "totals": totals, "note": NOTE, **({"selected": selected} if selected else {})}
+    return json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+
+def run(store, args, target=None):
+    sections = collect(store, args)
+    chosen = [s["name"] for s in sections] if args.section else None
+    total = sum(s["errors"] for s in sections)
+    if args.json:
+        print(document(sections, args.today, chosen), end="")
+    else:
+        for s in sections:
+            print("".join(f"{s['name']} | {line}\n" for line in s["lines"] + [f"errors={s['errors']}"]), end="")
+        notes = sum(s["notes"] for s in sections)
+        of = f" of {len(SECTIONS)} ({','.join(chosen)})" if chosen else ""
+        print(f"store check | sections={len(sections)}{of} errors={total} notes={notes} | {NOTE}")
+    if target is not None:
+        try:
+            _write_new(target, document(sections, args.today, chosen).encode("ascii"))
+        except OSError as exc:  # the class only, never the path
+            return print(f"store check: json-out write failed ({type(exc).__name__})", file=sys.stderr) or 2
     return 1 if total else 0
 
 def main(argv=None):
@@ -154,7 +214,15 @@ def main(argv=None):
     parser.add_argument("--backups", metavar="DIR")
     parser.add_argument("--max-backup-age-days", type=int, metavar="N")
     parser.add_argument("--today", type=date.fromisoformat, default=date.today(), metavar="YYYY-MM-DD")
+    machine = parser.add_mutually_exclusive_group()
+    machine.add_argument("--json", action="store_true", help="print one flock-store-check-v1 document instead of the text")
+    machine.add_argument("--json-out", metavar="NEWFILE", help="also write that document to a new 0600 file")
+    parser.add_argument("--section", action="append", choices=SECTIONS, metavar="NAME", help="run only this check")
     args = parser.parse_args(argv)
+    if args.section and len(set(args.section)) != len(args.section):
+        parser.error("--section NAME given twice")
+    if args.section and "backup" not in args.section and (args.backups, args.max_backup_age_days) != (None, None):
+        parser.error("--backups needs --section backup")
     if (args.backups is None) != (args.max_backup_age_days is None):
         parser.error("--backups and --max-backup-age-days go together")
     if args.max_backup_age_days is not None and not 1 <= args.max_backup_age_days <= 365:
@@ -164,7 +232,12 @@ def main(argv=None):
         return print("store check: STORE is inside the repository", file=sys.stderr) or 2
     if not store.is_dir():
         return print("store check: STORE is not a folder", file=sys.stderr) or 2
-    return run(store, args)
+    try:
+        target = None if args.json_out is None else _json_target(
+            args.json_out, store, None if args.backups is None else Path(args.backups).resolve())
+    except Refused as exc:
+        return print(f"store check: json-out refused ({exc})", file=sys.stderr) or 2
+    return run(store, args, target)
 
 if __name__ == "__main__":
     sys.exit(main())

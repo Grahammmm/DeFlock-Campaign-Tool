@@ -89,7 +89,7 @@ class FindingsJsonTests(unittest.TestCase):
             self.assertEqual(set(source), set(PUBLIC_SOURCE_FIELDS))
             self.assertRegex(source["sha256_prefix"], r"^[0-9a-f]{12}$")
             self.assertEqual(source["sha256_prefix"], short_hash(original["sha256"]))
-            self.assertIn(f"sha256 {source['sha256_prefix']}", page)
+            self.assertIn(f"Record no. <code>{source['sha256_prefix']}</code>", page)
         text = self.read("data/findings.json")
         self.assertIsNone(re.search(r"[0-9a-fA-F]{40,}", text))
         self.assertNotIn("synthetic-author", text)
@@ -135,8 +135,8 @@ class FindingsJsonTests(unittest.TestCase):
     def test_extra_model_key_is_never_emitted(self):
         real = site_module.load_content
 
-        def leaky(root):
-            model = real(root)
+        def leaky(root, today=None):
+            model = real(root, today)
             for finding in model["findings"]:
                 finding.update(reviewer_email="reviewer@example.invalid", author="synthetic-author", state="published",
                                rule_ids=["r1"], duty="d", rule_version="v", exceptions=[])

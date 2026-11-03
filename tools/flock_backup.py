@@ -1,6 +1,6 @@
 """Flock store backup: create, verify and restore one uncompressed tar of a private flock store (agencies/, regions/,
 LAW.csv) with a SHA-256 manifest (docs/BACKUP.md "Flock store"). Local files only: no network, upload or encryption."""
-import argparse, contextlib, hashlib, io, json, os, shutil, stat, sys, tarfile, tempfile
+import argparse, contextlib, hashlib, io, json, os, re, shutil, stat, sys, tarfile, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,6 +9,7 @@ MANIFEST, SCHEMA_VERSION, KIND = "manifest.json", 1, "flock-store"
 TOP_DIRS, TOP_FILES = ("agencies", "regions"), ("LAW.csv",)
 MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 HEX = frozenset("0123456789abcdef")
+SLUG = re.compile(r"[a-z0-9-]{1,60}")
 
 class Fail(Exception): """Refused or failed (exit 1); nothing partial is left behind by create."""
 
@@ -132,17 +133,23 @@ def verify(path, expected_manifest_sha256=None):
         problems += [_shown(name) + ": missing_member" for name in sorted(set(files) - seen)]
     return manifest, digest, problems
 
-def restore(path, into):
+def restore(path, into, agency=None):
+    """Verify the whole archive, then extract all of it, or only agencies/<agency>/ when agency is set."""
+    if agency is not None and not SLUG.fullmatch(agency): raise Fail("--agency is not a slug")
     into = _abs(into)
     if _inside(into, REPO): raise Fail("--into inside repository")
     if os.path.islink(into): raise Fail("--into is a symlink")
     if os.path.lexists(into) and (not into.is_dir() or any(into.iterdir())): raise Fail("--into is not an empty folder")
     manifest, _, problems = verify(path)
     if problems: raise Fail("archive refused, nothing extracted: " + "; ".join(problems))
+    prefix = "" if agency is None else "agencies/%s/" % agency  # trailing slash: "b" never matches "b-two"
+    wanted = {name: entry for name, entry in manifest["files"].items() if name.startswith(prefix)}
+    if agency is not None and not wanted: raise Fail("agency not in archive")
     into.mkdir(mode=0o700, exist_ok=True)
     os.chmod(into, 0o700)
     with tarfile.open(path, mode="r:") as tar:
         for member in tar.getmembers()[1:]:
+            if not member.name.startswith(prefix): continue
             parts, folder = member.name.split("/"), into
             for part in parts[:-1]:
                 folder = folder / part
@@ -152,11 +159,12 @@ def restore(path, into):
             fd = os.open(folder / parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "wb") as out: shutil.copyfileobj(tar.extractfile(member), out)
     bad = []
-    for name, entry in sorted(manifest["files"].items()):  # re-hash what is now on disk
+    for name, entry in sorted(wanted.items()):  # re-hash what is now on disk
         with open(into.joinpath(*name.split("/")), "rb") as handle:
             if _hash(handle) != entry["sha256"]: bad.append(_shown(name) + ": hash_mismatch_on_disk")
     if bad: raise Fail("restored files do not match: " + "; ".join(bad))
-    return manifest["counts"]
+    if agency is None: return manifest["counts"]
+    return {"files": len(wanted), "bytes": sum(entry["bytes"] for entry in wanted.values())}
 
 def diff(path, store, expected_manifest_sha256=None):
     """Names added, removed or changed in STORE since the archive at PATH (re-verified first). Writes nothing."""
@@ -187,6 +195,7 @@ def main(argv=None):
     p.add_argument("file"); p.add_argument("--manifest-sha256", metavar="HEX")
     p = sub.add_parser("restore", help="verify, then extract into an empty or absent --into folder (0700/0600)")
     p.add_argument("file"); p.add_argument("--into", required=True)
+    p.add_argument("--agency", metavar="SLUG", help="extract only agencies/SLUG/ (the whole archive is still verified)")
     p = sub.add_parser("diff", help="verify FILE, then name --store files added, removed or changed since it (exit 3)")
     p.add_argument("file"); p.add_argument("--store", required=True); p.add_argument("--manifest-sha256", metavar="HEX")
     args = parser.parse_args(argv)
@@ -205,8 +214,10 @@ def main(argv=None):
             print(json.dumps(report, indent=2, sort_keys=True))
             if not report["current"]: return 3
         else:
-            counts = restore(args.file, args.into)
-            print("restored files=%d bytes=%d" % (counts["files"], counts["bytes"]))
+            counts = restore(args.file, args.into, args.agency)
+            if args.agency is not None:
+                print("restored agency=%s files=%d bytes=%d" % (args.agency, counts["files"], counts["bytes"]))
+            else: print("restored files=%d bytes=%d" % (counts["files"], counts["bytes"]))
     except (Fail, OSError, tarfile.TarError) as err:
         print(err if isinstance(err, Fail) else "io error: %s" % type(err).__name__, file=sys.stderr)
         return 1

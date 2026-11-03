@@ -48,6 +48,19 @@ python3 -m campaign_tool.outbox --journal J approve-retry KEY --signature retry.
 
 The first approval's signature covers round 0, so it cannot be replayed for a retry.
 
+## Approving several outbox letters (G)
+
+`python3 -m campaign_tool.outbox --journal J payload-batch --out DIR --agency ID`
+exports proposed rows (omit `--agency` for all; repeat it for several agencies).
+DIR must be absent or empty, not a symlink. Read INDEX.md and **every** .txt;
+the index masks agency names in comparisons, but each payload is exact and unmasked.
+From DIR, run `ssh-keygen -Y sign -n deflock-approval -f <your key> *.txt`.
+Then run `python3 -m campaign_tool.outbox --journal J approve-batch --dir DIR`.
+Each letter keeps its own signature, verified by the existing approval path.
+Changed letters, missing or invalid signatures are skipped and named; re-export
+changed letters into a fresh directory and read them again before signing.
+Nothing sends from either batch command. Sending remains a separate per-row action.
+
 ## Approving a Flock email (G)
 
 ```

@@ -6,6 +6,12 @@ Open-source tools to help local organizers investigate automated license plate r
 
 ## Start locally
 
+New organizer? After cloning, run `python3 -m campaign_tool setup --directory ../my-campaign`.
+Answer name, county, two-letter state and optional city/place; setup runs offline and lists drafts to review.
+For no prompts, add `--name "Your Campaign" --county "Your County" --state CA --yes`.
+Re-run with the same answers to keep existing work. Nothing is sent or published.
+The individual commands remain available below.
+
 The portable offline starter below requires Python 3.11 or newer and no third-party
 Python packages. Full records intake/extraction has a separate Linux runtime and
 parser requirements; see [Records runtime](docs/RECORDS-RUNTIME.md). Running the
@@ -17,6 +23,7 @@ cd DeFlock-Campaign-Tool
 python3 -m campaign_tool init --directory ../my-campaign --county "Your County" --state CA --name "Your Campaign"
 python3 -m campaign_tool kit --directory ../my-campaign
 python3 -m campaign_tool doctor --directory ../my-campaign
+python3 -m campaign_tool doctor --directory ../my-campaign --checklist  # [ok]/[todo] rows; each todo names its next step and who takes it
 python3 -m campaign_tool build --directory ../my-campaign
 python3 -m http.server 8080 --bind 127.0.0.1 --directory ../my-campaign/public
 ```
@@ -30,9 +37,16 @@ Open http://127.0.0.1:8080. The generated site is a neutral campaign starter, no
 ```sh
 python3 -m campaign_tool ingest --directory ../my-campaign --file examples/synthetic-county/policy.txt --source-id demo-production-001
 python3 -m campaign_tool ingest --directory ../my-campaign --dir ../production-001 --source-id demo-production-001  # whole folder; per-file stored/present/skipped, no links followed
+python3 -m campaign_tool ingest --directory ../my-campaign --dir ../production-001 --source-id demo-production-001 --dry-run  # preview: would_store/present/skipped; writes nothing
+python3 -m campaign_tool ingest --directory ../my-campaign --zip ../production-002.zip --source-id demo-production-002  # archive and members by hash, never extracted; --dry-run works too
+python3 -m campaign_tool ingest --directory ../my-campaign --eml ../production-003.eml --source-id demo-production-003  # message as is plus each attachment; --dry-run works too
 python3 -m campaign_tool status --directory ../my-campaign
 python3 -m campaign_tool status --directory ../my-campaign --check
 ```
+
+`ingest --zip` stores the archive itself, then each regular member read from it in memory (nothing is extracted to disk), each with its own receipt named `archive.zip/member/path` and a ledger `contains` row linking member to archive. Archives over 200 MiB, files that are not a zip archive and archives with more than 2000 entries are refused before anything is written. Members that are not stored are listed by skip code and the archive is still stored: `directory`; `unsafe_name` (absolute, drive-letter, `..`, empty or NUL name, backslashes counted as separators, or a receipt name over 255 characters); `duplicate_name`; `encrypted`; `symlink`; `too_large` (over 50 MiB, read capped at 50 MiB + 1 byte whatever the header claims); `ratio` (more than 100× its compressed size); `unreadable` (corrupt data, CRC or size not matching the header, or an unsupported method). Nested archives (`.zip`, `.7z`, `.tar.gz`, ...) are stored as ordinary members and never opened.
+
+`ingest --eml` stores the `.eml` message byte for byte, then each attachment (the decoded payload of a part with a filename) as its own object with a receipt named `message.eml/<filename>` and a ledger `contains` row linking it to the message. Filenames are reduced to a basename (`/` and `\` both separators) without control characters, NFC, at most 120 characters; an empty, `.` or `..` name becomes `attachment-<n>` and a repeated name gets `-2`, `-3` before its extension. Body text, HTML alternatives and inline parts without a filename stay only inside the stored message; a forwarded `message/rfc822` part is stored as one `.eml` member and never opened. Messages over 50 MiB, malformed MIME (a multipart without a usable boundary) and messages with more than 200 MIME parts are refused before anything is written; an empty attachment is listed as `empty` and one decoding to over 50 MiB as `too_large`. No header value (Subject, From, To, Date, ...) is ever printed.
 
 `status --check` re-hashes every file in `private/objects` against the ledger and names missing, altered, orphaned, leftover `.intake-*` or unexpected entries by hash or file name only. It never writes, moves or deletes; exit 3 means problems were found, 0 a clean store.
 
