@@ -15,7 +15,8 @@ COLS = "agency,role,email,source_url,source_sha256,checked_at,added_by".split(",
 CHECKS = {"role": r"records", "email": r"[^@\s,;<>]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "source_url": r"https://\S+",
           "source_sha256": r"[0-9a-f]{64}", "checked_at": r"[0-9]{4}-[0-9]{2}-[0-9]{2}", "added_by": r".*\S.*"}
 USAGE = ("usage: flock_email.py draft RUNDIR --drafts DIR  (writes EMAIL-DRAFT.md; draft only, never sends)\n"
-         "       flock_email.py check STORE  (reads every STORE/agencies/<slug>/CONTACT.csv; writes nothing)\n"
+         "       flock_email.py check STORE [--json]  (reads every STORE/agencies/<slug>/CONTACT.csv; writes nothing;\n"
+         "                                      --json prints one flock-email-contact-v1 document instead, same exit code)\n"
          "       check and draft also take [--max-age-days N [--today YYYY-MM-DD]]  (a contact checked more than N days ago is stale)\n"
          "       check and draft warn (never refuse) when the address domain is not the source_url host's site; a human checks the page\n"
          "       flock_email.py status STORE [--json]  (each run's email stage; exit 1 on malformed or sent without approval;\n"
@@ -114,8 +115,26 @@ def draft(rundir, drafts, max_age=None, today=None):
     if not same_site(to.rsplit("@", 1)[1], host(src)): print(f"draft: warn: domain differs from source host {host(src)}", file=sys.stderr)
     return print(f"written=2 to_domain={to.rsplit('@', 1)[1]}") or 0
 
-def check(store, show=None, max_age=None, today=None):
-    """One readiness line per agency folder, then totals. Never prints an address local part; reads only."""
+def _contacts(folders, max_age=None, today=None):
+    """(rows, totals) for check: one row per agency folder, holding only the domain, host, date and first error."""
+    rows = []
+    for folder in folders:  # a symlinked agency folder is refused, never followed
+        link = folder.is_symlink()
+        to, errs, src = (None, ["link refused"], None) if link else contact(folder / "CONTACT.csv", folder.name, max_age, today)
+        old = re.fullmatch(r"contact: checked_at (\S+) is ([0-9]+) days old \(max [0-9]+\)", errs[0]) if errs else None
+        dom = None if errs else to.rsplit("@", 1)[1]
+        odd = dom is not None and not same_site(dom, host(src))  # warning only: a portal or county domain can be right
+        rows.append({"agency": folder.name, "state": "ready" if not errs else "stale" if old else "link_refused" if link else "not_ready",
+                     "domain": dom, "checked_at": old[1] if old else None, "age_days": int(old[2]) if old else None,
+                     "error": errs[0] if errs else None, "warn_source_host": host(src) if odd else None})
+    got = [r["state"] for r in rows]
+    ready, stale = got.count("ready"), got.count("stale")
+    return rows, {"agencies": len(rows), "ready": ready, "not_ready": len(rows) - ready - stale, "stale": stale,
+                  "mismatch": sum(bool(r["warn_source_host"]) for r in rows)}
+
+def check(store, show=None, max_age=None, today=None, as_json=False):
+    """One readiness line per agency folder, then totals (or one flock-email-contact-v1 document). Never prints an address
+    local part; reads only."""
     root = Path(store).resolve()
     if REPO in (root, *root.parents): return print("check: STORE is inside the repository", file=sys.stderr) or 2
     base = root / "agencies"
@@ -123,19 +142,19 @@ def check(store, show=None, max_age=None, today=None):
     try: folders = sorted(p for p in base.iterdir() if p.is_symlink() or p.is_dir())
     except OSError: return print("check: agencies folder unreadable", file=sys.stderr) or 2
     if show: return show(folders)  # status shares the STORE walk and its errors
-    lines, ready, stale, mismatch = [], 0, 0, 0
-    for folder in folders:  # a symlinked agency folder is refused, never followed
-        to, errs, src = (None, ["link refused"], None) if folder.is_symlink() else contact(folder / "CONTACT.csv", folder.name, max_age, today)
-        old = re.fullmatch(r"contact: checked_at (\S+) is ([0-9]+) days old \(max [0-9]+\)", errs[0]) if errs else None
-        ready += not errs
-        stale += bool(old)
-        lines.append(f"contact | {folder.name} | " + (f"ready | domain={to.rsplit('@', 1)[1]}" if not errs else
-                     f"stale | checked {old[1]}, {old[2]} days old" if old else f"not ready | {errs[0]}"))
-        mismatch += (odd := not errs and not same_site(to.rsplit("@", 1)[1], host(src)))  # warning only: a portal or county domain can be right
-        lines[-1] += f" | warn: domain differs from source host {host(src)}" * odd
-    print("\n".join(lines + [f"contact | agencies={len(folders)} ready={ready} not_ready={len(folders) - ready - stale}{f' stale={stale}' * bool(max_age)}"
-                             f" mismatch={mismatch} | draft only; G approval required before any send"]))
-    return 0 if ready == len(folders) else 1
+    rows, t = _contacts(folders, max_age, today)
+    if as_json:
+        print(json.dumps({"schema": "flock-email-contact-v1", "review_required": True, "max_age_days": max_age,
+                          "today": (today or date.today()).isoformat() if max_age is not None else None, "agencies": rows, "totals": t,
+                          "note": "draft only; G approval required before any send"}, indent=1, sort_keys=True, ensure_ascii=False))
+    else:
+        lines = [f"contact | {r['agency']} | " + (f"ready | domain={r['domain']}" if r["state"] == "ready" else
+                 f"stale | checked {r['checked_at']}, {r['age_days']} days old" if r["state"] == "stale" else f"not ready | {r['error']}")
+                 + f" | warn: domain differs from source host {r['warn_source_host']}" * bool(r["warn_source_host"]) for r in rows]
+        stale = f" stale={t['stale']}" * bool(max_age)
+        print("\n".join(lines + [f"contact | agencies={t['agencies']} ready={t['ready']} not_ready={t['not_ready']}{stale}"
+                                 f" mismatch={t['mismatch']} | draft only; G approval required before any send"]))
+    return 0 if t["ready"] == t["agencies"] else 1
 
 def marks(lines):
     """The values of every `Sent by:` line (stage and lint share this parse). Approval is never read from a line."""
@@ -254,10 +273,15 @@ def _privacy():  # loaded by file path like report/page/publish do; the patterns
     spec = importlib.util.spec_from_file_location("_email_flock_privacy", REPO / "tools" / "flock_privacy.py")
     return spec.loader.exec_module(module := importlib.util.module_from_spec(spec)) or module
 
+def _json_flag(rest):
+    """(rest without --json, whether it was there) when --json appears at most once; None when it is repeated."""
+    return None if rest.count("--json") > 1 else ([a for a in rest if a != "--json"], "--json" in rest)
+
 def main(argv):
     if argv in (["--help"], ["-h"]): return print(USAGE) or 0
-    opt = ages(argv[2:] if argv[:1] == ["check"] else argv[4:] if argv[:1] == ["draft"] and argv[2:3] == ["--drafts"] else [])
-    if opt and len(argv) >= 2 and argv[0] == "check": return check(argv[1], None, *opt)
+    chk = _json_flag(argv[2:]) if argv[:1] == ["check"] else None  # stripped first, so the age parse below stays today's
+    opt = ages(chk[0] if chk else argv[4:] if argv[:1] == ["draft"] and argv[2:3] == ["--drafts"] else [])
+    if opt and chk and len(argv) >= 2: return check(argv[1], None, *opt, as_json=chk[1])
     if len(argv) in (2, 3) and argv[0] == "status" and argv[2:] in ([], ["--json"]): return check(argv[1], status_json if argv[2:] else status)
     if opt and len(argv) >= 4 and argv[0] == "draft" and argv[2] == "--drafts": return draft(argv[1], argv[3], *opt)
     if len(argv) == 4 and argv[0] == "lint" and argv[2] == "--drafts": return lint(argv[1], argv[3])
