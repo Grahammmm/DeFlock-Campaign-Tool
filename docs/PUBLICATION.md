@@ -105,7 +105,7 @@ concurrent publishes of the same slug or id only one succeeds. The write is atom
 `D/private/publication-log.jsonl` (0600). It never builds, deploys or contacts anything: run
 `build` and review the site before any deploy.
 
-    python3 -m campaign_tool finding correct ID --directory D --date YYYY-MM-DD --note TEXT [--from DRAFT]
+    python3 -m campaign_tool finding correct ID --directory D --date YYYY-MM-DD --note TEXT --approved-by NAME [--from DRAFT]
 
 `finding correct` appends one `{date, note}` to the published finding whose `id` is ID (exactly one
 file in `content/findings/`, never a symlink) and sets `updated_at` (now, UTC). The date must be a real
@@ -220,7 +220,7 @@ roster, `finding review` refuses an unlisted name or unassigned role and `review
 ## Publication gate (one check at every publishing path)
 
 `campaign_tool/publication_gate.py` holds one check, `assert_publishable(artefact_id, content_hash, approvals)`,
-and every path that emits publishable content calls it before writing: `finding publish`
+and every path that emits publishable content calls it before writing: `finding publish` and `finding correct`
 (`campaign_tool/findings.py`), `flock_publish.py stage` and `flock_publish.py brief`. It returns nothing or
 raises `PublicationRefused` (a `ValueError`) naming the artefact id and one reason:
 
@@ -239,9 +239,14 @@ yet; it is reachable once a redaction sign-off exists. A legal-claim flag is rec
 one. A refusal prints only the id and reasons, exits non-zero and writes nothing. No code writes an approval: the
 gate has no writer, and `tests/test_publication_gate.py` fails if any other module writes an approval field outside
 the existing human review surface (Python modules by syntax tree, other languages by a literal pattern).
-For `stage` and `brief` the approval is the `PUBLISH.json` review fields, bound to the entry as filed and compared
-with the entry the run re-derives. A clean gate does not prove an artefact is fit to publish: redaction sign-off, the
-privacy lint and the legal-claim notes are separate conditions. `finding correct` is not gated yet.
+`finding publish` and `finding correct` (`--approved-by`, refused without a named person) bind the approval to the exact
+draft content, re-read just before the write. For `stage` and `brief` the approval is the `PUBLISH.json` review fields
+and the entry is compared with the entry the run re-derives (the run's findings are frozen to the verifier's plan hash).
+Known limit, not solved here: those review fields hold no content hash from the moment of approval (the schema is the
+fixed four keys `flock_publish.py` checks, outside this unit's files), so an edit to an approved entry and to the run
+it derives from together is not detected by the gate. Closing it needs an approval-time hash in the review surface.
+A clean gate does not prove an artefact is fit to publish: redaction sign-off, the privacy lint and the legal-claim
+notes are separate conditions.
 
 ## Not done
 
@@ -281,3 +286,28 @@ when `base_url` is set. Only the agenda item is shortened. Cancelled, past, late
 unverified meetings get no draft and are counted under `skipped`; an unreadable meeting file is
 counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts and
 `--check` are unchanged. Nothing is posted.
+
+## Posting one approved social draft (Worker `post_social`)
+
+A social post is a message to the public and cannot be recalled, so the approval is **per post**.
+The CLI above still never posts. The workspace Worker posts only through a `post_social` approval
+card whose subject is the finding id and whose proposal names `finding_id`, `platform`, the exact
+`text` and its `content_sha256`. At execution the executor refuses by name, posting nothing, unless:
+
+- the card is approved by an Access identity, not yet used, and approved within 7 days
+  (`no_approval`, `approval_consumed`, `approval_expired`);
+- the card names this finding and the one configured platform (`approval_mismatch`);
+- sha256 of the exact text equals the approved hash, so an edited draft needs a new approval
+  (`content_hash_mismatch`);
+- the finding is `published` with a publication record for its current content, by field, never by
+  wording such as "APPROVED" in the draft (`finding_not_published`, `finding_not_approved`);
+- the text matches no email, phone or plate pattern (`privacy_lint`) and fits the platform.
+
+DF-4 legal-claim flags (`review_flags`) show on the card and are counted on the receipt
+(`legal_flag_count`); they never block. One adapter (Mastodon) is configured by `MASTODON_URL`
+and the `MASTODON_TOKEN` secret; without them every card fails `social_not_configured`
+(`social_posting: not configured`). `(finding, platform)` has one receipt slot taken before the
+call: a second card is `already_posted`. A timeout, 5xx or reply without a post id is recorded
+`post_uncertain`, raises one incident and is never retried; check the platform by hand. The receipt
+holds ids, hashes, counts and enums only, never post text, handle or personal data. There is no
+batch, schedule, edit, delete or recall path.

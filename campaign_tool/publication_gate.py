@@ -88,7 +88,8 @@ def content_digest(obj):
 def entry_refusals(entries, fresh):
     """PUBLISH.json entries {finding_id, review, ...}: one line per approved entry the gate refuses (ids and enums only).
 
-    The approval is bound to the entry as it stands in the file; the content is the entry the run re-derives."""
+    The approval is bound to the entry as it stands in the file (the file holds no hash from approval time: a known
+    limit, docs/PUBLICATION.md); the content is the entry the run re-derives."""
     body = lambda f: content_digest({k: v for k, v in f.items() if k != "review"})  # noqa: E731
     now = {f.get("finding_id"): f for f in (fresh or {}).get("findings", [])}
     lines = []

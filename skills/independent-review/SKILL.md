@@ -24,3 +24,10 @@ reviewers or authorize publication. Require trusted reviewer attribution, origin
 byte verification, human release approval and privacy review outside that function.
 No review guarantees legal correctness. Escalate material unresolved legal questions
 to qualified counsel rather than making an accusation stronger than its evidence.
+
+## Custody
+
+When a published finding is challenged, run `python3 tools/custody_report.py build --store STORE --finding ID --out NEWDIR`
+and check its verdict first. Only `chain complete` means that every source re-hashes, every receipt step exists and a
+current review is bound to this exact content. A `stale review` was never a review of this content. The page is private and
+review-required. It shows byte identity, not authenticity, and it is never published.
