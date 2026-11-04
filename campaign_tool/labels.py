@@ -113,6 +113,7 @@ DEFAULTS = {
     "meeting.recording_from": "(from {start})", "vote.yes": "Yes", "vote.no": "No", "vote.abstain": "Abstained",
     "meeting.minutes_confirmed": "Confirmed in the minutes approved on {date}",
     "meeting.minutes_pending": "Recorded by the campaign; minutes not yet approved", "agency.past_meetings": "Past meetings",
+    "meeting.continued_to": "Continued to {date}", "meeting.continued_from": "Continued from {date}",
     "vote.absent": "Absent", "vote.recused": "Recused",
     "agency.votes_heading": "How members voted", "agency.votes_none": "No recorded vote",
     "agency.votes_source": "Official record", "agency.votes_more": "\u2026 and {count} earlier votes on the meeting pages",
