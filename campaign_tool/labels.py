@@ -26,7 +26,8 @@ DEFAULTS = {
     "search.intro": ("Looks through the titles, summaries and agency names of published findings and the titles of the "
                      "sources they cite. Everything is matched in your browser; what you type is not sent anywhere."),
     "search.fallback": "Search needs JavaScript. Without it, browse the {findings} or the {sources}.",
-    "footer.privacy": "Privacy", "privacy.title": "Privacy", "privacy.signup_policy": "Read the provider's privacy policy",
+    "footer.privacy": "Privacy", "footer.glossary": "Glossary", "privacy.title": "Privacy",
+    "privacy.signup_policy": "Read the provider's privacy policy",
     "privacy.lead": "What this site loads, whether it stores anything on your device, and where a signup goes.",
     "privacy.scripts": "Scripts, stylesheets and fonts are served from this site only. This site loads no third-party scripts.",
     "privacy.cookies": "This site sets no cookies and runs no analytics or tracking scripts.",
@@ -95,6 +96,11 @@ DEFAULTS = {
     "finding.reply_declined": "The agency declined to comment on {on}. We asked on {asked_on}.",
     "finding.reply_no_response": "asked on {asked_on}; no response by {reply_by}",
     "finding.part_of": "Part of: {topic}", "finding.related": "Related findings", "finding.same_agency": "Same agency",
+    "finding.terms": "Terms used on this page",
+    "glossary.also": "Also called: {aliases}", "glossary.citation": "Law package citation: {citation}",
+    "glossary.source": "Source", "glossary.status": "Status of this law package: {status}",
+    "title.glossary": "Glossary", "title.glossary_description": "Definitions of terms used on this site",
+    "heading.glossary": "Glossary",
     "finding.shares_one": "Shares {count} source record", "finding.shares_many": "Shares {count} source records",
     "finding.filter_label": "Filter findings", "finding.filter_agency": "Agency",
     "finding.filter_all_agency": "All agencies", "finding.filter_no_agency": "No agency named",
@@ -105,6 +111,8 @@ DEFAULTS = {
     "meeting.votes": "Recorded votes", "meeting.votes_member": "Member", "meeting.votes_vote": "Vote",
     "meeting.votes_source": "From the official record:", "meeting.recording": "Watch the discussion",
     "meeting.recording_from": "(from {start})", "vote.yes": "Yes", "vote.no": "No", "vote.abstain": "Abstained",
+    "meeting.minutes_confirmed": "Confirmed in the minutes approved on {date}",
+    "meeting.minutes_pending": "Recorded by the campaign; minutes not yet approved", "agency.past_meetings": "Past meetings",
     "vote.absent": "Absent", "vote.recused": "Recused",
     "agency.votes_heading": "How members voted", "agency.votes_none": "No recorded vote",
     "agency.votes_source": "Official record", "agency.votes_more": "\u2026 and {count} earlier votes on the meeting pages",
@@ -134,6 +142,13 @@ DEFAULTS = {
     "agency.transparency_shared_with_agencies": "Shared with agencies: {count}",
     "agency.transparency_up": "up {count} since {date}", "agency.transparency_down": "down {count} since {date}",
     "agency.transparency_same": "no change since {date}",
+    "agency.mapped_reported_counts": (
+        "The agency's transparency portal reported {reported} cameras (checked {checked}). "
+        "Community mappers have mapped {mapped} points inside the city limits (map data as of {map_date})."),
+    "agency.mapped_reported_caveat": (
+        "These are counted differently: the portal counts the agency's own cameras, "
+        "the map counts points inside a boundary whoever owns them."),
+    "agency.mapped_reported_unknown": "unknown",
     "agencies.glance_heading": "At a glance",
     "agencies.glance_note": "Numbers are as each source reported them on the date shown. This table does not rank agencies.",
     "agencies.glance_caption": "Each tracked agency side by side, in the order of the list below",

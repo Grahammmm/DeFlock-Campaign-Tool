@@ -37,8 +37,11 @@
         "on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
         "source_url": {"type": "string", "pattern": "^https://"},
         "vote": {"type": "string", "minLength": 1},
-        "votes": {"type": "array", "items": {"$ref": "#/$defs/vote"}}
-      }
+        "votes": {"type": "array", "items": {"$ref": "#/$defs/vote"}},
+        "minutes_url": {"type": "string", "pattern": "^https://", "maxLength": 500},
+        "minutes_approved_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
+      },
+      "dependentRequired": {"minutes_url": ["minutes_approved_on"], "minutes_approved_on": ["minutes_url"]}
     },
     "vote": {
       "type": "object",

@@ -13,6 +13,7 @@ publishing it. Records originals, mail, subscribers and private analysis never
 belong in ``content/``.
 """
 import json
+import os
 import re
 import unicodedata
 from datetime import date, datetime, timezone
@@ -21,7 +22,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import map_controller
-from .agency_cards import text as plain_text
+from .agency_cards import text as plain_text, visible
 from .review import CLASSIFICATIONS, review_blockers
 
 CONFIDENCE = ("verified", "likely", "needs_attorney_review")
@@ -43,7 +44,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "newsletters"}  # newsletters: DF1952-09
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "newsletters"}  # DF1952-04, DF1952-09
 
 
 class ContentError(ValueError):
@@ -561,7 +562,7 @@ MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes", "recording_url",
-                "recording_start"}
+                "recording_start", "minutes_url", "minutes_approved_on"}
 RECORDING_START = re.compile(r"([0-9]{1,2}):([0-5][0-9]):([0-5][0-9])")
 VOTE_VALUES = ("yes", "no", "abstain", "absent", "recused")
 PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
@@ -608,7 +609,8 @@ def load_outcome(value, starts_at, status, label, today=None):
     """Organizer-verified result of a past meeting (DF2237-11), read from an official https record."""
     if status == "cancelled":
         raise ContentError(f"{label}: a cancelled meeting has no outcome")
-    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes", "recording_url", "recording_start"}, label)
+    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes", "recording_url", "recording_start",
+                                                       "minutes_url", "minutes_approved_on"}, label)
     if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
         raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
     held, now = starts_at[:10], (today or date.today()).isoformat()
@@ -646,12 +648,31 @@ def load_outcome(value, starts_at, status, label, today=None):
             raise ContentError(f"{label}.recording_start: needs recording_url")
         if not match or (int(match[1]), int(match[2]), int(match[3])) > (12, 0, 0):
             raise ContentError(f"{label}.recording_start: use H:MM:SS, at most 12:00:00")
+    minutes = _load_minutes(value, held, now, label)  # DF2207-05: the body's approved minutes, always as a pair
     return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
             "verified_by": value["verified_by"], "verified_at": value["verified_at"],
             **({"vote": value["vote"]} if "vote" in value else {}),
             **({"votes": [{"name": v["name"], "vote": v["vote"]} for v in votes]} if "votes" in value else {}),
             **({"recording_url": recording} if "recording_url" in value else {}),
-            **({"recording_start": start} if "recording_start" in value else {})}
+            **({"recording_start": start} if "recording_start" in value else {}), **minutes}
+
+
+def _load_minutes(value, held, now, label):
+    """``{minutes_url, minutes_approved_on}`` or ``{}``; one without the other, or a null, is refused by field name."""
+    present = [key for key in ("minutes_url", "minutes_approved_on") if key in value]
+    if not present:
+        return {}
+    for key in ("minutes_url", "minutes_approved_on"):
+        if key not in value:
+            raise ContentError(f"{label}.{key}: needed together with {present[0]}")
+    url, day = value["minutes_url"], value["minutes_approved_on"]
+    if isinstance(url, str) and len(url) > 500:
+        raise ContentError(f"{label}.minutes_url: at most 500 characters")
+    _https(url, f"{label}.minutes_url")
+    if (not isinstance(day, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day)
+            or not held <= _timestamp(day, f"{label}.minutes_approved_on", date_only=True) <= now):
+        raise ContentError(f"{label}.minutes_approved_on: must be a YYYY-MM-DD date from {held} to {now}")
+    return {"minutes_url": url, "minutes_approved_on": day}
 
 
 def load_cited_findings(value, label):
@@ -772,7 +793,8 @@ AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", 
                "portal", "selected", "verified", "sources", "slug", "profile", "place_fips",
                "flock_transparency_slug", "muckrock_agency_id", "notes", "verification", "asked"}
 ASKED_STATES = ("awaiting_response", "acknowledged", "partly_answered", "answered", "declined_in_writing", "withdrawn")
-ASKED_KEYS, ASKED_TEXT = ("topic", "asked_on", "state", "updated_on", "note"), {"topic": 120, "note": 200}
+ASKED_KEYS, ASKED_TEXT = ("topic", "asked_on", "state", "updated_on", "note", "request"), {"topic": 120, "note": 200}
+ASKED_REQUEST = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")  # DF1207-03: kit_track.REQUEST; private link to kit/sent.json, never rendered
 CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on", "cost"}
 COST_KEYS, COST_PERIODS = ("amount_usd", "period", "as_stated_in"), ("annual", "total", "one_time")
 COST_AMOUNT, COST_URL = re.compile(r"(0|[1-9][0-9]*)([.][0-9]{1,2})?"), re.compile(r"(?i)[a-z][a-z0-9+.-]*://|www[.]")
@@ -934,7 +956,7 @@ def _agency_slug(agency):
 
 def _asked(entry, label, today=None, problems=None):
     """Organizer-entered requests; every problem goes to ``problems`` (content-check), else the first is raised."""
-    issues, result, values = [], [], entry.get("asked", [])
+    issues, result, values, linked = [], [], entry.get("asked", []), {}
     if not isinstance(values, list) or len(values) > 20:
         issues, values = [f"{label}: must be a list of at most 20 items"], []
     for index, value in enumerate(values):
@@ -949,6 +971,10 @@ def _asked(entry, label, today=None, problems=None):
                     raise ContentError(f"{item}.{key}: at most {ASKED_TEXT[key]} characters")
                 if key == "state" and value.get(key) not in ASKED_STATES:
                     raise ContentError(f"{item}.state: choose one of {list(ASKED_STATES)}")
+                if key == "request" and (not isinstance(value[key], str) or not ASKED_REQUEST.fullmatch(value[key])):
+                    raise ContentError(f"{item}.request: 1-40 characters a-z, 0-9 or -, starting with a letter or digit")
+                if key == "request" and value[key] in linked:
+                    raise ContentError(f"{item}.request: already linked by asked[{linked[value[key]]}]")
                 if key.endswith("_on") and _calendar_day(value.get(key), f"{item}.{key}") > (today or date.today()):
                     raise ContentError(f"{item}.{key}: must not be after the build date")
                 clean[key] = value[key]
@@ -956,6 +982,8 @@ def _asked(entry, label, today=None, problems=None):
                 issues.append(str(exc))
         if clean.get("updated_on", "9") < clean.get("asked_on", ""):
             issues.append(f"{item}.updated_on: must not be before asked_on")
+        if "request" in clean:
+            linked[clean["request"]] = index
         result.append(clean)
     if problems is not None:
         problems.extend(issues)
@@ -1543,6 +1571,252 @@ def load_officials(document, agencies, today):
     return result
 
 
+# --- glossary (DF1952-04): content/glossary.json -> /glossary.html and per-finding term lists -----------------
+GLOSSARY_KEYS, GLOSSARY_TERM_KEYS = {"schema_version", "terms", "notice_md"}, {"term", "aliases", "definition_md", "rule_id", "source_url"}
+MAX_GLOSSARY_TERMS, MAX_GLOSSARY_NAME, MAX_GLOSSARY_DEFINITION, MAX_GLOSSARY_NOTICE = 80, 100, 8000, 1000
+
+
+def glossary_key(name):
+    """Name used for uniqueness and matching: Unicode NFC, casefolded, whitespace collapsed."""
+    folded = unicodedata.normalize("NFC", name).casefold()
+    return unicodedata.normalize("NFC", " ".join(folded.split()))
+
+
+def _glossary_name(value):
+    """The trimmed name, or None unless it is 1-100 characters of plain single-line text."""
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    if (not 1 <= len(name) <= MAX_GLOSSARY_NAME or not plain_text(name)
+            or any(unicodedata.category(char) == "Cc" for char in name)):
+        return None
+    return name
+
+
+def _glossary_markdown(value, limit):
+    return isinstance(value, str) and len(value) <= limit and all(visible(char) for char in value)
+
+
+def _law_status(package):
+    return "reviewed on " + package["reviewed_at"] if package["status"] == "reviewed" else "draft, not legally reviewed"
+
+
+def load_glossary(document, root, problems=None):
+    """Validate a parsed ``content/glossary.json``: ``{"terms": [...sorted...], "notice_md": str}``.
+
+    Each term keeps ``term``, ``aliases``, ``definition_md`` and the optional ``rule_id``/``source_url`` it was given,
+    plus a derived ``anchor``; a term with a ``rule_id`` also gets ``citation`` and ``law_status`` from the campaign's
+    shipped law package (never input keys). Terms are ordered by normalized term, then the organizer's spelling.
+    With ``problems`` a list, every independent refusal is appended and None returned; without it the first
+    refusal raises ``ContentError`` (build). An empty ``terms`` list is valid and means the feature is off."""
+    found = []
+
+    def refuse(where, message):
+        found.append(f"glossary.json{where}: {message}")
+
+    package_state = []  # [(jurisdiction, package or None)] once a rule_id needs it
+
+    def law_package():
+        if not package_state:
+            from . import law  # local: law is only needed when a rule is cited
+            from .finding_law import jurisdiction  # local: finding_law imports this module
+            try:
+                name = jurisdiction(root)
+            except ContentError as exc:
+                found.append(str(exc))
+                name = False
+            package = None
+            if name:
+                try:
+                    package = law.load_package(name)
+                except (OSError, ValueError):
+                    package = None
+            package_state.append((name, package))
+        return package_state[0]
+
+    if not isinstance(document, dict):
+        refuse("", "expected an object")
+        document = {}
+    else:
+        unknown = sorted(str(key) for key in set(document) - GLOSSARY_KEYS)
+        if unknown:
+            refuse("", f"unknown field(s) {unknown}")
+        missing = sorted({"schema_version", "terms"} - set(document))
+        if missing:
+            refuse("", f"missing field(s) {missing}")
+    if "schema_version" in document and (type(document["schema_version"]) is not int or document["schema_version"] != 1):
+        refuse(".schema_version", "must be 1")
+    notice = document.get("notice_md", "")
+    if not _glossary_markdown(notice, MAX_GLOSSARY_NOTICE):
+        refuse(".notice_md", f"must be text of at most {MAX_GLOSSARY_NOTICE} characters without control characters")
+        notice = ""
+    entries = document.get("terms", [])
+    if not isinstance(entries, list):
+        refuse(".terms", "must be a list")
+        entries = []
+    elif len(entries) > MAX_GLOSSARY_TERMS:
+        refuse(".terms", f"at most {MAX_GLOSSARY_TERMS} terms")
+        entries = entries[:MAX_GLOSSARY_TERMS]
+
+    names, anchors, terms = {}, {}, []  # normalized name -> (where, name); anchor -> term; accepted terms
+
+    def claim(name, where):
+        key = glossary_key(name)
+        if key in names:
+            first_where, first_name = names[key]
+            refuse(where, f"name {name!r} repeats {first_name!r} (glossary.json{first_where})")
+            return False
+        names[key] = (where, name)
+        return True
+
+    for index, entry in enumerate(entries):
+        base = f".terms[{index}]"
+        if not isinstance(entry, dict):
+            refuse(base, "expected an object")
+            continue
+        unknown = sorted(str(key) for key in set(entry) - GLOSSARY_TERM_KEYS)
+        if unknown:
+            refuse(base, f"unknown field(s) {unknown}")
+        missing = sorted({"term", "aliases", "definition_md"} - set(entry))
+        if missing:
+            refuse(base, f"missing field(s) {missing}")
+        ok, term, anchor = not missing, _glossary_name(entry.get("term")), None
+        if "term" in entry:
+            if term is None:
+                refuse(base + ".term", f"must be plain single-line text of 1-{MAX_GLOSSARY_NAME} characters")
+                ok = False
+            elif claim(term, base + ".term"):
+                anchor = "term-" + re.sub(r"[^a-z0-9]+", "-", glossary_key(term)).strip("-")
+                if anchor == "term-":
+                    refuse(base + ".term", f"{term!r} has no letter or digit a-z/0-9 to build an anchor from")
+                    ok = False
+                elif anchor in anchors:
+                    refuse(base + ".term", f"{term!r} gives anchor {anchor}, which {anchors[anchor]!r} already has")
+                    ok = False
+                else:
+                    anchors[anchor] = term
+            else:
+                ok = False
+        aliases = entry.get("aliases")
+        if "aliases" in entry:
+            if not isinstance(aliases, list) or not 1 <= len(aliases) <= 3:
+                refuse(base + ".aliases", "must be a list of 1 to 3 names")
+                ok = False
+            else:
+                accepted = []
+                for number, alias in enumerate(aliases):
+                    where, name = f"{base}.aliases[{number}]", _glossary_name(alias)
+                    if name is None:
+                        refuse(where, f"must be plain single-line text of 1-{MAX_GLOSSARY_NAME} characters")
+                        ok = False
+                    elif claim(name, where):
+                        accepted.append(name)
+                    else:
+                        ok = False
+                aliases = accepted
+        definition = entry.get("definition_md")
+        if "definition_md" in entry and (not _glossary_markdown(definition, MAX_GLOSSARY_DEFINITION)
+                                         or not definition.strip()):
+            refuse(base + ".definition_md", f"must be non-blank text of at most {MAX_GLOSSARY_DEFINITION} characters "
+                                            "without control characters")
+            ok = False
+        accepted_term = {"term": term, "aliases": aliases, "definition_md": definition}
+        if "source_url" in entry:
+            try:
+                accepted_term["source_url"] = _https(entry["source_url"], "glossary.json" + base + ".source_url")
+            except ContentError as exc:
+                found.append(str(exc))
+                ok = False
+        if "rule_id" in entry:
+            rule_id = entry["rule_id"]
+            if not isinstance(rule_id, str) or not rule_id:
+                refuse(base + ".rule_id", "must be a non-empty rule id from the law package")
+                ok = False
+            elif "source_url" not in entry:
+                refuse(base + ".source_url", "is required with rule_id")
+                ok = False
+            else:
+                jur, package = law_package()
+                rules = {rule["rule_id"]: rule for rule in package["rules"]} if package else {}
+                if jur is False:
+                    ok = False  # the unreadable campaign.json is already named once
+                elif jur is None:
+                    refuse(base + ".rule_id", "there is no campaign.json, so no law package to check the rule against")
+                    ok = False
+                elif package is None:
+                    refuse(base + ".rule_id", f"there is no usable {jur} law package")
+                    ok = False
+                elif rule_id not in rules:
+                    refuse(base + ".rule_id", f"{rule_id!r} is not in the {jur} law package")
+                    ok = False
+                elif "source_url" in accepted_term and accepted_term["source_url"] not in {
+                        source["url"] for source in rules[rule_id]["sources"]}:
+                    refuse(base + ".source_url", f"is not one of the sources the {jur} law package lists for {rule_id}")
+                    ok = False
+                else:
+                    accepted_term.update(rule_id=rule_id, citation=rules[rule_id]["citation"],
+                                         law_status=_law_status(package))
+        if ok:
+            accepted_term["anchor"] = anchor
+            terms.append(accepted_term)
+    if found:
+        if problems is None:
+            raise ContentError(found[0])
+        problems.extend(found)
+        return None
+    terms.sort(key=lambda item: (glossary_key(item["term"]), item["term"]))
+    return {"terms": terms, "notice_md": notice}
+
+
+def read_glossary(root, problems=None):
+    """``load_glossary`` of ``<root>/content/glossary.json``; None when the file is absent.
+
+    A symlink (even dangling), folder or other non-regular path is refused, never skipped. ``problems``: see
+    ``load_glossary`` (content-check collects, build raises)."""
+    path = Path(root) / "content" / "glossary.json"
+    try:
+        if not os.path.lexists(path):
+            return None
+        if path.is_symlink() or not path.is_file():
+            raise ContentError("glossary.json: must be a regular file, not a symlink or folder")
+        try:
+            document = _read_json(path)
+        except OSError:
+            raise ContentError("glossary.json: could not be read") from None
+    except ContentError as exc:
+        if problems is None:
+            raise
+        problems.append(str(exc))
+        return None
+    return load_glossary(document, root, problems)
+
+
+def _word_char(char):
+    return char == "_" or unicodedata.category(char)[0] in "LN"
+
+
+def _mentions(text, name):
+    """True when ``name`` occurs in ``text`` with a non-word character (or the end) on both sides."""
+    start = text.find(name)
+    while start != -1:
+        end = start + len(name)
+        if (start == 0 or not _word_char(text[start - 1])) and (end == len(text) or not _word_char(text[end])):
+            return True
+        start = text.find(name, start + 1)
+    return False
+
+
+def glossary_terms_used(finding, glossary):
+    """The glossary terms a finding's title, summary or body_md use, in the glossary's alphabetical order.
+
+    Each field is searched on its own (never joined), normalized like the names (``glossary_key``); a term counts
+    when its name or any alias is a whole-word literal match. Markdown is searched as written, so link destinations
+    and code spans count. Definitions, sources and other findings never count."""
+    fields = [glossary_key(finding.get(key) or "") for key in ("title", "summary", "body_md")]
+    return [term for term in glossary["terms"]
+            if any(_mentions(field, glossary_key(name)) for field in fields for name in [term["term"], *term["aliases"]])]
+
+
 # --- assembly ---------------------------------------------------------------
 
 def load_content(root, today=None):
@@ -1652,6 +1926,9 @@ def load_content(root, today=None):
         "labels": labels,
         "officials": officials,
     }
+    glossary = read_glossary(root)  # DF1952-04: optional; None without the file
+    if glossary is not None:
+        model["glossary"] = glossary
     # content/redirects.json (DF2037-16): the key is present exactly when the file is, so a parsed JSON null is still
     # checked (and refused) by site against the pages it writes; without the file there is no key.
     if redirects_path.is_file() or redirects_path.is_symlink():
