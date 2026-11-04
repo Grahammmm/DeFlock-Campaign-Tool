@@ -138,7 +138,9 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice", "brand", "privacy_contact"}
+             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image"}
+SHARE_IMAGE_KEYS = {"path", "alt"}
+SHARE_RATIO, SHARE_RATIO_TOLERANCE = 1.905, 0.02  # 1200x630
 BRAND_KEYS = {"logo", "logo_alt", "accent", "ink", "favicon"}
 HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")
 ASSET_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")  # site._asset_plan's plain-name rule
@@ -230,6 +232,22 @@ def load_brand(value, assets_dir=None):
     return brand
 
 
+def load_share_image(value, assets_dir=None):
+    """site.json.share_image: a PNG/JPEG public asset 1200x630 to 2400x1260 (ratio 1.905) plus required alt; refusals name the field."""
+    label = "site.json.share_image"
+    _require_keys(value, SHARE_IMAGE_KEYS, set(), label)
+    alt = value.get("alt")
+    if (not isinstance(alt, str) or not alt.strip() or len(alt) > 300
+            or any(ord(char) < 32 or ord(char) == 127 for char in alt)):  # "<" and quotes are fine: the page escapes them
+        raise ContentError(f"{label}.alt: required, 1-300 characters on one line, no control characters")
+    size = _brand_asset(value.get("path"), assets_dir, f"{label}.path", (".png", ".jpg", ".jpeg"))
+    if size:
+        width, height = size
+        if not (1200 <= width <= 2400 and 630 <= height <= 1260) or abs(width / height - SHARE_RATIO) > SHARE_RATIO_TOLERANCE:
+            raise ContentError(f"{label}.path: {width}x{height} px; use 1200x630 to 2400x1260 at a 1.905 ratio")
+    return {"path": value["path"], "alt": alt, "size": size}
+
+
 def load_site(document, assets_dir=None):
     """``assets_dir`` (content/public-assets) lets ``brand`` check its logo and favicon files."""
     _require_keys(document, SITE_KEYS, {"schema_version", "tagline", "about_md"}, "site.json")
@@ -297,6 +315,7 @@ def load_site(document, assets_dir=None):
                                           "published rules as of the event date; consult counsel "
                                           "before relying on them."),
         **({"brand": load_brand(document["brand"], assets_dir)} if "brand" in document else {}),
+        **({"share_image": load_share_image(document["share_image"], assets_dir)} if "share_image" in document else {}),
     }
 
 
@@ -413,7 +432,8 @@ MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment
                 "status", "participation", "outcome"}
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
-OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote"}
+OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes"}
+VOTE_VALUES = ("yes", "no", "abstain", "absent", "recused")
 PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
                       "verified_at"}
 
@@ -458,7 +478,7 @@ def load_outcome(value, starts_at, status, label, today=None):
     """Organizer-verified result of a past meeting (DF2237-11), read from an official https record."""
     if status == "cancelled":
         raise ContentError(f"{label}: a cancelled meeting has no outcome")
-    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote"}, label)
+    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes"}, label)
     if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
         raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
     held, now = starts_at[:10], (today or date.today()).isoformat()
@@ -472,9 +492,23 @@ def load_outcome(value, starts_at, status, label, today=None):
                 or "\n" in text or "\t" in text):
             raise ContentError(f"{label}.{key}: must be 1 to 120 characters of plain text "
                                "(no angle brackets or control characters)")
+    votes = value.get("votes", [])  # DF0137-07: per-member votes; names are cross-checked against officials later
+    if "votes" in value and (not isinstance(votes, list) or not 1 <= len(votes) <= 30):
+        raise ContentError(f"{label}.votes: must list 1 to 30 votes")
+    for index, item in enumerate(votes):
+        where = f"{label}.votes[{index}]"
+        _require_keys(item, {"name", "vote"}, {"name", "vote"}, where)
+        name = _text(item, "name", where, allow_empty=False)
+        if len(name) > 120 or "\n" in name or "\t" in name:
+            raise ContentError(f"{where}.name: at most 120 characters on one line")
+        if any(other["name"] == name for other in votes[:index]):
+            raise ContentError(f"{where}.name: listed twice")
+        if not isinstance(item["vote"], str) or item["vote"] not in VOTE_VALUES:
+            raise ContentError(f"{where}.vote: must be one of {', '.join(VOTE_VALUES)}")
     return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
             "verified_by": value["verified_by"], "verified_at": value["verified_at"],
-            **({"vote": value["vote"]} if "vote" in value else {})}
+            **({"vote": value["vote"]} if "vote" in value else {}),
+            **({"votes": [{"name": v["name"], "vote": v["vote"]} for v in votes]} if "votes" in value else {})}
 
 
 def load_meeting(document, label, today=None):
@@ -1123,6 +1157,12 @@ def load_content(root, today=None):
     officials_path = content_dir / "officials.json"  # optional; a symlink is refused by _read_json
     officials = (load_officials(_read_json(officials_path), agencies, today or date.today())
                  if officials_path.is_file() or officials_path.is_symlink() else {})
+    for meeting in meetings:  # DF0137-07: a stored vote must still name one of the body's listed officials
+        listed = {person["name"] for person in officials.get(meeting["agency_id"], [])}
+        for index, vote in enumerate((meeting["outcome"] or {}).get("votes", [])):
+            if vote["name"] not in listed:
+                raise ContentError(f"meetings/{meeting_ids[meeting['id']]}.outcome.votes[{index}].name: "
+                                   f"not in officials.json for {meeting['agency_id']}")
 
     model = {
         "site": site,

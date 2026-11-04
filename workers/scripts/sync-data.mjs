@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Copies repo-owned data into the Workers packages so they can be bundled without
 // reading the filesystem at runtime. Run `node scripts/sync-data.mjs` after editing
-// data/agencies/*.json, jurisdictions/*/package.json, workers/schema/d1.sql or
-// campaign_tool/assets/styles.css.tmpl. `--check` exits 1 when anything is stale.
+// data/agencies/*.json, jurisdictions/*/package.json, workers/schema/d1.sql,
+// campaign_tool/assets/styles.css.tmpl or data/meeting-keywords.json. `--check` exits 1 when anything is stale.
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +43,42 @@ const css = readFileSync(join(repo, "campaign_tool", "assets", "styles.css.tmpl"
 planFile(
   join(workers, "shared", "src", "generated", "styles.ts"),
   banner + "campaign_tool/assets/styles.css.tmpl. Do not edit.\nexport const STYLES_CSS_TEMPLATE: string = " + JSON.stringify(css) + ";\n",
+);
+
+// 4. Meeting ALPR keywords -> shared TS matcher; campaign_tool/meetings.py reads the same JSON.
+// Lint: only constructs meaning the same in Python `re` and ECMAScript (literals, [ -] classes, \b, ?).
+const kwSource = "data/meeting-keywords.json";
+const kw = JSON.parse(readFileSync(join(repo, kwSource), "utf8"));
+const kwFail = (why) => { console.error("refused " + kwSource + ": " + why + "; nothing written."); process.exit(1); };
+if (kw.schema_version !== 1 || kw.flags !== "i") kwFail("expected schema_version 1 and flags \"i\"");
+if (!Array.isArray(kw.alternatives) || !kw.alternatives.length) kwFail("alternatives must be a non-empty list");
+const kwWord = "[\\p{L}\\p{N}_]"; // Python's str \b is Unicode-aware (word = isalnum() or "_"); ECMAScript's is ASCII-only
+const kwBoundary = "(?:(?<=" + kwWord + ")(?!" + kwWord + ")|(?<!" + kwWord + ")(?=" + kwWord + "))";
+const kwPattern = [];
+for (const alt of kw.alternatives) {
+  if (typeof alt !== "string" || !alt) kwFail("alternatives must be non-empty strings");
+  const parts = [];
+  for (let at = 0, tok = /\\b|\[[A-Za-z0-9 ]*-?\]|[A-Za-z0-9 ?-]/y, m; at < alt.length; at = tok.lastIndex) {
+    tok.lastIndex = at;
+    if ((m = tok.exec(alt))) {
+      // Python re.IGNORECASE also matches U+0130 and U+0131 to i; ECMAScript "iu" does not.
+      parts.push(m[0] === "\\b" ? kwBoundary : m[0].length > 1 ? m[0].replace(/i/gi, "iİı") : m[0].replace(/i/i, "[iİı]"));
+      continue;
+    }
+    const bad = /\(\?(?:P?<[^>]*>|[^)]*\))?|\\[pPk]\{[^}]*\}|\\k<[^>]*>|\\.?|[^]/y;
+    bad.lastIndex = at;
+    kwFail("alternative " + JSON.stringify(alt) + " uses unsupported construct " + JSON.stringify(bad.exec(alt)[0]));
+  }
+  kwPattern.push(parts.join(""));
+}
+const kwJoined = kw.alternatives.join("|");
+new RegExp(kwPattern.join("|"), "iu"); // a pattern ECMAScript rejects fails here, before anything is written
+planFile(
+  join(workers, "shared", "src", "generated", "meeting-keywords.ts"),
+  banner + kwSource + ". Do not edit.\n" +
+    "export const MEETING_KEYWORDS_SOURCE: string = " + JSON.stringify(kwJoined) + ";\n" +
+    "export const MEETING_KEYWORDS: RegExp = new RegExp(" + JSON.stringify(kwPattern.join("|")) + ", \"iu\");\n" +
+    "export function matchesMeetingKeywords(text: string): boolean {\n  return MEETING_KEYWORDS.test(text);\n}\n",
 );
 
 let stale = 0;

@@ -116,6 +116,23 @@ would push it over 400 words, the section keeps `Send by:` and `How:` and says t
 hand instead. The tool never adds a recipient, email or postal
 address (any named in `how` appears only on the `How:` line) and never sends the letter.
 
+### The one keyword list
+
+The four keyword alternatives live only in `data/meeting-keywords.json`
+(`{"schema_version": 1, "flags": "i", "alternatives": [...]}`). `campaign_tool/meetings.py` builds
+`KEYWORDS` from it at import (joined with `|`, case-insensitive); a missing or malformed file raises
+`MeetingsError` naming the file, with no built-in fallback. `workers/scripts/sync-data.mjs` generates
+`workers/shared/src/generated/meeting-keywords.ts` (`MEETING_KEYWORDS_SOURCE`, `MEETING_KEYWORDS`,
+`matchesMeetingKeywords`) for the Workers; nothing imports it yet.
+
+To change a keyword: edit the JSON, run `npm run sync` in `workers/`, commit both files, and add the
+new case to `tests/fixtures/meeting-keyword-parity.json`. `npm run sync:check` fails naming
+`meeting-keywords.ts` while they disagree. Alternatives may use only literal text, `[ -]`-style classes
+of literals, `\b` and `?`; the generator refuses anything else (`(?i)`, groups, `\p{..}`, backreferences)
+by name and writes nothing. The generated matcher spells out Python's Unicode `\b` and its `i`/`İ`/`ı`
+case rule so both sides give the same verdict (`tests/test_meeting_keywords.py`,
+`workers/shared/test/meeting-keywords.test.ts`).
+
 ## Workspace Meetings screen
 
 `POST /meetings` adds a meeting manually: `body_name`, `starts_at` (ISO-8601), optional
@@ -191,6 +208,15 @@ control characters; an existing outcome is kept unless `--replace`. `meetings-st
 the outcome. The site shows `Outcome: <label> on <date> (<vote>) · Official record · verified by <name>`
 on past meetings and the meeting page, never on upcoming ones. The tool fetches no minutes and
 says nothing about what an outcome means legally.
+
+`--votes FILE` adds the per-member roll call read from the same `--source` record (votes have no URL of
+their own). FILE is a regular, non-symlink UTF-8 CSV of at most 64 KiB with the header `name,vote` and
+1 to 30 rows; `vote` is `yes`, `no`, `abstain`, `absent` or `recused`, and each name must match that
+meeting's `agency_id` body in `content/officials.json` exactly (case-sensitive; Unicode NFC, runs of
+spaces collapsed). Problems are listed together by file row (the header is row 1), for example
+`votes row 3: unknown name "X" (not in officials.json for <agency_id>)` or `votes row 5: name listed twice`,
+and nothing is written. Votes are never inferred from `--vote`. Changing votes needs `--replace`, and
+`--replace` without `--votes` drops them (`votes: none`). The meeting page shows a "Recorded votes" table.
 
 ## Not done
 

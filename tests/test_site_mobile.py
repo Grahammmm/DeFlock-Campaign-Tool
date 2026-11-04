@@ -23,13 +23,13 @@ PRINT_SHA = (
     "eb29c644d71226a6"  # pragma: allowlist secret
     "8200fb9eace85d3a"  # pragma: allowlist secret
 )
-# Re-pinned after BF-df-agency-cards-public added only the .agency-block rules to styles.css.tmpl;
-# previous pin 565079ca...2100 (after DF1822-08's .comment-deadline).
+# Re-pinned after DF0137-12 appended only the .at-a-glance/.glance-table rules to styles.css.tmpl;
+# previous pin a3a87040...0e7c (after BF-df-agency-cards-public's .agency-block rules).
 STARTER_SHA = (
-    "a3a870402a1c0979"  # pragma: allowlist secret
-    "717c1123a091c939"  # pragma: allowlist secret
-    "b69679db171355a7"  # pragma: allowlist secret
-    "595f1567231e0e7c"  # pragma: allowlist secret
+    "61a5a27cc260aabf"  # pragma: allowlist secret
+    "feb4cc97c7b36d24"  # pragma: allowlist secret
+    "4e5c716fee1e16e9"  # pragma: allowlist secret
+    "aa943810fb794913"  # pragma: allowlist secret
 )
 
 

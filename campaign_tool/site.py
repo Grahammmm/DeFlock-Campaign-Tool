@@ -415,15 +415,26 @@ class Site:
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def share(self, title, description, path, kind, published, modified):
-        """Open Graph + Twitter summary tags from the page's own text; no image, og:url only with base_url."""
+        """Open Graph + Twitter summary tags from the page's own text; og:image only from site.json.share_image, og:url only with base_url."""
         tags = [("property", "og:site_name", self.name),
                 ("property", "og:title", e(title if kind == "article" else _one_line(title)).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")),
                 ("property", "og:description", e(description if kind == "article" else _one_line(description)).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")),
                 ("property", "og:type", kind)]
         if self.base and (kind != "article" or _preview_origin(self.base)):
             tags.append(("property", "og:url", e(self.base + path)))
-        tags += [("name", "twitter:card", "summary"), ("name", "twitter:title", e(_one_line(title))),
+        image = self.site.get("share_image")
+        if image and image["size"]:
+            url = e(self.base + "/" + image["path"] if self.base else "/" + image["path"])
+            tags += [("property", "og:image", url), ("property", "og:image:width", str(image["size"][0])),
+                     ("property", "og:image:height", str(image["size"][1])),
+                     ("property", "og:image:alt", e(image["alt"]))]
+        tags += [("name", "twitter:card", "summary_large_image" if image else "summary"),
+                 ("name", "twitter:title", e(_one_line(title))),
                  ("name", "twitter:description", e(_one_line(description)))]
+        if image and image["size"]:
+            if self.base:
+                tags.append(("name", "twitter:image", url))
+            tags.append(("name", "twitter:image:alt", e(image["alt"])))
         if kind == "article":
             tags.append(("property", "article:published_time", e(_one_line(published))))
             if modified:
@@ -681,11 +692,37 @@ class Site:
         for item in sorted(agency.get("asked", []), key=lambda row: row["asked_on"], reverse=True):
             asked.append(f'{e(item["topic"])} — asked {date_label(item["asked_on"])}. ' + e(asked_sentence(item, self.today))
                          + (f' {e(item["note"])}' if item.get("note") else ""))
-        return "".join(f'<section class="agency-block"><h4>{title}</h4>' + (
+        return "".join(f'<section class="agency-block"><h4{anchor}>{title}</h4>' + (
             "<ul>" + "".join(f"<li>{value}</li>" for value in values) + "</ul>" if values else f"<p>{empty}</p>") + "</section>"
-            for title, values, empty in (("What is confirmed", confirmed, "Nothing is confirmed by a published finding yet."),
-                                         ("What is not known", unknown, "Nothing listed yet."),
-                                         ("What we asked", asked, "No request is listed for this agency yet.")))
+            for title, values, empty, anchor in (("What is confirmed", confirmed, "Nothing is confirmed by a published finding yet.", ""),
+                                                 ("What is not known", unknown, "Nothing listed yet.", ""),
+                                                 ("What we asked", asked, "No request is listed for this agency yet.",
+                                                  f' id="{e(agency["slug"])}-asked"')))
+
+    def glance_section(self):
+        """DF0137-12: every agency side by side in model order (never sorted by a number); each cell links its source."""
+        unchecked, rows = self.t("agencies.glance_not_checked"), []
+        heads = [self.t(f"agencies.glance_{key}") for key in ("agency", "cameras", "searches_last_30_days",
+                                                               "retention_days", "policy", "contract", "asked")]
+
+        def sourced(url, text, checked_on):
+            return (f'<a href="{e(url)}" rel="noopener noreferrer">{text}</a> '
+                    f'<small>{self.t("agencies.glance_checked", date=time_tag(checked_on))}</small>')
+        for agency in self.model["agencies"]:
+            newest, policy, contract = (agency.get("transparency") or [{}])[0], agency.get("alpr_policy"), agency["contract"]
+            asked, page = len(agency.get("asked", [])), self.agency_pages().get(agency["agency_id"], f'#{agency["slug"]}')
+            cells = [f'<a href="{e(page)}">{e(agency["name"])}</a>'] + [
+                sourced(newest["source_url"], e(newest[key]), newest["checked_on"]) if newest.get(key) is not None
+                else unchecked for key in ("cameras", "searches_last_30_days", "retention_days")]
+            cells += [sourced(policy["url"], self.t("agencies.glance_posted"), policy["checked_on"]) if policy else unchecked,
+                      sourced(contract["source_url"], time_tag(contract["end"]), contract["checked_on"]) if contract else unchecked,
+                      f'<a href="#{e(agency["slug"])}-asked">{asked}</a>' if asked else "0"]
+            rows.append('<tr><th scope="row" data-label="' + heads[0] + f'">{cells[0]}</th>'
+                        + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
+        return (f'<section class="at-a-glance" id="at-a-glance"><h3>{self.t("agencies.glance_heading")}</h3>'
+                f'<p>{self.t("agencies.glance_note")}</p><table class="glance-table"><caption>{self.t("agencies.glance_caption")}'
+                '</caption><thead><tr>' + "".join(f'<th scope="col">{head}</th>' for head in heads) + "</tr></thead><tbody>"
+                + "".join(rows) + "</tbody></table></section>")
 
     def agencies_html(self):
         articles = []
@@ -714,7 +751,8 @@ class Site:
             articles.append(f'<article id="{e(agency["slug"])}">{body}</article>')
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
                 f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")}</p></div>'
-                + ('<div class="agency-list">' + "".join(articles) + '</div>' if articles else f'<p>{self.t("notice.no_agencies")}</p>')
+                + ('<div class="agency-list">' + self.glance_section() + "".join(articles) + '</div>' if articles
+                   else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
         return self.page("agencies", self.labels["title.agencies"], self.labels["title.agencies_description"], "/agencies.html", main)
 
@@ -968,6 +1006,18 @@ class Site:
                      + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')
         return self.page("meetings", self.labels["title.meetings"], self.labels["title.meetings_description"], "/meetings.html", main)
 
+    def recorded_votes(self, meeting):
+        """DF0137-07: the organizer-verified per-member votes, read from the outcome's official record; "" without."""
+        votes = (meeting.get("outcome") or {}).get("votes")
+        if not votes:
+            return ""
+        rows = "".join(f'<tr><td>{e(v["name"])}</td><td>{self.t("vote." + v["vote"])}</td></tr>' for v in votes)
+        source = e(meeting["outcome"]["source_url"])
+        return (f'<h3>{self.t("meeting.votes")}</h3><table class="recorded-votes"><thead><tr>'
+                f'<th scope="col">{self.t("meeting.votes_member")}</th><th scope="col">{self.t("meeting.votes_vote")}</th>'
+                f'</tr></thead><tbody>{rows}</tbody></table><p class="notice">{self.t("meeting.votes_source")} '
+                f'<a href="{source}" rel="noopener noreferrer">{source}</a></p>')
+
     def meeting_html(self, meeting):
         """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
         cancelled = meeting.get("status") == "cancelled"
@@ -981,7 +1031,8 @@ class Site:
                 + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
                 + (f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
                 + self.who_decides(meeting.get("agency_id"))
-                + (meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else "")
+                + (meeting_outcome_html(meeting) + self.recorded_votes(meeting)
+                   if meeting["starts_at"][:10] < self.today.isoformat() else "")
                 + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
