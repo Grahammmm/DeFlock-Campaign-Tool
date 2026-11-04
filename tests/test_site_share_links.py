@@ -207,6 +207,8 @@ class ShareLinksTests(unittest.TestCase):
             self.assertNotIn(marker.encode(), value)
         self.finding(self.a)
         for tag, attrs in Tags(self.read("findings/cedar-policy-posted.html")).tags:
+            if tag == "script" and dict(attrs).get("src") == "/findings/cite.js":
+                continue  # DF1422-14: the one first-party citation copy script
             self.assertNotIn(tag, ("script", "iframe", "form", "img"))
             self.assertFalse(any(key.lower().startswith("on") for key, _ in attrs))
 
