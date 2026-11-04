@@ -8,6 +8,7 @@ from tests.flock import test_publish as base
 APPROVED = {"status": "approved", "approved_by": "G", "approved_on": "2026-10-30", "approval_ref": "G-1"}
 FINAL = "stage | approved=%d staged=%d skipped_pending=%d | review-required; not built, not deployed; G decides any site use\n"
 SHA = "b" * 64
+ORIGINAL_SHA = hashlib.sha256(b"synthetic original\n").hexdigest()
 
 
 def block(slug, **extra):
@@ -28,7 +29,7 @@ class PublishStageTest(base.FlockPublishTest):  # setUp: verified run; here N1 b
         with open(self.run_dir / "FINDINGS.csv", newline="") as handle:
             table = list(csv.reader(handle))
         row = next(r for r in table if r[0] == "N1")
-        row[2], row[5] = "duty-concern", "F-090c3d39b556;F-76dbe8a9b4ac"
+        row[2], row[5] = "duty-concern", self.fact_ids["F-090c3d39b556"] + ";" + self.fact_ids["F-76dbe8a9b4ac"]
         with open(self.run_dir / "FINDINGS.csv", "w", newline="") as handle:
             csv.writer(handle, lineterminator="\n").writerows(table)
         self.assertEqual(self.export(), (0, "exported=4 refused=0\n"))
@@ -77,7 +78,7 @@ class PublishStageTest(base.FlockPublishTest):  # setUp: verified run; here N1 b
         self.assertEqual(doc["id"], "fnd_" + hashlib.sha256(b"sample\x1fN1").hexdigest()[:16])
         self.assertEqual((doc["state"], doc["published_at"], doc["confidence"], doc["classification"]),
                          ("staged", None, "verified", "documented_fact"))
-        self.assertEqual(doc["sources"], [{"sha256": SHA, "locator": "page:%d" % p, "title": "Source record", "rule_id": None}
+        self.assertEqual(doc["sources"], [{"sha256": ORIGINAL_SHA, "locator": "page:%d" % p, "title": "Source record", "rule_id": None}
                                           for p in (2, 3)])
         loaded = content.load_finding({**doc, "state": "published", "published_at": "2026-10-30T12:00:00+00:00"}, "staged")
         self.assertEqual(loaded["summary"], n1["text"])

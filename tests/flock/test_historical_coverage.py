@@ -151,6 +151,20 @@ class Base(unittest.TestCase):
 
 
 class FiveAgencies(Base):
+    def test_v3_facts_preserve_evidence_and_validate_metadata(self):
+        path = self.agencies / "alpha-city" / "FACTS.csv"
+        rows = [dict(r, source_path=str(self.store / "original.txt")) for _, r in FACTS.load(path)[1]]
+        bad = dict(rows[0], status="invalid")
+        FACTS.write_atomic(path, rows + [bad])
+        code, doc, target = self.report("--agency", "alpha-city")
+        self.assertEqual(code, 1)
+        row = self.dims(doc, "alpha-city")
+        self.assertEqual(row["errors"], ["FACTS.csv: row 6: status is invalid"])
+        self.assertEqual(row["dimensions"]["installation"]["date"], "2010-05-01")
+        self.assertEqual(row["dimensions"]["vendor"]["date"], "2011-03-01")
+        for output in target.iterdir():
+            self.assertNotIn(str(self.store / "original.txt"), output.read_text())
+
     def test_all_three_evidenced(self):
         code, doc, _ = self.report()
         self.assertEqual(code, 0)

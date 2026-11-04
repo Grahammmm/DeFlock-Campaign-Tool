@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document_id",
+    "source_sha256",
+    "scope",
+    "proposal_sha256",
+    "signed_by",
+    "signed_at",
+    "signature"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "schema_version": {"const": 1, "type": "integer"},
+    "document_id": {"pattern": "[A-Za-z0-9_-]{1,128}", "type": "string"},
+    "source_sha256": {"pattern": "[0-9a-f]{64}", "type": "string"},
+    "scope": {"const": "flock-redaction", "type": "string"},
+    "proposal_sha256": {"pattern": "[0-9a-f]{64}", "type": "string"},
+    "signed_by": {"minLength": 1, "type": "string"},
+    "signed_at": {"pattern": "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", "type": "string"},
+    "signature": {"pattern": "-----BEGIN SSH SIGNATURE-----[\\s\\S]+-----END SSH SIGNATURE-----\\n?", "type": "string"}
+  }
+}

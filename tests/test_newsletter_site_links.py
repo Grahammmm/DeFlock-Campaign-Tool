@@ -64,8 +64,8 @@ class SiteLinksTests(unittest.TestCase):
         result = self.cli("--from-content", "--site", str(self.public))
         self.assertEqual(result.returncode, 0, result.stderr)
         out = json.loads(result.stdout)
-        self.assertEqual(out["site_links"], {"public": str(self.public), "checked": 2, "external_skipped": 1, "missing": []})
-        self.assertEqual(site_links(json.loads((self.kit / "newsletter-draft.json").read_text()), BASE), ["/", FINDING])
+        self.assertEqual(out["site_links"], {"public": str(self.public), "checked": 3, "external_skipped": 2, "missing": []})
+        self.assertEqual(site_links(json.loads((self.kit / "newsletter-draft.json").read_text()), BASE), ["/", FINDING, "/sources.html#cedar-police-records"])
         self.assertFalse(out["sent"])
         self.assertNotIn("newsletter: link", result.stderr)
 
