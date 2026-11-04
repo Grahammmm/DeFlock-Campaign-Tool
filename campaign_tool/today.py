@@ -9,7 +9,7 @@ import shlex
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from . import findings, kit, kit_track, meeting_comments, meeting_stage
+from . import findings, kit, kit_assign, kit_track, meeting_comments, meeting_stage
 from .content import CONTINUATION_KEYS, _read_json, continuation_issues, continuation_targets, load_agencies, load_meeting
 
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
@@ -142,10 +142,15 @@ def _minutes_item(meeting, ident, as_of, directory):
                  "--minutes-url OFFICIAL_MINUTES_URL --minutes-approved-on YYYY-MM-DD", outcome["on"], ident)
 
 
-def _requests(root, as_of, directory, law_base):
+def _requests(root, as_of, directory, law_base, owner=None):
     items = []
-    for row in kit_track.due(root, as_of.isoformat(), law_base=law_base)["open"]:
-        name = f"{row['name'] or row['agency_id']} ({row['agency_id']})"
+    try:
+        kit_assign.read_assignments(root)
+    except ValueError as exc:  # one item naming the bad file; no unfiltered fallback, other sources still listed
+        return [_unreadable(kit_assign.FILE, exc)]
+    command = f"kit-status --directory {directory}" + (f" --owner {shlex.quote(owner)}" if owner is not None else "")
+    for row in kit_track.due(root, as_of.isoformat(), law_base=law_base, owner=owner)["open"]:
+        name = f"{row['name'] or row['agency_id']} ({kit_track._label(row['agency_id'], row['request'])})"
         if row["state"] == "past_due":
             what = (f"Follow up with {name}: request sent {row['sent_on']} passed its provisional determination "
                     f"date {row['due']} {-row['days']} day(s) ago")
@@ -163,8 +168,11 @@ def _requests(root, as_of, directory, law_base):
             what = f"{name}: link expired {row['due']}: {kit_track.DOWNLOAD_ASK}"
         else:
             continue
-        items.append(_item("request_" + row["state"], what, f"kit-status --directory {directory}", row["due"],
-                           row["agency_id"] + (row["request"] if row.get("kind") == "download" else "")))
+        if "owner" in row:
+            what += f" [owner: {row['owner']}]"
+        items.append(_item("request_" + row["state"], what, command, row["due"],
+                           row["agency_id"] + (row["request"] if row.get("kind") == "download"
+                                               else "" if row["request"] == "main" else "#" + row["request"])))
     return items
 
 
@@ -250,12 +258,15 @@ def _contracts(root, as_of, directory, days):
     return items
 
 
-def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS):
-    """Ranked to-do items ``{rank, kind, what, due, command}``; reads only, never raises for a broken input."""
+def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS, owner=None):
+    """Ranked to-do items ``{rank, kind, what, due, command}``; reads only, never raises for a broken input.
+
+    ``owner`` keeps only that teammate's request work; meetings, findings, contracts and contacts stay listed."""
     root = Path(root)
     directory = shlex.quote(str(root))
+    owner = None if owner is None else kit_assign.owner_label(owner, "--owner")
     sources = ((lambda: _meetings(root, as_of, directory), "content/meetings/"),
-               (lambda: _requests(root, as_of, directory, law_base), "kit/sent.json"),
+               (lambda: _requests(root, as_of, directory, law_base, owner), "kit/sent.json"),
                (lambda: _findings(root, directory), "private/drafts/"),
                (lambda: _contracts(root, as_of, directory, contract_days), "content/agencies.json"),
                (lambda: _review_waiting(root, as_of, directory, review_days), "private/review-assignments/"),
@@ -271,11 +282,11 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days
     return [{"rank": rank, **{k: v for k, v in item.items() if k != "_key"}} for rank, item in enumerate(items, 1)]
 
 
-def run_cli(root, as_of=None, as_json=False, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS):
+def run_cli(root, as_of=None, as_json=False, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS, owner=None):
     day = date.today() if as_of is None else kit_track._day(as_of)
     if day is None:
         raise ValueError("--as-of must be a real YYYY-MM-DD date")
-    items = todo(root, day, contract_days=contract_days, review_days=review_days)
+    items = todo(root, day, contract_days=contract_days, review_days=review_days, owner=owner)
     if as_json:
         return json.dumps(items, indent=2, ensure_ascii=False)
     if not items:
