@@ -206,7 +206,7 @@ class AddTests(Base):
         self.refused("kind", kind="person")
         self.refused("kind", kind="Civil_Liberties")
         self.refused("how", how="phone")
-        for confirmed in ("2026-02-30", "2026-9-1", "2026-09-01T00:00", "1999-12-31", "2026-10-02", "yesterday", "", None):
+        for confirmed in ("2026-02-30", "2026-9-1", "2026-09-01T00:00", "1999-12-31", "2026-10-02", "yesterday", "", None, "\uff12\uff10\uff12\uff16-09-01"):
             with self.subTest(confirmed=confirmed):
                 self.refused(confirmed_on=confirmed)
         for url in ("http://x.example.invalid/", "https://user:pw@x.example.invalid/", "https://x.example.invalid/?a=1",

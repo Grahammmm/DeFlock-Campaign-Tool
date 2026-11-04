@@ -30,7 +30,7 @@ ROW_KEYS = ("id", "name", "kind", "url", "joined_on", "organization")
 CONSENT_KEYS = ("organization", "confirmed_on", "how", "public_sha256", "correspondence")
 MAX_SUPPORTERS, MAX_BYTES, MAX_NAME, MAX_URL = 200, 1024 * 1024, 120, 300
 EARLIEST = date(2000, 1, 1)
-DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+DATE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
 URL_CHARS = re.compile(r"[A-Za-z0-9._~!$&'()*+,;=:%/-]+")
 PHONE = re.compile(r"\+?\d(?:[\s().\-]{0,3}\d){6,}")
 CONTACT = re.compile(r"\b(?:e-?mail|phone|tel|telephone|mobile|cell|fax|contact|whatsapp|sms|person|individual|"
