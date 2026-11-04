@@ -835,7 +835,8 @@ def main():
     social_p.add_argument("--within-days", type=int, default=None, metavar="N",
                           help="With --meetings: meetings starting within N days, 1 to 60 (default 14)")
     press = commands.add_parser("press", help="Draft private press material; sends nothing")
-    press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
+    press_commands = press.add_subparsers(dest="press_command", required=True)
+    press_draft = press_commands.add_parser("draft")
     press_draft.add_argument("--directory", required=True)
     press_draft.add_argument("--finding", action="append", default=[])
     press_draft.add_argument("--date")
@@ -857,6 +858,12 @@ def main():
     supporters_remove = supporters.add_parser("remove", help="Drop one organization's public entry and private record")
     supporters_remove.add_argument("--directory", required=True)
     supporters_remove.add_argument("--id", required=True)
+    press_letter = press_commands.add_parser("letter", help="Draft a private letter to the editor; sends nothing")
+    press_letter.add_argument("--directory", required=True)
+    press_letter.add_argument("--finding", action="append", default=[], help="Published finding id (repeat for 1 to 3)")
+    press_letter.add_argument("--words", type=int, default=250, metavar="N", help="Word limit, 150 to 400 (default 250)")
+    press_letter.add_argument("--outlet", help="Outlet name for the salutation (plain text)")
+    press_letter.add_argument("--date")
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_out = backup_p.add_mutually_exclusive_group(required=True)
@@ -1023,6 +1030,11 @@ def main():
     response_p.add_argument("--withheld-basis", action="append", default=[], metavar="TEXT",
                             help="denied or produced only, repeatable (at most 5): the agency's own stated reason or "
                             "code section, as written (1-200 chars, no control characters; never record contents)")
+    response_p.add_argument("--scope", action="append", default=[], metavar="ID",
+                            help="repeatable, with --disposition: a law-package scope this request asked for that the "
+                            "agency's answer covers (not on acknowledged, extension, clarification or fee_estimate steps)")
+    response_p.add_argument("--disposition", choices=("produced", "partly_produced", "withheld", "no_records_stated"),
+                            help="with --scope: what the agency said about those scopes (your record, not a legal finding)")
     muckrock_p = commands.add_parser("kit-muckrock-import", help="Propose the kit-response step a MuckRock request JSON you "
                                      "saved by hand implies; fetches and sends nothing")
     for flag in ("--directory", "--agency", "--from-json"):
@@ -1320,9 +1332,18 @@ def main():
         elif args.command == "social":
             social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days)
         elif args.command == "press":
-            from .press import build_press
-            print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
-            print("Draft written to kit/press. Nothing was sent.")
+            if args.press_command == "letter":
+                from .press import build_letter
+                result = build_letter(root, args.finding, args.date, words=args.words, outlet=args.outlet)
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                print(f"Letter word count: {result['words']}/{result['word_limit']}.")
+                for note in result["review_flags"]:
+                    print(note, file=sys.stderr)
+                print("Private letter draft written. Nothing was sent.")
+            else:
+                from .press import build_press
+                print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
+                print("Draft written to kit/press. Nothing was sent.")
         elif args.command == "build" and args.preview:
             from .site import preview_site
             report = preview_site(root)
@@ -1636,7 +1657,8 @@ def main():
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
                                          reference=args.reference, replace_reference=args.replace_reference,
                                          partial=args.partial, correspondence=args.correspondence,
-                                         withheld_basis=args.withheld_basis),
+                                         withheld_basis=args.withheld_basis, scope_ids=args.scope,
+                                         disposition=args.disposition),
                              indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-withheld":
