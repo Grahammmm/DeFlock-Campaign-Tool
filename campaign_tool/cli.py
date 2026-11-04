@@ -11,7 +11,7 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import fixes
+from . import fixes, registry
 
 MAX_BYTES = 50 * 1024 * 1024
 MAX_DIR_FILES = 2000
@@ -702,6 +702,20 @@ def finding_preview(root, draft_path, out, now=None):
     return {"written": written, "slug": finding["slug"]}
 
 
+def _campaign_option(parser):
+    """Every parser that takes --directory also takes --campaign NAME (a registered campaign), never both."""
+    for action in list(parser._actions):
+        if isinstance(action, argparse._SubParsersAction):
+            for sub in action.choices.values():
+                _campaign_option(sub)
+    directory = next((a for a in parser._actions if "--directory" in a.option_strings), None)
+    if directory is not None and "--campaign" not in parser._option_string_actions:
+        group = parser.add_mutually_exclusive_group(required=directory.required)
+        group._group_actions.append(directory)
+        directory.required = False
+        group.add_argument("--campaign", metavar="NAME", action=registry.CampaignAction, help="A registered campaign, not --directory")
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1074,7 +1088,22 @@ def main():
     pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
+    _campaign_option(parser)
+    campaigns = commands.add_parser("campaigns", help="A named register of campaign directories; names and paths only"
+                                    ).add_subparsers(dest="campaigns_command", required=True)
+    for verb, text in (("add", "Register NAME at --directory"), ("remove", "Unregister NAME; deletes nothing"),
+                       ("list", "The registered names and directories"),
+                       ("status", "One private line per campaign: counts and waiting gates; publishes nothing")):
+        verb_p = campaigns.add_parser(verb, help=text)
+        if verb in ("add", "remove"):
+            verb_p.add_argument("name")
+        if verb == "add":
+            verb_p.add_argument("--directory", required=True)
     args = parser.parse_args()
+    if args.command == "campaigns":
+        sys.exit(registry.run(args))
+    if getattr(args, "campaign", None):  # from here no path under another registered campaign can be opened or written
+        registry.confine(args.directory, args.registered)
     if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
         if not args.upcoming or args.allow_past or args.within_days not in (None, *range(1, 91)):
             pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
