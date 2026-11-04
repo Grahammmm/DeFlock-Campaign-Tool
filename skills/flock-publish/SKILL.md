@@ -54,6 +54,7 @@ review-required, not a legal conclusion.
 - Private draft (**NEEDS G** before any send): `python3 tools/flock_publish.py brief STORE --agency SLUG --out FILE.md`
   (same as `python3 tools/flock_publish_brief.py STORE --agency SLUG --out FILE.md`) writes one 0600 Markdown draft of the agency's
   approved entries from runs that pass `--check`; FILE is new and outside the repo and `STORE/agencies`. Never sent, posted or built.
+  Before asking G: `... brief STORE --agency SLUG --against FILE.md` re-derives it read-only (exit 0 current, 3 drifted by finding id).
 
 ## Withdraw
 - Withdraw or correct a published entry. **NEEDS G**: G approves a withdrawal or correction; record his approval_ref.
