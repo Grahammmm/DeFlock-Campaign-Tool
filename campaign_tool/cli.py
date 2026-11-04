@@ -905,6 +905,8 @@ def main():
         verify_agency_p.add_argument(flag, help="Required without 'import'")
     for flag in ("--records-email", "--records-url", "--portal"):
         verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
+    verify_agency_p.add_argument("--mailing-address", help="Postal address the organizer checked on the same official page: "
+                                 "2-5 lines of 1-80 characters separated by | (never fetched; not with 'import')")
     verify_agency_p.add_argument("--csv", help="import: header agency_id,source_url,checked_on,records_email,records_url,"
                                  "portal_vendor,portal_url; 1-500 rows, all or none")
     verify_agency_p.add_argument("--check", action="store_true", help="import: validate only; write nothing")
@@ -949,11 +951,11 @@ def main():
                                   "selected agency's draft (read-only; exit 3)")
     check_p.add_argument("--directory", required=True)
     check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
-    copy_p = commands.add_parser("kit-copy", help="Sendable part of a draft as kit/outgoing/<id>.txt or an unsent .eml; "
-                                 "sends nothing")
+    copy_p = commands.add_parser("kit-copy", help="Sendable part of a draft as kit/outgoing/<id>.txt, an unsent .eml, or "
+                                 "(--for mail) a private printable <id>.letter.html and .letter.txt; sends and prints nothing")
     for flag in ("--directory", "--agency"):
         copy_p.add_argument(flag, required=True)
-    copy_p.add_argument("--for", dest="copy_for", required=True, choices=("portal", "email"))
+    copy_p.add_argument("--for", dest="copy_for", required=True, choices=("portal", "email", "mail"))
     copy_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
                                      "records, sources, findings (read-only)")
@@ -987,6 +989,9 @@ def main():
     response_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     response_p.add_argument("--partial", action="store_true", help="produced only: part of the records; the request "
                             "stays open (--expected-on: the agency's next installment date)")
+    response_p.add_argument("--withheld-basis", action="append", default=[], metavar="TEXT",
+                            help="denied or produced only, repeatable (at most 5): the agency's own stated reason or "
+                            "code section, as written (1-200 chars, no control characters; never record contents)")
     muckrock_p = commands.add_parser("kit-muckrock-import", help="Propose the kit-response step a MuckRock request JSON you "
                                      "saved by hand implies; fetches and sends nothing")
     for flag in ("--directory", "--agency", "--from-json"):
@@ -994,6 +999,12 @@ def main():
     muckrock_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     muckrock_p.add_argument("--apply", action="store_true", help="Record the step (default: dry run, nothing written)")
     muckrock_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
+    import_p = commands.add_parser("kit-response-import", help="Record a transcribed portal or letter timeline (CSV) as "
+                                   "kit-response steps in one checked write; fetches and sends nothing")
+    for flag in ("--directory", "--agency", "--csv"):
+        import_p.add_argument(flag, required=True)
+    import_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    import_p.add_argument("--apply", action="store_true", help="Record every row (default: check only, nothing written)")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -1005,6 +1016,10 @@ def main():
     denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
                           help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
     denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
+    withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
+                                     "section number in the agency's own words (read-only)")
+    withheld_p.add_argument("--directory", required=True)
+    withheld_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -1433,7 +1448,8 @@ def main():
             run_cli(root, check=args.check)
         elif args.command == "kit-verify-agency" and args.action == "import":
             from .kit import verify_agencies_csv
-            single = [f for f in ("agency_id", "source_url", "checked_on", "records_email", "records_url", "portal")
+            single = [f for f in ("agency_id", "source_url", "checked_on", "records_email", "records_url", "portal",
+                                "mailing_address")
                       if getattr(args, f) is not None]
             if single:
                 verify_agency_p.error("import takes only --directory, --csv and --check, not "
@@ -1452,7 +1468,7 @@ def main():
                 verify_agency_p.error("the following arguments are required: " + ", ".join(missing))
             print(json.dumps(verify_agency(root, args.agency_id, source_url=args.source_url, checked_on=args.checked_on,
                                            records_email=args.records_email, records_url=args.records_url,
-                                           portal=args.portal), indent=2))
+                                           portal=args.portal, mailing_address=args.mailing_address), indent=2))
             print("Nothing was sent.")
         elif args.command == "content" and args.content_command == "strip-metadata":
             from .image_meta import strip_file
@@ -1484,6 +1500,12 @@ def main():
             print(f"Read only from {args.from_json}. Nothing was fetched or sent.")
             if result.get("refusal"):
                 raise ValueError(result["refusal"])
+        elif args.command == "kit-response-import":
+            from .kit_import_steps import import_steps, render
+            result = import_steps(root, args.agency, Path(args.csv).expanduser(), request=args.request, apply=args.apply)
+            print(render(result))
+            print("Recorded only. Nothing was fetched or sent." if result["applied"] else
+                  "Checked only; nothing was written, fetched or sent.")
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
             kit_check_cli(root, as_json=args.as_json)
@@ -1537,9 +1559,15 @@ def main():
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
                                          reference=args.reference, replace_reference=args.replace_reference,
-                                         partial=args.partial, correspondence=args.correspondence),
+                                         partial=args.partial, correspondence=args.correspondence,
+                                         withheld_basis=args.withheld_basis),
                              indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-withheld":
+            from .kit_track import format_withheld, withheld
+            report = withheld(root)
+            print(json.dumps(report, indent=2) if args.as_json else format_withheld(report), end="\n" if args.as_json else "")
+            print(report["note"], file=sys.stderr)
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
             read_config(root)
             from .ledger_list import run_cli as list_cli

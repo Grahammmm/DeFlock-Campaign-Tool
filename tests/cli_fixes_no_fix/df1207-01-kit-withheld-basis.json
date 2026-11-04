@@ -1,0 +1,7 @@
+{
+  "--withheld-basis is only for denied or produced steps": "kit-response --withheld-basis message that already names the option and the rule; not in the table",
+  "--withheld-basis: at most 5 per step": "kit-response --withheld-basis message that already names the option and the rule; not in the table",
+  "--withheld-basis #5 must be plain text without control characters": "kit-response --withheld-basis message that names the value number and the rule; not in the table",
+  "--withheld-basis #5 must be 1-5 characters after stripping": "kit-response --withheld-basis message that names the value number and the rule; not in the table",
+  "--withheld-basis #5: the same text is given twice": "kit-response --withheld-basis message that names the value number and the rule; not in the table"
+}

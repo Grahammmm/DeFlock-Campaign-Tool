@@ -1,0 +1,8 @@
+{
+  "mailing_address must be plain text lines without angle brackets or control characters": "kit-verify-agency --mailing-address message that already names the option and the rule; not in the table",
+  "mailing_address must be 2-5 lines separated by |, each 1-80 characters": "kit-verify-agency --mailing-address message that already names the option and the rule; not in the table",
+  "no verified mailing_address for this agency; run kit-verify-agency --mailing-address first": "kit-copy --for mail message that already names the missing proof and the command; not in the table",
+  "mailing_address in kit/agencies.json is not 2-5 plain lines of 1-80 characters": "kit-copy --for mail message that already names the stored field and the rule; not in the table",
+  "mailing_verification in kit/agencies.json needs a source_url and a real checked_on date": "kit-copy --for mail message that already names the stored field and the rule; not in the table",
+  "mailing_verification in kit/agencies.json needs an https:// source_url": "kit-copy --for mail message that already names the stored field and the rule; not in the table"
+}

@@ -232,12 +232,16 @@ class LabelsTest(unittest.TestCase):
         # map.check_*: the fixture has no map/point-checks.json (tests/test_map_point_checks.py covers those labels).
         # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
         # meeting.votes*, vote.*: the fixture records no votes (tests/test_meeting_votes.py covers those labels).
+        # handout.*: only the private meeting-pack handout writes these (tests/test_meeting_pack.py covers them).
         # agency.votes_*: the fixture records no votes (tests/test_site_member_votes.py covers those labels).
         absent = ["agency.transparency_cameras", "agency.transparency_checked", "agency.transparency_down",
                   "agency.transparency_heading", "agency.transparency_hotlist_alerts", "agency.transparency_retention_days",
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "agency.votes_heading", "agency.votes_more", "agency.votes_none", "agency.votes_source",
+                  "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
+                  "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.title",
+                  "handout.what_we_found",
                   "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
                   "map.check_duplicate", "map.check_earlier", "map.check_heading",
                   "map.check_in_agency_record", "map.check_not_found_on_site", "map.check_seen_in_person",
