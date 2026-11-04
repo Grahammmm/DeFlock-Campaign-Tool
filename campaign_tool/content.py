@@ -44,7 +44,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters"}  # DF1952-04 / DF2207-13 / DF1952-09: reserved even without content
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01: reserved even without content
 
 
 class ContentError(ValueError):
@@ -2368,6 +2368,162 @@ def glossary_terms_used(finding, glossary):
             if any(_mentions(field, glossary_key(name)) for field in fields for name in [term["term"], *term["aliases"]])]
 
 
+# --- faq (DF0022-01): content/faq.json -> /faq.html ----------------------------------------------------------
+FAQ_KEYS, FAQ_ENTRY_KEYS = {"schema_version", "entries"}, {"question", "answer_md", "finding_ids", "rule_id"}
+MAX_FAQ_ENTRIES, MAX_FAQ_QUESTION, MAX_FAQ_ANSWER, MAX_FAQ_FINDINGS, MAX_FAQ_RULE = 40, 160, 1500, 3, 120
+
+
+def _faq_question(value):
+    """True for a trimmed, non-blank, single-line plain-text question of 1-160 characters."""
+    return (isinstance(value, str) and value == value.strip() and 1 <= len(value) <= MAX_FAQ_QUESTION
+            and plain_text(value) and not any(unicodedata.category(char) in ("Cc", "Cf") for char in value))
+
+
+def load_faq(document, root, findings, problems=None):
+    """Validate a parsed ``content/faq.json``: ``[{question, answer_md, finding_ids, [rule_id, citation, law_status]}]``.
+
+    ``findings`` are the already validated, published content findings (a finding id must be one of their ids; None
+    skips only that membership check, for content-check when a finding file is itself refused). ``rule_id`` is looked
+    up in the campaign's shipped law package, loaded only when an entry cites one; ``citation`` and ``law_status``
+    come from the package, never from the file. Entries keep file order. With ``problems`` a list every independent
+    refusal is appended (``faq.json.entries[N]...``, zero-based) and None returned; without it the first raises
+    ``ContentError``. Answers are never echoed in a refusal."""
+    found = []
+
+    def refuse(where, message):
+        found.append(f"faq.json{where}: {message}")
+
+    package_state = []  # [(package or None)] once a rule_id needs it
+
+    def law_package():
+        if not package_state:
+            from . import law  # local: law is only needed when a rule is cited
+            from .finding_law import jurisdiction  # local: finding_law imports this module
+            package = None
+            try:
+                name = jurisdiction(root)
+                package = law.load_package(name) if name else None
+            except (ContentError, OSError, ValueError):
+                package = None
+            package_state.append(package)
+        return package_state[0]
+
+    if not isinstance(document, dict):
+        refuse("", "expected an object")
+        document = {}
+    else:
+        unknown = sorted(str(key) for key in set(document) - FAQ_KEYS)
+        if unknown:
+            refuse("", f"unknown field(s) {unknown}")
+        missing = sorted(FAQ_KEYS - set(document))
+        if missing:
+            refuse("", f"missing field(s) {missing}")
+    if "schema_version" in document and (type(document["schema_version"]) is not int or document["schema_version"] != 1):
+        refuse(".schema_version", "must be 1")
+    entries = document.get("entries", [])
+    if "entries" in document and (not isinstance(entries, list) or not 1 <= len(entries) <= MAX_FAQ_ENTRIES):
+        refuse(".entries", f"must be a list of 1 to {MAX_FAQ_ENTRIES} entries")
+        entries = []
+    elif "entries" not in document:
+        entries = []
+
+    published = None if findings is None else {finding["id"] for finding in findings}
+    first_at, accepted = {}, []  # normalized question -> first position; validated entries
+    for index, entry in enumerate(entries):
+        base = f".entries[{index}]"
+        before = len(found)
+        if not isinstance(entry, dict):
+            refuse(base, "expected an object")
+            continue
+        unknown = sorted(str(key) for key in set(entry) - FAQ_ENTRY_KEYS)
+        if unknown:
+            refuse(base, f"unknown field(s) {unknown}")
+        missing = sorted({"question", "answer_md"} - set(entry))
+        if missing:
+            refuse(base, f"missing field(s) {missing}")
+        question = entry.get("question")
+        if "question" in entry:
+            if not _faq_question(question):
+                refuse(base + ".question", f"must be trimmed plain single-line text of 1-{MAX_FAQ_QUESTION} characters "
+                                           "without <, > or control characters")
+            else:
+                key = glossary_key(question)
+                if key in first_at:
+                    refuse(base + ".question", f"duplicates entries[{first_at[key]}].question")
+                else:
+                    first_at[key] = index
+        answer = entry.get("answer_md")
+        if "answer_md" in entry and (not isinstance(answer, str) or not answer.strip() or len(answer) > MAX_FAQ_ANSWER
+                                     or not plain_text(answer)):
+            refuse(base + ".answer_md", f"must be non-blank plain text of at most {MAX_FAQ_ANSWER} characters "
+                                        "without <, > or control characters")
+        ids = entry.get("finding_ids", [])
+        if "finding_ids" in entry and (not isinstance(ids, list) or len(ids) > MAX_FAQ_FINDINGS):
+            refuse(base + ".finding_ids", f"must be a list of at most {MAX_FAQ_FINDINGS} finding ids")
+            ids = []
+        seen_ids = set()
+        for number, finding_id in enumerate(ids):
+            where = f"{base}.finding_ids[{number}]"
+            if not isinstance(finding_id, str) or not FINDING_ID.fullmatch(finding_id):
+                refuse(where, "must be a finding id (letters, digits, underscore or hyphen, 1-64 characters)")
+            elif finding_id in seen_ids:
+                refuse(where, "duplicate finding id")
+            else:
+                seen_ids.add(finding_id)
+                if published is not None and finding_id not in published:
+                    refuse(where, "not a published finding id")
+        rule = {}
+        if "rule_id" in entry:
+            rule_id = entry["rule_id"]
+            if not isinstance(rule_id, str) or not rule_id or len(rule_id) > MAX_FAQ_RULE:
+                refuse(base + ".rule_id", f"must be a non-empty rule id of at most {MAX_FAQ_RULE} characters")
+            else:
+                package = law_package()
+                if package is None:
+                    refuse(base + ".rule_id", "no usable campaign law package")
+                else:
+                    rules = {item["rule_id"]: item for item in package["rules"]}
+                    if rule_id not in rules:
+                        refuse(base + ".rule_id", "unknown law-package rule id")
+                    else:
+                        rule = {"rule_id": rule_id, "citation": rules[rule_id]["citation"], "law_status": _law_status(package)}
+        if len(found) == before:
+            accepted.append({"question": question, "answer_md": answer, "finding_ids": list(ids), **rule})
+    if found:
+        if problems is None:
+            raise ContentError(found[0])
+        problems.extend(found)
+        return None
+    return accepted
+
+
+def read_faq(root, findings, problems=None):
+    """``load_faq`` of ``<root>/content/faq.json``; None when the file is absent.
+
+    A symlink (even dangling), folder or other non-regular path is refused, never skipped, and a read failure is a
+    named ``ContentError``, not a traceback. ``problems``: see ``load_faq`` (content-check collects, build raises)."""
+    path = Path(root) / "content" / "faq.json"
+    try:
+        if path.is_symlink():
+            raise ContentError("faq.json: symlinks are not read")
+        if not os.path.lexists(path):
+            return None
+        if not path.is_file():
+            raise ContentError("faq.json: must be a regular file, not a symlink or folder")
+        try:
+            document = _read_json(path)
+        except OSError:
+            raise ContentError("faq.json: could not be read") from None
+        except RecursionError:
+            raise ContentError("faq.json: not valid UTF-8 JSON (nested too deeply)") from None
+    except ContentError as exc:
+        if problems is None:
+            raise
+        problems.append(str(exc))
+        return None
+    return load_faq(document, root, findings, problems)
+
+
 # --- assembly ---------------------------------------------------------------
 
 def load_content(root, today=None, *, _replacing_cosign_id=None):
@@ -2495,6 +2651,9 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
     glossary = read_glossary(root)  # DF1952-04: optional; None without the file
     if glossary is not None:
         model["glossary"] = glossary
+    faq = read_faq(root, findings)  # DF0022-01: optional; None without the file
+    if faq is not None:
+        model["faq"] = faq
     # content/redirects.json (DF2037-16): the key is present exactly when the file is, so a parsed JSON null is still
     # checked (and refused) by site against the pages it writes; without the file there is no key.
     if redirects_path.is_file() or redirects_path.is_symlink():
