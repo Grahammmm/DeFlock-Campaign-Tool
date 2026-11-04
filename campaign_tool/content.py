@@ -86,6 +86,22 @@ def _text(document, key, label, required=True, default="", allow_empty=True):
     return value
 
 
+def _quote(source, label):
+    """DF1952-08: the optional transcribed excerpt of a finding source, returned exactly as written.
+
+    1-400 code points, at least one non-whitespace character, no Unicode control or format characters (Cc/Cf: tabs,
+    newlines, DEL, C1 and bidi controls included). Angle brackets are ordinary text (the site escapes it). Nothing is
+    coerced, stripped or truncated, and the refusal never repeats the excerpt."""
+    value = source["quote"]
+    if not isinstance(value, str):
+        raise ContentError(f"{label}.quote: must be a string")
+    if not 1 <= len(value) <= QUOTE_MAX or not value.strip():
+        raise ContentError(f"{label}.quote: must be 1 to {QUOTE_MAX} characters with at least one that is not a space")
+    if any(unicodedata.category(char) in ("Cc", "Cf") for char in value):
+        raise ContentError(f"{label}.quote: must be plain text without control characters or line breaks")
+    return value
+
+
 def _text_list(document, key, label, limit=100):
     value = document.get(key, [])
     if not isinstance(value, list) or len(value) > limit or any(not plain_text(item) for item in value):
@@ -386,7 +402,8 @@ FINDING_KEYS = {"id", "title", "slug", "summary", "body_md", "classification", "
 FINDING_REQUIRED = {"id", "title", "slug", "summary", "classification", "confidence",
                     "event_date", "sources", "published_at", "corrections", "state",
                     "author", "limitations", "counterevidence"}
-SOURCE_KEYS = {"sha256", "locator", "title", "rule_id", "page"}
+SOURCE_KEYS = {"sha256", "locator", "title", "rule_id", "page", "quote"}
+QUOTE_MAX = 400  # DF1952-08: code points of an optional transcribed excerpt
 CORRECTION_KEYS = {"date", "note"}
 
 # DF1103-08: the agency's right of reply. "pending" means a request for comment was PREPARED, not that anyone was asked.
@@ -540,6 +557,8 @@ def load_finding(document, label, *, known_agency_ids=None, today=None):
             "rule_id": _text(source, "rule_id", f"{label}.sources[{index}]", required=False, default=None),
             "page": page,
         })
+        if "quote" in source:  # absent stays absent: no default or null key, so a quote-free finding keeps its exact shape
+            sources[-1]["quote"] = _quote(source, f"{label}.sources[{index}]")
     published_at = _timestamp(document["published_at"], f"{label}.published_at")
     published_day = datetime.fromisoformat(published_at.replace("Z", "+00:00")).date()
     corrections = []

@@ -113,6 +113,15 @@ the bare URL, "Open the public copy (page N)"). `build` stops and `content-check
 in `sources.json`, has no `public_url`, or is above the entry's `pages` (when that is above 0). `data/findings.json`
 carries `page` only when it is set.
 
+Optional `sources[].quote` (DF1952-08) is a short passage you copied by hand from the cited record: 1 to 400
+characters, at least one that is not a space, plain text with no control or line-break characters (tabs, newlines, DEL,
+bidi marks), kept exactly as written (no trimming, no Markdown; angle brackets are ordinary text and are escaped). It
+needs the same `locator` as every source. The finding page and the packet show it as a blockquote under the source
+line with "Transcribed by the campaign; not checked against the record text." and, when `page` is set, "Page N".
+Nothing compares the quote with the record: the campaign checks the transcription by hand. `data/findings.json`
+carries `quote` only when it is set; a quote holding a 40-character hex run stops the build (it is never redacted or
+cut). The labels `finding.quote_transcribed` and `finding.quote_page` can be overridden in `labels.json`.
+
 Every finding page shows the classification, a confidence label, the event
 date, each source with the first 12 characters of its SHA-256 and its locator,
 limitations, counterevidence, a Corrections section and the
