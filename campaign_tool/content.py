@@ -393,7 +393,7 @@ def load_finding(document, label, *, known_agency_ids=None):
     if blockers:
         raise ContentError(f"{label}: review blockers {blockers}")
     finding_id = document["id"]
-    if not isinstance(finding_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", finding_id):
+    if not isinstance(finding_id, str) or not FINDING_ID.fullmatch(finding_id):
         raise ContentError(f"{label}.id: use letters, digits, underscore or hyphen")
     slug = _slug(document["slug"], f"{label}.slug")
     if slug in STARTER_SLUGS:
@@ -480,8 +480,9 @@ def load_finding_preview(document, label, now=None):
 
 # --- meetings --------------------------------------------------------------
 
+FINDING_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # public finding ids; distinct from a slug
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
-                "status", "participation", "outcome"}
+                "status", "participation", "outcome", "cited_findings"}
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes", "recording_url",
@@ -578,6 +579,18 @@ def load_outcome(value, starts_at, status, label, today=None):
             **({"recording_start": start} if "recording_start" in value else {})}
 
 
+def load_cited_findings(value, label):
+    """DF2207-06: the finding ids a staged comment kit cites: a list of 1 to 3 unique ids, order kept as written."""
+    if not isinstance(value, list) or not 1 <= len(value) <= 3:
+        raise ContentError(f"{label}: must be a list of 1 to 3 finding ids")
+    for index, finding_id in enumerate(value):
+        if not isinstance(finding_id, str) or not FINDING_ID.fullmatch(finding_id):
+            raise ContentError(f"{label}[{index}]: use letters, digits, underscore or hyphen (1 to 64 characters)")
+        if finding_id in value[:index]:
+            raise ContentError(f"{label}[{index}]: {finding_id!r} is listed more than once")
+    return list(value)
+
+
 def load_meeting(document, label, today=None):
     _require_keys(document, MEETING_KEYS, {"body", "starts_at"}, label)
     agency_id = document.get("agency_id")
@@ -603,6 +616,8 @@ def load_meeting(document, label, today=None):
                           if document.get("participation") is not None else None),
         "outcome": (load_outcome(document["outcome"], starts_at, status, f"{label}.outcome", today)
                     if "outcome" in document else None),
+        **({"cited_findings": load_cited_findings(document["cited_findings"], f"{label}.cited_findings")}
+           if "cited_findings" in document else {}),
     }
 
 
