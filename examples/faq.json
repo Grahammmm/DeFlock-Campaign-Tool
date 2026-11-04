@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "question": "What is an ALPR?",
+      "answer_md": "[EDIT ME: verify for this campaign] An ALPR, or automated license plate reader, is a camera system that photographs passing vehicles and turns the license plate images into searchable data. That data can include the plate together with the time and place it was captured. This is plain-language background, not a legal definition."
+    },
+    {
+      "question": "What is this campaign asking for?",
+      "answer_md": "[EDIT ME: verify for this campaign] As a draft, the campaign asks local agencies for the public records that show how their license plate reader systems are run, such as usage and privacy policies, data-sharing agreements, retention periods and audit logs. These are the organizers' choices for this campaign, not a promise about what any agency will release. Replace this answer with the campaign's own stated requests."
+    },
+    {
+      "question": "Why ask for these records?",
+      "answer_md": "[EDIT ME: verify for this campaign] As a draft, the reason is that residents usually cannot see how a camera system is governed unless its policies and sharing records are requested and read. Comparing those records with what is said in public lets people see what is written down. Asking for records is not an accusation against anyone."
+    },
+    {
+      "question": "What is a public-records request?",
+      "answer_md": "[EDIT ME: verify for this campaign] A public-records request is a written request asking a public agency for copies of records it holds, such as policies, contracts or logs. The agency may answer by releasing copies, withholding some records or redacting parts of them. The tool records what comes back, including what was withheld and the reason given, if any."
+    },
+    {
+      "question": "How long does an agency have to answer?",
+      "answer_md": "[EDIT ME: verify for this campaign] For California agencies, the draft law package says an agency normally makes its determination within 10 days of receiving a copy request, and that a reasonably necessary unusual-circumstances extension needs written notice from the agency head or designee giving reasons and an expected date and adds at most 14 days. A determination is not the same as producing the records, and the actual date of receipt, holidays and notice requirements need human checking. The California law package is a draft, not independently reviewed; check the current official source and get qualified advice before relying on it. Official source: [Government Code section 7922.535](https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.535.).",
+      "rule_id": "ca-gov-7922.535-determination-and-extension-2026"
+    },
+    {
+      "question": "Does a missing record prove a violation?",
+      "answer_md": "[EDIT ME: verify for this campaign] No. A record may be missing because it was not provided, was not found or does not answer the question asked, and the tool labels that an information gap, which is not evidence that something did or did not happen. A finding describes differences between records and a rule, not a court's judgment."
+    },
+    {
+      "question": "Why do we not publish plate reads?",
+      "answer_md": "[EDIT ME: verify for this campaign] As a draft organizer choice, the campaign asks for policies, agreements and audit-style records and does not publish license plate reads, because a plate read can show where a person was and when. Published pages are built from reviewed findings and their cited sources, and privacy review is one of the reviews a finding needs before it is published. Please do not send plate sightings or personal information to the campaign."
+    },
+    {
+      "question": "Where can I see the records behind a finding?",
+      "answer_md": "[EDIT ME: verify for this campaign] Each published finding lists the source records it cites, with a locator and a record number. Where the campaign holds a public copy, the source links to it, and the sources page lists the library. A matching record number shows the file has not changed since it was received; it does not show who wrote the file or that what it says is true."
+    },
+    {
+      "question": "How are findings reviewed?",
+      "answer_md": "[EDIT ME: verify for this campaign] Before a finding is published it needs factual, legal and privacy review by at least two people other than the author, and until then the build refuses to publish it. Reviewers check each statement against the cited records. Reviewers declare agency interests privately, and a declared interest excludes their review of findings about that agency."
+    },
+    {
+      "question": "What do the finding labels mean?",
+      "answer_md": "[EDIT ME: verify for this campaign] Each finding carries a classification label, such as documented fact, apparent conflict or information gap, and a confidence label, verified or likely. Verified means each statement was checked against the cited source records by a reviewer other than the author; likely means the cited records support the reading but records still expected could change it. The How to read our findings page defines every label."
+    },
+    {
+      "question": "How are findings corrected?",
+      "answer_md": "[EDIT ME: verify for this campaign] When a published finding turns out to be wrong or incomplete, it is corrected rather than quietly changed. The finding stays on the site with a visible dated correction note, and the corrected text goes through review again."
+    },
+    {
+      "question": "How can I ask for a correction?",
+      "answer_md": "[EDIT ME: verify for this campaign] Send the page address, what you think is wrong and any public record that shows it to [EDIT ME: add a verified public correction contact]. The campaign checks the request against the cited records. If a finding changes, the page shows a dated correction note."
+    },
+    {
+      "question": "How can I help?",
+      "answer_md": "[EDIT ME: verify for this campaign] As a draft, ways to help include reading published records and sources, checking summaries against the cited pages, helping to read and redact source copies, and checking whether policies, sharing records and retention records are available for your local agencies. Please do not send plate sightings, tips, accusations or personal data. Please do not submit requests on your own to agencies the organizers are already working with."
+    },
+    {
+      "question": "Is this campaign anti-police?",
+      "answer_md": "[EDIT ME: verify for this campaign] As a draft organizer position, the campaign's work is about public records and how a camera technology is documented, not about opposing any group of people. Requests ask for records, and findings describe what the cited records show and do not accuse any person. The organizers should state the campaign's own position here in their own words."
+    },
+    {
+      "question": "Does this website give legal advice?",
+      "answer_md": "[EDIT ME: verify for this campaign] No. The site shares public records and plain-language explanations, and its pages say they are not legal advice. Any statement about the law comes from a law package that is a draft and not independently reviewed, so check the current official source and get qualified advice before relying on it."
+    }
+  ]
+}
