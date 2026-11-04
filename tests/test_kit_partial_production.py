@@ -84,6 +84,10 @@ class PartialProductionTests(unittest.TestCase):
         code, out, err = self.cli("kit-status")
         self.assertEqual((code, err), (0, ""))
         rows = json.loads(out)["requests"]
+        entries = json.loads(self.sent.read_text())["requests"]
+        for row in rows:
+            self.assertEqual(row.pop("scopes"), [{"scope_id": scope, "answer": None, "on": None}
+                                                 for scope in entries[row["agency_id"]]["scopes"]])
         self.assertEqual([{k: r.pop(k) for k in NEW_ROW_KEYS} for r in rows], [NEW_ROW_KEYS, NEW_ROW_KEYS])
         self.assertEqual([{s["answer"] for s in r.pop("scopes")} for r in rows], [{None}, {None}])
         self.assertEqual(json.dumps(rows), GOLDEN_STATUS_ROWS.replace("AGENCY", self.agency)
