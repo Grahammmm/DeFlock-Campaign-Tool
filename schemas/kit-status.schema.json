@@ -16,7 +16,7 @@
           "agency_id", "request", "name", "sent_on", "channel", "draft_changed_since_sent",
           "determination_due", "with_extension", "steps", "extended", "closed", "last_step",
           "records", "record_prefixes", "fee_estimate", "over_fee_cap", "stated_production_date",
-          "waiting_on_you_since", "producing", "next_installment", "reference", "fee_state", "fee_paid", "withheld_basis"
+          "waiting_on_you_since", "producing", "next_installment", "reference", "fee_state", "fee_paid", "withheld_basis", "scopes"
         ],
         "properties": {
           "agency_id": {"type": "string", "minLength": 1},
@@ -57,6 +57,33 @@
           "reference": {"type": ["string", "null"]},
           "fee_state": {"enum": [null, "unpaid", "paid", "waived"]},
           "fee_paid": {"$ref": "#/$defs/dollars_or_null"},
+          "downloads_pending": {
+            "type": "array", "minItems": 1,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["produced_on", "expires_on", "days_left", "state", "line"],
+              "properties": {
+                "produced_on": {"$ref": "#/$defs/date"},
+                "expires_on": {"$ref": "#/$defs/date"},
+                "days_left": {"type": "integer"},
+                "state": {"enum": ["pending", "expired"]},
+                "line": {"type": "string", "minLength": 1}
+              }
+            }
+          },
+          "scopes": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["scope_id", "answer", "on"],
+              "properties": {
+                "scope_id": {"type": "string", "minLength": 1},
+                "answer": {"enum": [null, "produced", "partly_produced", "withheld", "no_records_stated"]},
+                "on": {"$ref": "#/$defs/date_or_null"}
+              }
+            }
+          },
           "withheld_basis": {
             "type": "array",
             "items": {

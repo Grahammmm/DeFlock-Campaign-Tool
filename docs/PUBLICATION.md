@@ -7,6 +7,23 @@ creates one private `kit/press/` Markdown draft from published findings only. Re
 limitations, corrections, links and contact before any use. It sends and publishes nothing.
 Edited drafts are kept; the fresh version goes to `kit/press.suggested/`.
 
+### Letters to the editor
+
+`python3 -m campaign_tool press letter --directory D --finding ID [--finding ID] [--words N] [--outlet NAME] [--date YYYY-MM-DD]`
+writes one private, never-sent first-person letter to `kit/press/letters/<date>-<first-slug>.md` from one to
+three published findings (`--words` 150 to 400, default 250; `--outlet` is plain text for the salutation only).
+Each finding gets one short paragraph: its summary exactly as published, `(finding ID)`, `Corrected DATE.` with the
+latest correction date when it has any, and its finding link when `base_url` is set. The closing points to the next
+scheduled staged meeting of the FIRST finding's agency (no speaking or comment claims), else to the signup section
+(`/#participate`). `[YOUR NAME]` and `[YOUR CITY]` are left for the organizer.
+
+Finding paragraphs are dropped whole from the end until the visible body fits N words (whitespace tokens with a
+letter or digit; the two placeholders and the initial draft comment are not counted); only a first paragraph that
+cannot fit is refused. The count is printed as `Letter word count: X/N.` The legal-claim wording guard is alert-only:
+rule names are printed to stderr as `review-required` notes and nothing is blocked. Edited letters are kept and the
+fresh version goes to `kit/press/letters.suggested/`. The letter record is `kit/press/letters/.written.json`, separate
+from the release draft's. Nothing is sent or published; the release `press draft` is unchanged.
+
 How a finding goes from draft to the public site in the workspace Worker, and how it is
 corrected or withdrawn afterwards. Code: `workers/workspace/src/review_state.ts`,
 `publication.ts`, `manifest.ts`, `executors/publish_finding.ts`, `executors/deploy_site.ts`.
@@ -167,6 +184,32 @@ source library` and listed in an `[EDIT ME: add these sources before review: ...
 limitations, counterevidence, the finding text, source locators) stays an `[EDIT ME: ...]` marker. A request
 that is still open (no answer, or only an acknowledgement, extension or partial answer) or that produced
 records is refused; write a regular finding for those. Nothing is published.
+
+### Agency right of reply
+
+An agency can be invited to comment before a finding is published; publishing without asking stays allowed and
+adds no review requirement. `python3 -m campaign_tool finding reply-request DRAFT --directory D --by YYYY-MM-DD`
+writes a private, never-sent `kit/replies/<id>.md` (directories 0700, file 0600, never overwritten): the agency
+name, the draft's title and summary, the deadline, the 12-character prefixes of the cited records and a neutral
+request for comment. It holds no address, full hash, body text, private note or legal claim, and it sends
+nothing; asking the agency is your own manual step. It stores `agency_response: {status: "pending",
+prepared_on, reply_by}` on the draft. **Pending means prepared, not asked**, and a pending reply is never
+published.
+
+`python3 -m campaign_tool finding reply DRAFT --directory D --status received|declined|no_response --on D
+--asked-on D [--text T] [--record PREFIX]` records the outcome on the draft. `--asked-on` is your attestation of
+the day you really asked the agency; an unsent prepared request is not evidence of asking. `received` needs
+`--text`, the reply as written (1-2000 characters, line breaks and tabs kept, no other control characters, no
+40-or-more-character hex run); `declined` may carry one; `no_response` carries none and is refused before the
+deadline (`--on` on or after `--by`). `--record` names a source-library record (12-64 hex characters, which must be
+registered and stored) holding the reply, and adds it to the draft's sources if absent. The command prints no reply
+text and sends nothing.
+
+The reply is part of the reviewed content: any change to it, or adding one after approval, makes earlier review
+receipts stale, so it needs fresh review before `finding publish` or `finding correct --from`. The finding page
+then shows it under "Agency response" as plain text, and `data/findings.json` carries `agency_response` with
+`status`, `asked_on`, `reply_by`, `on`, optional `text` and the 12-character `record_sha256_prefix`; a no-response
+shows as "asked on D; no response by D". A finding without a reply renders and exports as before.
 
 ## Propose, approve, execute
 
@@ -347,6 +390,26 @@ when `base_url` is set. Only the agenda item is shortened. Cancelled, past, late
 unverified meetings get no draft and are counted under `skipped`; an unreadable meeting file is
 counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts and
 `--check` are unchanged. Nothing is posted.
+
+### Social drafts for outcomes (never posted)
+
+`social --directory D --outcomes [--within-days N] [--platform P ...]` (N from 1 to 60, default 14)
+writes one private draft per staged meeting whose organizer-recorded `outcome` is dated in the last
+N calendar days, to `kit/social/outcomes/<id>.md` (or `kit/social/outcomes/<P>/<id>.md` sized by that
+platform's rule; kept edits go to `kit/social/outcomes.suggested/` or `kit/social/outcomes/<P>.suggested/`).
+The window is on the recorded `outcome.on` date, inclusive: today and the N-1 days before it (exactly N
+dates), not the meeting start, the verification date or the file time. The post reads
+`<body> — <outcome.on>: <agenda item>. Result: <result>.`, then ` Vote: <vote>.` only when a vote line was
+recorded, then ` Official record: <outcome.source_url>` and `<base_url>/meetings/<id>.html` when `base_url`
+is set. The result token and the vote line are quoted exactly as recorded; no tally is derived from
+per-member votes and no decision is inferred. Only the agenda item is shortened; if the fixed fields
+alone cannot fit the platform's limit the run is refused, naming the meeting and platform, before any
+file is written. A meeting without a recorded outcome, a cancelled one, or one outside the window gets
+no draft and is counted under `skipped` (`cancelled`, `no_outcome`, `outside_window`, `unreadable`);
+an unreadable meeting file is counted and named, never fatal. Participation is not required. A draft
+you edited is kept (the fresh text goes to the suggestions folder); a corrected outcome updates only
+untouched drafts; drafts that left the window are listed as `stale`, never removed. `--outcomes` cannot
+be combined with `--meetings` or `--check`. Nothing is posted.
 
 ## Posting one approved social draft (Worker `post_social`)
 

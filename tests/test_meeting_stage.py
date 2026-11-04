@@ -72,7 +72,9 @@ class MeetingStageTests(unittest.TestCase):
         self.assertFalse(report["replaced"])
         self.assertIn("verify the posted agenda", report["note"])
         document = json.loads(self.target.read_text(encoding="utf-8"))
-        self.assertLessEqual(set(document), {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md"})
+        self.assertLessEqual(set(document), {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md",
+                                             "cited_findings"})
+        self.assertEqual(document["cited_findings"], report["findings"])  # the exact selected ids are stored
         model = load_content(self.root)
         staged = [m for m in model["meetings"] if m["id"] == MID]
         self.assertEqual(len(staged), 1)

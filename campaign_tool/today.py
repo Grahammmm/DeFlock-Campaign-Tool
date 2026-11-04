@@ -13,7 +13,8 @@ from . import findings, kit, kit_track, meeting_comments, meeting_stage
 from .content import _read_json, load_agencies, load_meeting
 
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
-         "request_installment_due", "finding_ready", "finding_blocked",
+         "request_installment_due", "request_download_pending", "request_download_expired", "finding_ready",
+         "finding_blocked",
          "contract_ending", "minutes_pending", "stale_comment_kit", "stale_contact", "review_waiting", "unreadable")
 WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS, REVIEW_DAYS = 7, 180, 120, 7
 CONTRACT_DAYS, CONTRACT_ENDED_DAYS, MINUTES_DAYS = 90, 30, 45
@@ -96,10 +97,15 @@ def _requests(root, as_of, directory, law_base):
         elif row["state"] == "producing" and row["days"] == 0:
             what, row = (f"Check on {name}: the next installment the agency stated for {row['due']} is due today",
                          {**row, "state": "installment_due"})
+        elif row["state"] == "download_pending":  # an expiring link: its own agency-stated date, days left
+            n = row["days"]
+            what = f"Download records from {name} before {row['due']} ({n} day{'' if n == 1 else 's'} left)"
+        elif row["state"] == "download_expired":
+            what = f"{name}: link expired {row['due']}: {kit_track.DOWNLOAD_ASK}"
         else:
             continue
         items.append(_item("request_" + row["state"], what, f"kit-status --directory {directory}", row["due"],
-                           row["agency_id"]))
+                           row["agency_id"] + (row["request"] if row.get("kind") == "download" else "")))
     return items
 
 

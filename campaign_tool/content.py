@@ -14,7 +14,9 @@ belong in ``content/``.
 """
 import json
 import re
+import unicodedata
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -41,7 +43,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about"}
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "newsletters"}  # newsletters: DF1952-09
 
 
 class ContentError(ValueError):
@@ -324,12 +326,81 @@ def load_site(document, assets_dir=None):
 FINDING_KEYS = {"id", "title", "slug", "summary", "body_md", "classification", "confidence",
                 "event_date", "sources", "published_at", "updated_at", "corrections", "state",
                 "author", "limitations", "counterevidence", "agency_id", "rule_version",
-                "duty", "exceptions", "rule_ids", "also_agency_ids"}
+                "duty", "exceptions", "rule_ids", "also_agency_ids", "agency_response"}
 FINDING_REQUIRED = {"id", "title", "slug", "summary", "classification", "confidence",
                     "event_date", "sources", "published_at", "corrections", "state",
                     "author", "limitations", "counterevidence"}
 SOURCE_KEYS = {"sha256", "locator", "title", "rule_id", "page"}
 CORRECTION_KEYS = {"date", "note"}
+
+# DF1103-08: the agency's right of reply. "pending" means a request for comment was PREPARED, not that anyone was asked.
+REPLY_STATUSES = ("received", "declined", "no_response")
+REPLY_BASE_KEYS = frozenset(("status", "prepared_on", "reply_by"))
+REPLY_FINAL_KEYS = REPLY_BASE_KEYS | {"asked_on", "on"}
+REPLY_OPTIONAL = {"received": {"text", "record_sha256"}, "declined": {"text"}, "no_response": set()}
+MAX_REPLY_TEXT = 2000
+_REPLY_DAY, _FULL_HEX = re.compile(r"\d{4}-\d{2}-\d{2}"), re.compile(r"[0-9a-fA-F]{40,}")
+
+
+def reply_day(value):
+    """A real padded YYYY-MM-DD as a date, else None."""
+    try:
+        return date.fromisoformat(value) if isinstance(value, str) and _REPLY_DAY.fullmatch(value) else None
+    except ValueError:
+        return None
+
+
+def _agency_response(value, where, cited=None, today=None):
+    """Validate one agency_response and return a normalized copy. Every refusal names ``where.<field>`` with a fixed
+    reason and never quotes the supplied text or an unknown key. ``cited``: the finding's source sha256 values."""
+    if not isinstance(value, dict):
+        raise ContentError(f"{where}: must be an object")
+    status = value.get("status")
+    if status != "pending" and status not in REPLY_STATUSES:
+        raise ContentError(f"{where}.status: must be pending, received, declined or no_response")
+    final = status != "pending"
+    base = REPLY_FINAL_KEYS if final else REPLY_BASE_KEYS
+    allowed = base | (REPLY_OPTIONAL[status] if final else set())
+    for key in sorted(value, key=str):
+        if key not in REPLY_FINAL_KEYS | REPLY_OPTIONAL["received"]:
+            raise ContentError(f"{where}: unknown field")
+        if key not in allowed:
+            raise ContentError(f"{where}.{key}: not allowed for status {status}")
+    for key in sorted(base | ({"text"} if status == "received" else set())):
+        if key not in value:
+            raise ContentError(f"{where}.{key}: required for status {status}")
+    days = {key: reply_day(value[key]) for key in base - {"status"}}
+    for key, day in days.items():
+        if day is None:
+            raise ContentError(f"{where}.{key}: must be a real YYYY-MM-DD date")
+    today = today or date.today()
+    if days["prepared_on"] > today:
+        raise ContentError(f"{where}.prepared_on: must not be in the future")
+    if days["prepared_on"] > days["reply_by"]:
+        raise ContentError(f"{where}.reply_by: must not be before prepared_on")
+    if final:
+        asked = days["asked_on"]
+        if not days["prepared_on"] <= asked <= days["reply_by"]:
+            raise ContentError(f"{where}.asked_on: must be between prepared_on and reply_by")
+        if not asked <= days["on"] <= today:
+            raise ContentError(f"{where}.on: must be on or after asked_on and not in the future")
+        if status == "no_response" and days["on"] < days["reply_by"]:
+            raise ContentError(f"{where}.on: no_response needs a date on or after reply_by")
+    if "text" in value:
+        text = value["text"]
+        if (not isinstance(text, str) or not 1 <= len(text) <= MAX_REPLY_TEXT or not text.strip()
+                or any(ch not in "\n\t" and unicodedata.category(ch) in ("Cc", "Cf", "Cs") for ch in text)):
+            raise ContentError(f"{where}.text: must be 1-{MAX_REPLY_TEXT} characters of non-blank text "
+                               "without control or format characters")
+        if _FULL_HEX.search(text):
+            raise ContentError(f"{where}.text: must not hold a full hash (40 or more hex characters)")
+    if "record_sha256" in value:
+        sha = value["record_sha256"]
+        if not isinstance(sha, str) or not SHA256.fullmatch(sha):
+            raise ContentError(f"{where}.record_sha256: must be 64 lowercase hex characters")
+        if cited is not None and sha not in cited:
+            raise ContentError(f"{where}.record_sha256: must be one of the finding's cited sources")
+    return {key: value[key] for key in sorted(value)}
 
 
 MAX_ALSO_AGENCIES = 10
@@ -378,7 +449,7 @@ def check_finding_agencies(finding, known_agency_ids, label):
     return finding
 
 
-def load_finding(document, label, *, known_agency_ids=None):
+def load_finding(document, label, *, known_agency_ids=None, today=None):
     _require_keys(document, FINDING_KEYS, FINDING_REQUIRED, label)
     if document["state"] != "published":
         raise ContentError(f"{label}: state is {document['state']!r}; only published findings are rendered")
@@ -393,7 +464,7 @@ def load_finding(document, label, *, known_agency_ids=None):
     if blockers:
         raise ContentError(f"{label}: review blockers {blockers}")
     finding_id = document["id"]
-    if not isinstance(finding_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", finding_id):
+    if not isinstance(finding_id, str) or not FINDING_ID.fullmatch(finding_id):
         raise ContentError(f"{label}.id: use letters, digits, underscore or hyphen")
     slug = _slug(document["slug"], f"{label}.slug")
     if slug in STARTER_SLUGS:
@@ -434,6 +505,9 @@ def load_finding(document, label, *, known_agency_ids=None):
         raise ContentError(f"{label}.rule_ids: each rule id must be a non-empty string of at most 120 characters")
     if len(set(rule_ids)) != len(rule_ids):
         raise ContentError(f"{label}.rule_ids: duplicate rule id")
+    response = ({"agency_response": _agency_response(document["agency_response"], f"{label}.agency_response",
+                                                      {s["sha256"] for s in sources}, today)}
+                if "agency_response" in document else {})
     loaded = {
         "id": finding_id,
         "title": _text(document, "title", label, allow_empty=False),
@@ -459,6 +533,7 @@ def load_finding(document, label, *, known_agency_ids=None):
     }
     if also_agency_ids is not None:  # absent stays absent: a primary-only finding keeps its exact shape
         loaded["also_agency_ids"] = also_agency_ids
+    loaded.update(response)  # absent stays absent, like also_agency_ids: a finding with no reply keeps its exact shape
     if known_agency_ids is not None:
         check_finding_agencies(loaded, known_agency_ids, label)
     return loaded
@@ -480,8 +555,9 @@ def load_finding_preview(document, label, now=None):
 
 # --- meetings --------------------------------------------------------------
 
+FINDING_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # public finding ids; distinct from a slug
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
-                "status", "participation", "outcome"}
+                "status", "participation", "outcome", "cited_findings"}
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes", "recording_url",
@@ -598,6 +674,18 @@ def _load_minutes(value, held, now, label):
     return {"minutes_url": url, "minutes_approved_on": day}
 
 
+def load_cited_findings(value, label):
+    """DF2207-06: the finding ids a staged comment kit cites: a list of 1 to 3 unique ids, order kept as written."""
+    if not isinstance(value, list) or not 1 <= len(value) <= 3:
+        raise ContentError(f"{label}: must be a list of 1 to 3 finding ids")
+    for index, finding_id in enumerate(value):
+        if not isinstance(finding_id, str) or not FINDING_ID.fullmatch(finding_id):
+            raise ContentError(f"{label}[{index}]: use letters, digits, underscore or hyphen (1 to 64 characters)")
+        if finding_id in value[:index]:
+            raise ContentError(f"{label}[{index}]: {finding_id!r} is listed more than once")
+    return list(value)
+
+
 def load_meeting(document, label, today=None):
     _require_keys(document, MEETING_KEYS, {"body", "starts_at"}, label)
     agency_id = document.get("agency_id")
@@ -623,6 +711,8 @@ def load_meeting(document, label, today=None):
                           if document.get("participation") is not None else None),
         "outcome": (load_outcome(document["outcome"], starts_at, status, f"{label}.outcome", today)
                     if "outcome" in document else None),
+        **({"cited_findings": load_cited_findings(document["cited_findings"], f"{label}.cited_findings")}
+           if "cited_findings" in document else {}),
     }
 
 
@@ -703,7 +793,9 @@ AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", 
                "flock_transparency_slug", "muckrock_agency_id", "notes", "verification", "asked"}
 ASKED_STATES = ("awaiting_response", "acknowledged", "partly_answered", "answered", "declined_in_writing", "withdrawn")
 ASKED_KEYS, ASKED_TEXT = ("topic", "asked_on", "state", "updated_on", "note"), {"topic": 120, "note": 200}
-CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on"}
+CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on", "cost"}
+COST_KEYS, COST_PERIODS = ("amount_usd", "period", "as_stated_in"), ("annual", "total", "one_time")
+COST_AMOUNT, COST_URL = re.compile(r"(0|[1-9][0-9]*)([.][0-9]{1,2})?"), re.compile(r"(?i)[a-z][a-z0-9+.-]*://|www[.]")
 FLOCK_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){0,7}")
 VERIFIED_FIELDS = ("records_email", "records_url", "portal")
 KIT_POSTAL_KEYS = {"mailing_address", "mailing_verification"}  # private kit/agencies.json only; never published
@@ -750,13 +842,28 @@ def _calendar_day(value, label):
     return day
 
 
+def _contract_cost(value, label):
+    """``profile.contract.cost``: an organizer-transcribed amount exactly as a document states it; never computed."""
+    if not isinstance(value, dict) or set(value) != set(COST_KEYS):
+        raise ContentError(f"{label}: needs only amount_usd, period and as_stated_in")
+    amount, period, title = value["amount_usd"], value["period"], value["as_stated_in"]
+    if not (isinstance(amount, str) and COST_AMOUNT.fullmatch(amount) and Decimal(amount) <= 100000000):
+        raise ContentError(f"{label}.amount_usd: decimal string from 0 to 100000000 with at most 2 decimals")
+    if not (isinstance(period, str) and period in COST_PERIODS):
+        raise ContentError(f"{label}.period: choose annual, total or one_time")
+    if not (isinstance(title, str) and 1 <= len(title) <= 120 and title == title.strip() and plain_text(title)
+            and not COST_URL.match(title) and not any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in title)):
+        raise ContentError(f"{label}.as_stated_in: plain document title of 1 to 120 characters")
+    return {"amount_usd": amount, "period": period, "as_stated_in": title}
+
+
 def _contract(value, label):
     """An organizer-checked contract term (``profile.contract``) from its official source; never fetched."""
     if value is None:
         return None
     if isinstance(value, dict) and not {"source_url", "checked_on"} <= set(value):
         raise ContentError(f"{label}: needs source_url and checked_on")
-    _require_keys(value, CONTRACT_KEYS, CONTRACT_KEYS - {"renewal_note"}, label)
+    _require_keys(value, CONTRACT_KEYS, CONTRACT_KEYS - {"renewal_note", "cost"}, label)
     vendor, note = _text(value, "vendor", label, allow_empty=False), _text(value, "renewal_note", label)
     for key, text, limit in (("vendor", vendor, 80), ("renewal_note", note, 200)):
         if len(text) > limit:
@@ -766,8 +873,11 @@ def _contract(value, label):
         raise ContentError(f"{label}.end: must not be before start")
     if _calendar_day(value["checked_on"], f"{label}.checked_on") > date.today():
         raise ContentError(f"{label}.checked_on: must not be after the build date")
-    return {"vendor": vendor, "start": value["start"], "end": value["end"], "renewal_note": note,
-            "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
+    contract = {"vendor": vendor, "start": value["start"], "end": value["end"], "renewal_note": note,
+                "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
+    if "cost" in value:
+        contract["cost"] = _contract_cost(value["cost"], f"{label}.cost")
+    return contract
 
 
 ALPR_POLICY_KEYS = {"url", "source_url", "checked_on"}
@@ -1316,6 +1426,17 @@ def load_pages(content_dir, finding_slugs):
     return pages
 
 
+def load_newsletters(content_dir):
+    """Public newsletter issues of ``content/newsletters/<day>.json`` (DF1952-09), oldest first; ``[]`` without any.
+
+    Read through the one validator ``content-check`` also uses; never reads ``kit/``."""
+    from .newsletter.archive import load_public_issues  # local: the newsletter package imports this module
+    try:
+        return load_public_issues(content_dir)
+    except ValueError as exc:
+        raise ContentError(str(exc)) from None
+
+
 # --- topic pages (DF1952-06): content/topics/<slug>.json -> /topics/<slug>.html -------------------
 TOPIC_KEYS, MAX_TOPICS, MAX_TOPIC_FINDINGS = {"title", "intro_md", "finding_ids"}, 30, 100
 TOPIC_RESERVED = {"index", "topics", "timeline", "cameras"}  # generated names the page list does not reserve
@@ -1538,6 +1659,7 @@ def load_content(root, today=None):
     model = {
         "site": site,
         "findings": findings,
+        "newsletters": load_newsletters(content_dir),
         "pages": pages,
         "topics": topics,
         "meetings": meetings,

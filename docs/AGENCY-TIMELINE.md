@@ -165,6 +165,16 @@ open (`producing: true`, `next_installment` in `kit-status`) until a final `prod
 installment date) or, once that date has passed, `installment_passed` (counted, exit 3); `today` shows it and
 `kit-followup` drafts a reminder naming the date. Only a final `produced` step clears a stated production date.
 
+## Download links that expire (kit requests)
+
+`kit-response --kind produced --download-expires-on YYYY-MM-DD` records the date the agency says its download link
+expires (produced steps only; not before the step's own `--date`). The production stays "download pending" until
+records are linked to it: a later `produced --record PREFIX` step on the same request clears the latest pending one
+(records on the same step mean it is not pending at all). `kit-status` lists `downloads_pending` with days left;
+`kit-due` adds a `download` row due on the expiry date and, once it has passed, `download_expired` (counted, exit 3):
+"link expired: ask the agency for a new one"; `today` shows the same rows. Only the date is kept: the link itself is
+never stored or fetched, and nothing is downloaded for you. Files without the key read exactly as before.
+
 ## Clarification requested (kit requests)
 
 `kit-response --kind clarification_requested` records the agency asking you to clarify or narrow a request (not after
@@ -201,6 +211,20 @@ not cover. `kit-withheld --directory D [--json]` lists every recorded basis acro
 section number found in the agency's own text (`Gov. Code § 7923.600`, `Government Code section 7927.705(a)`,
 `GC 7922.000`; a basis naming two sections appears under both; none: `no section number stated`). It is read-only and
 adds no legal reading. Older `kit/sent.json` files with no `withheld_basis` read unchanged.
+
+## Per-scope answers (kit requests)
+
+`kit-sent` records the law-package scope ids its draft covers as `scopes` (every package scope, in package order, when
+the kit was built without `--scope`; exactly the `--scope` list otherwise), read from `kit/summary.json`. A missing,
+symlinked or unreadable summary, or no law package, stores no `scopes` (never guessed); `--replace` re-reads it.
+`kit-response --scope ID [--scope ID ...] --disposition produced|partly_produced|withheld|no_records_stated` records, on
+that dated step, what the agency said about those scopes (`scope_answers`). Both flags or neither; every ID must be one
+the request asked for; a duplicate ID is refused; a request with no recorded `scopes` refuses `--scope`; not allowed on
+`acknowledged`, `extension`, `clarification_requested`, `clarified` or `fee_estimate` steps. A disposition is your record
+of what the agency said, never a legal finding, and is independent of `--withheld-basis`.
+`kit-status` rows carry `scopes`: `null` (request recorded before this existed: scopes not recorded) or, per asked scope,
+`{scope_id, answer, on}` with the latest disposition and its step date, `answer: null` for no answer yet. `kit-coverage`
+(table and `--csv`) gains a last `scopes` column: `not recorded` or `k/n answered`.
 
 ## Private calendar (kit-calendar)
 

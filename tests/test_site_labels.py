@@ -231,11 +231,14 @@ class LabelsTest(unittest.TestCase):
         # meeting.votes*, vote.*: the fixture records no votes (tests/test_meeting_votes.py covers those labels).
         # handout.*: only the private meeting-pack handout writes these (tests/test_meeting_pack.py covers them).
         # agency.votes_*: the fixture records no votes (tests/test_site_member_votes.py covers those labels).
-        absent = ["agency.transparency_cameras", "agency.transparency_checked", "agency.transparency_down",
+        # agency.contract_cost, agency.cost_*: the fixture has no contract cost (tests/test_agency_contract_cost.py covers those).
+        absent = ["agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
+                  "agency.cost_total", "agency.transparency_cameras", "agency.transparency_checked", "agency.transparency_down",
                   "agency.transparency_heading", "agency.transparency_hotlist_alerts", "agency.transparency_retention_days",
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "agency.votes_heading", "agency.votes_more", "agency.votes_none", "agency.votes_source",
+                  "finding.agency_response", "finding.reply_declined", "finding.reply_no_response", "finding.reply_received",
                   "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
                   "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.title",
                   "handout.what_we_found",
