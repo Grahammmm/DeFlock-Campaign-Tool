@@ -7,6 +7,7 @@ import contextlib
 import copy
 import io
 import json
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -128,9 +129,44 @@ class LawImpactTests(unittest.TestCase):
         _, out, _ = self.run_impact(expect=3)
         self.assertIn("added ca-delta; window 2024-01-01..open", out)
         self.assertIn("fnd_d draft 2024-05-01 cites ca-delta (added)", out)
-        self.assertIn(f"campaign_tool finding diff fnd_d --directory {self.root} --from {draft}", out)
+        command = f"campaign_tool finding review-status {draft} --directory {self.root}"
+        self.assertIn(command, out)
+        self.assertIn("edit the unpublished draft", out)
         self.assertNotIn("fnd_early", out)
         self.assertNotIn("finding correct fnd_d", out)
+        self.assertNotIn("finding diff fnd_d", out)
+        data = json.loads(self.run_impact("--json", expect=3)[1])
+        self.assertEqual(data["affected"][0]["next"][0], command)
+        # A real campaign config, but deliberately no published counterpart.
+        initialized = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "init", "--directory",
+                                      str(self.root), "--county", "Synthetic", "--state", "CA",
+                                      "--name", "Synthetic campaign"], cwd=REPO_ROOT, capture_output=True, text=True,
+                                     timeout=30)
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        before = snapshot(self.root)
+        result = subprocess.run([sys.executable, "-B", "-m", *shlex.split(command)], cwd=REPO_ROOT,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("blockers", result.stdout)
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_pending_correction_is_distinct_and_emits_a_working_diff(self):
+        rule_of(self.new, "ca-alpha")["duty"] = "Synthetic duty, amended."
+        self.finding("fnd_c")
+        draft = self.finding("fnd_c", where="private/drafts", title="Synthetic amended title")
+        _, out, _ = self.run_impact(expect=3)
+        self.assertIn("fnd_c pending correction 2024-05-01", out)
+        data = json.loads(self.run_impact("--json", expect=3)[1])
+        entry = next(e for e in data["affected"] if e["state"] == "pending correction")
+        command = f"campaign_tool finding diff fnd_c --directory {self.root} --from {draft}"
+        self.assertEqual(entry["next"][0], command)
+        self.assertIn("if a correction is needed", entry["next"][1])
+        before = snapshot(self.root)
+        result = subprocess.run([sys.executable, "-B", "-m", *shlex.split(command)], cwd=REPO_ROOT,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn('title: "Synthetic fnd_c" -> "Synthetic amended title"', result.stdout)
+        self.assertEqual(snapshot(self.root), before)
 
     def test_removed_rule_cited_by_a_published_finding_is_named_removed(self):
         self.new["rules"] = [r for r in self.new["rules"] if r["rule_id"] != "ca-gamma"]

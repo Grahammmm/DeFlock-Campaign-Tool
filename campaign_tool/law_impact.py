@@ -128,7 +128,8 @@ def collect(root):
     for row in rows:
         if "draft_path" in row and row["state"] in DRAFT_STATES:
             try:
-                found.append(("draft", row["draft_path"], findings.load_draft(row["draft_path"])))
+                state = "pending correction" if row["state"] == "pending correction" else "draft"
+                found.append((state, row["draft_path"], findings.load_draft(row["draft_path"])))
             except (OSError, ValueError):
                 unreadable.append(str(row["draft_path"]))
     return found, sorted(set(unreadable))
@@ -168,7 +169,11 @@ def affected(rule_rows, found):
 def next_commands(entry, directory):
     d, ident = shlex.quote(directory), shlex.quote(entry["id"])
     if entry["state"] == "draft":
-        return [f"campaign_tool finding diff {ident} --directory {d} --from {shlex.quote(entry['path'])}"]
+        return [f"campaign_tool finding review-status {shlex.quote(entry['path'])} --directory {d}",
+                "edit the unpublished draft to reassess the cited rules, then obtain fresh reviews before publication"]
+    if entry["state"] == "pending correction":
+        return [f"campaign_tool finding diff {ident} --directory {d} --from {shlex.quote(entry['path'])}",
+                "if a correction is needed: revise this draft and obtain fresh reviews before correcting the published finding"]
     return [f"campaign_tool finding diff {ident} --directory {d} --from DRAFT",
             "if a correction is needed: " + CORRECT.format(id=ident, d=d)]
 
