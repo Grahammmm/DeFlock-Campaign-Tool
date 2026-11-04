@@ -1470,7 +1470,8 @@ def _plan_site(root, today=None, notes=None):
     files.update({
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
         **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
-        "site-data.js": site.site_data_js(), "agency-cards.js": agency_cards.render(site.cards_config()),
+        "site-data.js": site.site_data_js(),
+        "agency-cards.js": agency_cards.render(site.cards_config(), relabel=bool(site.js_labels)),
         "app.js": site.app_js(), "data/findings.json": site.findings_json(),
         "data/sources.json": site.sources_json(),
     })

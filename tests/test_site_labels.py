@@ -286,7 +286,12 @@ class ScriptLabelsTest(unittest.TestCase):
         self.assertNotIn("innerHTML", app)
         self.assertEqual(files["_headers"], plain["_headers"])  # CSP unchanged: no inline script, same origins
         changed = sorted(p for p in plain if plain[p] != files[p])
-        self.assertEqual(changed, ["app.js", "findings/filter.js", "findings/index.html", "site-data.js"])
+        self.assertEqual(changed, ["agency-cards.js", "app.js", "findings/filter.js", "findings/index.html", "site-data.js"])
+        cards = files["agency-cards.js"].decode()
+        for english in ('"no published findings yet"', '" published finding"'):
+            self.assertNotIn(english, cards)
+        for key in ("zero", "one", "many"):
+            self.assertIn(f'"js.agency_findings_{key}"', cards)
         self.assertIn(b'"Sin hallazgos publicados."', files["site-data.js"])  # Python-side js.* text goes into CITIES
 
     def test_quotes_backslash_and_slash_emitted_escaped_and_scripts_parse(self):
