@@ -95,7 +95,7 @@ class PolicyCheckTests(unittest.TestCase):
         self.build()
         expected = [
             "Authorized purposes for using the system and collecting information: addressed (page 3)",
-            "Job titles of the people authorized to use or access the system, and training requirements: not found in the posted policy",
+            "Job titles of the people authorized to access or use the system, or to collect ALPR information, and training requirements: not found in the posted policy",
             "Monitoring of security and of privacy-law requirements: not found in the posted policy",
             "Purposes, processes and restrictions for selling, sharing or transferring information: not found in the posted policy",
             "Title of the custodian or owner responsible for the system: addressed",
@@ -169,6 +169,8 @@ class PolicyCheckTests(unittest.TestCase):
         self.assertEqual(load()["rule_id"], "ca-civ-1798.90.51-usage-and-privacy-policy")
         self.assertEqual(load(status="reviewed")["status"], "reviewed")
         for changes, message in (({"rule_id": "ca-civ-no-such-rule"}, "rule_id"),
+                                 ({"rule_id": []}, "rule_id"),
+                                 ({"rule_id": {}}, "rule_id"),
                                  ({"status": "approved"}, "status"),
                                  ({"elements": source["elements"] + [source["elements"][0]]}, "duplicate"),
                                  ({"elements": []}, "elements")):
@@ -176,10 +178,15 @@ class PolicyCheckTests(unittest.TestCase):
                 load(**changes)
         self.assertEqual(law.load_checklist("us-ca")["status"], "draft")
         with mock.patch.object(law, "JURISDICTIONS", base):  # a build whose checklist is not bound is refused
-            (base / "us-ca" / "policy-checklist.json").write_text(json.dumps({**source, "rule_id": "ca-civ-no-such-rule"}))
             self.write(policy_check=check())
-            with self.assertRaisesRegex(ContentError, "policy checklist could not be loaded"):
-                self.build()
+            for rule_id in ("ca-civ-no-such-rule", [], {}):
+                with self.subTest(rule_id=rule_id):
+                    (base / "us-ca" / "policy-checklist.json").write_text(json.dumps({**source, "rule_id": rule_id}))
+                    with self.assertRaisesRegex(ContentError, "policy checklist could not be loaded"):
+                        self.build()
+                    problems = content_problems(self.root)
+                    assert problems is not None
+                    self.assertTrue(any("policy checklist could not be loaded" in line for line in problems))
 
     # 6
     def test_rendered_section_has_no_compliance_wording_and_escapes_labels(self):
@@ -228,6 +235,27 @@ class PolicyCheckTests(unittest.TestCase):
         first = self.snapshot()
         self.build()
         self.assertEqual(self.snapshot(), first)
+
+    def test_content_check_names_all_policy_problems_across_selected_agencies(self):
+        document = copy.deepcopy(self.base)
+        selected = []
+        for index, entry in enumerate(document):
+            if entry["agency_id"] in ("ca-cedar-county-sheriff", "ca-cedar-police"):
+                selected.append(index)
+                entry["profile"]["alpr_policy"] = POLICY
+                entry["profile"]["policy_check"] = check(policy_url="https://example.org/other.pdf", elements={})
+        self.assertEqual(len(selected), 2)
+        self.path.write_text(json.dumps(document))
+        with self.assertRaises(ContentError):
+            self.build()
+        lines = content_problems(self.root)
+        assert lines is not None
+        problems = "\n".join(lines)
+        for index in selected:
+            label = f"content/agencies.json[{index}].{LABEL}"
+            self.assertIn(f"{label}.policy_url: must equal profile.alpr_policy.url", problems)
+            for element_id in IDS:
+                self.assertIn(f"{label}.elements.{element_id}: missing", problems)
 
     def test_an_unselected_agency_with_a_broken_check_is_skipped(self):
         self.write()

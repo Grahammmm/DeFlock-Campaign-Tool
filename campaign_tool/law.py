@@ -223,7 +223,7 @@ def load_checklist(jurisdiction, base=None):
     if checklist["status"] not in ("draft", "reviewed"):
         raise ValueError("$.status: must be draft or reviewed")
     package = load_package(jurisdiction, base)
-    if checklist["rule_id"] not in {rule["rule_id"] for rule in package["rules"]}:
+    if not isinstance(checklist["rule_id"], str) or checklist["rule_id"] not in {rule["rule_id"] for rule in package["rules"]}:
         raise ValueError(f"$.rule_id: {checklist['rule_id']!r} is not a rule in the {jurisdiction} package")
     elements, seen = checklist["elements"], set()
     if not isinstance(elements, list) or not elements:
