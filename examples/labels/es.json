@@ -75,6 +75,8 @@
     "intro.sources": "Los originales permanecen en el archivo privado, salvo que se enlace una copia pública. Cada entrada indica los hallazgos publicados que la citan.",
     "intro.meetings": "Los kits de comentarios resumen hallazgos revisados; no son asesoramiento legal y no piden a nadie que inunde una reunión.",
     "intro.open_data_about": "Los hallazgos publicados también están disponibles como datos abiertos:",
+    "intro.meetings_open_data": "Reuniones y resultados como datos abiertos (JSON)",
+    "intro.meetings_open_data_about": "Reuniones con sus resultados registrados, votos y fuentes oficiales:",
     "notice.no_findings": "Todavía no se ha publicado ningún hallazgo.",
     "notice.no_upcoming": "No hay reuniones próximas en la lista.",
     "notice.past_meetings_link": "Reuniones pasadas y sus kits de comentarios",

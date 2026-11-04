@@ -348,6 +348,14 @@ configured), `received_at`, `public_url` or null, `pages` or null and
 never count). It never includes `note`, `fragment` or the full hash; the build
 refuses with `data/sources.json: ...` and writes nothing on any other key or a
 40+ hex string. The starter build (no `content/`) writes no `data/sources.json`.
+`data/meetings.json` is the staged meetings as open data (`schemas/meetings-open-data.schema.json`), linked from
+`meetings.html` and `about.html`, newest `starts_at` first, cancelled ones included (`"meetings": []` with none):
+top level `schema_version`, `generated_at` (the build date at 00:00 UTC) and `meetings`; per meeting `id`, `body`,
+`agency_id` or null, `starts_at`, `status`, `agenda_url` or null, `url` (the page path `/meetings/<id>.html`) and, for a
+held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `source_url`, `vote` and the per-member
+`votes` as `{name, vote}` in stored order, each only when recorded). It never includes the comment kit, `participation`,
+contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
+`data/meetings.json: non-public key ...` and writes nothing.
 `public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan
