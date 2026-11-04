@@ -2,6 +2,10 @@
 
 Names each campaign input whose date is more than N days before today, with the command that refreshes it.
 A missing or unparseable date is ``unknown`` and an input that does not exist is ``absent``: never assumed fresh.
+A date after today is ``future`` (whatever N is): a clock or source-date anomaly, reported with a signed negative
+``age_days`` and a refresh text that starts by asking the organizer to check the source date and the local clock.
+It is a diagnostic, not a legal conclusion and not an automatic refresh. Law sources are aged one entry per source:
+``records_law`` first, then each rule's sources in package order.
 """
 from datetime import date, datetime
 
@@ -10,6 +14,7 @@ from .content import ContentError, load_snapshot
 
 MAP_REFRESH = "python3 tools/fetch_osm_alprs.py --directory {} --relation <county relation id> (or --bbox SOUTH WEST NORTH EAST)"
 SEED_REFRESH = "update the shared agency seed (package release)"
+FUTURE_PREFIX = "Check the source date and local clock; then "
 
 
 def _entry(name, status, refresh, day=None, today=None):
@@ -20,9 +25,11 @@ def _entry(name, status, refresh, day=None, today=None):
 
 
 def _dated(name, day, refresh, stale_days, today):
-    """An entry when the date is unknown or strictly older than stale_days; None when fresh."""
+    """An entry when the date is unknown, after today (``future``) or strictly older than stale_days; None when fresh."""
     if day is None:
         return _entry(name, "unknown", refresh)
+    if day > today:  # calendar days on the same injected today; independent of stale_days
+        return _entry(name, "future", FUTURE_PREFIX + refresh, day, today)
     return _entry(name, "stale", refresh, day, today) if (today - day).days > stale_days else None
 
 
@@ -76,15 +83,23 @@ def _law(jurisdiction, stale_days, today):
     try:
         if not law.package_path(jurisdiction).is_file():
             return [_entry(f"law package {jurisdiction}", "absent", refresh)]
-        _rows, stale = law.review_sheet(law.load_package(jurisdiction), today, stale_days)
+        package = law.load_package(jurisdiction)
+        rules = [("records_law", package["records_law"]["sources"])]
+        rules += [(rule["rule_id"], rule["sources"]) for rule in package["rules"]]
+        dated = [(rule_id, source, date.fromisoformat(source["accessed"]))
+                 for rule_id, sources in rules for source in sources]
     except (OSError, ValueError, TypeError, KeyError):
         return [_entry(f"law package {jurisdiction}", "unknown", refresh)]
-    return [{"input": "law:" + s["rule_id"], "status": "stale", "title": s["title"], "accessed": s["accessed"],
-             "date": s["accessed"], "age_days": s["age_days"], "refresh": refresh} for s in stale]
+    found = []
+    for rule_id, source, day in dated:  # one entry per source, so a future date never hides behind an older one
+        entry = _dated("law:" + rule_id, day, refresh, stale_days, today)
+        if entry:
+            found.append({**entry, "title": source["title"], "accessed": source["accessed"]})
+    return found
 
 
 def stale_inputs(root, cfg, stale_days, today=None):
-    """Stale, unknown and absent inputs sorted by input name; fresh inputs are not listed."""
+    """Stale, future-dated, unknown and absent inputs sorted by input name; fresh inputs are not listed."""
     today = today or date.today()
     jurisdiction = str(cfg.get("country", "US")).lower() + "-" + cfg["state"].lower()
     found = [_meetings(root, stale_days, today), _map(root, stale_days, today), _seed(jurisdiction, stale_days, today)]
