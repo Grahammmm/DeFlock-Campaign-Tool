@@ -8,6 +8,7 @@ import type {
 } from "../db.ts";
 import type { BrevoSettings } from "../manifest.ts";
 import { statePill } from "./layout.ts";
+export { home } from "./home.ts";
 
 /** Readiness of the inline Legistar poll, from the newest run receipt that recorded one (counts only). */
 export function legistarLine(runs: RunReceiptRow[]): string {

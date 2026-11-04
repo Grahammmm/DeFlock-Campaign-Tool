@@ -24,6 +24,7 @@ mail or publishes anything.
 | Part | What it does | Evidence |
 | --- | --- | --- |
 | Readiness snapshot | Offline doctor projection, fail-closed privacy/identity checks; runner-authenticated setting transport and 36-hour age-aware readback; not deployed or scheduled. | `schemas/readiness-snapshot-v1.json`, `workers/workspace/src/readiness.ts`, [WORKERS.md](WORKERS.md) |
+| Organizer entry screen | Access-protected workspace home: recorded gates, request-state groups, age-aware readiness and named organizer actions; prior dashboard at /status; not deployed by this change. | `workers/workspace/src/views/home.ts`, [WORKERS.md](WORKERS.md) |
 | Threat model | Categories, existing safeguards, gaps and an advisory trust ranking. | [THREAT-MODEL.md](THREAT-MODEL.md) |
 | Flock facts, law-policy, compare | Cited facts, law and policy text, and policy comparison for one agency. | `tools/flock_facts.py`, `tools/flock_law_policy.py`, `tools/flock_compare.py`, `skills/flock-facts/`, `skills/flock-law-policy/`, `skills/flock-compare/` |
 | Flock verify | Independent check of a run's findings against their citations. | `tools/flock_verify.py`, `skills/flock-verify/` |
@@ -73,7 +74,7 @@ The hosted path is not deployed, and no deploy receipt exists; the fresh-account
 - Runner: processes workspace jobs in a container.
 
 Before serving anyone, the hosted path still needs:
-- A registered outbox sender in the workspace (`df-bind-sender`).
+- A registered outbox sender in the workspace (`df-bind-sender`): the setup wizard can now write the settings, but no gateway or key is provisioned.
 - Account configuration and verification for the social posting adapter (`df-social-posting`), now implemented offline.
 - Provider configuration and verification for the Brevo webhook and list count (`df-subscribe`); the code is tested offline.
 - Feed configuration and deployment for the Legistar poll (`df-legistar-poll`). The poll is implemented offline.
@@ -93,7 +94,7 @@ Only items with no implementation in this repository.
 
 | Item | Evidence that it is not built |
 | --- | --- |
-| Registered sender for the Worker `send_request`/`send_followup` executors | Outbox code is bound; an unconfigured sender refuses with `sender_not_configured`: `workers/workspace/src/executors/types.ts`. A deployed workspace still needs a registered sender. |
+| Registered sender for the Worker `send_request`/`send_followup` executors | Outbox code is bound, and the wizard's Outbox sender step writes `OUTBOX_GATEWAY_URL` and `OUTBOX_SIGNING_KEY` as a both-or-neither pair, but nothing is provisioned: without the pair a workspace refuses with `sender_not_configured`: `workers/workspace/src/executors/types.ts`. A deployed workspace still needs a registered sender. |
 | Live social posting | `post_social` has one Mastodon adapter behind per-post approval, but no account is configured: `workers/workspace/src/executors/post_social.ts` |
 | Independently reviewed state-law packages | California ships `status: draft`: `jurisdictions/us-ca/package.json` |
 | Live Legistar polling from the Worker | `pollLegistar` runs inline on the cron slots and is tested offline. It is not deployed and `LEGISTAR_FEEDS` is not configured: [MEETINGS.md](MEETINGS.md) |

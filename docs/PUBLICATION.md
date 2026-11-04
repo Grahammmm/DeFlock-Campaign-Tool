@@ -68,6 +68,9 @@ finding that still carries one. Nothing is published.
         --decision approve|reject|changes_requested --reviewer NAME --rationale TEXT
     python3 -m campaign_tool finding review-status DRAFT --directory D
 
+A volunteer reviewer's role-by-role walkthrough (what to read and check, how to choose a decision, a synthetic example)
+is in [REVIEW-GUIDE.md](REVIEW-GUIDE.md); this section stays the reference.
+
 `finding review` appends one receipt to `D/private/reviews/<finding id>.json` (directory 0700,
 file 0600, atomic write) under an exclusive lock on `D/private/reviews/.lock` (0600), so
 concurrent reviews never drop each other's receipts, and writes nothing else. Reviewer names
@@ -168,6 +171,43 @@ If the content file cannot be removed both copies remain and the leftover is nam
 (never reviewer names, rationales or notes). A draft whose id is published is a second `pending correction` row; a withdrawn
 id wins (a leftover content file is named); an unreadable file is an `unreadable` row with its path and a fixed reason
 (not JSON, a symlink, too large, ...). A reason that can quote the file, such as an unknown key, is withheld. Exit 0.
+
+### Plain-language check (advisory, never a gate)
+
+    python3 -m campaign_tool finding check-plain DRAFT|ID --directory D [--json]
+
+Reads one finding (a draft file, or the id of the one published finding in `content/findings/`) and lists readability
+suggestions for its `title`, `summary` and `body_md`, in that order. It is read-only, rewrites nothing, records no verdict
+and writes no file. `build`, `finding publish`, review receipts and content hashes never read it, and the legal-wording
+rule below is a different, blocking check that it does not touch. A draft need not pass review or evidence checks first.
+
+| Rule | Warns when |
+| --- | --- |
+| `long_sentence` | a sentence has more than 30 words |
+| `long_summary` | the summary has more than 60 words (reported once) |
+| `unexplained_abbreviation` | a whole word of 2 to 6 capital letters A-Z is used before it is spelled out |
+| `long_paragraph` | a paragraph has more than 150 words |
+
+Exactly 30, 60 or 150 words do not warn, and the rules may overlap. Each row names the field and the paragraph, sentence
+and word numbers (all counted from 1 in that field) of its first word, plus `start`/`end` code-point offsets into the
+original text with `--json`. A word is letters and digits with inner apostrophes or hyphens kept (`don't`, `well-known`);
+an underscore splits words. A paragraph is a block of lines with no blank line inside it; a sentence ends at `.`, `!` or `?`
+followed by a space or the end. Markdown is not parsed: link destinations and code count as written. Text inside matched
+double quotes ("..." or “...”) and text equal to one of the finding's source titles is skipped: its words are not counted and
+never reported, though they still count in a later word's number. An abbreviation counts as spelled out from the point where
+`expanded words (ABC)` or `ABC (expanded words)` appears, with the same number of words as letters and no skipped small
+words (`Automated license plate readers (ALPR)`); earlier uses still warn, and an expansion never spans two fields. An
+all-capital alias in the campaign's `content/glossary.json` (`ALPR` for "Automated license plate reader") also explains that
+abbreviation everywhere; the canonical term alone or a lowercase alias does not. A present but invalid glossary is refused
+with its usual message. `[EDIT ME: ...]` text is checked like any other, so `EDIT` and `ME` warn.
+
+Text output starts with `Plain-language suggestions (advisory only; not a publication gate).`, then one line per row, then
+`N suggestion(s). Nothing was changed.`; `--json` prints one object `{"advisory", "finding_id", "warnings": [...]}` instead.
+Exit 0: no rows (not a claim that the text is clear or approved). Exit 3: one or more rows. Exit 1: the input could not be
+read or is invalid (unreadable, symlinked or oversized file, a title or summary that is not a string, an id that is missing,
+unpublished or published twice), with nothing on stdout. Exit 2: wrong arguments. `finding preview` prints the same rows
+under `Plain language (advisory)` after its usual output and still exits 0. The check is a rough heuristic: it will flag
+names and initialisms you meant (a quoted name is skipped; others are not), and miss hard sentences that are short.
 
 ### Drafting a gap finding from a request
 
@@ -370,7 +410,8 @@ sign-off, the privacy lint and the legal-claim notes are separate conditions.
 
 ## Not done
 
-No reviewer signatures or identity check (roster names are self-asserted); the workspace Worker has
+Offline review signatures are optional (see Signed receipts above) and only prove a receipt was made with a key in the
+organizer-held roster; there is no other identity check (roster names are self-asserted); the workspace Worker has
 no reviewer directory or role assignment beyond the Access policy; no automatic notification to
 reviewers. `finding assign DRAFT --directory D --role R --reviewer NAME --on D [--replace]` only records, privately in
 `private/review-assignments/`, who was asked to review which role since which date (refused for the draft's author, and
