@@ -108,6 +108,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         finally:
             with fixture.lock:
                 fixture.active -= 1
+                fixture.lock.notify_all()
             self.close_connection = True
 
 
@@ -123,7 +124,7 @@ class Fixture:
     def __init__(self):
         self.routes = {}
         self.calls = []
-        self.lock = threading.Lock()
+        self.lock = threading.Condition()
         self.active = self.max_active = 0
         self.server = Server(('127.0.0.1',0),Handler)
         self.server.fixture = self
@@ -163,9 +164,16 @@ class World:
         return self.queue.inventory(host,'mail:'+source[:32],item_id or path.rsplit('/',1)[-1],
                                     'https://'+host+path+'?signed=private-fixture-token',source)
     def fetch(self,**kwargs):
-        return run_download(self.queue,self.processing,apply=True,approval_loader=kwargs.pop('approval_loader',approval),
+        result = run_download(self.queue,self.processing,apply=True,approval_loader=kwargs.pop('approval_loader',approval),
                             egress_loader=kwargs.pop('egress_loader',egress),
                             transport=kwargs.pop('transport',self.fixture.transport(max_bytes=kwargs.get('limits',engine.Limits()).max_bytes)),**kwargs)
+        # A client can finish reading before the handler's finally block runs.
+        # Drain that cleanup before a separate, sequential fetch starts; retain
+        # max_active so concurrent requests within a fetch still fail the oracle.
+        with self.fixture.lock:
+            if not self.fixture.lock.wait_for(lambda: self.fixture.active == 0, timeout=5):
+                raise AssertionError('fixture_response_cleanup_timeout')
+        return result
     def item_state(self,key):
         return dict(self.queue.db.execute('SELECT * FROM portal_items WHERE id=?',(key,)).fetchone())
     def canonical_counts(self):
