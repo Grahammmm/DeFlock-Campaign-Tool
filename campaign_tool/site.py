@@ -46,7 +46,7 @@ VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
@@ -589,6 +589,7 @@ class Site:
         self.timeline = timeline_events(model, self.today, self._agency_pages)
         # DF1952-04: content/glossary.json; an absent file or an empty terms list switches every glossary output off.
         self.glossary = model.get("glossary") if (model.get("glossary") or {}).get("terms") else None
+        self.faq = model.get("faq") or None  # DF0022-01: content/faq.json entries; an absent file switches every FAQ output off
         # DF1952-06: curated topics (slug order); each finding id -> the topics listing it. No topics key = none.
         self.topics = model.get("topics", [])
         self.supporters = model.get("supporters") or []  # DF2207-13: validated public rows; [] = no page, no link
@@ -761,6 +762,8 @@ class Site:
         archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
         parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a>{meetings_feed} · <a href="/search.html">{self.t("footer.search")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}{archive}'
                      ' · <a href="/methods.html">How to read our findings</a></p>')
+        if self.faq:  # DF0022-01: appended last, so every earlier footer paragraph is unchanged
+            parts.append(f'<p><a href="/faq.html">{self.t("footer.faq")}</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def share(self, title, description, path, kind, published, modified):
@@ -1598,6 +1601,28 @@ class Site:
         return self.page("glossary", self.labels["title.glossary"], self.labels["title.glossary_description"],
                          "/glossary.html", main)
 
+    def faq_html(self):
+        """``/faq.html`` (DF0022-01): the questions in file order, each an ``h2`` with a one-based ``q-N`` id, the answer
+        through markdown_lite (no images), then the findings it cites, its law reference and the glossary terms used."""
+        entries = []
+        for number, entry in enumerate(self.faq, 1):
+            parts = [f'<h2 id="q-{number}">{e(entry["question"])}</h2>', markdown(entry["answer_md"])]
+            cited = [self.finding_by_id[finding_id] for finding_id in entry["finding_ids"]]
+            if cited:
+                links = "".join(f'<li><a href="/findings/{e(finding["slug"])}.html">{e(finding["title"])}</a></li>' for finding in cited)
+                parts.append(f'<h3>{self.t("faq.findings")}</h3><ul>{links}</ul>')
+            if "rule_id" in entry:
+                parts.append(f'<p>{self.t("faq.rule")}: {e(entry["citation"])} (<code>{e(entry["rule_id"])}</code>)</p>'
+                             f'<p class="notice">{self.t("faq.law_status", status=e(entry["law_status"]))}</p>')
+            used = (glossary_terms_used({"title": entry["question"], "summary": "", "body_md": entry["answer_md"]}, self.glossary)
+                    if self.glossary else [])
+            if used:
+                items = "".join(f'<li><a href="/glossary.html#{e(term["anchor"])}">{e(term["term"])}</a></li>' for term in used)
+                parts.append(f'<h3>{self.t("faq.terms")}</h3><ul>{items}</ul>')
+            entries.append("".join(parts))
+        main = '    <section class="section finding-body" id="content">' + "".join(entries) + '</section>\n'
+        return self.page("faq", self.labels["faq.title"], self.labels["faq.title"], "/faq.html", main)
+
     def agency_response_html(self, finding):
         """The agency's reply (or silence) under "Agency response" as escaped plain text, never Markdown; "" when
         the finding has no reply or only a prepared (pending) request. The record shows as its 12-character prefix."""
@@ -2135,6 +2160,7 @@ class Site:
                  "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html"]
         paths += ["/cameras.html"] if self.map else []
         paths += ["/glossary.html"] if self.glossary else []
+        paths += ["/faq.html"] if self.faq else []  # DF0022-01
         if self.topics:  # DF1952-06: the index file topics/index.html is served at /topics/
             paths += ["/topics/"] + [f'/topics/{t["slug"]}.html' for t in self.topics]
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
@@ -2611,6 +2637,8 @@ def _plan_site(root, today=None, notes=None):
         pages["supporters.html"] = site.supporters_html()
     if site.glossary:  # DF1952-04: the slug is reserved, so no content page can already hold this name
         pages["glossary.html"] = site.glossary_html()
+    if site.faq:  # DF0022-01: the slug is reserved, so no content page can already hold this name
+        pages["faq.html"] = site.faq_html()
 
     if model["newsletters"]:  # DF1952-09: newest first; the slug is reserved, so nothing else can own these paths
         pages["newsletters.html"] = site.newsletters_html()
