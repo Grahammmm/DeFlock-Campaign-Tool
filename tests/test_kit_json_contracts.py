@@ -92,7 +92,9 @@ class KitJsonContractTests(unittest.TestCase):
         a, b, c = self.a, self.b, self.c
         main_sha = hashlib.sha256((self.root / "kit" / "requests" / f"{a}.md").read_bytes()).hexdigest()
         rows = {  # (agency, request): (sent_on, extra entry keys, steps)
-            (a, "main"): ("2026-03-02", {"draft_sha256": main_sha}, []),  # plain sent: past due
+            (a, "main"): ("2026-03-02", {"draft_sha256": main_sha,
+                                                  "scopes": [s["scope_id"] for s in self.package["request_scopes"]]},
+                            []),  # plain sent: past due, recorded scopes with no answers
             (a, "over-cap"): ("2026-03-10", {"reference": "R0123-110125"},
                               [step("2026-03-11", "acknowledged"), step("2026-03-12", "fee_estimate", amount_cents=15000)]),
             (a, "paid"): ("2026-03-10", {}, [step("2026-03-11", "extension"),

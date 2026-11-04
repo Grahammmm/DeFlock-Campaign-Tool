@@ -79,7 +79,7 @@ class FindingsJsonTests(unittest.TestCase):
                          (1, "Cedar County Records Project", "content/findings"))
         self.assertEqual(len(doc["findings"]), 1)
         finding = doc["findings"][0]
-        self.assertEqual(set(finding), set(PUBLIC_FINDING_FIELDS))
+        self.assertEqual(set(finding), set(PUBLIC_FINDING_FIELDS) - {"also_agency_ids"})  # optional: absent for this example
         for key in NEVER:
             self.assertNotIn(key, finding)
         page = self.read(f"findings/{SLUG}.html")

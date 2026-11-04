@@ -795,6 +795,13 @@ def _write_draft(root, draft):
     raise ValueError(f"{folders[1]}: {DRAFT_ATTEMPTS} generated ids already exist; nothing written")
 
 
+def _known_for(root, document):
+    """DF1952-07: ids of the campaign's agencies when ``document`` uses also_agency_ids, else None (no lookup)."""
+    if isinstance(document, dict) and "also_agency_ids" in document:
+        return {agency["agency_id"] for agency in _known_agencies(root)}
+    return None
+
+
 def publish(root, draft_path, approved_by, now=None):
     """Write content/findings/<slug>.json as published and log it privately; never builds or deploys."""
     draft = load_draft(draft_path)
@@ -808,7 +815,7 @@ def publish(root, draft_path, approved_by, now=None):
         raise ValueError("the author cannot approve publication of their own finding")
     when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     document = dict(reviewed_view(draft), state="published", published_at=when, corrections=[])
-    finding = content.load_finding(document, str(draft_path))
+    finding = content.load_finding(document, str(draft_path), known_agency_ids=_known_for(root, document))
     if not _real_dir(root / "content"):
         raise ValueError(f"{root / 'content'}: no content/ directory in this campaign")
     if not _real_dir(root / "private"):
@@ -1045,7 +1052,8 @@ def _correct_locked(root, finding_id, date, note, from_draft, moment, approved_b
         if blockers:
             raise ValueError(f"review blockers: {blockers}")
         document = dict(reviewed_view(draft), **kept)
-    finding = content.load_finding(document, f"content/findings/{target.name}")
+    finding = content.load_finding(document, f"content/findings/{target.name}",
+                                   known_agency_ids=_known_for(root, document))
     if from_draft is not None:
         problems = cited_problems(root, finding)
         if problems:
