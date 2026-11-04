@@ -142,6 +142,31 @@ in date order. A linked, non-regular or malformed `kit/newsletter-sent.json` is 
 explicit `--since` wins. The draft JSON output names where the window came from in `since_from`:
 `"record"`, `"flag"` or `null`. This is the offline counterpart of the hosted `campaign_sent` event.
 
+### Kept issues and the local public archive (DF1952-09)
+
+`newsletter sent --date D` and `--record-sent D` are one writer. Besides the record it keeps the draft's exact bytes as
+the private `kit/newsletter-issues/D.json` (folder mode 0700, file 0600, created exclusively, never overwritten), and the
+record's `draft_sha256` is the sha256 of those bytes. One issue per day: a second record for a recorded day is refused,
+even for a different draft (older histories with two issues on one day stay readable but cannot be archived). A symlinked
+folder or target, a non-regular file or a copy with no matching record (a crash between the two writes) is refused and
+never overwritten or adopted. If recording fails after the copy was created, that copy is removed again. There is no
+lock and no cross-file transaction: run one recording at a time. Nothing deletes or changes the current draft.
+
+`--from-content` (and only it) also stores `public_archive` `{schema_version, title, body_md}` inside the draft JSON: the
+Markdown exactly as assembled before the consent footer (intro, findings, corrections, requests, library, map with its
+"ownership unconfirmed" wording, decisions, meetings, site link and the not-legal-advice sentence). The footer, sender and
+unsubscribe wording, review flags, counts and excluded notes are never in it, and the HTML and text are unchanged. Default,
+`--manifest` and Worker drafts have no such key, so their bytes are unchanged and they can be kept but not archived.
+
+`newsletter archive --date D` checks one issue (exactly one record for D, a regular kept copy of the recorded hash, a valid
+projection) and prints it, writing nothing. `newsletter archive --date D --publish` then writes only
+`{schema_version, sent_on, title, body_md}` to `content/newsletters/D.json`. `--publish` means a local, reviewable content
+file, not hosting or sending: read that file, commit it and run `build` yourself. It never replaces a file, never falls
+back to the current draft or current content, and refuses an issue without a projection (draft again with
+`--from-content` and record that one; old copies are never reconstructed). Hash equality shows the bytes are the recorded
+ones, not that anyone reviewed them. Usage errors (an action mixed with drafting flags, `--publish` without `archive`)
+exit 2; refusals print `Stopped:` and exit 1. Output is one JSON document with `"sent": false`.
+
 ## Approve & send
 
 Subscribers lists the draft jobs. Approve & send on a `done` draft creates a `send_newsletter`

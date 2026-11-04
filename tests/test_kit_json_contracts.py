@@ -19,8 +19,9 @@ STATUS = json.loads((REPO_ROOT / "schemas" / "kit-status.schema.json").read_text
 DUE = json.loads((REPO_ROOT / "schemas" / "kit-due.schema.json").read_text(encoding="utf-8"))
 ROW = STATUS["properties"]["requests"]["items"]
 OPEN = DUE["properties"]["open"]["items"]
-CONDITIONAL = {"more", "correspondence", "correspondence_prefixes", "correspondence_more"}
-STATES = {"waiting_on_you", "producing", "installment_passed", "no_law_package", "past_due", "due_today", "upcoming"}
+CONDITIONAL = {"more", "correspondence", "correspondence_prefixes", "correspondence_more", "downloads_pending"}
+STATES = {"waiting_on_you", "producing", "installment_passed", "no_law_package", "past_due", "due_today", "upcoming",
+          "download_pending", "download_expired"}
 STAMP = "2026-03-01T00:00:00+00:00"
 FILLER = "abcd" * 16  # low-entropy synthetic sha256
 
@@ -145,9 +146,9 @@ class KitJsonContractTests(unittest.TestCase):
                 self.assertIs(node.get("additionalProperties"), False, sorted(node["properties"]))
                 self.assertLessEqual(set(node.get("required", [])), set(node["properties"]))
         self.assertEqual(set(ROW["properties"]) - set(ROW["required"]), CONDITIONAL)
-        self.assertEqual(set(OPEN["properties"]) - set(OPEN["required"]), {"since", "note"})
+        self.assertEqual(set(OPEN["properties"]) - set(OPEN["required"]), {"since", "note", "kind", "produced_on"})
         self.assertEqual(set(STATUS["required"]), set(STATUS["properties"]))
-        self.assertEqual(set(DUE["required"]), set(DUE["properties"]))
+        self.assertEqual(set(DUE["properties"]) - set(DUE["required"]), {"download_expired"})
 
     def test_enums_match_the_code(self):
         self.assertEqual(set(ROW["properties"]["channel"]["enum"]), set(kit_track.CHANNELS))
@@ -192,6 +193,13 @@ class KitJsonContractTests(unittest.TestCase):
                          [{"on": "2026-03-06", "kind": "denied", "basis": "Synthetic exemption"}])
         self.assertIn("over your fee cap", stderr)
         union = set().union(*map(set, document["requests"]))
+        kit_track.record_step(self.root, self.a, "2026-03-11", "produced", download_expires_on="2026-03-20")
+        pending, _ = self.status()
+        law.validate(pending, STATUS)
+        check_keys(pending, STATUS)
+        row = next(r for r in pending["requests"] if (r["agency_id"], r["request"]) == (self.a, "main"))
+        self.assertEqual(len(row["downloads_pending"]), 1)
+        union.update(set().union(*map(set, pending["requests"])))
         self.assertEqual(union, set(ROW["properties"]))  # every schema property is emitted by some row
 
     def test_status_without_a_fee_cap_reports_over_fee_cap_null(self):
@@ -234,7 +242,7 @@ class KitJsonContractTests(unittest.TestCase):
         law.validate(document, DUE)
         self.assertIn("no_law_package", {r["state"] for r in document["open"]})
         self.assertEqual(STATES - {r["state"] for r in document["open"]},
-                         {"past_due", "due_today", "upcoming"})
+                         {"past_due", "due_today", "upcoming", "download_pending", "download_expired"})
 
     def test_a_planted_extra_key_or_bad_value_fails_the_checks(self):
         self.fixture()
