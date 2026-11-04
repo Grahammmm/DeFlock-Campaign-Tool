@@ -177,9 +177,23 @@ ${notice ? html`<p class="notice">${notice}</p>` : ""}
 <h2>History</h2><div class="cards">${other.map(card)}</div>`;
 }
 
-export function publish(publications: PublicationRow[], siteVersion: string | null, previous: string | null, campaign: CampaignRow | null): Safe {
+/** site_version recorded in a build_site job's inputs; "?" when the JSON is malformed or lacks it (never throws). */
+function buildSiteVersion(job: JobRow): string {
+  try {
+    const inputs = JSON.parse(job.inputs_json) as { site_version?: unknown } | null;
+    return inputs && typeof inputs === "object" && typeof inputs.site_version === "string" && inputs.site_version ? inputs.site_version : "?";
+  } catch {
+    return "?";
+  }
+}
+
+export function publish(publications: PublicationRow[], siteVersion: string | null, previous: string | null, campaign: CampaignRow | null, lastBuild: JobRow | null = null): Safe {
   return html`<h1>Publish</h1>
 <p>The public site serves the R2 prefix <code>sites/${siteVersion ?? "(none)"}/</code>${previous ? html` (previous: <code>${previous}</code>)` : ""}${campaign?.public_hostname ? html` at <code>${campaign.public_hostname}</code>` : ""}. A version switch is a <code>deploy_site</code> approval card.</p>
+<h2>Rebuild from current data</h2>
+<p>Queues a build_site job from the current manifest and proposes a deploy_site card; nothing is served until that card is approved.</p>
+<form method="post" action="/publish/rebuild"><button class="secondary" type="submit">Rebuild site from manifest</button></form>
+${lastBuild ? html`<p class="meta">Last build: ${lastBuild.job_id} ${statePill(lastBuild.state)} for ${buildSiteVersion(lastBuild)} - enqueued ${lastBuild.enqueued_at}${lastBuild.state === "failed" && lastBuild.error ? html`<br><span class="pill bad">${lastBuild.error}</span>` : ""}</p>` : html`<p class="meta">No build yet.</p>`}
 <form method="post" action="/publish/propose" class="stack"><label class="field">Propose serving site version <input type="text" name="site_version" pattern="[a-z0-9._-]{1,64}" required></label><button class="secondary" type="submit">Create deploy_site card</button></form>
 <h2>Publications</h2>
 <table class="data"><tr><th>Path</th><th>Finding</th><th>Published</th><th>By</th><th>Content</th></tr>${publications.map((p) => html`<tr><td>${p.path}</td><td>${p.finding_id ?? ""}</td><td>${p.published_at}</td><td>${p.published_by}</td><td>${p.content_sha256.slice(0, 16)}</td></tr>`)}</table>`;
