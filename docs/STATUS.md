@@ -23,6 +23,7 @@ mail or publishes anything.
 
 | Part | What it does | Evidence |
 | --- | --- | --- |
+| Readiness snapshot | Offline doctor projection, fail-closed privacy/identity checks; runner-authenticated setting transport and 36-hour age-aware readback; not deployed or scheduled. | `schemas/readiness-snapshot-v1.json`, `workers/workspace/src/readiness.ts`, [WORKERS.md](WORKERS.md) |
 | Threat model | Categories, existing safeguards, gaps and an advisory trust ranking. | [THREAT-MODEL.md](THREAT-MODEL.md) |
 | Flock facts, law-policy, compare | Cited facts, law and policy text, and policy comparison for one agency. | `tools/flock_facts.py`, `tools/flock_law_policy.py`, `tools/flock_compare.py`, `skills/flock-facts/`, `skills/flock-law-policy/`, `skills/flock-compare/` |
 | Flock verify | Independent check of a run's findings against their citations. | `tools/flock_verify.py`, `skills/flock-verify/` |
@@ -56,6 +57,7 @@ mail or publishes anything.
 | Campaign local schedule (not installed) | Six shipped systemd user timer pairs for gate-safe campaign slots (reconcile, stale-check, run-report-review, deadline drafts, site build, backup) and a read-only check of each slot's command, gate safety, time collisions and lock; installs, enables and starts nothing; the install is an attended operator step. | `tools/local_schedule_check.py`, `deploy/local-schedule/install.md` |
 | Collection triage | Read-only first pass over a returned collection's extracted text: a kind (responsive, policy, contract, search-log, boilerplate, duplicate, unsorted), a confidence and a cited reason per member, and a review queue that lists every member; every row stays unreviewed, nothing is hidden, marked reviewed or published. | `tools/collection_triage.py`, `schemas/collection-triage-v1.json`, [RECORDS-DETECTORS.md](RECORDS-DETECTORS.md) |
 | Offline starter CLI | Agency discovery, request kit, static site build, newsletter drafts, Legistar import, backup/verify/restore. | `README.md`, [LAUNCH.md](../LAUNCH.md) |
+| Campaign register | `campaigns add\|list\|remove\|status` keeps a private register of campaign names and paths; every command takes `--campaign NAME` or `--directory D`; one private status row per campaign, counts and waiting gates only. Local only; hosted multi-campaign is an open owner decision. | `campaign_tool/registry.py`, [MULTI-CAMPAIGN.md](MULTI-CAMPAIGN.md) |
 
 ## Hosted path: deploy scheduled, nothing provisioned (G 2026-11-01)
 
