@@ -13,7 +13,8 @@ SECRETS = (EMAIL, PHONE, PLATE, "555", "7ABC", "clerk")
 
 class PrivacyScanJsonTest(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
+        # Exercise a path containing a phone fragment; paths are receipt metadata, not matched text.
+        tmp = tempfile.TemporaryDirectory(prefix="privacy-555-")
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(os.path.realpath(tmp.name))
         for sub in ("cwd", "out"):
@@ -52,8 +53,10 @@ class PrivacyScanJsonTest(unittest.TestCase):
                       {"path": f"{d}/story.md", "outcome": "scanned", "reason": None, "sha256": sha["story.md"], "findings": [
                           {"line": 1, "category": "email"}, {"line": 1, "category": "phone"}, {"line": 2, "category": "plate"}]}],
             "totals": {"files": 2, "scanned": 2, "skipped": 0, "findings": 3, "allowed": 0, "failed": False}})
+        # The exact path metadata is asserted above; exclude only the known temporary root.
+        content_raw = raw.replace(str(self.tmp).encode(), b"<temporary-root>")
         for secret in SECRETS:
-            self.assertNotIn(secret.encode(), raw)
+            self.assertNotIn(secret.encode(), content_raw)
         self.assertEqual(raw, (json.dumps(doc, sort_keys=True, indent=2, ensure_ascii=True) + "\n").encode())
 
     def test_stdout_unchanged_with_and_without_flag(self):
@@ -166,8 +169,11 @@ class PrivacyScanJsonTest(unittest.TestCase):
         self.assertEqual(doc["files"][0]["findings"], [{"line": 2, "category": "phone"}])
         self.assertEqual(doc["totals"], {"files": 1, "scanned": 1, "skipped": 0, "findings": 1, "allowed": 1, "failed": False})
         self.assertTrue(doc["allow_file_used"])
-        for value in ("records@", "Records@", "office", str(allow), "555"):
-            self.assertNotIn(value.encode(), raw)
+        self.assertEqual(doc["files"][0]["path"], str(d / "req.md"))
+        content_raw = raw.replace(str(self.tmp).encode(), b"<temporary-root>")
+        self.assertNotIn(str(allow).encode(), raw)
+        for value in ("records@", "Records@", "office", "555"):
+            self.assertNotIn(value.encode(), content_raw)
 
 
 if __name__ == "__main__":

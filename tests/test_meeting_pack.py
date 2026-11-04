@@ -317,10 +317,12 @@ class MeetingPackTests(unittest.TestCase):
 
     def test_no_labels_english_handout_is_byte_identical_to_main(self):
         # sha256 of handout.html as built by origin/main f38ae765 (before DF0137-17) for the same four fixtures.
-        expected = {'plain': '30de2c2520239b2f2e02c6b7a94ca46fe09f59d9e74f339b974a6ef47e444515',
-                    'rich': '82dc65aaeda7a782d66308cab2af059fc575b93f6f1ba0ff6bcccfb0acf1f1ef',
-                    'rich-no-base': '0fb688d3bd7ea920843e0e3157a57105625a2cab4ada289959341e1653089c9f',
-                    'empty': 'edf0c2a136c29211f08a65f88bd95dcb1441da6edf92bc7dd7b811054af72ced'}
+        expected = {  # Public handout fixture digests, not credentials.
+            'plain': '30de2c2520239b2f2e02c6b7a94ca46fe09f59d9e74f339b974a6ef47e444515',  # pragma: allowlist secret
+            'rich': '82dc65aaeda7a782d66308cab2af059fc575b93f6f1ba0ff6bcccfb0acf1f1ef',  # pragma: allowlist secret
+            'rich-no-base': '0fb688d3bd7ea920843e0e3157a57105625a2cab4ada289959341e1653089c9f',  # pragma: allowlist secret
+            'empty': 'edf0c2a136c29211f08a65f88bd95dcb1441da6edf92bc7dd7b811054af72ced',  # pragma: allowlist secret
+        }
         for case, data in self.handouts().items():
             with self.subTest(case=case):
                 self.assertEqual(hashlib.sha256(data).hexdigest(), expected[case])
