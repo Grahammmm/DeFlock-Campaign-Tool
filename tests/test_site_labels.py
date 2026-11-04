@@ -238,6 +238,7 @@ class LabelsTest(unittest.TestCase):
         # map.check_*: the fixture has no map/point-checks.json (tests/test_map_point_checks.py covers those labels).
         # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
         # agency.mapped_reported_*: the fixture has no transparency snapshot (tests/test_agency_mapped_reported.py covers those).
+        # meeting.comments_*: the fixture records no public-comment counts (tests/test_meeting_comment_counts.py covers them).
         # meeting.votes*, vote.*: the fixture records no votes (tests/test_meeting_votes.py covers those labels).
         # handout.*: only the private meeting-pack handout writes these (tests/test_meeting_pack.py covers them).
         # agency.votes_*: the fixture records no votes (tests/test_site_member_votes.py covers those labels).
@@ -265,6 +266,7 @@ class LabelsTest(unittest.TestCase):
                   "map.check_in_agency_record", "map.check_not_found_on_site", "map.check_seen_in_person",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
+                  "meeting.comments_both", "meeting.comments_spoke", "meeting.comments_written",
                   "meeting.continued_from", "meeting.continued_to", "meeting.cosigned_many", "meeting.cosigned_one",
                   "meeting.minutes_confirmed", "meeting.minutes_pending", "meeting.recording", "meeting.recording_from",
                   "meeting.staff_direction",
