@@ -23,6 +23,15 @@ def load(name):
 
 publish = load('publish')
 verify = load('verify')
+_spec = importlib.util.spec_from_file_location('_queue_gate', REPO / 'campaign_tool' / 'publication_gate.py')
+if _spec is None or _spec.loader is None:
+    raise ImportError('publication gate unavailable')
+gate = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gate)
+
+
+def content_hash(entry):  # DF-APPROVAL-TIME-BIND: what an approval records in review.content_hash for this exact entry
+    return gate.content_digest({k: v for k, v in entry.items() if k != 'review'})
 
 
 def inside(path, root):
@@ -99,14 +108,20 @@ def build(store, agency_filter, run_filter=None):
             entries = sorted(doc['findings'], key=lambda f: (f['review']['status'] != 'needs-review', f['finding_id']))
             for entry in entries:
                 review = entry['review']
-                if review['status'] == 'approved':
+                bound = review.get('content_hash') == content_hash(entry)
+                if review['status'] == 'approved' and bound:
                     counts['approved'] += 1
                     continue
-                if review['status'] not in ('pending', 'needs-review'):
+                if review['status'] not in ('pending', 'needs-review', 'approved'):
                     continue
                 fid = entry['finding_id']
                 challenge = challenges.get(fid)
                 warnings, codes = [], []
+                if review['status'] == 'approved':  # unbound (legacy) or bound to other content: the gate refuses it
+                    unbound = not review.get('content_hash')
+                    warnings.append('approval has no recorded content_hash (legacy): it approves nothing until re-bound'
+                                    if unbound else 'approval was recorded for different content: it approves nothing')
+                    codes.append('approval-unbound' if unbound else 'approval-stale')
                 if not challenge:
                     warnings.append('VERIFY row missing')
                     codes.append('verify-row-missing')
@@ -159,7 +174,9 @@ def build(store, agency_filter, run_filter=None):
                     lines += ['approved earlier by %s on %s; moved to needs-review by recheck' %
                               (review['approved_by'], review['approved_on'])]
                 lines += ['', '**To approve** — human review only: fill approved_by, approved_on and approval_ref,',
-                          'and set status to approved in PUBLISH.json per skills/flock-publish.', '']
+                          'set status to approved and set content_hash to the value below in PUBLISH.json per',
+                          'skills/flock-publish. The hash binds the approval to this exact text; any later change voids it.',
+                          'content_hash: ' + content_hash(entry), '']
     lines += ['Approved entries (counted only): %d' % counts['approved'], '']
     rows.append('queue | %swaiting=%d needs_review=%d not_reviewable=%d warnings=%d | review-required; only a human approves' %
                 ('run=%s ' % run_filter if run_filter else '', counts['waiting'], counts['needs_review'],
