@@ -822,8 +822,9 @@ def main():
     outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
     outcome_p.add_argument("--votes", metavar="FILE", help="name,vote CSV (yes|no|abstain|absent|recused) read from the --source record")
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
-    commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
-                        ).add_argument("--directory", required=True)
+    content_check_p = commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)")
+    content_check_p.add_argument("--directory", required=True)
+    content_check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
     evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
     evidence_p.add_argument("--directory", required=True)
     evidence_p.add_argument("--check", action="store_true", help="Exit 3 when any citation has a problem")
@@ -1245,7 +1246,7 @@ def main():
             print(json.dumps(result, indent=2, ensure_ascii=False) + "\nPrivate log only; nothing was sent or published.")
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
-            content_check_cli(root)
+            content_check_cli(root, as_json=args.as_json)
         elif args.command == "evidence":
             from .evidence import run_cli
             run_cli(root, check=args.check)
