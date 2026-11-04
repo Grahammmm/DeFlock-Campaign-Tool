@@ -212,7 +212,8 @@ class AgencyAskedTests(unittest.TestCase):
                 continue
             self.assertEqual(before[name], after[name], name)
             self.assertNotIn(b"Data-sharing list", after[name])
-        self.assertEqual([n for n in after if b"Data-sharing list" in after[n]],
+        # Directory enumeration order varies by filesystem; only this exact inventory is permitted.
+        self.assertCountEqual([n for n in after if b"Data-sharing list" in after[n]],
                          ["timeline.html", "agencies.html", "data/agencies.csv", "data/agencies.json"])
 
 
