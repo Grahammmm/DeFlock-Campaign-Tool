@@ -48,7 +48,7 @@ class AgencyAskedTests(unittest.TestCase):
 
     def article(self, files, name):
         page = files["agencies.html"].decode()
-        start = page.index(name)
+        start = page.index("<h3>" + name)
         return page[start:page.index("</article>", start)]
 
     def blocks(self, files, name):
@@ -195,6 +195,9 @@ class AgencyAskedTests(unittest.TestCase):
             without = self.build()["agencies.html"].decode()
         self.assertEqual(BLOCK.sub("", self.build()["agencies.html"].decode()), without)
         self.save(1, asked=THREE)
+        # DF0137-12: the At a glance table's "Records items asked" cell for Cedar Police (2nd row) now shows the count.
+        cell, row = '<td data-label="Records items asked">{}</td>', without.index('<a href="/agencies/cedar.html">')
+        without = without[:row] + without[row:].replace(cell.format("0"), cell.format('<a href="#cedar-asked">3</a>'), 1)
         self.assertEqual(BLOCK.sub("", self.build()["agencies.html"].decode()), without)
 
     def test_data_and_feeds_byte_identical_field_not_exported(self):

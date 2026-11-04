@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Flock publish: a verified run's confirmed strong findings -> PUBLISH.json for human review (every entry pending).
 Exit 1 = errors/empty, 2 = usage, 3 = family refusal. Only a human approves (skills/flock-publish).
-recheck: 3 = entries moved to needs-review. export and recheck RUNDIR must lie outside the repository."""
+recheck: 3 = entries moved to needs-review; brief --against FILE: 3 = draft drifted from the store. export and recheck RUNDIR must lie outside the repository."""
 import argparse, collections, contextlib, csv, datetime, importlib.util, io, json, operator, os, re, sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -332,13 +332,13 @@ def main(argv=None):
     parser.add_argument("rundir", nargs="?")
     parser.add_argument("--site-slug"); parser.add_argument("--check"); parser.add_argument("--run")
     parser.add_argument("--copy"); parser.add_argument("--out")  # stage only (NB-DF-17, tools/flock_publish_stage.py)
-    parser.add_argument("--agency")  # brief only (DF1537-12, tools/flock_publish_brief.py; --out FILE)
+    parser.add_argument("--agency"); parser.add_argument("--against")  # brief only (DF1537-12, flock_publish_brief.py; --out | --against FILE)
     parser.add_argument("--today"); parser.add_argument("--dry-run", action="store_true")  # recheck (DF1537-10) or stage without --out (RF0310-7)
     parser.add_argument("--json", action="store_true")  # status only (RF0910-11)
     for flag in ("--finding", "--on", "--by", "--approval-ref", "--replaced-by"): parser.add_argument(flag)  # noqa: E701 - DF1537-11
     args = parser.parse_args(argv)
     usage = ("usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR] | status STORE [--json] | stage RUNDIR --copy FILE --out DIR"
-             " | stage RUNDIR --copy FILE --dry-run | brief STORE --agency SLUG --out FILE | recheck RUNDIR [--today YYYY-MM-DD] [--dry-run]"
+             " | stage RUNDIR --copy FILE --dry-run | brief STORE --agency SLUG --out FILE|--against FILE | recheck RUNDIR [--today YYYY-MM-DD] [--dry-run]"
              " | withdraw RUNDIR --finding ID --on D --by NAME --approval-ref REF [--dry-run] | correct RUNDIR --finding ID --replaced-by NEWRUNDIR:NEWID"
              " --on D --by NAME --approval-ref REF [--dry-run]")
     changing = args.command in ("withdraw", "correct") and args.rundir and None not in (args.finding, args.on, args.by, args.approval_ref) and \
@@ -351,8 +351,9 @@ def main(argv=None):
     checking = args.check and args.run != "" and not (args.command or args.rundir or args.site_slug)
     listing = args.command == "status" and args.rundir and (args.check, args.run, args.site_slug) == (None,) * 3
     if args.json and not listing: parser.error(usage)  # noqa: E701
-    briefing = args.command == "brief" and args.rundir and args.agency and args.out and (args.check, args.run, args.site_slug, args.copy) == (None,) * 4
-    if (args.copy is not None or args.out is not None) and not (staging or briefing) or args.agency is not None and not briefing: parser.error(usage)  # noqa: E701
+    briefing = args.command == "brief" and args.rundir and args.agency and bool(args.out) != bool(args.against) and \
+        (args.check, args.run, args.site_slug, args.copy) == (None,) * 4 and None in (args.out, args.against)  # exactly one of --out/--against
+    if (args.copy is not None or args.out is not None) and not (staging or briefing) or (args.agency, args.against) != (None, None) and not briefing: parser.error(usage)  # noqa: E701,E501
     if checking and args.run is None:
         return check(args.check)
     if not (checking or listing or staging or briefing or rechecking or changing) and (args.command != "export" or not args.rundir or args.check or args.run is not None or
@@ -369,6 +370,8 @@ def main(argv=None):
         if staging or briefing:  # loaded only for its verb; --out/--copy are refused inside the same repository root
             spec = importlib.util.spec_from_file_location("_flock_publish_" + args.command, Path(__file__).resolve().with_name("flock_publish_%s.py" % args.command))
             spec.loader.exec_module(verb := importlib.util.module_from_spec(spec))
+            if briefing and args.against:  # RF0450-10: read-only, exit 0 current / 3 drifted
+                return verb.against(run, args.agency, args.against, verify_tool.REPO)
             return verb.brief(run, args.agency, args.out, verify_tool.REPO) if briefing else verb.stage(run, args.copy, args.out, verify_tool.REPO, args.dry_run)
         return status(run, args.json) if listing else check(args.check, run) if checking else export(run, args.site_slug)
     except (OSError, ValueError) as exc:  # the class only, never a path or record text

@@ -818,6 +818,7 @@ def main():
     for flag in ("--directory", "--id", "--result", "--on", "--source", "--verified-by"):
         outcome_p.add_argument(flag, required=True)
     outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
+    outcome_p.add_argument("--votes", metavar="FILE", help="name,vote CSV (yes|no|abstain|absent|recused) read from the --source record")
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
     commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
                         ).add_argument("--directory", required=True)
@@ -988,6 +989,7 @@ def main():
     for flag in ("--directory", "--date", "--note"):
         correct_p.add_argument(flag, required=True)
     correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
+    correct_p.add_argument("--approved-by", help="Named person approving this correction (the publication gate refuses without one)")
     withdraw_p = finding_cmds.add_parser("withdraw", help="Move a published finding to private/withdrawn/ (no notice page, no build)")
     withdraw_p.add_argument("id", metavar="ID")
     for flag in ("--directory", "--reason"):
@@ -1131,7 +1133,9 @@ def main():
         elif args.command == "meetings-outcome":
             from .meeting_outcome import record_outcome
             print(json.dumps(record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by,
-                                            args.vote, args.replace), indent=2))
+                                            args.vote, args.replace, votes_file=args.votes), indent=2))
+            if args.replace and args.votes is None:  # the new outcome replaced the old one whole
+                print("votes: none")
             print("Recorded only. Nothing was published.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
@@ -1197,7 +1201,7 @@ def main():
                 print(json.dumps(rows, indent=2, ensure_ascii=False) if args.as_json else findings.status_table(rows))
                 return
             if args.finding_command == "correct":
-                print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft)))
+                print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft, None, args.approved_by)))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 return
             if args.finding_command == "withdraw":
