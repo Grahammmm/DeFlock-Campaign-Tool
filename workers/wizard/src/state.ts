@@ -2,6 +2,7 @@
 // `stripSecrets` removes them at handoff.
 import type { AgencyKind, Location, SuggestedAgency } from "@deflock/shared/agencies";
 import type { PlanStep, Receipt, RollbackStep } from "./plan.ts";
+import type { OutboxSender, OutboxSenderStatus } from "./steps/outbox-sender.ts";
 
 export type PrivacyTier = "redacted_cloud" | "strict_local";
 export type Channel = "email" | "muckrock" | "portal_manual";
@@ -68,6 +69,7 @@ export interface Accounts {
   mailbox: Mailbox;
   brevo: Brevo | null;
   model: ModelProvider | null;
+  outbox?: OutboxSender | null; // both-or-neither pair (steps/outbox-sender.ts)
 }
 
 export interface DeployResult {
@@ -92,6 +94,7 @@ export interface WizardState {
   requests: Record<string, RequestDraft>;
   accounts: Accounts | null;
   mail_mode?: MailboxMode; // non-secret handoff setting; survives stripSecrets
+  outbox_sender?: OutboxSenderStatus; // non-secret; survives stripSecrets
   plan: PlanStep[] | null;
   deploy: DeployResult | null;
   handoff_at: string | null;
