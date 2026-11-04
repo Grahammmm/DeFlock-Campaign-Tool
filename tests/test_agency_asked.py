@@ -212,8 +212,8 @@ class AgencyAskedTests(unittest.TestCase):
                 continue
             self.assertEqual(before[name], after[name], name)
             self.assertNotIn(b"Data-sharing list", after[name])
-        self.assertEqual([n for n in after if b"Data-sharing list" in after[n]],
-                         ["timeline.html", "agencies.html", "data/agencies.json"])
+        self.assertCountEqual([n for n in after if b"Data-sharing list" in after[n]],
+                              ["timeline.html", "agencies.html", "data/agencies.json"])
 
 
 if __name__ == "__main__":

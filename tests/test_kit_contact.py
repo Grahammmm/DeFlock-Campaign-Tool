@@ -19,7 +19,7 @@ from tests.test_kit_check import ready_drafts  # noqa: E402
 NAME = "narrowed"
 SENT_ON, NAMED_SENT_ON = "2026-03-02", "2026-03-05"
 DONE = "Recorded only. Nothing was sent.\n"
-SECRET = "NOTE-TEXT-ONLY-IN-SENT-JSON"
+PRIVATE_NOTE = "NOTE-TEXT-ONLY-IN-SENT-JSON"
 
 
 def run(*arguments):
@@ -227,7 +227,7 @@ class KitContactTests(unittest.TestCase):
             self.assertIn("1 MiB", self.unchanged(lambda: self.contact(SENT_ON)))
 
     def test_contacts_do_not_advance_steps(self):
-        self.ok(self.contact("2026-03-04", note=SECRET))  # a contact before any step does not touch acknowledged-first
+        self.ok(self.contact("2026-03-04", note=PRIVATE_NOTE))  # a contact before any step does not touch acknowledged-first
         self.ok(run("kit-response", "--directory", self.root, "--agency", self.agency, "--date", "2026-03-06",
                     "--kind", "acknowledged"))
         self.assertEqual([s["kind"] for s in self.entry()["steps"]], ["acknowledged"])
@@ -257,8 +257,8 @@ class KitContactTests(unittest.TestCase):
         self.ok(run("kit-status", "--directory", self.root, "--csv", csv_before))
         plain_before = run("kit-status", "--directory", self.root)
         self.assertEqual(plain_before[0], 0)
-        self.ok(self.contact("2026-03-10", "voicemail", "Records Supervisor", SECRET))
-        self.ok(self.contact("2026-03-12", "in_person", "Front Counter Clerk", SECRET))
+        self.ok(self.contact("2026-03-10", "voicemail", "Records Supervisor", PRIVATE_NOTE))
+        self.ok(self.contact("2026-03-12", "in_person", "Front Counter Clerk", PRIVATE_NOTE))
         code, out, err = run("kit-status", "--directory", self.root)
         self.assertEqual(code, 0, err)
         report = json.loads(out)  # stdout stays one JSON document
@@ -270,16 +270,16 @@ class KitContactTests(unittest.TestCase):
         self.assertNotIn("last_contact", rows[third])
         self.assertEqual({k: v for k, v in rows[third].items()},
                          {r["agency_id"]: r for r in json.loads(plain_before[1])["requests"]}[third])
-        self.assertNotIn(SECRET, out + err)
+        self.assertNotIn(PRIVATE_NOTE, out + err)
         csv_after = self.tmp / "after.csv"
         self.ok(run("kit-status", "--directory", self.root, "--csv", csv_after))
         self.assertEqual(csv_after.read_bytes(), csv_before.read_bytes())
-        self.assertNotIn(SECRET, csv_after.read_text(encoding="utf-8"))
+        self.assertNotIn(PRIVATE_NOTE, csv_after.read_text(encoding="utf-8"))
 
     def test_citation_opt_in_as_of_and_named_filename(self):
-        self.ok(self.contact("2026-03-10", "phone", "Records Supervisor", SECRET))
-        self.ok(self.contact("2026-03-10", "voicemail", "Records Supervisor", SECRET))  # same day: the later one
-        self.ok(self.contact("2026-04-20", "in_person", "Front Counter Clerk", SECRET))
+        self.ok(self.contact("2026-03-10", "phone", "Records Supervisor", PRIVATE_NOTE))
+        self.ok(self.contact("2026-03-10", "voicemail", "Records Supervisor", PRIVATE_NOTE))  # same day: the later one
+        self.ok(self.contact("2026-04-20", "in_person", "Front Counter Clerk", PRIVATE_NOTE))
         followups = self.kit / "followups"
 
         def draft(as_of, *extra):
@@ -294,14 +294,14 @@ class KitContactTests(unittest.TestCase):
         line = "On 2026-03-10 we contacted the records office by voicemail (Records Supervisor)."
         self.assertEqual(cited.count(line), 1)
         self.assertEqual(cited.replace(line + "\n\n", "", 1), plain)  # nothing else in the draft moves
-        self.assertNotIn(SECRET, cited)
+        self.assertNotIn(PRIVATE_NOTE, cited)
         self.assertNotIn("2026-04-20", cited)
         later = draft("2026-05-01", "--cite-contact")
         self.assertEqual(later.count("On 2026-04-20 we contacted the records office by in person (Front Counter Clerk)."), 1)
         self.assertNotIn("2026-03-10 we contacted", later)
         # a named request writes its own draft and cites only its own contact
         self.ok(self.send(self.agency, NAMED_SENT_ON, "--request", NAME))
-        self.ok(self.contact("2026-03-25", "email", "Records Manager", SECRET, "--request", NAME))
+        self.ok(self.contact("2026-03-25", "email", "Records Manager", PRIVATE_NOTE, "--request", NAME))
         code, out, err = run("kit-followup", "--directory", self.root, "--agency", self.agency, "--request", NAME,
                              "--as-of", "2026-05-01", "--cite-contact")
         self.assertEqual(code, 0, err)
@@ -392,13 +392,13 @@ class KitContactTests(unittest.TestCase):
     def test_only_private_files_change(self):
         public = self.root / "public"
         before = snapshot(self.root)
-        self.ok(self.contact("2026-03-10", "phone", "Records Clerk", SECRET))
+        self.ok(self.contact("2026-03-10", "phone", "Records Clerk", PRIVATE_NOTE))
         after = snapshot(self.root)
         self.assertEqual({p for p in after if after[p] != before.get(p)}, {"kit/sent.json"})
         self.assertEqual(set(after), set(before))  # no new file, folder or temp file
         for private in ("sent-undone.json", "followups", "request-settings.json"):
             self.assertFalse((self.kit / private).exists(), private)
-        self.assertFalse(public.exists() and any(SECRET in p.read_text(errors="ignore")
+        self.assertFalse(public.exists() and any(PRIVATE_NOTE in p.read_text(errors="ignore")
                                                  for p in public.rglob("*") if p.is_file()))
         self.ok(run("kit-status", "--directory", self.root))
         self.assertEqual(snapshot(self.root), after)  # status only reads
@@ -410,7 +410,7 @@ class KitContactTests(unittest.TestCase):
         self.assertEqual({p for p in final if final[p] != after.get(p)}, {"kit/followups", f"kit/followups/{written}"})
         self.assertEqual(final["kit/sent.json"], after["kit/sent.json"])
         self.assertEqual(stat.S_IMODE((self.kit / "followups").stat().st_mode), 0o700)
-        self.assertNotIn(SECRET, (self.kit / "followups" / written).read_text(encoding="utf-8"))
+        self.assertNotIn(PRIVATE_NOTE, (self.kit / "followups" / written).read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
