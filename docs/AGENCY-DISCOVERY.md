@@ -33,14 +33,28 @@ opt-in: a kit lists them only with `--include campus_police`, never by
 default, so a kit without it is unchanged. Each entry is unverified with null
 contacts; its source note says to submit to the campus records office, which
 is separate from the city and county records offices and has its own
-procedure. Community colleges, private universities and school police are not
-seeded.
+procedure. Private universities and school police are not seeded.
 
-Coverage: all 58 counties. City lists are believed complete for San Luis
-Obispo, Santa Barbara, Monterey, Santa Cruz, Ventura, Kern, Fresno,
-Sacramento, San Diego, Alameda and Los Angeles counties; other counties list
-the cities a contributor could name with confidence and omit the rest rather
-than guess. `records_url`, `records_email`, `portal.url`, `place_fips`,
+California community college district police departments (36, from the
+`CCD_POLICE` table) are seeded in the county of the district office as kind
+`ccd_police`, after the campus police entries. Only districts that operate
+their own police department are listed; a district that contracts a city
+police department or the county sheriff, or that staffs unsworn campus
+safety officers, is not, and 36 of the 72 districts in the Chancellor's
+Office directory are absent for that reason or because no official page
+confirmed a department. They are opt-in: a kit lists them only with
+`--include ccd_police`, never by default, so a kit without it is unchanged.
+Each entry is unverified with null contacts; its source note says the entry
+was seeded from the district's official page and to submit to the district
+records office, which is separate from the city, county and campus records
+offices. The page each row came from is recorded in the pull request that
+added it, not in the seed.
+
+Coverage: all 58 counties, and all 482 incorporated cities, each with a
+`city_council` entry and a policing value (own police department, county
+sheriff, another agency, or not recorded). A city whose policing arrangement
+is not recorded has a council entry only, and its source note says to verify.
+`records_url`, `records_email`, `portal.url`, `place_fips`,
 `flock_transparency_slug` and `muckrock_agency_id` are null until someone
 verifies them, and `verified` is false everywhere. A wrong policing value is
 a bug: open a PR against the table with the official page as the source.
@@ -84,7 +98,8 @@ with `suggested: true`. For a city match the city's own agencies come first,
 then the county-wide ones; for a county match the county-wide agencies come
 first, then every city's agencies in seed order. `--include` (repeatable)
 restricts and orders kinds: `sheriff`, `police`, `county_board`,
-`city_council`, `district_attorney`, `chp`, and the opt-in `campus_police`.
+`city_council`, `district_attorney`, `chp`, and the opt-in `campus_police` and
+`ccd_police`.
 
 ## Online mode
 
@@ -165,6 +180,16 @@ Give one or more of `--records-email`, `--records-url` and `--portal` (URLs must
 `verified: true` and `verification` (`source_url`, `checked_on`, `fields`); a later call replaces `verification`
 and changes only the fields it names. The organizer, not the tool, checks the page: `source_url` is never
 fetched and nothing is sent. Re-running `kit` keeps the entry and uses the email in unedited drafts.
+
+To record many checked contacts at once, use `kit-verify-agency import --directory D --csv FILE [--check]`. The
+first row must be exactly `agency_id,source_url,checked_on,records_email,records_url,portal_vendor,portal_url`
+(UTF-8, a leading byte-order mark is fine); 1-500 data rows, at most 512 KiB, and an empty cell means "not given".
+`portal_vendor` must be one of `nextrequest`, `govqa`, `justfoia`, `none`, `unknown` and needs a `portal_url`; a
+`portal_url` alone keeps the entry's vendor (or `unknown`). Every row passes the same checks as the single-agency
+command against the current `kit/agencies.json`, and an `agency_id` may appear only once in the file. If any row is
+bad, each is named as `line <L>: <reason>` (the header is line 1; the first 20, then `and N more`), the command exits 2
+and nothing is written; otherwise all rows are applied in file order in one write. `--check` runs every check and
+writes nothing. Output lists agency ids only, never an e-mail address, and no URL is fetched and nothing is sent.
 
 Contacts go out of date. `doctor --directory ../my-campaign --contact-max-age-days 180` adds `stale_contacts`: each
 selected, verified entry whose `verification.checked_on` is more than 180 days old (`agency_id`, `checked_on`,

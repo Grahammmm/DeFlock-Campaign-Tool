@@ -234,7 +234,7 @@ class LabelsTest(unittest.TestCase):
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
-                  "officials.heading", "officials.listed", "officials.source",
+                  "officials.heading", "officials.listed", "officials.source", "privacy.signup_policy",
                   "vote.absent", "vote.abstain", "vote.no", "vote.recused", "vote.yes"]
         self.assertEqual(sorted(set(DEFAULTS) - set(JS_DEFAULTS) - seen), absent)  # js.*: the script tests below
 
