@@ -427,15 +427,26 @@ class Site:
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def share(self, title, description, path, kind, published, modified):
-        """Open Graph + Twitter summary tags from the page's own text; no image, og:url only with base_url."""
+        """Open Graph + Twitter summary tags from the page's own text; og:image only from site.json.share_image, og:url only with base_url."""
         tags = [("property", "og:site_name", self.name),
                 ("property", "og:title", e(title if kind == "article" else _one_line(title)).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")),
                 ("property", "og:description", e(description if kind == "article" else _one_line(description)).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")),
                 ("property", "og:type", kind)]
         if self.base and (kind != "article" or _preview_origin(self.base)):
             tags.append(("property", "og:url", e(self.base + path)))
-        tags += [("name", "twitter:card", "summary"), ("name", "twitter:title", e(_one_line(title))),
+        image = self.site.get("share_image")
+        if image and image["size"]:
+            url = e(self.base + "/" + image["path"] if self.base else "/" + image["path"])
+            tags += [("property", "og:image", url), ("property", "og:image:width", str(image["size"][0])),
+                     ("property", "og:image:height", str(image["size"][1])),
+                     ("property", "og:image:alt", e(image["alt"]))]
+        tags += [("name", "twitter:card", "summary_large_image" if image else "summary"),
+                 ("name", "twitter:title", e(_one_line(title))),
                  ("name", "twitter:description", e(_one_line(description)))]
+        if image and image["size"]:
+            if self.base:
+                tags.append(("name", "twitter:image", url))
+            tags.append(("name", "twitter:image:alt", e(image["alt"])))
         if kind == "article":
             tags.append(("property", "article:published_time", e(_one_line(published))))
             if modified:
