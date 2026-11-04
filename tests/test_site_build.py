@@ -21,12 +21,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 PAGES = ["index.html", "agencies.html", "findings/index.html", "findings/packet-all.html", "findings/cedar-policy-posted.html",
          "sources.html", "meetings.html", "about.html", "corrections.html", "timeline.html", "meetings/cedar-council-2026-10.html",
-         "agencies/cedar.html"]  # DF2237-08: Cedar Police has a finding and sources
+         "agencies/cedar.html", "sources/cafecafecafe.html", "sources/beefbeefbeef.html"]  # DF2237-08: Cedar Police has a finding and sources; DF1103-11: a record page per library entry
 FILES = PAGES + ["404.html", "cameras.html", "methods.html", "privacy.html", "search.html", "search.js", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                  "site-data.js", "agency-cards.js", "app.js", "data/cameras.geojson",
                  "data/city-boundaries.geojson", "findings/agency/cedar.xml", "data/findings.json", "data/findings.csv",
                  "data/sources.json", "data/sources.csv",
-                 "data/meetings.json", "data/agencies.json", "findings/cite.js"]
+                 "data/meetings.json", "data/agencies.json", "data/meetings.csv", "data/agencies.csv", "findings/cite.js"]
 EXPECTED_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; "
                 "img-src 'self' data: blob: https://tiles.example.invalid; "
                 "connect-src 'self' https://tiles.example.invalid; font-src 'self'; worker-src blob:; "
@@ -94,7 +94,7 @@ class SiteBuildTests(unittest.TestCase):
         page = self.read("findings/cedar-policy-posted.html")
         for needle in ("Documented fact", "Verified against the record", 'datetime="2026-01-15"',
                        "Record no. <code>cafecafecafe", "page:1-2", 'id="corrections"', "Corrected the policy date",
-                       "This is not legal advice", 'href="/sources.html#cedar-police-records"'):
+                       "This is not legal advice", 'href="/sources/cafecafecafe.html"'):
             self.assertIn(needle, page)
         self.assertNotIn("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe", page)
         index = self.read("findings/index.html")

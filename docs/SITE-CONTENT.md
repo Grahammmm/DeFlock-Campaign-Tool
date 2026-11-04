@@ -264,6 +264,28 @@ Each `sources.html` entry ends with `Cited by:` and links to every published
 finding that cites its `sha256` (model order, once each), or with
 `Not cited by a published finding`. Drafts never appear.
 
+Record pages (DF1103-11): every library entry also gets `sources/<first 12 hex of its sha256>.html` (labels
+`sources.record_description`, `sources.record_page` = "Record details"). The page shows the title, the received date, the
+agency (linked to its page when it has one), the record number with the "How to check a copy" steps (on every record page,
+checked or not), the page count (0 included), the public copy link or the private-archive notice, the recorded copy check,
+the public note and each published finding that cites it, once, in model order. It is built only from the published model:
+originals, the ledger, the kit and private drafts are never read. Library entries link to it ("Record details"), and the
+record-number link on a finding page points to it when the entry is in the library; an uncatalogued citation stays unlinked.
+Packet, timeline, agency-card and agency-page links still use the `sources.html#<fragment>` group anchors. Record pages are in
+`sitemap.xml` (with a `base_url`, no `lastmod`), last, in library order; with no library entries none are written.
+
+Record numbers must be unique: any two library entries sharing the same 12-character prefix, including one `sha256` listed under
+two fragments, refuse the build naming the prefix and the entries' positions in `sources.json` (never a full hash). Nothing is
+overwritten or merged for you: consolidate the aliases by hand (keep one entry per record) before building. `sources add`,
+`sources edit` and `sources verify-copy` keep their own rules and do not rewrite the library for this. The top-level name
+`sources/` is reserved: `public-assets/sources/...` is refused as a generated path, with or without entries, and the slug
+`sources` is already a reserved content page.
+
+Downstream hook contract (for the library filter): each outer library `<li>` has `class="source-entry"`,
+`data-agency` (the entry's `agency_id`), `data-year` (the first four characters of `received_at`, no time-zone conversion),
+`data-cited` (`true` when a published finding cites it, else `false`) and `data-record` (the 12 lowercase hex characters).
+Every entry stays visible; the agency-document-group sections keep their ids.
+
 `content/officials.json` (optional, never fetched) lists who decides for a body:
 `{"schema_version": 1, "bodies": [{"agency_id", "officials": [{"name", "role",
 "profile_url"?, "source_url", "checked_on"}]}]}`. Each `agency_id` is a loaded agency,
@@ -476,7 +498,7 @@ one writer. Evidence originals are never deleted.
 `index.html` (hero map when configured, agency cards, mission, latest findings,
 signup, meetings), `agencies.html`, `findings/index.html`,
 `findings/<slug>.html`, `sources.html` (with `#library` and one
-`#<fragment>` section per source group), `meetings.html`, `about.html`,
+`#<fragment>` section per source group), `sources/<12-hex record number>.html` (one per library entry), `meetings.html`, `about.html`,
 `style.css`, `_headers`, `robots.txt`, `sitemap.xml` (only when `base_url` is
 set: absolute `<loc>`s, finding pages and `/`, `/findings/` with the UTC day of
 the latest update or correction as `<lastmod>`; without `base_url` no sitemap,
@@ -528,14 +550,16 @@ are empty cells when omitted by the public JSON (including a pending response); 
 `; `, and a present `agency_response` is a JSON object serialized with sorted keys in one cell, using only its public fields.
 A cell that begins with `=`, `+`, `-`, `@`, a tab or a
 carriage return is written with a leading `'` so a spreadsheet does not run it as a formula (the `kit-status --csv` rule; the JSON
-is not changed). A meetings CSV is not built.
+is not changed).
 `data/meetings.json` is the staged meetings as open data (`schemas/meetings-open-data.schema.json`), linked from
 `meetings.html` and `about.html`, newest `starts_at` first, cancelled ones included (`"meetings": []` with none):
 top level `schema_version`, `generated_at` (the build date at 00:00 UTC) and `meetings`; per meeting `id`, `body`,
 `agency_id` or null, `starts_at`, `status`, `agenda_url` or null, `url` (the page path `/meetings/<id>.html`) and, for a
 held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `source_url`, `vote` and the per-member
 `votes` as `{name, vote}` in stored order, each only when recorded), plus the pair `minutes_url` and
-`minutes_approved_on` (the body's approved official minutes, both or neither; no derived confirmation flag). It never
+`minutes_approved_on` (the body's approved official minutes, both or neither; no derived confirmation flag), plus
+the optional `continued_to` (a staged meeting id) or `continued_to_date` (a stated date) of a `continued` result (one
+of the two, never both; no derived back-reference). It never
 includes the comment kit, `participation`,
 contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
 `data/meetings.json: non-public key ...` and writes nothing.
@@ -552,6 +576,19 @@ has one, `cost`: `amount_usd`, `period`, `as_stated_in`) or null, `transparency`
 (the card's camera-count sentence) or null. It never includes `records_email`, `records_url`, `portal`, the asked-item
 `note`, the contract `renewal_note`, kit files, notes or any other key; the build refuses with
 `data/agencies.json: non-public key ...` and writes nothing.
+`data/agencies.csv` and `data/meetings.csv` (DF2207-11) are spreadsheet copies of those two files, linked beside every link
+to the matching JSON (`agencies.html`, `meetings.html` and `about.html`; label `intro.open_data_csv`, not in `sitemap.xml`).
+Each is read back from the JSON text the build has already rendered and checked, so columns contain only allowlisted public
+JSON fields, and there is no CSV without its JSON. The header includes required and optional public record keys in the order
+the JSON file writes them (alphabetical), for no records too. In particular, agencies always have a `funding` column, even
+when no agency has recorded funding. A key a record lacks (including `funding` or a meeting's `outcome`) or a null is an empty
+cell, never a missing column;
+then one row per record in the JSON array's order. Text stays as it is, a number keeps its JSON spelling, `true`/`false` stay
+`true`/`false`, a list is joined with `; ` in stored order (a string item as text, any other item as compact JSON), and an
+object (`asked` or `funding` items, `alpr_policy`, `contract`, `transparency`, a meeting's `outcome` with its `votes`) is one cell of compact
+JSON (`{"checked_on":"2026-10-20","url":"..."}`), never spread over more columns. Encoding and the formula guard are those of
+`findings.csv`: UTF-8 without a byte-order mark, CRLF line ends, standard quoting, and a cell that begins with `=`, `+`, `-`, `@`,
+a tab or a carriage return is written with a leading `'` (interior characters are not touched; the JSON is not changed).
 `public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan

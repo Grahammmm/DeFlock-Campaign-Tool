@@ -307,6 +307,32 @@ from the `meeting.minutes_confirmed` (with `{date}`), `meeting.minutes_pending` 
 `today` lists a `minutes_pending` item for each outcome recorded more than 45 days ago (by `--on`) that has no
 minutes, with the command to attach them; it only asks you to check whether the minutes are approved.
 
+### Following a continued item to its stated date
+
+`--result continued` may add one of `--continued-to MEETING_ID` (a staged meeting of exactly the same body, status
+scheduled, whose own local date is after this meeting's) or `--continued-to-date YYYY-MM-DD` (a real calendar date after
+the meeting, any future date allowed), as the official source states it. Neither is required, and the flags only
+exist when creating or fully replacing an outcome: other results refuse them (`continued_to: requires result continued`,
+`continued_to_date: requires result continued`), the two together are refused
+(`--continued-to and --continued-to-date are mutually exclusive`), the minutes-only mode refuses both, and there is no
+continuation-only update. A target id that is unknown, this meeting, cancelled, of another body (compared exactly:
+case, spaces, agency) or not dated after the meeting is refused naming `meetings/<id>.outcome.continued_to` and
+writes nothing. Dates are the meeting's local calendar dates; no time zone is converted, so a later hour of the same day
+is not a later date. A full `--replace` drops an omitted continuation (so it repairs a reference that went bad); the
+minutes-only `--replace` keeps it. `build` and `content-check` apply the same rules to hand-edited files.
+
+A stated date is matched, not resolved: the meeting page of the source says `Continued to D`, linking the later
+meeting when exactly one non-cancelled meeting of the same body is staged on that date; with none the plain date is
+shown, and with several the plain date is followed by one `Meeting page (ID)` link each. Every matched later
+meeting says `Continued from D` and links back, source by source in start order. A same-body, same-date match is a
+follow-up cue only, never confirmation that the agenda item was heard or resolved; an explicit `--continued-to` is
+the organizer's reading of the source. The wording comes from the `meeting.continued_to` and `meeting.continued_from`
+labels (each with `{date}`), and the extra links use `meeting.page`. `today` lists a `continued_pending` item for a
+`--continued-to-date` whose date has passed with no meeting of that body staged on it, with the command to open the
+outcome's source and stage the follow-up (`meetings-stage`); a broken explicit reference or a duplicate meeting id
+shows as an `unreadable` item instead. `data/meetings.json` carries `continued_to` or `continued_to_date` on the
+outcome.
+
 ## Worker Legistar poll (inline, authored, undeployed)
 
 `runScheduled` (`workers/workspace/src/cron.ts`) polls Legistar inline on the existing cron slots
