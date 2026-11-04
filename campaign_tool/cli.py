@@ -1045,10 +1045,11 @@ def main():
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
                                                                "produced", "denied", "closed", "fee_estimate",
                                                                "clarification_requested", "clarified", "fee_paid",
-                                                               "fee_waived"))
+                                                               "fee_waived", "withdrawn"))
     response_p.add_argument("--amount", metavar="USD", help="fee_estimate (required) or fee_paid (optional): 0-100000 "
                             "(e.g. 245.50); recorded only, nothing is paid")
-    response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
+    response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents); required for "
+                            "withdrawn, the campaign's own withdrawal of its request (not an agency closure)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
     response_p.add_argument("--correspondence", action="append", default=[], metavar="PREFIX",
@@ -1701,9 +1702,11 @@ def main():
             print(json.dumps(report, indent=2))
             for row in report["requests"]:  # a reminder on stderr; stdout stays one JSON document
                 label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
-                if row["over_fee_cap"]:
+                if "withdrawn_on" in row:  # ended by us: history stays in the JSON, but no reminder is actionable
+                    print(f"{label}: withdrawn by us on {row['withdrawn_on']}", file=sys.stderr)
+                if row["over_fee_cap"] and "withdrawn_on" not in row:
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
-                if row["fee_state"] == "unpaid":
+                if row["fee_state"] == "unpaid" and "withdrawn_on" not in row:
                     print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
                 if row.get("undone_steps"):
                     print(f"{label}: {row['undone_steps']} step(s) undone", file=sys.stderr)
