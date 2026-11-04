@@ -25,12 +25,13 @@ RESOURCE_ROOT = Path(__file__).resolve().parent / "_resources"
 SEED_DIR = RESOURCE_ROOT / "data" / "agencies"
 SEED_SCHEMA = RESOURCE_ROOT / "schemas" / "agency-seed.schema.json"
 GEOCODER = "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress"
-COUNTY_KINDS = ("sheriff", "county_board", "district_attorney", "chp", "campus_police", "ccd_police")
+COUNTY_KINDS = ("sheriff", "county_board", "district_attorney", "chp", "campus_police", "ccd_police",
+                "school_police")
 CITY_KINDS = ("police", "city_council")
-LAW_ENFORCEMENT_KINDS = ("sheriff", "police", "chp", "campus_police", "ccd_police")
+LAW_ENFORCEMENT_KINDS = ("sheriff", "police", "chp", "campus_police", "ccd_police", "school_police")
 DEFAULT_INCLUDE = ("sheriff", "police", "county_board", "city_council",
                    "district_attorney", "chp")
-OPT_IN_KINDS = ("campus_police", "ccd_police")  # seeded but never in a kit unless --include names it
+OPT_IN_KINDS = ("campus_police", "ccd_police", "school_police")  # seeded but never in a kit unless --include names it
 STATE_FIPS = {"CA": "06"}
 
 
