@@ -70,7 +70,7 @@ class FindingStatusTests(unittest.TestCase):
         for name in ("st-pub", "st-fix", "st-gone"):
             self.approve_all(self.put(name, folder=self.base))
             findings.publish(self.root, self.base / f"{name}.json", "Pat Organizer", now=NOW)
-        findings.correct(self.root, "st-fix", "2026-03-05", NOTE, now=LATER)
+        findings.correct(self.root, "st-fix", "2026-03-05", NOTE, now=LATER, approved_by="Pat Organizer")
         self.gone_bytes = (self.content / "findings" / "st-gone.json").read_bytes()
         findings.withdraw(self.root, "st-gone", REASON, now=LATER)
 

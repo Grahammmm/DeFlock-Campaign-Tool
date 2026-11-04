@@ -79,3 +79,18 @@
 
 /* Brevo-hosted signup: one consent form, with a lightweight hero path. */
 .banner-signup-link{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;min-height:48px;padding:.75rem 1.2rem;border-radius:4px;background:var(--coral);color:#fff;text-decoration:none;font-weight:700;white-space:nowrap}.banner-signup-link:focus-visible,.signup-embed-fallback a:focus-visible{outline:3px solid var(--mint);outline-offset:3px}.signup-embed{min-width:0;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 14px 35px #092b2d26}.signup-embed iframe{display:block;width:100%;min-height:560px;border:0;background:#fff}.signup-embed-fallback{margin:0!important;padding:.75rem 1rem 1.1rem!important;color:var(--ink);font-size:.85rem!important}.signup-embed-fallback a{color:#145b51;font-weight:700}@media(max-width:850px){.banner-signup-link{width:100%}.signup-embed iframe{min-height:620px}}
+
+/* agencies.html "At a glance" (DF0137-12): a bordered table on screen and on paper; stacked labelled rows only on
+   narrow screens, so paper output always keeps the table. Only source cells hold http links (URLs shown on paper). */
+.agency-list>.at-a-glance{grid-column:1/-1;background:#fff;padding:1.4rem;border-top:3px solid var(--coral)}
+.glance-table{width:100%;border-collapse:collapse;font-size:.92rem}
+.glance-table caption{text-align:left;font-weight:700;padding-bottom:.5rem}
+.glance-table th,.glance-table td{border:1px solid #7d8a86;padding:.45rem .6rem;text-align:left;vertical-align:top;overflow-wrap:anywhere}
+.glance-table small{display:block;color:var(--muted)}
+@media screen and (max-width:640px){
+.glance-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.glance-table,.glance-table tbody,.glance-table tr,.glance-table th,.glance-table td{display:block}
+.glance-table tr{border:1px solid #7d8a86;margin-bottom:.75rem}
+.glance-table tbody th,.glance-table td{border:0;border-bottom:1px solid var(--line)}
+.glance-table tbody th::before,.glance-table td::before{content:attr(data-label);display:block;font-size:.8rem;color:var(--muted)}
+}

@@ -82,6 +82,18 @@ meeting without one is never described as decided. At most 8 lines, then "and N 
 site."; `counts.decisions` is present only when the section is. Worker manifests carry no
 `decisions` key and render exactly as before.
 
+`--from-content` also lists, under **Records requests** (after New findings and Corrections, before
+Decisions), each public `asked` item from `content/agencies.json` whose `asked_on` or `updated_on` is on
+or after the `--since` day (all of them without `--since`) and not after the day the draft is built;
+an item dated after the build day is left out. Each line is `AGENCY: TOPIC — SENTENCE`, where SENTENCE
+is the agency page's own state sentence (`site.asked_sentence`, so the newsletter and the site never
+disagree), followed by an "Agency page" link only when `campaign.base_url` is set (the agency's
+`/agencies/<slug>.html` page, else its `/agencies.html#<slug>` anchor; never a relative link). The
+organizer `note` and everything under `kit/` are never read. Newest activity first; at most 8 lines,
+then "and N more on the site."; the heading is omitted when no item is kept and `counts.requests` is
+present only when the section is. Worker manifests carry no `requests` key and render exactly as
+before; a `requests` that is not a list is refused (`DraftError`).
+
 Under each upcoming meeting `--from-content` adds one indented line. With participation facts an
 organizer verified (see MEETINGS.md) it reads `How to take part: In person: yes|no; Remote: HOW;
 Written comments: HOW, by DEADLINE; Speaker limit: N minutes (checked DAY) [Official details](URL)`,

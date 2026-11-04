@@ -3,18 +3,27 @@
 Pure aggregator over existing read-only helpers. Every source is read separately, so a broken input becomes its own
 ``unreadable`` item ("fix <file>: ...") and never hides another source's items. Nothing is written, sent or published.
 """
+import argparse
 import json
 import shlex
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from . import findings, kit, kit_track, meeting_stage
-from .content import _read_json, load_meeting
+from .content import _read_json, load_agencies, load_meeting
 
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
          "request_installment_due", "finding_ready", "finding_blocked",
-         "stale_comment_kit", "stale_contact", "unreadable")
+         "contract_ending", "stale_comment_kit", "stale_contact", "unreadable")
 WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS = 7, 180, 120
+CONTRACT_DAYS, CONTRACT_ENDED_DAYS = 90, 30
+
+
+def contract_days(text):
+    """argparse type for ``today --contract-days``: a whole number of days, 1-365."""
+    if not (text.isascii() and text.isdigit()) or not 1 <= int(text) <= 365:
+        raise argparse.ArgumentTypeError(f"must be a whole number of days from 1 to 365, got {text!r}")
+    return int(text)
 
 
 def _item(kind, what, command, due=None, key=""):
@@ -103,13 +112,37 @@ def _contacts(root, as_of, directory):
                   entry["checked_on"], entry["agency_id"]) for entry in stale]
 
 
-def todo(root, as_of, *, law_base=None):
+def _contracts(root, as_of, directory, days):
+    path = root / "content" / "agencies.json"
+    if not path.exists() and not path.is_symlink():  # no agency list: nothing to watch
+        return []
+    items = []
+    for agency in load_agencies(_read_json(path), "content/agencies.json", today=as_of):  # the build's validation
+        if (term := agency["contract"]) is None:
+            continue
+        left = (date.fromisoformat(term["end"]) - as_of).days
+        head = f"Contract with {term['vendor']} for {agency['name']} ({agency['agency_id']})"
+        if 0 <= left <= days:
+            step = f"ends {term['end']} (in {left} days): ask for the renewal staff report and watch the agenda"
+        elif -CONTRACT_ENDED_DAYS <= left < 0:
+            step = f"ended {term['end']} ({-left} days ago): ask whether it was renewed and for the staff report"
+        else:
+            continue
+        note = f" Note: {term['renewal_note']}" if term["renewal_note"] else ""
+        items.append(_item("contract_ending", f"{head} {step}. Source: {term['source_url']} (checked "
+                           f"{term['checked_on']}){note}", f"meetings --directory {directory} --client "
+                           "LEGISTAR_CLIENT --online", term["end"], agency["agency_id"]))
+    return items
+
+
+def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS):
     """Ranked to-do items ``{rank, kind, what, due, command}``; reads only, never raises for a broken input."""
     root = Path(root)
     directory = shlex.quote(str(root))
     sources = ((lambda: _meetings(root, as_of), "content/meetings/"),
                (lambda: _requests(root, as_of, directory, law_base), "kit/sent.json"),
                (lambda: _findings(root, directory), "private/drafts/"),
+               (lambda: _contracts(root, as_of, directory, contract_days), "content/agencies.json"),
                (lambda: _stale_kits(root, directory), "content/"),
                (lambda: _contacts(root, as_of, directory), "kit/agencies.json"))
     items = []
@@ -122,11 +155,11 @@ def todo(root, as_of, *, law_base=None):
     return [{"rank": rank, **{k: v for k, v in item.items() if k != "_key"}} for rank, item in enumerate(items, 1)]
 
 
-def run_cli(root, as_of=None, as_json=False):
+def run_cli(root, as_of=None, as_json=False, contract_days=CONTRACT_DAYS):
     day = date.today() if as_of is None else kit_track._day(as_of)
     if day is None:
         raise ValueError("--as-of must be a real YYYY-MM-DD date")
-    items = todo(root, day)
+    items = todo(root, day, contract_days=contract_days)
     if as_json:
         return json.dumps(items, indent=2, ensure_ascii=False)
     if not items:
