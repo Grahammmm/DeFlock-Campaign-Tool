@@ -485,6 +485,14 @@ is not a legal endorsement and does not let anyone speak for them. `supporters` 
 without a file. Labels: `supporters.title`, `supporters.description`, `supporters.joined` (`{date}`) and
 `supporters.kind.<kind>`; `examples/labels/es.json` carries Spanish drafts (still unreviewed).
 
+**Co-sign grant (DF2207-14).** A private record may also carry `cosign` (`"any"` or 1 to 100 meeting ids) with
+`cosign_confirmed_on`, `cosign_how` and `cosign_correspondence`: all four or none. Set it with
+`supporters consent --directory DIR --id ID --cosign any|MEETING_ID ... --confirmed-on D --how HOW [--correspondence PREFIX]`
+or remove it with `--clear-cosign` (see [MEETINGS.md](MEETINGS.md)). It is read only by `meetings-stage --cosign`,
+`load_content` and `content-check`; it never reaches the public file or the site. A listing alone never allows co-signing.
+Staged meetings store `cosigners` (1 to 30 supporter ids), shown on the meeting page as `Co-signed by N organizations`
+(labels `meeting.cosigned_one` and `meeting.cosigned_many`, both with `{count}`; Spanish drafts in `examples/labels/es.json`).
+
 Limits: the lint refuses `@`, phone-number-like digit runs and contact labels (`email:`, `phone:`, `contact:`, `mailto:`)
 in names and URLs, but it does not recognise a person's name. The organization attestation and the organizer's own
 review before every `add` remain mandatory; no program can prove that free text names an organization rather than a

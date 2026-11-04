@@ -692,7 +692,7 @@ def _read_previous(path):
 def meeting_stage_cmd(args, root):
     from .meeting_stage import stage
     report = stage(root, args.id, args.agency_id, args.location, args.replace, args.participation,
-                   finding_ids=args.finding, asks=args.ask)
+                   finding_ids=args.finding, asks=args.ask, cosign_ids=args.cosign)
     print(json.dumps(report, indent=2))
     for note in report.get("review_flags", []):  # DF2207-07: advisory legal-claim notes, positions only
         print(note, file=sys.stderr)
@@ -868,6 +868,18 @@ def main():
     supporters_add.add_argument("--how", required=True, choices=SUPPORTER_HOWS)
     supporters_add.add_argument("--correspondence", default=None, metavar="PREFIX",
                                 help="12 to 64 hex characters of an ingested record; kept privately")
+    supporters_consent = supporters.add_parser("consent", help="Grant or revoke permission to name one listed organization "
+                                               "under a staged written comment; edits only the private file")
+    supporters_consent.add_argument("--directory", required=True)
+    supporters_consent.add_argument("--id", required=True)
+    grant_group = supporters_consent.add_mutually_exclusive_group(required=True)
+    grant_group.add_argument("--cosign", nargs="+", metavar="any|MEETING_ID",
+                             help="The word any (alone) or the meeting ids the organization agreed to co-sign")
+    grant_group.add_argument("--clear-cosign", action="store_true", help="Remove the co-sign grant")
+    supporters_consent.add_argument("--confirmed-on", default=None, metavar="DATE", help="YYYY-MM-DD it agreed to co-sign")
+    supporters_consent.add_argument("--how", default=None, choices=SUPPORTER_HOWS)
+    supporters_consent.add_argument("--correspondence", default=None, metavar="PREFIX",
+                                    help="12 to 64 hex characters of an ingested record; kept privately")
     supporters_remove = supporters.add_parser("remove", help="Drop one organization's public entry and private record")
     supporters_remove.add_argument("--directory", required=True)
     supporters_remove.add_argument("--id", required=True)
@@ -923,6 +935,9 @@ def main():
     stage_p.add_argument("--ask", action="append", metavar="T", default=None,
                          help="This meeting's own public-comment ask (repeatable, 1-3, 1-200 characters); "
                               "replaces site.json comment_asks for this kit only")
+    stage_p.add_argument("--cosign", action="append", metavar="SUPPORTER_ID", default=None,
+                         help="Name a consenting supporting organization under this meeting's written comment "
+                              "(repeatable, max 30; needs --participation with a written_comment; sends nothing)")
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
@@ -1467,11 +1482,17 @@ def main():
             print(json.dumps(shown, indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "supporters":
-            from .supporters import add_supporter, remove_supporter
-            print(json.dumps(remove_supporter(root, args.id) if args.supporters_command == "remove" else
-                             add_supporter(root, name=args.name, kind=args.kind, organization=args.organization,
-                                           confirmed_on=args.confirmed_on, how=args.how, url=args.url,
-                                           correspondence=args.correspondence)))
+            from .supporters import add_supporter, remove_supporter, set_cosign_consent
+            if args.supporters_command == "consent":
+                result = set_cosign_consent(root, args.id, cosign=args.cosign, clear=args.clear_cosign,
+                                            confirmed_on=args.confirmed_on, how=args.how, correspondence=args.correspondence)
+            elif args.supporters_command == "remove":
+                result = remove_supporter(root, args.id)
+            else:
+                result = add_supporter(root, name=args.name, kind=args.kind, organization=args.organization,
+                                       confirmed_on=args.confirmed_on, how=args.how, url=args.url,
+                                       correspondence=args.correspondence)
+            print(json.dumps(result))
             print("Recorded only. Nothing was published.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
