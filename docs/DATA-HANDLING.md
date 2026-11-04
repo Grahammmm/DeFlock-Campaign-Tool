@@ -1,5 +1,7 @@
 # Data handling
 
+The open questions for G are in [DATA-HANDLING-DECISIONS.md](DATA-HANDLING-DECISIONS.md).
+
 Use an external campaign directory and keep private originals, mail, subscriber
 data, signed links, credentials and analysis out of source control. The CLI sets
 a restrictive umask and private storage permissions, but does not encrypt disk:
