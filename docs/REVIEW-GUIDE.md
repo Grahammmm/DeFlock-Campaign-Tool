@@ -9,7 +9,7 @@ This guide is for a volunteer asked to review one draft finding in one role: fac
 - **Independent.** You must not be the draft's `author`; the tool refuses that name (case and spacing ignored). Two different non-author reviewers must cover the three roles before a finding can clear the gate.
 - **Competent for the role.** If you cannot read the records, cannot follow the law-package rule, or do not know the privacy risk, say so to the organizer and record nothing. Never approve to be helpful. There is no "abstain" decision: an unrecorded role simply stays a blocker.
 - **Confidential.** The draft, preview, packet, cited records and your rationale are private until the organizer publishes through the redaction and review gates. Do not forward, post or quote them.
-- **A role is not an identity.** Names are self-asserted offline. The roster says which roles a name may hold; it proves nobody's identity. Receipts may carry an optional SSH signature (see "Signed receipts" in [PUBLICATION.md](PUBLICATION.md#offline-review-receipts-cli)); the guide adds no key or signing steps.
+- **A role is not an identity.** Names are self-asserted offline. The [reviewer roster](PUBLICATION.md#reviewer-roster-role-assignment-not-authentication) says which roles a name may hold; it proves nobody's identity. Receipts may carry an optional SSH signature (see "Signed receipts" in [PUBLICATION.md](PUBLICATION.md#offline-review-receipts-cli)); the guide adds no key or signing steps.
 - **Passing software checks is not validation.** The review gate counts receipts bound to the exact content hash. It cannot tell whether your reading was careful.
 
 ## What each command records
@@ -74,7 +74,7 @@ python3 -m campaign_tool finding diff "$FINDING_ID" --directory "$CAMPAIGN" --fr
 
 **Decision.** Approve only the reading you checked against the primary text. A rule marked `likely` or `needs_attorney_review`, or a disputed reading, is not yours to certify: choose `changes_requested` (soften, cite, or send to a qualified independent reviewer) rather than approve. Choose `reject` if the draft rests on a rule that does not apply or a duty the text does not state. A draft law package is not a reviewed one, and your finding approval does not make it so.
 
-**Rationale.** Name the rule id and version and what you compared. Example: `Legal: rule us-ca-example-1 v2026 vs cited text, event 2026-01-02 inside effective dates; exceptions stated. Rule is labelled likely; wording kept descriptive. Approve.`
+**Rationale.** Name the rule id and version and what you compared. Example: `Legal: rule us-ca-example-1 v2026 vs cited text, event 2026-01-02 inside effective dates; exceptions stated. Rule is labelled likely; changes_requested: send the rule and cited text to a qualified independent reviewer, then recheck.`
 
 ## Privacy reviewer
 
