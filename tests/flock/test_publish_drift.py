@@ -61,7 +61,7 @@ class PublishDriftTest(base.FlockPublishTest):  # setUp builds store/agencies/<A
         verify = (self.run_dir / "VERIFY.csv").read_text()
         row = next(line for line in verify.splitlines() if line.startswith("T1,"))
         flipped = "T1,downgrade,F-a71d059d7a51,6,medium,Existing training material withholding notices,Page 6 is unclear."
-        (self.run_dir / "VERIFY.csv").write_text(verify.replace(row, flipped))
+        (self.run_dir / "VERIFY.csv").write_text(verify.replace(row, flipped.replace("F-a71d059d7a51", self.fact_ids["F-a71d059d7a51"])))
         for name in ("PUBLIC-OK.csv", "QUESTIONS.md"):
             (self.run_dir / name).unlink()
         self.assertEqual(base.run("flock_verify.py", "finish", self.rd)[0], 0)  # re-signed as the test store does
