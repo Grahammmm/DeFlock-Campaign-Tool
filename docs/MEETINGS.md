@@ -218,8 +218,31 @@ spaces collapsed). Problems are listed together by file row (the header is row 1
 and nothing is written. Votes are never inferred from `--vote`. Changing votes needs `--replace`, and
 `--replace` without `--votes` drops them (`votes: none`). The meeting page shows a "Recorded votes" table.
 
+## Worker Legistar poll (inline, authored, undeployed)
+
+`runScheduled` (`workers/workspace/src/cron.ts`) polls Legistar inline on the existing cron slots
+through `pollLegistar` (`workers/workspace/src/legistar_poll.ts`). There is no second scheduler and no
+job row, so the runner is not involved. Configure it with the optional `LEGISTAR_FEEDS` setting: https
+events feed URLs, separated by spaces or commas, for example
+`https://webapi.legistar.com/v1/<client>/events?EventItems=1`. If the setting is absent, nothing is
+fetched, the run summary records `not_configured`, and the dashboard shows
+`legistar_poll: not configured`.
+- Each feed gets one GET with no redirect followed, no credential and no cookie. Limits match the CLI:
+  20 s, 4 MiB and at most 60 events. A feed that breaks a limit, is not https, has credentials in its
+  URL, redirects, or returns a bad status or bad JSON files nothing. It raises one deduplicated
+  incident naming the feed by host and path, with no response body, and the slot's outcome becomes
+  `partial`. The other feeds still run.
+- An event is kept only when one of its agenda items matches `matchesMeetingKeywords`, the generated
+  copy of `data/meeting-keywords.json`. All other events are counted as `discarded`.
+- A kept event is filed through `fileMeeting`, using the source URL `<feed path>/<EventId>` and the
+  item id `EventId`. A re-poll files nothing. Changed bytes file one revision, and the previous row is
+  left unchanged. Only the body name, date, ids, URL and hash are stored. Item text, comments and
+  attendee fields are not.
+- An event with no usable date is filed `date_state: unknown` with `starts_at` NULL and is never
+  guessed. A meeting already in the past is filed with its real date and counted `past`.
+
 ## Not done
 
-No automatic Legistar polling from the Worker, no RSVP collection (the `rsvp_count` column is
+No RSVP collection (the `rsvp_count` column is
 reserved), no other agenda platforms (Granicus, PrimeGov, CivicClerk), and no calendar
 feed. Each of those should keep the same keyword-lead, human-verify rule.
