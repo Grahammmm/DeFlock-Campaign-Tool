@@ -108,7 +108,12 @@ the binding statute cited alongside so a reader can see which is which.
 [--stale-days N] [--base DIR]` writes a private CSV worksheet (mode 0600, refused
 inside the repository or over an existing file): one `records_law` row, then one row
 per rule in package order, with the rule text, its sources, the oldest access date
-and its age, and four blank reviewer columns. Stdout JSON names every source
+and its age, a `package_sha256` column (just before the reviewer columns), and four
+blank reviewer columns. `package_sha256` is the same lowercase SHA-256 on every row:
+the digest of the whole package as canonical JSON (sorted keys, compact separators,
+UTF-8; every rule, source, label and review field counts, array order included).
+It identifies the exact package revision the worksheet was made from; it is not a
+signature and does not authenticate the reviewer. Stdout JSON names every source
 accessed more than N days (default 180, 1..3650) before `--as-of`. The worksheet is
 not legal advice and not a review: it never changes `status`, `reviewed_by`,
 `reviewed_at` or any `review` label. Only a human reviewer moves a package to
@@ -126,6 +131,20 @@ today; any refused row stops the run and nothing is written. Edited `duty`,
 `status`, `reviewed_by` or `reviewed_at`: check the result with
 `tools/check_law_review.py`, then record the reviewers through the process above.
 
+A worksheet is accepted only against the package revision it was made from. Every row
+must carry a `package_sha256` equal to the current package's digest; a missing,
+malformed or different value, or a worksheet from before this column existed,
+stops the run with `regenerate review-sheet or review-packet, nothing written`,
+before any label is transcribed and before any output file is created. Any change
+to the package (another rule, a request scope, a source, an intervening review label,
+`status` or `reviewed_by`) makes every older worksheet stale, even a blank one. Recover
+by regenerating the worksheet from the current package and having the human reviewer
+reassess and re-enter the conclusions; old conclusions are never copied across. The
+three text cells a reviewer may edit (`duty`, `exceptions`, `remedy`) do not change
+the binding. There is no override and no automatic migration of old worksheets.
+The binding detects a stale or mismatched worksheet; it cannot prevent someone from
+editing the digest and is not a signature.
+
 ## Reviewer packet (not a review)
 
 `python3 -m campaign_tool law review-packet --jurisdiction us-ca --out NEWDIR
@@ -141,9 +160,12 @@ files, and a refusal prints one line and creates nothing:
   (`needs_attorney_review`, then `likely`, then `verified`), with the reading, the
   cited sources, the dates and one question; then the `records_law` row.
 - `WORKSHEET.csv`: byte-identical to `review-sheet` for the same `--as-of` (default
-  today), so `apply-sheet` reads the returned file unchanged.
+  today) and package, including its `package_sha256` column, so `apply-sheet` reads
+  the returned file unchanged while the package is unchanged.
 - `RETURN.md`: the filled worksheet goes back to the maintainer, who opens the PR;
-  the packet names no address.
+  the packet names no address. If the package changes before the worksheet comes
+  back, `apply-sheet` refuses it: build a new packet and have the reviewer
+  reassess; do not copy a digest across.
 
 The packet states no conclusion and changes nothing in the package. While a
 package is `draft`, `doctor` lists the reviewer requirement and this command in

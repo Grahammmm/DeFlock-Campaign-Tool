@@ -8,12 +8,12 @@ from pathlib import Path
 
 from .content import load_content
 from .findings import _write_private
+from .privacy_patterns import EMAIL  # the shared pattern: everything the old local copy matched, plus the spelled-out forms
 
 NAME = "correction-requests.json"
 STATES = ("open", "accepted", "declined")
 REQUIRED = ("id", "finding_id", "received_on", "summary", "state")
 DECIDED = ("decided_on", "note")
-EMAIL = re.compile(r"[^\s@<>()\[\],;:\"']+@[^\s@<>()\[\],;:\"']+\.[A-Za-z]{2,}")
 DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
