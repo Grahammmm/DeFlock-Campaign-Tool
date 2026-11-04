@@ -1,6 +1,7 @@
 """DF-2 gate: only a verified human signature approves an outbox row; nothing unapproved reaches a send."""
 import contextlib
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -189,6 +190,76 @@ class ApprovalGateTests(unittest.TestCase):
         self.assertIn('"state": "refused"', done.getvalue())
         self.assertEqual(self.box.row(self.key)["state"], "failed")
 
+    # -- RF0210-3: the signed draft fee and the fee-cap column must be the same exact integer cents --
+    def snapshot(self, box):
+        return ([tuple(r) for r in box.db.execute("SELECT *, typeof(fee_cap_cents) FROM outbox ORDER BY idempotency_key")],
+                [tuple(r) for r in box.db.execute("SELECT * FROM outbox_retry_approval ORDER BY event_id")])
+
+    def fee_box(self, cap):
+        box = ob.Outbox(self.journal, campaign_fee_cap_cents=cap)
+        self.addCleanup(box.close)
+        return box
+
+    def approved_fee_row(self, box, request_id, fee):
+        key = box.propose(ob.RequestDraft(**{**DRAFT, "request_id": request_id, "agency_id": request_id, "fee_cap_cents": fee}))["idempotency_key"]
+        box.approve(key, {"kind": "ssh", "signature": self.owner.sign(box.approval_payload(key))})
+        return key
+
+    def test_signed_fee_column_mismatch_cannot_bypass_campaign_cap(self):
+        """Signed 5000 cents with the fee column edited to 0 used to pass a zero campaign cap and send 5000."""
+        for cap in (0, 5000, None):
+            for signed, column in ((5000, 0), (0, 9999), (5000, 4999)):
+                with self.subTest(cap=cap, signed=signed, column=column), self.owner.trust():
+                    box = self.fee_box(cap)
+                    key = self.approved_fee_row(box, f"R-FEE-{cap}-{signed}-{column}", signed)
+                    box.db.execute("UPDATE outbox SET fee_cap_cents=? WHERE idempotency_key=?", (column, key))
+                    before = self.snapshot(box)
+                    with self.assertRaises(ob.Blocked) as ctx:
+                        box.send(key, self.transport)
+                    self.assertEqual((ctx.exception.reason, self.sent), ("invalid_fee_cap", []))
+                    self.assertEqual(ctx.exception.detail, "stored fee must be valid integer cents matching the approved draft")
+                    self.assertEqual(self.snapshot(box), before)
+                    self.assertFalse(box.db.in_transaction)
+                    # The signature itself is still valid: restoring the column puts the row back under the
+                    # ordinary cap rules (sendable when the signed fee fits, fee_cap_exceeded otherwise).
+                    box.db.execute("UPDATE outbox SET fee_cap_cents=? WHERE idempotency_key=?", (signed, key))
+                    if cap is None or signed <= cap:
+                        self.assertEqual(box.send(key, self.transport)["state"], "sent")
+                        self.sent.clear()
+                    else:
+                        with self.assertRaises(ob.Blocked) as again:
+                            box.send(key, self.transport)
+                        self.assertEqual(again.exception.reason, "fee_cap_exceeded")
+
+    def test_legacy_signed_malformed_fee_is_blocked_without_rewrite(self):
+        """A malformed fee that was signed as-is is refused at send, even after reopening the journal."""
+        cases = [("float", 0.9, 0), ("string", "5", 5), ("bool", True, 1), ("negative", -1, -1),
+                 ("oversize", 2 ** 63, 0), ("nan", float("nan"), 0), ("null", None, 0), ("integral float", 5000.0, 5000)]
+        for name, signed, column in cases:
+            with self.subTest(name), self.owner.trust():
+                box = self.fee_box(None)
+                key = box.propose(ob.RequestDraft(**{**DRAFT, "request_id": "R-LEGACY-" + name, "agency_id": "legacy-" + name}))["idempotency_key"]
+                fields = json.loads(box.row(key)["draft_json"])
+                fields["fee_cap_cents"] = signed  # historical journals could hold this; propose() now refuses it
+                box.db.execute("UPDATE outbox SET draft_json=?, fee_cap_cents=? WHERE idempotency_key=?",
+                               (json.dumps(fields, sort_keys=True), column, key))
+                box.approve(key, {"kind": "ssh", "signature": self.owner.sign(box.approval_payload(key))})
+                self.assertEqual(box.row(key)["state"], "approved")  # the signature over the malformed text verifies
+                before = self.snapshot(box)
+                for attempt in (box, self.fee_box(None)):  # then again after reopening the journal
+                    with self.assertRaises(ob.Blocked) as ctx:
+                        attempt.send(key, self.transport)
+                    self.assertEqual(ctx.exception.reason, "invalid_fee_cap")
+                    self.assertEqual(self.snapshot(attempt), before)
+                    self.assertFalse(attempt.db.in_transaction)
+                self.assertEqual(self.sent, [])
+
+    def test_fractional_fee_is_not_truncated_into_the_column(self):
+        """propose() used int(0.9) == 0 for the column while the transport saw 0.9; it now refuses."""
+        box = self.fee_box(0)
+        with self.assertRaises(ob.OutboxError):
+            box.propose(ob.RequestDraft(**{**DRAFT, "request_id": "R-FRAC", "fee_cap_cents": 0.9}))
+        self.assertEqual([r["request_id"] for r in box.rows()], ["R-1"])
 
 
 if __name__ == "__main__":

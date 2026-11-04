@@ -111,6 +111,16 @@ class ContentCheckJsonTests(unittest.TestCase):
         self.assertEqual(problem_record("public-assets/a.png: has metadata: EXIF"),
                          {"file": "public-assets/a.png", "message": "has metadata: EXIF"})
 
+    def test_press_problems_are_records_with_their_files(self):
+        site = json.loads((self.root / "content/site.json").read_text(encoding="utf-8"))
+        self.write("content/site.json", {**site, "press": {"contact_role": "Press lead"}})  # no address to inherit
+        self.write("content/pages/press.json", {"title": "Mine", "body_md": "Text."})
+        doc = self.document(self.cli("--json"))
+        records = sorted((r["file"], r["message"]) for r in doc["problems"])
+        self.assertEqual(records, [("pages/press.json", "slug press is reserved"),
+                                   ("site.json.press.contact_email", "required when site.json.contact_email is not set")])
+        self.assertEqual(doc["count"], 2)
+
     def test_non_ascii_text_is_not_escaped(self):
         self.write("content/findings/se\u00f1or.json", "{not json")
         result = self.cli("--json")

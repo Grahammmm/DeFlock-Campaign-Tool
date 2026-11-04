@@ -7,13 +7,14 @@ types it in; nothing is fetched or published. The whole meeting document is vali
 import csv
 import json
 import os
+import re
 import stat
 import sys
 import unicodedata
 from datetime import date
 
-from .content import (DIRECTION_KEYS, VOTE_VALUES, _read_json, continuation_issues, default_agencies, load_agencies, load_meeting,
-                      load_officials)
+from .content import (COMMENT_KEYS, DIRECTION_KEYS, VOTE_VALUES, _read_json, continuation_issues, default_agencies, load_agencies,
+                      load_meeting, load_officials)
 from .kit import _write_json
 from .legal_claims import legal_notes
 
@@ -93,9 +94,10 @@ def _find(folder, meeting_id):
 
 def record_outcome(root, meeting_id, result, on, source_url, verified_by, vote=None, replace=False, today=None,
                    votes_file=None, recording_url=None, recording_start=None, continued_to=None, continued_to_date=None, direction=None, return_by=None,
-                   direction_source=None):
+                   direction_source=None, spoke=None, written=None, comment_source_url=None):
     today = today or date.today()
     _check_direction_pair(direction, return_by, direction_source)  # DF0022-08
+    _check_comment_pair(spoke, written, comment_source_url)  # DF0022-09
     if recording_start is not None and recording_url is None:  # DF1422-10: a start time is part of a recording
         raise MeetingOutcomeError("recording_start needs recording_url")
     if continued_to is not None and continued_to_date is not None:  # DF0022-07: one stated destination, not two
@@ -122,7 +124,9 @@ def record_outcome(root, meeting_id, result, on, source_url, verified_by, vote=N
                **({"continued_to": continued_to} if continued_to is not None else {}),
                **({"continued_to_date": continued_to_date} if continued_to_date is not None else {}),
                **({"direction": direction, "return_by": return_by, "direction_source": source_url if direction_source is None else direction_source}
-                  if direction is not None else {})}
+                  if direction is not None else {}),
+               # DF0022-09: the source is this outcome's own minutes (none is carried by a fresh outcome) or source_url
+               **_comment_group(spoke, written, comment_source_url, source_url)}
     updated = {**document, "outcome": outcome}
     prospective = load_meeting(updated, label, today=today)
     if continued_to is not None:  # DF0022-07: the staged meetings with only this outcome replaced
@@ -142,6 +146,28 @@ def _check_direction_pair(direction, return_by, direction_source):
         raise MeetingOutcomeError("direction: needed together with return_by")
     elif return_by is None:
         raise MeetingOutcomeError("return_by: needed together with direction")
+
+
+def _check_comment_pair(spoke, written, comment_source_url):
+    """DF0022-09: a comment source alone selects nothing."""
+    if spoke is None and written is None and comment_source_url is not None:
+        raise MeetingOutcomeError("--comment-source needs --spoke or --written")
+
+
+def _comment_group(spoke, written, comment_source_url, default_source):
+    """The count keys to store, or ``{}``; the source is the one given, else ``default_source``. Values are validated by
+    ``content.load_comment_counts`` when the prospective document is loaded."""
+    if spoke is None and written is None:
+        return {}
+    return {**({"spoke": spoke} if spoke is not None else {}), **({"written": written} if written is not None else {}),
+            "comment_source_url": default_source if comment_source_url is None else comment_source_url}
+
+
+def comment_count(text, flag):
+    """DF0022-09: a CLI count: ASCII decimal digits only, 0 to 999 (leading zeros allowed); anything else is refused by flag."""
+    if isinstance(text, str) and re.fullmatch(r"[0-9]+", text) and len(text.lstrip("0")) <= 3:
+        return int(text)
+    raise MeetingOutcomeError(f"{flag}: must be a whole number from 0 to 999")
 
 
 def _check_continuation(root, path, meeting, today):
@@ -234,6 +260,43 @@ def record_direction(root, meeting_id, direction, return_by, *, direction_source
 
 
 MINUTES_KEYS = ("minutes_url", "minutes_approved_on")
+
+
+def record_comment_counts(root, meeting_id, *, spoke=None, written=None, comment_source_url=None, replace=False, today=None):
+    """Attach the public-comment totals an official record states to an already recorded outcome (DF0022-09).
+
+    Only ``spoke``, ``written`` and ``comment_source_url`` are merged (the source defaults to the outcome's current
+    ``minutes_url``, else its ``source_url``); every other outcome and meeting key stays exactly as stored. With
+    ``replace`` the whole count group is replaced, so a count not supplied is removed. Nothing is fetched; the whole
+    prospective meeting and its continuation references are validated before the write."""
+    today = today or date.today()
+    _check_comment_pair(spoke, written, comment_source_url)
+    if spoke is None and written is None:
+        raise MeetingOutcomeError("public comment counts: needs --spoke or --written")
+    path, document = _find(root / "content" / "meetings", meeting_id)
+    label = f"meetings/{path.name}"
+    meeting = load_meeting(document, label, today=today)
+    if meeting["status"] == "cancelled":
+        raise MeetingOutcomeError(f"public comment counts: meeting {meeting_id} is cancelled; it has no outcome")
+    if meeting["starts_at"][:10] > today.isoformat():
+        raise MeetingOutcomeError(f"public comment counts: meeting {meeting_id} has not happened yet ({meeting['starts_at'][:10]})")
+    if meeting["outcome"] is None:
+        raise MeetingOutcomeError(f"public comment counts: needs a recorded outcome (meeting {meeting_id} has none)")
+    current = meeting["outcome"]
+    if ("spoke" in current or "written" in current) and not replace:
+        raise MeetingOutcomeError(f"public comment counts already recorded; pass --replace to overwrite them (meeting {meeting_id})")
+    stored = {key: value for key, value in document["outcome"].items() if key not in COMMENT_KEYS}
+    group = _comment_group(spoke, written, comment_source_url, current.get("minutes_url", current["source_url"]))
+    updated = {**document, "outcome": {**stored, **group}}
+    prospective = load_meeting(updated, label, today=today)
+    if "continued_to" in prospective["outcome"]:  # the staged meetings with only this outcome replaced
+        _check_continuation(root, path, prospective, today)
+    if os.path.islink(path):  # checked again right before the write
+        raise MeetingOutcomeError(f"content/meetings/{path.name} must not be a symlink")
+    _write_json(path, updated)
+    return updated["outcome"]
+
+
 CREATION_FLAGS = (("result", "--result"), ("on", "--on"), ("source", "--source"), ("verified_by", "--verified-by"))
 MINUTES_ONLY_REFUSES = (("vote", "--vote"), ("votes", "--votes"), ("recording_url", "--recording-url"),
                         ("recording_start", "--recording-start"), ("continued_to", "--continued-to"),
@@ -259,9 +322,29 @@ def run_outcome_command(root, args):
     return lines
 
 
+COMMENT_FLAGS = (("spoke", "--spoke"), ("written", "--written"), ("comment_source", "--comment-source"))
+COUNTS_ONLY_REFUSES = MINUTES_ONLY_REFUSES + (("direction", "--direction"), ("return_by", "--return-by"),
+                                               ("direction_source", "--direction-source"))
+
+
 def _run_outcome_mode(root, args):
     minutes_url, minutes_on = args.minutes_url, args.minutes_approved_on
     direction, return_by, source = args.direction, args.return_by, args.direction_source
+    comments = {name: getattr(args, name, None) for name, _ in COMMENT_FLAGS}  # DF0022-09
+    wanted = [flag for name, flag in COMMENT_FLAGS if comments[name] is not None]
+    spoke, written = (None if comments[name] is None else comment_count(comments[name], flag)
+                      for name, flag in COMMENT_FLAGS[:2])
+    if wanted and (minutes_url is not None or minutes_on is not None):
+        raise MeetingOutcomeError(f"minutes mode cannot be combined with {', '.join(wanted)}")
+    if wanted:
+        _check_comment_pair(spoke, written, comments["comment_source"])
+    if wanted and all(getattr(args, name) is None for name, _ in CREATION_FLAGS):  # counts-only mode
+        mixed = [flag for name, flag in COUNTS_ONLY_REFUSES if getattr(args, name) is not None]
+        if mixed:
+            raise MeetingOutcomeError(f"counts-only mode cannot be combined with {', '.join(mixed)}")
+        outcome = record_comment_counts(root, args.id, spoke=spoke, written=written,
+                                        comment_source_url=comments["comment_source"], replace=args.replace)
+        return [json.dumps(outcome, indent=2), "Recorded only. Nothing was published."]
     wants_direction = any(value is not None for value in (direction, return_by, source))
     if wants_direction and (minutes_url is not None or minutes_on is not None):
         raise MeetingOutcomeError("minutes mode cannot be combined with direction flags")
@@ -282,7 +365,8 @@ def _run_outcome_mode(root, args):
                                  args.replace, votes_file=args.votes, recording_url=args.recording_url,
                                  recording_start=args.recording_start, continued_to=args.continued_to,
                                  continued_to_date=args.continued_to_date, direction=direction, return_by=return_by,
-                                 direction_source=source)
+                                 direction_source=source, spoke=spoke, written=written,
+                                 comment_source_url=comments["comment_source"])
         return [json.dumps(outcome, indent=2)] + (["votes: none"] if args.replace and args.votes is None else []) \
             + ["Recorded only. Nothing was published."]
     for name, flag in (("minutes_url", "--minutes-url"), ("minutes_approved_on", "--minutes-approved-on")):

@@ -6,7 +6,7 @@
       "source_relative_path": "scripts/intake.py",
       "source_sha256": "c37b6a831d7c0546f28c34db046b98c6d1fa56bd9bb815771c84679b7ab0244f",
       "engine_path": "campaign_tool/records/intake/folder.py",
-      "engine_sha256": "507e3b6e59acc0cc221ef93e822660b4920d223df34c5dc20545d28d520a1ece"
+      "engine_sha256": "29ff2858997eacd334b7df157ae01844d1710f6119a14ef8eac16540622a54fe"
     },
     {
       "source_relative_path": "scripts/repair_intake.py",
@@ -51,7 +51,8 @@
     "Respect inherited extraction resource limits and include effective worker memory in parser-budget cache identity",
     "C20: strict CSV/TSV record parsing with logical/physical error spans; ragged rows retain values with ambiguous column mapping; version CSV extraction policy",
     "C20 acceptance reconciliation: ragged CSV/TSV records retain values and exact locators without inferred missing header fields; well-shaped empty cells retain empty presence",
-    "H1: quarantine only downward from named hashes and direct containers; retain hashes with outside parents or unnamed top-level uses and exclude unsafe named paths without globally excluding shared bytes, reporting retained named paths"
+    "H1: quarantine only downward from named hashes and direct containers; retain hashes with outside parents or unnamed top-level uses and exclude unsafe named paths without globally excluding shared bytes, reporting retained named paths",
+    "RF0210-4: account for XLSX chartsheets as located unsupported-content gaps with complete sheet counts; version XLSX extraction policy so earlier XLSX extractions reparse once"
   ],
   "scope": "Source code and synthetic fixtures only; no private campaign data or original ledgers imported",
   "engine_revision": "portable-intake-3"

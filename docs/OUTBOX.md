@@ -66,6 +66,7 @@ and must not be treated as evidence that a provider delivered anything.
 | Row `blocked` | `Blocked(blocked)` with the stored reason |
 | Not `approved` or no `approved_by` | `Blocked(not_approved)` |
 | `fee_cap_cents` above the campaign cap | `Blocked(fee_cap_exceeded)` |
+| Draft fee or stored fee column is not valid integer cents, or the two differ | `Blocked(invalid_fee_cap)` |
 | An email or filing already `sent`/`sending` to the same agency this UTC day | `Blocked(daily_agency_cap)`; follow-ups count too |
 
 A `Blocked` raised by the transport itself (MuckRock 402) moves the row to `blocked`. An
@@ -75,6 +76,35 @@ leaves the row in `sending` with the error recorded and raises `AmbiguousFailure
 that request sends again until an organizer resolves it with `reconcile <key> delivered|
 not_delivered --by <identity>`, which needs the provider's own evidence (mailbox Sent folder,
 MuckRock request page).
+
+## Fees are exact integer cents
+
+`fee_cap_cents` is the fee a draft offers; the campaign cap (`Outbox(campaign_fee_cap_cents=...)`,
+CLI `--fee-cap-cents`) is the largest fee the organizer accepts. Both are exact integer cents
+from `0` to `9223372036854775807` (the SQLite signed INTEGER range). Booleans, floats (including
+integral and non-finite ones), strings, null, containers, negative and oversized integers are
+refused, never rounded, truncated or parsed as dollars.
+
+- Campaign cap: the default is integer `0` (any fee blocks). Python `None` is the only
+  unlimited setting and has no CLI spelling. An invalid cap raises `OutboxError` from
+  `Outbox(...)` before any directory, chmod or database effect. The CLI accepts only a
+  nonempty ASCII digit string in range (leading zeros allowed); anything else is an ordinary
+  usage error (exit 2) that does not echo the supplied value.
+- `propose` validates the draft fee before the existing-key lookup and before any insert, so an
+  invalid replay of an existing key is refused too. The stored draft JSON and the fee column hold
+  the same integer. The CLI prints `{"state": "refused", "reason": "fee_cap_cents must be an
+  integer between 0 and 9223372036854775807"}` and exits 2.
+- `send` re-checks inside the same `BEGIN IMMEDIATE` transaction, after the signature verifies:
+  the signed draft's fee and the fee column must both be valid and equal, else
+  `Blocked(invalid_fee_cap)` (CLI: `{"state": "blocked", "reason": "invalid_fee_cap"}`, exit 2),
+  even with an unlimited campaign cap. The cap compares the signed draft fee. A refusal changes
+  no row, timestamp, receipt, approval evidence or retry history, claims no daily slot and calls
+  no transport. Changed signed text without fresh approval remains `not_approved`; already-`sent`
+  rows remain no-ops even if their old fee data is malformed.
+
+Journals written before this check may hold a malformed or mismatched fee. They are not migrated,
+repaired or rewritten. Do not hand-edit, round or re-key such a row to get past the gate: keep
+the evidence and have the correction and a fresh approval reviewed independently.
 
 ## Transports
 
