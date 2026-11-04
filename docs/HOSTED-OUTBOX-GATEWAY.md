@@ -32,6 +32,25 @@ ending exactly `/send`, without credentials/query/fragment) and the separate
 repository production authorization requirements before configuring them. Gateway
 transport/sender/journal/fee settings remain private deployment responsibilities.
 
+## Registering the sender (wizard step)
+
+Screen 5 of the setup wizard has an optional **Outbox sender** section, default
+skip. Both fields empty skips it: the plan carries neither setting, the launch
+receipt records `outbox_sender: skipped`, and requests stay drafted. To register,
+fill both the gateway URL and the signing secret:
+
+- The URL must be `https:` with a host and the path exactly `/send`, with no
+  credentials, query or fragment.
+- The secret must be at least 32 bytes of base64url (43 or more characters).
+- Exactly one of the two is refused as `outbox_sender: half configured — both
+  settings or neither`; nothing is saved or emitted.
+
+A registered pair becomes the Worker secrets `OUTBOX_GATEWAY_URL` and
+`OUTBOX_SIGNING_KEY` in the plan, shown redacted. The secret is not echoed back,
+logged, or written to the launch receipt or any plain configuration. Registering a
+sender only makes sending possible: every send still needs a recorded organizer
+approval, and the wizard adds no setting that skips it. It provisions no gateway.
+
 ## Version 1 protocol
 
 POST exact JSON bytes to `/send` with `X-Outbox-Signature` equal to lowercase
