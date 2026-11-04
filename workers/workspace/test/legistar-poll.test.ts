@@ -141,7 +141,7 @@ describe("legistar poll in runScheduled", () => {
     const plain = "http://webapi.example.invalid/v1/gamma/events";
     const credentialUrl = new URL("https://webapi.example.invalid/v1/delta/events");
     credentialUrl.username = "synthetic-organizer";
-    credentialUrl.password = "synthetic-pw";
+    credentialUrl.password = credentialUrl.username;
     const creds = credentialUrl.toString();
     const moved = "https://webapi.example.invalid/v1/epsilon/events";
     stubFetch({ [moved]: { status: 302, headers: { location: "https://elsewhere.example.invalid/v1/epsilon/events" } } });
