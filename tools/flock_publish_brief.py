@@ -100,6 +100,8 @@ def brief(store, agency, out, repo):
     body = render(agency, entries)
     if publish.privacy.EMAIL.search(body) or publish.privacy.PHONE.search(body):  # contact details never enter a brief
         return refuse(["an approved entry carries an email or phone pattern"])
+    if publish.privacy.PLATE.search(body):  # the shared lint's third category
+        return refuse(["an approved entry carries a plate pattern"])
     link(raw.resolve(), body.encode("utf-8"))
     print("brief | agency=%s runs=%d approved=%d skipped_runs=%d written=%s" % (agency, used, len(entries), skipped, raw.name))
     return 0
@@ -157,6 +159,8 @@ def against(store, agency, raw, repo):  # RF0450-10: re-derive the draft and com
     body = render(agency, entries)
     if publish.privacy.EMAIL.search(body) or publish.privacy.PHONE.search(body):
         return refuse(["an approved entry carries an email or phone pattern"])
+    if publish.privacy.PLATE.search(body):
+        return refuse(["an approved entry carries a plate pattern"])
     label = name(Path(raw))
     if data == body.encode("utf-8"):
         return print("brief | against=%s state=current approved=%d" % (label, len(entries))) or 0

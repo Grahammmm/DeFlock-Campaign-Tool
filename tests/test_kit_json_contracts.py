@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -20,7 +21,7 @@ DUE = json.loads((REPO_ROOT / "schemas" / "kit-due.schema.json").read_text(encod
 ROW = STATUS["properties"]["requests"]["items"]
 OPEN = DUE["properties"]["open"]["items"]
 CONDITIONAL = {"more", "correspondence", "correspondence_prefixes", "correspondence_more", "downloads_pending",
-               "withdrawn_on"}
+               "contacts", "last_contact", "withdrawn_on"}
 STATES = {"waiting_on_you", "producing", "installment_passed", "no_law_package", "past_due", "due_today", "upcoming",
           "download_pending", "download_expired"}
 STAMP = "2026-03-01T00:00:00+00:00"
@@ -204,6 +205,14 @@ class KitJsonContractTests(unittest.TestCase):
         row = next(r for r in pending["requests"] if (r["agency_id"], r["request"]) == (self.a, "main"))
         self.assertEqual(len(row["downloads_pending"]), 1)
         union.update(set().union(*map(set, pending["requests"])))
+        kit_track.record_contact(self.root, self.a, "2026-03-11", "phone", "Records Clerk", "Asked", today=date(2026, 3, 20))
+        contacted, _ = self.status()
+        law.validate(contacted, STATUS)
+        check_keys(contacted, STATUS)
+        row = next(r for r in contacted["requests"] if (r["agency_id"], r["request"]) == (self.a, "main"))
+        self.assertEqual((row["contacts"], row["last_contact"]),
+                         (1, {"on": "2026-03-11", "channel": "phone", "role": "Records Clerk"}))
+        union.update(set().union(*map(set, contacted["requests"])))
         self.assertEqual(union, set(ROW["properties"]))  # every schema property is emitted by some row
 
     def test_status_without_a_fee_cap_reports_over_fee_cap_null(self):

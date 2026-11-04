@@ -333,6 +333,34 @@ outcome's source and stage the follow-up (`meetings-stage`); a broken explicit r
 shows as an `unreadable` item instead. `data/meetings.json` carries `continued_to` or `continued_to_date` on the
 outcome.
 
+## Meetings feed (`meetings.xml`)
+
+When `content/meetings/` stages at least one meeting, `build` writes `public/meetings.xml`, one Atom document
+(UTF-8, namespace `http://www.w3.org/2005/Atom`) with one entry per staged meeting. With no staged meeting there is
+no file and no feed link, and a build without `content/` (the starter) is unchanged. The name `meetings.xml` is
+reserved, so a public asset cannot take it; removing the last staged meeting removes the file on the next build.
+It is Atom, not iCalendar: there is no `.ics` file and no RSVP.
+
+- **Who is listed:** a scheduled meeting whose local start day is today or later, every cancelled meeting, and every
+  meeting with a recorded outcome. A past scheduled meeting with no outcome is left out. The day split is the site's
+  own (the date written in `starts_at`, the same one the meetings page uses). A staged list whose meetings are all
+  left out still gets a feed with no entries, so a reader's subscription does not break.
+- **Entry:** id `urn:deflock-meeting:<id>`; title `<body>: <agenda item>` (`Cancelled: ` first for a cancelled
+  meeting); a link to the meeting page, an `agenda_url` link and the official outcome source link when they exist;
+  a plain-text summary with the stored zoned start, the body, the agenda item, `Cancelled.`, the agenda link and,
+  when an outcome is recorded, `Outcome: <result> on <date>.` and `Vote: <text>.`. It never carries the comment kit,
+  who verified an outcome, roll-call names, participation contacts or recording links; those stay on the meeting page.
+- **Dates come from content only.** An entry's `updated` is the outcome date (as midnight UTC) when an outcome is
+  recorded, otherwise the stored start. The feed's `updated` is the latest of those in UTC (`2000-01-01T00:00:00+00:00`
+  with no entries). The build time, file times and `verified_at` are never used, so the same content, config, labels and
+  build day give byte-identical output. Entries are ordered newest `updated` first, equal instants by id. Because
+  a cancellation has no recorded date in the public content, marking a meeting cancelled can change the entry without
+  moving its `updated`. When a build day crosses a meeting's start day, a past meeting with no outcome leaves the
+  feed, so bytes are identical only for builds on the same side of that day.
+- **Links:** `/meetings.xml` is linked from the meetings page, the footer of every page and, as an
+  `application/atom+xml` alternate, the head of the meetings page and each meeting page. It is not in the sitemap.
+  Feed text stays English like the findings feed; the link labels `meeting.feed` and `title.meetings_feed` follow `labels.json`.
+
 ## Worker Legistar poll (inline, authored, undeployed)
 
 `runScheduled` (`workers/workspace/src/cron.ts`) polls Legistar inline on the existing cron slots
@@ -367,5 +395,12 @@ before this can be considered a supported live poll. No detail requests or new s
 ## Not done
 
 No RSVP collection (the `rsvp_count` column is
-reserved), no other agenda platforms (Granicus, PrimeGov, CivicClerk), and no calendar
-feed. Each of those should keep the same keyword-lead, human-verify rule.
+reserved), and no other agenda platforms (Granicus, PrimeGov, CivicClerk). Each of those should keep the same keyword-lead, human-verify rule.
+
+## Calendar feed
+
+A built site publishes `/meetings.ics` (RFC 5545), linked from the meetings page, so supporters can subscribe. It lists the
+upcoming, not cancelled meetings only (same split as the page: the build day counts as upcoming); past and cancelled ones are
+omitted. Each event has `UID:meeting-<id>@<host of base_url>`, a UTC `DTSTART` converted from the meeting's offset, the
+agenda URL, location and agenda item when set, and a link back to the meeting on the page. The feed has no `DTEND`, and for
+one build day it is byte-identical. The `.ics` extension is on the runner's upload allowlist (`text/calendar`).

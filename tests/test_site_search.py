@@ -117,7 +117,7 @@ class SiteSearchTests(unittest.TestCase):
         pages = list(self.public.rglob("*.html"))
         self.assertGreater(len(pages), 10)
         for page in pages:
-            self.assertIn('<a href="/feed.xml">Findings feed</a> · <a href="/search.html">Search</a>', page.read_text(encoding="utf-8"), page.name)
+            self.assertIn('<a href="/feed.xml">Findings feed</a> · <a href="/meetings.xml">Meetings feed</a> · <a href="/search.html">Search</a>', page.read_text(encoding="utf-8"), page.name)
         self.assertIn(f"<loc>{BASE}/search.html</loc>", self.read("sitemap.xml"))
         self.set_base(None)
         shutil.rmtree(self.public)
