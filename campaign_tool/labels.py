@@ -141,6 +141,13 @@ DEFAULTS = {
     "agency.transparency_shared_with_agencies": "Shared with agencies: {count}",
     "agency.transparency_up": "up {count} since {date}", "agency.transparency_down": "down {count} since {date}",
     "agency.transparency_same": "no change since {date}",
+    "agency.mapped_reported_counts": (
+        "The agency's transparency portal reported {reported} cameras (checked {checked}). "
+        "Community mappers have mapped {mapped} points inside the city limits (map data as of {map_date})."),
+    "agency.mapped_reported_caveat": (
+        "These are counted differently: the portal counts the agency's own cameras, "
+        "the map counts points inside a boundary whoever owns them."),
+    "agency.mapped_reported_unknown": "unknown",
     "agencies.glance_heading": "At a glance",
     "agencies.glance_note": "Numbers are as each source reported them on the date shown. This table does not rank agencies.",
     "agencies.glance_caption": "Each tracked agency side by side, in the order of the list below",
