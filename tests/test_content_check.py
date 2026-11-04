@@ -92,6 +92,24 @@ class ContentCheckTests(unittest.TestCase):
                 (self.root / "content/findings" / name).unlink()
         self.assertEqual(content_problems(self.root), [])
 
+    def test_press_reserved_page_slug_is_refused_by_check_and_build_alike(self):
+        self.write("content/pages/press.json", {"title": "Mine", "body_md": "Text."})  # press is not enabled: still reserved
+        expected = "pages/press.json: slug press is reserved"
+        self.assertEqual(content_problems(self.root), [expected])
+        self.assertEqual(self.load_error(), expected)
+        before = self.tree()
+        result = self.cli()
+        self.assertEqual((result.returncode, result.stdout.splitlines()[0]), (3, "content/: 1 problem(s)"))
+        self.assertEqual(self.tree(), before)
+
+    def test_press_site_json_problem_is_named_like_build(self):
+        site = self.read("content/site.json")
+        self.write("content/site.json", {**site, "press": {"contact_role": "x" * 81, "contact_email": "press@example.invalid"}})
+        problems = content_problems(self.root)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertTrue(problems[0].startswith("site.json.press.contact_role: "), problems)
+        self.assertEqual(self.load_error(), problems[0])
+
     def test_missing_site_json_does_not_stop_the_other_checks(self):
         (self.root / "content/site.json").unlink()
         self.finding("x-bad.json", id="fnd_x", slug="x-bad", confidence="maybe")

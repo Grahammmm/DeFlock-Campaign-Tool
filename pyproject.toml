@@ -29,6 +29,7 @@ campaign_tool = ["assets/*.tmpl",
                  "_resources/jurisdictions/us-ca/package.json",
                  "_resources/jurisdictions/us-ca/policy-checklist.json",
                  "_resources/templates/records-request.md",
-                 "_resources/checklists/contract-checklist.json"]
+                 "_resources/checklists/contract-checklist.json",
+                 "_resources/examples/faq.json"]
 "campaign_tool.records" = ["_release_manifest.json", "_release_dependencies.txt"]
 "campaign_tool.records.runner" = ["templates/*.in"]

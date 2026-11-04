@@ -153,3 +153,38 @@ class WorkbookCompositionTests(unittest.TestCase):
         self.assertTrue(h.test_runner.promote(h.subject,'extract',packet,claim_id=claim['claim_id'])['test_only'])
         self.assertTrue(h.test_runner.promote(h.subject,'extract',packet)['reused'])
         self.assertEqual(h.stages.counts(h.database)['verified_seven_stage_complete'],0)
+
+    def test_chartsheet_hold_cannot_use_native_workbook_exception(self):
+        # A real parser receipt carries a located chartsheet gap beside the generic hold;
+        # the single-generic-hold native workbook exception must not admit it.
+        from openpyxl import Workbook
+        from openpyxl.chart import BarChart
+        from tests.records import test_extraction_validation as fixtures
+        fixtures.ExtractionValidationTests.setUpClass()
+        h=fixtures.ExtractionValidationTests('runTest');h.setUp();self.addCleanup(h.doCleanups)
+        book=Workbook();book.active.title='Synthetic';book.active['A1']='Fictional value'
+        book.create_chartsheet('Fictional chart').add_chart(BarChart())
+        stream=io.BytesIO();book.save(stream);raw=stream.getvalue()
+        source=h.root/'original.xlsx';h.write(source,raw);h.source=source;h.subject=enrollment.sha(raw)
+        with h.store.ledger(h.database) as con:
+            con.execute('INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)',(h.subject,len(raw),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',None,'original','unresolved',str(source),'receipt_validation_pending',None,'{}'))
+            con.execute('INSERT INTO occurrences VALUES(?,?,?,?,?,?,?,?)',('xlsx-source',h.subject,'local','fictional',None,None,'fixture','{}'))
+            for stage in h.store.STAGES:con.execute('INSERT INTO stage_state VALUES(?,?,?,?,?,?,?,?)',(h.subject,stage,'pending',None,'fixture',h.store.now(),'intake',None))
+            con.commit()
+        out=h.root/'xlsx';out.mkdir(mode=0o700)
+        result=fixtures.routes.extract(source,h.subject,out,'xlsx',timeout=20)
+        receipt=json.loads((Path(result['run_path'])/'extraction.json').read_text())
+        self.assertEqual(sorted(i['code'] for i in receipt['issues']),
+            ['workbook_cached_values_and_objects_not_reviewed','workbook_chartsheet_not_extracted'])
+        h.enrolled=h.enroll(Path(result['run_path'])/'extraction.json');h.install()
+        f=WorkbookPolicyTests('runTest');f.setUp();self.addCleanup(f.doCleanups)
+        f.inspection['package_parts']=len(zipfile.ZipFile(io.BytesIO(raw)).infolist());qualified=f.load()
+        adapter_id=validation.install_extraction_validator(database=h.database,evidence_root=h.adapter.evidence_root,original_root=h.root,native_workbook_policy=qualified)
+        h.validator=h.stages._INSTALLED_VALIDATORS[adapter_id]
+        with self.assertRaisesRegex(ValueError,'workbook_reader_hold_mismatch'):h.validator.evidence(h.enrolled['import_id'])
+        h.runner()
+        with self.assertRaisesRegex(ValueError,'workbook_reader_hold_mismatch'):h.validator.evidence(h.enrolled['import_id'])
+        self.assertEqual(h.stages.counts(h.database)['verified_seven_stage_complete'],0)
+        with h.store.ledger(h.database,readonly=True) as con:
+            states=dict(con.execute("SELECT stage,status FROM stage_state WHERE original_sha256=?",(h.subject,)).fetchall())
+        self.assertNotEqual(states.get('extract'),'done')

@@ -26,7 +26,27 @@ when a line names no file, and the same exit codes, so an editor or CI step can 
 
 ## Content directory
 
-`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+
+### Draft FAQ starter
+
+A fresh `content init` also writes `content/faq.json`: fifteen plain-language questions (what an ALPR is, what the campaign
+asks for and why, public-records requests, how long an agency has to answer, why plate reads are not published, how findings
+are reviewed, labelled and corrected, how to ask for a correction, how to help, whether the campaign is anti-police, and
+whether the site gives legal advice). It is read from the packaged copy of `examples/faq.json`, so it works from an
+installed wheel with no repository checkout. Every answer starts `[EDIT ME: verify for this campaign]` and is unfinished
+organizer copy: the marker stays visible on `/faq.html` until you replace it, and it is not an approval gate.
+
+- Timing: for a California campaign the deadline answer carries the law package rule `ca-gov-7922.535-determination-and-extension-2026`
+  and the package's draft caveat. For any other state that one answer is replaced by generic text that sends the reader to
+  the applicable law package and official guidance, with no rule id; no California rule is applied elsewhere.
+- Replace every marker, including the correction answer's `[EDIT ME: add a verified public correction contact]`: add a
+  contact only after you have verified it. The starter creates no mail link or form. The report's `placeholders` count sums
+  the markers in `site.json` and `faq.json`.
+- To publish no FAQ, remove `content/faq.json` and rebuild; the page and its links disappear. `content init --from OLD`
+  still copies only public branding: a source `faq.json` is listed as skipped and no starter is added.
+- Before any publication run `content-check` and `build --check` offline. Neither approves wording: the legal-claim
+  guard stays advisory and a clean run does not mean the answers were reviewed. Existing campaigns are not changed.
 
 ### Second locality
 
@@ -43,7 +63,7 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 
 | Path | Required | Purpose |
 | --- | --- | --- |
-| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), `license` (below), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
+| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), `license` (below), optional `press` (below), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
 | `content/findings/*.json` | no | one published finding per file (schema below) |
 | `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id`, optional `cited_findings` (1 to 3 unique finding ids, written by `meetings-stage`) |
 | `content/sources.json` | no | source-library entries: `sha256`, `title`, `agency_id`, `received_at`, `public_url` or null, `fragment`, `pages`, `note` |
@@ -184,6 +204,50 @@ GeoJSON foreign members `license` = `ODbL-1.0`, `license_url` (the opendatacommo
 points are not changed. This is the one file a build without `license` still changes. Boundary files are not derived
 from the camera data and are copied as before.
 
+### Press page for reporters (`site.json.press`)
+
+Optional. `site.json.press` = `{"contact_role": "<1-80 characters>", "contact_email": "<optional>", "about_md": "<optional, up to 1500 characters>"}`
+builds one public page, `/press.html`, with the campaign description, a press contact, the ten newest published
+findings with their citation text, the logo download and the open-data files with their licences.
+
+```json
+"press": {"contact_role": "Media contact", "contact_email": "media@your-campaign.example", "about_md": "Reporters: we can walk you through any finding and its records."}
+```
+
+**Review the address before you set it.** The role and the address are published on a public page and in the page
+source. Use an address the organizers have agreed to make public; the tool never falls back to `privacy_contact`, an
+author, an agency or a kit contact, and `init --from` never copies `press` to another locality.
+
+- `contact_role` is required: one line, 1 to 80 characters, no control characters; the page escapes it.
+- `contact_email` defaults to the validated `site.json.contact_email`. An explicit value must be a non-empty valid
+  address; `null`, an empty string or a malformed address is refused as `site.json.press.contact_email`, and so is a
+  missing one when `site.json.contact_email` is not set either.
+- `about_md` is plain text without angle brackets, up to 1500 characters (empty is fine). It renders after the
+  `site.json.about_md` campaign description and never replaces it.
+- Unknown fields, a non-object `press` and `null`/`false`/`[]` are refused as `site.json.press`. Without the key there is
+  no page, no footer link and no sitemap entry, and every other output is byte-identical. Removing the key and
+  rebuilding removes `press.html`.
+
+Findings: the ten newest by publication instant (UTC, then slug, descending; a correction, update or event date never
+reorders them), each with title link, summary, classification, confidence, publication date, the same "Cite this
+finding" text as the finding page and `data/findings.json`, and, when it has corrections, the usual "Corrected <date>"
+marker (newest correction) linking to that finding's `#corrections`. No copy button or script is added. With no
+findings the page shows the usual no-findings notice. Only published findings are listed.
+
+Logo and data: with `site.json.brand.logo` the page shows it and links the same copied `/<logo>` file with a `download`
+attribute (no second copy). It then links only the files this build writes: `data/findings`, `sources`, `agencies` and
+`meetings` as `.json` and `.csv`, `data/cameras.geojson` with a map, and the copied `data/county.geojson` and
+city-boundary file when present. Beside each link: `cameras.geojson` always shows ODbL and the OpenStreetMap credit;
+every other file shows `site.json.license` (name, deed link, attribution), or "License not specified" when you have set
+none (the tool never picks one). The page adds no keys to any data file.
+
+`press` is a reserved page and finding slug: a `content/pages/press.json` is refused even with press disabled, by `build`
+and by `content-check` (which now also runs the pages check). `press.html` is a generated top-level name, so a redirect
+or public asset at that path is refused. There is no top-nav item, feed entry or script. Labels: `footer.press`,
+`press.title`, `press.description`, `press.contact`, `press.findings`, `press.logo`, `press.data`,
+`press.download_logo`, `press.license_unspecified`; the finding labels (`finding.cite`, `finding.corrected`,
+`finding.published`, `notice.no_findings`) are reused. `examples/labels/es.json` carries Spanish drafts (still unreviewed).
+
 ### Agencies, cards and the picker
 
 Agencies come from `content/agencies.json` or the kit. Each gets a slug (the
@@ -243,6 +307,26 @@ shipped law package by rule id `ca-civ-1798.90.55-public-comment-before-implemen
 the Rule line is left out and the build is not refused. It is an organizer-verified record and never fetched: "not found
 yet" is not a statement that no meeting was held, and the section makes no finding that one was required, missed or
 adequate. It is not in card JS, open data or feeds.
+
+An agency's optional `profile.sharing` (DF1207-08) records the agencies the vendor transparency portal names as receiving
+the agency's data, as an organizer transcribed them: `{"checked_on", "source_url", "recipients": [{"name", "state", "kind"}]}`.
+Record it with `python3 -m campaign_tool content agency-sharing --directory D --agency ID --csv FILE --checked-on YYYY-MM-DD
+--source-url URL [--replace]`. The CSV is UTF-8 (a BOM is allowed) with the header exactly `name,state,kind`: `name` 1-160
+characters without control characters, `state` a two-letter USPS code (50 states, DC, PR, AS, GU, MP, VI) or `US` for a
+federal agency (`US` only with `federal`), `kind` one of `local`, `state`, `federal`, `private`, `unknown`; 1 to 2000 rows,
+and the same name (any letter case) and state twice is refused. `--source-url` is an `https://` page on
+`transparency.flocksafety.com`; `--checked-on` is a real date not after today. Every bad row is named by its line (at most 20,
+then "and N more"); on any error nothing is written. The file is read as a plain file, never fetched, and a symlink is refused.
+The whole `content/agencies.json` is validated and then written once; an agency that already has a list needs `--replace`.
+Recipients are stored sorted by state, then name. The agency page and the agencies-list card show "Who the vendor portal lists
+as receiving data": "As listed on the vendor transparency portal, transcribed by the organizer (checked `{date}`): `{n}`
+agencies.", a count by state (the campaign's own state first) and by kind, then "Out of state and federal:" with the name,
+state and kind of every entry outside the campaign's state or of kind `federal` (at most 100, then "and N more"), then the
+sharing rule (`ca-civ-1798.90.55-sharing-limits`) and the 2023 Attorney General bulletin
+(`ca-oag-2023-dle-06-out-of-state-sharing-guidance`) as cited by the shipped law package, and "Law package: `{status}`." A
+rule the package lacks leaves out its line and never refuses the build. It lists what the portal names and draws no
+conclusion about any agency; `build` and `content-check` refuse a hand-edited list that breaks these rules. It is not in card
+JS, open data or feeds, and the portal is never contacted.
 
 An agency's optional `profile.contract_check` (DF2207-03) records an organizer's reading of the linked ALPR vendor
 agreement against the draft, tool-wide checklist `checklists/contract-checklist.json` (not part of any law package;
@@ -726,7 +810,9 @@ held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `
 `minutes_approved_on` (the body's approved official minutes, both or neither; no derived confirmation flag), plus
 the optional `continued_to` (a staged meeting id) or `continued_to_date` (a stated date) of a `continued` result (one
 of the two, never both; no derived back-reference), plus the optional trio `direction`, `return_by` and
-`direction_source` (a staff direction as the official source states it; all or none; no reminder or fulfillment flag). It never
+`direction_source` (a staff direction as the official source states it; all or none; no reminder or fulfillment flag), plus the
+optional `spoke` and `written` whole numbers (0 to 999) with their https `comment_source_url` (the public-comment totals the
+official record states; at least one count with the source; no for/against split, name or quote). It never
 includes the comment kit, `participation`,
 contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
 `data/meetings.json: non-public key ...` and writes nothing.
