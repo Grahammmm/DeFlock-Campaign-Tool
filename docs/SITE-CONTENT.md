@@ -43,7 +43,7 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 
 | Path | Required | Purpose |
 | --- | --- | --- |
-| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `brand` (below) |
+| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below) |
 | `content/findings/*.json` | no | one published finding per file (schema below) |
 | `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id` |
 | `content/sources.json` | no | source-library entries: `sha256`, `title`, `agency_id`, `received_at`, `public_url` or null, `fragment`, `pages`, `note` |
@@ -329,6 +329,29 @@ legal and privacy review by two people other than the author. The definitions li
 the label tables; each badge on finding pages and the findings index links to its definition. It is in the footer and
 `sitemap.xml`; the slug `methods` and `public-assets/methods.html` are refused. `feed.xml` and `data/findings.json` keep plain labels.
 
+### Privacy page
+`privacy.html` is always generated and is not editable (DF1207-16). It states, in plain words, that scripts, stylesheets
+and fonts come from this site only, that the site sets no cookies and runs no analytics, which hosts the interactive map
+contacts (the style and tile hosts of `map/map-config.json`, sorted; none without a map), where a newsletter signup goes
+(only with `signup.mode` `brevo_hosted`: the provider host from `form_html_allowlisted_url`, plus `signup.note`) and the
+campaign's privacy contact. Every sentence is a `privacy.*` label (`footer.privacy` for the footer link) chosen from
+`Site.privacy_facts()`, which reads the same settings as the Content-Security-Policy; `content/labels.json` can reword the
+sentences but never changes which facts are stated. It is in the footer of every page and, with a `base_url`, in `sitemap.xml`;
+the slug `privacy` and `public-assets/privacy.html` are refused.
+
+Two optional keys feed it. `site.json.privacy_contact` is an email address (validated like `contact_email`); without it the page
+uses `contact_email`, and with neither it says "This campaign has not published a privacy contact." and never invents one.
+`site.json.signup.privacy_url` is an https link to the provider's policy on the same allowlisted host suffix as the signup
+form; it is linked only with a hosted signup, and without it no provider-policy link is shown (no URL is guessed). A bad value
+is refused by field name.
+
+The build refuses to write anything when a claim contradicts the final CSP or file list, with
+`privacy.html: "<claim>" contradicts <directive or file>`: `script-src`, `style-src` or `font-src` other than exactly `'self'`;
+a built script (a `.js`/`.mjs` file or a `<script src>`) whose name holds `gtag`, `analytics`, `plausible`, `matomo` or `umami`;
+a `Set-Cookie` header in `_headers`; map hosts that differ from the https hosts in `img-src`/`connect-src`; a `form-action`
+other than the named signup host (or `'none'`). The page is not legal advice and not a reviewed privacy policy (it says so);
+the independent privacy review in ROADMAP item 15 stays open. The CSP itself is unchanged.
+
 Photos: a phone or camera photo usually carries metadata, often including the GPS position where it was taken
 (an organizer's home, say). `build` and `content-check` therefore refuse a `.jpg`, `.jpeg`, `.png` or `.webp` in
 `content/public-assets/` that carries EXIF (`EXIF GPS` when it has a GPS block), XMP, IPTC, a JPEG comment, PNG text
@@ -499,7 +522,7 @@ hosts you declare in `style_url` and `tile_hosts`.
 - Angle brackets in any text field; non-https or `javascript:` links; remote
   scripts, fonts, iframes or images.
 - Full SHA-256 values on pages (12-character prefixes only), records originals,
-  `private/`, `kit/requests/`, email addresses other than `contact_email`,
+  `private/`, `kit/requests/`, email addresses other than `contact_email` and `privacy_contact`,
   subscriber data, portal credentials.
 - Anything in `public-assets/` outside the extension allowlist or over 5 MiB.
 

@@ -765,7 +765,7 @@ def main():
                          help="Fall back to the Census geocoder when the seed cannot resolve the location")
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
-                              "city_council, district_attorney, chp, campus_police (opt-in)")
+                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in)")
     kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
@@ -838,11 +838,17 @@ def main():
     evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
     evidence_p.add_argument("--directory", required=True)
     evidence_p.add_argument("--check", action="store_true", help="Exit 3 when any citation has a problem")
-    verify_agency_p = commands.add_parser("kit-verify-agency", help="Record an organizer-checked records contact in kit/agencies.json")
-    for flag in ("--directory", "--agency-id", "--source-url", "--checked-on"):
-        verify_agency_p.add_argument(flag, required=True)
+    verify_agency_p = commands.add_parser("kit-verify-agency", help="Record an organizer-checked records contact in kit/agencies.json;"
+                                          " 'import --csv FILE' records many at once")
+    verify_agency_p.add_argument("action", nargs="?", choices=("import",), help="import: many checked contacts from one CSV")
+    verify_agency_p.add_argument("--directory", required=True)
+    for flag in ("--agency-id", "--source-url", "--checked-on"):
+        verify_agency_p.add_argument(flag, help="Required without 'import'")
     for flag in ("--records-email", "--records-url", "--portal"):
         verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
+    verify_agency_p.add_argument("--csv", help="import: header agency_id,source_url,checked_on,records_email,records_url,"
+                                 "portal_vendor,portal_url; 1-500 rows, all or none")
+    verify_agency_p.add_argument("--check", action="store_true", help="import: validate only; write nothing")
     agency_cmds = commands.add_parser("kit-agency", help="Add, select or deselect agencies in kit/agencies.json; the next"
                                       " kit run drafts requests for selected law-enforcement agencies"
                                       ).add_subparsers(dest="agency_command", required=True)
@@ -1270,8 +1276,25 @@ def main():
         elif args.command == "evidence":
             from .evidence import run_cli
             run_cli(root, check=args.check)
+        elif args.command == "kit-verify-agency" and args.action == "import":
+            from .kit import verify_agencies_csv
+            single = [f for f in ("agency_id", "source_url", "checked_on", "records_email", "records_url", "portal")
+                      if getattr(args, f) is not None]
+            if single:
+                verify_agency_p.error("import takes only --directory, --csv and --check, not "
+                                      + ", ".join("--" + f.replace("_", "-") for f in single))
+            if args.csv is None:
+                verify_agency_p.error("the following arguments are required: --csv")
+            print(json.dumps(verify_agencies_csv(root, Path(args.csv).expanduser(), check=args.check), indent=2))
+            print("Nothing was fetched or sent.")
         elif args.command == "kit-verify-agency":
             from .kit import verify_agency
+            stray = [f"--{f}" for f in ("csv",) if getattr(args, f) is not None] + ["--check"] * args.check
+            if stray:
+                verify_agency_p.error(", ".join(stray) + " only with 'import'")
+            if missing := [f"--{f.replace('_', '-')}" for f in ("agency_id", "source_url", "checked_on")
+                           if getattr(args, f) is None]:
+                verify_agency_p.error("the following arguments are required: " + ", ".join(missing))
             print(json.dumps(verify_agency(root, args.agency_id, source_url=args.source_url, checked_on=args.checked_on,
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
