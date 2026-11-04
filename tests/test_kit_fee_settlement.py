@@ -101,7 +101,7 @@ class FeeSettlementTests(unittest.TestCase):
         code, out, _ = run("kit-coverage", "--directory", self.root, "--csv")
         self.assertEqual(code, 0)
         coverage_rows = {r[0]: r for r in csv.reader(out.splitlines())}
-        self.assertEqual((coverage_rows["agency_id"][-1], coverage_rows[self.agency][-1]), ("fee", "paid"))
+        self.assertEqual((coverage_rows["agency_id"][-2], coverage_rows[self.agency][-2]), ("fee", "paid"))
 
     def test_waived_and_amount_on_waived_refused(self):
         self.ok("2026-03-05", "fee_estimate", "--amount", "20")
@@ -177,6 +177,7 @@ class FeeSettlementTests(unittest.TestCase):
         row, err = self.status()
         self.assertEqual((row.pop("fee_state"), row.pop("fee_paid")), ("unpaid", None))
         self.assertEqual(row.pop("withheld_basis"), [])
+        self.assertEqual({s["answer"] for s in row.pop("scopes")}, {None})
         self.assertEqual({k: v for k, v in row.items() if k not in ("agency_id", "name")}, GOLDEN_ROW)
         self.assertEqual(err, f"{self.agency}: fee estimate $245.50 is unpaid\n")
         cells, values = self.csv_row("legacy")
@@ -185,7 +186,7 @@ class FeeSettlementTests(unittest.TestCase):
         cover, totals = self.coverage()
         self.assertEqual((cover["fee_state"], totals["fee_unpaid"]), ("unpaid", 1))
         table = kit_track.format_coverage(kit_track.coverage(self.root))
-        self.assertTrue(table.splitlines()[0].endswith(" fee"))
+        self.assertEqual(table.splitlines()[0].split()[-2:], ["fee", "scopes"])
         self.assertIn("fee_unpaid 1", table)
         self.assertEqual(self.sent.read_bytes(), before)
 

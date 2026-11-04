@@ -1,0 +1,9 @@
+{
+  "--scope and --disposition go together: give both or neither": "kit-response --scope/--disposition message that already names both options and the rule; not in the table",
+  "--disposition must be one of name": "kit-response --disposition message that already lists the allowed values; not in the table",
+  "--scope is not allowed on a 5 step": "kit-response --scope message that already names the option and the step kind; not in the table",
+  "--scope 5: the same scope is given twice": "kit-response --scope message that already names the option and the repeated id; not in the table",
+  "scopes not recorded for this request; --scope cannot be checked": "kit-response --scope message that already names the option and the reason; not in the table",
+  "--scope 5 was not asked in this request": "kit-response --scope message that already names the option and the id; not in the table",
+  "kit/summary.json names scope 5, which is not in the law package; rebuild the kit": "kit-sent message that already names the file and says to rebuild the kit; not in the table"
+}
