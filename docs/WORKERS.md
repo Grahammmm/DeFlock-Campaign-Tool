@@ -1,5 +1,7 @@
 # Cloudflare Workers: wizard, workspace, public site
 
+See [hosted path status](STATUS.md#hosted-path-deploy-scheduled-nothing-provisioned-g-2026-11-01) for the decision and remaining work.
+
 `workers/` holds the three Workers described in [CONTRACTS.md](CONTRACTS.md) and
 [ARCHITECTURE.md](ARCHITECTURE.md). They are TypeScript, share one npm workspace, and are
 tested offline with `@cloudflare/vitest-plugin` (workerd, D1, R2 and KV emulated in

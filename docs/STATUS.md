@@ -54,9 +54,23 @@ mail or publishes anything.
 | Campaign local schedule (not installed) | Six shipped systemd user timer pairs for gate-safe campaign slots (reconcile, stale-check, run-report-review, deadline drafts, site build, backup) and a read-only check of each slot's command, gate safety, time collisions and lock; installs, enables and starts nothing; the install is an attended operator step. | `tools/local_schedule_check.py`, `deploy/local-schedule/install.md` |
 | Offline starter CLI | Agency discovery, request kit, static site build, newsletter drafts, Legistar import, backup/verify/restore. | `README.md`, [LAUNCH.md](../LAUNCH.md) |
 
-## Offline-only, frozen (G 2026-10-31)
+## Hosted path: deploy scheduled, nothing provisioned (G 2026-11-01)
 
-No new features until a deploy is scheduled; path-scoped CI keeps them tested.
+G's 2026-11-01 decision approves planning and then spending, with the cost shown to G before anything is provisioned; it is not standing approval to provision.
+The hosted path is not deployed, and no deploy receipt exists; the fresh-account launch gate in [LAUNCH.md](../LAUNCH.md) is **Not run**. Path-scoped CI keeps this code tested.
+
+- Setup wizard: guides an organizer through account setup and a provisioning plan.
+- Organizer workspace: provides the protected campaign workspace, jobs and approvals.
+- Public-site Worker: serves the campaign's public site.
+- Runner: processes workspace jobs in a container.
+
+Before serving anyone, the hosted path still needs:
+- A registered outbox sender in the workspace (`df-bind-sender`).
+- Account configuration and verification for the social posting adapter (`df-social-posting`), now implemented offline.
+- Provider configuration and verification for the Brevo webhook and list count (`df-subscribe`); the code is tested offline.
+- Legistar polling (`df-legistar-poll`).
+- Deployment and integration verification for the two runner handlers (`df-runner-handlers`), now implemented offline.
+- A job budget / spend cap: **GAP**, no sheet item covers this.
 
 | Part | State | Evidence |
 | --- | --- | --- |
@@ -71,13 +85,13 @@ Only items with no implementation in this repository.
 
 | Item | Evidence that it is not built |
 | --- | --- |
-| Binding the outbox to the Worker `send_request`/`send_followup` executors | They refuse with `sender_not_configured`: `workers/workspace/src/executors/types.ts` |
+| Registered sender for the Worker `send_request`/`send_followup` executors | Outbox code is bound; an unconfigured sender refuses with `sender_not_configured`: `workers/workspace/src/executors/types.ts`. A deployed workspace still needs a registered sender. |
 | Live social posting | `post_social` has one Mastodon adapter behind per-post approval, but no account is configured: `workers/workspace/src/executors/post_social.ts` |
 | Independently reviewed state-law packages | California ships `status: draft`: `jurisdictions/us-ca/package.json` |
 | Automatic Legistar polling from the Worker | The CLI import exists; the Worker only lists imported meetings: [MEETINGS.md](MEETINGS.md) |
 | Backup encryption, scheduling and hosted restore | `campaign_tool/backup.py` writes a plain tar by hand; encryption and storage are left to the operator |
-| Monitored scheduling and cost controls for the hosted path | No hosted schedule exists; see the frozen rows above |
-| Any production deployment of the Workers or the runner | Frozen above until a deploy is scheduled |
+| Monitored scheduling and cost controls for the hosted path | The schedule is authored in code but undeployed; budget and spend controls remain a gap. See [hosted path](#hosted-path-deploy-scheduled-nothing-provisioned-g-2026-11-01). |
+| Any production deployment of the Workers or the runner | Scheduled, not provisioned; see [hosted path](#hosted-path-deploy-scheduled-nothing-provisioned-g-2026-11-01). |
 
 See [LAUNCH.md](../LAUNCH.md) for the launch gates and [ROADMAP.md](ROADMAP.md)
 for the longer plan.
