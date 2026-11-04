@@ -25,6 +25,7 @@ TODAY = date(2026, 11, 4)
 SYNTHETIC_NOTE, SYNTHETIC_ADDRESS = "Synthetic private note: call back Tuesday", "records-clerk@agency.synthetic.example"
 REVIEWER, REASON, CORRECTION = "Synthetic Reviewer Pat", "Synthetic withdrawal reason", "Synthetic correction note"
 HASH_A, HASH_B, HASH_C = (c * 64 for c in "abc")
+PAYLOAD = "synthetic-payload-must-not-be-read"
 
 
 def run(*arguments):
@@ -362,6 +363,261 @@ class RecentTests(unittest.TestCase):
         code, out, err = run("recent", "--directory", self.tmp, "--since", "2026-11-01")
         self.assertEqual((code, out), (1, ""))
         self.assertIn("Stopped", err)
+
+    # RF0220-3: unsafe input directories
+    def campaign(self, name):
+        root = self.tmp / name
+        root.mkdir(parents=True)
+        (root / "campaign.json").write_text(json.dumps({"schema_version": 1, "name": "Synthetic", "county": "San Luis Obispo",
+                                                         "state": "CA"}), encoding="utf-8")
+        return root
+
+    def unsafe(self, root, relative, variant):
+        """Make root/relative a link (external, internal, dangling, self) or a regular file; its parent stays real."""
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if variant == "file":
+            path.write_text(PAYLOAD, encoding="utf-8")
+        elif variant == "self":
+            path.symlink_to(path)
+        elif variant == "dangling":
+            path.symlink_to(self.tmp / "nowhere-synthetic")
+        else:
+            target = (self.tmp if variant == "external" else root) / f"{variant}-target-{relative.replace('/', '-')}"
+            target.mkdir()
+            path.symlink_to(target, target_is_directory=True)
+
+    def no_readers(self):
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        for name in ("_requests", "_records", "_findings", "_meetings"):
+            stack.enter_context(mock.patch.object(recent, name, side_effect=AssertionError(f"{name} was called")))
+        stack.enter_context(mock.patch.object(recent.findings, "status_rows", side_effect=AssertionError("status_rows")))
+
+    @staticmethod
+    def refusal(relative):
+        return f"recent: {relative}/ must be a real directory, not a symlink or file"
+
+    def test_input_directory_symlinks_refused_before_any_reader(self):
+        self.no_readers()
+        count = 0
+        for relative in recent.INPUT_DIRECTORIES:
+            for variant in ("external", "internal", "dangling", "self"):
+                count += 1
+                with self.subTest(relative=relative, variant=variant):
+                    root = self.campaign(f"link-{count}")
+                    self.unsafe(root, relative, variant)
+                    with self.assertRaises(ValueError) as caught:
+                        recent.collect(root, "2026-11-01", None, TODAY)
+                    self.assertEqual(str(caught.exception), self.refusal(relative))
+                    self.assertNotIn("Traceback", str(caught.exception))
+                    code, out, err = run("recent", "--directory", root, "--since", "2026-11-01")
+                    self.assertEqual((code, out, err), (1, "", f"Stopped: {self.refusal(relative)}\n"))
+        self.assertEqual(count, 32)
+
+    def test_input_guard_checks_parents_first_and_never_looks_below_a_refused_parent(self):
+        root = self.campaign("order")
+        self.unsafe(root, "content", "external")
+        (self.tmp / "external-target-content" / "findings").mkdir()  # a real folder behind the link: never inspected
+        self.unsafe(root, "private/reviews", "external")
+        seen = []
+        real_lstat = os.lstat
+
+        def spy(path, *args, **kwargs):
+            seen.append(os.fspath(path))
+            return real_lstat(path, *args, **kwargs)
+        self.no_readers()
+        with mock.patch.object(os, "lstat", spy), self.assertRaises(ValueError) as caught:
+            recent.collect(root, "2026-11-01", None, TODAY)
+        self.assertEqual(str(caught.exception), self.refusal("content"))  # allowlist order: content before private/reviews
+        self.assertEqual([p for p in seen if p.startswith(str(root))], [str(root / "kit"), str(root / "content")])
+        both = self.campaign("both")
+        self.unsafe(both, "private/reviews", "internal")
+        self.unsafe(both, "kit", "dangling")
+        with self.assertRaises(ValueError) as caught:
+            recent.collect(both, "2026-11-01", None, TODAY)
+        self.assertEqual(str(caught.exception), self.refusal("kit"))
+
+    def test_external_kit_and_content_events_never_enter_recent(self):
+        external = self.tmp / "external-history"
+        external.mkdir()
+        (external / "agencies.json").write_text(json.dumps([{"agency_id": "ca-sentinel", "name": "Sentinel Police",
+                                                             "records_email": SYNTHETIC_ADDRESS}]), encoding="utf-8")
+        (external / "sent.json").write_text(json.dumps({"schema_version": 1, "requests": {"ca-sentinel": {
+            "sent_on": "2026-11-02", "channel": "email", "draft": "requests/x.md", "draft_sha256": HASH_C,
+            "recorded_at": "2026-11-02T10:00:00+00:00", "steps": []}}}), encoding="utf-8")
+        (external / "sources.json").write_text(json.dumps([{"sha256": HASH_B, "title": "T", "agency_id": "ca-sentinel",
+                                                            "received_at": "2026-11-02T08:00:00Z", "public_url": None,
+                                                            "fragment": "f"}]), encoding="utf-8")
+        for relative, expected_area in (("kit", "kit"), ("content", "content")):
+            for md in (None, self.tmp / f"{relative}.md"):
+                with self.subTest(relative=relative, md=md):
+                    root = self.campaign(f"external-{relative}-{md is not None}")
+                    (root / relative).symlink_to(external, target_is_directory=True)
+                    extra = () if md is None else ("--md", md)
+                    code, out, err = run("recent", "--directory", root, "--since", "2026-11-01", *extra)
+                    self.assertEqual((code, out), (1, ""))
+                    self.assertEqual(err, f"Stopped: {self.refusal(expected_area)}\n")
+                    for private in ("ca-sentinel", "Sentinel", HASH_B[:12], str(external), "external-history", "Traceback"):
+                        self.assertNotIn(private, out + err)
+                    if md is not None:
+                        self.assertFalse(os.path.lexists(md))
+
+    def test_linked_empty_collections_are_not_successful_empty_reports(self):
+        for relative in ("private/reviews", "content/meetings", "content/findings", "private/drafts", "private/withdrawn"):
+            for variant in ("external", "internal"):  # the targets are empty folders with no JSON files at all
+                with self.subTest(relative=relative, variant=variant):
+                    root = self.campaign(f"empty-{relative.replace('/', '-')}-{variant}")
+                    self.unsafe(root, relative, variant)
+                    for extra in ((), ("--json",)):
+                        code, out, err = run("recent", "--directory", root, "--since", "2026-11-01", *extra)
+                        self.assertEqual((code, out, err), (1, "", f"Stopped: {self.refusal(relative)}\n"))
+                        self.assertNotIn("nothing recorded", out + err)
+                        self.assertNotEqual(out, "[]\n")
+
+    def test_input_directory_regular_files_and_fifos_refused_without_open(self):
+        self.no_readers()
+        real_open, real_os_open = open, os.open
+
+        def watch(real):
+            def inner(path, *args, **kwargs):
+                if str(path).startswith(str(self.tmp)) and not str(path).endswith("campaign.json"):
+                    raise AssertionError(f"opened {path}")
+                return real(path, *args, **kwargs)
+            return inner
+        for index, relative in enumerate(recent.INPUT_DIRECTORIES):
+            variants = ["file"] + (["fifo"] if hasattr(os, "mkfifo") else [])
+            for variant in variants:
+                with self.subTest(relative=relative, variant=variant):
+                    root = self.campaign(f"nondir-{index}-{variant}")
+                    if variant == "file":
+                        self.unsafe(root, relative, "file")
+                    else:
+                        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                        os.mkfifo(root / relative)
+                    with mock.patch("builtins.open", watch(real_open)), mock.patch.object(os, "open", watch(real_os_open)):
+                        with self.assertRaises(ValueError) as caught:
+                            recent.collect(root, "2026-11-01", None, TODAY)
+                    self.assertEqual(str(caught.exception), self.refusal(relative))
+                    code, out, err = run("recent", "--directory", root, "--since", "2026-11-01")
+                    self.assertEqual((code, out, err), (1, "", f"Stopped: {self.refusal(relative)}\n"))
+                    self.assertNotIn(PAYLOAD, out + err)
+
+    def test_input_directory_inspection_error_is_fixed_and_private(self):
+        self.no_readers()
+        secret = "/private/synthetic-secret-path denied"
+        real_lstat = os.lstat
+        for error in (PermissionError(13, secret), OSError(5, secret)):
+            with self.subTest(error=type(error).__name__):
+                root = self.campaign(f"inspect-{type(error).__name__}")
+                (root / "private").mkdir()
+
+                def lstat(path, *args, **kwargs):
+                    if os.fspath(path) == str(root / "private" / "reviews"):
+                        raise error
+                    return real_lstat(path, *args, **kwargs)
+                with mock.patch.object(os, "lstat", lstat):
+                    with self.assertRaises(ValueError) as caught:
+                        recent.collect(root, "2026-11-01", None, TODAY)
+                    self.assertEqual(str(caught.exception), "recent: private/reviews/ cannot be inspected")
+                    self.assertIsNone(caught.exception.__cause__)
+                    self.assertTrue(caught.exception.__suppress_context__)
+                    code, out, err = run("recent", "--directory", root, "--since", "2026-11-01")
+                self.assertEqual((code, out, err), (1, "", "Stopped: recent: private/reviews/ cannot be inspected\n"))
+                self.assertNotIn("synthetic-secret", err)
+
+    def test_input_refusal_does_not_create_md_or_change_any_tree(self):
+        self.sent(("ca-one", "2026-11-02", []))
+        self.finding("content/findings", "fnd_pub", published_at="2026-11-03T09:00:00Z", corrections=[])
+        self.put("private/drafts/fnd_draft.json", {"id": "fnd_draft", "title": "Draft", "slug": "fnd_draft"})
+        external = self.tmp / "external-reviews"
+        external.mkdir()
+        (external / "fnd_pub.json").write_text("[]", encoding="utf-8")
+        (self.root / "private" / "reviews").symlink_to(external, target_is_directory=True)
+        out_dir = self.tmp / "out"
+        out_dir.mkdir()
+        before, outside = tree(self.root), tree(self.tmp / "external-reviews")
+        beside = tree(out_dir)
+        for extra in ((), ("--json",)):
+            target = out_dir / "report.md"
+            code, out, err = run("recent", "--directory", self.root, "--since", "2026-11-01", "--md", target, *extra)
+            self.assertEqual((code, out, err), (1, "", f"Stopped: {self.refusal('private/reviews')}\n"))
+            self.assertFalse(os.path.lexists(target))
+            self.assertEqual(tree(out_dir), beside)
+            self.assertEqual(tree(self.root), before)
+            self.assertEqual(tree(external), outside)
+        for call in (lambda: recent.collect(self.root, "2026-11-01", None, TODAY),
+                     lambda: recent.report(self.root, "2026-11-01", None, TODAY),
+                     lambda: self.report("2026-11-01", md=str(out_dir / "report.md"))):
+            with self.assertRaises(ValueError) as caught:
+                call()
+            self.assertEqual(str(caught.exception), self.refusal("private/reviews"))
+        self.assertEqual(tree(out_dir), beside)
+
+    def populate(self, root):
+        self.root, saved = root, self.root
+        try:
+            self.sent(("ca-one", "2026-11-02", []))
+            self.finding("content/findings", "fnd_pub", published_at="2026-11-03T09:00:00Z", corrections=[])
+        finally:
+            self.root = saved
+
+    def test_missing_input_directories_and_linked_campaign_root_still_work(self):
+        bare = self.campaign("bare")  # every allowlisted folder absent
+        code, out, err = run("recent", "--directory", bare, "--since", "2026-11-01")
+        self.assertEqual((code, err, out.count("nothing recorded")), (0, "", 4))
+        sparse = self.campaign("sparse")  # some real, empty folders
+        for relative in ("kit", "content/meetings", "private/withdrawn"):
+            (sparse / relative).mkdir(parents=True)
+        code, out, err = run("recent", "--directory", sparse, "--since", "2026-11-01")
+        self.assertEqual((code, err, out.count("nothing recorded")), (0, "", 4))
+        real = self.campaign("Real Campaign ünï")  # spaces and Unicode
+        self.populate(real)
+        code, direct, err = run("recent", "--directory", real, "--since", "2026-11-01")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Request sent to Synthetic ca-one Police", direct)
+        self.assertIn(f"kit-status --directory {shlex.quote(str(real))}", direct)
+        alias = self.tmp / "alias root"
+        alias.symlink_to(real, target_is_directory=True)
+        code, aliased, err = run("recent", "--directory", alias, "--since", "2026-11-01")
+        self.assertEqual((code, err, aliased), (0, "", direct))  # the CLI resolves --directory itself (unchanged)
+        events = recent.collect(alias, "2026-11-01", None, TODAY)[0]  # a direct call keeps the alias spelling
+        self.assertEqual([e["what"] for e in events], [e["what"] for e in recent.collect(real, "2026-11-01", None, TODAY)[0]])
+        self.assertTrue(events and all(shlex.quote(str(alias)) in e["command"] for e in events if "--directory" in e["command"]))
+        parent = self.tmp / "ancestor-link"
+        parent.symlink_to(self.tmp, target_is_directory=True)
+        events = recent.collect(parent / "Real Campaign ünï", "2026-11-01", None, TODAY)[0]
+        self.assertTrue(any(shlex.quote(str(parent / "Real Campaign ünï")) in e["command"] for e in events))
+        code, via_ancestor, err = run("recent", "--directory", parent / "Real Campaign ünï", "--since", "2026-11-01")
+        self.assertEqual((code, err, via_ancestor), (0, "", direct))
+
+    def test_input_guard_precedence_and_existing_partial_report_contract(self):
+        self.unsafe(self.root, "kit", "external")
+        existing = self.tmp / "existing.md"
+        existing.write_text("keep me", encoding="utf-8")
+        for arguments in (("--since", "2026-11-09"), ("--since", "11/01/2026"),
+                          ("--since", "2026-11-01", "--md", existing),
+                          ("--since", "2026-11-01", "--md", self.root / "public" / "r.md"),
+                          ("--since", "2026-11-01", "--md", self.tmp / "missing" / "r.md")):
+            with self.subTest(arguments=arguments):
+                code, out, err = run("recent", "--directory", self.root, *arguments)
+                self.assertEqual((code, out), (2, ""))
+                self.assertNotIn("must be a real directory", err)
+        self.assertEqual(existing.read_text(encoding="utf-8"), "keep me")
+        safe = self.campaign("partial")
+        self.put_in(safe, "kit/sent.json", "{not json")
+        self.put_in(safe, "private/reviews/fnd_x.json", "{}")
+        target = self.tmp / "partial.md"
+        code, out, err = run("recent", "--directory", safe, "--since", "2026-11-01", "--md", target)
+        self.assertEqual(code, 3, err)
+        self.assertIn("kit/sent.json unreadable", out)
+        self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o600)
+        self.assertIn("private/reviews/fnd\\_x.json unreadable", target.read_text(encoding="utf-8"))
+
+    def put_in(self, root, relative, document):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(document, encoding="utf-8")
 
 
 if __name__ == "__main__":
