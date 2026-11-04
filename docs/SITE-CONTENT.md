@@ -227,6 +227,20 @@ one existing fragment. It prints `{"added": [12-char prefixes],
 "already_listed": n, "dry_run": bool}`; `--dry-run` writes nothing, and a
 second run adds nothing. Nothing is fetched or published.
 
+`sources add-batch --directory D --from-request AGENCY [--request NAME] [--tz ZONE] [--fragment F] [--dry-run]`
+fills the library from a request's production evidence instead of an ingest `source_id`: every record linked with
+`kit-response --kind produced --record` on that request's produced steps (`kit/sent.json`; `--request` defaults to
+`main`) that is not yet in the library, in the same one validated write (same 500-entry cap, fragment choice and size
+cap). Records linked as `--correspondence` are never added. `agency_id` is the request's agency (it must be one of the
+campaign's agencies) and `received_at` is the step's date at 00:00 in `--tz` (an IANA zone, default
+`America/Los_Angeles`; there is no campaign-wide time zone setting), written with its offset; a record linked on two
+steps takes the earlier date. The title is the ledger's original file name followed by `[EDIT ME: title]`, or
+`Record <12 hex> [EDIT ME: title]` when the ledger has no name. `--source-id`, `--agency-id` and `--received-at` cannot
+be combined with `--from-request`. It prints the same `{"added", "already_listed", "dry_run"}` summary and then
+`nothing to add` when every record is already listed (nothing is written). A request with no linked production records,
+an unknown request or agency, or an unknown `--tz` is refused and nothing is written. Nothing is fetched or published;
+`public_url` stays null.
+
 `sources verify-copy --directory D --sha256 PREFIX --file DOWNLOADED --checked-on YYYY-MM-DD
 [--differs-because redacted|converted|unknown]` hashes a copy you downloaded yourself from an entry's `public_url`
 (a regular local file, no symlink, at most 200 MiB; nothing is fetched, copied or stored) and records
@@ -398,6 +412,8 @@ Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descri
 `intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
 `signup.*`, `js.*` (scripts, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
 keeps its English default.
+A complete Spanish draft of every key is in [`examples/labels/es.json`](../examples/labels/es.json) ([README](../examples/labels/README.md)).
+Machine-made draft. A fluent Spanish reader must check every line before a campaign uses it; nothing here is reviewed.
 Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds
 `<`, `>` or a control character; a `{placeholder}` the key's default does not use (only `{name}`, `{county}`,
 `{state}`, `{count}`, `{date}` exist, plus `{shown}`/`{total}` in `js.filter_count` and `{evidence}`/`{source}` in
@@ -508,6 +524,21 @@ that do not strictly increase, a negative or non-integer count, a symlink or a f
 and never its value; `content-check` lists the same line. With two or more records `cameras.html` shows "Mapped points
 over time", a plain table (date, total, added, removed, and per-city columns when every record has `by_city`); with
 none or one the built site is unchanged. A mapped point, and a rising count, is not evidence of agency ownership.
+
+`content/map/point-checks.json` (optional; organizer-edited by hand, never fetched or written by the tool) records what
+an organizer found at single mapped points: `{"schema_version": 1, "checks": [{"node": 123, "status": "seen_in_person",
+"checked_on": "2026-11-01", "source": "<12-hex library prefix or https:// URL>", "note": "optional, 200 characters"}]}`.
+`node` must be an OpenStreetMap node id present in `cameras.geojson` (its `.../node/N` URL); `status` is
+`seen_in_person`, `in_agency_record`, `not_found_on_site` or `duplicate`; `checked_on` is a calendar day not after the
+build day; `source` is either the first 12 hex characters of one `sources.json` entry's sha256 (it must match exactly
+one) or an `https://` URL (no userinfo, at most 500 characters); `note` is plain text without an address or phone-like
+number. At most 5 checks per node, 2000 checks and 512 KiB; a symlink is refused. `build` refuses the file naming the
+field (`map/point-checks.json.checks[3].node: not a mapped point`) and never the value; `content-check` lists every
+refused entry. With the file, `cameras.html` gains an "Organizer check" column (newest check: status, date, source link;
+"and N earlier" when more; a dash when none) and the map popup one escaped line "Organizer check: <status>, <date>"
+(the note and the source stay off the popup and out of `site-data.js`). Without the file nothing is built differently.
+A check never removes or edits a point and never writes to OpenStreetMap: `duplicate` and `not_found_on_site` points stay
+on the map and in every count. `in_agency_record` says an agency record lists the point; it is never ownership.
 
 The build never downloads MapLibre. To enable the interactive map, copy the
 library into `content/vendor/maplibre-gl.js` and `content/vendor/maplibre-gl.css`

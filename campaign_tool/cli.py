@@ -832,6 +832,15 @@ def main():
     outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
     outcome_p.add_argument("--votes", metavar="FILE", help="name,vote CSV (yes|no|abstain|absent|recused) read from the --source record")
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
+    outcome_p.add_argument("--recording-url", help="https URL of the body's official video or audio of the meeting")
+    outcome_p.add_argument("--recording-start", metavar="H:MM:SS", help="Where the discussion starts in the recording, at most 12:00:00")
+    sent_p = commands.add_parser("meetings-comment-sent", help="Record a comment you submitted by hand on a staged "
+                                 "meeting in kit/comments-sent.json; sends nothing")
+    for flag in ("--directory", "--id", "--on"):
+        sent_p.add_argument(flag, required=True)
+    sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail", "in_person"))
+    sent_p.add_argument("--file", help="The letter you sent: only its SHA-256 and size are kept, never its text or path")
+    sent_p.add_argument("--replace", action="store_true", help="Overwrite an existing record for this meeting")
     content_check_p = commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)")
     content_check_p.add_argument("--directory", required=True)
     content_check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
@@ -956,10 +965,17 @@ def main():
         sources_edit.add_argument(flag, default=None)
     sources_edit.add_argument("--clear-public-url", action="store_true")
     sources_edit.add_argument("--pages", type=int, default=None)
-    batch = sources.add_parser("add-batch", help="Add every receipt of one ingest source_id not yet listed; "
-                               "titles marked [EDIT ME: title]; publishes nothing")
-    for flag in ("--directory", "--source-id", "--agency-id", "--received-at"):
-        batch.add_argument(flag, required=True)
+    batch = sources.add_parser("add-batch", help="Add every receipt of one ingest source_id (or every production record "
+                               "of one request, --from-request) not yet listed; titles marked [EDIT ME: title]; "
+                               "publishes nothing")
+    batch.add_argument("--directory", required=True)
+    for flag in ("--source-id", "--agency-id", "--received-at"):
+        batch.add_argument(flag, default=None, help="Required unless --from-request")
+    batch.add_argument("--from-request", metavar="AGENCY", default=None,
+                       help="Use the production records linked on this agency's produced steps instead")
+    batch.add_argument("--request", default=None, help="With --from-request: the request name (default main)")
+    batch.add_argument("--tz", default=None,
+                       help="With --from-request: IANA time zone for received_at (default America/Los_Angeles)")
     batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
     batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
     verify = sources.add_parser("verify-copy", help="Hash a copy you downloaded from an entry's public_url and record "
@@ -1096,6 +1112,22 @@ def main():
         parser.error("--within-days must be 1 to 60")
     if args.command == "build" and args.preview and args.budget is not None:
         parser.error("--budget measures a written build; it cannot be combined with --preview")
+    if args.command == "sources" and args.sources_command == "add-batch":
+        given = {"--source-id": args.source_id, "--agency-id": args.agency_id, "--received-at": args.received_at}
+        if args.from_request is not None:
+            if any(value is not None for value in given.values()):
+                batch.error("--from-request takes the agency, records and dates from the request; "
+                            "it cannot be combined with --source-id, --agency-id or --received-at")
+            # Resolve defaults only after preserving whether request-only options were supplied.
+            if args.request is None:
+                args.request = "main"
+            if args.tz is None:
+                args.tz = "America/Los_Angeles"
+        elif any(value is None for value in given.values()):
+            batch.error("the following arguments are required: --source-id, --agency-id, --received-at "
+                        "(or --from-request AGENCY)")
+        elif args.request is not None or args.tz is not None:
+            batch.error("--request and --tz are only for --from-request")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -1156,20 +1188,36 @@ def main():
             report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
                                     max_findings=args.max_findings, replace=args.replace)
             print(json.dumps(report, indent=2))
+            for built in report["built"]:
+                if built["comment_sent"]:
+                    print(f"{built['id']}: Comment recorded as submitted on {built['comment_sent']['on']} "
+                          f"({built['comment_sent']['channel']}).")
             sys.exit(3 if report["skipped"] else 0)
         elif args.command == "meeting-pack":
             from .meeting_pack import build as pack_build
-            print(json.dumps(pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
-                                        replace=args.replace, allow_past=args.allow_past)))
+            report = pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
+                                replace=args.replace, allow_past=args.allow_past)
+            print(json.dumps(report))
+            if report["comment_sent"]:
+                print(f"Comment recorded as submitted on {report['comment_sent']['on']} "
+                      f"({report['comment_sent']['channel']}).")
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
         elif args.command == "meetings-outcome":
             from .meeting_outcome import record_outcome
             print(json.dumps(record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by,
-                                            args.vote, args.replace, votes_file=args.votes), indent=2))
+                                            args.vote, args.replace, votes_file=args.votes,
+                                            recording_url=args.recording_url, recording_start=args.recording_start), indent=2))
             if args.replace and args.votes is None:  # the new outcome replaced the old one whole
                 print("votes: none")
             print("Recorded only. Nothing was published.")
+        elif args.command == "meetings-comment-sent":
+            from .meeting_comments import record
+            entry = record(root, args.id, args.on, args.channel, args.file, args.replace)
+            shown = {"id": args.id, **{k: v for k, v in entry.items() if k != "letter_sha256"},
+                     **({"letter_sha256_prefix": entry["letter_sha256"][:12]} if "letter_sha256" in entry else {})}
+            print(json.dumps(shown, indent=2))
+            print("Recorded only. Nothing was sent.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
@@ -1179,9 +1227,16 @@ def main():
             from .sources_cmd import list_sources
             print(json.dumps(list_sources(root), indent=2, ensure_ascii=False))
         elif args.command == "sources" and args.sources_command == "add-batch":
-            from .sources_cmd import add_batch
-            print(json.dumps(add_batch(root, args.source_id, args.agency_id, args.received_at, args.fragment,
-                                       dry_run=args.dry_run)))
+            from .sources_cmd import add_batch, add_from_request
+            if args.from_request is not None:
+                result = add_from_request(root, args.from_request, request=args.request, tz=args.tz,
+                                          fragment=args.fragment, dry_run=args.dry_run)
+                print(json.dumps(result))
+                if not result["added"]:
+                    print("nothing to add")
+            else:
+                print(json.dumps(add_batch(root, args.source_id, args.agency_id, args.received_at, args.fragment,
+                                           dry_run=args.dry_run)))
         elif args.command == "sources" and args.sources_command == "verify-copy":
             from .sources_cmd import verify_copy
             try:

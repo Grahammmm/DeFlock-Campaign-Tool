@@ -9,7 +9,7 @@ import shlex
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from . import findings, kit, kit_track, meeting_stage
+from . import findings, kit, kit_track, meeting_comments, meeting_stage
 from .content import _read_json, load_agencies, load_meeting
 
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
@@ -36,6 +36,11 @@ def _unreadable(label, exc):
 
 def _meetings(root, as_of):
     folder, items = root / "content" / "meetings", []
+    try:
+        submitted = meeting_comments.read(root)  # a comment already sent by hand is not due again (DF1207-09)
+    except ValueError as exc:  # bad file: say so once, keep listing every deadline
+        items.append(_unreadable(meeting_comments.LABEL, exc))
+        submitted = {}
     for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
         label = "content/meetings/" + path.name
         try:
@@ -49,6 +54,8 @@ def _meetings(root, as_of):
         if meeting["status"] != "scheduled" or day is None or not as_of <= day <= as_of + timedelta(WINDOW_DAYS):
             continue
         ident = meeting["id"] or path.stem
+        if ident in submitted:
+            continue
         agenda = f" (agenda: {meeting['agenda_url']})" if meeting["agenda_url"] else ""
         items.append(_item("comment_deadline", f"Written comment due {due} for {meeting['body']} ({ident})",
                            f"submit written comment: {written['how']}{agenda}", due, ident))
