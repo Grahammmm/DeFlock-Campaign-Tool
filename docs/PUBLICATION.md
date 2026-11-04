@@ -64,6 +64,23 @@ receipt. `finding review-status` is read-only and prints the receipts for the cu
 the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
 and privacy, with no reject or changes_requested on the current content).
 
+Campaign binding: each campaign holds a random id in `D/private/campaign-id.json` (0600, written once by `init`,
+or by the first `finding review` or `finding reviewers add` in an older campaign, and never replaced). Every
+receipt records it as `campaign_id`, and the `review-payload` bytes a reviewer signs include it, so a receipt or
+signature made in one campaign does not approve the same finding in another. Only approvals carrying this
+campaign's id count; a current approval with another campaign's id adds the blocker `foreign_campaign_receipt`,
+and one with no id adds `unbound_legacy_receipt`, so neither is accepted or dropped silently. A reject or
+changes_requested receipt blocks whatever its binding. `review-payload` refuses in a campaign that has no id yet.
+
+Receipts written before binding have no `campaign_id`, so after upgrading they approve nothing until the organizer
+binds them: `finding bind-receipts --directory D` lists, per finding, how many receipts are unbound or bound to
+another campaign and changes nothing; check that every listed receipt was granted in this campaign, then rerun
+with `--confirm`. That stamps each unbound receipt with this campaign's id and `campaign_bound: {by, at}` (every
+other field kept), never touches a receipt bound to another campaign, and appends one line per finding to
+`D/private/reviews/binding-log.jsonl` with the sha256 of each receipt as it was. A signed receipt bound this way
+keeps verifying against the bytes it was signed over. Binding is an attestation: do not run it on receipts copied
+from another campaign.
+
 Wording: a `title`, `summary` or `body_md` containing `violat*`, `illegal*`, `unlawful*`, `criminal*` or
 "broke the law" (any case; NFKC-normalised with zero-width and soft-hyphen characters removed) adds the blocker
 `legal_conclusion_wording_in_<field>` (the field name only, never the words), so `review-status` lists it and
@@ -272,6 +289,20 @@ every chosen platform is made before anything is written, so one that cannot fit
 the platform named. Each folder keeps its own `.written.json`, kept edits go to
 `kit/social/<P>.suggested/` and stale slugs are listed per platform. Without `--platform` the run is
 unchanged (`len()` within 280 into `kit/social/`); `--check` reads that folder only.
+
+### Social drafts for meetings (never posted)
+
+`social --directory D --meetings [--within-days N] [--platform P ...]` (N from 1 to 60, default 14)
+writes one private draft per staged meeting that is `scheduled`, starts between now and N days
+ahead and carries organizer-verified `participation`, to `kit/social/meetings/<id>.md` (or
+`kit/social/meetings/<P>/<id>.md` sized by that platform's rule; kept edits go to
+`kit/social/meetings.suggested/` or `kit/social/meetings/<P>.suggested/`). The post gives the body,
+the date and time in the meeting's own UTC offset (as the meeting page prints it), the agenda item,
+the verified written-comment deadline and how, how to attend, and `<base_url>/meetings/<id>.html`
+when `base_url` is set. Only the agenda item is shortened. Cancelled, past, later-than-window and
+unverified meetings get no draft and are counted under `skipped`; an unreadable meeting file is
+counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts and
+`--check` are unchanged. Nothing is posted.
 
 ## Posting one approved social draft (Worker `post_social`)
 
