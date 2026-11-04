@@ -26,6 +26,7 @@ DENIED_SUFFIXES = {".eml", ".mbox", ".sqlite", ".sqlite3", ".db", ".pem", ".key"
 DENIED_NAMES = {
     "records-search.rsidx",  # tools/records_search.py private index: it holds record text
     "custody.md", "custody.json",  # tools/custody_report.py private artefacts: never in the public tree
+    "historical-coverage.json", "historical-coverage-report.md",  # private reports: they hold record identity
 }  # compared against p.name.lower()
 
 
