@@ -14,8 +14,8 @@ from .content import _read_json, load_agencies, load_meeting
 
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
          "request_installment_due", "finding_ready", "finding_blocked",
-         "contract_ending", "stale_comment_kit", "stale_contact", "unreadable")
-WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS = 7, 180, 120
+         "contract_ending", "stale_comment_kit", "stale_contact", "review_waiting", "unreadable")
+WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS, REVIEW_DAYS = 7, 180, 120, 7
 CONTRACT_DAYS, CONTRACT_ENDED_DAYS = 90, 30
 
 
@@ -23,6 +23,13 @@ def contract_days(text):
     """argparse type for ``today --contract-days``: a whole number of days, 1-365."""
     if not (text.isascii() and text.isdigit()) or not 1 <= int(text) <= 365:
         raise argparse.ArgumentTypeError(f"must be a whole number of days from 1 to 365, got {text!r}")
+    return int(text)
+
+
+def review_days(text):
+    """argparse type for ``today --review-days``: a whole number of days, 1-90."""
+    if not (text.isascii() and text.isdigit()) or not 1 <= int(text) <= 90:
+        raise argparse.ArgumentTypeError(f"must be a whole number of days from 1 to 90, got {text!r}")
     return int(text)
 
 
@@ -98,6 +105,29 @@ def _findings(root, directory):
     return items
 
 
+def _review_waiting(root, as_of, directory, days):
+    """Assigned review roles with no current-content receipt after ``days`` days (assignments never count as review)."""
+    items = []
+    for row in findings.status_rows(root, draft_paths=True):
+        if "draft_path" not in row or row["state"] == "withdrawn":  # unreadable rows are reported by _findings
+            continue
+        try:
+            draft = findings.load_draft(row["draft_path"])
+            assigned, states = findings.load_assignments(root, draft), None
+            if assigned:
+                states = findings.assignment_states(root, draft)
+        except ValueError as exc:  # one bad assignment or receipt file never hides another draft's items
+            items.append(_unreadable(f"private/review-assignments/{row['id']}.json", exc))
+            continue
+        for role, entry in sorted(assigned.items()):
+            if states[role]["state"] == "assigned" and (as_of - date.fromisoformat(entry["on"])).days >= days:
+                items.append(_item("review_waiting", f"Review ({role}) of {row['id']} assigned to "
+                                   f"{entry['reviewer']} since {entry['on']}",
+                                   f"finding review-status {shlex.quote(row['draft_path'])} --directory {directory}",
+                                   entry["on"], f"{row['id']} {role}"))
+    return items
+
+
 def _stale_kits(root, directory):
     by_meeting = {}
     for entry in meeting_stage.stale_kits(root):
@@ -142,7 +172,7 @@ def _contracts(root, as_of, directory, days):
     return items
 
 
-def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS):
+def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS):
     """Ranked to-do items ``{rank, kind, what, due, command}``; reads only, never raises for a broken input."""
     root = Path(root)
     directory = shlex.quote(str(root))
@@ -150,6 +180,7 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS):
                (lambda: _requests(root, as_of, directory, law_base), "kit/sent.json"),
                (lambda: _findings(root, directory), "private/drafts/"),
                (lambda: _contracts(root, as_of, directory, contract_days), "content/agencies.json"),
+               (lambda: _review_waiting(root, as_of, directory, review_days), "private/review-assignments/"),
                (lambda: _stale_kits(root, directory), "content/"),
                (lambda: _contacts(root, as_of, directory), "kit/agencies.json"))
     items = []
@@ -162,11 +193,11 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS):
     return [{"rank": rank, **{k: v for k, v in item.items() if k != "_key"}} for rank, item in enumerate(items, 1)]
 
 
-def run_cli(root, as_of=None, as_json=False, contract_days=CONTRACT_DAYS):
+def run_cli(root, as_of=None, as_json=False, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS):
     day = date.today() if as_of is None else kit_track._day(as_of)
     if day is None:
         raise ValueError("--as-of must be a real YYYY-MM-DD date")
-    items = todo(root, day, contract_days=contract_days)
+    items = todo(root, day, contract_days=contract_days, review_days=review_days)
     if as_json:
         return json.dumps(items, indent=2, ensure_ascii=False)
     if not items:
