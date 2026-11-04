@@ -201,8 +201,12 @@ def package_status(jurisdiction, base=None):
         return "missing", str(exc)
 
 
-def rules_in_force(package, event_date):
-    """Rules whose effective interval contains ``event_date`` (inclusive)."""
+def rules_in_force(package, event_date, *, local_rules=(), agency_id=None):
+    """Rules whose effective interval contains ``event_date`` (inclusive).
+
+    Organizer-transcribed local rules (``load_local_rules``) are appended, unchanged and never added to the
+    package, only when ``agency_id`` is named in their ``agency_ids``; without it the result is state-only.
+    """
     if isinstance(event_date, str):
         event_date = parse_date(event_date, "event_date")
     if not isinstance(event_date, date):
@@ -213,7 +217,178 @@ def rules_in_force(package, event_date):
         end = rule["effective_to"] and date.fromisoformat(rule["effective_to"])
         if start <= event_date and (end is None or event_date <= end):
             result.append(rule)
+    if agency_id is not None:
+        for rule in local_rules:
+            end = rule["effective_to"] and date.fromisoformat(rule["effective_to"])
+            if (agency_id in rule["agency_ids"] and date.fromisoformat(rule["effective_from"]) <= event_date
+                    and (end is None or event_date <= end)):
+                result.append(rule)
     return result
+
+
+# --- organizer-transcribed local rules (DF1952-01) --------------------------------------------------------------
+
+LOCAL_RULES_FILE = "law/local-rules.json"
+LOCAL_RULES_MAX_BYTES = 1024 * 1024
+LOCAL_RULES_MAX_RULES = 500
+LOCAL_RULES_KEYS = {"schema_version", "jurisdiction", "rules"}
+LOCAL_RULE_KEYS = {"rule_id", "citation", "duty", "source_url", "checked_on", "effective_from", "effective_to",
+                   "agency_ids"}
+LOCAL_RULE_LABEL = "local rule, organizer-transcribed, not legally reviewed"
+LOCAL_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+LOCAL_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def local_rules_present(root):
+    """True when ``root/law/local-rules.json`` exists, or ``root/law`` is anything but a plain folder (it is refused)."""
+    folder = Path(root) / "law"
+    if not os.path.lexists(folder):
+        return False
+    return folder.is_symlink() or not folder.is_dir() or os.path.lexists(folder / "local-rules.json")
+
+
+def _local_pairs(pairs):
+    seen = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"{LOCAL_RULES_FILE}: duplicate key {key!r}")
+        seen[key] = value
+    return seen
+
+
+def _local_read(root):
+    """The parsed overlay: a regular, non-symlink UTF-8 JSON file of at most 1 MiB with no duplicate keys."""
+    folder = Path(root) / "law"
+    path = folder / "local-rules.json"
+    if folder.is_symlink() or (os.path.lexists(folder) and not folder.is_dir()):
+        raise ValueError("law/: must be a plain folder, not a symlink or a file")
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            raise ValueError(f"{LOCAL_RULES_FILE}: must be a regular file, not a symlink or special file")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        raise ValueError(f"{LOCAL_RULES_FILE}: not readable ({exc.strerror or 'error'})") from None
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError(f"{LOCAL_RULES_FILE}: must be a regular file, not a symlink or special file")
+        data = stream.read(LOCAL_RULES_MAX_BYTES + 1)
+    if len(data) > LOCAL_RULES_MAX_BYTES:
+        raise ValueError(f"{LOCAL_RULES_FILE}: file larger than {LOCAL_RULES_MAX_BYTES} bytes")
+    def refuse_constant(name):
+        raise ValueError(f"{LOCAL_RULES_FILE}: {name} is not allowed")
+    try:
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_local_pairs, parse_constant=refuse_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError(f"{LOCAL_RULES_FILE}: not valid UTF-8 JSON ({type(exc).__name__})") from None
+
+
+def _local_day(value, where):
+    if not isinstance(value, str) or not LOCAL_DAY.fullmatch(value):
+        raise ValueError(f"{where}: expected a YYYY-MM-DD date")
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"{where}: not a calendar date") from None
+
+
+def _local_text(rule, key, where, limit):
+    from .content import plain_text  # local: content must not be imported while this module loads
+    value = rule[key]
+    if not isinstance(value, str) or not value.strip() or not plain_text(value):
+        raise ValueError(f"{where}.{key}: must be non-empty plain text without angle brackets")
+    if len(value) > limit:
+        raise ValueError(f"{where}.{key}: at most {limit} characters")
+
+
+def _local_rule(rule, index, prefix, state_ids, agency_ids, today):
+    from .content import ContentError, _https  # local: content must not be imported while this module loads
+    where = f"law/local-rules.json.rules[{index}]"
+    if not isinstance(rule, dict):
+        raise ValueError(f"{where}: expected an object")
+    extra, missing = sorted(set(rule) - LOCAL_RULE_KEYS), sorted(LOCAL_RULE_KEYS - set(rule))
+    if extra:
+        raise ValueError(f"{where}: unknown field(s) {extra}")
+    if missing:
+        raise ValueError(f"{where}.{missing[0]}: required field is missing")
+    rule_id = rule["rule_id"]
+    if not isinstance(rule_id, str):
+        raise ValueError(f"{where}.rule_id: must be a string")
+    if rule_id in state_ids:
+        raise ValueError(f"{where}.rule_id: {rule_id!r} is a state rule id; a local rule may not reuse it")
+    if (not LOCAL_ID.fullmatch(rule_id) or not rule_id.startswith(prefix) or len(rule_id) == len(prefix)
+            or len(rule_id) > 120):
+        raise ValueError(f"{where}.rule_id: must be a lowercase slug of at most 120 characters that starts with "
+                         f"{prefix!r} and has a name after it")
+    _local_text(rule, "citation", where, 300)
+    _local_text(rule, "duty", where, 2000)
+    try:
+        if not isinstance(rule["source_url"], str) or len(rule["source_url"]) > 500:
+            raise ContentError("must be an https:// URL of at most 500 characters")
+        _https(rule["source_url"], "source_url")
+    except ContentError as exc:
+        raise ValueError(f"{where}.source_url: {str(exc).split(': ', 1)[-1]}") from None
+    if _local_day(rule["checked_on"], where + ".checked_on") > today:
+        raise ValueError(f"{where}.checked_on: must not be after today")
+    start = _local_day(rule["effective_from"], where + ".effective_from")
+    if rule["effective_to"] is not None and _local_day(rule["effective_to"], where + ".effective_to") < start:
+        raise ValueError(f"{where}.effective_to: precedes effective_from")
+    ids = rule["agency_ids"]
+    if not isinstance(ids, list) or not ids or len(ids) > 100:
+        raise ValueError(f"{where}.agency_ids: must be a list of 1 to 100 agency ids")
+    for position, agency in enumerate(ids):
+        if not isinstance(agency, str) or not agency:
+            raise ValueError(f"{where}.agency_ids[{position}]: must be a non-empty string")
+        if ids.index(agency) != position:
+            raise ValueError(f"{where}.agency_ids[{position}]: duplicate agency id {agency!r}")
+        if agency_ids is not None and agency not in agency_ids:
+            raise ValueError(f"{where}.agency_ids[{position}]: {agency!r} is not a loaded campaign agency")
+    return {key: (list(rule[key]) if key == "agency_ids" else rule[key]) for key in sorted(LOCAL_RULE_KEYS)}
+
+
+def load_local_rules(root, package, agencies, today=None):
+    """Every validated version in ``root/law/local-rules.json``, ordered by (rule_id, effective_from); [] when absent.
+
+    Read-only. ``package`` is the state law package (or None) whose rule ids a local id may not reuse. ``agencies`` are
+    the loaded campaign agencies (dicts with ``agency_id`` or plain ids); None skips the agency-scope check and is only
+    for a caller whose agency file is itself refused and already named. Refuses with ValueError naming the field.
+    A repeated rule_id is a dated version: windows of one id must not overlap, whatever their agencies.
+    """
+    if not local_rules_present(root):
+        return []
+    from .finding_law import jurisdiction as campaign_jurisdiction  # local: finding_law imports this module
+    name = campaign_jurisdiction(root)
+    if name is None:
+        raise ValueError(f"{LOCAL_RULES_FILE}: needs a campaign.json to name the campaign's jurisdiction")
+    document = _local_read(root)
+    if not isinstance(document, dict):
+        raise ValueError(f"{LOCAL_RULES_FILE}: expected an object")
+    extra, missing = sorted(set(document) - LOCAL_RULES_KEYS), sorted(LOCAL_RULES_KEYS - set(document))
+    if extra:
+        raise ValueError(f"{LOCAL_RULES_FILE}: unknown field(s) {extra}")
+    if missing:
+        raise ValueError(f"{LOCAL_RULES_FILE}.{missing[0]}: required field is missing")
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        raise ValueError(f"{LOCAL_RULES_FILE}.schema_version: must be the integer 1")
+    if document["jurisdiction"] != name:
+        raise ValueError(f"{LOCAL_RULES_FILE}.jurisdiction: {document['jurisdiction']!r} does not match the "
+                         f"campaign jurisdiction {name!r}")
+    rules = document["rules"]
+    if not isinstance(rules, list) or len(rules) > LOCAL_RULES_MAX_RULES:
+        raise ValueError(f"{LOCAL_RULES_FILE}.rules: must be a list of at most {LOCAL_RULES_MAX_RULES} rules")
+    state_ids = {rule["rule_id"] for rule in package["rules"]} if package else set()
+    known = None if agencies is None else {a["agency_id"] if isinstance(a, dict) else a for a in agencies}
+    today = today or date.today()
+    loaded = [_local_rule(rule, index, "local-" + name + "-", state_ids, known, today)
+              for index, rule in enumerate(rules)]
+    last = {}  # rule_id -> (effective_to or None, index) of the version with the latest start so far
+    for index in sorted(range(len(loaded)), key=lambda i: (loaded[i]["rule_id"], loaded[i]["effective_from"], i)):
+        rule = loaded[index]
+        earlier = last.get(rule["rule_id"])
+        if earlier is not None and (earlier[0] is None or rule["effective_from"] <= earlier[0]):
+            raise ValueError(f"law/local-rules.json.rules[{index}].effective_from: window overlaps rules[{earlier[1]}] "
+                             f"for {rule['rule_id']!r}")
+        last[rule["rule_id"]] = (rule["effective_to"], index)
+    return sorted(loaded, key=lambda rule: (rule["rule_id"], rule["effective_from"]))
 
 
 def _add_days(start, days, day_type):
@@ -563,6 +738,22 @@ def _apply_sheet_output(args, package):
                      "docs/LAW-PACKAGES.md. Edited text in text_edited was not applied.")}
 
 
+def _check_output(directory):
+    """``law check``: the shared overlay validation; ValueError names the first refused field."""
+    from . import finding_law
+    root = Path(directory)
+    if not root.is_dir():
+        raise ValueError(f"{directory}: --directory must be an existing campaign folder")
+    problems, rules = finding_law.check(root, [])
+    if problems:
+        raise ValueError(problems[0])
+    present = local_rules_present(root)
+    return {"local_rules": "valid" if present else "absent", "rule_count": len(rules),
+            "rule_ids": sorted({rule["rule_id"] for rule in rules}), "label": LOCAL_RULE_LABEL,
+            "note": ("Organizer-transcribed rules, validated for shape only. Software cannot establish that a source is "
+                     "official, that a rule applies, or that anyone reviewed it; the state package is unchanged.")}
+
+
 def _stale_days(text):
     if not re.fullmatch(r"\d{1,4}", text) or not 1 <= int(text) <= 3650:
         raise argparse.ArgumentTypeError(f"expected an integer 1..3650, got {text!r}")
@@ -601,6 +792,8 @@ def main(argv=None):
     impact.add_argument("new", metavar="NEW.json")
     impact.add_argument("--directory", required=True, help="Campaign folder holding the findings and drafts")
     impact.add_argument("--json", dest="as_json", action="store_true", help="Print the report as JSON")
+    check = commands.add_parser("check", help="Validate the campaign's optional law/local-rules.json (read-only)")
+    check.add_argument("--directory", required=True, help="Campaign folder")
     for sub in (show, rules, remind, sheet, apply):
         sub.add_argument("jurisdiction")
         sub.add_argument("--base", help="Alternate jurisdictions directory")
@@ -609,6 +802,9 @@ def main(argv=None):
         from .law_impact import run_cli
         return run_cli(args.old, args.new, args.directory, args.as_json)
     try:
+        if args.command == "check":
+            print(json.dumps(_check_output(args.directory), indent=2, ensure_ascii=False))
+            return 0
         package = load_package(args.jurisdiction, args.base)
         output = summary(package) if args.command == "show" else _command_output(args, package)
     except (OSError, ValueError) as exc:

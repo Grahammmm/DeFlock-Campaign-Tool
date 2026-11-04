@@ -860,6 +860,14 @@ def default_agencies(root):
     return unique
 
 
+def load_campaign_agencies(root, today=None):
+    """The campaign's loaded agencies: content/agencies.json when present, else the kit's selected agencies."""
+    path = Path(root) / "content" / "agencies.json"
+    if path.is_file():
+        return load_agencies(_read_json(path), "content/agencies.json", today)
+    return default_agencies(root)
+
+
 # --- map -------------------------------------------------------------------
 
 MAP_EXTRA_KEYS = {"county_bounds", "style_url", "tile_hosts", "group_label", "attribution", "county_boundary"}
@@ -1296,8 +1304,8 @@ def load_content(root, today=None):
         slugs.add(finding["slug"])
         ids.add(finding["id"])
         findings.append(finding)
-    from .finding_law import check_findings  # local: finding_law imports this module
-    law_problems = check_findings(root, findings)
+    from .finding_law import check as check_law  # local: finding_law imports this module
+    law_problems, local_rules = check_law(root, findings)
     if law_problems:
         raise ContentError(law_problems[0])
     findings.sort(key=lambda f: (f["published_at"], f["slug"]), reverse=True)
@@ -1319,11 +1327,7 @@ def load_content(root, today=None):
     if page_problems:
         raise ContentError(page_problems[0])
 
-    agencies_path = content_dir / "agencies.json"
-    if agencies_path.is_file():
-        agencies = load_agencies(_read_json(agencies_path), "content/agencies.json", today)
-    else:
-        agencies = default_agencies(root)
+    agencies = load_campaign_agencies(root, today)
 
     map_config = load_map(content_dir, sources, today)
     if map_config:
@@ -1375,6 +1379,7 @@ def load_content(root, today=None):
         "assets_dir": assets_dir,
         "labels": labels,
         "officials": officials,
+        "local_rules": local_rules,  # DF1952-01: every validated version of law/local-rules.json, [] without one
     }
     # content/redirects.json (DF2037-16): the key is present exactly when the file is, so a parsed JSON null is still
     # checked (and refused) by site against the pages it writes; without the file there is no key.

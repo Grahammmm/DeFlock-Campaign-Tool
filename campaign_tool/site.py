@@ -403,7 +403,11 @@ class Site:
                     self.image_sizes["/" + source.relative_to(model["assets_dir"]).as_posix()] = size
         # Legal basis (DF1507-02): the package is read once, only when a finding cites a rule.
         self.rule_citations, self.law_status = {}, None
-        if any(finding_law.cited(f) for f in model["findings"]):
+        # DF1952-01: validated organizer-transcribed local rules (all versions); the package is read only for ids
+        # that are not local ones, so a local-only citation never touches the state package.
+        self.local_rules = model.get("local_rules") or []
+        local_ids = {rule["rule_id"] for rule in self.local_rules}
+        if any(rule_id not in local_ids for f in model["findings"] for rule_id in finding_law.cited(f)):
             name = finding_law.jurisdiction(self.root)
             try:
                 package = law.load_package(name) if name else None
@@ -957,6 +961,16 @@ class Site:
         related.sort(key=lambda r: (-r[1], not r[2], -utc_moment(r[0]["published_at"]).timestamp(), r[0]["slug"]))
         return related[:limit]
 
+    def rule_item(self, finding, rule_id, is_local):
+        """One cited rule: a state rule's package citation, or the local version in force for the finding's agency and
+        event date followed by its transcription label (never the package status, never an inferred duty)."""
+        if not is_local:
+            return f"<li><code>{e(rule_id)}</code> — {e(self.rule_citations.get(rule_id, 'citation unavailable'))}</li>"
+        versions = [rule for rule in law.rules_in_force({"rules": []}, finding["event_date"], local_rules=self.local_rules,
+                                                        agency_id=finding.get("agency_id")) if rule["rule_id"] == rule_id]
+        citation = versions[0]["citation"] if versions else "citation unavailable"
+        return f"<li><code>{e(rule_id)}</code> — {e(citation)} ({e(law.LOCAL_RULE_LABEL)})</li>"
+
     def legal_basis(self, finding):
         """The finding's own rule_version/duty/exceptions and each cited rule's package citation; "" when none."""
         cited = finding_law.cited(finding)
@@ -973,10 +987,9 @@ class Site:
         elif exceptions and not isinstance(exceptions, list):
             parts.append(f"<p>Exceptions: {e(exceptions)}</p>")
         if cited:
-            parts.append("<ul>" + "".join(
-                f"<li><code>{e(rule_id)}</code> — {e(self.rule_citations.get(rule_id, 'citation unavailable'))}</li>"
-                for rule_id in cited) + "</ul>")
-            if self.law_status:
+            local = {rule["rule_id"] for rule in self.local_rules}
+            parts.append("<ul>" + "".join(self.rule_item(finding, rule_id, rule_id in local) for rule_id in cited) + "</ul>")
+            if self.law_status and any(rule_id not in local for rule_id in cited):
                 parts.append(f'<p class="notice">Law package status: {e(self.law_status)}.</p>')
         return "".join(parts) + "</section>"
 

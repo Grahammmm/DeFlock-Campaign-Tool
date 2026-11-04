@@ -12,7 +12,7 @@ from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOW
                       _require_keys, _slug, _text, _validate_cameras, check_source_pages, default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
                       load_snapshot, load_sources, plain_text, point_check_problems, point_nodes)
-from .finding_law import check_findings, jurisdiction, package_line
+from .finding_law import check as check_law, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
 from .labels import MAX_LABELS_BYTES, load_labels
@@ -165,7 +165,6 @@ def content_problems(root, limit=LIMIT):
         slugs.add(finding["slug"])
         ids.add(finding["id"])
         findings.append(finding)
-    _attempt(problems, "campaign.json", lambda: problems.extend(check_findings(root, findings)))
 
     meeting_ids = set()
     for path in _files(content_dir, "meetings"):
@@ -199,6 +198,10 @@ def content_problems(root, limit=LIMIT):
     else:
         agencies = _attempt(problems, "kit/agencies.json", lambda: default_agencies(root))
 
+    # DF1952-01: the law check follows agency loading so a local overlay's agency_ids are judged against loaded agencies
+    # (None, when agencies are themselves refused and named, skips only that scope check).
+    _attempt(problems, "campaign.json", lambda: problems.extend(check_law(root, findings, agencies)[0]))
+
     map_config = _map(problems, content_dir, library)
     if map_config and agencies is not None:  # a broken agency list would only add false lines
         known = {agency["slug"] for agency in agencies if agency["kind"] in CITY_KINDS}
@@ -217,7 +220,7 @@ def content_problems(root, limit=LIMIT):
 
 
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
-FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "kit/",
+FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "kit/", "law/",
                  "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json")
 
 

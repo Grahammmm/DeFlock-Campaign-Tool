@@ -185,6 +185,42 @@ Exit 0: no finding affected. Exit 3: at least one affected. Exit 2: an input err
 writes no file, never marks a package reviewed and never records a correction. It states no legal conclusion;
 whether a correction is needed, and whether the amended package may be reviewed, stay with the human reviewers.
 
+## Local ordinances: the campaign overlay
+
+A city or county ordinance is not a state rule and never enters a state package. An organizer may transcribe one into
+the campaign's own optional `law/local-rules.json` (runtime input; it is not shipped data and no public file is made
+from it). Exact shape, one object per dated version of a rule:
+
+    {"schema_version": 1, "jurisdiction": "us-ca", "rules": [
+      {"rule_id": "local-us-ca-cedar-retention",
+       "citation": "Cedar Municipal Code 5.1",
+       "duty": "Delete plate reads after 30 days.",
+       "source_url": "https://library.example.org/cedar/municode/5-1",
+       "checked_on": "2026-01-02",
+       "effective_from": "2020-01-01", "effective_to": null,
+       "agency_ids": ["ca-cedar-police"]}]}
+
+- `jurisdiction` must equal the campaign's `country-state`; there is no state fallback. `rule_id` is a lowercase slug
+  starting `local-<jurisdiction>-` (for example `local-us-ca-`) with a name after it, and may not equal a state rule id.
+- `citation` and `duty` are plain text as the organizer read them (no angle brackets). `source_url` is an `https://`
+  address the organizer attests is the official primary text; it is never fetched and its host is not judged official.
+  `checked_on` is a real date not after today. `effective_to` may be `null`; a future `effective_from` is allowed.
+- `agency_ids` lists the campaign agencies the rule applies to; each must be a loaded agency. A rule applies to a
+  finding only when the finding's `agency_id` is listed and its `event_date` is inside the inclusive window.
+- A repeated `rule_id` is a dated version. Windows of one id may not overlap (a shared end/start day overlaps), whatever
+  their agencies. No review or status field is accepted: organizers cannot mark a local rule reviewed.
+
+Check it, read-only, before building (exit 0 valid or absent, exit 1 `Stopped:` plus the field, exit 2 bad usage):
+
+    python3 -m campaign_tool.law check --directory DIR
+
+`build`, `content-check`, `finding preview` and `finding packet` validate the same file, even when no finding cites it,
+and refuse a finding that cites an unknown, out-of-scope or out-of-force `local-` id (in `rule_ids` or `sources[].rule_id`).
+`law.rules_in_force(package, day, local_rules=..., agency_id=...)` appends the matching versions after the state rules;
+without `agency_id` it is state-only. A finding page lists each cited local rule by citation with the label
+"local rule, organizer-transcribed, not legally reviewed"; the state package, its review status and its citations
+are unchanged. Validation proves shape only, never that the text is official, current, applicable or reviewed.
+
 ## Current state
 
 `us-ca` is a draft authored from leginfo.legislature.ca.gov and the California
