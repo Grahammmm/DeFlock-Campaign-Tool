@@ -39,7 +39,22 @@
         "counterevidence": {"type": "array", "items": {"type": "string"}},
         "corrections": {"type": "array", "items": {"$ref": "#/$defs/correction"}},
         "url": {"type": "string", "pattern": "^(https?://.+)?/findings/[^/]+\\.html$"},
-        "citation": {"type": "string", "minLength": 1}
+        "citation": {"type": "string", "minLength": 1},
+        "agency_response": {"$ref": "#/$defs/agency_response"}
+      }
+    },
+    "agency_response": {
+      "description": "Optional. Present only for a recorded reply (received, declined) or silence (no_response); a prepared but unsent request is never published. Text is the agency's words as written.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "asked_on", "reply_by", "on"],
+      "properties": {
+        "status": {"enum": ["received", "declined", "no_response"]},
+        "asked_on": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "reply_by": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "on": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "record_sha256_prefix": {"type": "string", "pattern": "^[0-9a-f]{12}$"}
       }
     },
     "source": {

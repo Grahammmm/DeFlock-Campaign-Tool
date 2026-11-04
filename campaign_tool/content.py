@@ -14,6 +14,7 @@ belong in ``content/``.
 """
 import json
 import re
+import unicodedata
 from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -324,15 +325,84 @@ def load_site(document, assets_dir=None):
 FINDING_KEYS = {"id", "title", "slug", "summary", "body_md", "classification", "confidence",
                 "event_date", "sources", "published_at", "updated_at", "corrections", "state",
                 "author", "limitations", "counterevidence", "agency_id", "rule_version",
-                "duty", "exceptions", "rule_ids"}
+                "duty", "exceptions", "rule_ids", "agency_response"}
 FINDING_REQUIRED = {"id", "title", "slug", "summary", "classification", "confidence",
                     "event_date", "sources", "published_at", "corrections", "state",
                     "author", "limitations", "counterevidence"}
 SOURCE_KEYS = {"sha256", "locator", "title", "rule_id", "page"}
 CORRECTION_KEYS = {"date", "note"}
 
+# DF1103-08: the agency's right of reply. "pending" means a request for comment was PREPARED, not that anyone was asked.
+REPLY_STATUSES = ("received", "declined", "no_response")
+REPLY_BASE_KEYS = frozenset(("status", "prepared_on", "reply_by"))
+REPLY_FINAL_KEYS = REPLY_BASE_KEYS | {"asked_on", "on"}
+REPLY_OPTIONAL = {"received": {"text", "record_sha256"}, "declined": {"text"}, "no_response": set()}
+MAX_REPLY_TEXT = 2000
+_REPLY_DAY, _FULL_HEX = re.compile(r"\d{4}-\d{2}-\d{2}"), re.compile(r"[0-9a-fA-F]{40,}")
 
-def load_finding(document, label):
+
+def reply_day(value):
+    """A real padded YYYY-MM-DD as a date, else None."""
+    try:
+        return date.fromisoformat(value) if isinstance(value, str) and _REPLY_DAY.fullmatch(value) else None
+    except ValueError:
+        return None
+
+
+def _agency_response(value, where, cited=None, today=None):
+    """Validate one agency_response and return a normalized copy. Every refusal names ``where.<field>`` with a fixed
+    reason and never quotes the supplied text or an unknown key. ``cited``: the finding's source sha256 values."""
+    if not isinstance(value, dict):
+        raise ContentError(f"{where}: must be an object")
+    status = value.get("status")
+    if status != "pending" and status not in REPLY_STATUSES:
+        raise ContentError(f"{where}.status: must be pending, received, declined or no_response")
+    final = status != "pending"
+    base = REPLY_FINAL_KEYS if final else REPLY_BASE_KEYS
+    allowed = base | (REPLY_OPTIONAL[status] if final else set())
+    for key in sorted(value, key=str):
+        if key not in REPLY_FINAL_KEYS | REPLY_OPTIONAL["received"]:
+            raise ContentError(f"{where}: unknown field")
+        if key not in allowed:
+            raise ContentError(f"{where}.{key}: not allowed for status {status}")
+    for key in sorted(base | ({"text"} if status == "received" else set())):
+        if key not in value:
+            raise ContentError(f"{where}.{key}: required for status {status}")
+    days = {key: reply_day(value[key]) for key in base - {"status"}}
+    for key, day in days.items():
+        if day is None:
+            raise ContentError(f"{where}.{key}: must be a real YYYY-MM-DD date")
+    today = today or date.today()
+    if days["prepared_on"] > today:
+        raise ContentError(f"{where}.prepared_on: must not be in the future")
+    if days["prepared_on"] > days["reply_by"]:
+        raise ContentError(f"{where}.reply_by: must not be before prepared_on")
+    if final:
+        asked = days["asked_on"]
+        if not days["prepared_on"] <= asked <= days["reply_by"]:
+            raise ContentError(f"{where}.asked_on: must be between prepared_on and reply_by")
+        if not asked <= days["on"] <= today:
+            raise ContentError(f"{where}.on: must be on or after asked_on and not in the future")
+        if status == "no_response" and days["on"] < days["reply_by"]:
+            raise ContentError(f"{where}.on: no_response needs a date on or after reply_by")
+    if "text" in value:
+        text = value["text"]
+        if (not isinstance(text, str) or not 1 <= len(text) <= MAX_REPLY_TEXT or not text.strip()
+                or any(ch not in "\n\t" and unicodedata.category(ch) in ("Cc", "Cf", "Cs") for ch in text)):
+            raise ContentError(f"{where}.text: must be 1-{MAX_REPLY_TEXT} characters of non-blank text "
+                               "without control or format characters")
+        if _FULL_HEX.search(text):
+            raise ContentError(f"{where}.text: must not hold a full hash (40 or more hex characters)")
+    if "record_sha256" in value:
+        sha = value["record_sha256"]
+        if not isinstance(sha, str) or not SHA256.fullmatch(sha):
+            raise ContentError(f"{where}.record_sha256: must be 64 lowercase hex characters")
+        if cited is not None and sha not in cited:
+            raise ContentError(f"{where}.record_sha256: must be one of the finding's cited sources")
+    return {key: value[key] for key in sorted(value)}
+
+
+def load_finding(document, label, today=None):
     _require_keys(document, FINDING_KEYS, FINDING_REQUIRED, label)
     if document["state"] != "published":
         raise ContentError(f"{label}: state is {document['state']!r}; only published findings are rendered")
@@ -387,7 +457,11 @@ def load_finding(document, label):
         raise ContentError(f"{label}.rule_ids: each rule id must be a non-empty string of at most 120 characters")
     if len(set(rule_ids)) != len(rule_ids):
         raise ContentError(f"{label}.rule_ids: duplicate rule id")
+    response = ({"agency_response": _agency_response(document["agency_response"], f"{label}.agency_response",
+                                                      {s["sha256"] for s in sources}, today)}
+                if "agency_response" in document else {})
     return {
+        **response,
         "id": finding_id,
         "title": _text(document, "title", label, allow_empty=False),
         "slug": slug,

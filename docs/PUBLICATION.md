@@ -165,6 +165,32 @@ limitations, counterevidence, the finding text, source locators) stays an `[EDIT
 that is still open (no answer, or only an acknowledgement, extension or partial answer) or that produced
 records is refused; write a regular finding for those. Nothing is published.
 
+### Agency right of reply
+
+An agency can be invited to comment before a finding is published; publishing without asking stays allowed and
+adds no review requirement. `python3 -m campaign_tool finding reply-request DRAFT --directory D --by YYYY-MM-DD`
+writes a private, never-sent `kit/replies/<id>.md` (directories 0700, file 0600, never overwritten): the agency
+name, the draft's title and summary, the deadline, the 12-character prefixes of the cited records and a neutral
+request for comment. It holds no address, full hash, body text, private note or legal claim, and it sends
+nothing; asking the agency is your own manual step. It stores `agency_response: {status: "pending",
+prepared_on, reply_by}` on the draft. **Pending means prepared, not asked**, and a pending reply is never
+published.
+
+`python3 -m campaign_tool finding reply DRAFT --directory D --status received|declined|no_response --on D
+--asked-on D [--text T] [--record PREFIX]` records the outcome on the draft. `--asked-on` is your attestation of
+the day you really asked the agency; an unsent prepared request is not evidence of asking. `received` needs
+`--text`, the reply as written (1-2000 characters, line breaks and tabs kept, no other control characters, no
+40-or-more-character hex run); `declined` may carry one; `no_response` carries none and is refused before the
+deadline (`--on` on or after `--by`). `--record` names a source-library record (12-64 hex characters, which must be
+registered and stored) holding the reply, and adds it to the draft's sources if absent. The command prints no reply
+text and sends nothing.
+
+The reply is part of the reviewed content: any change to it, or adding one after approval, makes earlier review
+receipts stale, so it needs fresh review before `finding publish` or `finding correct --from`. The finding page
+then shows it under "Agency response" as plain text, and `data/findings.json` carries `agency_response` with
+`status`, `asked_on`, `reply_by`, `on`, optional `text` and the 12-character `record_sha256_prefix`; a no-response
+shows as "asked on D; no response by D". A finding without a reply renders and exports as before.
+
 ## Propose, approve, execute
 
 1. `POST /findings/:id/propose` (ready findings only, confidence not
