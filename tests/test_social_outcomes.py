@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tracemalloc
 import unittest
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -178,6 +179,25 @@ class SocialOutcomeTests(unittest.TestCase):
         self.assertEqual(self.tree(), before)
         mixed = [{"id": "z", "body": BODY, "agenda_item": "x" * 400, "outcome": outcome()}]
         self.assertLessEqual(len(outcome_post_text(mixed[0], BASE)), 280)
+
+    def test_long_valid_agenda_draft_has_bounded_peak_memory(self):
+        self.meeting("m-long", outcome(vote="5-0"), agenda_item="A" * 8192)
+        tracemalloc.start()
+        try:
+            summary = build_outcome_social(self.root, now=NOW)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        # An 8 KiB agenda must not retain every prefix (over 64 MiB).
+        self.assertLess(peak, 2 * 1024 * 1024)
+        self.assertEqual(summary["outcomes"]["written"], ["m-long"])
+        self.assertEqual(summary["unreadable_files"], [])
+        self.assertFalse(summary["posted"])
+        text = self.text(self.out / "m-long.md")
+        self.assertEqual(len(text), 280)
+        self.assertTrue(text.startswith(f"{BODY} \u2014 2026-11-08: A"))
+        self.assertTrue(text.endswith(f"\u2026. Result: approved. Vote: 5-0. Official record: {SOURCE} "
+                                      f"{BASE}/meetings/m-long.html"))
 
     def test_edits_suggestions_stale_and_idempotence(self):
         self.meeting("m-one")

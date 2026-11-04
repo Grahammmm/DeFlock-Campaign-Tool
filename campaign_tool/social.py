@@ -20,6 +20,7 @@ import os
 import re
 import stat
 from datetime import date, datetime, timedelta, timezone
+from itertools import chain
 
 from .content import ContentError, _read_json, _slug, load_content, load_meeting, load_site
 from .kit import _kit_folder, _write_json, _write_text
@@ -370,9 +371,9 @@ def outcome_post_text(meeting, base_url, platform=None):
     head = f"{meeting['body']} \u2014 {outcome['on']}"
     item = meeting["agenda_item"]
     limit = PLATFORMS[platform][0] if platform is not None else SOCIAL_MAX_CHARS
-    shown_options = [": " + (item if cut == len(item) else item[:cut].rstrip() + "\u2026")
-                     for cut in range(len(item), -1, -1)] if item else []
-    for shown in shown_options + [""]:  # last resort: no agenda text at all
+    shown_options = (": " + (item if cut == len(item) else item[:cut].rstrip() + "\u2026")
+                     for cut in range(len(item), -1, -1)) if item else ()
+    for shown in chain(shown_options, ("",)):  # last resort: no agenda text at all
         text = f"{head}{shown}.{tail}"
         if (post_length(text, platform) if platform is not None else len(text)) <= limit:
             return text
