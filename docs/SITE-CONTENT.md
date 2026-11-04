@@ -162,6 +162,21 @@ absent shows nothing. `agencies.html` shows "Posted ALPR usage policy (checked
 <date>, where we found it)" on that agency's card only; neither URL is fetched.
 Linking a policy says only that it was posted; it is not a finding about compliance.
 
+An agency's optional `profile.policy_check` records an organizer's reading of the posted `alpr_policy` against the
+draft checklist `jurisdictions/us-ca/policy-checklist.json` (bound to the law-package rule
+`ca-civ-1798.90.51-usage-and-privacy-policy`, Civ. Code § 1798.90.51(b); status `draft`, packaged byte-identical and
+checked by `tools/sync_campaign_resources.py`): `{"checked_on": "YYYY-MM-DD", "policy_url": "https://…", "elements":
+{"<id>": {"status": "addressed"|"not_found"|"unclear", "page"?: 1–9999}}}`. `policy_url` must equal
+`profile.alpr_policy.url` (so `alpr_policy` must be present); every checklist id (`authorized_purposes`,
+`authorized_users_training`, `security_monitoring`, `sharing_restrictions`, `custodian_title`, `accuracy_correction`,
+`retention_destruction`) must be present and no other; `page` only with `addressed`; `checked_on` a real date not after
+the build date and not before `alpr_policy.checked_on`. A bad entry stops the build and `content-check` flags it, naming
+every field as `<file>[n].profile.policy_check.<field>` on one line. The agency page and the agencies-list card show
+"What the posted policy covers (organizer reading, not a legal review)": one line per element in checklist order
+("addressed (page N)", "not found in the posted policy" or "unclear"), the check date, a link to the posted policy and the
+law package status label. It is an organizer's reading of what the document says, not a finding about compliance, and
+`not found` is never read as more than that. Nothing is fetched; the section is not in card JS, open data or feeds.
+
 An agency's optional `asked` (≤ 20 items) lists what the organizer asked it: `{"topic", "asked_on", "state",
 "updated_on"?, "note"?}`. `topic` ≤ 120 and `note` ≤ 200 plain-text characters; `asked_on`/`updated_on` are real
 YYYY-MM-DD dates not after the build date, `updated_on` not before `asked_on`; `state` is one of `awaiting_response`,

@@ -22,7 +22,8 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import CITY_KINDS, MAX_GEOJSON_BYTES, TRANSPARENCY_FIELDS, ContentError, _read_json, load_content, utc_moment
+from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, MAX_GEOJSON_BYTES, TRANSPARENCY_FIELDS, ContentError, _read_json,
+                     load_content, utc_moment)
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
@@ -230,6 +231,10 @@ def policy_line(policy):  # links a posted ALPR usage policy an organizer found;
             'rel="noopener noreferrer">where we found it</a>)</p>')
 
 
+def law_status(package):  # the law-package status label shown beside any reading of its rules
+    return "reviewed on " + package["reviewed_at"] if package["status"] == "reviewed" else "draft, not legally reviewed"
+
+
 ASKED_SENTENCES = {"awaiting_response": "No written response recorded as of{day}.", "answered": "Answered{day}.",
                    "acknowledged": "Acknowledged{day}; no records yet.", "partly_answered": "Partly answered{day}.",
                    "declined_in_writing": "Declined in writing{on}.", "withdrawn": "We withdrew this request{day}."}
@@ -357,8 +362,14 @@ class Site:
                 package = None
             if package is not None:
                 self.rule_citations = {rule["rule_id"]: rule["citation"] for rule in package["rules"]}
-                self.law_status = ("reviewed on " + package["reviewed_at"] if package["status"] == "reviewed"
-                                   else "draft, not legally reviewed")
+                self.law_status = law_status(package)
+        # DF1207-06: the checklist's own package (never the campaign's) gives the label shown with a posted-policy reading.
+        self.checklist_law_status = None
+        if any(a.get("policy_check") for a in model["agencies"]):
+            try:
+                self.checklist_law_status = law_status(law.load_package(CHECKLIST_JURISDICTION))
+            except (OSError, ValueError):
+                pass
         # DF2237-08: agencies with a published finding or a sources.json entry get /agencies/<slug>.html.
         qualifying = {f["agency_id"] for f in model["findings"]} | {s["agency_id"] for s in model["sources"]}
         self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
@@ -627,6 +638,19 @@ class Site:
                 + f' ({self.t("agency.checked", date=date_label(contract["checked_on"]))} <a href="{e(contract["source_url"])}" '
                   f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>')
 
+    def policy_check_section(self, agency):
+        """DF1207-06: the organizer's reading of which listed elements a posted policy addresses; fixed wording, no judgement."""
+        check = agency.get("policy_check")
+        if not check:
+            return ""
+        words = {"not_found": "not found in the posted policy", "unclear": "unclear", "addressed": "addressed"}
+        items = "".join(f'<li>{e(item["label"])}: {words[item["status"]]}'
+                        + (f' (page {item["page"]})' if "page" in item else "") + "</li>" for item in check["elements"])
+        return ('<section class="policy-check"><h4>What the posted policy covers (organizer reading, not a legal review)</h4>'
+                f'<ul>{items}</ul><p>Checked {date_label(check["checked_on"])} against <a href="{e(check["policy_url"])}" '
+                f'rel="noopener noreferrer">the posted policy</a>. Law package: {e(self.checklist_law_status or "status unavailable")}.'
+                '</p></section>')
+
     def transparency_block(self, agency, heading="h4"):
         """Newest organizer-transcribed portal snapshot, as the vendor reported it, with change since the previous one."""
         snapshots = agency.get("transparency")
@@ -755,6 +779,7 @@ class Site:
                     + (f'<p>{self.t("agency.findings", count=len(findings))} ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
+                    + self.policy_check_section(agency)
                     + self.contract_line(agency["contract"]) + self.transparency_block(agency)
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
@@ -803,7 +828,8 @@ class Site:
                 + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
-                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.transparency_block(agency, "h3") + self.who_decides(aid)
+                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency)
+                + self.transparency_block(agency, "h3") + self.who_decides(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
