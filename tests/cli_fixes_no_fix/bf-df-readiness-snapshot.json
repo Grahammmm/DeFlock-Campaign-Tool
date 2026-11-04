@@ -1,0 +1,6 @@
+{
+  "readiness_campaign_id_absent: supply --campaign-id or config campaign_id": "The refusal already names both supported ways to supply the required campaign identity.",
+  "readiness_unsafe_next_action: index 5, category 5": "Privacy refusal identifies the action index and shared privacy category without echoing unsafe content; review the private doctor inputs rather than bypassing the guard.",
+  "readiness_next_action_length: index 5": "Snapshot contract refusal identifies the overlong doctor action; the exporter must not truncate or reword doctor output.",
+  "readiness_next_actions_count: maximum 40": "Snapshot contract refusal states the action limit; there is no safe automatic fix that preserves all doctor actions unchanged."
+}

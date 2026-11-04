@@ -38,6 +38,7 @@ class PublishRecheckTest(base.FlockPublishTest):  # setUp: verified run (F4 fini
         with open(self.facts, newline="") as handle:
             table = list(csv.DictReader(handle))
         fields = list(table[0])
+        fact_id = self.fact_ids.get(fact_id, fact_id)
         table = [dict(r, **change) if r["fact_id"] == fact_id else r for r in table if not (remove and r["fact_id"] == fact_id)]
         with open(self.facts, "w", newline="") as handle:
             writer = csv.DictWriter(handle, fields, lineterminator="\n")
@@ -45,7 +46,7 @@ class PublishRecheckTest(base.FlockPublishTest):  # setUp: verified run (F4 fini
             writer.writerows(table)
 
     def dispute(self, fact_id):  # through DF1537-01's own review verb, as an organizer would
-        self.assertEqual(base.run("flock_facts.py", "review", "--store", str(self.store), "--agency", base.AGENCY, "--ids", fact_id,
+        self.assertEqual(base.run("flock_facts.py", "review", "--store", str(self.store), "--agency", base.AGENCY, "--ids", self.fact_ids.get(fact_id, fact_id),
                                   "--set", "disputed", "--reviewer", "second-reader", "--date", "2026-10-30")[0], 0)
 
     def statuses(self):

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "readiness-snapshot-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "generated_at", "campaign_id", "law_package_status", "production_ready", "safe_to_send_automatically", "next_actions", "counts"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "generated_at": {"type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|\\+00:00)$"},
+    "campaign_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "law_package_status": {"enum": ["draft", "reviewed", "missing"]},
+    "production_ready": {"type": "boolean"},
+    "safe_to_send_automatically": {"type": "boolean"},
+    "next_actions": {"type": "array", "maxItems": 40, "items": {"type": "string", "maxLength": 240}},
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stale_contacts", "stale_inputs", "stale_comment_kits", "contracts_ending", "correction_requests_open_over_14_days"],
+      "properties": {
+        "stale_contacts": {"type": "integer", "minimum": 0},
+        "stale_inputs": {"type": "integer", "minimum": 0},
+        "stale_comment_kits": {"type": "integer", "minimum": 0},
+        "contracts_ending": {"type": "integer", "minimum": 0},
+        "correction_requests_open_over_14_days": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

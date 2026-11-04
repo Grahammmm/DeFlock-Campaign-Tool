@@ -37,9 +37,9 @@ class PublishStatusJsonTest(text.PublishStatusTest):
         rd = self.run_dir.with_name(date)
         self.assertEqual(base.run("flock_compare.py", "scaffold", "--store", str(self.store), "--agency", base.AGENCY, "--date", date,
                                   "--provider", "anthropic", "--model", "claude-opus-5-5", "--applicability", "Sample city police")[0], 0)
-        shutil.copy(base.FIXTURES / "findings-sample.csv", rd / "FINDINGS.csv")
+        (rd / "FINDINGS.csv").write_text(self.fixture_text("findings-sample.csv"))
         self.assertEqual(base.run("flock_verify.py", "start", str(rd), "--provider", "openai", "--model", "gpt-5-codex")[0], 0)
-        shutil.copy(base.FIXTURES / "verify-sample.csv", rd / "VERIFY.csv")
+        (rd / "VERIFY.csv").write_text(self.fixture_text("verify-sample.csv"))
         self.assertEqual(base.run("flock_verify.py", "finish", str(rd))[0], 0)
         self.assertEqual(base.run("flock_publish.py", "export", str(rd), "--site-slug", "sample")[0], 0)
         return rd

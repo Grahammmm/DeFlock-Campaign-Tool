@@ -5,6 +5,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 V1 = ["agency", "request", "fact_type", "value", "source_sha256", "page", "verbatim_quote"]
 V2 = V1 + ["fact_id", "kind", "effective_from", "effective_to", "added_by", "added_at", "status"]
+V3 = V2 + ["source_path"]  # original's absolute location recorded with the citation; legacy rows have none
 KINDS = {"record", "policy", "law", "public"}
 STATUSES = {"unreviewed", "checked", "disputed"}
 REVIEW_HEAD = ["fact_id", "from_status", "to_status", "reviewer", "reviewed_at", "note"]  # FACT-REVIEWS.csv v1
@@ -59,9 +60,9 @@ def validate(row, v2, folder=None, kind="record"):
 def load(path, folder=None, kind="record"):
     with open(path, encoding="utf-8-sig", newline="") as handle:
         records = list(csv.reader(handle))
-    if not records or records[0] not in (V1, V2) or (folder is not None and records[0] != V2):
+    if not records or records[0] not in (V1, V2, V3) or (folder is not None and records[0] not in (V2, V3)):
         return False, [], ["row 1: header is not an accepted header"]
-    v2, rows, errors = records[0] == V2, [], []
+    v2, rows, errors = records[0] in (V2, V3), [], []
     for number, rec in enumerate(records[1:], 2):
         if not rec:
             continue
@@ -162,7 +163,9 @@ def write_atomic(path, rows):
     fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
-            csv.writer(out, lineterminator="\n", quoting=csv.QUOTE_MINIMAL).writerows([V2] + [[r[k] for k in V2] for r in rows])
+            header = V3 if any("source_path" in r for r in rows) else V2
+            csv.writer(out, lineterminator="\n", quoting=csv.QUOTE_MINIMAL).writerows(
+                [header] + [[r.get(k, "") for k in header] for r in rows])
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError): os.unlink(tmp)
