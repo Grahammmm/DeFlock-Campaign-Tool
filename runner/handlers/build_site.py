@@ -56,7 +56,8 @@ MANIFEST_KEYS = {"schema_version", "site_version", "manifest_sha256", "campaign"
                  "findings", "meetings", "sources", "agencies", "map"}
 MEDIA = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".json": "application/json", ".geojson": "application/geo+json", ".xml": "application/xml", ".txt": "text/plain; charset=utf-8",
-         ".svg": "image/svg+xml", ".webp": "image/webp", ".ico": "image/x-icon"}
+         ".svg": "image/svg+xml", ".webp": "image/webp", ".ico": "image/x-icon",
+         ".ics": "text/calendar; charset=utf-8"}
 
 
 def _media_type(path):

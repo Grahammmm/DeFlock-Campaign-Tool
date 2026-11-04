@@ -110,9 +110,9 @@ class AtomicSiteBuildTests(unittest.TestCase):
 
     def test_copy_or_swap_failure_leaves_previous_site_and_no_temp(self):
         before, copies, renames = self.first_build(), [], []
-        with fail_on_call(site_module.shutil, "copyfile", 2, copies):
+        with fail_on_call(site_module.shutil, "copyfile", 1, copies):
             self.assert_refused(before, OSError, mkdtemp_called=True)
-        self.assertEqual(len(copies), 2)
+        self.assertEqual(len(copies), 1)
         with fail_on_call(os, "rename", 2, renames):
             self.assert_refused(before, OSError, mkdtemp_called=True)
         self.assertEqual([Path(target).name for _, target in renames[1:]], ["public", "public"])  # swap, put back

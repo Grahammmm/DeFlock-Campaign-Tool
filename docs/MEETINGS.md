@@ -368,6 +368,44 @@ outcome's source and stage the follow-up (`meetings-stage`); a broken explicit r
 shows as an `unreadable` item instead. `data/meetings.json` carries `continued_to` or `continued_to_date` on the
 outcome.
 
+### Recording a staff direction and its report-back date
+
+When the official record says the body told its staff to do something and report back (for example "return with a
+draft usage policy"), record it with `--direction TEXT --return-by YYYY-MM-DD [--direction-source URL]`. Two modes:
+
+- **With the outcome** (the four creation flags): any result may carry a direction. Only a direction with no return-by
+  (or the reverse) is refused, and `--direction-source` alone refuses `direction_source: needs direction and return_by`.
+- **Direction only** (`--directory`, `--id`, `--direction`, `--return-by`, no creation flag): adds the direction to an
+  outcome already recorded (`direction: needs a recorded outcome`), on a held, non-cancelled meeting. The first direction
+  needs no `--replace`; a second is refused (`direction already recorded; pass --replace to overwrite it`) and
+  `--replace` replaces exactly the three direction fields, keeping the result, verifier, votes, recording, minutes,
+  continuation and every other key as stored. `--vote`, `--votes`, `--recording-*` and `--continued-to*` are refused here
+  (`direction-only mode cannot be combined with FLAG`), and the minutes mode refuses every direction flag
+  (`minutes mode cannot be combined with direction flags`). A full `--replace` of the outcome drops an omitted direction
+  (as it drops omitted votes); the minutes-only `--replace` keeps it. There is no way to clear a direction by itself.
+
+`--direction` is one line of 1 to 200 plain-text characters, kept exactly as given (no leading or trailing space, no
+angle brackets, control characters or tabs). `--return-by` is a real calendar day on or after the meeting's own date
+(`return_by: must be a YYYY-MM-DD date on or after the meeting`); it may be before the outcome date, already past or far
+ahead, because it is the date the source states, never a legal deadline. `--direction-source` is an https URL of at most
+500 characters; omitted, it is the outcome's own `--source` (never the minutes URL). Nothing is fetched. The three
+fields are stored together on the outcome (all present or all absent); `build` and `content-check` refuse a hand-edited
+partial, null or malformed group. Success prints the whole updated outcome and `Recorded only. Nothing was published.`
+
+The legal-claim guard is alert-only: wording that asserts a violation prints a `review-required:
+meetings/ID.outcome.direction: legal-claim wording (RULES)` note on stderr when recording and on every `build`, scanning
+the raw text. The note never changes the result or the exit code and never repeats the text.
+
+The meeting page says `Staff were directed to: T (by D, as stated in SOURCE)` (SOURCE a plain link to the direction's
+source) under the outcome, minutes and continuation lines; a meeting without a direction is byte-identical to before. The
+wording is the `meeting.staff_direction` label (`{direction}`, `{date}`, `{source}`; Spanish draft in
+`examples/labels/es.json`). `today` lists a `direction_pending` item (after `continued_pending`, due = the return-by)
+when the return-by date is 14 days away or less, with no lower limit, unless a non-cancelled meeting of exactly the same
+body, on a later local calendar date, has a recorded outcome dated on or before the day asked. A different body, the same
+day, a later meeting with no outcome and a malformed file never suppress it. This is a workflow reminder only: a later
+outcome does not prove staff did what was asked, its absence does not mean they did not, and no fulfillment status is
+stored. `data/meetings.json` carries `direction`, `return_by` and `direction_source` on the outcome, all or none.
+
 ## Meetings feed (`meetings.xml`)
 
 When `content/meetings/` stages at least one meeting, `build` writes `public/meetings.xml`, one Atom document
@@ -430,5 +468,12 @@ before this can be considered a supported live poll. No detail requests or new s
 ## Not done
 
 No RSVP collection (the `rsvp_count` column is
-reserved), no other agenda platforms (Granicus, PrimeGov, CivicClerk), and no iCalendar
-(`.ics`) feed (the Atom `meetings.xml` above is the only feed). Each of those should keep the same keyword-lead, human-verify rule.
+reserved), and no other agenda platforms (Granicus, PrimeGov, CivicClerk). Each of those should keep the same keyword-lead, human-verify rule.
+
+## Calendar feed
+
+A built site publishes `/meetings.ics` (RFC 5545), linked from the meetings page, so supporters can subscribe. It lists the
+upcoming, not cancelled meetings only (same split as the page: the build day counts as upcoming); past and cancelled ones are
+omitted. Each event has `UID:meeting-<id>@<host of base_url>`, a UTC `DTSTART` converted from the meeting's offset, the
+agenda URL, location and agenda item when set, and a link back to the meeting on the page. The feed has no `DTEND`, and for
+one build day it is byte-identical. The `.ics` extension is on the runner's upload allowlist (`text/calendar`).
