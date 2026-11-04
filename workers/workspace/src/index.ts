@@ -99,13 +99,18 @@ app.use("*", async (c, next) => {
 });
 
 async function render(c: { env: Env; var: Vars; req: { path: string } }, title: string, body: import("@deflock/shared/html").Safe): Promise<Response> {
-  const campaign = await c.var.repo.campaign();
+  // Home loads each source independently; do not repeat a failing campaign read in the shell.
+  const campaign = c.req.path === "/" ? null : await c.var.repo.campaign();
   return new Response(page(title, campaign?.name ?? "Workspace", c.req.path, c.var.identity, body), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "private, no-store", "x-frame-options": "DENY", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" },
   });
 }
 
 app.get("/", async (c) => {
+  return render(c, "Waiting on you", await V.home(c.var.repo, c.env));
+});
+
+app.get("/status", async (c) => {
   const repo = c.var.repo;
   return render(c, "Dashboard", V.dashboard(await repo.campaign(), await repo.counts(), await repo.incidents(), await repo.runs(), await repo.jobs(30)));
 });
