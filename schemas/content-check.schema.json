@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deflock-campaign-tool.invalid/schemas/content-check.schema.json",
+  "title": "content-check-v1",
+  "description": "Printed by `content-check --json`: one JSON line with the problems the text form lists. file is the leading path of a problem line (null when the line names none); the whole line is file + \": \" + message, or message alone. count is the full count; problems holds at most the first 200; truncated says whether more exist. law_package is the informational law-package line (null when campaign.json is absent or unreadable). no_content is present, true, only when the campaign has no content/ directory. Read-only; not a publication approval or legal review.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "count", "problems", "truncated", "law_package"],
+  "properties": {
+    "schema": {"const": "content-check-v1"},
+    "count": {"type": "integer", "minimum": 0},
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "message"],
+        "properties": {
+          "file": {"type": ["string", "null"]},
+          "message": {"type": "string"}
+        }
+      }
+    },
+    "truncated": {"type": "boolean"},
+    "law_package": {"type": ["string", "null"]},
+    "no_content": {"const": true}
+  }
+}

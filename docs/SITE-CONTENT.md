@@ -19,6 +19,10 @@ a legal review or an HTML sanitizer.
 lists every problem in `content/` at once (`content/: N problem(s)`, one line per
 file problem, capped at 200) with exactly the rules `build` enforces. It is
 read-only and exits 0 when clean or without `content/`, 3 when anything is listed.
+Add `--json` for one JSON line (`content-check-v1`, [schema](../schemas/content-check.schema.json)):
+`{"count": N, "law_package": ..., "problems": [{"file": "findings/x.json", "message": "..."}], "schema": ..., "truncated": false}`
+with the same problems, the first 200 only (`truncated` says more exist, `count` is the full number), `file` null
+when a line names no file, and the same exit codes, so an editor or CI step can show each problem at its file.
 
 ## Content directory
 
