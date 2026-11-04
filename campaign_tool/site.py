@@ -26,7 +26,8 @@ from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
 from .content import (CITY_KINDS, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
-                      ContentError, _read_json, check_finding_agencies, finding_agency_ids, load_content, utc_moment)
+                      ContentError, _read_json, check_finding_agencies, finding_agency_ids, glossary_terms_used,
+                      load_content, utc_moment)
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
@@ -42,7 +43,7 @@ VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies",
-                       "_redirects", "methods.html", "privacy.html", "search.html", "search.js", "newsletters.html", "newsletters"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "search.html", "search.js", "newsletters.html", "newsletters"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
@@ -526,6 +527,8 @@ class Site:
         self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
                               for a in model["agencies"] if a["agency_id"] in qualifying}
         self.timeline = timeline_events(model, self.today, self._agency_pages)
+        # DF1952-04: content/glossary.json; an absent file or an empty terms list switches every glossary output off.
+        self.glossary = model.get("glossary") if (model.get("glossary") or {}).get("terms") else None
         # DF1952-06: curated topics (slug order); each finding id -> the topics listing it. No topics key = none.
         self.topics = model.get("topics", [])
         self.finding_by_id = {f["id"]: f for f in model["findings"]}
@@ -644,7 +647,8 @@ class Site:
         parts.append(f'<p>{e(self.site["not_legal_advice"])}</p>')
         if self.topics:  # DF1952-06
             parts.append(f'<p><a href="/topics/">{self.t("nav.topics")}</a></p>')
-        parts.append(f'<p><a href="/privacy.html">{self.t("footer.privacy")}</a></p>')
+        parts.append(f'<p><a href="/privacy.html">{self.t("footer.privacy")}</a>'
+                     + (f' · <a href="/glossary.html">{self.t("footer.glossary")}</a>' if self.glossary else "") + '</p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
         parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a> · <a href="/search.html">{self.t("footer.search")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}{archive}'
@@ -1276,11 +1280,44 @@ class Site:
                 + f'<h3 id="corrections">{self.t("finding.corrections")}</h3><ul>{corrections}</ul>'
                 + f'<p><a href="/corrections.html">{self.t("finding.all_corrections")}</a></p>'
                 + f'<p><a href="/corrections.html#request">{self.t("finding.ask_correction")}</a></p>'
+                + self.terms_used_html(finding)
+
                 + self.finding_meetings_html(finding)
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         return self.page("findings", finding["title"], finding["summary"], finding_path(finding), main,
                          scripts=["/findings/cite.js"],
                          kind="article", published=finding["published_at"], modified=finding["updated_at"])
+
+    def terms_used_html(self, finding):
+        """DF1952-04: ``Terms used on this page`` links to the glossary entries the finding's title, summary or body use;
+        "" (no heading) without a glossary or a match."""
+        used = glossary_terms_used(finding, self.glossary) if self.glossary else []
+        if not used:
+            return ""
+        items = "".join(f'<li><a href="/glossary.html#{e(term["anchor"])}">{e(term["term"])}</a></li>' for term in used)
+        return f'<h3 id="glossary-terms">{self.t("finding.terms")}</h3><ul>{items}</ul>'
+
+    def glossary_html(self):
+        """``/glossary.html`` (DF1952-04): the optional notice, then every term alphabetically with one ``#term-...`` id,
+        its aliases, the escaped-markdown definition and, when given, the citation, source link and law-package status."""
+        entries = []
+        for term in self.glossary["terms"]:
+            parts = [f'<h3 id="{e(term["anchor"])}">{e(term["term"])}</h3>']
+            if term["aliases"]:
+                parts.append(f'<p>{self.t("glossary.also", aliases=e(", ".join(term["aliases"])))}</p>')
+            parts.append(self.md(term["definition_md"]))
+            if "citation" in term:
+                parts.append(f'<p>{self.t("glossary.citation", citation=e(term["citation"]))}</p>')
+            if "source_url" in term:
+                parts.append(f'<p><a href="{e(term["source_url"])}" rel="noopener noreferrer">{self.t("glossary.source")}</a></p>')
+            if "law_status" in term:
+                parts.append(f'<p class="notice">{self.t("glossary.status", status=e(term["law_status"]))}</p>')
+            entries.append("".join(parts))
+        notice = self.md(self.glossary["notice_md"]) if self.glossary["notice_md"].strip() else ""
+        main = (f'    <section class="section finding-body" id="content"><h2>{self.t("heading.glossary")}</h2>{notice}'
+                + "".join(entries) + '</section>\n')
+        return self.page("glossary", self.labels["title.glossary"], self.labels["title.glossary_description"],
+                         "/glossary.html", main)
 
     def agency_response_html(self, finding):
         """The agency's reply (or silence) under "Agency response" as escaped plain text, never Markdown; "" when
@@ -1755,6 +1792,7 @@ class Site:
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
                  "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html"]
         paths += ["/cameras.html"] if self.map else []
+        paths += ["/glossary.html"] if self.glossary else []
         if self.topics:  # DF1952-06: the index file topics/index.html is served at /topics/
             paths += ["/topics/"] + [f'/topics/{t["slug"]}.html' for t in self.topics]
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
@@ -2067,6 +2105,9 @@ def _plan_site(root, today=None, notes=None):
         pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
     for page in model["pages"]:
         pages[f'{page["slug"]}.html'] = site.content_page_html(page)
+    if site.glossary:  # DF1952-04: the slug is reserved, so no content page can already hold this name
+        pages["glossary.html"] = site.glossary_html()
+
     if model["newsletters"]:  # DF1952-09: newest first; the slug is reserved, so nothing else can own these paths
         pages["newsletters.html"] = site.newsletters_html()
         for issue in model["newsletters"]:

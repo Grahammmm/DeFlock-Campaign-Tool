@@ -11,7 +11,7 @@ from pathlib import Path
 from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _asked, _bounds, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
-                      load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths,
+                      load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_glossary,
                       topics_namespace_problem)
 from .finding_law import check_findings, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
@@ -208,6 +208,8 @@ def content_problems(root, limit=LIMIT):
     if labels_path.is_file() or labels_path.is_symlink():
         _attempt(problems, "labels.json", lambda: load_labels(_read_json(labels_path, MAX_LABELS_BYTES)))
 
+    read_glossary(root, problems)  # DF1952-04: the build's own reader; it names every independent problem itself
+
     agencies_path = content_dir / "agencies.json"
     if agencies_path.is_file():
         document = _attempt(problems, "content/agencies.json", lambda: _read_json(agencies_path))
@@ -246,7 +248,7 @@ def content_problems(root, limit=LIMIT):
 
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
 FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "topics/", "kit/", "newsletters/",
-                 "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json")
+                 "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json")
 
 
 def problem_record(line):
