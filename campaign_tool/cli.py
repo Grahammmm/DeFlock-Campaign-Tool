@@ -1143,6 +1143,15 @@ def main():
                          "ending within N days, default 90; ended in the last 30 days are always listed")
     today_p.add_argument("--review-days", type=review_days, default=REVIEW_DAYS, metavar="N", help="Assigned finding "
                          "reviews with no receipt after N days, default 7")
+    recent_p = commands.add_parser("recent", help="Private what-changed report for a period: requests, records, findings, "
+                                   "meetings (read-only; --md writes one new file)")
+    recent_p.add_argument("--directory", required=True)
+    recent_p.add_argument("--since", required=True, metavar="YYYY-MM-DD", help="First day of the period")
+    recent_p.add_argument("--until", metavar="YYYY-MM-DD", help="Last day, not after today (default today)")
+    recent_p.add_argument("--md", metavar="FILE", help="Also write the report as Markdown to this new 0600 file "
+                          "(refused inside public/ or content/; never overwrites)")
+    recent_p.add_argument("--json", dest="as_json", action="store_true", help="Print the events as JSON")
+
     law_packet = commands.add_parser("law", help="Law package tools; nothing here marks a package reviewed"
                                      ).add_subparsers(dest="law_command", required=True).add_parser(
         "review-packet", help="Private packet for a human law reviewer in a new --out folder; reviews nothing")
@@ -1503,6 +1512,13 @@ def main():
             from .today import run_cli as today_cli
             read_config(root)  # not a campaign folder: Stopped, before any source is read
             print(today_cli(root, args.as_of, args.as_json, args.contract_days, args.review_days))
+        elif args.command == "recent":
+            from .recent import run_cli as recent_cli
+            read_config(root)
+            code = recent_cli(root, args.since, args.until, args.md, args.as_json)
+            if code:
+                sys.exit(code)
+
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
