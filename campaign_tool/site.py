@@ -215,7 +215,8 @@ PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "bas
 PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0137-09: meetings open data
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
 PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes", "minutes_url", "minutes_approved_on",
-                         "continued_to", "continued_to_date")  # never verified_by / verified_at
+                         "continued_to", "continued_to_date", "direction", "return_by",
+                         "direction_source")  # never verified_by / verified_at
 PUBLIC_VOTE_FIELDS = ("name", "vote")
 # DF1207-14: data/findings.csv and data/sources.csv are flattened from the built public JSON documents, so no CSV column
 # can exist that the JSON does not carry; "sources", "corrections" and "public_copy" are the only nested values.
@@ -1691,6 +1692,18 @@ class Site:
                   for source in self._continuation_back.get(meeting["id"], []) if held(source)]
         return "".join(lines)
 
+    def meeting_direction_html(self, meeting):
+        """DF0022-08: ``Staff were directed to: T (by D, as stated in SOURCE)`` for a held meeting whose outcome carries a
+        direction; "" otherwise. The words are the official source's, attributed to it; the source is a plain link, never
+        fetched or embedded, and the line states nothing about whether staff reported back."""
+        outcome = meeting.get("outcome") or {}
+        if "direction" not in outcome or meeting["status"] == "cancelled" or meeting["starts_at"][:10] >= self.today.isoformat():
+            return ""
+        source = e(outcome["direction_source"])
+        link = f'<a href="{source}" rel="noopener noreferrer">{source}</a>'
+        return (f'<p class="meeting-direction">'
+                f'{self.t("meeting.staff_direction", direction=e(outcome["direction"]), date=e(outcome["return_by"]), source=link)}</p>')
+
     def meeting_html(self, meeting):
         """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
         cancelled = meeting.get("status") == "cancelled"
@@ -1707,6 +1720,7 @@ class Site:
                 + (meeting_outcome_html(meeting, self.t) + self.recorded_votes(meeting)
                    if meeting["starts_at"][:10] < self.today.isoformat() else "")
                 + self.meeting_continuation_html(meeting)
+                + self.meeting_direction_html(meeting)
                 + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
@@ -2271,7 +2285,8 @@ class Site:
         if outcome and meeting["status"] != "cancelled" and meeting["starts_at"][:10] < self.today.isoformat():
             value["outcome"] = {key: outcome[key] for key in ("result", "on", "source_url", "vote", "minutes_url",
                                                               "minutes_approved_on", "continued_to",
-                                                              "continued_to_date") if key in outcome}
+                                                              "continued_to_date", "direction", "return_by",
+                                                              "direction_source") if key in outcome}
             if "votes" in outcome:  # DF0137-07 per-member votes, in stored order
                 value["outcome"]["votes"] = [{"name": v["name"], "vote": v["vote"]} for v in outcome["votes"]]
         return value

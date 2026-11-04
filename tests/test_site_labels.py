@@ -263,6 +263,7 @@ class LabelsTest(unittest.TestCase):
                   "map.history_title", "map.history_total",
                   "meeting.continued_from", "meeting.continued_to",
                   "meeting.minutes_confirmed", "meeting.minutes_pending", "meeting.recording", "meeting.recording_from",
+                  "meeting.staff_direction",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
                   "officials.heading", "officials.listed", "officials.source", "privacy.signup_policy",
                   "supporters.description", "supporters.joined", "supporters.kind.business",
