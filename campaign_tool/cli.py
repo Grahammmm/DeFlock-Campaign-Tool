@@ -436,7 +436,7 @@ def doctor_report(root, contact_max_age_days=None, stale_days=None):
 
 def readiness(root, campaign_id=None, out=None, contact_max_age_days=None, stale_days=None):
     from datetime import datetime, timezone
-    from tools.flock_privacy import categories
+    from .privacy_patterns import categories
     campaign_id = campaign_id if campaign_id is not None else read_config(root).get("campaign_id")
     if not isinstance(campaign_id, str) or not campaign_id.strip():
         raise ValueError("readiness_campaign_id_absent: supply --campaign-id or config campaign_id")

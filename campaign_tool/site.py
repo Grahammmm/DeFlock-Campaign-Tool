@@ -32,6 +32,7 @@ from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
 from .markdown_lite import render as markdown
+from .privacy_patterns import refusal
 from .shell import render
 from .provenance_text import EXPLAINER, source_line
 from .redirects import load_redirects
@@ -2076,6 +2077,26 @@ def _asset_plan(model):
     return plan
 
 
+def _privacy_gate(model):
+    """Refuse the build when an email, phone or plate pattern sits in published text (the shared privacy lint, before anything is
+    rendered or written). Names the category and the place, never the text. The fields an organizer fills with a contact on purpose
+    (a meeting's ``how``) are not scanned; site.json's contact addresses are not part of these parts."""
+    def walk(value, where):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key != "how":
+                    yield from walk(item, f"{where}.{key}")
+        elif isinstance(value, (list, tuple)):
+            for number, item in enumerate(value):
+                yield from walk(item, f"{where}[{number}]")
+        elif isinstance(value, str):
+            yield where, value
+    for part in ("findings", "meetings", "pages", "newsletters", "topics", "glossary"):
+        for where, text in walk(model.get(part), part):
+            if note := refusal(where, text):
+                raise ContentError(note)
+
+
 def _plan_site(root, today=None, notes=None):
     """Render every page and check every copy without writing: ``(files, copies)``, or None without content/."""
     from .cli import read_config
@@ -2086,6 +2107,7 @@ def _plan_site(root, today=None, notes=None):
     model = load_content(root, today)
     if model is None:
         return None
+    _privacy_gate(model)
     site = Site(root, cfg, model, today=today or date.today())
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {

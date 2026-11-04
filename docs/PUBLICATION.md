@@ -457,3 +457,21 @@ call: a second card is `already_posted`. A timeout, 5xx or reply without a post 
 `post_uncertain`, raises one incident and is never retried; check the platform by hand. The receipt
 holds ids, hashes, counts and enums only, never post text, handle or personal data. There is no
 batch, schedule, edit, delete or recall path.
+
+## Publishing paths and the shared privacy lint (BF-df-pii-everywhere)
+
+`campaign_tool/publish_paths.py` (`PUBLISH_PATHS`) names every path that emits, or feeds, something a member of the public could read:
+the site pages, Atom feed, agency feeds, Open Graph meta, agency cards and data exports (one gate, `_privacy_gate`, on the content model
+before anything renders), the newsletter draft, `kit/social/` drafts, the Worker's `post_social`, and the Flock report, page, publish,
+brief, stage and email tools. The email, phone and plate patterns have one home, `campaign_tool/privacy_patterns.py`
+(`tools/flock_privacy.py` re-exports it); a lint refusal names the category and the place, never the matched text.
+`tests/test_publish_path_coverage.py` holds three assertions that fail on their own: (a) every registered path refuses a synthetic email,
+phone and plate, (b) every module that writes to a public output root, the feed, the cards or `kit/social/` (or loads the shared lint) is
+registered or listed as reviewed non-publishing, (c) no other module defines an email, phone or plate pattern. The stricter patterns
+(the newsletter phone gate, the digest redaction patterns, the kit and email address validators, the Worker mirror) are the named
+`PATTERN_EXCEPTIONS`, pinned by that test. A meeting's `how` text is not scanned because organizers fill it with a contact on purpose.
+
+What this does not prove: the patterns have blind spots (bare 10-digit runs and plain-word emails are not matched), so a path that passes
+can still carry personal data. A clean lint is not a substitute for the human publish gate or for redaction sign-off; the legal-claim guard
+stays alert-only and never refuses.
+
