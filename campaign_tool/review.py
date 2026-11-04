@@ -66,8 +66,12 @@ def declared_interest_agencies(finding, entry):
     declared = entry.get("interest_agencies") if isinstance(entry, dict) else None
     if not isinstance(declared, list) or not isinstance(finding, dict):
         return []
-    from .content import finding_agency_ids  # lazy: content imports this module
-    return [item for item in finding_agency_ids(finding) if isinstance(item, str) and item in declared]
+    # Same membership as content.finding_agency_ids (primary, then extras); not imported, as content imports this
+    # module and the workers scope check pins review.py's import closure.
+    extra = finding.get("also_agency_ids")
+    members = [finding.get("agency_id"), *(extra if isinstance(extra, list) else ())]
+    return [item for i, item in enumerate(members) if isinstance(item, str) and item in declared
+            and item not in members[:i]]
 
 
 def _rostered_entry(roster, name):
