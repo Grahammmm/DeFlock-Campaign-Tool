@@ -11,7 +11,7 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import fixes
+from . import fixes, registry
 
 MAX_BYTES = 50 * 1024 * 1024
 MAX_DIR_FILES = 2000
@@ -702,6 +702,20 @@ def finding_preview(root, draft_path, out, now=None):
     return {"written": written, "slug": finding["slug"]}
 
 
+def _campaign_option(parser):
+    """Every parser that takes --directory also takes --campaign NAME (a registered campaign), never both."""
+    for action in list(parser._actions):
+        if isinstance(action, argparse._SubParsersAction):
+            for sub in action.choices.values():
+                _campaign_option(sub)
+    directory = next((a for a in parser._actions if "--directory" in a.option_strings), None)
+    if directory is not None and "--campaign" not in parser._option_string_actions:
+        group = parser.add_mutually_exclusive_group(required=directory.required)
+        group._group_actions.append(directory)
+        directory.required = False
+        group.add_argument("--campaign", metavar="NAME", action=registry.CampaignAction, help="A registered campaign, not --directory")
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -765,7 +779,7 @@ def main():
                          help="Fall back to the Census geocoder when the seed cannot resolve the location")
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
-                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in)")
+                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in), school_police (opt-in)")
     kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
@@ -832,6 +846,8 @@ def main():
     outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
     outcome_p.add_argument("--votes", metavar="FILE", help="name,vote CSV (yes|no|abstain|absent|recused) read from the --source record")
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
+    outcome_p.add_argument("--recording-url", help="https URL of the body's official video or audio of the meeting")
+    outcome_p.add_argument("--recording-start", metavar="H:MM:SS", help="Where the discussion starts in the recording, at most 12:00:00")
     sent_p = commands.add_parser("meetings-comment-sent", help="Record a comment you submitted by hand on a staged "
                                  "meeting in kit/comments-sent.json; sends nothing")
     for flag in ("--directory", "--id", "--on"):
@@ -963,10 +979,17 @@ def main():
         sources_edit.add_argument(flag, default=None)
     sources_edit.add_argument("--clear-public-url", action="store_true")
     sources_edit.add_argument("--pages", type=int, default=None)
-    batch = sources.add_parser("add-batch", help="Add every receipt of one ingest source_id not yet listed; "
-                               "titles marked [EDIT ME: title]; publishes nothing")
-    for flag in ("--directory", "--source-id", "--agency-id", "--received-at"):
-        batch.add_argument(flag, required=True)
+    batch = sources.add_parser("add-batch", help="Add every receipt of one ingest source_id (or every production record "
+                               "of one request, --from-request) not yet listed; titles marked [EDIT ME: title]; "
+                               "publishes nothing")
+    batch.add_argument("--directory", required=True)
+    for flag in ("--source-id", "--agency-id", "--received-at"):
+        batch.add_argument(flag, default=None, help="Required unless --from-request")
+    batch.add_argument("--from-request", metavar="AGENCY", default=None,
+                       help="Use the production records linked on this agency's produced steps instead")
+    batch.add_argument("--request", default=None, help="With --from-request: the request name (default main)")
+    batch.add_argument("--tz", default=None,
+                       help="With --from-request: IANA time zone for received_at (default America/Los_Angeles)")
     batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
     batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
     verify = sources.add_parser("verify-copy", help="Hash a copy you downloaded from an entry's public_url and record "
@@ -1090,7 +1113,22 @@ def main():
     pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
+    _campaign_option(parser)
+    campaigns = commands.add_parser("campaigns", help="A named register of campaign directories; names and paths only"
+                                    ).add_subparsers(dest="campaigns_command", required=True)
+    for verb, text in (("add", "Register NAME at --directory"), ("remove", "Unregister NAME; deletes nothing"),
+                       ("list", "The registered names and directories"),
+                       ("status", "One private line per campaign: counts and waiting gates; publishes nothing")):
+        verb_p = campaigns.add_parser(verb, help=text)
+        if verb in ("add", "remove"):
+            verb_p.add_argument("name")
+        if verb == "add":
+            verb_p.add_argument("--directory", required=True)
     args = parser.parse_args()
+    if args.command == "campaigns":
+        sys.exit(registry.run(args))
+    if getattr(args, "campaign", None):  # from here no path under another registered campaign can be opened or written
+        registry.confine(args.directory, args.registered)
     if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
         if not args.upcoming or args.allow_past or args.within_days not in (None, *range(1, 91)):
             pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
@@ -1112,6 +1150,22 @@ def main():
         parser.error("--within-days must be 1 to 60")
     if args.command == "build" and args.preview and args.budget is not None:
         parser.error("--budget measures a written build; it cannot be combined with --preview")
+    if args.command == "sources" and args.sources_command == "add-batch":
+        given = {"--source-id": args.source_id, "--agency-id": args.agency_id, "--received-at": args.received_at}
+        if args.from_request is not None:
+            if any(value is not None for value in given.values()):
+                batch.error("--from-request takes the agency, records and dates from the request; "
+                            "it cannot be combined with --source-id, --agency-id or --received-at")
+            # Resolve defaults only after preserving whether request-only options were supplied.
+            if args.request is None:
+                args.request = "main"
+            if args.tz is None:
+                args.tz = "America/Los_Angeles"
+        elif any(value is None for value in given.values()):
+            batch.error("the following arguments are required: --source-id, --agency-id, --received-at "
+                        "(or --from-request AGENCY)")
+        elif args.request is not None or args.tz is not None:
+            batch.error("--request and --tz are only for --from-request")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -1190,7 +1244,8 @@ def main():
         elif args.command == "meetings-outcome":
             from .meeting_outcome import record_outcome
             print(json.dumps(record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by,
-                                            args.vote, args.replace, votes_file=args.votes), indent=2))
+                                            args.vote, args.replace, votes_file=args.votes,
+                                            recording_url=args.recording_url, recording_start=args.recording_start), indent=2))
             if args.replace and args.votes is None:  # the new outcome replaced the old one whole
                 print("votes: none")
             print("Recorded only. Nothing was published.")
@@ -1210,9 +1265,16 @@ def main():
             from .sources_cmd import list_sources
             print(json.dumps(list_sources(root), indent=2, ensure_ascii=False))
         elif args.command == "sources" and args.sources_command == "add-batch":
-            from .sources_cmd import add_batch
-            print(json.dumps(add_batch(root, args.source_id, args.agency_id, args.received_at, args.fragment,
-                                       dry_run=args.dry_run)))
+            from .sources_cmd import add_batch, add_from_request
+            if args.from_request is not None:
+                result = add_from_request(root, args.from_request, request=args.request, tz=args.tz,
+                                          fragment=args.fragment, dry_run=args.dry_run)
+                print(json.dumps(result))
+                if not result["added"]:
+                    print("nothing to add")
+            else:
+                print(json.dumps(add_batch(root, args.source_id, args.agency_id, args.received_at, args.fragment,
+                                           dry_run=args.dry_run)))
         elif args.command == "sources" and args.sources_command == "verify-copy":
             from .sources_cmd import verify_copy
             try:

@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "jurisdiction": "us-ca",
+  "status": "draft",
+  "reviewed_by": [],
+  "reviewed_at": null,
+  "records_law": {
+    "name": "Synthetic Records Act",
+    "citation": "Synthetic Code 1",
+    "determination_days": 10,
+    "determination_extension_days": 14,
+    "day_type": "calendar",
+    "fee_basis": "Synthetic fee basis.",
+    "appeal": "Synthetic appeal text.",
+    "sources": [
+      {
+        "title": "Synthetic source",
+        "url": "https://example.invalid/records",
+        "accessed": "2026-01-01"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "ca-alpha",
+      "citation": "Synthetic Code ca-alpha",
+      "actor": "Synthetic actor",
+      "activity": "Synthetic activity",
+      "duty": "Synthetic duty ca-alpha",
+      "exceptions": [
+        "Synthetic exception one.",
+        "Synthetic exception two."
+      ],
+      "remedy": "Synthetic remedy.",
+      "effective_from": "2016-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Synthetic rule source",
+          "url": "https://example.invalid/ca-alpha",
+          "accessed": "2026-01-01"
+        }
+      ],
+      "review": "likely"
+    },
+    {
+      "rule_id": "ca-beta",
+      "citation": "Synthetic Code ca-beta",
+      "actor": "Synthetic actor",
+      "activity": "Synthetic activity",
+      "duty": "Synthetic duty ca-beta",
+      "exceptions": [
+        "Synthetic exception one.",
+        "Synthetic exception two."
+      ],
+      "remedy": "Synthetic remedy.",
+      "effective_from": "2016-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Synthetic rule source",
+          "url": "https://example.invalid/ca-beta",
+          "accessed": "2026-01-01"
+        }
+      ],
+      "review": "likely"
+    },
+    {
+      "rule_id": "ca-gamma",
+      "citation": "Synthetic Code ca-gamma",
+      "actor": "Synthetic actor",
+      "activity": "Synthetic activity",
+      "duty": "Synthetic duty ca-gamma",
+      "exceptions": [
+        "Synthetic exception one.",
+        "Synthetic exception two."
+      ],
+      "remedy": "Synthetic remedy.",
+      "effective_from": "2020-01-01",
+      "effective_to": "2023-12-31",
+      "sources": [
+        {
+          "title": "Synthetic rule source",
+          "url": "https://example.invalid/ca-gamma",
+          "accessed": "2026-01-01"
+        }
+      ],
+      "review": "likely"
+    }
+  ],
+  "request_scopes": [
+    {
+      "scope_id": "agreements",
+      "title": "Synthetic scope agreements",
+      "items": [
+        "Synthetic item."
+      ],
+      "rule_ids": [
+        "ca-alpha"
+      ]
+    },
+    {
+      "scope_id": "policies",
+      "title": "Synthetic scope policies",
+      "items": [
+        "Synthetic item."
+      ],
+      "rule_ids": [
+        "ca-alpha"
+      ]
+    },
+    {
+      "scope_id": "sharing",
+      "title": "Synthetic scope sharing",
+      "items": [
+        "Synthetic item."
+      ],
+      "rule_ids": [
+        "ca-alpha"
+      ]
+    },
+    {
+      "scope_id": "audit-logs",
+      "title": "Synthetic scope audit-logs",
+      "items": [
+        "Synthetic item."
+      ],
+      "rule_ids": [
+        "ca-alpha"
+      ]
+    },
+    {
+      "scope_id": "compliance",
+      "title": "Synthetic scope compliance",
+      "items": [
+        "Synthetic item."
+      ],
+      "rule_ids": [
+        "ca-alpha"
+      ]
+    },
+    {
+      "scope_id": "hearing-records",
+      "title": "Synthetic scope hearing-records",
+      "items": [
+        "Synthetic item."
+      ],
+      "rule_ids": [
+        "ca-alpha"
+      ]
+    }
+  ]
+}
