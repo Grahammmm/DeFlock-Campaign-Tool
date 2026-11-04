@@ -27,9 +27,9 @@ RULE = "ca-civ-1798.90.5-definitions"
 RULE_URL = "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."
 NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network access attempted"))
 
-# sha256 of every file the fictional example renders on origin/main (b82eff80fd4e93084868c05622bada8d5f6f7bac)
-# with today=2026-10-01 and no glossary.json: re-captured from an untouched detached main worktree, never
-# from the candidate. Re-capture after intentional site changes using the same fixed date and absent glossary.
+# sha256 of every file the fictional example renders on origin/main (514d4f03) with today=2026-10-01 and no
+# glossary.json: captured from an untouched detached main worktree, never from the candidate. A later change to the
+# generated site re-captures this table (render the example with today=2026-10-01 and no glossary.json; sha256 each file).
 BASELINE = {
     "404.html": "de1094d7b8cb47ad4d2725c3bbc91e05c5fe550651ebecaca4271bf927531cc0",  # pragma: allowlist secret -- public rendered-file SHA-256
     "_headers": "d8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e",  # pragma: allowlist secret -- public rendered-file SHA-256
