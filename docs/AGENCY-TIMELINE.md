@@ -371,3 +371,33 @@ campaign's `public/` or `content/`; spreadsheet formula prefixes are neutralised
 five figures, `request_span` rows each wait (`open` is `yes` or `no`), `agency_metric` rows the counts and medians (the
 wait metrics put their number of open waits in `open`). The label is repeated on every row. Notes, references, hashes,
 amounts and contact details are never exported. The table still prints, followed by the new file's summary.
+
+## Your own contact with the records office (kit-contact)
+
+`kit-contact --directory D --agency ID [--request NAME] --on YYYY-MM-DD --channel phone|voicemail|in_person|email
+--with ROLE --note TEXT` records that **you** called, left a voicemail, visited the counter or emailed the records
+office. It is a private note on the sent request, not an agency response: contacts are stored in their own `contacts`
+list on the `kit/sent.json` entry and never as a step, so `acknowledged`-first, `closed`, the due dates, `kit-asked`
+and every follow-up gate behave exactly as before. A closed request still takes a contact. The request must already be
+sent (`kit-sent`; `--request` defaults to `main`); otherwise the command stops and nothing is written. It prints the
+recorded summary and `Recorded only. Nothing was sent.`
+
+Example (synthetic): `kit-contact --directory D --agency us-ca-example --on 2026-03-10 --channel phone --with "Records
+Supervisor" --note "Asked when to expect a determination"`.
+
+- `--on` is a real `YYYY-MM-DD` date, not before the sent day and not in the future. Contacts may be added out of date
+  order; the latest is the greatest date, and the later one recorded wins a tie.
+- `--with` is a **job title, not a person's name** (1-60 characters, whitespace collapsed). `<`, `>`, control and
+  format characters, any `@` and any run of seven or more digits (a phone number) are refused. `--note` is required
+  plain text of 1-500 characters with the same markup and control rules. The tool cannot tell a title from a name, so
+  keep personal details, direct lines and addresses out of both fields; the note is never printed back.
+- `kit-status` adds `contacts` (the count) and `last_contact` (`on`, `channel`, `role`; never the note) to a request
+  row only when it has contacts. The status CSV, `kit-due`, `kit-asked`, public content and exports do not carry them.
+- `kit-followup --cite-contact` (with `--request NAME` for a named request, whose draft is
+  `kit/followups/<agency>--<name>-<day>.md`) adds one line to the private draft: `On D we contacted the records
+  office by CHANNEL (ROLE).` for the latest contact on or before `--as-of`; the note is never quoted. With no such
+  contact the command stops before anything is written. Without the flag the draft is unchanged, and the flag never
+  bypasses the past-due, waiting, answered, closed or replace rules.
+- `kit-response-undo` leaves contacts untouched. `kit-sent --replace` (only while no step is recorded) keeps them, and
+  refuses a corrected sent date later than any contact. There is no contact undo or export. A malformed `contacts`
+  list makes `kit/sent.json` unreadable rather than being dropped. Nothing is fetched or sent.

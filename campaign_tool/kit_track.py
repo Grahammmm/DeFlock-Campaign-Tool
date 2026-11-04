@@ -190,6 +190,50 @@ def muckrock_id(entry):  # the request id (digits) at the end of a muckrock entr
     return found.group(1) if found else None
 
 
+CONTACT_CHANNELS = ("phone", "voicemail", "in_person", "email")  # the organizer's own contact, never an agency step
+CONTACT_LABELS = {"phone": "phone", "voicemail": "voicemail", "in_person": "in person", "email": "email"}
+CONTACT_KEYS = {"on", "channel", "role", "note", "recorded_at"}
+ROLE_MAX, CONTACT_NOTE_MAX = 60, 500
+PHONE_LIKE = re.compile(r"[0-9](?:[-+ ().]*[0-9]){6}")  # seven or more ASCII digits, separated only by - + space ( ) or dots
+
+
+def _contact_text(value, flag, limit):  # plain text, whitespace collapsed, 1..limit characters; the text is never echoed
+    if not isinstance(value, str) or any(c in "<>" or unicodedata.category(c).startswith("C") for c in value):
+        raise ValueError(f"{flag} must be plain text without <, > or control characters")
+    text = " ".join(value.split())
+    if not text or len(text) > limit:
+        raise ValueError(f"{flag} must be 1-{limit} characters after collapsing whitespace")
+    return text
+
+
+def _contact_role(role):  # a job title, not a person's name: no email address and no phone number
+    text = _contact_text(role, "--with", ROLE_MAX)
+    if "@" in text or PHONE_LIKE.search(text):
+        raise ValueError("--with is a job title, not a person's name: no email address or phone number")
+    return text
+
+
+def _contact_ok(contact, sent_on):  # one stored contact: exact keys, a real date not before the sent day, clean text
+    if not isinstance(contact, dict) or set(contact) != CONTACT_KEYS or contact["channel"] not in CONTACT_CHANNELS:
+        return False
+    try:
+        return (bool(_day(contact["on"])) and contact["on"] >= sent_on and _contact_role(contact["role"]) == contact["role"]
+                and _contact_text(contact["note"], "note", CONTACT_NOTE_MAX) == contact["note"]
+                and bool(_day(contact["recorded_at"], STAMP, datetime.fromisoformat)))
+    except ValueError:
+        return False
+
+
+def _contacts_ok(entry):  # contacts: absent (none), or a list (possibly empty) of valid stored contacts
+    return "contacts" not in entry or (isinstance(entry["contacts"], list)
+                                       and all(_contact_ok(c, entry["sent_on"]) for c in entry["contacts"]))
+
+
+def _latest_contact(entry, as_of=None):  # latest by date, a tie going to the later appended; None when none (by as_of)
+    found = [(c["on"], i, c) for i, c in enumerate(entry.get("contacts", ())) if as_of is None or c["on"] <= as_of]
+    return max(found, key=lambda item: item[:2])[2] if found else None
+
+
 def _entry_ok(key, entry):
     parts = _split(key)
     return (parts and kit.AGENCY_ID.match(parts[0]) and isinstance(entry, dict) and _day(entry.get("sent_on"))
@@ -199,7 +243,7 @@ def _entry_ok(key, entry):
             and ("reference" not in entry or isinstance(entry["reference"], str)
                  and REFERENCE.fullmatch(entry["reference"]))
             and ("correspondence" not in entry or _corr_ok(entry["correspondence"]))
-            and ("undo_ids" not in entry or _undo_ids_ok(entry["undo_ids"]))
+            and ("undo_ids" not in entry or _undo_ids_ok(entry["undo_ids"])) and _contacts_ok(entry)
             and ("request_url" not in entry or entry["channel"] == "muckrock" and _request_url(entry["request_url"])
                  or entry["channel"] == "portal" and _portal_url_ok(entry["request_url"])))
 
@@ -312,6 +356,10 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
         raise ValueError(f"{label} already recorded as sent on {previous['sent_on']}; use --replace to correct it")
     if previous and previous["steps"]:
         raise ValueError(f"{label} has recorded steps; its entry sent on {previous['sent_on']} cannot be replaced")
+    first_contact = min((c["on"] for c in (previous or {}).get("contacts", ())), default=None)
+    if first_contact is not None and sent_on > first_contact:
+        raise ValueError(f"{label} has a contact on {first_contact}, before --date {sent_on}; "
+                         "a contact cannot come before the request was sent")
     scopes = _asked_scopes(root, law_base)  # read on every call, so --replace re-reads the current kit
     entry = {"sent_on": sent_on, "channel": channel, "draft": draft, "draft_sha256": digest,
              "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "steps": []}
@@ -325,6 +373,8 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
         entry["reference"] = previous["reference"]
     if previous and "undo_ids" in previous:  # and the count of undone steps (their receipts stay in sent-undone.json)
         entry["undo_ids"] = previous["undo_ids"]
+    if previous and "contacts" in previous:  # the organizer's own contacts stay with the request
+        entry["contacts"] = previous["contacts"]
     _set_reference(entry, reference, replace_reference)
     if correspondence:  # a new list replaces the stored one; none given keeps it (as reference)
         entry["correspondence"] = _resolve_correspondence(root, correspondence, {})
@@ -767,6 +817,40 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     return {"agency_id": agency_id, "request": request, **_shown(entry), "steps": list(map(_shown, entry["steps"]))}
 
 
+def record_contact(root, agency_id, on, channel, role, note, *, request="main", today=None):
+    """Append one organizer contact (a call, voicemail, counter visit or email) to a sent request; nothing is sent.
+
+    Stored in the entry's own ``contacts`` list, never in ``steps``, so no step, due or follow-up rule reads it."""
+    root, request = Path(root), _request(request)
+    if channel not in CONTACT_CHANNELS:
+        raise ValueError("--channel must be one of " + ", ".join(CONTACT_CHANNELS))
+    role, note = _contact_role(role), _contact_text(note, "--note", CONTACT_NOTE_MAX)
+    day = _day(on)
+    if day is None:
+        raise ValueError("--on must be a real YYYY-MM-DD date")
+    if not isinstance(agency_id, str) or not kit.AGENCY_ID.fullmatch(agency_id):
+        raise ValueError(f"agency_id {agency_id!r} is not a valid agency id")
+    if (root / "kit").is_symlink():
+        raise ValueError("kit/ must not be a symlink")
+    requests = read_sent(root)
+    entry, label = requests.get(_key(agency_id, request)), _label(agency_id, request)
+    if entry is None:
+        raise ValueError(f"no sent request {label}; run kit-sent{'' if request == 'main' else ' --request ' + request} first")
+    if day < _day(entry["sent_on"]):
+        raise ValueError(f"--on {on} is before the request was sent on {entry['sent_on']}")
+    if day > (today or date.today()):
+        raise ValueError(f"--on {on} is in the future")
+    contact = {"on": on, "channel": channel, "role": role, "note": note,
+               "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    entry["contacts"] = [*entry.get("contacts", ()), contact]
+    document = {"schema_version": 1, "requests": dict(sorted(requests.items()))}
+    if len(json.dumps(document, indent=2, ensure_ascii=False).encode("utf-8")) + 1 > MAX_BYTES:
+        raise ValueError("kit/sent.json would be larger than 1 MiB; contact not recorded")
+    kit._write_json(root / "kit" / "sent.json", document)
+    return {"agency_id": agency_id, "request": request, "contacts": len(entry["contacts"]),
+            "contact": {k: contact[k] for k in ("on", "channel", "role")}}
+
+
 def status(root, today=None, law_base=None, *, request=None):
     """Every recorded request (or only those named ``request``) with provisional determination dates (read-only)."""
     from .cli import read_config  # local import: cli imports this module lazily
@@ -807,6 +891,7 @@ def status(root, today=None, law_base=None, *, request=None):
         extended = law.deadline(package, entry["sent_on"], extension=True).isoformat() if package else None
         due = (extended if "extension" in kinds else law.deadline(package, entry["sent_on"]).isoformat()) \
             if package else None
+        last_contact = _latest_contact(entry)
         rows.append({"agency_id": agency_id, "request": name, "name": names.get(agency_id),
                      "sent_on": entry["sent_on"], "channel": entry["channel"],
                      "draft_changed_since_sent": _draft(root, agency_id, name) != entry["draft_sha256"],
@@ -826,7 +911,9 @@ def status(root, today=None, law_base=None, *, request=None):
                      **({"undone_steps": len(entry["undo_ids"])} if entry.get("undo_ids") else {}),
                      "withheld_basis": _bases(steps), "scopes": _scope_rows(entry, steps),
                      **({"downloads_pending": downloads} if downloads else {}),
-                     **({"request_url": entry["request_url"]} if "request_url" in entry else {})})
+                     **({"request_url": entry["request_url"]} if "request_url" in entry else {}),
+                     **({"contacts": len(entry["contacts"]),  # the organizer's own contacts: a count and the latest, no note
+                         "last_contact": {k: last_contact[k] for k in ("on", "channel", "role")}} if last_contact else {})})
     waiting = any(row["waiting_on_you_since"] for row in rows)
     return {"requests": rows, "law_package_status": package_status, "note": NOTE + (WAIT_NOTE if waiting else "")}
 
@@ -987,29 +1074,33 @@ def _followup_target(root, name, replace):  # private kit/followups/ (0700); sym
     return target
 
 
-def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today=None):
-    """Write a private, never-sent follow-up draft to kit/followups/ for a request past its provisional date."""
+def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today=None, request="main",
+             cite_contact=False):
+    """Write a private, never-sent follow-up draft to kit/followups/ for a request past its provisional date.
+
+    ``cite_contact``: one line naming the latest organizer contact on or before the as-of day (channel and role only)."""
     from .cli import read_config  # local import: cli imports this module lazily
-    root, today = Path(root), today or date.today()
+    root, today, request = Path(root), today or date.today(), _request(request)
     day = _day(as_of) if as_of is not None else today
     if day is None:
         raise ValueError("--as-of must be a real YYYY-MM-DD date")
     if day > today:
         raise ValueError(f"--as-of {day.isoformat()} is in the future")
-    entry = read_sent(root).get(agency_id)
+    entry = read_sent(root).get(_key(agency_id, request))
     if entry is None or not kit.AGENCY_ID.fullmatch(agency_id):
-        raise ValueError(f"no hand-sent request recorded for {agency_id}")
+        raise ValueError(f"no hand-sent request recorded for {_label(agency_id, request)}")
+    label = _label(agency_id, request)
     steps = [s for s in entry["steps"] if isinstance(s, dict)]
     if any(s.get("kind") == "closed" for s in steps):
-        raise ValueError(f"request for {agency_id} is closed")
+        raise ValueError(f"request for {label} is closed")
     if _waiting_since(steps):
         raise WaitingOnYou(f"waiting on you since {_waiting_since(steps)} — reply to the agency's clarification first")
     answer = next((s for s in steps if s.get("kind") in ANSWERED), None)
     if answer and not _producing(steps):
-        raise ValueError(f"request for {agency_id} was answered ({answer['kind']} on {answer.get('on')}); "
+        raise ValueError(f"request for {label} was answered ({answer['kind']} on {answer.get('on')}); "
                          "no follow-up drafted")
     row = next((r for r in due(root, day.isoformat(), law_base=law_base)["open"]
-                if (r["agency_id"], r["request"]) == (agency_id, "main") and r.get("kind") != "download"), None)
+                if (r["agency_id"], r["request"]) == (agency_id, request) and r.get("kind") != "download"), None)
     if row is None or row["state"] == "no_law_package":
         raise ValueError("no law package: dates cannot be computed")
     if row["state"] == "producing":
@@ -1020,7 +1111,13 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
         package = law.load_package(kit._jurisdiction(read_config(root)), law_base)
     except ValueError:
         raise ValueError("no law package: dates cannot be computed") from None
-    target = _followup_target(root, f"{agency_id}-{day.isoformat()}.md", replace)
+    contact = None
+    if cite_contact:  # refused before followups/ is created or an existing draft touched
+        contact = _latest_contact(entry, day.isoformat())
+        if contact is None:
+            raise ValueError(f"no contact recorded for {label} on or before {day.isoformat()}; "
+                             "run kit-contact first or drop --cite-contact")
+    target = _followup_target(root, f"{_stem(agency_id, request)}-{day.isoformat()}.md", replace)
     statute, name = package["records_law"], row["name"] or agency_id
     extended = " (extended, as the agency noted)" if any(s.get("kind") == "extension" for s in steps) else ""
     subject, first = draft_lines(entry)
@@ -1029,10 +1126,12 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
             "or a denial.") if row["state"] == "past_due" else (
         f"We have received part of the records; you said the next installment would come on {row['due']}. As of "
         f"{day.isoformat()} we have no record of that installment.")
+    cited = [f"On {contact['on']} we contacted the records office by {CONTACT_LABELS[contact['channel']]} "
+             f"({contact['role']}).", ""] if contact else []
     lines = [f"# Follow-up draft: {name}{subject}", "", "DRAFT — NOT SENT. Review before sending it yourself.", "",
              f"To: {name}, records custodian", "", *([first, ""] if first else []),
              f"On {entry['sent_on']} we sent a records request by {entry['channel']} to {name}. {told}",
-             "", f"Please tell us the status of the request under the {statute['name']}, {statute['citation']}, "
+             "", *cited, f"Please tell us the status of the request under the {statute['name']}, {statute['citation']}, "
              "and when you expect to respond.", "", kit.DEFAULT_REQUESTER, "", "---", ""]
     if package["status"] != "reviewed":
         lines.append(f"Law package status: {package['status']} (not independently reviewed)")

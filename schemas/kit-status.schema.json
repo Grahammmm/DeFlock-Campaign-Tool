@@ -57,6 +57,16 @@
           "reference": {"type": ["string", "null"]},
           "fee_state": {"enum": [null, "unpaid", "paid", "waived"]},
           "fee_paid": {"$ref": "#/$defs/dollars_or_null"},
+          "contacts": {"type": "integer", "minimum": 1},
+          "last_contact": {
+            "type": "object", "additionalProperties": false,
+            "required": ["on", "channel", "role"],
+            "properties": {
+              "on": {"$ref": "#/$defs/date"},
+              "channel": {"enum": ["phone", "voicemail", "in_person", "email"]},
+              "role": {"type": "string", "minLength": 1, "maxLength": 60}
+            }
+          },
           "downloads_pending": {
             "type": "array", "minItems": 1,
             "items": {

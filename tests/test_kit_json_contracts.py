@@ -19,7 +19,8 @@ STATUS = json.loads((REPO_ROOT / "schemas" / "kit-status.schema.json").read_text
 DUE = json.loads((REPO_ROOT / "schemas" / "kit-due.schema.json").read_text(encoding="utf-8"))
 ROW = STATUS["properties"]["requests"]["items"]
 OPEN = DUE["properties"]["open"]["items"]
-CONDITIONAL = {"more", "correspondence", "correspondence_prefixes", "correspondence_more", "downloads_pending"}
+CONDITIONAL = {"more", "correspondence", "correspondence_prefixes", "correspondence_more", "downloads_pending",
+               "contacts", "last_contact"}
 STATES = {"waiting_on_you", "producing", "installment_passed", "no_law_package", "past_due", "due_today", "upcoming",
           "download_pending", "download_expired"}
 STAMP = "2026-03-01T00:00:00+00:00"

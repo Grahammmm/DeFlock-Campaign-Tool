@@ -1084,6 +1084,19 @@ def main():
         followup_p.add_argument(flag, required=True)
     followup_p.add_argument("--as-of", help="YYYY-MM-DD, not after today (default today)")
     followup_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
+    followup_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    followup_p.add_argument("--cite-contact", action="store_true", help="Add one line naming your latest recorded contact "
+                            "(kit-contact) on or before --as-of: channel and job title only, never its note")
+    from .kit_track import CONTACT_CHANNELS as contact_channels
+    contact_p = commands.add_parser("kit-contact", help="Record your own call, voicemail, counter visit or email to the "
+                                    "records office on a sent request, privately; sends nothing")
+    for flag in ("--directory", "--agency", "--on"):
+        contact_p.add_argument(flag, required=True)
+    contact_p.add_argument("--channel", required=True, choices=contact_channels)
+    contact_p.add_argument("--with", dest="role", required=True, metavar="ROLE", help="Job title of who you spoke or "
+                           "wrote to (1-60 characters), not a person's name; no email address or phone number")
+    contact_p.add_argument("--note", required=True, help="1-500 characters of plain text; no personal details")
+    contact_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     denial_p = commands.add_parser("kit-denial-reply", help="Private reply draft after a recorded denied step; never sent")
     for flag in ("--directory", "--agency"):
         denial_p.add_argument(flag, required=True)
@@ -1762,8 +1775,14 @@ def main():
             print(json.dumps(list_cli(args, root), indent=2))
         elif args.command == "kit-followup":
             from .kit_track import followup
-            print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace), indent=2))
+            print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace, request=args.request,
+                                      cite_contact=args.cite_contact), indent=2))
             print("Draft only. Nothing was sent.")
+        elif args.command == "kit-contact":
+            from .kit_track import record_contact
+            print(json.dumps(record_contact(root, args.agency, args.on, args.channel, args.role, args.note,
+                                            request=args.request), indent=2))
+            print("Recorded only. Nothing was sent.")
         elif args.command == "kit-denial-reply":
             from .kit_track import denial_reply
             print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
