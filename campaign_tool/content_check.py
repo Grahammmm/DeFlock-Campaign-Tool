@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _asked, _bounds, _read_json,
-                      _require_keys, _slug, _text, _validate_cameras, check_source_pages, default_agencies,
+                      _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
                       load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_glossary,
                       topics_namespace_problem)
@@ -170,7 +170,7 @@ def content_problems(root, limit=LIMIT):
     else:
         _attempt(problems, "site.json", lambda: load_site(_read_json(site_path), content_dir / "public-assets"))
 
-    slugs, ids, findings = set(), set(), []
+    slugs, ids, findings, labelled = set(), set(), [], []
     for path in _files(content_dir, "findings"):
         label = "findings/" + path.name
         finding = _attempt(problems, label, lambda: load_finding(_read_json(path), label))
@@ -180,6 +180,7 @@ def content_problems(root, limit=LIMIT):
             problems.append(f"findings/{path.name}: duplicate finding slug or id")
         slugs.add(finding["slug"])
         ids.add(finding["id"])
+        labelled.append((label, finding))
         findings.append(finding)
     _attempt(problems, "campaign.json", lambda: problems.extend(check_findings(root, findings)))
     findings_intact = len(findings) == len(_files(content_dir, "findings"))
@@ -219,6 +220,10 @@ def content_problems(root, limit=LIMIT):
                             lambda: load_agencies(_read_json(agencies_path), "content/agencies.json"))
     else:
         agencies = _attempt(problems, "kit/agencies.json", lambda: default_agencies(root))
+    if agencies is not None:  # DF1952-07: a failed agency pass is already named; do not add an unknown-id line per finding
+        known = {agency["agency_id"] for agency in agencies}
+        for label, finding in labelled:
+            _attempt(problems, label, lambda: check_finding_agencies(finding, known, label))
 
     map_config = _map(problems, content_dir, library)
     if map_config and agencies is not None:  # a broken agency list would only add false lines

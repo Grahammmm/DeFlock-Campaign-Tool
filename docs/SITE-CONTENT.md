@@ -92,6 +92,17 @@ Review receipts are not evaluated by the build; the organizer's publication
 approval (see [CONTRACTS.md](CONTRACTS.md), approval card `publish_finding`)
 remains the gate that moves a finding into `content/findings/`.
 
+Optional `also_agency_ids` (DF1952-07): a list of 1 to 10 distinct agency ids, none equal to `agency_id`, for a finding that
+is about several agencies. It needs a non-empty primary `agency_id` and every id (primary included) must be one of the
+campaign's agencies, or `load_finding`, `build`, `content-check`, `finding publish` and `finding correct` refuse it by
+field and index; the order you enter is kept. The one finding page then appears on every named agency's page and Atom
+feed, counts once in each agency card and city `findingCount`, is listed under each agency in the findings filter and in
+related findings (any shared agency counts as "same agency"), and its page and the printable packet link every agency.
+`data/findings.json` carries `also_agency_ids` only for such findings. The field is part of the reviewed content hash:
+adding, removing or reordering an agency invalidates earlier review receipts, so for a published finding it takes a
+`finding correct --from DRAFT` with fresh review. Findings without the field render byte for byte as before. Search,
+kits, meeting packs, newsletters, the timeline and law-rule scope still use the primary agency only.
+
 Rule check: every id in `rule_ids` (unique, non-empty, at most 120 characters) and every non-null `sources[].rule_id` must be a
 rule in the campaign's law package (`campaign.json` country-state) in force on `event_date`, or `build` stops and
 `content-check` names it; `content-check` also prints `law package <jurisdiction>: draft|reviewed|missing`.
@@ -354,7 +365,7 @@ present. `data/findings.json` is the published findings as open data
 `about.html`: per finding `id`, `slug`, `title`, `summary`, `body_md`,
 `classification`, `confidence`, `event_date`, `published_at`, `updated_at`,
 `agency_id`, `url` (absolute only when `base_url` is set; top-level `url_kind`
-says which), `limitations`, `counterevidence`, `corrections` (`date`, `note`) and
+says which), `also_agency_ids` (only on a finding that has it), `limitations`, `counterevidence`, `corrections` (`date`, `note`) and
 `sources` (`sha256_prefix`, the 12 hex characters shown on the page, `title`,
 `locator`, `rule_id`). It never includes `author`, `state`, `rule_version`,
 `duty`, `exceptions`, `rule_ids` or full hashes; the build refuses and writes
