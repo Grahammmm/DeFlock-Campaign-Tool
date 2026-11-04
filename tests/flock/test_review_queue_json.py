@@ -164,16 +164,27 @@ class ReviewQueueJsonTest(rq.ReviewQueueTest):
             calls = []
 
             def fdopen(*args, **kwargs):
-                calls.append(1)
-                if len(calls) == fail_on:
-                    raise OSError('injected')
+                mode = args[1] if len(args) > 1 else kwargs.get('mode', 'r')
+                if any(flag in mode for flag in 'wax+'):
+                    calls.append(1)
+                    if len(calls) == fail_on:
+                        raise OSError('injected')
                 return real(*args, **kwargs)
             with self.subTest(fail_on=fail_on), mock.patch.object(queue.os, 'fdopen', fdopen):
                 code, stdout = self.call(None, '--json')
                 self.assertEqual(code, 1)
                 self.assertEqual(stdout, 'queue refused: invalid input or output\n')
                 self.assertFalse(os.path.lexists(self.result))
-        with mock.patch.object(queue.os, 'open', side_effect=[os.open(os.devnull, os.O_WRONLY), OSError('injected')]):
+        real_open, calls = os.open, []
+
+        def open_output(path, flags, *args, **kwargs):
+            if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+                calls.append(1)
+                if len(calls) == 2:
+                    raise OSError('injected')
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(queue.os, 'open', side_effect=open_output):
             self.assertEqual(self.call(None, '--json')[0], 1)
         self.assertFalse(os.path.lexists(self.result))
 

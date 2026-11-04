@@ -19,10 +19,10 @@ class ReviewQueueRunTest(rq.ReviewQueueTest):
         self.assertEqual(base.run('flock_compare.py', 'scaffold', '--store', str(self.store), '--agency', base.AGENCY,
                                   '--date', SECOND, '--provider', 'anthropic', '--model', 'claude-opus-5-5',
                                   '--applicability', 'Sample city police')[0], 0)
-        shutil.copy(base.FIXTURES / 'findings-sample.csv', self.second / 'FINDINGS.csv')
+        (self.second / 'FINDINGS.csv').write_text(self.fixture_text('findings-sample.csv'))
         self.assertEqual(base.run('flock_verify.py', 'start', str(self.second), '--provider', 'openai',
                                   '--model', 'gpt-5-codex')[0], 0)
-        shutil.copy(base.FIXTURES / 'verify-sample.csv', self.second / 'VERIFY.csv')
+        (self.second / 'VERIFY.csv').write_text(self.fixture_text('verify-sample.csv'))
         self.assertEqual(base.run('flock_verify.py', 'finish', str(self.second))[0], 0)
         self.assertEqual(base.run('flock_publish.py', 'export', str(self.second), '--site-slug', 'sample')[0], 0)
 

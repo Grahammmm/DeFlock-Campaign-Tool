@@ -82,7 +82,7 @@ class ReviewQueueTest(base.FlockPublishTest):
             reader = csv.DictReader(h)
             fields, rows = reader.fieldnames, list(reader)
         for row in rows:
-            if row['fact_id'] == 'F-76dbe8a9b4ac':
+            if row['fact_id'] == self.fact_ids['F-76dbe8a9b4ac']:
                 row['effective_to'] = '2026-10-30'
         with facts.open('w', newline='') as h:
             writer = csv.DictWriter(h, fields, lineterminator='\n')

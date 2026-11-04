@@ -11,7 +11,8 @@ The manifest shape matches ``newsletterManifest`` in the workspace Worker::
      "meetings": [{"body", "starts_at", "agenda_item", "agenda_url", "relevance",
                    "participation"?: {...} | null}],  # --from-content: content.load_participation's dict
      "decisions": [{"body", "on", "result", "vote", "source_url", "meeting_path"}],  # optional, --from-content
-     "requests": [{"agency", "topic", "asked_on", "updated_on", "state", "sentence", "path"}]}  # optional, --from-content
+     "requests": [{"agency", "topic", "asked_on", "updated_on", "state", "sentence", "path"}],  # optional, --from-content
+     "records": [{"title", "agency", "received_at", "prefix", "public_url", "path"}]}  # optional, --from-content
 
 ``corrections`` is optional (``--from-content`` sets it; Worker manifests omit it).
 ``participation`` likewise: an object adds a "How to take part" line, null the
@@ -42,6 +43,7 @@ MAX_CORRECTIONS = 50
 NOTE_LIMIT = 200
 _PATH = re.compile(r"/[A-Za-z0-9._/-]{0,200}")
 _AGENCY_PATH = re.compile(r"/[A-Za-z0-9._/-]{0,200}(?:#[A-Za-z0-9_-]{1,80})?")
+_PREFIX = re.compile(r"[0-9a-f]{12}")
 _HTTPS = re.compile(r"https://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[A-Za-z0-9._~/?#&=%-]*)?")
 # Patterns that must never appear in a draft: emails and phone-like numbers
 # would mean personal data leaked into the manifest.
@@ -181,6 +183,40 @@ def _requests(items, since, now, base_url):
     return lines
 
 
+def _records(items, since, now, base_url):
+    """Lines for ``records`` (DF1422-15): library entries whose ``received_at`` day is inside the window.
+
+    The window is the ``since`` day through ``now``'s day; an entry received after ``now`` is never listed. Only the
+    12-character record prefix is shown. The sources page link is added only when the campaign has a ``base_url``.
+    """
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise DraftError("records must be a list")
+    low, high = (since.date() if since else None), now.date()
+    lines = []
+    for index, item in enumerate(_entries(items, "records")):
+        label = f"records[{index}]"
+        received = item.get("received_at")
+        day = _day(received[:10] if isinstance(received, str) else received, label + ".received_at")
+        title, agency = _clean(item.get("title"), label + ".title", 160), _clean(item.get("agency"), label + ".agency", 120)
+        prefix, url, path = item.get("prefix"), item.get("public_url"), item.get("path")
+        if not title or not agency:
+            raise DraftError(f"{label}: title and agency are required")
+        if not isinstance(prefix, str) or not _PREFIX.fullmatch(prefix):
+            raise DraftError(f"{label}.prefix: 12 lowercase hex characters required, got {str(prefix)[:20]!r}")
+        if url is not None and (not isinstance(url, str) or not _HTTPS.fullmatch(url)):
+            raise DraftError(f"{label}.public_url: must be an https:// URL")
+        if not isinstance(path, str) or not _AGENCY_PATH.fullmatch(path) or ".." in path.split("/"):
+            raise DraftError(f"{label}.path: invalid public path")
+        if day > high or (low is not None and day < low):
+            continue
+        entry = f"- **{title}** ({agency}), received {day.isoformat()}, record {prefix}"
+        entry += f" [Public copy]({url})" if url else ""
+        lines.append(entry + (f" [Sources page]({base_url.rstrip('/') + path})" if base_url else ""))
+    return lines
+
+
 def _how(value, label, excluded):
     """Organizer ``how`` text, or "see official details" when it holds an email or phone (DF2037-15)."""
     if isinstance(value, str) and (_EMAIL.search(value) or _PHONE.search(value)):
@@ -271,6 +307,7 @@ def build_draft(manifest, now=None):
         raise DraftError("findings and meetings must be lists")
     decisions = _decisions(manifest.get("decisions"))
     requests = _requests(manifest.get("requests"), since, now, base_url)
+    records = _records(manifest.get("records"), since, now, base_url)
     # The engine applies the documented window itself: findings published since the
     # last send, meetings that have not started yet (soonest first). Labels keep the
     # manifest index so a bad entry is named where the organizer can find it.
@@ -333,6 +370,12 @@ def build_draft(manifest, now=None):
         if len(requests) > MAX_MEETINGS:
             lines.append(f"- and {len(requests) - MAX_MEETINGS} more on the site.")
         lines.append("")
+    if records:
+        lines.append("## New in the records library")
+        lines += records[:MAX_FINDINGS]
+        if len(records) > MAX_FINDINGS:
+            lines.append(f"- and {len(records) - MAX_FINDINGS} more on the sources page.")
+        lines.append("")
     if decisions:
         lines.append("## Decisions")
         lines += decisions[:MAX_MEETINGS]
@@ -392,6 +435,7 @@ def build_draft(manifest, now=None):
     result = {"subject": subject[:200], "html": html, "text": text,
               "counts": {"findings": len(findings), "meetings": len(meetings),
                          **({"requests": len(requests)} if requests else {}),
+                         **({"records": len(records)} if records else {}),
                          **({"decisions": len(decisions)} if decisions else {})}, "excluded": excluded,
               "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
     if review_flags:  # absent otherwise, so unflagged drafts stay byte-identical (same convention as corrections_listed)
