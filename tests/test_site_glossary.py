@@ -27,9 +27,9 @@ RULE = "ca-civ-1798.90.5-definitions"
 RULE_URL = "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."
 NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network access attempted"))
 
-# Fixed-day (2026-10-01) baseline independently rendered from main 9c50543d
-# and calendar head 499af297: main plus the exact calendar intro link from
-# that immutable PR; meetings.ics matches the immutable PR bytes.
+# Fixed-day (2026-10-01) baseline independently rendered from main af567b4d
+# and source-filter head 6fefe4fa: source page, filter script, stylesheet and
+# site-data.js match the immutable PR; every other file matches main.
 # Every merged file was compared byte-for-byte against these independent inputs.
 # DF0237-02: agencies.html alone was re-rendered, for the always-on ninth glance column ("Latest report", "none on
 # record" when no report is recorded; presentation only), from main 6daa8a2e; every other digest is unchanged.
@@ -69,12 +69,13 @@ BASELINE = {
     "robots.txt": "f520ce90da728c1ea72afb9c9f22a0976b5e2c16ac6aa7256e1218479b4f2b80",  # pragma: allowlist secret -- public rendered-file SHA-256
     "search.html": "94d7901059876ce0e2b21209916607a5e039a4fa45dcb29d9846fb20de64710e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "search.js": "0f6185d1995caa68bb3292cf15417996ee917bf5b3c48c81d05cbd057d0da1f6",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "site-data.js": "bbce3111f93457ba0bc47b04ba0876e13bbcafa57305f61a9b046e72d62c0541",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "site-data.js": "992aa92b3f544c4deaba28d2661f8b9ed995939a7da592540f269f0fb0a23e7e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "sitemap.xml": "ab05fa8c7d57a393d8997b194fcef21e0e444f2f4eef751c101df532b9fd522e",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "sources.html": "9efaaba42f6ba6d532fa33fff2cc51d65bd4dbda95e3192457393aeaed862eb2",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "sources.html": "d36957ff6da8632165c36750951d444d235a3bedcf5721b186135aef0af84dd4",  # pragma: allowlist secret -- public rendered-file SHA-256
     "sources/beefbeefbeef.html": "fe3419b37acf26a42df77207a223a0fcbfed04b9567a32b4c44f113f0cda6772",  # pragma: allowlist secret -- public rendered-file SHA-256
     "sources/cafecafecafe.html": "c22983ff1eae601a774dc1b391063605d10cf8cf7719aca954fdef5dc4e300fb",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "style.css": "640f0eb310ea16f07977566cd01d4298d73fed80b89603ce3d711072ec4aabc0",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "sources/filter.js": "4880474e6f4e552946692df7bbadbf9341d0c383f081b873d776d1cbc1070b2a",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "style.css": "2dc934dbebe30b0c6c11780789a53d1a4c853f7cbbd5ff5b27cb347bed933bf4",  # pragma: allowlist secret -- public rendered-file SHA-256
     "timeline.html": "48af0aaa960234edcc8eac283c91e470c9136bfbc329cfa75e71e78757b41415",  # pragma: allowlist secret -- public rendered-file SHA-256
 }
 
