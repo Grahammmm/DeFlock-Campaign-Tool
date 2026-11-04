@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from . import law, map_controller
 from .agency_cards import text as plain_text, visible
+from .camera_direction import valid_direction
 from .review import CLASSIFICATIONS, review_blockers
 
 CONFIDENCE = ("verified", "likely", "needs_attorney_review")
@@ -1657,6 +1658,9 @@ def _validate_cameras(document, label):
                 if value is not None and (not isinstance(value, str) or
                                           not re.fullmatch(r"https://www\.openstreetmap\.org/(?:node|way)/\d+", value)):
                     raise ContentError(f"{label}.features[{index}].url: must be an openstreetmap.org object URL")
+            elif key == "direction":  # DF0237-11: an OpenStreetMap facing tag as tagged, or null; never echoed back
+                if value is not None and not valid_direction(value):
+                    raise ContentError(f"{label}.features[{index}].direction: expected an OpenStreetMap facing tag or null")
             elif isinstance(value, str) and not plain_text(value):
                 raise ContentError(f"{label}.features[{index}].{key}: plain text only")
             elif not isinstance(value, (str, int, float, bool)) and value is not None:

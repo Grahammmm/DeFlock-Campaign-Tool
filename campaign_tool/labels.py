@@ -193,6 +193,7 @@ DEFAULTS = {
     "map.check_heading": "Organizer check", "map.check_seen_in_person": "Seen in person",
     "map.check_in_agency_record": "Listed in an agency record", "map.check_not_found_on_site": "Not found on site",
     "map.check_duplicate": "Duplicate of another point", "map.check_earlier": "and {count} earlier",
+    "map.direction_line": "Faces: {direction} (OpenStreetMap tag)",
     "signup.email": "Email address", "signup.placeholder": "you@example.org",
     "signup.provider_note": "Submitting opens the provider's hosted confirmation page.",
     "signup.none": "No email addresses are collected by this site. Follow meetings and findings here or by feed.",

@@ -49,7 +49,7 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 | `content/sources.json` | no | source-library entries: `sha256`, `title`, `agency_id`, `received_at`, `public_url` or null, `fragment`, `pages`, `note` |
 | `content/agencies.json` | no | override list; default is the selected entries of `kit/agencies.json` plus `kit/governing-bodies.json` |
 | `content/map/map-config.json` | no | controller settings (`schemas/map-controller.schema.json` keys) plus `county_bounds`, `style_url`, `tile_hosts`, `group_label`, `attribution` |
-| `content/map/cameras.geojson` | with map | Point features; properties `manufacturer`, `operator`, `url` (openstreetmap.org object URL or null) |
+| `content/map/cameras.geojson` | with map | Point features; properties `manufacturer`, `operator`, `url` (openstreetmap.org object URL or null) and optional `direction` (an OpenStreetMap facing tag string or null; see Map data) |
 | `content/map/<city-boundaries>.geojson` | with map | the file named by `city_boundaries_url` (`data/<file>.geojson`); features need `NAME` or `BASENAME` |
 | `content/map/county.geojson` | no | county outline, served as `/data/county.geojson` |
 | `content/map/cities.json` | no | `{slug: {bounds: [[w,s],[e,n]], name}}` for police/city_council agencies shown in the picker |
@@ -1005,6 +1005,21 @@ that do not strictly increase, a negative or non-integer count, a symlink or a f
 and never its value; `content-check` lists the same line. With two or more records `cameras.html` shows "Mapped points
 over time", a plain table (date, total, added, removed, and per-city columns when every record has `by_city`); with
 none or one the built site is unchanged. A mapped point, and a rising count, is not evidence of agency ownership.
+
+**Facing tag (`direction`, optional).** `fetch_osm_alprs.py` keeps a node's `direction` tag (else its `camera:direction`
+tag; a present but unusable `direction` is never replaced by the other key) in `cameras.geojson` as
+`properties.direction`, exactly as tagged, when it is 1 to 4 values joined by `;` (no spaces, at most 15 characters)
+and each value is a whole number 0 to 359 (no sign, fraction or leading zero) or one of the 16 compass words N, NNE,
+NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW in any case. Anything else on a retained point is written
+as `null`, and the run prints `direction invalid=N` on stderr (a count only, never the tag text); a point without
+either tag gets no `direction` property, so a map fetched without any facing tag is byte-identical to before and a
+`cameras.geojson` without the property reads unchanged. `--check` treats a changed value as `retagged`, comparing
+the strings exactly (`NE` to `ne` or to `SW` is retagged; a missing property and `null` are both "unknown"). `build`
+and `content-check` refuse a hand-edited `direction` outside the grammar (`map/cameras.geojson.features[N].direction:
+expected an OpenStreetMap facing tag or null`, never the value). `cameras.html` adds `Faces: NE (OpenStreetMap tag)`
+under the OpenStreetMap link of a tagged point (label `map.direction_line`) and the map popup shows the same text;
+untagged points show nothing new. The value is a volunteer's tag: no bearing is converted, and nothing is inferred
+about a road, a plate, coverage, ownership or an independent check.
 
 `content/map/point-checks.json` (optional; organizer-edited by hand, never fetched or written by the tool) records what
 an organizer found at single mapped points: `{"schema_version": 1, "checks": [{"node": 123, "status": "seen_in_person",
