@@ -170,6 +170,52 @@
           ]
         },
         {
+          "agency_id": "ca-san-francisco-bay-area-rapid-transit-district-police-alameda",
+          "name": "San Francisco Bay Area Rapid Transit District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "San Francisco Bay Area Rapid Transit District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (transit); serves Alameda County; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-east-bay-regional-park-district-police-alameda",
+          "name": "East Bay Regional Park District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "East Bay Regional Park District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (park); serves Alameda County; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-alameda-police",
           "name": "Alameda Police Department",
           "kind": "police",
@@ -1977,6 +2023,52 @@
           "sources": [
             {
               "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-francisco-bay-area-rapid-transit-district-police-contra-costa",
+          "name": "San Francisco Bay Area Rapid Transit District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "San Francisco Bay Area Rapid Transit District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (transit); serves Contra Costa County; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-east-bay-regional-park-district-police-contra-costa",
+          "name": "East Bay Regional Park District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "East Bay Regional Park District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (park); serves Contra Costa County; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -16179,6 +16271,29 @@
           ]
         },
         {
+          "agency_id": "ca-fulton-el-camino-recreation-and-park-district-police",
+          "name": "Fulton-El Camino Park Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "Fulton-El Camino Recreation and Park District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (park); serves Sacramento County; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-citrus-heights-police",
           "name": "Citrus Heights Police Department",
           "kind": "police",
@@ -18017,6 +18132,29 @@
           ]
         },
         {
+          "agency_id": "ca-san-diego-unified-port-district-police",
+          "name": "San Diego Unified Port District Harbor Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "San Diego Unified Port District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (port_harbor); serves San Diego County; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-carlsbad-police",
           "name": "Carlsbad Police Department",
           "kind": "police",
@@ -18800,6 +18938,29 @@
           "sources": [
             {
               "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-francisco-bay-area-rapid-transit-district-police-san-francisco",
+          "name": "San Francisco Bay Area Rapid Transit District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "San Francisco Bay Area Rapid Transit District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (transit); serves San Francisco County; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -19856,6 +20017,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-francisco-bay-area-rapid-transit-district-police-san-mateo",
+          "name": "San Francisco Bay Area Rapid Transit District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "San Francisco Bay Area Rapid Transit District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (transit); serves San Mateo County; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -21273,6 +21457,29 @@
           "sources": [
             {
               "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-francisco-bay-area-rapid-transit-district-police-santa-clara",
+          "name": "San Francisco Bay Area Rapid Transit District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "San Francisco Bay Area Rapid Transit District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (transit); serves Santa Clara County; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
