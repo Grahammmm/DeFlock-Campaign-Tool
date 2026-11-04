@@ -207,6 +207,10 @@ DEFAULTS = {
     "supporters.kind.civil_liberties": "Civil liberties", "supporters.kind.community": "Community",
     "supporters.kind.faith": "Faith", "supporters.kind.labor": "Labor", "supporters.kind.neighborhood": "Neighborhood",
     "supporters.kind.business": "Business", "supporters.kind.other": "Other",
+    "footer.press": "Press", "press.title": "Press",
+    "press.description": "Campaign background, press contact, recent findings with citation text, logo and open data for reporters.",
+    "press.contact": "Press contact", "press.findings": "Recent findings", "press.logo": "Logo",
+    "press.data": "Open data", "press.download_logo": "Download the logo", "press.license_unspecified": "License not specified",
 }
 # DF0137-14: fixed strings the generated scripts write into the page. Defaults are today's exact English; site.py
 # switches the scripts to LABELS lookups (site-data.js) only when a js.* key differs from its default.
