@@ -271,3 +271,34 @@ named as `line <L>: <the kit-response message>` (the header is line 1; up to 20 
 command exits 2 and nothing is written. A row equal to a step already recorded on that request is reported
 `already recorded, skipped`; the same row twice in the file is refused on its second line. Without `--apply` the command
 only checks; with `--apply` every new step is recorded in file order in one atomic write. Nothing is fetched or sent.
+
+## Taking back the latest step (kit-response-undo)
+
+`kit-response-undo --directory D --agency ID [--request NAME] --reason TEXT` removes exactly the last recorded step of a
+hand-sent (`email`, `portal` or `mail`) request: the one at the end of the list, not the one with the latest date. Use
+it for a mistyped date or kind, or a `closed` recorded by mistake, which otherwise locks the request. There is no index,
+date selector, bulk switch or redo; re-record the corrected step with `kit-response`. `--reason` is required (1-200
+characters after whitespace is collapsed; no `<`, `>` or control characters) and is never printed. A MuckRock request,
+an unknown request, a missing `kit/sent.json` and a request with no recorded step are refused, and nothing is written.
+
+Before anything is written the steps that remain are replayed, in order, through the same rules `kit-response` applies
+(dates, order, `acknowledged` first, extension, closed, clarification, fee, partial and expected dates, withheld basis,
+download expiry). Stored full record and correspondence hashes are checked as stored; no ledger lookup is made, so a
+step whose original file is gone still passes. The removed step is checked for shape only, so a step that is itself
+wrong can be taken back.
+
+The removed step, all its full hashes and metadata, the reason, a UTC time and the hashes of the entry before and after
+are appended to the private `kit/sent-undone.json` (`schema_version` 1, mode 0600, an `undos` list). Receipts are never
+changed or removed, and no ledger object, source or public content is touched. A missing archive means no receipts; a
+corrupt, wrong-schema, symlinked or non-regular archive, or a symlinked `kit/` folder, is refused before either write.
+The reference number and the request's own correspondence stay on the entry.
+
+The two files are written in a fixed order and are **not** atomic together: the archive is written and fsynced first,
+then `kit/sent.json` is replaced with the shorter list and the receipt's `undo_id` is stored on the entry (`undo_ids`).
+If the second write fails or the process stops in between, the archive holds a receipt whose id is not on the entry: an
+attempted, never a counted, undo. Run the command again; the retry gets a new id, and only ids on the entry count.
+`kit-status` shows `undone_steps` on a request row (only when above zero) and prints `<request>: N step(s) undone` on
+stderr; `kit-sent --replace` keeps the count. Every status, due, fee and download figure is recomputed from the steps
+that remain, so undoing a `closed` reopens the request, undoing a fee payment makes the estimate unpaid again, and
+undoing the final production leaves it partial or download-pending. Once every step is undone, `kit-sent --replace`
+can correct a wrong sent date. Nothing is fetched or sent.
