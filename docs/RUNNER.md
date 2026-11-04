@@ -1,5 +1,7 @@
 # Runner
 
+See [hosted path status](STATUS.md#hosted-path-deploy-scheduled-nothing-provisioned-g-2026-11-01) for the decision and remaining work.
+
 The runner is the container that does the engine work the Workers cannot: parsing
 preserved mail, sandboxed PDF/workbook extraction, redaction and digests, follow-up
 drafting and the public-site build. It is a poll loop over the runner API in
