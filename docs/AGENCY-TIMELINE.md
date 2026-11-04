@@ -165,6 +165,16 @@ open (`producing: true`, `next_installment` in `kit-status`) until a final `prod
 installment date) or, once that date has passed, `installment_passed` (counted, exit 3); `today` shows it and
 `kit-followup` drafts a reminder naming the date. Only a final `produced` step clears a stated production date.
 
+## Download links that expire (kit requests)
+
+`kit-response --kind produced --download-expires-on YYYY-MM-DD` records the date the agency says its download link
+expires (produced steps only; not before the step's own `--date`). The production stays "download pending" until
+records are linked to it: a later `produced --record PREFIX` step on the same request clears the latest pending one
+(records on the same step mean it is not pending at all). `kit-status` lists `downloads_pending` with days left;
+`kit-due` adds a `download` row due on the expiry date and, once it has passed, `download_expired` (counted, exit 3):
+"link expired: ask the agency for a new one"; `today` shows the same rows. Only the date is kept: the link itself is
+never stored or fetched, and nothing is downloaded for you. Files without the key read exactly as before.
+
 ## Clarification requested (kit requests)
 
 `kit-response --kind clarification_requested` records the agency asking you to clarify or narrow a request (not after

@@ -41,7 +41,7 @@ VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies",
-                       "_redirects", "methods.html", "privacy.html", "search.html", "search.js", "supporters.html"}
+                       "_redirects", "methods.html", "privacy.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
@@ -470,6 +470,16 @@ class Site:
         for finding in model["findings"]:
             for sha in dict.fromkeys(s["sha256"] for s in finding["sources"]):
                 self.cited_by.setdefault(sha, []).append(finding)
+        # DF2207-06: published finding id -> staged meetings whose kit stored it as cited_findings, newest first.
+        # Only ids of findings in the validated public model count; a withdrawn or unknown id lists nothing.
+        public_ids = {f["id"] for f in model["findings"]}
+        self.meetings_by_finding = {}
+        for meeting in sorted(model["meetings"], key=lambda m: m["id"]):  # stable id order, then newest moment first
+            for finding_id in meeting.get("cited_findings", ()):
+                if finding_id in public_ids:
+                    self.meetings_by_finding.setdefault(finding_id, []).append(meeting)
+        for listed in self.meetings_by_finding.values():
+            listed.sort(key=lambda m: utc_moment(m["starts_at"]), reverse=True)
         self.city_agencies = [a for a in model["agencies"] if a["kind"] in CITY_KINDS]
         self.map = model["map"]
         self.maplibre = "maplibre-gl.js" in model["vendor"]
@@ -590,7 +600,8 @@ class Site:
             parts.append(f'<p><a href="/supporters.html">{self.t("supporters.title")}</a></p>')
         parts.append(f'<p><a href="/privacy.html">{self.t("footer.privacy")}</a></p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
-        parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a> · <a href="/search.html">{self.t("footer.search")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}'
+        archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
+        parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a> · <a href="/search.html">{self.t("footer.search")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}{archive}'
                      ' · <a href="/methods.html">How to read our findings</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
@@ -1157,6 +1168,24 @@ class Site:
                 parts.append(f'<p class="notice">Law package status: {e(self.law_status)}.</p>')
         return "".join(parts) + "</section>"
 
+    def finding_meetings_html(self, finding):
+        """DF2207-06: the staged meetings whose comment kit cites this finding, newest first; "" with none.
+
+        A staged citation is not proof of attendance, speaking, adoption or endorsement."""
+        items = []
+        for meeting in self.meetings_by_finding.get(finding["id"], ()):
+            moment = datetime.fromisoformat(meeting["starts_at"].replace("Z", "+00:00"))
+            offset = int(moment.utcoffset().total_seconds()) // 60
+            shown = (f'{moment:%Y-%m-%d %H:%M} (UTC{"-" if offset < 0 else "+"}{abs(offset) // 60:02d}:{abs(offset) % 60:02d})')
+            cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
+            agenda = f' · {self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}' if meeting["agenda_item"] else ""
+            outcome = meeting.get("outcome")
+            result = f' · Outcome: {e(OUTCOME_LABELS[outcome["result"]])}' if outcome else ""
+            items.append(f'<li><time datetime="{e(meeting["starts_at"])}">{e(shown)}</time> · '
+                         f'<a href="/meetings/{e(meeting["id"])}.html">{cancelled}{e(meeting["body"])}</a>{agenda}{result}</li>')
+        return (f'<h3 id="discussed-at-public-meetings">Discussed at public meetings</h3><ul>{"".join(items)}</ul>'
+                if items else "")
+
     def finding_html(self, finding):
         sources = []
         for source in finding["sources"]:
@@ -1200,6 +1229,7 @@ class Site:
                 + f'<h3 id="corrections">{self.t("finding.corrections")}</h3><ul>{corrections}</ul>'
                 + f'<p><a href="/corrections.html">{self.t("finding.all_corrections")}</a></p>'
                 + f'<p><a href="/corrections.html#request">{self.t("finding.ask_correction")}</a></p>'
+                + self.finding_meetings_html(finding)
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         return self.page("findings", finding["title"], finding["summary"], finding_path(finding), main,
                          scripts=["/findings/cite.js"],
@@ -1343,6 +1373,25 @@ class Site:
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         return self.page(f'page:{page["slug"]}', page["title"], page["description"] or page["title"],
                          f'/{page["slug"]}.html', main)
+
+    def newsletters_html(self):
+        """/newsletters.html (DF1952-09): public issues from content/newsletters/, newest first; no signup or footer text."""
+        rows = "".join(f'<li><a href="/newsletters/{issue["sent_on"]}.html">{e(issue["title"])}</a> '
+                       f'<time datetime="{issue["sent_on"]}">{issue["sent_on"]}</time></li>'
+                       for issue in reversed(self.model["newsletters"]))
+        main = ('    <section class="section finding-body" id="content"><h2>Newsletter archive</h2>'
+                f'<p>Past issues of our email newsletter, as sent.</p><ul>{rows}</ul>'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("newsletters", "Newsletter archive", "Past issues of our email newsletter", "/newsletters.html", main)
+
+    def newsletter_html(self, issue):
+        """/newsletters/<day>.html (DF1952-09): one issue's public Markdown through markdown_lite."""
+        day = issue["sent_on"]
+        main = (f'    <article class="section finding-body" id="content"><h2>{e(issue["title"])}</h2>'
+                f'<p>Sent <time datetime="{day}">{day}</time></p>{self.md(issue["body_md"])}'
+                f'<p><a href="/newsletters.html">All newsletter issues</a></p>'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
+        return self.page("newsletters", issue["title"], f"Newsletter issue sent {day}", f"/newsletters/{day}.html", main)
 
     def methods_html(self):
         """/methods.html (DF2037-14): label definitions from the badge tables, the record-number explainer and the
@@ -1639,6 +1688,8 @@ class Site:
             paths += ["/topics/"] + [f'/topics/{t["slug"]}.html' for t in self.topics]
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
         paths += ["/supporters.html"] if self.supporters else []  # DF2207-13
+        if self.model.get("newsletters"):  # DF1952-09: only with public issues
+            paths += ["/newsletters.html"] + [f'/newsletters/{i["sent_on"]}.html' for i in reversed(self.model["newsletters"])]
         paths += list(self.agency_pages().values())
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
         paths += [f'/meetings/{m["id"]}.html' for m in self.model["meetings"]]
@@ -1882,6 +1933,10 @@ def _plan_site(root, today=None, notes=None):
         pages[f'{page["slug"]}.html'] = site.content_page_html(page)
     if site.supporters:  # DF2207-13: no rows, no page
         pages["supporters.html"] = site.supporters_html()
+    if model["newsletters"]:  # DF1952-09: newest first; the slug is reserved, so nothing else can own these paths
+        pages["newsletters.html"] = site.newsletters_html()
+        for issue in model["newsletters"]:
+            pages[f'newsletters/{issue["sent_on"]}.html'] = site.newsletter_html(issue)
     if site.topics:  # DF1952-06
         pages["topics/index.html"] = site.topics_index_html()
         for topic in site.topics:

@@ -114,6 +114,8 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     if location is not None:
         document["location"] = location
     document.update({"participation": entry["participation"]} if participation is not None else {})
+    if cited:  # DF2207-06: the exact ids the kit cites, once; a kit citing none omits the field
+        document["cited_findings"] = [f["id"] for f in cited]
     kept = root / "content" / "meetings" / f"{meeting_id}.json"  # an organizer-verified outcome survives --replace
     try:
         old = _read_json(kept) if replace and kept.is_file() and not os.path.islink(kept) else {}

@@ -365,6 +365,26 @@ unverified meetings get no draft and are counted under `skipped`; an unreadable 
 counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts and
 `--check` are unchanged. Nothing is posted.
 
+### Social drafts for outcomes (never posted)
+
+`social --directory D --outcomes [--within-days N] [--platform P ...]` (N from 1 to 60, default 14)
+writes one private draft per staged meeting whose organizer-recorded `outcome` is dated in the last
+N calendar days, to `kit/social/outcomes/<id>.md` (or `kit/social/outcomes/<P>/<id>.md` sized by that
+platform's rule; kept edits go to `kit/social/outcomes.suggested/` or `kit/social/outcomes/<P>.suggested/`).
+The window is on the recorded `outcome.on` date, inclusive: today and the N-1 days before it (exactly N
+dates), not the meeting start, the verification date or the file time. The post reads
+`<body> — <outcome.on>: <agenda item>. Result: <result>.`, then ` Vote: <vote>.` only when a vote line was
+recorded, then ` Official record: <outcome.source_url>` and `<base_url>/meetings/<id>.html` when `base_url`
+is set. The result token and the vote line are quoted exactly as recorded; no tally is derived from
+per-member votes and no decision is inferred. Only the agenda item is shortened; if the fixed fields
+alone cannot fit the platform's limit the run is refused, naming the meeting and platform, before any
+file is written. A meeting without a recorded outcome, a cancelled one, or one outside the window gets
+no draft and is counted under `skipped` (`cancelled`, `no_outcome`, `outside_window`, `unreadable`);
+an unreadable meeting file is counted and named, never fatal. Participation is not required. A draft
+you edited is kept (the fresh text goes to the suggestions folder); a corrected outcome updates only
+untouched drafts; drafts that left the window are listed as `stale`, never removed. `--outcomes` cannot
+be combined with `--meetings` or `--check`. Nothing is posted.
+
 ## Posting one approved social draft (Worker `post_social`)
 
 A social post is a message to the public and cannot be recalled, so the approval is **per post**.
