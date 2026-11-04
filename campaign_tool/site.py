@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
+from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, finding_agency_ids, glossary_terms_used,
                       load_content, utc_moment)
 from .corrections_policy import policy_html
@@ -45,7 +45,7 @@ VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "requests.html"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
@@ -681,7 +681,9 @@ class Site:
                      + (f' · <a href="/glossary.html">{self.t("footer.glossary")}</a>' if self.glossary else "") + '</p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
-        parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a> · <a href="/search.html">{self.t("footer.search")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}{archive}'
+        parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a> · <a href="/search.html">{self.t("footer.search")}</a>'
+                     f' · <a href="/requests.html">{self.t("footer.requests")}</a>'  # DF1103-13: between the feed and Corrections
+                     f' · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}{archive}'
                      ' · <a href="/methods.html">How to read our findings</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
@@ -1100,6 +1102,38 @@ class Site:
                    else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
         return self.page("agencies", self.labels["title.agencies"], self.labels["title.agencies_description"], "/agencies.html", main)
+
+    def request_rows(self):
+        """DF1103-13: every public asked item as ``(agency, item)``, newest ``asked_on`` first, then ``agency_id``, then the
+        item's position in its agency list; duplicates stay. Reads only the validated ``model["agencies"][*]["asked"]``."""
+        rows = [(agency["agency_id"], index, agency, item)
+                for agency in self.model["agencies"] for index, item in enumerate(agency.get("asked", []))]
+        rows.sort(key=lambda row: (row[0], row[1]))
+        rows.sort(key=lambda row: row[3]["asked_on"], reverse=True)  # stable: equal days keep (agency_id, index) order
+        return [(agency, item) for _, _, agency, item in rows]
+
+    def requests_html(self):
+        """/requests.html (DF1103-13): one table of every public asked item across agencies; the lead counts the same rows."""
+        rows = self.request_rows()
+        states = [item["state"] for _, item in rows]
+        counts = " · ".join(self.t("requests.count", state=self.t("requests.state_" + state), count=states.count(state))
+                            for state in ASKED_STATES)
+        lead = f'<p>{self.t("requests.lead", total=len(rows))} {counts}</p>'
+        heads = [self.t("requests.col_" + key) for key in ("agency", "topic", "asked_on", "state", "updated_on")]
+        body = []
+        for agency, item in rows:
+            page = self.agency_pages().get(agency["agency_id"], f'/agencies.html#{agency["slug"]}')
+            cells = [f'<a href="{e(page)}">{e(agency["name"])}</a>', e(item["topic"]), time_tag(item["asked_on"]),
+                     e(asked_sentence(item, self.today)),
+                     time_tag(item["updated_on"]) if item.get("updated_on") else self.t("requests.not_recorded")]
+            body.append(f'<tr><th scope="row" data-label="{heads[0]}">{cells[0]}</th>'
+                        + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
+        table = ((f'<table class="glance-table"><caption>{self.t("requests.caption")}</caption><thead><tr>'
+                  + "".join(f'<th scope="col">{head}</th>' for head in heads) + "</tr></thead><tbody>" + "".join(body)
+                  + "</tbody></table>") if rows else f'<p>{self.t("requests.empty")}</p>')
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div>'
+                f'<h2>{self.t("requests.title")}</h2></div></div>{lead}<p>{self.t("requests.note")}</p>{table}</section>\n')
+        return self.page("agencies", self.labels["requests.title"], self.labels["requests.description"], "/requests.html", main)
 
     @staticmethod
     def _official_name(person):
@@ -1902,7 +1936,8 @@ class Site:
 
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
-                 "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html"]
+                 "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html",
+                 "/requests.html"]  # DF1103-13
         paths += ["/cameras.html"] if self.map else []
         paths += ["/glossary.html"] if self.glossary else []
         if self.topics:  # DF1952-06: the index file topics/index.html is served at /topics/
@@ -2218,6 +2253,7 @@ def _plan_site(root, today=None, notes=None):
         "meetings.html": site.meetings_html(), "about.html": site.about_html(),
         "corrections.html": site.corrections_html(), "404.html": site.not_found_html(), "methods.html": site.methods_html(), "search.html": site.search_html(),
         "timeline.html": site.timeline_html(), "privacy.html": site.privacy_html(),
+        "requests.html": site.requests_html(),
     }
 
     for meeting in model["meetings"]:
