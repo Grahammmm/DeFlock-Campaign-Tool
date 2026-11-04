@@ -187,6 +187,20 @@ class BackupDiffTests(unittest.TestCase):
         self.assertEqual(report["more"], {"added": 50})
         self.assertEqual(report["removed"], [])
 
+    def test_plain_output_byte_identical_and_no_encrypted_key(self):
+        expected = json.dumps({"archive_created_at": self.manifest["created_at"], "current": True, "added": [],
+                               "removed": [], "changed": [], "unchanged": len(self.manifest["files"])}, indent=2) + "\n"
+        for extra in ((), ("--gnupg-home", self.base / "unused-gnupg-home")):
+            r = self.diff_cli(*extra)
+            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, expected, ""))
+        (self.root / "kit" / "new.json").write_text("{}")
+        r = self.diff_cli("--gnupg-home", self.base / "unused-gnupg-home")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(list(json.loads(r.stdout)), ["archive_created_at", "current", "added", "removed", "changed",
+                                                      "unchanged"])
+        self.assertNotIn("encrypted", r.stdout)
+        self.assertNotIn("encrypted", backup.diff(self.archive, self.root))
+
     def test_read_only_and_no_hashes_or_content_in_output(self):
         (self.root / "content" / "site.json").write_text('{"schema_version":1,"tagline":"edited-tagline-words"}')
         self.ingest(b"Third synthetic record.\n", "demo-3")
