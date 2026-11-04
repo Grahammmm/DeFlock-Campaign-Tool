@@ -72,8 +72,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         fixture = self.server.fixture
         path = urlsplit(self.path).path
         with fixture.lock:
-            fixture.active += 1
-            fixture.max_active = max(fixture.max_active,fixture.active)
             fixture.calls.append((self.headers.get('Host'),path))
             route = fixture.routes.get(path,{})
             sequence = route.get('sequence')
@@ -106,9 +104,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError,ConnectionResetError,OSError):
             pass
         finally:
-            with fixture.lock:
-                fixture.active -= 1
             self.close_connection = True
+
+
+class TrackedSocket:
+    """Count client-owned connections, not asynchronously finishing handlers."""
+    def __init__(self, sock, fixture):
+        self.sock = sock
+        self.fixture = fixture
+        self.closed = False
+        with fixture.lock:
+            fixture.active += 1
+            fixture.max_active = max(fixture.max_active, fixture.active)
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+    def close(self):
+        with self.fixture.lock:
+            if not self.closed:
+                self.closed = True
+                try:
+                    self.sock.close()
+                finally:
+                    self.fixture.active -= 1
 
 
 class Server(socketserver.ThreadingMixIn,socketserver.TCPServer):
@@ -137,7 +156,7 @@ class Fixture:
         sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         sock.settimeout(timeout)
         sock.connect(('127.0.0.1',self.server.server_address[1]))
-        return sock
+        return TrackedSocket(sock, self)
     def transport(self,**kwargs):
         # Actual production HTTP parser/stream/deadline machinery. The only seam
         # maps a validated public numeric fixture address to this loopback server.
