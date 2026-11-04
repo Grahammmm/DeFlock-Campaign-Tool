@@ -15,9 +15,9 @@ from .content import _read_json, load_agencies, load_meeting
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
          "request_installment_due", "request_download_pending", "request_download_expired", "finding_ready",
          "finding_blocked",
-         "contract_ending", "stale_comment_kit", "stale_contact", "review_waiting", "unreadable")
+         "contract_ending", "minutes_pending", "stale_comment_kit", "stale_contact", "review_waiting", "unreadable")
 WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS, REVIEW_DAYS = 7, 180, 120, 7
-CONTRACT_DAYS, CONTRACT_ENDED_DAYS = 90, 30
+CONTRACT_DAYS, CONTRACT_ENDED_DAYS, MINUTES_DAYS = 90, 30, 45
 
 
 def contract_days(text):
@@ -42,7 +42,7 @@ def _unreadable(label, exc):
     return _item("unreadable", f"fix {label}: {str(exc)[:ERROR_CHARS]}", f"open {label} and fix it", key=label)
 
 
-def _meetings(root, as_of):
+def _meetings(root, as_of, directory):
     folder, items = root / "content" / "meetings", []
     try:
         submitted = meeting_comments.read(root)  # a comment already sent by hand is not due again (DF1207-09)
@@ -52,22 +52,35 @@ def _meetings(root, as_of):
     for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
         label = "content/meetings/" + path.name
         try:
-            meeting = load_meeting(_read_json(path), "meetings/" + path.name)
+            meeting = load_meeting(_read_json(path), "meetings/" + path.name, today=as_of)
             written = (meeting["participation"] or {}).get("written_comment") or {}
             due = written.get("deadline")
             day = datetime.fromisoformat(due.replace("Z", "+00:00")).date() if due else None
         except (ValueError, OSError) as exc:
             items.append(_unreadable(label, exc))
             continue
+        ident = meeting["id"] or path.stem
+        if (pending := _minutes_item(meeting, ident, as_of, directory)) is not None:
+            items.append(pending)
         if meeting["status"] != "scheduled" or day is None or not as_of <= day <= as_of + timedelta(WINDOW_DAYS):
             continue
-        ident = meeting["id"] or path.stem
         if ident in submitted:
             continue
         agenda = f" (agenda: {meeting['agenda_url']})" if meeting["agenda_url"] else ""
         items.append(_item("comment_deadline", f"Written comment due {due} for {meeting['body']} ({ident})",
                            f"submit written comment: {written['how']}{agenda}", due, ident))
     return items
+
+
+def _minutes_item(meeting, ident, as_of, directory):
+    """DF2207-05: a recorded outcome older than MINUTES_DAYS days with no approved minutes linked (never an allegation)."""
+    outcome = meeting["outcome"]
+    if not outcome or "minutes_url" in outcome or (as_of - date.fromisoformat(outcome["on"])).days <= MINUTES_DAYS:
+        return None
+    return _item("minutes_pending", f"Outcome of {meeting['body']} ({ident}) recorded for {outcome['on']} has no approved "
+                 "minutes linked: check whether the body's official minutes are approved",
+                 f"meetings-outcome --directory {directory} --id {shlex.quote(ident)} "
+                 "--minutes-url OFFICIAL_MINUTES_URL --minutes-approved-on YYYY-MM-DD", outcome["on"], ident)
 
 
 def _requests(root, as_of, directory, law_base):
@@ -182,7 +195,7 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days
     """Ranked to-do items ``{rank, kind, what, due, command}``; reads only, never raises for a broken input."""
     root = Path(root)
     directory = shlex.quote(str(root))
-    sources = ((lambda: _meetings(root, as_of), "content/meetings/"),
+    sources = ((lambda: _meetings(root, as_of, directory), "content/meetings/"),
                (lambda: _requests(root, as_of, directory, law_base), "kit/sent.json"),
                (lambda: _findings(root, directory), "private/drafts/"),
                (lambda: _contracts(root, as_of, directory, contract_days), "content/agencies.json"),

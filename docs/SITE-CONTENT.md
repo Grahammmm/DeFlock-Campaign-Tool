@@ -313,6 +313,49 @@ ignored, symlinks and folders are refused, at most 50 files. Slugs that are star
 published finding slug are refused, as is a `public-assets/<slug>.html` entry. Every page is listed in
 `sitemap.xml`; `nav: true` (strictly a boolean, at most 3 pages) adds the title to the header nav after About.
 
+### Glossary (`content/glossary.json`, optional)
+
+Definitions an organizer has checked, written once, become `/glossary.html` and a "Terms used on this page" list on
+each finding that uses them. The file is `{"schema_version": 1, "terms": [...], "notice_md"?}`; nothing else.
+```json
+{"schema_version": 1, "notice_md": "Plain-language notes, not legal advice.",
+ "terms": [{"term": "ALPR", "aliases": ["license plate reader"], "definition_md": "A camera system that reads plates.",
+            "rule_id": "ca-civ-1798.90.5-definitions", "source_url": "https://leginfo.legislature.ca.gov/..."}]}
+```
+- `terms`: 0 to 80 entries; an empty list (or no file) switches the feature off completely: no page, no footer link, no
+  sitemap line, no list on findings, and every other output is byte-identical to a build without the file.
+- `term`: 1-100 characters of plain single-line text (no `<`, `>` or control characters), trimmed. `aliases`: 1 to 3 names
+  of the same kind. `definition_md`: non-blank, at most 8000 characters, rendered by the same escaped `markdown_lite` as
+  pages, so raw HTML shows as text. `notice_md` (at most 1000 characters, rendered above the entries) is optional;
+  `null` is refused, never read as "absent". Unknown keys, a `schema_version` other than the integer 1, wrong types and
+  non-string aliases are refused rather than coerced.
+- Names are compared after Unicode NFC, casefolding and collapsing whitespace. A term or alias that repeats another
+  one (across entries or within one) is refused naming both names and `glossary.json`; nothing is silently merged.
+- Terms are sorted by that normalized term, then spelling. Each gets the anchor `term-` plus the normalized term with
+  every run outside `a-z0-9` turned into `-`, so editing a definition or reordering the file never moves an anchor. A term
+  with no `a-z`/`0-9` at all, or two terms whose anchors would collide, is refused by name (no `-2` suffixes).
+- `rule_id` (optional) must be an exact rule id in the campaign's shipped law package (`campaign.json`'s jurisdiction)
+  and needs `source_url`, which must be one of that rule's `sources[].url`; no package, no rule or another URL refuses
+  the term. The page then shows the rule's citation and the package's own status ("draft, not legally reviewed" unless
+  the package says reviewed). Definitions are not gated on a finding's event date and never promote a review state.
+  `source_url` alone is only checked as an https URL: the organizer attests that it is the official source, and the build
+  never fetches it or judges its host.
+- `Terms used on this page` on a finding lists, in glossary order, each term whose name or alias appears in the
+  finding's `title`, `summary` or `body_md`. Each field is searched on its own (a phrase never spans two fields), after the
+  same normalization, as a literal (no patterns, stems or plurals) with a non-word character or the text edge on both
+  sides; letters, digits and `_` of any script are word characters. Markdown is searched as written, so link
+  destinations and code spans count. Definitions, sources, the footer and other findings never count. Nothing in the
+  prose is rewritten or auto-linked, and the finding hash, packet and open data are unchanged.
+- `glossary.html` joins the footer (next to Privacy) and, with `base_url`, `sitemap.xml`. `glossary` is a reserved slug
+  with or without the file: a `pages/glossary.json`, a finding slugged `glossary` and a `public-assets/glossary.html/...`
+  file are refused. The input JSON is never copied into `public/`.
+- `content-check` runs the build's own reader and lists every independent problem with `glossary.json` in its path;
+  a symlink (even dangling), folder or other non-regular `glossary.json`, an oversize file (2 MiB) or invalid UTF-8
+  or JSON is refused, not skipped. A refused glossary leaves the existing `public/` untouched; removing the file and
+  rebuilding removes the page and all its links.
+- Labels: `footer.glossary`, `title.glossary`, `title.glossary_description`, `heading.glossary`, `finding.terms` and
+  `glossary.also`, `glossary.citation`, `glossary.source`, `glossary.status` (see Labels).
+
 ### Newsletter archive (`content/newsletters/<YYYY-MM-DD>.json`, optional)
 
 Written by `newsletter archive --date D --publish` (see NEWSLETTER.md); exactly `{"schema_version": 1, "sent_on", "title",
@@ -367,6 +410,7 @@ pages, listed in the sitemap; other agencies get no page and no link; a `public-
 per picker city by name, each point in the first city boundary holding it by the counts' half-open rule, then the
 `group_label` section; manufacturer/operator or "not tagged", an OSM node link or "no OSM link"; over 2 000 points each
 section lists 500 rows, then "and N more on the map"; linked from the map fallback and footer, in `sitemap.xml`),
+`glossary.html` (only with a non-empty `content/glossary.json`: see Glossary),
 `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or
@@ -408,7 +452,9 @@ is not changed). A meetings CSV is not built.
 top level `schema_version`, `generated_at` (the build date at 00:00 UTC) and `meetings`; per meeting `id`, `body`,
 `agency_id` or null, `starts_at`, `status`, `agenda_url` or null, `url` (the page path `/meetings/<id>.html`) and, for a
 held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `source_url`, `vote` and the per-member
-`votes` as `{name, vote}` in stored order, each only when recorded). It never includes the comment kit, `participation`,
+`votes` as `{name, vote}` in stored order, each only when recorded), plus the pair `minutes_url` and
+`minutes_approved_on` (the body's approved official minutes, both or neither; no derived confirmation flag). It never
+includes the comment kit, `participation`,
 contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
 `data/meetings.json: non-public key ...` and writes nothing.
 `data/agencies.json` is the agencies as open data (`schemas/agencies-open-data.schema.json`), linked from
@@ -541,7 +587,7 @@ every page is byte-identical to the English defaults in `campaign_tool/labels.py
 ```
 Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descriptions), `eyebrow.*`, `heading.*`,
 `intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
-`signup.*`, `js.*` (scripts, below), `handout.*` (the private meeting-pack handout, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
+`signup.*`, `glossary.*`, `js.*` (scripts, below), `handout.*` (the private meeting-pack handout, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
 keeps its English default.
 A complete Spanish draft of every key is in [`examples/labels/es.json`](../examples/labels/es.json) ([README](../examples/labels/README.md)).
 Machine-made draft. A fluent Spanish reader must check every line before a campaign uses it; nothing here is reviewed.

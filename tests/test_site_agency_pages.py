@@ -123,9 +123,14 @@ class AgencyPageTests(unittest.TestCase):
         self.add_meeting("no-agency", "2026-11-08T18:00:00-07:00")
         self.build()
         html = self.read(CEDAR)
-        self.assertIn("Board cedar-up (fictional)", html)
-        self.assertIn("Board cedar-today (fictional)", html)
-        for other in ("cedar-past", "cedar-cancelled", "sheriff-up", "no-agency", "cedar-council-2026-10"):
+        # DF2207-05: this body's own past and cancelled meetings now follow the upcoming ones under "Past meetings"
+        upcoming, past = html.split("<h3>Past meetings</h3>")
+        self.assertIn("Board cedar-up (fictional)", upcoming)
+        self.assertIn("Board cedar-today (fictional)", upcoming)
+        for own in ("cedar-past", "cedar-cancelled"):
+            self.assertNotIn(f"Board {own} (fictional)", upcoming)
+            self.assertIn(f"Board {own} (fictional)", past)
+        for other in ("sheriff-up", "no-agency", "cedar-council-2026-10"):
             self.assertNotIn(f"Board {other} (fictional)", html)
             self.assertNotIn(f"/meetings/{other}.html", html)
         self.assertNotIn("No upcoming meetings are listed for this body.", html)

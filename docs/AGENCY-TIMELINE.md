@@ -226,6 +226,33 @@ of what the agency said, never a legal finding, and is independent of `--withhel
 `{scope_id, answer, on}` with the latest disposition and its step date, `answer: null` for no answer yet. `kit-coverage`
 (table and `--csv`) gains a last `scopes` column: `not recorded` or `k/n answered`.
 
+## Public asked items from the tracker (kit-asked)
+
+`kit-asked --directory D [--apply]` proposes the public "What we asked" list in `content/agencies.json` from the private
+`kit/sent.json`, for each request whose agency is in that file. A dry run (the default) prints one line per field
+change, `content/agencies.json <agency>.asked[<i>].<field>: <old> -> <new>` or `+ new item ...`, exit 0, and writes
+nothing. `--apply` builds the whole new document, validates it with the content loader (a refusal, or more than 20 items
+for an agency, prints `Stopped:`, exits 3 and writes nothing) and then writes it once, atomically. Nothing is sent or
+published; build as usual after reviewing it.
+
+Each proposed item is `topic` (the request's recorded scope titles joined with `; `, cut at a title boundary within 120
+characters; `Records request` when no scopes were recorded), `asked_on` (the sent date), `state` and `updated_on` (the
+latest step date, left out when there are no steps), linked to its request by the new optional `request` key (the
+request name, `main` for the original; 1-40 characters a-z, 0-9 or `-`). The key is never rendered on the site, in
+`data/*.json`, feeds or newsletters, and older content without it reads unchanged. State comes from the latest step and
+the per-scope answers: no steps `awaiting_response`; `acknowledged`, `extension`, `determination`, `fee_estimate`,
+`clarification_requested`, `clarified`, `fee_paid` or `fee_waived` as the latest step with no `produced` step
+`acknowledged`; `denied` with no `produced` step `declined_in_writing`; any `produced` step `answered` only when the
+request recorded scopes, every scope's latest answer is `produced` or `no_records_stated` and the latest production is
+not a rolling (`--partial`) one, otherwise `partly_answered`. A request `closed` without production is not proposed: the
+dry run says `organizer to choose` and any existing item is left as it is; `withdrawn` is never proposed.
+
+An existing item with the same `request` is updated field by field and keeps its own `note`; an item with no `request`
+(typed by you) and its note are never touched. Notes, withheld bases, references and linked records of the tracker never
+reach content. `content-check` names a linked item whose date (`updated_on`, else `asked_on`) is before its request's
+latest step (`... older than its request's latest step (<kind> on <date>); run kit-asked`) and a link to a request that
+`kit/sent.json` does not have; with no `kit/sent.json` it adds nothing.
+
 ## Private calendar (kit-calendar)
 
 `kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import
