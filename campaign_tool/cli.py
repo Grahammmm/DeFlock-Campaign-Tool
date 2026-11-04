@@ -832,8 +832,9 @@ def main():
     outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
     outcome_p.add_argument("--votes", metavar="FILE", help="name,vote CSV (yes|no|abstain|absent|recused) read from the --source record")
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
-    commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
-                        ).add_argument("--directory", required=True)
+    content_check_p = commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)")
+    content_check_p.add_argument("--directory", required=True)
+    content_check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
     evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
     evidence_p.add_argument("--directory", required=True)
     evidence_p.add_argument("--check", action="store_true", help="Exit 3 when any citation has a problem")
@@ -870,6 +871,8 @@ def main():
                         "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
     sent_p.add_argument("--reference", metavar="REF", help="The agency's own request number (1-40: A-Z a-z 0-9 - _ # .)")
     sent_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
+    sent_p.add_argument("--correspondence", action="append", default=[], metavar="PREFIX",
+                        help="Repeatable: >= 12 hex of the ingested sent message or confirmation; not records")
     status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
@@ -907,6 +910,8 @@ def main():
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
+    response_p.add_argument("--correspondence", action="append", default=[], metavar="PREFIX",
+                            help="any kind, repeatable: >= 12 hex of an ingested letter or confirmation; not records")
     response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     response_p.add_argument("--expected-on", metavar="YYYY-MM-DD", help="determination or a later step: the agency's "
                             "own stated production date (provisional, not a legal deadline)")
@@ -1261,7 +1266,7 @@ def main():
             print(json.dumps(result, indent=2, ensure_ascii=False) + "\nPrivate log only; nothing was sent or published.")
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
-            content_check_cli(root)
+            content_check_cli(root, as_json=args.as_json)
         elif args.command == "evidence":
             from .evidence import run_cli
             run_cli(root, check=args.check)
@@ -1291,7 +1296,8 @@ def main():
             from .kit_track import record_sent
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
                                          replace=args.replace, reference=args.reference,
-                                         replace_reference=args.replace_reference), indent=2))
+                                         replace_reference=args.replace_reference,
+                                         correspondence=args.correspondence), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
@@ -1339,7 +1345,7 @@ def main():
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
                                          reference=args.reference, replace_reference=args.replace_reference,
-                                         partial=args.partial),
+                                         partial=args.partial, correspondence=args.correspondence),
                              indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):

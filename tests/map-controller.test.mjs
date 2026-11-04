@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 const config=JSON.parse(fs.readFileSync('examples/fictional-campaign/map-config.json','utf8'));
 const run=spawnSync('python3',['campaign_tool/map_controller.py'],{input:JSON.stringify({config,profile_renderer:'  function setCityText(slug) { window.profileSelection=slug; }\n'}),encoding:'utf8'});
@@ -234,4 +236,76 @@ test('DF1422-11 popup adds one escaped organizer-check line only for a checked n
   assert.equal(html.includes('<img'),false);
   c.pointChecks[10]={status:'<script>',checked_on:'2026-10-30'};
   assert.equal(click('https://www.openstreetmap.org/node/10').includes('Organizer check'),false);  // a status outside the enum draws nothing
+});
+
+// DF0137-14: a relabelled site's map controller (app.js) reads js.* labels from site-data.js; no English left.
+const ES={'js.mapped_point':'{count} punto mapeado','js.mapped_points':'{count} puntos mapeados',
+  'js.map_failed':'El mapa no cargó. Elija un área, {evidence} o {source}.','js.map_evidence':'revise las notas',
+  'js.map_source':'abra el mapa fuente','js.data_failed':'Los datos no cargaron. {source}','js.data_source':'Abra el mapa fuente',
+  'js.popup_title':'Punto "ALPR" & comunitario','js.popup_no_manufacturer':'Fabricante no indicado',
+  'js.popup_no_operator':'Operador no indicado','js.popup_source':'Ver registro fuente'};
+const esRoot=fs.mkdtempSync(path.join(os.tmpdir(),'relabel-map-'));
+fs.cpSync('examples/fictional-campaign',esRoot,{recursive:true,filter:p=>!p.includes(`${path.sep}public`)});
+fs.writeFileSync(path.join(esRoot,'content','labels.json'),JSON.stringify({schema_version:1,labels:ES}));
+const esBuilt=spawnSync('python3',['-B','-m','campaign_tool','build','--directory',esRoot],{encoding:'utf8'});
+if(esBuilt.status!==0)throw Error(esBuilt.stderr);
+const esCode=['site-data.js','agency-cards.js','app.js'].map(n=>fs.readFileSync(path.join(esRoot,'public',n),'utf8')).join('\n');
+const esMap=JSON.parse(fs.readFileSync(path.join(esRoot,'content','map','map-config.json'),'utf8'));
+function element(tag){
+  return {tag,children:[],remove(){this.removed=true;},appendChild(child){this.children.push(child);return child;},
+    set textContent(value){this.children=value===''?[]:[String(value)];},
+    get textContent(){return this.children.map(c=>typeof c==='string'?c:c.textContent).join('');}};
+}
+function esSetup(){
+  const nodes={count:element('p'),fallback:element('p')},popups=[],events={};
+  const context={URL,console,window:{matchMedia:()=>({matches:true})},
+    document:{addEventListener(){},createElement:element,createTextNode:text=>text,querySelectorAll:()=>[],
+      querySelector(s){return s==='.map-fallback'?nodes.fallback:s==='.city-picker'?{offsetHeight:44}:null;},
+      getElementById(id){return id==='map-selection-count'?nodes.count:nodes[id]||(nodes[id]=element('div'));}}};
+  vm.createContext(context);vm.runInContext(esCode,context);
+  class MapStub {on(name,...args){events[name]=args.at(-1);} addControl(){} addSource(){} addLayer(){} getLayer(){return true;}
+    setFilter(){} fitBounds(){} resize(){} getCanvas(){return {style:{}};}}
+  class PopupStub {constructor(){popups.push(this);} on(){return this;} remove(){return this;} setLngLat(){return this;}
+    setHTML(value){this.html=value;return this;} addTo(){return this;}}
+  const maplibre={Map:MapStub,Popup:PopupStub,NavigationControl:class{},AttributionControl:class{}};
+  context.ResizeObserver=class{observe(){}};
+  return {c:context,nodes,popups,events,maplibre};
+}
+test('relabelled selection count uses the singular and plural labels; the group keeps its configured suffix',()=>{
+  const {c,nodes}=esSetup();
+  assert.equal(esCode.includes('" mapped point'),false);
+  c.cameraGeojson={features:[{properties:{city:'cedar',ruralCandidate:false}}]};
+  c.chooseCity('cedar');assert.equal(nodes.count.textContent,'1 punto mapeado');
+  c.cameraGeojson.features.push({properties:{city:'cedar',ruralCandidate:true}});
+  c.chooseCity('cedar');assert.equal(nodes.count.textContent,'2 puntos mapeados');
+  c.chooseCity(esMap.group_slug);assert.equal(nodes.count.textContent,'1'+esMap.candidate_count_suffix);
+  c.cameraGeojson=null;c.chooseCity(null);assert.equal(nodes.count.textContent,`${esMap.initial_point_count} puntos mapeados`);
+});
+test('relabelled map fallback is built from text nodes and links, never innerHTML',()=>{
+  const {c,nodes}=esSetup();
+  const app=fs.readFileSync(path.join(esRoot,'public','app.js'),'utf8');
+  assert.equal(/could not load|DeFlock source map|evidence notes|innerHTML/.test(app),false);
+  c.initMap();
+  const f=nodes.fallback;
+  assert.equal(f.textContent,'El mapa no cargó. Elija un área, revise las notas o abra el mapa fuente.');
+  assert.equal(f.innerHTML,undefined);
+  const links=f.children.filter(child=>typeof child!=='string');
+  assert.deepEqual(links.map(a=>[a.href,a.textContent,a.target||'']),
+    [['sources.html#library','revise las notas',''],[esMap.source_map_url,'abra el mapa fuente','_blank']]);
+  assert.equal(links[1].rel,'noopener noreferrer');
+});
+test('relabelled camera-data failure and popup read the labels; popup label text is escaped',async()=>{
+  const failed=esSetup();failed.c.window.maplibregl=failed.c.maplibregl=failed.maplibre;
+  failed.c.fetch=async()=>{throw Error('offline');};
+  failed.c.initMap();failed.events.load();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(failed.nodes.fallback.textContent,'Los datos no cargaron. Abra el mapa fuente');
+  assert.equal(failed.nodes.fallback.children[1].href,esMap.source_map_url);
+  const ok=esSetup();ok.c.window.maplibregl=ok.c.maplibregl=ok.maplibre;
+  ok.c.fetch=async()=>({json:async()=>({features:[]})});
+  ok.c.initMap();ok.events.load();await new Promise(resolve=>setImmediate(resolve));
+  ok.events.click({lngLat:[1,1],features:[{properties:{operator:'Unspecified',url:'https://www.openstreetmap.org/node/1'}}]});
+  const html=ok.popups.at(-1).html;
+  assert.ok(html.startsWith('<strong>Punto &quot;ALPR&quot; &amp; comunitario</strong><br>Fabricante no indicado<br>Operador no indicado<br>'),html);
+  assert.ok(html.endsWith('>Ver registro fuente &nearr;</a>'),html);
+  assert.equal(/ALPR point|not specified|View source record/.test(html),false);
 });

@@ -173,3 +173,32 @@ import (hygiene imports no candidate code).
 Fixtures are synthetic. `tests/fixtures/n3_historical_check/scenarios.json` lists
 the populations only. Diffs and attestations are generated at test time in
 scratch space, never inside the fixture directory.
+
+## Per-agency historical coverage report (BF-df-historical)
+
+`tools/historical_coverage.py build --store ABS --out NEWDIR [--agency SLUG ...] [--as-of YYYY-MM-DD] [--json]` writes
+`historical-coverage.json` (`historical-coverage-v1`, `schemas/historical-coverage-v1.json`) and
+`historical-coverage-report.md`; `report DIR [--json]` prints a saved one. Status: REVIEW REQUIRED, private, not a legal
+finding. It reads each agency's own `FACTS.csv` and `POLICY.csv` and nothing else, and writes nothing into the store.
+
+Three dimensions per agency, each either `evidenced` or `unevidenced`:
+
+- `installation` and `vendor`: the earliest `effective_from` of a fact row of that dimension's types (basis
+  `document_date`, `contract_term_start`). `policy`: the earliest `governs_from` of an adopted POLICY row (basis
+  `in_force_statement`), the same governing windows `flock_law_policy` uses.
+- An evidenced row carries the date, page (policy: `policy_row_id`), `source_sha256` and basis. Other documents for the same
+  dimension are listed as corroborating and never override the earliest.
+- An unevidenced row carries one reason: `no-document`, `no-date-in-document`, `no-text` (a held document yielded no
+  extracted text, so absence is not concluded) or `document-unreadable`.
+- Dates keep their stated precision (year, month or day); none is widened or inferred. With no `--as-of`, the as-of date is the
+  latest evidenced date in the requested agencies, never the clock.
+- The gap map lists, per unevidenced dimension, the period from the day after the agency's earliest evidenced date to as-of.
+  Policy gaps between adopted windows and after a closed last window come from `flock_law_policy.gaps_rows`, clipped to that
+  range and marked `no-document`; an earliest evidenced policy date does not imply continuous coverage.
+- Where installation precedes policy, both dates and the interval in days print under `Dates in sequence` with a fixed neutral
+  sentence. Nothing characterises the interval.
+
+Limits: only held, extracted, dated documents count, so a gap may be a missing or unread document rather than a missing
+period. Nothing is read from another agency, the web or the clock. The report carries ids, dates, hashes and counts, never
+document text, and both file names are in the public-tree denied set. Exit 0 all sources loaded, 1 a source failed (rows still
+written, failures named), 2 usage.
