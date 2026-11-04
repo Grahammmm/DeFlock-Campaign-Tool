@@ -250,6 +250,16 @@ Cancelled, past and stale kits stop: re-stage corrections with `meetings-stage -
 Use `--allow-past` for an archive, or `--replace` to regenerate an existing private pack.
 Nothing is sent or published. Review the print preview before handing it over.
 
+With `site.json.base_url` set, the handout prints a QR code beside each finding URL and one last link with a QR
+code to the campaign site, after the findings and before the record explainer (also when there are no findings).
+Codes are made offline by the tool itself (`campaign_tool/qr.py`, standard library only; byte mode, error
+correction level M, versions 1-10, four-module quiet zone) and encode exactly the URL printed beside them; the
+agenda link, the sources and the "N more on the site" line get none. A URL over 213 bytes stops that pack with
+"QR URL exceeds 213-byte capacity (version 10, level M)." before anything is written, `--replace` included, so
+an existing pack is left untouched; `--upcoming` lists that meeting as skipped with the same reason and builds
+the others. Without `base_url` there is no QR code and the handout is byte-identical to before.
+`comment.md` and `sources.csv` never change.
+
 The handout follows the campaign's language: `<html lang>` is `site.json.language`, and its fixed headings and notes
 (title, "What we found", the empty-state sentence, the source line, "corrected", the agenda link, "N more on the
 site", the record-number explainer, and the classification and confidence wording) come from `content/labels.json`
