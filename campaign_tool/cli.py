@@ -994,8 +994,15 @@ def main():
         review_p.add_argument(flag, required=True)
         payload_p.add_argument(flag, required=True)
     review_p.add_argument("--signature", metavar="SIG", help="SSH signature over the review-payload bytes")
-    finding_cmds.add_parser("review-status", help="Print review_blockers for a draft (read-only)"
-                            ).add_argument("--directory", required=True)
+    finding_cmds.add_parser("review-status", help="Print review_blockers for a draft and who was asked to review "
+                            "each role (read-only)").add_argument("--directory", required=True)
+    assign_p = finding_cmds.add_parser("assign", help="Record who was asked to review one role of a draft "
+                                       "(private note; sends nothing and is not a review)")
+    assign_p.add_argument("--directory", required=True)
+    assign_p.add_argument("--role", required=True, help="factual, legal or privacy")
+    assign_p.add_argument("--reviewer", required=True)
+    assign_p.add_argument("--on", required=True, metavar="YYYY-MM-DD", help="Date asked, not after today")
+    assign_p.add_argument("--replace", action="store_true", help="Replace a different reviewer already assigned")
     publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
     for flag in ("--directory", "--approved-by"):
         publish_p.add_argument(flag, required=True)
@@ -1062,9 +1069,11 @@ def main():
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
     today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
-    from .today import CONTRACT_DAYS, contract_days
+    from .today import CONTRACT_DAYS, REVIEW_DAYS, contract_days, review_days
     today_p.add_argument("--contract-days", type=contract_days, default=CONTRACT_DAYS, metavar="N", help="Contracts "
                          "ending within N days, default 90; ended in the last 30 days are always listed")
+    today_p.add_argument("--review-days", type=review_days, default=REVIEW_DAYS, metavar="N", help="Assigned finding "
+                         "reviews with no receipt after N days, default 7")
     law_packet = commands.add_parser("law", help="Law package tools; nothing here marks a package reviewed"
                                      ).add_subparsers(dest="law_command", required=True).add_parser(
         "review-packet", help="Private packet for a human law reviewer in a new --out folder; reviews nothing")
@@ -1279,8 +1288,15 @@ def main():
             if args.finding_command == "review-payload":
                 sys.stdout.buffer.write(findings.review_payload(root, draft, args.role, args.decision, args.reviewer, args.rationale))
                 return
+            if args.finding_command == "assign":
+                print(json.dumps(findings.assign(root, draft, args.role, args.reviewer, args.on, replace=args.replace),
+                                 indent=2, ensure_ascii=False))
+                print("Recorded only. Nothing was sent. An assignment is not a review.")
+                return
             print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale, signature=args.signature)
-                             if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
+                             if args.finding_command == "review" else
+                             {**findings.review_status(root, draft), "assignments": findings.assignment_states(root, draft)},
+                             indent=2))
         elif args.command == "correction-request":
             from . import correction_requests as cr
             read_config(root)
@@ -1371,7 +1387,7 @@ def main():
         elif args.command == "today":
             from .today import run_cli as today_cli
             read_config(root)  # not a campaign folder: Stopped, before any source is read
-            print(today_cli(root, args.as_of, args.as_json, args.contract_days))
+            print(today_cli(root, args.as_of, args.as_json, args.contract_days, args.review_days))
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
