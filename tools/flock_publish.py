@@ -12,6 +12,9 @@ compare = verify_tool.compare
 _spec = importlib.util.spec_from_file_location("_flock_privacy", Path(__file__).resolve().parent / "flock_privacy.py")
 privacy = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(privacy)
+_spec = importlib.util.spec_from_file_location("_flock_redaction_record", Path(__file__).resolve().with_name("flock_redaction_record.py"))
+redaction = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(redaction)
 HEADLINE = "Research draft - not legal advice"
 HOSTS = ("leginfo.legislature.ca.gov", "oag.ca.gov")
 SLUG = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
@@ -98,17 +101,30 @@ def derive(run, site_slug, new=False, recheck=False):  # export's checks and doc
     policy_rows = {r["policy_row_id"]: r for _, r in compare.law_policy.load_policy(agency / "POLICY.csv", agency.name)[0]}
     vendors = [(r["value"] + " " + r["verbatim_quote"]).lower() for r in facts.values() if r["fact_type"] == "vendor"]
     vigilant = any("vigilant" in v or "motorola" in v for v in vendors) and not any("flock" in v for v in vendors)
-    out, lines = [], []
+    out, lines, redaction_notes = [], [], []
     for f in (f for f in findings if f["finding_id"] in ok):
         text, cites = compare.squash(f["claim"]), cites_for(f, law_rows, policy_rows, package, facts)
         cats = text_rules(text, vigilant) + (["law-host"] if any(c["kind"] == "law" and not law_url_ok(c["url"]) for c in cites) else [])
         if cats:
             lines.append("finding %s: refused %s" % (f["finding_id"], ",".join(cats)))
             continue
+        cited = [facts[i] for i in compare.ids(f["fact_ids"]) if i in facts]
+        reason = None
+        for sha in sorted({r["source_sha256"].strip() for r in cited}):
+            current = redaction.original_hash(store, [r.get("source_path", "") for r in cited if r["source_sha256"].strip() == sha])
+            state, why = redaction.eligibility(store, agency.name, sha, current)
+            if current is None or state == "ineligible":
+                reason = "source_mismatch" if current is None else why
+                break
+            if state == "no_record":
+                redaction_notes.append("review-required: source %s: redaction:no_record" % sha[:12])
+        if reason:
+            lines.append("finding %s: refused redaction:%s" % (f["finding_id"], reason))
+            continue
         out.append({"finding_id": f["finding_id"], "topic": f["topic"], "claim_class": f["claim_class"], "rating": "strong",
                     "text": text, "cites": cites,
                     "review": {"status": "pending", "approved_by": "", "approved_on": "", "approval_ref": ""}})
-    flags = claim_notes(out)  # DF-4 alert-only: the entry is still exported, pending; its human approval is the gate
+    flags = list(dict.fromkeys(redaction_notes)) + claim_notes(out)  # notes do not increment refused
     if not out:
         return 1, lines + ["exported=0 refused=%d" % len(lines)], None
     meta = json.loads((run / "RUN.json").read_text(encoding="utf-8"))

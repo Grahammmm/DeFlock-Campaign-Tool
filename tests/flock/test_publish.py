@@ -15,6 +15,22 @@ class FlockPublishTest(unittest.TestCase):
                              "--added-by", "tester", "--date", "2026-10-30")[0], 0)
         shutil.copy(FIXTURES / "law-sample.csv", self.store / "LAW.csv")
         shutil.copy(FIXTURES / "policy-sample.csv", self.store / "agencies" / AGENCY / "POLICY.csv")
+        # Citation fixture now records an original and an explicit not-required proposal.
+        source = self.store / "original.txt"
+        source.write_bytes(b"synthetic original\n")
+        facts = self.store / "agencies" / AGENCY / "FACTS.csv"
+        with facts.open(newline="") as handle:
+            rows = list(csv.reader(handle))
+        with facts.open("w", newline="") as handle:
+            csv.writer(handle).writerows([rows[0] + ["source_path"]] + [r + [str(source)] for r in rows[1:]])
+        redaction = facts.parent / "redaction" / ("b" * 64)
+        redaction.mkdir(parents=True, mode=0o700)
+        redaction.parent.chmod(0o700)
+        proposal = redaction / "PROPOSAL.json"
+        proposal.write_text(json.dumps({"schema_version": 1, "document_id": "synthetic", "source_sha256": "b" * 64,
+            "redaction_required": False, "proposed": [], "not_detected_note": "synthetic fixture",
+            "scan_receipt": "c" * 64, "created_at": "2026-10-30T00:00:00Z"}))
+        proposal.chmod(0o600)
         self.run_dir = self.store / "agencies" / AGENCY / "runs" / "2026-10-30"
         self.assertEqual(run("flock_compare.py", "scaffold", "--store", str(self.store), "--agency", AGENCY, "--date", "2026-10-30",
                              "--provider", "anthropic", "--model", "claude-opus-5-5", "--applicability", "Sample city police")[0], 0)
@@ -130,6 +146,12 @@ class FlockPublishTest(unittest.TestCase):
         repo = self.store.with_name("repo"); repo.mkdir()
         copy = self.store.rename(self.store.with_name("repo-copy"))
         rd = copy / self.run_dir.relative_to(self.store)
+        facts = copy / "agencies" / AGENCY / "FACTS.csv"
+        facts.write_text(facts.read_text().replace(str(self.store / "original.txt"), str(copy / "original.txt")))
+        import hashlib
+        meta = json.loads((rd / "RUN.json").read_text())
+        meta["inputs"]["FACTS.csv"] = hashlib.sha256(facts.read_bytes()).hexdigest()
+        (rd / "RUN.json").write_text(json.dumps(meta))
         self.assertEqual(self.call(repo, "export", str(rd), "--site-slug", "sample"), (0, "exported=4 refused=0\n"))
         self.assertEqual(self.call(copy, "--check", str(rd / "PUBLISH.json")), (0, "findings=4 approved=0 errors=0\n"))
 if __name__ == "__main__":
