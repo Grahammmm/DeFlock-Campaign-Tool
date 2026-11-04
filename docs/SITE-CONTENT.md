@@ -244,6 +244,26 @@ the Rule line is left out and the build is not refused. It is an organizer-verif
 yet" is not a statement that no meeting was held, and the section makes no finding that one was required, missed or
 adequate. It is not in card JS, open data or feeds.
 
+An agency's optional `profile.sharing` (DF1207-08) records the agencies the vendor transparency portal names as receiving
+the agency's data, as an organizer transcribed them: `{"checked_on", "source_url", "recipients": [{"name", "state", "kind"}]}`.
+Record it with `python3 -m campaign_tool content agency-sharing --directory D --agency ID --csv FILE --checked-on YYYY-MM-DD
+--source-url URL [--replace]`. The CSV is UTF-8 (a BOM is allowed) with the header exactly `name,state,kind`: `name` 1-160
+characters without control characters, `state` a two-letter USPS code (50 states, DC, PR, AS, GU, MP, VI) or `US` for a
+federal agency (`US` only with `federal`), `kind` one of `local`, `state`, `federal`, `private`, `unknown`; 1 to 2000 rows,
+and the same name (any letter case) and state twice is refused. `--source-url` is an `https://` page on
+`transparency.flocksafety.com`; `--checked-on` is a real date not after today. Every bad row is named by its line (at most 20,
+then "and N more"); on any error nothing is written. The file is read as a plain file, never fetched, and a symlink is refused.
+The whole `content/agencies.json` is validated and then written once; an agency that already has a list needs `--replace`.
+Recipients are stored sorted by state, then name. The agency page and the agencies-list card show "Who the vendor portal lists
+as receiving data": "As listed on the vendor transparency portal, transcribed by the organizer (checked `{date}`): `{n}`
+agencies.", a count by state (the campaign's own state first) and by kind, then "Out of state and federal:" with the name,
+state and kind of every entry outside the campaign's state or of kind `federal` (at most 100, then "and N more"), then the
+sharing rule (`ca-civ-1798.90.55-sharing-limits`) and the 2023 Attorney General bulletin
+(`ca-oag-2023-dle-06-out-of-state-sharing-guidance`) as cited by the shipped law package, and "Law package: `{status}`." A
+rule the package lacks leaves out its line and never refuses the build. It lists what the portal names and draws no
+conclusion about any agency; `build` and `content-check` refuse a hand-edited list that breaks these rules. It is not in card
+JS, open data or feeds, and the portal is never contacted.
+
 An agency's optional `profile.contract_check` (DF2207-03) records an organizer's reading of the linked ALPR vendor
 agreement against the draft, tool-wide checklist `checklists/contract-checklist.json` (not part of any law package;
 status `draft`, packaged byte-identical and checked by `tools/sync_campaign_resources.py`): `{"checked_on": "YYYY-MM-DD",
@@ -726,7 +746,9 @@ held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `
 `minutes_approved_on` (the body's approved official minutes, both or neither; no derived confirmation flag), plus
 the optional `continued_to` (a staged meeting id) or `continued_to_date` (a stated date) of a `continued` result (one
 of the two, never both; no derived back-reference), plus the optional trio `direction`, `return_by` and
-`direction_source` (a staff direction as the official source states it; all or none; no reminder or fulfillment flag). It never
+`direction_source` (a staff direction as the official source states it; all or none; no reminder or fulfillment flag), plus the
+optional `spoke` and `written` whole numbers (0 to 999) with their https `comment_source_url` (the public-comment totals the
+official record states; at least one count with the source; no for/against split, name or quote). It never
 includes the comment kit, `participation`,
 contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
 `data/meetings.json: non-public key ...` and writes nothing.

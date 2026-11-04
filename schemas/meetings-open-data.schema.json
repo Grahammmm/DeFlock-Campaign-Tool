@@ -46,14 +46,19 @@
         "continued_to_date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
         "direction": {"type": "string", "minLength": 1, "maxLength": 200},
         "return_by": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
-        "direction_source": {"type": "string", "pattern": "^https://", "maxLength": 500}
+        "direction_source": {"type": "string", "pattern": "^https://", "maxLength": 500},
+        "spoke": {"type": "integer", "minimum": 0, "maximum": 999},
+        "written": {"type": "integer", "minimum": 0, "maximum": 999},
+        "comment_source_url": {"type": "string", "pattern": "^https://", "maxLength": 500}
       },
       "dependentRequired": {"minutes_url": ["minutes_approved_on"], "minutes_approved_on": ["minutes_url"],
                             "direction": ["return_by", "direction_source"], "return_by": ["direction", "direction_source"],
-                            "direction_source": ["direction", "return_by"]},
+                            "direction_source": ["direction", "return_by"],
+                            "spoke": ["comment_source_url"], "written": ["comment_source_url"]},
       "dependentSchemas": {
         "continued_to": {"properties": {"result": {"const": "continued"}}},
-        "continued_to_date": {"properties": {"result": {"const": "continued"}}}
+        "continued_to_date": {"properties": {"result": {"const": "continued"}}},
+        "comment_source_url": {"anyOf": [{"required": ["spoke"]}, {"required": ["written"]}]}
       },
       "not": {"required": ["continued_to", "continued_to_date"]}
     },
