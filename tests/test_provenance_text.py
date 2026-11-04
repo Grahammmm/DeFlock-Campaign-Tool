@@ -65,15 +65,17 @@ class ProvenancePagesTests(unittest.TestCase):
         build_site(self.root)
         public = self.root / "public"
         library = (public / "sources.html").read_text()
-        ids = set(re.findall(r'\bid="([^"]+)"', library))
+        linked = 0
         self.assertIn("Every document we cite, and where it came from.", library)
         for path in public.rglob("*.html"):
             html = path.read_text()
             self.assertNotRegex(html, r"[0-9a-fA-F]{40,}")
-            for fragment in re.findall(r'href="/sources.html#([^"]+)"[^>]*>Record no\.', html):
-                self.assertIn(fragment, ids)
+            for target in re.findall(r'href="(/sources/[0-9a-f]{12}\.html)"[^>]*>Record no\.', html):
+                self.assertTrue((public / target[1:]).is_file(), target)  # DF1103-11: each record link has a built page
+                linked += 1
             for prefix in re.findall(r'Record no\. <code>([^<]+)</code>', html):
                 self.assertRegex(prefix, r"^[0-9a-f]{12}$")
+        self.assertGreaterEqual(linked, 1)
         pages = [library] + [(public / "findings" / (f["slug"] + ".html")).read_text()
                              for f in self.model["findings"]]
         for html in pages:
@@ -87,7 +89,7 @@ class ProvenancePagesTests(unittest.TestCase):
         html = self.site(model).finding_html(model["findings"][0])["html"]
         self.assertIn("Not yet listed in the source library.", html)
         self.assertIn('<p class="record-no">Record no. <code>cafecafecafe</code></p>', html)
-        self.assertNotIn('href="/sources.html#', html)
+        self.assertNotIn('href="/sources/', html)
         self.assertNotIn(", received ", html)
 
     def test_unknown_or_unselected_agency_does_not_invent_attribution(self):

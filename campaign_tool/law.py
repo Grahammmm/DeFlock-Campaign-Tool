@@ -205,6 +205,47 @@ def package_status(jurisdiction, base=None):
         return "missing", str(exc)
 
 
+CHECKLIST_KEYS = {"schema_version", "status", "rule_id", "elements"}
+CHECKLIST_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def load_checklist(jurisdiction, base=None):
+    """DF1207-06: read jurisdictions/<jurisdiction>/policy-checklist.json, a draft list of the elements one package rule
+    names for a posted policy. Refuses (ValueError) an unknown key, a status other than draft/reviewed, a ``rule_id`` that
+    is not in the loaded package, an empty list, a bad or duplicate element id or an empty label."""
+    path = package_path(jurisdiction, base).with_name("policy-checklist.json")
+    if not path.is_file():
+        raise ValueError(f"No policy checklist at {path}")
+    try:
+        checklist = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: invalid JSON: {exc}") from None
+    if not isinstance(checklist, dict) or set(checklist) != CHECKLIST_KEYS:
+        raise ValueError(f"{path}: must be an object with exactly {sorted(CHECKLIST_KEYS)}")
+    if checklist["schema_version"] != 1 or isinstance(checklist["schema_version"], bool):
+        raise ValueError("$.schema_version: must be 1")
+    if checklist["status"] not in ("draft", "reviewed"):
+        raise ValueError("$.status: must be draft or reviewed")
+    package = load_package(jurisdiction, base)
+    if not isinstance(checklist["rule_id"], str) or checklist["rule_id"] not in {rule["rule_id"] for rule in package["rules"]}:
+        raise ValueError(f"$.rule_id: {checklist['rule_id']!r} is not a rule in the {jurisdiction} package")
+    elements, seen = checklist["elements"], set()
+    if not isinstance(elements, list) or not elements:
+        raise ValueError("$.elements: must be a non-empty list")
+    for index, element in enumerate(elements):
+        where = f"$.elements[{index}]"
+        if not isinstance(element, dict) or set(element) != {"id", "label"}:
+            raise ValueError(f"{where}: must be an object with exactly id and label")
+        if not isinstance(element["id"], str) or not CHECKLIST_ID.fullmatch(element["id"]):
+            raise ValueError(f"{where}.id: must be lowercase letters, digits and underscores")
+        if element["id"] in seen:
+            raise ValueError(f"{where}.id: duplicate {element['id']!r}")
+        seen.add(element["id"])
+        if not isinstance(element["label"], str) or not element["label"].strip():
+            raise ValueError(f"{where}.label: must be non-empty text")
+    return checklist
+
+
 def rules_in_force(package, event_date, *, local_rules=(), agency_id=None):
     """Rules whose effective interval contains ``event_date`` (inclusive).
 
