@@ -468,8 +468,18 @@ class CliTests(AtlasTestCase):
         with self.assertRaises(AtlasError):  # no kit at all: the report would invent an empty selection
             kit_atlas.compare_atlas(self.root, self.csv)
         self.write_campaign(county="San Luis Obispo")
-        (self.root / "campaign.json").write_text("[]", encoding="utf-8")
-        self.assertEqual(cli("kit-agency", "atlas", "--csv", self.csv, "--directory", self.root).returncode, 1)
+        for config in ([], None, "not an object", 1, True):
+            with self.subTest(config=config):
+                (self.root / "campaign.json").write_text(json.dumps(config), encoding="utf-8")
+                before, source = snapshot(self.root), snapshot(self.csv)
+                result = cli("kit-agency", "atlas", "--csv", self.csv, "--directory", self.root)
+                self.assertEqual((result.returncode, result.stdout), (1, ""))
+                self.assertTrue(result.stderr.startswith("Stopped: Unsupported campaign schema version\n"), result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                with self.assertRaisesRegex(AtlasError, "Unsupported campaign schema version"):
+                    kit_atlas.compare_atlas(self.root, self.csv)
+                self.assertEqual(snapshot(self.root), before)
+                self.assertEqual(snapshot(self.csv), source)
         self.write_campaign(county="San Luis Obispo")
         with mock.patch.object(discovery, "load_seed", side_effect=ValueError("seed is invalid")):
             with self.assertRaises(AtlasError):

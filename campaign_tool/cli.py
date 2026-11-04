@@ -25,7 +25,7 @@ def now():
 
 def read_config(root):
     cfg = json.loads((root / "campaign.json").read_text(encoding="utf-8"))
-    if cfg.get("schema_version") != 1:
+    if not isinstance(cfg, dict) or cfg.get("schema_version") != 1:
         raise ValueError("Unsupported campaign schema version")
     for key in ("name", "county", "state"):
         if not isinstance(cfg.get(key), str) or not cfg[key].strip():
