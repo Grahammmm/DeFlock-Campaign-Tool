@@ -258,7 +258,7 @@ class LabelsTest(unittest.TestCase):
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "agency.votes_heading", "agency.votes_more", "agency.votes_none", "agency.votes_source",
-                  "finding.agency_response", "finding.reply_declined", "finding.reply_no_response", "finding.reply_received",
+                  "finding.agency_response", "finding.quote_page", "finding.quote_transcribed", "finding.reply_declined", "finding.reply_no_response", "finding.reply_received",
                   "footer.license",
                   "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
                   "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.title",
