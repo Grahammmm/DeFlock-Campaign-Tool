@@ -1,4 +1,6 @@
 import ast
+from contextlib import closing
+import sqlite3
 import hashlib
 import importlib.util
 import json
@@ -89,6 +91,52 @@ class InventoryTest(unittest.TestCase):
         self.assertTrue(doc['review_required'])
         self.assertTrue(doc['enforced_by_code'])
         self.assertTrue(doc['source_errors'])
+
+    def test_wal_ledger_without_symlinks_is_unchanged(self):
+        private = self.store / 'private'
+        objects = private / 'objects'
+        private.mkdir(mode=0o700)
+        objects.mkdir(mode=0o700)
+        data = b'synthetic object\n'
+        digest = hashlib.sha256(data).hexdigest()
+        (objects / digest).write_bytes(data)
+        os.chmod(objects / digest, 0o600)
+        ledger = private / 'ledger.sqlite'
+        with closing(sqlite3.connect(ledger)) as db:
+            self.assertEqual(db.execute('PRAGMA journal_mode=WAL').fetchone()[0], 'wal')
+            db.execute('CREATE TABLE objects (sha256 TEXT, byte_count INTEGER)')
+            db.execute('INSERT INTO objects VALUES (?, ?)', (digest, len(data)))
+            db.commit()
+        os.chmod(ledger, 0o600)
+        self.assertEqual(ledger.read_bytes()[18:20], b'\x02\x02')
+        self.assertFalse(list(private.glob('ledger.sqlite-*')))
+        self.assertFalse(any(p.is_symlink() for p in self.store.rglob('*')))
+        before = snapshot(self.store)
+        run = self.run_tool()
+        self.assertEqual(run.returncode, 0, run.stderr + run.stdout)
+        self.assertEqual(before, snapshot(self.store))
+        doc = json.loads((self.out / 'inventory.json').read_text())
+        self.assertEqual(doc['source_errors'], [])
+        self.assertEqual(next(a for a in doc['areas'] if a['area'] == 'private')['files'], 2)
+
+    def test_unreadable_or_sidecar_ledger_is_unchanged_and_reported(self):
+        private = self.store / 'private'
+        private.mkdir(mode=0o700)
+        ledger = private / 'ledger.sqlite'
+        ledger.write_bytes(b'not a database')
+        for suffix in ('', '-wal', '-shm', '-journal'):
+            with self.subTest(suffix=suffix):
+                if suffix:
+                    (private / ('ledger.sqlite' + suffix)).write_bytes(b'synthetic sidecar')
+                before = snapshot(self.store)
+                out = self.base / ('result' + suffix)
+                run = self.run_tool(out=out)
+                self.assertEqual(run.returncode, 0, run.stderr + run.stdout)
+                self.assertEqual(before, snapshot(self.store))
+                doc = json.loads((out / 'inventory.json').read_text())
+                self.assertIn('structural check failed', doc['source_errors'])
+                if suffix:
+                    (private / ('ledger.sqlite' + suffix)).unlink()
 
     def test_refusal_targets(self):
         (self.store / 'agencies').mkdir()

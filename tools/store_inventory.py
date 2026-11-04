@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import sqlite3
 import stat
 import sys
 from datetime import date, datetime, timezone
@@ -127,6 +128,26 @@ def scan_receipt(store, parent):
             os.unlink(target)  # the explicitly admitted, path-bearing temporary receipt only
 
 
+def ledger_rows(store):
+    """Query only an in-memory copy; even SQLite mode=ro can create sidecars."""
+    path = store / 'private' / 'ledger.sqlite'
+    if any(os.path.lexists(str(path) + '-' + suffix) for suffix in ('journal', 'wal', 'shm')):
+        # The database file alone may not contain the committed state.
+        raise ValueError('ledger sidecars present')
+    if not path.exists():
+        return []
+    data = bytearray(path.read_bytes())
+    if data[:16] == b'SQLite format 3\0' and data[18:20] == b'\x02\x02':
+        # As in cli._ledger_lookup: no sidecars, so query the complete copy as rollback mode.
+        data[18:20] = b'\x01\x01'
+    try:
+        with contextlib.closing(sqlite3.connect(':memory:')) as db:
+            db.deserialize(bytes(data))
+            return db.execute('SELECT sha256, byte_count FROM objects ORDER BY sha256').fetchall()
+    except sqlite3.Error:
+        raise ValueError('ledger unreadable') from None
+
+
 def inventory(store, out):
     paths = sorted(store.iterdir(), key=lambda p: p.name)
     areas = []
@@ -162,7 +183,7 @@ def inventory(store, out):
             if not (store / 'private').is_dir() and not (store / 'agencies').is_dir() and not (store / 'regions').is_dir():
                 errors.append('structural checks not applicable to this store layout')
             if (store / 'private').is_dir():
-                result = store_check.check_store(store)
+                result = store_check.check_store(store, rows=ledger_rows(store))
                 if result['problems']:
                     errors.append('campaign store check found ' + str(len(result['problems'])) + ' problems')
             if (store / 'agencies').is_dir() or (store / 'regions').is_dir():

@@ -1,6 +1,7 @@
 # Data handling
 
-The open questions for G are in [DATA-HANDLING-DECISIONS.md](DATA-HANDLING-DECISIONS.md).
+The open questions for G are in `docs/DATA-HANDLING-DECISIONS.md` in the repository
+(not included in the portable skills bundle).
 
 Use an external campaign directory and keep private originals, mail, subscriber
 data, signed links, credentials and analysis out of source control. The CLI sets
