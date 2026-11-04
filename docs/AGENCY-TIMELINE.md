@@ -235,3 +235,17 @@ under the normal step rules. `processed` is `acknowledged`; `fix` is `clarificat
 `fee_estimate` from `price` (none: record it by hand); `rejected` is `denied`; `no_docs` and `abandoned` are `closed`
 with a note; `partial` is `produced --partial`; `done` is `produced`. `started`, `submitted`, `ack`, `appealing` and
 `lawsuit` propose no step, and any other status is refused by name. Nothing is fetched or sent.
+
+## A transcribed timeline in one write (kit-response-import)
+
+`kit-response-import --directory D --agency ID --csv FILE [--request NAME] [--apply]` records a portal or letter history
+you copied into a CSV by hand instead of one `kit-response` call per event. The file is UTF-8 (a BOM is fine), at most
+256 KiB and 1-200 data rows, a regular file (a symlink is refused), with the header exactly
+`date,kind,note,amount,expected_on,partial`; an empty cell means not given and `partial` is empty, `yes` or `no`.
+`--record`, `--correspondence` and `--reference` are not columns: link records with `kit-response --record`; the agency
+reference is stored once. Each row is checked in file order by the same rules as `kit-response` (a dry run) against the
+recorded steps plus the rows before it, so a closing step in row 2 refuses an extension in row 3. Any refused row is
+named as `line <L>: <the kit-response message>` (the header is line 1; up to 20 are listed, then `and N more`), the
+command exits 2 and nothing is written. A row equal to a step already recorded on that request is reported
+`already recorded, skipped`; the same row twice in the file is refused on its second line. Without `--apply` the command
+only checks; with `--apply` every new step is recorded in file order in one atomic write. Nothing is fetched or sent.

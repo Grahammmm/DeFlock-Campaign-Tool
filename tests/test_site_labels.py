@@ -299,7 +299,7 @@ class ScriptLabelsTest(unittest.TestCase):
         self.assertNotIn("innerHTML", app)
         self.assertEqual(files["_headers"], plain["_headers"])  # CSP unchanged: no inline script, same origins
         changed = sorted(p for p in plain if plain[p] != files[p])
-        self.assertEqual(changed, ["agency-cards.js", "app.js", "findings/filter.js", "findings/index.html", "site-data.js"])
+        self.assertEqual(changed, ["agency-cards.js", "app.js", "findings/filter.js", "findings/index.html", "search.html", "site-data.js"])
         cards = files["agency-cards.js"].decode()
         for english in ('"no published findings yet"', '" published finding"'):
             self.assertNotIn(english, cards)

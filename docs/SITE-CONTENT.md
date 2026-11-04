@@ -326,6 +326,13 @@ weight (HTML plus site-local stylesheets, preloads, scripts and `img`/`source` f
 references, each once; on-disk bytes, uncompressed) and exits 3 naming every page over
 `KB*1024` bytes with its three largest assets. Files a script fetches at run time (map
 GeoJSON) are not counted; external hosts are never fetched; a failed `--check` wins.
+To see growth over time rather than only the ceiling, `--budget` also takes `--weights-out FILE`, which saves
+the per-page table as a private `page-weights-v1` JSON record (no timestamp, so equal builds give byte-identical files;
+a new file only, mode 0600, never inside `public/` or `content/`), and `--weights-baseline FILE`, which reads such a record
+and prints each page as `<page> <bytes> bytes (+N|-N|±0 since baseline)`, `(new page)`, or
+`removed since baseline: <page>`. The baseline never changes the exit code (3 only when a page is over budget); an
+unreadable, symlinked, over 2 MiB or wrong-schema baseline stops the build with exit 1 before the table. Both
+options need `--budget`. These are uncompressed first-party bytes of the built files, not a field measurement.
 Meetings on or after the build date (the typed
 `starts_at` date, no time-zone conversion) are upcoming, soonest first (home: next
 three); `meetings.html` then lists `#past-meetings`, most recent first.
@@ -350,6 +357,20 @@ and confidence label (`#classification-<code>`, `#confidence-<code>`), explains 
 legal and privacy review by two people other than the author. The definitions live in `campaign_tool/site.py` next to
 the label tables; each badge on finding pages and the findings index links to its definition. It is in the footer and
 `sitemap.xml`; the slug `methods` and `public-assets/methods.html` are refused. `feed.xml` and `data/findings.json` keep plain labels.
+
+### Search page
+`search.html` and `search.js` are always generated and are not editable (DF1207-15). The page has a search box, a result
+list and a count line; `search.js` fetches the already-published `/data/findings.json` and `/data/sources.json` once
+(same origin; the CSP is unchanged) and matches in the browser: findings by title, summary, agency name and cited source
+titles, sources by title and agency name. Matching ignores case and accents (`José` finds `jose`); every word typed must
+appear. A query is 2 to 100 characters after trimming, otherwise the page shows the hint. At most 50 results, findings
+first, each linked to the finding page or to the agency's section of `sources.html`. The query lives in the URL hash
+(`/search.html#q=alpr%20contract`), is read on load and on `hashchange`, and typing updates it with `history.replaceState`;
+a malformed hash is ignored. Results are written with `createElement` and `textContent` only (never `innerHTML`). Nothing
+is searched on a server and nothing is logged. Without JavaScript, or when either JSON file is missing or malformed, the
+page shows a paragraph linking `/findings/` and `/sources.html` (with the second case also showing the unavailable
+message). The "Search" link is in the footer beside the feed link and `/search.html` is in `sitemap.xml` when `base_url`
+is set; the slug `search` and `public-assets/search.html` are refused. Finding bodies and private records are not searched.
 
 ### Privacy page
 `privacy.html` is always generated and is not editable (DF1207-16). It states, in plain words, that scripts, stylesheets
@@ -441,6 +462,12 @@ loads `/site-data.js` before `/findings/filter.js`, and the scripts read `LABELS
 facts when site.json lists none); `js.city_points_one`/`js.city_points_many`, `js.city_no_findings` (agency cards);
 `js.group_vendor`, `js.group_status`, `js.group_summary` (`{name}` is the map's group label), `js.group_fact`,
 `js.group_open`, `js.group_flag` (the unconfirmed-ownership group card).
+Search page labels: `footer.search` (footer link), `search.title`, `search.description`, `search.label` (the box label),
+`search.intro`, `search.fallback` (`{findings}` and `{sources}` are the two links, text from `nav.findings`/`nav.sources`);
+script texts `js.search_hint`, `js.search_none`, `js.search_count_one`/`js.search_count_many` (`{count}`),
+`js.search_unavailable`, `js.search_finding` and `js.search_source` (the tag after each result). `search.js` is the same
+file for every site: it carries the English defaults and reads `LABELS` when `site-data.js` is loaded first, which
+`search.html` does only once a `js.*` label differs from its default.
 Stays English by design: the starter page, `feed.xml`/agency feeds, `sitemap.xml`, `robots.txt`, `_headers`,
 `data/findings.json`, and text from shared modules: the source sentence and provenance explainer
 (`provenance_text.py`) and the corrections policy (`corrections_policy.py`). Content-supplied text is never touched.
