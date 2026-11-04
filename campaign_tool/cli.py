@@ -818,6 +818,7 @@ def main():
     for flag in ("--directory", "--id", "--result", "--on", "--source", "--verified-by"):
         outcome_p.add_argument(flag, required=True)
     outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
+    outcome_p.add_argument("--votes", metavar="FILE", help="name,vote CSV (yes|no|abstain|absent|recused) read from the --source record")
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
     commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
                         ).add_argument("--directory", required=True)
@@ -1026,6 +1027,9 @@ def main():
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
     today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
+    from .today import CONTRACT_DAYS, contract_days
+    today_p.add_argument("--contract-days", type=contract_days, default=CONTRACT_DAYS, metavar="N", help="Contracts "
+                         "ending within N days, default 90; ended in the last 30 days are always listed")
     law_packet = commands.add_parser("law", help="Law package tools; nothing here marks a package reviewed"
                                      ).add_subparsers(dest="law_command", required=True).add_parser(
         "review-packet", help="Private packet for a human law reviewer in a new --out folder; reviews nothing")
@@ -1128,7 +1132,9 @@ def main():
         elif args.command == "meetings-outcome":
             from .meeting_outcome import record_outcome
             print(json.dumps(record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by,
-                                            args.vote, args.replace), indent=2))
+                                            args.vote, args.replace, votes_file=args.votes), indent=2))
+            if args.replace and args.votes is None:  # the new outcome replaced the old one whole
+                print("votes: none")
             print("Recorded only. Nothing was published.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
@@ -1285,7 +1291,7 @@ def main():
         elif args.command == "today":
             from .today import run_cli as today_cli
             read_config(root)  # not a campaign folder: Stopped, before any source is read
-            print(today_cli(root, args.as_of, args.as_json))
+            print(today_cli(root, args.as_of, args.as_json, args.contract_days))
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
