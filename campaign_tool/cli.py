@@ -471,8 +471,15 @@ def kit(args, root):
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
-def social_cmd(root, platforms=None, meetings=False, within_days=14):
-    from .social import build_meeting_social, build_social, meeting_review_notes, review_notes
+def social_cmd(root, platforms=None, meetings=False, within_days=14, outcomes=False):
+    from .social import (build_meeting_social, build_outcome_social, build_social, meeting_review_notes,
+                         outcome_review_notes, review_notes)
+    if outcomes:  # DF1952-14: private drafts quoting recorded meeting outcomes; nothing is posted
+        print(json.dumps(build_outcome_social(root, platforms, within_days), indent=2, ensure_ascii=False))
+        for note in outcome_review_notes(root, within_days):
+            print(note, file=sys.stderr)
+        print("Drafts written to kit/social/outcomes. Nothing was posted.")
+        return
     if meetings:  # DF1207-11: private drafts for upcoming meetings with verified participation; finding drafts untouched
         print(json.dumps(build_meeting_social(root, platforms, within_days), indent=2, ensure_ascii=False))
         for note in meeting_review_notes(root, within_days):
@@ -831,8 +838,11 @@ def main():
                           help="Draft for this platform's own length rule into kit/social/<platform> (repeatable)")
     social_p.add_argument("--meetings", action="store_true",
                           help="Draft one private post per scheduled upcoming meeting with verified participation into kit/social/meetings")
+    social_p.add_argument("--outcomes", action="store_true",
+                          help="Draft one private post per meeting with a recorded outcome dated in the last N days into kit/social/outcomes")
     social_p.add_argument("--within-days", type=int, default=None, metavar="N",
-                          help="With --meetings: meetings starting within N days, 1 to 60 (default 14)")
+                          help="With --meetings: meetings starting within N days; with --outcomes: outcomes recorded in the last N "
+                               "calendar days, today included; 1 to 60 (default 14)")
     press = commands.add_parser("press", help="Draft private press material; sends nothing")
     press_commands = press.add_subparsers(dest="press_command", required=True)
     press_draft = press_commands.add_parser("draft")
@@ -1255,8 +1265,10 @@ def main():
         parser.error("--check reads kit/social only; it cannot be combined with --platform")
     if args.command == "social" and args.meetings and args.check:
         parser.error("--check reads finding drafts only; it cannot be combined with --meetings")
-    if args.command == "social" and args.within_days is not None and not args.meetings:
-        parser.error("--within-days needs --meetings")
+    if args.command == "social" and args.outcomes and (args.meetings or args.check):
+        parser.error("--outcomes cannot be combined with " + ("--meetings" if args.meetings else "--check (--check reads finding drafts only)"))
+    if args.command == "social" and args.within_days is not None and not (args.meetings or args.outcomes):
+        parser.error("--within-days needs --meetings or --outcomes")
     if args.command == "social" and args.within_days is not None and not 1 <= args.within_days <= 60:
         parser.error("--within-days must be 1 to 60")
     if args.command == "build" and args.preview and args.budget is not None:
@@ -1311,7 +1323,7 @@ def main():
             print(json.dumps(report, indent=2, ensure_ascii=False))
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
-            social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days)
+            social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days, args.outcomes)
         elif args.command == "press":
             if args.press_command == "letter":
                 from .press import build_letter

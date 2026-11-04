@@ -11,13 +11,16 @@ Drafts for slugs that are no longer published are listed as stale, never deleted
 (``post_length``) into ``kit/social/<platform>/``; ``check_social`` reads ``kit/social/`` only.
 ``build_meeting_social(root)`` drafts one post per scheduled, upcoming, organizer-verified staged meeting into
 ``kit/social/meetings/`` (same rules, never posted); finding drafts and ``check_social`` do not change.
+``build_outcome_social(root)`` drafts one post per meeting with a recorded outcome dated in the last N days into
+``kit/social/outcomes/`` (result and vote quoted as recorded; never posted).
 """
 import hashlib
 import json
 import os
 import re
 import stat
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from itertools import chain
 
 from .content import ContentError, _read_json, _slug, load_content, load_meeting, load_site
 from .kit import _kit_folder, _write_json, _write_text
@@ -257,10 +260,13 @@ def _meeting_draft(meeting, base_url, platform=None):
     return f"<!-- DRAFT: not posted. Review before any use. meeting {meeting['id']} -->\n\n{meeting_post_text(meeting, base_url, platform)}\n"
 
 
-def _upcoming_verified(root, within_days, now):
-    """Return ``(meetings, skipped, unreadable_files, base_url)``; an unreadable meeting file is counted and named, never fatal."""
+def _check_window(within_days):
     if type(within_days) is not int or not 1 <= within_days <= 60:
         raise ValueError("--within-days must be a whole number from 1 to 60")
+
+
+def _staged_meetings(root, now):
+    """Return ``(meetings, unreadable_files, base_url, now)``; an unreadable meeting file is named, never fatal."""
     now = now or datetime.now(timezone.utc)
     now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
     content_dir = root / "content"
@@ -271,7 +277,7 @@ def _upcoming_verified(root, within_days, now):
         base_url = load_site(_read_json(site_path), content_dir / "public-assets").get("base_url") if site_path.is_file() else None
     except ContentError as exc:
         raise ValueError(str(exc)) from None
-    skipped, unreadable, kept, seen = dict.fromkeys(SKIP_KEYS, 0), [], [], set()
+    unreadable, loaded, seen = [], [], set()
     folder = content_dir / "meetings"
     for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
         try:
@@ -280,10 +286,20 @@ def _upcoming_verified(root, within_days, now):
             if meeting["id"] in seen:
                 raise ContentError(f"duplicate meeting id {meeting['id']!r}")
         except (ContentError, OSError, ValueError):
-            skipped["unreadable"] += 1
             unreadable.append(path.name)
             continue
         seen.add(meeting["id"])
+        loaded.append(meeting)
+    return loaded, unreadable, base_url, now
+
+
+def _upcoming_verified(root, within_days, now):
+    """Return ``(meetings, skipped, unreadable_files, base_url)``; an unreadable meeting file is counted and named, never fatal."""
+    _check_window(within_days)
+    loaded, unreadable, base_url, now = _staged_meetings(root, now)
+    skipped, kept = dict.fromkeys(SKIP_KEYS, 0), []
+    skipped["unreadable"] = len(unreadable)
+    for meeting in loaded:
         starts = datetime.fromisoformat(meeting["starts_at"].replace("Z", "+00:00"))
         if meeting["status"] != "scheduled":
             skipped["cancelled"] += 1
@@ -334,3 +350,97 @@ def build_meeting_social(root, platforms=None, within_days=14, now=None):
             _kit_folder(folder)
         result = {"platforms": {p: _write_drafts(meeting_dir / p, meeting_dir / (p + ".suggested"), plan[p]) for p in platforms}}
     return {"meetings": result, "skipped": skipped, "unreadable_files": unreadable, "posted": False}
+
+
+# --- recorded-outcome drafts (DF1952-14) -------------------------------------
+
+OUTCOME_SKIP_KEYS = ("cancelled", "no_outcome", "outside_window", "unreadable")
+
+
+def outcome_post_text(meeting, base_url, platform=None):
+    """Return the post for a meeting with a recorded outcome; only ``agenda_item`` is shortened.
+
+    Result and vote are quoted exactly as recorded (``platform=None``: legacy ``len()`` cap)."""
+    outcome = meeting["outcome"]
+    tail = f" Result: {outcome['result']}."
+    if "vote" in outcome:
+        tail += f" Vote: {outcome['vote']}."
+    tail += f" Official record: {outcome['source_url']}"
+    if base_url:
+        tail += f" {base_url.rstrip('/')}/meetings/{meeting['id']}.html"
+    head = f"{meeting['body']} \u2014 {outcome['on']}"
+    item = meeting["agenda_item"]
+    limit = PLATFORMS[platform][0] if platform is not None else SOCIAL_MAX_CHARS
+    shown_options = (": " + (item if cut == len(item) else item[:cut].rstrip() + "\u2026")
+                     for cut in range(len(item), -1, -1)) if item else ()
+    for shown in chain(shown_options, ("",)):  # last resort: no agenda text at all
+        text = f"{head}{shown}.{tail}"
+        if (post_length(text, platform) if platform is not None else len(text)) <= limit:
+            return text
+    raise ValueError(f"meeting {meeting['id']}: outcome post cannot fit {limit} characters"
+                     + (f" on {platform}" if platform else ""))
+
+
+def _outcome_draft(meeting, base_url, platform=None):
+    return (f"<!-- DRAFT: not posted. Review before any use. outcome {meeting['id']} -->\n\n"
+            f"{outcome_post_text(meeting, base_url, platform)}\n")
+
+
+def _recorded_outcomes(root, within_days, now):
+    """Return ``(meetings, skipped, unreadable_files, base_url)`` for outcomes dated in the last ``within_days`` calendar days.
+
+    The window is on the recorded ``outcome.on`` date, inclusive:
+    ``[today - (within_days - 1), today]`` (``today`` = ``now``'s UTC date)."""
+    _check_window(within_days)
+    loaded, unreadable, base_url, now = _staged_meetings(root, now)
+    skipped, kept = dict.fromkeys(OUTCOME_SKIP_KEYS, 0), []
+    skipped["unreadable"] = len(unreadable)
+    first = now.date() - timedelta(days=within_days - 1)
+    for meeting in loaded:
+        if meeting["status"] != "scheduled":
+            skipped["cancelled"] += 1
+        elif meeting["outcome"] is None:
+            skipped["no_outcome"] += 1
+        elif not first <= date.fromisoformat(meeting["outcome"]["on"]) <= now.date():
+            skipped["outside_window"] += 1
+        else:
+            kept.append(meeting)
+    return kept, skipped, unreadable, base_url
+
+
+def outcome_review_notes(root, within_days=14, now=None):
+    """DF-4 alert-only: ``review-required`` notes for outcome posts whose wording asserts a violation. Never raises."""
+    try:
+        meetings, _, _, base_url = _recorded_outcomes(root, within_days, now)
+        return legal_notes((f"social/outcomes/{m['id']}", outcome_post_text(m, base_url)) for m in meetings)
+    except Exception:  # noqa: BLE001 - alert-only; build_outcome_social reports its own refusals
+        return ["review-required: social: legal-claim wording (outcome posts could not be scanned; read them before use)"]
+
+
+def build_outcome_social(root, platforms=None, within_days=14, now=None):
+    """Write outcome drafts into ``kit/social/outcomes/`` (``<platform>/`` each with ``platforms``) and return
+    ``{outcomes, skipped, unreadable_files, posted}``; ``outcomes`` is ``build_social``'s dict (per platform with ``platforms``)."""
+    meetings, skipped, unreadable, base_url = _recorded_outcomes(root, within_days, now)
+    kit_dir = root / "kit"
+    social_dir = kit_dir / "social"
+    outcome_dir = social_dir / "outcomes"
+    if platforms is None:
+        drafts = {m["id"]: _outcome_draft(m, base_url) for m in meetings}
+        for folder in (kit_dir, social_dir, outcome_dir, social_dir / "outcomes.suggested"):
+            if folder in (kit_dir, social_dir) or os.path.lexists(folder):
+                _kit_folder(folder)
+        result = _write_drafts(outcome_dir, social_dir / "outcomes.suggested", drafts)
+    else:
+        platforms = list(dict.fromkeys(platforms))
+        unknown = [p for p in platforms if p not in PLATFORMS]
+        if unknown or not platforms:
+            raise ValueError(f"unknown platform: {', '.join(unknown) or 'none given'} (choose from {', '.join(PLATFORMS)})")
+        plan = {p: {m["id"]: _outcome_draft(m, base_url, p) for m in meetings} for p in platforms}
+        folders = [outcome_dir / name for p in platforms for name in (p, p + ".suggested")]
+        for folder in [kit_dir, social_dir, outcome_dir] + folders:
+            if os.path.lexists(folder):
+                _kit_folder(folder)
+        for folder in (kit_dir, social_dir, outcome_dir):
+            _kit_folder(folder)
+        result = {"platforms": {p: _write_drafts(outcome_dir / p, outcome_dir / (p + ".suggested"), plan[p]) for p in platforms}}
+    return {"outcomes": result, "skipped": skipped, "unreadable_files": unreadable, "posted": False}
