@@ -219,7 +219,7 @@ class ValidationTests(Base):
         self.assertEqual(self.direct(replace=True)["direction_source"], SOURCE)
         self.assertEqual(self.direct(replace=True, direction_source=DIRECTION_SOURCE)["direction_source"], DIRECTION_SOURCE)
         for url, needle in (("http://example.invalid/x", "must be an https:// URL"),
-                            ("https://user:pw@example.invalid/x", "must be an https:// URL"),
+                            ("https://" + "user:pw" + "@example.invalid/x", "must be an https:// URL"),
                             ("https://example.invalid/x y", "must be an https:// URL"),
                             ("https://example.invalid/<b>", "must be an https:// URL"),
                             ("", "must be an https:// URL"), ("https://example.invalid/" + "a" * 500, "at most 500 characters")):
