@@ -31,11 +31,13 @@ NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network acc
 # and calendar head 499af297: main plus the exact calendar intro link from
 # that immutable PR; meetings.ics matches the immutable PR bytes.
 # Every merged file was compared byte-for-byte against these independent inputs.
+# DF0237-02: agencies.html alone was re-rendered, for the always-on ninth glance column ("Latest report", "none on
+# record" when no report is recorded; presentation only), from main 6daa8a2e; every other digest is unchanged.
 BASELINE = {
     "404.html": "b2991c912cf60b9f6da98217067eb5de2346263569dccb68e458107bdb4c2819",  # pragma: allowlist secret -- public rendered-file SHA-256
     "_headers": "d8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "about.html": "877208df0c2ce6c5ec765b7bd3e9868089aef85f91133a5b11d2a5e095a81e93",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "agencies.html": "15d474ba517c2b78a387ee4450f57e48576a49df5a0ca148e924a3e597470b17",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "agencies.html": "7b960c9c488ba6ffc6bb55766e5a9b5e793d3d0f37fa50210cfa2a6e8d01675a",  # pragma: allowlist secret -- public rendered-file SHA-256
     "agencies/cedar.html": "bd1c188e41b7e3fff1cf52d2d76d503b630a99f551827f3a56e6a15de8d9df24",  # pragma: allowlist secret -- public rendered-file SHA-256
     "agency-cards.js": "95d2218da220b6ec4ecd303342c0aaa090f5ea4999b0ffd05b3454c46719ca00",  # pragma: allowlist secret -- public rendered-file SHA-256
     "app.js": "ab63767de14fee8703a11531e24ebcfc4a8b845f986208772f242ef8d447db9e",  # pragma: allowlist secret -- public rendered-file SHA-256

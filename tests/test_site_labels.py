@@ -240,11 +240,15 @@ class LabelsTest(unittest.TestCase):
         # agency.votes_*: the fixture records no votes (tests/test_site_member_votes.py covers those labels).
         # agency.contract_cost, agency.cost_*: the fixture has no contract cost (tests/test_agency_contract_cost.py covers those).
         # agency.funding_*: the fixture records no funding (tests/test_agency_funding.py covers those).
+        # agency.report*: the fixture records no reports (tests/test_agency_reports.py overrides every one).
         absent = ["agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
                   "agency.cost_total", "agency.funding_fiscal_year", "agency.funding_kind_asset_forfeiture",
                   "agency.funding_kind_donation", "agency.funding_kind_general_fund", "agency.funding_kind_grant",
                   "agency.funding_kind_other", "agency.funding_provenance",
                   "agency.mapped_reported_caveat", "agency.mapped_reported_counts", "agency.mapped_reported_unknown",
+                  "agency.report_checked", "agency.report_kind_annual_report", "agency.report_kind_audit_summary",
+                  "agency.report_kind_other", "agency.report_kind_surveillance_report", "agency.report_kind_usage_statistics",
+                  "agency.report_period", "agency.report_published", "agency.reports_heading",
                   "agency.transparency_cameras", "agency.transparency_checked", "agency.transparency_down",
                   "agency.transparency_heading", "agency.transparency_hotlist_alerts", "agency.transparency_retention_days",
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",

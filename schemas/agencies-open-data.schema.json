@@ -30,6 +30,7 @@
         "alpr_policy": {"$ref": "#/$defs/policy"},
         "contract": {"$ref": "#/$defs/contract"},
         "funding": {"$ref": "#/$defs/funding"},
+        "reports": {"$ref": "#/$defs/reports"},
         "transparency": {"$ref": "#/$defs/transparency"},
         "camera_count": {"type": ["string", "null"]}
       }
@@ -101,6 +102,27 @@
         "amount_usd": {"type": "string", "pattern": "^(0|[1-9][0-9]*)([.][0-9]{1,2})?$"},
         "period": {"enum": ["annual", "total", "one_time"]},
         "fiscal_year": {"type": "string", "pattern": "^[1-9][0-9]{3}$"}
+      }
+    },
+    "reports": {
+      "description": "ALPR usage reports the agency itself published, as an organizer transcribed them; present only when recorded, newest reporting period first (period_end, then period_start, descending; then title and source_url ascending). Each entry has its own source_url and checked_on. Build responsibilities, not expressed here: period_start is before period_end, checked_on is not after the build date, published_on is not after checked_on, every date is a real calendar day, and a title is plain text without angle brackets or control characters. Absence says nothing about whether a report exists or is required.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {"$ref": "#/$defs/report_entry"}
+    },
+    "report_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "kind", "period_start", "period_end", "source_url", "checked_on"],
+      "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 160},
+        "kind": {"enum": ["annual_report", "audit_summary", "usage_statistics", "surveillance_report", "other"]},
+        "period_start": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "period_end": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "published_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "source_url": {"type": "string", "pattern": "^https://"},
+        "checked_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
       }
     },
     "transparency": {
