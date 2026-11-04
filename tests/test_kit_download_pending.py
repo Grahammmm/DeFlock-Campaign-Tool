@@ -14,7 +14,7 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from campaign_tool import cli, kit_track  # noqa: E402
+from campaign_tool import cli, kit_track, law  # noqa: E402
 from tests.test_kit_check import ready_drafts  # noqa: E402
 
 SENT_ON, PRODUCED_ON, EXPIRES = "2026-03-02", "2026-03-02", "2026-03-16"
@@ -74,7 +74,9 @@ class DownloadPendingTests(unittest.TestCase):
         return self.ok(on, "produced", "--download-expires-on", expires, *extra, request=request)
 
     def rows(self, as_of):  # kit-status as of a date (the reader takes it; the CLI has no --as-of)
-        return kit_track.status(self.root, today=date.fromisoformat(as_of))["requests"]
+        report = kit_track.status(self.root, today=date.fromisoformat(as_of))
+        law.validate(report, json.loads((REPO_ROOT / "schemas/kit-status.schema.json").read_text()))
+        return report["requests"]
 
     def row(self, as_of, request="main"):
         return next(r for r in self.rows(as_of) if r["request"] == request)
@@ -82,7 +84,9 @@ class DownloadPendingTests(unittest.TestCase):
     def due(self, as_of, expect):
         code, out, err = self.cli("kit-due", "--as-of", as_of)
         self.assertEqual(code, expect, err)
-        return json.loads(out)
+        report = json.loads(out)
+        law.validate(report, json.loads((REPO_ROOT / "schemas/kit-due.schema.json").read_text()))
+        return report
 
     def today(self, as_of):
         code, out, err = self.cli("today", "--as-of", as_of)

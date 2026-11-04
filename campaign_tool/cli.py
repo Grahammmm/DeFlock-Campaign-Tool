@@ -502,7 +502,7 @@ def _site_claim_notes(root):
     return site_notes(root)
 
 
-def build(root, check=False, budget=None):
+def build(root, check=False, budget=None, weights_out=None, weights_baseline=None):
     from .site import build_site
     public = root / "public"
     notes = []
@@ -544,21 +544,24 @@ def build(root, check=False, budget=None):
             raise ValueError(f"public tree check found {len(broken)} broken link(s); fix content and rebuild")
         print("Public tree check passed (pattern scan, internal links and accessibility pattern lint; "
               "not an accessibility audit; human review still required).")
-    return 0 if budget is None else weight_budget(public, budget)
+    return 0 if budget is None else weight_budget(public, budget, weights_out, weights_baseline)
 
 
-def weight_budget(public, budget):
-    from .site_check import page_weights
+def weight_budget(public, budget, weights_out=None, weights_baseline=None):
+    from .site_check import page_weights, read_weights, weight_changes, weights_record, write_weights
     rows = page_weights(public)
+    base = None if weights_baseline is None else read_weights(weights_baseline)  # read first: a bad file prints nothing
     print("Page weight (first-party: html + referenced site-local css/js/images, uncompressed):")
-    for row in rows:
-        print(f"  {row['page']} {row['total']} bytes")
+    for line in [f"  {row['page']} {row['total']} bytes" for row in rows] if base is None else weight_changes(rows, base):
+        print(line)
     over = [row for row in rows if row["total"] > budget * 1024]
     for row in over:
         named = ", ".join(f"{p} {n}" for p, n in sorted(row["assets"], key=lambda a: (-a[1], a[0]))[:3])
         print(f"over budget: {row['page']} {row['total']} bytes > {budget} KB; largest: {named or '(no assets)'}")
     if not over:
         print(f"Page weight within {budget} KB (first-party, uncompressed).")
+    if weights_out is not None:  # last: the record is private and never changes the exit code
+        print(f"Page weights written to {write_weights(public.parent, weights_out, weights_record(rows, budget))} (private).")
     return 3 if over else 0
 
 
@@ -789,6 +792,10 @@ def main():
                               help="List files a rebuild would add, remove or change in public/; writes nothing")
             cmd.add_argument("--budget", type=_positive_kb, metavar="KB", help="Print each page's first-party "
                              "weight (html + referenced css/js/images, uncompressed); exit 3 when a page exceeds KB")
+            cmd.add_argument("--weights-out", metavar="FILE", help="With --budget: save the per-page weights to a new "
+                             "private page-weights-v1 JSON file (not inside public/ or content/)")
+            cmd.add_argument("--weights-baseline", metavar="FILE", help="With --budget: print each page's growth "
+                             "against a saved page-weights-v1 file")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
             cmd.add_argument("--fix-modes", action="store_true",
@@ -827,10 +834,17 @@ def main():
     social_p.add_argument("--within-days", type=int, default=None, metavar="N",
                           help="With --meetings: meetings starting within N days, 1 to 60 (default 14)")
     press = commands.add_parser("press", help="Draft private press material; sends nothing")
-    press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
+    press_commands = press.add_subparsers(dest="press_command", required=True)
+    press_draft = press_commands.add_parser("draft")
     press_draft.add_argument("--directory", required=True)
     press_draft.add_argument("--finding", action="append", default=[])
     press_draft.add_argument("--date")
+    press_letter = press_commands.add_parser("letter", help="Draft a private letter to the editor; sends nothing")
+    press_letter.add_argument("--directory", required=True)
+    press_letter.add_argument("--finding", action="append", default=[], help="Published finding id (repeat for 1 to 3)")
+    press_letter.add_argument("--words", type=int, default=250, metavar="N", help="Word limit, 150 to 400 (default 250)")
+    press_letter.add_argument("--outlet", help="Outlet name for the salutation (plain text)")
+    press_letter.add_argument("--date")
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_out = backup_p.add_mutually_exclusive_group(required=True)
@@ -934,8 +948,9 @@ def main():
     for flag in ("--directory", "--agency", "--date"):
         sent_p.add_argument(flag, required=True)
     sent_p.add_argument("--channel", required=True, choices=kit_track_channels)
-    sent_p.add_argument("--request-url", metavar="URL", help="With --channel muckrock only: the https://www.muckrock.com/foi/ "
-                        "page of the request you filed there (recorded, never fetched)")
+    sent_p.add_argument("--request-url", metavar="URL", help="With --channel portal: the https:// page of the request you "
+                        "filed there, on the agency's verified portal host (kit-verify-agency --portal); with --channel "
+                        "muckrock: the https://www.muckrock.com/foi/ page. Recorded, never fetched")
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     sent_p.add_argument("--request", default="main", help="Name of a further request to this agency, drafted in "
                         "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
@@ -1000,6 +1015,11 @@ def main():
                             "its download link expires (not before --date). Only the date is kept; the link itself is "
                             "never stored or fetched. The production stays 'download pending' until records are "
                             "linked with a later produced --record step")
+    response_p.add_argument("--scope", action="append", default=[], metavar="ID",
+                            help="repeatable, with --disposition: a law-package scope this request asked for that the "
+                            "agency's answer covers (not on acknowledged, extension, clarification or fee_estimate steps)")
+    response_p.add_argument("--disposition", choices=("produced", "partly_produced", "withheld", "no_records_stated"),
+                            help="with --scope: what the agency said about those scopes (your record, not a legal finding)")
     muckrock_p = commands.add_parser("kit-muckrock-import", help="Propose the kit-response step a MuckRock request JSON you "
                                      "saved by hand implies; fetches and sends nothing")
     for flag in ("--directory", "--agency", "--from-json"):
@@ -1137,10 +1157,14 @@ def main():
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
     new_p = finding_cmds.add_parser("new", help="Write a private/drafts/fnd_<id>.json skeleton with [EDIT ME: ...] markers")
-    for flag in ("--directory", "--agency", "--title"):
-        new_p.add_argument(flag, required=True)
+    new_p.add_argument("--directory", required=True)
+    new_p.add_argument("--agency", help="Required unless --gap")
+    new_p.add_argument("--title", help="Required unless --gap")
     new_p.add_argument("--source", action="append", default=[], metavar="PREFIX", help="12-64 hex of a library sha256; repeatable")
     new_p.add_argument("--author")
+    new_p.add_argument("--gap", metavar="AGENCY", help="Draft an information_gap from this agency's denied or closed request "
+                       "that produced no records (dates, stated basis and library correspondence prefilled)")
+    new_p.add_argument("--request", help="With --gap: the request name (default main)")
     diff_p = finding_cmds.add_parser("diff", help="Field-level diff of public fields: ID --from DRAFT, or OLD NEW "
                                      "(read-only; exit 3 when they differ)")
     diff_p.add_argument("inputs", nargs="+", metavar="ID | OLD NEW")
@@ -1191,6 +1215,10 @@ def main():
     pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
+    flyer = commands.add_parser("flyer", help="Write a private printable one-page campaign flyer; prints and publishes nothing")
+    flyer.add_argument("--directory", required=True)
+    flyer.add_argument("--max-findings", type=int, choices=range(1, 7), default=3)
+    flyer.add_argument("--replace", action="store_true")
     _campaign_option(parser)
     campaigns = commands.add_parser("campaigns", help="A named register of campaign directories; names and paths only"
                                     ).add_subparsers(dest="campaigns_command", required=True)
@@ -1212,6 +1240,15 @@ def main():
             pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
         diff_p.error("use either ID --from DRAFT, or OLD NEW")
+    if getattr(args, "finding_command", None) == "new":
+        if args.gap is not None and (args.agency is not None or args.source):
+            new_p.error("--gap takes the agency from the request; it cannot be combined with --agency or --source")
+        if args.gap is None and args.request is not None:
+            new_p.error("--request is only for --gap")
+        if args.gap is None and (args.agency is None or args.title is None):
+            new_p.error("the following arguments are required: " + ", ".join(
+                flag for flag, value in (("--agency", args.agency), ("--title", args.title)) if value is None)
+                + " (or --gap AGENCY)")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
     if getattr(args, "stale_days", None) is not None and not 1 <= args.stale_days <= 3650:
@@ -1228,6 +1265,8 @@ def main():
         parser.error("--within-days must be 1 to 60")
     if args.command == "build" and args.preview and args.budget is not None:
         parser.error("--budget measures a written build; it cannot be combined with --preview")
+    if args.command == "build" and args.budget is None and (args.weights_out is not None or args.weights_baseline is not None):
+        parser.error("--weights-out and --weights-baseline need --budget")
     if args.command == "sources" and args.sources_command == "add-batch":
         given = {"--source-id": args.source_id, "--agency-id": args.agency_id, "--received-at": args.received_at}
         if args.from_request is not None:
@@ -1278,9 +1317,18 @@ def main():
         elif args.command == "social":
             social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days)
         elif args.command == "press":
-            from .press import build_press
-            print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
-            print("Draft written to kit/press. Nothing was sent.")
+            if args.press_command == "letter":
+                from .press import build_letter
+                result = build_letter(root, args.finding, args.date, words=args.words, outlet=args.outlet)
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                print(f"Letter word count: {result['words']}/{result['word_limit']}.")
+                for note in result["review_flags"]:
+                    print(note, file=sys.stderr)
+                print("Private letter draft written. Nothing was sent.")
+            else:
+                from .press import build_press
+                print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
+                print("Draft written to kit/press. Nothing was sent.")
         elif args.command == "build" and args.preview:
             from .site import preview_site
             report = preview_site(root)
@@ -1288,7 +1336,8 @@ def main():
             print("Preview only; public/ was not changed.")
             sys.exit(3 if report["added"] or report["removed"] or report["changed"] else 0)
         elif args.command == "build":
-            code = build(root, check=args.check, budget=args.budget)
+            code = build(root, check=args.check, budget=args.budget, weights_out=args.weights_out,
+                         weights_baseline=args.weights_baseline)
             if code:
                 sys.exit(code)
         elif args.command == "backup":
@@ -1299,6 +1348,10 @@ def main():
             backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "flyer":
+            from .flyer import build as flyer_build
+            print(json.dumps(flyer_build(Path(args.directory).expanduser(), args.max_findings, replace=args.replace)))
+            print("Private file; nothing was printed, sent or published.")
         elif args.command == "meeting-pack" and args.upcoming:
             from .meeting_pack import build_upcoming
             report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
@@ -1395,7 +1448,13 @@ def main():
         elif args.command == "finding" and args.finding_command == "new":
             from . import findings
             read_config(root)
-            print(json.dumps(findings.new_draft(root, args.agency, args.title, args.source, author=args.author)))
+            if args.gap is not None:
+                result = findings.new_gap_draft(root, args.gap, args.request or "main", args.title, author=args.author)
+                print(json.dumps({key: value for key, value in result.items() if key != "blockers"}))
+                for prefix in result["blockers"]:
+                    print(f"blocker: {prefix} is not in the source library (sources add-batch --from-request or sources add)")
+            else:
+                print(json.dumps(findings.new_draft(root, args.agency, args.title, args.source, author=args.author)))
             print('Private draft only; replace every "[EDIT ME: ...]" before review. Nothing was published.')
         elif args.command == "finding":
             from . import findings
@@ -1536,6 +1595,8 @@ def main():
                     print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
                 for item in row.get("downloads_pending", ()):
                     print(f"{label}: {item['line']}", file=sys.stderr)
+                if row["channel"] == "portal" and row.get("request_url"):
+                    print(f"{label}: Portal request: {row['request_url']}", file=sys.stderr)
         elif args.command == "kit-fees":
             from . import kit_fees
             report = kit_fees.fees(root)
@@ -1577,8 +1638,8 @@ def main():
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
                                          reference=args.reference, replace_reference=args.replace_reference,
                                          partial=args.partial, correspondence=args.correspondence,
-                                         withheld_basis=args.withheld_basis,
-                                         download_expires_on=args.download_expires_on),
+                                         withheld_basis=args.withheld_basis, scope_ids=args.scope,
+                                         disposition=args.disposition, download_expires_on=args.download_expires_on),
                              indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-withheld":

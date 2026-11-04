@@ -212,6 +212,20 @@ section number found in the agency's own text (`Gov. Code § 7923.600`, `Governm
 `GC 7922.000`; a basis naming two sections appears under both; none: `no section number stated`). It is read-only and
 adds no legal reading. Older `kit/sent.json` files with no `withheld_basis` read unchanged.
 
+## Per-scope answers (kit requests)
+
+`kit-sent` records the law-package scope ids its draft covers as `scopes` (every package scope, in package order, when
+the kit was built without `--scope`; exactly the `--scope` list otherwise), read from `kit/summary.json`. A missing,
+symlinked or unreadable summary, or no law package, stores no `scopes` (never guessed); `--replace` re-reads it.
+`kit-response --scope ID [--scope ID ...] --disposition produced|partly_produced|withheld|no_records_stated` records, on
+that dated step, what the agency said about those scopes (`scope_answers`). Both flags or neither; every ID must be one
+the request asked for; a duplicate ID is refused; a request with no recorded `scopes` refuses `--scope`; not allowed on
+`acknowledged`, `extension`, `clarification_requested`, `clarified` or `fee_estimate` steps. A disposition is your record
+of what the agency said, never a legal finding, and is independent of `--withheld-basis`.
+`kit-status` rows carry `scopes`: `null` (request recorded before this existed: scopes not recorded) or, per asked scope,
+`{scope_id, answer, on}` with the latest disposition and its step date, `answer: null` for no answer yet. `kit-coverage`
+(table and `--csv`) gains a last `scopes` column: `not recorded` or `k/n answered`.
+
 ## Private calendar (kit-calendar)
 
 `kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import
@@ -231,6 +245,18 @@ under the normal step rules. `processed` is `acknowledged`; `fix` is `clarificat
 `fee_estimate` from `price` (none: record it by hand); `rejected` is `denied`; `no_docs` and `abandoned` are `closed`
 with a note; `partial` is `produced --partial`; `done` is `produced`. `started`, `submitted`, `ack`, `appealing` and
 `lawsuit` propose no step, and any other status is refused by name. Nothing is fetched or sent.
+
+## Requests filed on an agency portal (kit requests)
+
+`kit-sent --channel portal --request-url https://<portal host>/...` keeps a link back to a request you filed on the
+agency's NextRequest, GovQA or JustFOIA portal. The agency must already have its portal recorded by `kit-verify-agency
+--portal`, and the URL's host (compared lower-case) must equal that portal's host; the URL must be `https` with no
+login, port, query or fragment, at most 300 characters. It is refused with `--channel email` or `mail`, and for an agency
+with no verified portal. The link is stored as `request_url`, never fetched: the tool opens no portal page and uses no
+portal login. `kit-status` and `kit-due` show it on the request's row (`kit-status` also prints `Portal request: URL` on
+stderr), `kit-status --csv` adds a `request_url` column, and the `kit-followup` and `kit-denial-reply` drafts quote
+`Portal request: URL` after the reference line. `kit-sent --replace` keeps a stored link unless you give a new one.
+Older `kit/sent.json` files, with no `request_url`, read and write as before.
 
 ## A transcribed timeline in one write (kit-response-import)
 

@@ -7,6 +7,23 @@ creates one private `kit/press/` Markdown draft from published findings only. Re
 limitations, corrections, links and contact before any use. It sends and publishes nothing.
 Edited drafts are kept; the fresh version goes to `kit/press.suggested/`.
 
+### Letters to the editor
+
+`python3 -m campaign_tool press letter --directory D --finding ID [--finding ID] [--words N] [--outlet NAME] [--date YYYY-MM-DD]`
+writes one private, never-sent first-person letter to `kit/press/letters/<date>-<first-slug>.md` from one to
+three published findings (`--words` 150 to 400, default 250; `--outlet` is plain text for the salutation only).
+Each finding gets one short paragraph: its summary exactly as published, `(finding ID)`, `Corrected DATE.` with the
+latest correction date when it has any, and its finding link when `base_url` is set. The closing points to the next
+scheduled staged meeting of the FIRST finding's agency (no speaking or comment claims), else to the signup section
+(`/#participate`). `[YOUR NAME]` and `[YOUR CITY]` are left for the organizer.
+
+Finding paragraphs are dropped whole from the end until the visible body fits N words (whitespace tokens with a
+letter or digit; the two placeholders and the initial draft comment are not counted); only a first paragraph that
+cannot fit is refused. The count is printed as `Letter word count: X/N.` The legal-claim wording guard is alert-only:
+rule names are printed to stderr as `review-required` notes and nothing is blocked. Edited letters are kept and the
+fresh version goes to `kit/press/letters.suggested/`. The letter record is `kit/press/letters/.written.json`, separate
+from the release draft's. Nothing is sent or published; the release `press draft` is unchanged.
+
 How a finding goes from draft to the public site in the workspace Worker, and how it is
 corrected or withdrawn afterwards. Code: `workers/workspace/src/review_state.ts`,
 `publication.ts`, `manifest.ts`, `executors/publish_finding.ts`, `executors/deploy_site.ts`.
@@ -131,6 +148,9 @@ correction's date (equal is fine); the note is non-empty, at most 1000 character
 With `--from DRAFT` the reviewed fields are replaced by the draft's (same id and slug), which must clear
 the same review blockers and cited-record check as `publish`; `id`, `slug`, `published_at` and earlier
 corrections are kept. One `{at, action: "correct", id, slug, date, content_sha256, text_changed}` line is logged.
+A finding about several agencies (`also_agency_ids`, see SITE-CONTENT.md) is hashed with that list as entered, so adding,
+removing or reordering an agency on a published finding needs a correction from a freshly reviewed draft; `publish` and
+`correct` refuse an unknown agency id before anything is written.
 
     python3 -m campaign_tool finding withdraw ID --directory D --reason TEXT
 
@@ -148,6 +168,22 @@ If the content file cannot be removed both copies remain and the leftover is nam
 (never reviewer names, rationales or notes). A draft whose id is published is a second `pending correction` row; a withdrawn
 id wins (a leftover content file is named); an unreadable file is an `unreadable` row with its path and a fixed reason
 (not JSON, a symlink, too large, ...). A reason that can quote the file, such as an unknown key, is withheld. Exit 0.
+
+### Drafting a gap finding from a request
+
+When an agency denied a request or closed it without producing records, start the draft from the request
+itself: `python3 -m campaign_tool finding new --directory D --gap AGENCY [--request NAME] [--title T] [--author NAME]`
+(`--request` defaults to `main`; `--gap` cannot be combined with `--agency` or `--source`). It reads
+`kit/sent.json` and writes the same private 0600 draft, with `classification` `information_gap`, `event_date`
+the date of the denial or closure, and a facts block at the start of `body_md`: when and how the request was
+sent, the agency's answer and date, and each stated withheld basis as the agency wrote it (angle brackets and
+line breaks flattened so it stays plain text). The request's correspondence records that are in
+`content/sources.json` become the sources; any that are not are printed as `blocker: <12 hex> is not in the
+source library` and listed in an `[EDIT ME: add these sources before review: ...]` limitations line, so run
+`sources add-batch --from-request` or `sources add` first. Everything interpretive (summary, confidence,
+limitations, counterevidence, the finding text, source locators) stays an `[EDIT ME: ...]` marker. A request
+that is still open (no answer, or only an acknowledgement, extension or partial answer) or that produced
+records is refused; write a regular finding for those. Nothing is published.
 
 ## Propose, approve, execute
 
@@ -227,6 +263,20 @@ edited draft is kept and the fresh one goes to `kit/social.suggested/`; drafts f
 longer published are listed as `stale`, never deleted. Nothing is posted and nothing goes
 under `public/`; posting stays an organizer decision outside this tool.
 
+## Campaign flyer (never printed or posted)
+
+`python3 -m campaign_tool flyer --directory D [--max-findings N] [--replace]` writes a private one-page
+flyer to `kit/flyer/flyer.html` and a plain `flyer.txt` twin (folder 0700, files 0600): the `site.json`
+logo (copied beside it as `logo.<ext>`), campaign name, tagline, county and state, up to N (1-6, default 3)
+published findings newest `published_at` first with their classification and confidence labels and public
+URL from `base_url`, "N more on the site" when cut, a "Get involved" link to `base_url`, and the
+not-legal-advice line. With no published finding it says records are requested and nothing is published
+yet; without `base_url` it prints no links. Draft, withdrawn and challenged findings never appear. The
+HTML has one inline `<style>`, no script and no external load; its only links are the campaign's own
+`base_url`. An existing flyer is refused without `--replace`; a symlinked folder or file, or a logo
+named in `site.json` but missing, is refused. Nothing is printed, sent or published and nothing is
+written under `public/` or `content/`; printing and handing it out stay an organizer decision.
+
 ## Reviewer roster (role assignment, not authentication)
 
 `finding reviewers add --directory D --name N --role R [--role R]` (R: factual, legal, privacy) merges
@@ -280,7 +330,8 @@ with a roster for an unlisted name or a role they do not hold); nothing is sent,
 blocker, receipt count or publication check reads it. `finding review-status` shows each role as assigned since D,
 receipt_recorded or unassigned, and `today --review-days N` (default 7) lists assignments with no receipt after N days.
 `finding diff ID --directory D --from DRAFT` (or `OLD NEW`) prints a read-only field-level
-diff of the public fields before a correction; exit 3 when they differ. The runner that executes
+diff of the public fields (including `agency_id` and `also_agency_ids`; a reorder of the extra agencies prints the old and
+the new ordered list) before a correction; exit 3 when they differ. The runner that executes
 `build_site` is a separate component (see [ROADMAP.md](ROADMAP.md)).
 
 The offline starter has a page-level preview: `python3 -m campaign_tool build --directory D --preview`

@@ -12,7 +12,9 @@ The manifest shape matches ``newsletterManifest`` in the workspace Worker::
                    "participation"?: {...} | null}],  # --from-content: content.load_participation's dict
      "decisions": [{"body", "on", "result", "vote", "source_url", "meeting_path"}],  # optional, --from-content
      "requests": [{"agency", "topic", "asked_on", "updated_on", "state", "sentence", "path"}],  # optional, --from-content
-     "records": [{"title", "agency", "received_at", "prefix", "public_url", "path"}]}  # optional, --from-content
+     "records": [{"title", "agency", "received_at", "prefix", "public_url", "path"}],  # optional, --from-content
+     "map": {"records": [{"recorded_on", "osm_base", "source", "total", "by_city", "added", "removed"}],
+             "label": "...", "path": "/cameras.html"}}  # optional, --from-content, only with map history
 
 ``corrections`` is optional (``--from-content`` sets it; Worker manifests omit it).
 ``participation`` likewise: an object adds a "How to take part" line, null the
@@ -217,6 +219,69 @@ def _records(items, since, now, base_url):
     return lines
 
 
+def _map_record(item, label):
+    """Validate one ``map.records`` entry (DF0137-13 shape); returns ``(day, osm_day, item)``."""
+    if not isinstance(item, dict):
+        raise DraftError(f"{label}: must be an object")
+    day = _day(item.get("recorded_on"), label + ".recorded_on")
+    base = item.get("osm_base")
+    osm_day = _day(base[:10] if isinstance(base, str) else base, label + ".osm_base") if base is not None else day
+    for key in ("total", "added", "removed"):
+        if type(item.get(key)) is not int or item[key] < 0:
+            raise DraftError(f"{label}.{key}: non-negative integer required")
+    cities = item.get("by_city")
+    if cities is not None:
+        if not isinstance(cities, dict):
+            raise DraftError(f"{label}.by_city: must be an object or null")
+        for name, count in cities.items():
+            _clean(name, label + ".by_city name", 120)
+            if type(count) is not int or count < 0:
+                raise DraftError(f"{label}.by_city: non-negative integer counts required")
+    return day, osm_day, item
+
+
+def _map(doc, since, now, base_url):
+    """Lines for ``map`` (DF1422-16): the newest history record inside the window against the one before it.
+
+    The window is the ``since`` day through ``now``'s day; a record after ``now`` is never used. The previous
+    record is the one just before it on any date. An in-window record that changed nothing gives no section.
+    Per-city lines need ``by_city`` on both records. Wording says community-mapped, ownership unconfirmed.
+    """
+    if doc is None:
+        return []
+    if not isinstance(doc, dict):
+        raise DraftError("map must be an object")
+    items = doc.get("records")
+    if not isinstance(items, list):
+        raise DraftError("map.records must be a list")
+    records = sorted((_map_record(item, f"map.records[{index}]") for index, item in enumerate(items)), key=lambda r: r[0])
+    low, high = (since.date() if since else None), now.date()
+    inside = [i for i, r in enumerate(records) if r[0] <= high and (low is None or r[0] >= low)]
+    if not inside:
+        return []
+    day, osm_day, current = records[inside[-1]]
+    previous = records[inside[-1] - 1] if inside[-1] > 0 else None
+    old = previous[2] if previous else None
+    cities = {}
+    if old is not None and old["by_city"] is not None and current["by_city"] is not None:
+        for name in sorted(set(old["by_city"]) | set(current["by_city"])):
+            before, after = old["by_city"].get(name, 0), current["by_city"].get(name, 0)
+            if before != after:
+                cities[name] = (before, after)
+    if old is not None and current["added"] == 0 and current["removed"] == 0 and old["by_city"] == current["by_city"]:
+        return []
+    link = ""
+    if base_url:
+        link = f" [Cameras page]({_link(base_url, doc.get('path', '/cameras.html'), 'map.path')})"
+    lines = [f"- {current['total']} community-mapped points (ownership unconfirmed), OpenStreetMap data of {osm_day.isoformat()}.{link}"]
+    if old is not None:
+        lines.append(f"- Since {previous[0].isoformat()}: {current['added']} added, {current['removed']} removed.")
+    lines += [f"- {name}: {before} → {after}" for name, (before, after) in list(cities.items())[:MAX_MEETINGS]]
+    if len(cities) > MAX_MEETINGS:
+        lines.append(f"- and {len(cities) - MAX_MEETINGS} more on the cameras page.")
+    return lines
+
+
 def _how(value, label, excluded):
     """Organizer ``how`` text, or "see official details" when it holds an email or phone (DF2037-15)."""
     if isinstance(value, str) and (_EMAIL.search(value) or _PHONE.search(value)):
@@ -308,6 +373,7 @@ def build_draft(manifest, now=None):
     decisions = _decisions(manifest.get("decisions"))
     requests = _requests(manifest.get("requests"), since, now, base_url)
     records = _records(manifest.get("records"), since, now, base_url)
+    camera_map = _map(manifest.get("map"), since, now, base_url)
     # The engine applies the documented window itself: findings published since the
     # last send, meetings that have not started yet (soonest first). Labels keep the
     # manifest index so a bad entry is named where the organizer can find it.
@@ -376,6 +442,10 @@ def build_draft(manifest, now=None):
         if len(records) > MAX_FINDINGS:
             lines.append(f"- and {len(records) - MAX_FINDINGS} more on the sources page.")
         lines.append("")
+    if camera_map:
+        lines.append("## Camera map")
+        lines += camera_map
+        lines.append("")
     if decisions:
         lines.append("## Decisions")
         lines += decisions[:MAX_MEETINGS]
@@ -436,6 +506,7 @@ def build_draft(manifest, now=None):
               "counts": {"findings": len(findings), "meetings": len(meetings),
                          **({"requests": len(requests)} if requests else {}),
                          **({"records": len(records)} if records else {}),
+                         **({"map": 1} if camera_map else {}),
                          **({"decisions": len(decisions)} if decisions else {})}, "excluded": excluded,
               "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
     if review_flags:  # absent otherwise, so unflagged drafts stay byte-identical (same convention as corrections_listed)

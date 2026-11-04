@@ -9,9 +9,10 @@ import json
 from pathlib import Path
 
 from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _asked, _bounds, _read_json,
-                      _require_keys, _slug, _text, _validate_cameras, check_source_pages, default_agencies,
+                      _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
-                      load_snapshot, load_sources, plain_text, point_check_problems, point_nodes)
+                      load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths,
+                      topics_namespace_problem)
 from .finding_law import check_findings, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
@@ -135,6 +136,21 @@ def _meeting(path, label):
     return meeting
 
 
+def _topics(problems, content_dir, findings, finding_slugs):
+    """DF1952-06: every refused content/topics/<slug>.json by file (load_topics stops at the first). ``findings`` None:
+    a finding file is itself refused, so ids are not matched. Page slugs are the page file stems, as load_pages names them."""
+    paths = _attempt(problems, "topics/", lambda: topic_paths(content_dir))
+    folder = content_dir / "pages"
+    pages = [{"slug": path.stem} for path in (sorted(folder.iterdir()) if folder.is_dir() else [])
+             if path.name.endswith(".json")]
+    loaded = [topic for path in paths or []
+              for topic in [_attempt(problems, "topics/" + path.name, lambda: load_topic(path, findings, pages))]
+              if topic is not None]
+    clash = loaded and topics_namespace_problem({p["slug"] for p in pages}, finding_slugs)
+    if clash:
+        problems.append(clash)
+
+
 def _cap(problems, limit):
     if limit is None or len(problems) <= limit:
         return problems
@@ -154,7 +170,7 @@ def content_problems(root, limit=LIMIT):
     else:
         _attempt(problems, "site.json", lambda: load_site(_read_json(site_path), content_dir / "public-assets"))
 
-    slugs, ids, findings = set(), set(), []
+    slugs, ids, findings, labelled = set(), set(), [], []
     for path in _files(content_dir, "findings"):
         label = "findings/" + path.name
         finding = _attempt(problems, label, lambda: load_finding(_read_json(path), label))
@@ -164,8 +180,10 @@ def content_problems(root, limit=LIMIT):
             problems.append(f"findings/{path.name}: duplicate finding slug or id")
         slugs.add(finding["slug"])
         ids.add(finding["id"])
+        labelled.append((label, finding))
         findings.append(finding)
     _attempt(problems, "campaign.json", lambda: problems.extend(check_findings(root, findings)))
+    findings_intact = len(findings) == len(_files(content_dir, "findings"))
 
     meeting_ids = set()
     for path in _files(content_dir, "meetings"):
@@ -183,6 +201,8 @@ def content_problems(root, limit=LIMIT):
     if library is not None:  # an unreadable library is already named; build refuses it before the page check
         problems.extend(check_source_pages(findings, library))
 
+    _topics(problems, content_dir, findings if findings_intact else None, slugs)
+
     labels_path = content_dir / "labels.json"  # optional, read exactly as load_content: a symlink is named, not read
     if labels_path.is_file() or labels_path.is_symlink():
         _attempt(problems, "labels.json", lambda: load_labels(_read_json(labels_path, MAX_LABELS_BYTES)))
@@ -198,6 +218,10 @@ def content_problems(root, limit=LIMIT):
                             lambda: load_agencies(_read_json(agencies_path), "content/agencies.json"))
     else:
         agencies = _attempt(problems, "kit/agencies.json", lambda: default_agencies(root))
+    if agencies is not None:  # DF1952-07: a failed agency pass is already named; do not add an unknown-id line per finding
+        known = {agency["agency_id"] for agency in agencies}
+        for label, finding in labelled:
+            _attempt(problems, label, lambda: check_finding_agencies(finding, known, label))
 
     map_config = _map(problems, content_dir, library)
     if map_config and agencies is not None:  # a broken agency list would only add false lines
@@ -217,7 +241,7 @@ def content_problems(root, limit=LIMIT):
 
 
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
-FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "kit/",
+FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "topics/", "kit/",
                  "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json")
 
 
