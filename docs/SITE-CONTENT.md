@@ -185,6 +185,21 @@ absent shows nothing. `agencies.html` shows "Posted ALPR usage policy (checked
 <date>, where we found it)" on that agency's card only; neither URL is fetched.
 Linking a policy says only that it was posted; it is not a finding about compliance.
 
+An agency's optional `profile.policy_check` records an organizer's reading of the posted `alpr_policy` against the
+draft checklist `jurisdictions/us-ca/policy-checklist.json` (bound to the law-package rule
+`ca-civ-1798.90.51-usage-and-privacy-policy`, Civ. Code § 1798.90.51(b); status `draft`, packaged byte-identical and
+checked by `tools/sync_campaign_resources.py`): `{"checked_on": "YYYY-MM-DD", "policy_url": "https://…", "elements":
+{"<id>": {"status": "addressed"|"not_found"|"unclear", "page"?: 1–9999}}}`. `policy_url` must equal
+`profile.alpr_policy.url` (so `alpr_policy` must be present); every checklist id (`authorized_purposes`,
+`authorized_users_training`, `security_monitoring`, `sharing_restrictions`, `custodian_title`, `accuracy_correction`,
+`retention_destruction`) must be present and no other; `page` only with `addressed`; `checked_on` a real date not after
+the build date and not before `alpr_policy.checked_on`. A bad entry stops the build and `content-check` flags it, naming
+every field as `<file>[n].profile.policy_check.<field>` on one line. The agency page and the agencies-list card show
+"What the posted policy covers (organizer reading, not a legal review)": one line per element in checklist order
+("addressed (page N)", "not found in the posted policy" or "unclear"), the check date, a link to the posted policy and the
+law package status label. It is an organizer's reading of what the document says, not a finding about compliance, and
+`not found` is never read as more than that. Nothing is fetched; the section is not in card JS, open data or feeds.
+
 An agency's optional `asked` (≤ 20 items) lists what the organizer asked it: `{"topic", "asked_on", "state",
 "updated_on"?, "note"?}`. `topic` ≤ 120 and `note` ≤ 200 plain-text characters; `asked_on`/`updated_on` are real
 YYYY-MM-DD dates not after the build date, `updated_on` not before `asked_on`; `state` is one of `awaiting_response`,
@@ -248,6 +263,28 @@ sources route to `sources.html#library`.
 Each `sources.html` entry ends with `Cited by:` and links to every published
 finding that cites its `sha256` (model order, once each), or with
 `Not cited by a published finding`. Drafts never appear.
+
+Record pages (DF1103-11): every library entry also gets `sources/<first 12 hex of its sha256>.html` (labels
+`sources.record_description`, `sources.record_page` = "Record details"). The page shows the title, the received date, the
+agency (linked to its page when it has one), the record number with the "How to check a copy" steps (on every record page,
+checked or not), the page count (0 included), the public copy link or the private-archive notice, the recorded copy check,
+the public note and each published finding that cites it, once, in model order. It is built only from the published model:
+originals, the ledger, the kit and private drafts are never read. Library entries link to it ("Record details"), and the
+record-number link on a finding page points to it when the entry is in the library; an uncatalogued citation stays unlinked.
+Packet, timeline, agency-card and agency-page links still use the `sources.html#<fragment>` group anchors. Record pages are in
+`sitemap.xml` (with a `base_url`, no `lastmod`), last, in library order; with no library entries none are written.
+
+Record numbers must be unique: any two library entries sharing the same 12-character prefix, including one `sha256` listed under
+two fragments, refuse the build naming the prefix and the entries' positions in `sources.json` (never a full hash). Nothing is
+overwritten or merged for you: consolidate the aliases by hand (keep one entry per record) before building. `sources add`,
+`sources edit` and `sources verify-copy` keep their own rules and do not rewrite the library for this. The top-level name
+`sources/` is reserved: `public-assets/sources/...` is refused as a generated path, with or without entries, and the slug
+`sources` is already a reserved content page.
+
+Downstream hook contract (for the library filter): each outer library `<li>` has `class="source-entry"`,
+`data-agency` (the entry's `agency_id`), `data-year` (the first four characters of `received_at`, no time-zone conversion),
+`data-cited` (`true` when a published finding cites it, else `false`) and `data-record` (the 12 lowercase hex characters).
+Every entry stays visible; the agency-document-group sections keep their ids.
 
 `content/officials.json` (optional, never fetched) lists who decides for a body:
 `{"schema_version": 1, "bodies": [{"agency_id", "officials": [{"name", "role",
@@ -507,7 +544,7 @@ one writer. Evidence originals are never deleted.
 `index.html` (hero map when configured, agency cards, mission, latest findings,
 signup, meetings), `agencies.html`, `findings/index.html`,
 `findings/<slug>.html`, `sources.html` (with `#library` and one
-`#<fragment>` section per source group), `meetings.html`, `about.html`,
+`#<fragment>` section per source group), `sources/<12-hex record number>.html` (one per library entry), `meetings.html`, `about.html`,
 `style.css`, `_headers`, `robots.txt`, `sitemap.xml` (only when `base_url` is
 set: absolute `<loc>`s, finding pages and `/`, `/findings/` with the UTC day of
 the latest update or correction as `<lastmod>`; without `base_url` no sitemap,
