@@ -1,6 +1,7 @@
 """`content init`: write the minimal valid content/ tree so `build` switches to the content site.
 
 Every organizer-owned sentence is a "[EDIT ME: ...]" placeholder; nothing is built, sent or published.
+A fresh init also seeds content/faq.json from the packaged draft FAQ starter (DF0022-02).
 """
 import ctypes
 import errno
@@ -14,12 +15,15 @@ import tempfile
 from pathlib import Path
 
 from .cli import read_config
-from .content import load_site
+from .content import load_faq, load_site
 from .markdown_lite import lint
 
 PLACEHOLDER = "[EDIT ME: "
 _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
+FAQ_STARTER = Path(__file__).resolve().parent / "_resources" / "examples" / "faq.json"  # packaged mirror of examples/faq.json
+GENERIC_DEADLINE = (PLACEHOLDER + "verify for this campaign] Check the applicable law package and official guidance for response timing. "
+                    "A reminder is not a legal determination or a promise that records will be produced by that date.")
 
 
 def _plain(value):
@@ -40,6 +44,27 @@ def site_document(cfg):
         "signup": {"mode": "none"},
         "language": "en",
     }
+
+
+def faq_document(cfg):
+    """The draft FAQ starter for this campaign, validated by the real FAQ loader.
+
+    Read from the packaged resource (never a checkout path). For California the starter is kept as shipped, including the
+    one law-package ``rule_id`` and its draft caveat; for any other state the one answer that cites a California rule is
+    replaced by generic wording without a ``rule_id``, so no California rule is applied elsewhere.
+    """
+    document = json.loads(FAQ_STARTER.read_text(encoding="utf-8"))
+    if str(cfg.get("country", "US")).upper() + "-" + cfg["state"] != "US-CA":
+        for entry in document["entries"]:
+            if entry.pop("rule_id", None) is not None:
+                entry["answer_md"] = GENERIC_DEADLINE
+    with tempfile.TemporaryDirectory(prefix=".faq-check-") as folder:  # the loader reads the jurisdiction from campaign.json
+        (Path(folder) / "campaign.json").write_text(json.dumps(cfg), encoding="utf-8")
+        if load_faq(document, Path(folder), [], []) is None:
+            raise RuntimeError("content init produced a FAQ the build would refuse")
+    if any(lint(entry["answer_md"]) for entry in document["entries"]):
+        raise RuntimeError("content init produced Markdown the build would degrade")
+    return document
 
 
 def _write(path, text):
@@ -89,9 +114,11 @@ def init_content(root, source_root=None):
         raise ValueError("content/ already exists; nothing was written")
     document = site_document(cfg)
     text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    faq_text = json.dumps(faq_document(cfg), indent=2, ensure_ascii=False) + "\n"
     temporary = Path(tempfile.mkdtemp(prefix=".content.new-", dir=root))
     try:
         _write(temporary / "site.json", text)
+        _write(temporary / "faq.json", faq_text)
         # Self-check: a written file the build would reject is a bug here, not an organizer error.
         written = json.loads((temporary / "site.json").read_text(encoding="utf-8"))
         load_site(written)
@@ -107,8 +134,9 @@ def init_content(root, source_root=None):
     except BaseException:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
-    return {"written": ["content/findings/", "content/meetings/", "content/site.json", "content/sources.json"],
-            "placeholders": text.count(PLACEHOLDER)}
+    return {"written": ["content/faq.json", "content/findings/", "content/meetings/", "content/site.json",
+                        "content/sources.json"],
+            "placeholders": text.count(PLACEHOLDER) + faq_text.count(PLACEHOLDER)}
 
 
 def init_from(root, source_root):

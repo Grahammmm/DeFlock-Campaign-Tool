@@ -26,7 +26,27 @@ when a line names no file, and the same exit codes, so an editor or CI step can 
 
 ## Content directory
 
-`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+
+### Draft FAQ starter
+
+A fresh `content init` also writes `content/faq.json`: fifteen plain-language questions (what an ALPR is, what the campaign
+asks for and why, public-records requests, how long an agency has to answer, why plate reads are not published, how findings
+are reviewed, labelled and corrected, how to ask for a correction, how to help, whether the campaign is anti-police, and
+whether the site gives legal advice). It is read from the packaged copy of `examples/faq.json`, so it works from an
+installed wheel with no repository checkout. Every answer starts `[EDIT ME: verify for this campaign]` and is unfinished
+organizer copy: the marker stays visible on `/faq.html` until you replace it, and it is not an approval gate.
+
+- Timing: for a California campaign the deadline answer carries the law package rule `ca-gov-7922.535-determination-and-extension-2026`
+  and the package's draft caveat. For any other state that one answer is replaced by generic text that sends the reader to
+  the applicable law package and official guidance, with no rule id; no California rule is applied elsewhere.
+- Replace every marker, including the correction answer's `[EDIT ME: add a verified public correction contact]`: add a
+  contact only after you have verified it. The starter creates no mail link or form. The report's `placeholders` count sums
+  the markers in `site.json` and `faq.json`.
+- To publish no FAQ, remove `content/faq.json` and rebuild; the page and its links disappear. `content init --from OLD`
+  still copies only public branding: a source `faq.json` is listed as skipped and no starter is added.
+- Before any publication run `content-check` and `build --check` offline. Neither approves wording: the legal-claim
+  guard stays advisory and a clean run does not mean the answers were reviewed. Existing campaigns are not changed.
 
 ### Second locality
 

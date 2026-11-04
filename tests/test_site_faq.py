@@ -36,6 +36,8 @@ FOOTER_FAQ = '<p><a href="/faq.html">FAQ</a></p>'
 # render-and-hash, never from this candidate. A later change to the generated site re-captures this table.
 # Camera GeoJSON digest refreshed from untouched origin/main 6daa8a2e4a7fe90d17b5f824170d1d7915c1ae7b;
 # the complete no-FAQ rendered inventory matches that independent render byte for byte.
+# Source-filter inventory and three digests on main were independently refreshed
+# from untouched 6123a134c44a2f60934c063e814dafd9fc68db51 at TODAY.
 # After merging main fea068d5, independently rendered that immutable revision and
 # report PR 4ced73d4 at TODAY: agencies.html matches the report PR; every other
 # file matches main, including the source filter's new script and shared assets.
