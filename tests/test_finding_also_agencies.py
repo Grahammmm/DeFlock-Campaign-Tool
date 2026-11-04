@@ -37,7 +37,7 @@ BASE_SLUG = "cedar-policy-posted"
 KNOWN = {POLICE, SHERIFF, COUNCIL}
 # sha256 over the artifacts a primary-only campaign publishes (filter.js, findings.json, feed.xml, per-agency feeds,
 # findings index) for the fixture built by ``legacy_fixture``, recorded from main before DF1952-07.
-LEGACY_DIGEST = "6ddbabd69b0aa4a0ec5bcccf522ee530fda34915104646c4875c6d2ba4c6959d"
+LEGACY_DIGEST = "6ddbabd69b0aa4a0ec5bcccf522ee530fda34915104646c4875c6d2ba4c6959d"  # pragma: allowlist secret -- SHA-256 of synthetic public artifacts, not a credential
 
 NODE_HARNESS = r"""
 const fs=require('fs'),vm=require('vm'),path=require('path');
