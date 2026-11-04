@@ -134,3 +134,22 @@ or establish that a caller-supplied locator resolves against original bytes.
 Event-date timezone applicability remains a supplied-context limitation, not a
 newly verified jurisdiction-specific calendar rule. These repairs add no corpus
 run, persistence adapter, review acceptance or publication authorization.
+
+## Collection triage pass
+
+`python3 tools/collection_triage.py run --collection C --out NEWDIR` is a first pass over a returned collection, not a
+detector and not a review. C holds `collection.json` (`collection-triage-input-v1`: a name and members of `{id, text}`) and
+the extracted-text files it names; the run only reads C and calls no model. It writes `collection-triage-v1.json`
+([schema](../schemas/collection-triage-v1.json)), `QUEUE.md`, `triage-status.txt` and `triage-notes.json` to a new private
+folder.
+
+- Each member gets a kind (`responsive`, `policy`, `contract`, `search-log`, `boilerplate`, `duplicate`, `unsorted`), a
+  `confidence` band of its own and a `reason` of `signal`, `locator` and `text_sha256`. The rules are phrase counts and a
+  table shape, listed at the top of the tool; they are not the structured detectors above.
+- `duplicate` is an identical text hash only. No extracted text, or an unreadable file, is `unsorted`, never `boilerplate`.
+- `QUEUE.md` lists every member: responsive, policy, contract and search-log first, then unsorted, then low-confidence
+  anything, then boilerplate, then duplicates. A `boilerplate` verdict ranks a member last; it never hides it.
+- `review_state` is `unreviewed` on every row. Rows hold ids, locators, hashes and counts, never document text; the notes
+  file names a member when the shared privacy patterns or the legal-claim guard flag its text, and halts nothing.
+- Limits: English phrase lists only, no OCR, and a wrong kind is possible, so the queue is an order to read in. Exit 1
+  means a member could not be read (it is named and listed as `unsorted`); exit 2 is usage.
