@@ -310,6 +310,28 @@ class Sequence(Base):
 
 
 class Gaps(Base):
+    def test_closed_policy_window_leaves_unevidenced_tail(self):
+        closed = policy("beta-town", D, "2020-01-01")
+        closed[PH.index("governs_to")] = "2020-06-30"
+        self.put("beta-town", None, [closed])
+        _, doc, target = self.report("--agency", "beta-town", "--as-of", "2023-01-01")
+        row = self.dims(doc, "beta-town")
+        self.assertEqual(row["dimensions"]["policy"]["date"], "2020-01-01")
+        self.assertIn({"from": "2020-07-01", "to": "2023-01-01", "dimension": "policy", "reason": "no-document"}, row["gaps"])
+        self.assertEqual(check(doc, SCHEMA), [])
+        self.assertIn("| 2020-07-01 | 2023-01-01 | policy | unevidenced: no-document |",
+                      (target / MOD.MD_NAME).read_text(encoding="utf-8"))
+
+    def test_gap_between_policy_windows_is_clipped_to_as_of(self):
+        closed = policy("beta-town", D, "2016-01-01")
+        closed[PH.index("governs_to")] = "2016-06-30"
+        self.put("beta-town", None, [closed, policy("beta-town", E, "2018-01-01")])
+        for on, end in (("2023-01-01", "2017-12-31"), ("2017-03-01", "2017-03-01"), ("2016-06-30", None)):
+            with self.subTest(on=on):
+                _, doc, _ = self.report("--agency", "beta-town", "--as-of", on, out=on)
+                gaps = [g for g in self.dims(doc, "beta-town")["gaps"] if g["dimension"] == "policy"]
+                self.assertEqual(gaps, [{"from": "2016-07-01", "to": end, "dimension": "policy", "reason": "no-document"}] if end else [])
+
     def test_gap_runs_from_day_after_earliest_to_as_of(self):
         _, doc, _ = self.report("--as-of", "2020-01-01")
         gaps = self.dims(doc, "beta-town")["gaps"]

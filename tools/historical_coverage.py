@@ -157,14 +157,16 @@ def build_agency(store, slug, recorder=None):
     textless = any(v == {"UNREADABLE"} for v in values.values())  # a document is held, nothing was extracted
     dims = {"installation": _facts_dim("installation", rows, textless), "vendor": _facts_dim("vendor", rows, textless),
             "policy": _policy_dim(prows, textless)}
-    return ({"agency": slug, "dimensions": {k: dims[k] for k in DIMENSIONS}, "gaps": [], "sequence": None,
+    return ({"agency": slug, "dimensions": {k: dims[k] for k in DIMENSIONS}, "gaps": [], "sequence": None, "_policy_rows": prows,
              "errors": errors + ["POLICY.csv: " + e for e in perrs]},
             {d["source_sha256"] for d in dims.values() if d["status"] == "evidenced"})
 
 
 def _finish(row, as_of):
     """The gap map and the sequence, from this agency's own dates and the as-of date."""
-    dims = row["dimensions"]
+    dims, prows = row["dimensions"], row.pop("_policy_rows", [])
+    policy_tool = _module("flock_law_policy.py")
+    prows = [(n, r) for n, r in prows if not list(policy_tool.problems(r, "policy", row["agency"]))]
     got = sorted((d["date"] for d in dims.values() if d["status"] == "evidenced"), key=_key)
     inst, pol = dims["installation"], dims["policy"]
     try:
@@ -172,6 +174,14 @@ def _finish(row, as_of):
         if start and _lo(start) <= _hi(as_of):
             row["gaps"] = [{"from": start, "to": as_of, "dimension": k, "reason": dims[k]["reason"]}
                            for k in DIMENSIONS if dims[k]["status"] == "unevidenced"]
+            for gap in policy_tool.gaps_rows(prows, _hi(as_of).isoformat())[0]:
+                if gap["kind"] not in ("gap", "closed"):
+                    continue  # wholly unestablished policy is already covered above
+                lo = _after(gap["to"]) if gap["kind"] == "closed" else gap["from"]
+                hi = as_of if gap["kind"] == "closed" else min(gap["to"], _hi(as_of).isoformat())
+                lo = start if _lo(start) > _lo(lo) else lo
+                if _lo(lo) <= _hi(hi):
+                    row["gaps"].append({"from": lo, "to": hi, "dimension": "policy", "reason": "no-document"})
         if inst["status"] == pol["status"] == "evidenced" and _hi(inst["date"]) < _lo(pol["date"]):
             days = (_lo(pol["date"]) - _lo(inst["date"])).days if _prec(inst["date"]) == _prec(pol["date"]) == 3 else None
             row["sequence"] = {"installation": inst["date"], "policy": pol["date"], "interval_days": days,

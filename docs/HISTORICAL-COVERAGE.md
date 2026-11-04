@@ -193,6 +193,8 @@ Three dimensions per agency, each either `evidenced` or `unevidenced`:
 - Dates keep their stated precision (year, month or day); none is widened or inferred. With no `--as-of`, the as-of date is the
   latest evidenced date in the requested agencies, never the clock.
 - The gap map lists, per unevidenced dimension, the period from the day after the agency's earliest evidenced date to as-of.
+  Policy gaps between adopted windows and after a closed last window come from `flock_law_policy.gaps_rows`, clipped to that
+  range and marked `no-document`; an earliest evidenced policy date does not imply continuous coverage.
 - Where installation precedes policy, both dates and the interval in days print under `Dates in sequence` with a fixed neutral
   sentence. Nothing characterises the interval.
 
