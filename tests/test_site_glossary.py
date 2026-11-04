@@ -27,7 +27,7 @@ RULE = "ca-civ-1798.90.5-definitions"
 RULE_URL = "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."
 NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network access attempted"))
 
-# sha256 of every file the fictional example renders on origin/main (79d013e3) with today=2026-10-01 and no
+# sha256 of every file the fictional example renders on origin/main (514d4f03) with today=2026-10-01 and no
 # glossary.json: captured from an untouched detached main worktree, never from the candidate. A later change to the
 # generated site re-captures this table (render the example with today=2026-10-01 and no glossary.json; sha256 each file).
 BASELINE = {
@@ -57,7 +57,7 @@ BASELINE = {
     "index.html": "b9ce605e67f58e96c0412ad858a3d3bab426730e0fd48f7857fa1032bd595d7a",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings/cedar-council-2026-10.html": "058ef8d946b7a7ef3388278f57e5f015b9f2e1af9d747700825a1fe90e2a5c95",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.html": "063f2e5e30554effebc5e5371970e21989a431cd48a5c436cdb95050b6e91a17",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "methods.html": "afbbbe909c00667c07471f37f0d3f0fccd4009ff411365b67bedcc6a7a8fbd99",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "methods.html": "e1469baebfdb46a8201ce605d290a270df8bfc71bd14fe55c44271653947c40b",  # pragma: allowlist secret -- public rendered-file SHA-256
     "privacy.html": "4303eda8bef4cc87170ae5864caac586431d2c4fec275dd464c2101cf9805518",  # pragma: allowlist secret -- public rendered-file SHA-256
     "robots.txt": "f520ce90da728c1ea72afb9c9f22a0976b5e2c16ac6aa7256e1218479b4f2b80",  # pragma: allowlist secret -- public rendered-file SHA-256
     "search.html": "c0e38535264dc884144c511d8f129b7041b49206feef8dcf4e48b08c91cefce6",  # pragma: allowlist secret -- public rendered-file SHA-256

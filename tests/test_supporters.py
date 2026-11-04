@@ -544,9 +544,14 @@ class WriteTests(Base):
                 for stray in self.outside.iterdir():
                     if stray != sentinel:
                         stray.unlink()
+                os.chmod(self.outside, 0o755)
                 setup()
+                outside_mode = self.outside.stat().st_mode
                 before = snapshot(self.root)
                 outside_state = {p.name: (p.read_bytes(), p.stat().st_mode) for p in self.outside.iterdir()}
+                if label in ("kit link", "kit dangling"):
+                    with self.assertRaises(SupporterError):
+                        supporters_module._ensure_private_dir(self.root)
                 with self.assertRaises(SupporterError):
                     self.add()
                 with self.assertRaises(SupporterError):
@@ -554,6 +559,7 @@ class WriteTests(Base):
                 self.assertEqual(snapshot(self.root) == before, True)
                 self.assertEqual({p.name: (p.read_bytes(), p.stat().st_mode) for p in self.outside.iterdir()}, outside_state)
                 self.assertEqual(sentinel.read_bytes(), outside_before)
+                self.assertEqual(self.outside.stat().st_mode, outside_mode)
                 self.assertEqual(self.temporaries(), [])
         # build and content-check refuse the same stores instead of following them
         for leftover in (self.root / "kit", self.public_file):

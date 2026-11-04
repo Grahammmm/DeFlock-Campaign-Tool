@@ -409,7 +409,10 @@ def _ensure_private_dir(root):
         if not os.path.lexists(kit):
             os.mkdir(kit, 0o700)
             created = True
-        if os.lstat(kit).st_mode & 0o077:
+        info = os.lstat(kit)
+        if not stat.S_ISDIR(info.st_mode):
+            raise OSError("not a real folder")
+        if info.st_mode & 0o077:
             os.chmod(kit, 0o700)
         if os.lstat(kit).st_mode & 0o077:
             raise OSError("mode not secured")
