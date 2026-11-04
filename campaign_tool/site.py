@@ -8,7 +8,9 @@ configured, the MapLibre controller. All generated JavaScript is self-hosted;
 pages contain no inline scripts, and the emitted ``_headers`` file carries a
 Content-Security-Policy that names only the hosts the content model declared.
 """
+import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -138,6 +140,11 @@ PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
 PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes")  # never verified_by / verified_at
 PUBLIC_VOTE_FIELDS = ("name", "vote")
+# DF1207-14: data/findings.csv and data/sources.csv are flattened from the built public JSON documents, so no CSV column
+# can exist that the JSON does not carry; "sources", "corrections" and "public_copy" are the only nested values.
+FINDINGS_CSV_COLUMNS = PUBLIC_FINDING_FIELDS
+SOURCES_CSV_COLUMNS = tuple(c for key in PUBLIC_LIBRARY_FIELDS
+                            for c in ((f"public_copy_{k}" for k in PUBLIC_COPY_FIELDS) if key == "public_copy" else (key,)))
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
 EXTRA_CSS = """
 /* Content-model pages */
@@ -907,7 +914,8 @@ class Site:
                  if form else "")
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.findings")}</p>'
                 f'<h2>{self.t("heading.findings")}</h2></div><p>{self.t("intro.findings")} <a href="/feed.xml">{self.t("intro.atom_feed")}</a> · '
-                f'<a href="/data/findings.json" type="application/json">{self.t("intro.open_data")}</a> · <a href="/findings/packet-all.html">Printable packet</a>.</p>'
+                f'<a href="/data/findings.json" type="application/json">{self.t("intro.open_data")}</a> · '
+                f'<a href="/data/findings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a> · <a href="/findings/packet-all.html">Printable packet</a>.</p>'
                 '<p><a href="/methods.html">How to read our findings</a> defines each classification and confidence label.</p></div>'
                 f'{form}{self.findings_list(self.model["findings"], filter_attrs=True)}{empty}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
@@ -1101,7 +1109,8 @@ class Site:
         howto = COPY_HOWTO if any(copy_status(s) for s in self.model["sources"]) else ""  # unchanged page without checks
         main = (f'    <section class="section" id="content"><div class="section-heading" id="library"><div><p class="eyebrow">{self.t("eyebrow.sources")}</p>'
                 f'<h2>{self.t("heading.sources")}</h2></div><p class="provenance-note">{e(EXPLAINER)} {self.t("intro.sources")} '
-                f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a>.</p>{howto}</div>'
+                f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a> · '
+                f'<a href="/data/sources.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p>{howto}</div>'
                 + ("".join(sections) or f'<p>{self.t("notice.no_sources")}</p>') + '</section>\n')
         return self.page("sources", self.labels["title.sources"], self.labels["title.sources_description"], "/sources.html", main)
 
@@ -1156,8 +1165,10 @@ class Site:
         main = (f'    <section class="section finding-body" id="content"><p class="eyebrow">{self.t("eyebrow.about")}</p>'
                 f'<h2>{self.name}</h2>{self.md(self.site["about_md"])}{contact}'
                 f'<p>{self.t("intro.open_data_about")} '
-                '<a href="/data/findings.json" type="application/json">data/findings.json</a> and '
-                '<a href="/data/sources.json" type="application/json">data/sources.json</a>. '
+                '<a href="/data/findings.json" type="application/json">data/findings.json</a> · '
+                f'<a href="/data/findings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a> and '
+                '<a href="/data/sources.json" type="application/json">data/sources.json</a> · '
+                f'<a href="/data/sources.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>. '
                 f'{self.t("intro.meetings_open_data_about")} <a href="/data/meetings.json" type="application/json">data/meetings.json</a>.'
                 + (f' {self.t("notice.no_meetings")}' if not self.model["meetings"] else "") + '</p>'
                 + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
@@ -1539,12 +1550,19 @@ class Site:
 
     def findings_json(self):
         """``data/findings.json``: published findings as open data; refuses any non-public key or full hash."""
+        return json.dumps(self._findings_doc(), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+    def findings_csv(self):
+        """``data/findings.csv`` (DF1207-14): the rows of the built findings document, one column per public key."""
+        return _csv_text(FINDINGS_CSV_COLUMNS, [_flat_finding(f) for f in self._findings_doc()["findings"]])
+
+    def _findings_doc(self):
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/findings",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "findings": [self._public_finding(f) for f in self.model["findings"]]}
         finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {})})
         _assert_public(doc, "data/findings.json", PUBLIC_TOP_LEVEL_FIELDS, {"findings": finding})
-        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        return doc
 
     def _public_library_entry(self, source):
         """One library entry, copied key by key (never ``note``, ``fragment`` or the full sha256)."""
@@ -1557,12 +1575,19 @@ class Site:
 
     def sources_json(self):
         """``data/sources.json``: the source library as open data; refuses any non-public key or full hash."""
+        return json.dumps(self._sources_doc(), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+    def sources_csv(self):
+        """``data/sources.csv`` (DF1207-14): the rows of the built source-library document."""
+        return _csv_text(SOURCES_CSV_COLUMNS, [_flat_source(s) for s in self._sources_doc()["sources"]])
+
+    def _sources_doc(self):
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/sources.json",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "sources": [self._public_library_entry(s) for s in self.model["sources"]]}
         _assert_public(doc, "data/sources.json", PUBLIC_LIBRARY_TOP_LEVEL,
                        {"sources": (PUBLIC_LIBRARY_FIELDS, {"public_copy": (PUBLIC_COPY_FIELDS, {})})})
-        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        return doc
 
     def _public_meeting(self, meeting):
         """One staged meeting, copied key by key: what its page shows, never the kit, participation or verifier."""
@@ -1585,6 +1610,46 @@ class Site:
         _assert_public(doc, "data/meetings.json", PUBLIC_MEETING_TOP_LEVEL,
                        {"meetings": (PUBLIC_MEETING_FIELDS, {"outcome": (PUBLIC_OUTCOME_FIELDS, {"votes": vote})})})
         return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def _text(value):
+    """``None`` is empty, a list is ``; ``-joined, a bool is true/false, anything else its string."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "; ".join(_text(item) for item in value)
+    return ("true" if value else "false") if isinstance(value, bool) else str(value)
+
+
+def _cell(value):
+    """One CSV cell: the flattened text, with the formula guard the kit CSV uses applied once to the whole cell."""
+    from .kit_export import formula_safe  # local, as the other optional site steps
+    return formula_safe(_text(value))
+
+
+def _flat_finding(finding):
+    """One findings.json record as a ``{column: cell}`` row (sources by prefix, corrections as ``date: note``)."""
+    row = {key: finding[key] for key in FINDINGS_CSV_COLUMNS}
+    row["sources"] = [source["sha256_prefix"] for source in finding["sources"]]
+    row["corrections"] = [f'{c["date"]}: {c["note"]}' for c in finding["corrections"]]
+    return {key: _cell(value) for key, value in row.items()}
+
+
+def _flat_source(entry):
+    """One sources.json record as a ``{column: cell}`` row (``public_copy`` spread over three columns)."""
+    copy = entry["public_copy"] or {}
+    row = {key: entry[key] for key in PUBLIC_LIBRARY_FIELDS if key != "public_copy"}
+    row.update({f"public_copy_{key}": copy.get(key) for key in PUBLIC_COPY_FIELDS})
+    return {key: _cell(row[key]) for key in SOURCES_CSV_COLUMNS}
+
+
+def _csv_text(columns, rows):
+    """RFC 4180 text (CRLF, header first); the file is written as UTF-8 without a byte-order mark."""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\r\n")
+    writer.writerow(columns)
+    writer.writerows([row[column] for column in columns] for row in rows)
+    return out.getvalue()
 
 
 def _assert_public(doc, name, top, nested):
@@ -1692,8 +1757,8 @@ def _plan_site(root, today=None, notes=None):
         **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
         "site-data.js": site.site_data_js(),
         "agency-cards.js": agency_cards.render(site.cards_config(), relabel=bool(site.js_labels)),
-        "app.js": site.app_js(), "data/findings.json": site.findings_json(),
-        "data/sources.json": site.sources_json(), "data/meetings.json": site.meetings_json(),
+        "app.js": site.app_js(), "data/findings.json": site.findings_json(), "data/findings.csv": site.findings_csv(),
+        "data/sources.json": site.sources_json(), "data/sources.csv": site.sources_csv(), "data/meetings.json": site.meetings_json(),
     })
     if site.finding_filter():  # written only when the findings index loads it
         files["findings/filter.js"] = filter_js(bool(site.js_labels))

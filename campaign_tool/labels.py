@@ -55,6 +55,7 @@ DEFAULTS = {
     "intro.agencies_home": "Choose an area to see its status, published facts and the source notes behind them.",
     "intro.full_agency_list": "Full agency list", "intro.all_meetings": "All meetings and comment kits",
     "intro.all_findings": "All findings", "intro.atom_feed": "Atom feed", "intro.open_data": "Open data (JSON)",
+    "intro.open_data_csv": "Spreadsheet (CSV)",
     "intro.agencies": "Listing an agency here says only that we asked or intend to ask it for records. No agency is "
                       "asserted to operate license plate readers unless a published finding says so with sources.",
     "intro.findings": "Each finding names its classification, confidence, event date and the hashed source records behind it.",

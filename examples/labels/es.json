@@ -68,6 +68,7 @@
     "intro.all_findings": "Todos los hallazgos",
     "intro.atom_feed": "Canal Atom",
     "intro.open_data": "Datos abiertos (JSON)",
+    "intro.open_data_csv": "Hoja de cálculo (CSV)",
     "intro.agencies": "Incluir una agencia aquí solo significa que le pedimos, o pensamos pedirle, registros. No se afirma que ninguna agencia opere lectores automáticos de matrículas (ALPR) a menos que un hallazgo publicado lo diga con sus fuentes.",
     "intro.findings": "Cada hallazgo indica su clasificación, su nivel de confianza, la fecha del suceso y los registros fuente con huella digital que lo respaldan.",
     "intro.corrections": "Cada corrección emitida sobre un hallazgo publicado, de la más reciente a la más antigua.",
