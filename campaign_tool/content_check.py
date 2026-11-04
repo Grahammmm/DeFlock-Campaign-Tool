@@ -10,11 +10,12 @@ import os
 from pathlib import Path
 
 from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _alpr_policy, _asked, _bounds, _contract, _contract_check, _policy_check, _read_json,
-                      _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, default_agencies,
+                      _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, continuation_problems,
+                      default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
                       load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_glossary,
                       topics_namespace_problem)
-from .finding_law import check_findings, jurisdiction, package_line
+from .finding_law import check as check_law, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
 from .labels import MAX_LABELS_BYTES, load_labels
@@ -211,10 +212,9 @@ def content_problems(root, limit=LIMIT):
         ids.add(finding["id"])
         labelled.append((label, finding))
         findings.append(finding)
-    _attempt(problems, "campaign.json", lambda: problems.extend(check_findings(root, findings)))
     findings_intact = len(findings) == len(_files(content_dir, "findings"))
 
-    meeting_ids = set()
+    meeting_ids, loaded_meetings = set(), []
     for path in _files(content_dir, "meetings"):
         label = "meetings/" + path.name
         meeting = _attempt(problems, label, lambda: _meeting(path, label))
@@ -223,6 +223,8 @@ def content_problems(root, limit=LIMIT):
         if meeting["id"] in meeting_ids:
             problems.append(f"meetings/{path.name}: duplicate meeting id")
         meeting_ids.add(meeting["id"])
+        loaded_meetings.append(meeting)
+    problems.extend(continuation_problems(loaded_meetings))  # DF0022-07: the same cross-record rule build enforces
 
     sources_path = content_dir / "sources.json"
     library = (_attempt(problems, "sources.json", lambda: load_sources(_read_json(sources_path)))
@@ -267,6 +269,10 @@ def content_problems(root, limit=LIMIT):
         for label, finding in labelled:
             _attempt(problems, label, lambda: check_finding_agencies(finding, known, label))
 
+    # DF1952-01: the law check follows agency loading so a local overlay's agency_ids are judged against loaded agencies
+    # (None, when agencies are themselves refused and named, skips only that scope check).
+    _attempt(problems, "campaign.json", lambda: problems.extend(check_law(root, findings, agencies)[0]))
+
     map_config = _map(problems, content_dir, library)
     if map_config and agencies is not None:  # a broken agency list would only add false lines
         known = {agency["slug"] for agency in agencies if agency["kind"] in CITY_KINDS}
@@ -289,7 +295,7 @@ def content_problems(root, limit=LIMIT):
 
 
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
-FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "topics/", "kit/", "newsletters/",
+FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "topics/", "kit/", "law/", "newsletters/",
                  "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json")
 
 
