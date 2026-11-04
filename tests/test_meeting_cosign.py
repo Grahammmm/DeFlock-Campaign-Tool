@@ -7,7 +7,9 @@ meeting. Removal or a narrowed grant makes every staged meeting that still lists
 import contextlib
 import io
 import json
+from html import unescape
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -242,17 +244,21 @@ class StageTests(Base):
         name = "Parks & Rec [Click](https://evil.example.invalid/x) **Bold** <b>"
         with self.assertRaises(SupporterError):
             self.add(name)  # angle brackets are refused at listing
-        name = "Parks & Rec [Click](https://evil.example.invalid/x) **Bold** _it_ |pipe|"
+        name = r"Parks (North) & Rec [Click](https://evil.example.invalid/x) **Bold** _it_ |pipe| \ #!~`"
         supporter_id = self.add(name)
         self.grant(supporter_id)
         self.stage(ids=[supporter_id])
         kit = self.document()["comment_kit_md"]
-        self.assertIn("- Parks & Rec \\[Click\\]\\(https://evil.example.invalid/x\\) \\*\\*Bold\\*\\* \\_it\\_ \\|pipe\\|", kit)
+        self.assertIn(r"- Parks \(North\) & Rec \[Click\]\(https://evil.example.invalid/x\) \*\*Bold\*\* \_it\_ \|pipe\| \\ \#\!\~\`", kit)
         build_site(self.root, today=TODAY)
         page = (self.root / "public" / "meetings" / f"{MID}.html").read_text(encoding="utf-8")
         self.assertNotIn('href="https://evil.example.invalid', page)
         self.assertNotIn("<strong>Bold</strong>", page)
-        self.assertIn("Parks &amp; Rec", page)
+        self.assertIn("Parks", page)
+        roster = page.split("<strong>Co-signed by</strong>", 1)[1].split("</ul>", 1)[0]
+        items = re.findall(r"<li>(.*?)</li>", roster, re.DOTALL)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(unescape(re.sub(r"<[^>]*>", "", items[0])), name)
 
     def test_written_comment_is_required(self):
         a = self.ids[0]
