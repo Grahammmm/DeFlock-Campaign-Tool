@@ -128,6 +128,15 @@ def _request_url(value):  # a valid MuckRock request URL (<= 300 chars, no query
     return isinstance(value, str) and len(value) <= 300 and bool(MUCKROCK_URL.fullmatch(value))
 
 
+UNDO_ID = re.compile(r"[0-9a-f]{32}")
+UNDO_IDS_MAX = 1000
+
+
+def _undo_ids_ok(value):  # applied kit-response-undo ids on an entry: 1..1000 unique ids, nothing else
+    return (isinstance(value, list) and 1 <= len(value) <= UNDO_IDS_MAX and len(set(map(str, value))) == len(value)
+            and all(isinstance(i, str) and UNDO_ID.fullmatch(i) for i in value))
+
+
 def _portal_host(url):  # the host of a portal-filed request URL, or ValueError naming the first rule it breaks
     if not isinstance(url, str) or len(url) > URL_MAX:
         raise ValueError("--request-url must be at most 300 characters")
@@ -190,6 +199,7 @@ def _entry_ok(key, entry):
             and ("reference" not in entry or isinstance(entry["reference"], str)
                  and REFERENCE.fullmatch(entry["reference"]))
             and ("correspondence" not in entry or _corr_ok(entry["correspondence"]))
+            and ("undo_ids" not in entry or _undo_ids_ok(entry["undo_ids"]))
             and ("request_url" not in entry or entry["channel"] == "muckrock" and _request_url(entry["request_url"])
                  or entry["channel"] == "portal" and _portal_url_ok(entry["request_url"])))
 
@@ -313,6 +323,8 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
         entry["request_url"] = previous["request_url"]  # a --replace correction keeps the stored link (as the reference)
     if previous and "reference" in previous:  # a --replace correction keeps the stored reference
         entry["reference"] = previous["reference"]
+    if previous and "undo_ids" in previous:  # and the count of undone steps (their receipts stay in sent-undone.json)
+        entry["undo_ids"] = previous["undo_ids"]
     _set_reference(entry, reference, replace_reference)
     if correspondence:  # a new list replaces the stored one; none given keeps it (as reference)
         entry["correspondence"] = _resolve_correspondence(root, correspondence, {})
@@ -583,45 +595,21 @@ def _next_installment(steps):  # the latest expected_on on or after the latest p
                                           None)
 
 
-def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None,
-                expected_on=None, reference=None, replace_reference=False, partial=False, correspondence=(),
-                dry_run=False, withheld_basis=(), download_expires_on=None, scope_ids=(), disposition=None):
-    """Append one dated agency response step (``dry_run``: check and return it, write nothing).
-
-    ``download_expires_on``: the agency's stated expiry of a download link (produced only). Only the date is stored."""
-
-    root, request = Path(root), _request(request)
-    reference = _reference(reference, replace_reference)
-    if kind not in KINDS:
-        raise ValueError("--kind must be one of " + ", ".join(KINDS))
-    scope_ids, disposition = _clean_scopes(kind, scope_ids, disposition)
-    if partial and kind != "produced":
-        raise ValueError("--partial is only for produced steps")
-    if download_expires_on is not None and kind != "produced":
-        raise ValueError("--download-expires-on is only for produced steps")
-    if download_expires_on is not None and _day(download_expires_on) is None:
-        raise ValueError("--download-expires-on must be a real YYYY-MM-DD date")
-    records = list(records or ())  # produced only: ledger prefixes; full hashes stored, 12-char prefixes returned
-    if records and kind != "produced":
-        raise ValueError("--record is only for produced steps")
-    correspondence = list(correspondence or ())  # any kind: letters and confirmations, never production evidence
-    if len(records) > RECORDS_MAX:
-        raise ValueError(f"--record: at most {RECORDS_MAX} records per step")
-    note = _clean_note(note)
-    stated_bases = _clean_basis(kind, withheld_basis)
-    requests = read_sent(root)
-    entry = requests.get(_key(agency_id, request)) if "#" not in agency_id else None
-    if entry is None and request != "main":
-        raise ValueError(f"no sent request {agency_id}/{request}; run kit-sent --request {request} first")
-    if entry is None:
-        raise ValueError(f"no hand-sent request recorded for {agency_id}; run kit-sent first")
-    label = _label(agency_id, request)
-    steps = entry["steps"]
-    if not _scopes_ok(entry) or not all(
-            isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) and _amount_ok(s)
+def _step_shape_ok(entry, s):  # a known kind, a real date and well-formed optional fields
+    return (isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) and _amount_ok(s)
             and _step_records(s) == s.get("records", []) and _steps_corr_ok(s) and _basis_ok(s)
-            and _answers_ok(s, entry) and _download_ok(s) for s in steps) or not _expected_ok(steps):
-        raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
+            and _answers_ok(s, entry) and _download_ok(s))
+
+
+def _steps_ok(entry, steps):
+    return _scopes_ok(entry) and all(_step_shape_ok(entry, s) for s in steps) and _expected_ok(steps)
+
+
+def _check_step(entry, steps, label, on, kind, *, today=None, partial=False, expected_on=None, amount=None,
+                download_expires_on=None, scope_ids=()):
+    """The kit-response rules for adding one step after ``steps`` (pure: reads and writes nothing).
+
+    Shared by ``record_step`` and ``validate_steps`` (kit-response-undo), so there is a single ruleset."""
     if scope_ids and "scopes" not in entry:
         raise ValueError("scopes not recorded for this request; --scope cannot be checked")
     for scope_id in scope_ids:
@@ -676,6 +664,85 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
         raise ValueError("--expected-on must be a real YYYY-MM-DD date")
     if expected_on is not None and _day(expected_on) < day:
         raise ValueError(f"stated date {expected_on} is before the {kind} on {on}")
+
+
+STEP_KEYS = {"on", "kind", "partial", "expected_on", "download_expires_on", "amount_cents", "note", "records",
+             "correspondence", "withheld_basis", "scope_answers", "recorded_at"}  # what record_step can store
+
+
+def _note_ok(note):  # a stored note is already in _clean_note's normalized form
+    try:
+        return isinstance(note, str) and _clean_note(note) == note
+    except ValueError:
+        return False
+
+
+def stored_step_ok(entry, step):
+    """One stored step on its own: known keys, a real stamp, a clean note, and every field well-formed (no ordering)."""
+    return (_scopes_ok(entry) and _step_shape_ok(entry, step) and set(step) <= STEP_KEYS
+            and ("recorded_at" not in step or bool(_day(step["recorded_at"], STAMP, datetime.fromisoformat)))
+            and ("note" not in step or _note_ok(step["note"]))
+            and ("partial" not in step or step["partial"] is True and step["kind"] == "produced")
+            and ("records" not in step or step["kind"] == "produced" and bool(step["records"]))
+            and ("correspondence" not in step or bool(step["correspondence"])))
+
+
+def validate_steps(entry, label, *, today=None):
+    """Replay every stored step of ``entry`` through the kit-response rules, each after the steps before it.
+
+    Pure: no ledger lookup (stored full hashes are checked as stored) and no write. ValueError names the first rule
+    broken; an empty step list is valid."""
+    steps = entry["steps"]
+    if not _steps_ok(entry, steps) or not all(stored_step_ok(entry, s) for s in steps):
+        raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
+    linked = [*entry.get("correspondence", []), *(h for s in steps for key in ("records", "correspondence")
+                                                  for h in s.get(key, []))]
+    if len(set(linked)) != len(linked):  # record_step never links one hash twice
+        raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
+    for number, step in enumerate(steps):
+        _check_step(entry, steps[:number], label, step["on"], step["kind"], today=today, partial=_partial(step),
+                    expected_on=step.get("expected_on"), amount=step.get("amount_cents"),
+                    download_expires_on=step.get("download_expires_on"), scope_ids=list(step.get("scope_answers", ())))
+
+
+def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None,
+                expected_on=None, reference=None, replace_reference=False, partial=False, correspondence=(),
+                dry_run=False, withheld_basis=(), download_expires_on=None, scope_ids=(), disposition=None):
+    """Append one dated agency response step (``dry_run``: check and return it, write nothing).
+
+    ``download_expires_on``: the agency's stated expiry of a download link (produced only). Only the date is stored."""
+
+    root, request = Path(root), _request(request)
+    reference = _reference(reference, replace_reference)
+    if kind not in KINDS:
+        raise ValueError("--kind must be one of " + ", ".join(KINDS))
+    scope_ids, disposition = _clean_scopes(kind, scope_ids, disposition)
+    if partial and kind != "produced":
+        raise ValueError("--partial is only for produced steps")
+    if download_expires_on is not None and kind != "produced":
+        raise ValueError("--download-expires-on is only for produced steps")
+    if download_expires_on is not None and _day(download_expires_on) is None:
+        raise ValueError("--download-expires-on must be a real YYYY-MM-DD date")
+    records = list(records or ())  # produced only: ledger prefixes; full hashes stored, 12-char prefixes returned
+    if records and kind != "produced":
+        raise ValueError("--record is only for produced steps")
+    correspondence = list(correspondence or ())  # any kind: letters and confirmations, never production evidence
+    if len(records) > RECORDS_MAX:
+        raise ValueError(f"--record: at most {RECORDS_MAX} records per step")
+    note = _clean_note(note)
+    stated_bases = _clean_basis(kind, withheld_basis)
+    requests = read_sent(root)
+    entry = requests.get(_key(agency_id, request)) if "#" not in agency_id else None
+    if entry is None and request != "main":
+        raise ValueError(f"no sent request {agency_id}/{request}; run kit-sent --request {request} first")
+    if entry is None:
+        raise ValueError(f"no hand-sent request recorded for {agency_id}; run kit-sent first")
+    label = _label(agency_id, request)
+    steps = entry["steps"]
+    if not _steps_ok(entry, steps):
+        raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
+    _check_step(entry, steps, label, on, kind, today=today, partial=partial, expected_on=expected_on, amount=amount,
+                download_expires_on=download_expires_on, scope_ids=scope_ids)
     cents = None if amount is None else _amount_cents(amount)  # every refusal above and here writes nothing
     linked = {h: f"{entry['sent_on']} as correspondence" for h in entry.get("correspondence", [])}
     for s in steps:
@@ -756,6 +823,7 @@ def status(root, today=None, law_base=None, *, request=None):
                      "stated_production_date": stated, "waiting_on_you_since": _waiting_since(steps),
                      "producing": producing, "next_installment": _next_installment(steps) if producing else None,
                      "reference": entry.get("reference"), "fee_state": _fee_state(steps), "fee_paid": fee_paid,
+                     **({"undone_steps": len(entry["undo_ids"])} if entry.get("undo_ids") else {}),
                      "withheld_basis": _bases(steps), "scopes": _scope_rows(entry, steps),
                      **({"downloads_pending": downloads} if downloads else {}),
                      **({"request_url": entry["request_url"]} if "request_url" in entry else {})})
