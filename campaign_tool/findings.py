@@ -222,12 +222,17 @@ def _checked(root, draft, role, decision, reviewer, rationale):
     rationale = _text("rationale", rationale, 2000)
     if _who(reviewer) == _who(draft.get("author")):
         raise ValueError("the author cannot review their own finding")
+    return reviewer, rationale, _roster_entry(root, role, reviewer)
+
+
+def _roster_entry(root, role, reviewer):
+    """The reviewer's roster entry (None with no roster); with a roster, refuse an unlisted name or a missing role."""
     roster = _load_roster(root)
     entry = roster and _rostered(roster, reviewer)
     if roster is not None and (entry is None or role not in entry["roles"]):
         raise ValueError(f"{reviewer} is not " + ("on the reviewer roster" if entry is None
                                                   else f"assigned the {role} role"))
-    return reviewer, rationale, entry
+    return entry
 
 
 def review_payload(root, draft, role, decision, reviewer, rationale):
@@ -359,6 +364,81 @@ def review_status(root, draft):
             "foreign_campaign_receipts": foreign, **receipt_trust(root, draft, receipts),
             "review_blockers": _bound_blockers(root, draft, receipts),
             **({} if roster is None else {"unrostered_receipts": _unrostered(roster, receipts)})}
+
+
+def _assignments_path(root, draft):
+    for folder in (root / "private", root / "private" / "review-assignments"):
+        if os.path.lexists(folder) and (os.path.islink(folder) or not os.path.isdir(folder)):
+            raise _PathError(f"{folder}: must be a real directory, not a symlink or a file")
+    return root / "private" / "review-assignments" / (draft["id"] + ".json")
+
+
+def _day(value, where):
+    try:
+        return date.fromisoformat(value if isinstance(value, str) and _DAY.fullmatch(value) else "")
+    except ValueError:
+        raise ValueError(f"{where} must be a real YYYY-MM-DD date") from None
+
+
+def load_assignments(root, draft):
+    """Read-only ``{role: {reviewer, on, recorded_at}}`` from private/review-assignments/<id>.json ({} if absent)."""
+    path = _assignments_path(root, draft)
+    if not os.path.lexists(path):
+        return {}
+    document = _read_json(path, MAX_RECEIPTS_BYTES, "review assignment file")
+    if (not isinstance(document, dict) or set(document) != {"schema_version", "assignments"}
+            or type(document["schema_version"]) is not int or document["schema_version"] != 1
+            or not isinstance(document["assignments"], dict)):
+        raise _PathError(f"{path}: review assignment file must hold schema_version 1 and assignments")
+    for role, entry in document["assignments"].items():
+        if (role not in ROLES or not isinstance(entry, dict) or set(entry) != {"reviewer", "on", "recorded_at"}
+                or not isinstance(entry["reviewer"], str) or not isinstance(entry["recorded_at"], str)):
+            raise _PathError(f"{path}: each assignment must be a known role with reviewer, on and recorded_at")
+        _day(entry["on"], f"{path}: assignment 'on'")
+    return document["assignments"]
+
+
+def assign(root, draft, role, reviewer, on, today=None, replace=False, now=None):
+    """Record who was asked to review ``role`` of ``draft`` since ``on`` (private; sends nothing, counts as no review).
+    One assignment per (draft, role): the same reviewer again is a no-op, another needs ``replace``."""
+    if role not in ROLES:
+        raise ValueError(f"--role must be one of {sorted(ROLES)}")
+    reviewer = _text("reviewer", reviewer, 120)
+    if _who(reviewer) == _who(draft.get("author")):
+        raise ValueError("the author cannot review their own finding")
+    _roster_entry(root, role, reviewer)
+    if _day(on, "--on") > (today or date.today()):
+        raise ValueError("--on must not be after today")
+    path = _assignments_path(root, draft)  # refuses a symlinked private/ or private/review-assignments before any write
+    load_assignments(root, draft)  # refuse a bad existing file before any write
+    for folder in (root / "private", path.parent):
+        folder.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(folder, 0o700)
+    with _locked(path.parent):
+        assignments = load_assignments(root, draft)
+        held = assignments.get(role)
+        if held is not None and _who(held["reviewer"]) == _who(reviewer):
+            return dict(held, id=draft["id"], role=role, unchanged=True, written=str(path))
+        if held is not None and not replace:
+            raise ValueError(f"{role} review of {draft['id']} is already assigned to {held['reviewer']} since "
+                             f"{held['on']}; use --replace to assign {reviewer} instead")
+        when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        entry = {"reviewer": reviewer, "on": on, "recorded_at": when}
+        _write_private(path, {"schema_version": 1, "assignments": {**assignments, role: entry}}, ".assign-")
+    return dict(entry, id=draft["id"], role=role, unchanged=False, written=str(path))
+
+
+def assignment_states(root, draft):
+    """Read-only ``{role: {state, reviewer?, since?}}`` for all three roles: receipt_recorded when a current-content
+    receipt for that role exists (any reviewer), else assigned (since the assignment date), else unassigned.
+    An assignment is not a review: this feeds no blocker, receipt count or publication check."""
+    digest = reviewed_hash(draft)
+    receipts = _load_receipts(_receipts_path(root, draft))
+    assigned = load_assignments(root, draft)
+    done = {r.get("role") for r in receipts if isinstance(r, dict) and r.get("content_sha256") == digest}
+    return {role: {"state": "receipt_recorded"} if role in done
+            else {"state": "assigned", "reviewer": assigned[role]["reviewer"], "since": assigned[role]["on"]}
+            if role in assigned else {"state": "unassigned"} for role in sorted(ROLES)}
 
 
 def bind_receipts(root, confirm=False, now=None):
