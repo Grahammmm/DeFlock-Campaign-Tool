@@ -15,6 +15,9 @@ review-required, not a legal conclusion.
 
 ## Redact
 - Human redaction and names review of each `text` (the pipeline's redaction gate; names are not machine-checked).
+- For source text, `python3 tools/flock_redact.py propose STORE SLUG SHA DOCUMENT --scan-receipt RECEIPT`
+  proposes category/byte locators only. Follow [the signing ceremony](../../docs/REDACTION.md):
+  verified human sign-off, staged apply, private unchanged original. Eligibility never approves publication.
 
 ## Before you approve
 - `python3 tools/flock_review_queue.py show STORE [--agency SLUG [--run RUN]] --out NEWDIR [--json]` writes a private review queue.

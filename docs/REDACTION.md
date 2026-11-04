@@ -42,7 +42,7 @@ The three version-1 schemas reject additional keys and require all defined keys.
 
 Only a human holding an authorized signing key can sign. Verification reuses
 `campaign_tool.approval.verify` and its root-owned trust-file and binary checks;
-there is no typed-name fallback. No signing ceremony is implemented here.
+there is no typed-name fallback. The workflow below records verified signatures.
 
 ## Reader results
 
@@ -65,6 +65,54 @@ The exporter refuses an entry once if any cited document is ineligible, naming
 only finding id and reason. Notes do not inflate its refused count. A valid
 not-required proposal needs no signature. No-record notes use hash prefixes only.
 Other publishing paths and record writers are separate staged work.
+
+## Private text workflow
+
+All commands below run from the engine checkout. STORE, DOCUMENT, RECEIPT and
+signature/payload paths are absolute private paths, never paths in this repository.
+SHA is the original's lowercase SHA-256; SLUG is its existing agency slug.
+DOCUMENT is UTF-8 extracted text (not a PDF or a visual/page redaction).
+Keep it in its own 0700 folder within STORE and keep scan receipts elsewhere
+within STORE: the scanner refuses receipts under any scanned file's parent.
+
+```
+python3 tools/flock_privacy_scan.py DOCUMENT --json-out RECEIPT
+python3 tools/flock_redact.py propose STORE SLUG SHA DOCUMENT --scan-receipt RECEIPT
+python3 tools/flock_redact.py payload STORE SLUG SHA DOCUMENT > PRIVATE-PAYLOAD
+# Human: inspect every proposed locator in the private original AND the blind spots.
+# Human: read PRIVATE-PAYLOAD before signing with a key agents cannot use.
+ssh-keygen -Y sign -f YOUR-KEY -n deflock-approval PRIVATE-PAYLOAD
+python3 tools/flock_redact.py signoff STORE SLUG SHA DOCUMENT --signature PRIVATE-PAYLOAD.sig
+python3 tools/flock_redact.py status STORE SLUG SHA DOCUMENT
+python3 tools/flock_redact.py apply STORE SLUG SHA DOCUMENT
+```
+
+A scan with matches exits 3; that is evidence for review, not approval. Propose
+requires a current full-category receipt with no allow file and no scan failure.
+The receipt hash, not its text or matched values, is recorded in the proposal.
+The document id is its source hash. Canonical JSON (sorted, indented, final newline)
+is signed byte for byte. Signoff records only the verified principal; no typed
+name, option, environment setting or unattended path can sign. Existing records
+are never replaced. Re-signing a changed original requires a new source identity.
+
+Apply freshly checks the source, proposal spans and human signature. It builds a
+private staging store under STORE, including the derivative and eligibility record,
+and requires the unchanged reader to return `(eligible, ok)` there **before** any
+live output is created. Only the derivative location field is then relocated to
+its final absolute path. Immutable links promote the derivative and record; the
+reader and source are checked again, with rollback of our new links on failure.
+All staging is removed on success or failure; existing live files are never deleted
+or overwritten. An interrupted process can leave new files, never approval: inspect
+and reconcile rather than overwrite them. `derivative_missing` is not permission
+to write live outputs. Staged validation, not that reason, authorizes promotion.
+
+The derivative is `SHA.redacted.txt` beside DOCUMENT, mode 0600; the original stays
+byte-identical and private. Each approved span is removed, including overlaps and
+cross-line spans, and replaced with category/byte-length markers, never a value or
+value hash. Status reports none/proposed/signed/applied/stale using reader reasons;
+no-match proposals report proposed (`not_required`), not signed or applied.
+Only the redacted derivative may proceed to later publication review. Nothing in
+this workflow publishes, and every existing human publication gate still applies.
 
 ## Blind spots
 
