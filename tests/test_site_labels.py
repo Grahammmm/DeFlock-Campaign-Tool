@@ -238,8 +238,12 @@ class LabelsTest(unittest.TestCase):
         # handout.*: only the private meeting-pack handout writes these (tests/test_meeting_pack.py covers them).
         # agency.votes_*: the fixture records no votes (tests/test_site_member_votes.py covers those labels).
         # agency.contract_cost, agency.cost_*: the fixture has no contract cost (tests/test_agency_contract_cost.py covers those).
+        # agency.funding_*: the fixture records no funding (tests/test_agency_funding.py covers those).
         absent = ["agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
-                  "agency.cost_total", "agency.mapped_reported_caveat", "agency.mapped_reported_counts", "agency.mapped_reported_unknown",
+                  "agency.cost_total", "agency.funding_fiscal_year", "agency.funding_kind_asset_forfeiture",
+                  "agency.funding_kind_donation", "agency.funding_kind_general_fund", "agency.funding_kind_grant",
+                  "agency.funding_kind_other", "agency.funding_provenance",
+                  "agency.mapped_reported_caveat", "agency.mapped_reported_counts", "agency.mapped_reported_unknown",
                   "agency.transparency_cameras", "agency.transparency_checked", "agency.transparency_down",
                   "agency.transparency_heading", "agency.transparency_hotlist_alerts", "agency.transparency_retention_days",
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
