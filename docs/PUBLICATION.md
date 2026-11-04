@@ -64,6 +64,23 @@ receipt. `finding review-status` is read-only and prints the receipts for the cu
 the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
 and privacy, with no reject or changes_requested on the current content).
 
+Campaign binding: each campaign holds a random id in `D/private/campaign-id.json` (0600, written once by `init`,
+or by the first `finding review` or `finding reviewers add` in an older campaign, and never replaced). Every
+receipt records it as `campaign_id`, and the `review-payload` bytes a reviewer signs include it, so a receipt or
+signature made in one campaign does not approve the same finding in another. Only approvals carrying this
+campaign's id count; a current approval with another campaign's id adds the blocker `foreign_campaign_receipt`,
+and one with no id adds `unbound_legacy_receipt`, so neither is accepted or dropped silently. A reject or
+changes_requested receipt blocks whatever its binding. `review-payload` refuses in a campaign that has no id yet.
+
+Receipts written before binding have no `campaign_id`, so after upgrading they approve nothing until the organizer
+binds them: `finding bind-receipts --directory D` lists, per finding, how many receipts are unbound or bound to
+another campaign and changes nothing; check that every listed receipt was granted in this campaign, then rerun
+with `--confirm`. That stamps each unbound receipt with this campaign's id and `campaign_bound: {by, at}` (every
+other field kept), never touches a receipt bound to another campaign, and appends one line per finding to
+`D/private/reviews/binding-log.jsonl` with the sha256 of each receipt as it was. A signed receipt bound this way
+keeps verifying against the bytes it was signed over. Binding is an attestation: do not run it on receipts copied
+from another campaign.
+
 Wording: a `title`, `summary` or `body_md` containing `violat*`, `illegal*`, `unlawful*`, `criminal*` or
 "broke the law" (any case; NFKC-normalised with zero-width and soft-hyphen characters removed) adds the blocker
 `legal_conclusion_wording_in_<field>` (the field name only, never the words), so `review-status` lists it and
@@ -105,7 +122,7 @@ concurrent publishes of the same slug or id only one succeeds. The write is atom
 `D/private/publication-log.jsonl` (0600). It never builds, deploys or contacts anything: run
 `build` and review the site before any deploy.
 
-    python3 -m campaign_tool finding correct ID --directory D --date YYYY-MM-DD --note TEXT [--from DRAFT]
+    python3 -m campaign_tool finding correct ID --directory D --date YYYY-MM-DD --note TEXT --approved-by NAME [--from DRAFT]
 
 `finding correct` appends one `{date, note}` to the published finding whose `id` is ID (exactly one
 file in `content/findings/`, never a symlink) and sets `updated_at` (now, UTC). The date must be a real
@@ -220,7 +237,7 @@ roster, `finding review` refuses an unlisted name or unassigned role and `review
 ## Publication gate (one check at every publishing path)
 
 `campaign_tool/publication_gate.py` holds one check, `assert_publishable(artefact_id, content_hash, approvals)`,
-and every path that emits publishable content calls it before writing: `finding publish`
+and every path that emits publishable content calls it before writing: `finding publish` and `finding correct`
 (`campaign_tool/findings.py`), `flock_publish.py stage` and `flock_publish.py brief`. It returns nothing or
 raises `PublicationRefused` (a `ValueError`) naming the artefact id and one reason:
 
@@ -233,15 +250,25 @@ raises `PublicationRefused` (a `ValueError`) naming the artefact id and one reas
 | `approver_unnamed` | `approved_by` is empty, a placeholder (`-`, `n/a`, `tbd`, `auto`, `system`, `agent`) or a model or lane name |
 | `approval_consumed` | the matching approval carries a truthy `consumed` |
 | `redaction_unsigned` | the approval carries `redaction_signed` and it is not true |
+| `approval_unbound` | (`stage`/`brief`) the approved `PUBLISH.json` entry records no `review.content_hash` |
 
 The gate reads those fields, never prose in the artefact or its file name. `redaction_signed` is set by no path
 yet; it is reachable once a redaction sign-off exists. A legal-claim flag is recorded on a refusal and never causes
 one. A refusal prints only the id and reasons, exits non-zero and writes nothing. No code writes an approval: the
 gate has no writer, and `tests/test_publication_gate.py` fails if any other module writes an approval field outside
 the existing human review surface (Python modules by syntax tree, other languages by a literal pattern).
-For `stage` and `brief` the approval is the `PUBLISH.json` review fields, bound to the entry as filed and compared
-with the entry the run re-derives. A clean gate does not prove an artefact is fit to publish: redaction sign-off, the
-privacy lint and the legal-claim notes are separate conditions. `finding correct` is not gated yet.
+`finding publish` and `finding correct` (`--approved-by`, refused without a named person) bind the approval to the exact
+draft content, re-read just before the write.
+For `stage` and `brief` the approval is the `PUBLISH.json` review fields, bound to the content as it stood when the
+person approved it (DF-APPROVAL-TIME-BIND): `review.content_hash` is the sha256 of the entry without `review`, which
+the person records with the approval (`flock_review_queue.py show` prints it beside the text). The gate compares that
+recorded hash with the entry the run re-derives now, and the filed entry must equal that re-derivation; a hash is
+never recomputed from the file to stand in for the recorded one, so editing an approved entry together with the run
+that derives it voids the approval. **Legacy approvals** (recorded before this field existed) carry no hash: they
+stay in the file untouched, `--check` still accepts them, and the review queue lists them again with an
+`approval-unbound` warning, but they approve nothing (`approval_unbound`) until a person re-reads the text and records
+its hash. Nothing stamps them automatically. A clean gate does not prove an artefact is fit to publish: redaction
+sign-off, the privacy lint and the legal-claim notes are separate conditions.
 
 ## Not done
 
@@ -267,6 +294,20 @@ every chosen platform is made before anything is written, so one that cannot fit
 the platform named. Each folder keeps its own `.written.json`, kept edits go to
 `kit/social/<P>.suggested/` and stale slugs are listed per platform. Without `--platform` the run is
 unchanged (`len()` within 280 into `kit/social/`); `--check` reads that folder only.
+
+### Social drafts for meetings (never posted)
+
+`social --directory D --meetings [--within-days N] [--platform P ...]` (N from 1 to 60, default 14)
+writes one private draft per staged meeting that is `scheduled`, starts between now and N days
+ahead and carries organizer-verified `participation`, to `kit/social/meetings/<id>.md` (or
+`kit/social/meetings/<P>/<id>.md` sized by that platform's rule; kept edits go to
+`kit/social/meetings.suggested/` or `kit/social/meetings/<P>.suggested/`). The post gives the body,
+the date and time in the meeting's own UTC offset (as the meeting page prints it), the agenda item,
+the verified written-comment deadline and how, how to attend, and `<base_url>/meetings/<id>.html`
+when `base_url` is set. Only the agenda item is shortened. Cancelled, past, later-than-window and
+unverified meetings get no draft and are counted under `skipped`; an unreadable meeting file is
+counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts and
+`--check` are unchanged. Nothing is posted.
 
 ## Posting one approved social draft (Worker `post_social`)
 

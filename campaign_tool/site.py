@@ -25,7 +25,7 @@ from . import agency_cards, camera_counts, finding_law, image_meta, law, map_con
 from .content import CITY_KINDS, MAX_GEOJSON_BYTES, TRANSPARENCY_FIELDS, ContentError, _read_json, load_content, utc_moment
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
-from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, KIND_LABELS, html_text
+from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
 from .markdown_lite import render as markdown
 from .shell import render
 from .provenance_text import EXPLAINER, source_line
@@ -93,6 +93,17 @@ try{v=decodeURIComponent(kv.slice(1).join("="));}catch(err){continue;}var s=pick
 form.addEventListener("change",function(){apply();});form.hidden=false;apply(!found);
 window.findingFilter={apply:apply};})();
 """
+# DF0137-14: a relabelled site (a js.* label differs from its default) reads the count from LABELS in site-data.js,
+# which the findings index then loads first; the text is set through textContent only.
+FILTER_COUNT_JS = 'count.textContent="Showing "+shown+" of "+items.length;'
+
+
+def filter_js(relabel=False):
+    """findings/filter.js: today's FILTER_JS, or with ``relabel`` the count read from ``LABELS["js.filter_count"]``."""
+    if not relabel:
+        return FILTER_JS
+    return FILTER_JS.replace(FILTER_COUNT_JS, 'count.textContent=String(LABELS["js.filter_count"]).replace(/\\{(shown|total)\\}/g,'
+                             'function(m,k){return k==="shown"?shown:items.length;});')
 # data/findings.json emits only these keys, built field by field (DF2237-09); anything else refuses the build.
 PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
                          "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
@@ -325,6 +336,9 @@ class Site:
         self.map = model["map"]
         self.maplibre = "maplibre-gl.js" in model["vendor"]
         self.labels = model.get("labels") or DEFAULTS  # content/labels.json merged over the English defaults
+        # DF0137-14: the js.* labels passed to the scripts, or None (today's English scripts) when none differs.
+        self.js_labels = ({key: self.labels[key] for key in JS_DEFAULTS}
+                          if any(self.labels[key] != text for key, text in JS_DEFAULTS.items()) else None)
         # DF1822-13: "/<relative>" -> (width, height) of each readable PNG/JPEG/WebP public asset, for markdown images.
         self.image_sizes = {}
         for source in model.get("public_assets", ()):
@@ -413,15 +427,26 @@ class Site:
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def share(self, title, description, path, kind, published, modified):
-        """Open Graph + Twitter summary tags from the page's own text; no image, og:url only with base_url."""
+        """Open Graph + Twitter summary tags from the page's own text; og:image only from site.json.share_image, og:url only with base_url."""
         tags = [("property", "og:site_name", self.name),
                 ("property", "og:title", e(title if kind == "article" else _one_line(title)).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")),
                 ("property", "og:description", e(description if kind == "article" else _one_line(description)).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")),
                 ("property", "og:type", kind)]
         if self.base and (kind != "article" or _preview_origin(self.base)):
             tags.append(("property", "og:url", e(self.base + path)))
-        tags += [("name", "twitter:card", "summary"), ("name", "twitter:title", e(_one_line(title))),
+        image = self.site.get("share_image")
+        if image and image["size"]:
+            url = e(self.base + "/" + image["path"] if self.base else "/" + image["path"])
+            tags += [("property", "og:image", url), ("property", "og:image:width", str(image["size"][0])),
+                     ("property", "og:image:height", str(image["size"][1])),
+                     ("property", "og:image:alt", e(image["alt"]))]
+        tags += [("name", "twitter:card", "summary_large_image" if image else "summary"),
+                 ("name", "twitter:title", e(_one_line(title))),
                  ("name", "twitter:description", e(_one_line(description)))]
+        if image and image["size"]:
+            if self.base:
+                tags.append(("name", "twitter:image", url))
+            tags.append(("name", "twitter:image:alt", e(image["alt"])))
         if kind == "article":
             tags.append(("property", "article:published_time", e(_one_line(published))))
             if modified:
@@ -679,11 +704,37 @@ class Site:
         for item in sorted(agency.get("asked", []), key=lambda row: row["asked_on"], reverse=True):
             asked.append(f'{e(item["topic"])} — asked {date_label(item["asked_on"])}. ' + e(asked_sentence(item, self.today))
                          + (f' {e(item["note"])}' if item.get("note") else ""))
-        return "".join(f'<section class="agency-block"><h4>{title}</h4>' + (
+        return "".join(f'<section class="agency-block"><h4{anchor}>{title}</h4>' + (
             "<ul>" + "".join(f"<li>{value}</li>" for value in values) + "</ul>" if values else f"<p>{empty}</p>") + "</section>"
-            for title, values, empty in (("What is confirmed", confirmed, "Nothing is confirmed by a published finding yet."),
-                                         ("What is not known", unknown, "Nothing listed yet."),
-                                         ("What we asked", asked, "No request is listed for this agency yet.")))
+            for title, values, empty, anchor in (("What is confirmed", confirmed, "Nothing is confirmed by a published finding yet.", ""),
+                                                 ("What is not known", unknown, "Nothing listed yet.", ""),
+                                                 ("What we asked", asked, "No request is listed for this agency yet.",
+                                                  f' id="{e(agency["slug"])}-asked"')))
+
+    def glance_section(self):
+        """DF0137-12: every agency side by side in model order (never sorted by a number); each cell links its source."""
+        unchecked, rows = self.t("agencies.glance_not_checked"), []
+        heads = [self.t(f"agencies.glance_{key}") for key in ("agency", "cameras", "searches_last_30_days",
+                                                               "retention_days", "policy", "contract", "asked")]
+
+        def sourced(url, text, checked_on):
+            return (f'<a href="{e(url)}" rel="noopener noreferrer">{text}</a> '
+                    f'<small>{self.t("agencies.glance_checked", date=time_tag(checked_on))}</small>')
+        for agency in self.model["agencies"]:
+            newest, policy, contract = (agency.get("transparency") or [{}])[0], agency.get("alpr_policy"), agency["contract"]
+            asked, page = len(agency.get("asked", [])), self.agency_pages().get(agency["agency_id"], f'#{agency["slug"]}')
+            cells = [f'<a href="{e(page)}">{e(agency["name"])}</a>'] + [
+                sourced(newest["source_url"], e(newest[key]), newest["checked_on"]) if newest.get(key) is not None
+                else unchecked for key in ("cameras", "searches_last_30_days", "retention_days")]
+            cells += [sourced(policy["url"], self.t("agencies.glance_posted"), policy["checked_on"]) if policy else unchecked,
+                      sourced(contract["source_url"], time_tag(contract["end"]), contract["checked_on"]) if contract else unchecked,
+                      f'<a href="#{e(agency["slug"])}-asked">{asked}</a>' if asked else "0"]
+            rows.append('<tr><th scope="row" data-label="' + heads[0] + f'">{cells[0]}</th>'
+                        + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
+        return (f'<section class="at-a-glance" id="at-a-glance"><h3>{self.t("agencies.glance_heading")}</h3>'
+                f'<p>{self.t("agencies.glance_note")}</p><table class="glance-table"><caption>{self.t("agencies.glance_caption")}'
+                '</caption><thead><tr>' + "".join(f'<th scope="col">{head}</th>' for head in heads) + "</tr></thead><tbody>"
+                + "".join(rows) + "</tbody></table></section>")
 
     def agencies_html(self):
         articles = []
@@ -712,7 +763,8 @@ class Site:
             articles.append(f'<article id="{e(agency["slug"])}">{body}</article>')
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
                 f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")}</p></div>'
-                + ('<div class="agency-list">' + "".join(articles) + '</div>' if articles else f'<p>{self.t("notice.no_agencies")}</p>')
+                + ('<div class="agency-list">' + self.glance_section() + "".join(articles) + '</div>' if articles
+                   else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
         return self.page("agencies", self.labels["title.agencies"], self.labels["title.agencies_description"], "/agencies.html", main)
 
@@ -775,6 +827,7 @@ class Site:
                 f'{form}{self.findings_list(self.model["findings"], filter_attrs=True)}{empty}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", self.labels["title.findings"], self.labels["title.findings_description"], "/findings/", main,
+                         ["/site-data.js", "/findings/filter.js"] if form and self.js_labels else
                          ["/findings/filter.js"] if form else [])
 
     def packet_html(self):
@@ -1078,10 +1131,27 @@ class Site:
             more = f'<p>and {len(rows) - len(shown)} more on the map</p>' if len(shown) < len(rows) else ""
             sections += (f'<section class="camera-group"><h3>{e(name or self.map["group_label"])}</h3>'
                          f'<p>{len(rows)} mapped point{"" if len(rows) == 1 else "s"}</p>{table}{more}</section>')
+        # DF0137-13: map/history.json as a plain table once it has 2+ records (else nothing: the page is unchanged);
+        # city columns only when every record has by_city, a city one record lacks shows a dash
+        records, history = self.map.get("history") or [], ""
+        if len(records) >= 2:
+            cities = sorted({n for r in records for n in r["by_city"]}) if all(
+                r["by_city"] is not None for r in records) else []
+            head = "".join(f'<th scope="col">{self.t("map.history_" + key)}</th>'
+                           for key in ("date", "total", "added", "removed"))
+            head += "".join(f'<th scope="col">{e(name)}</th>' for name in cities)
+            body = "".join(f'<tr><td><time datetime="{r["recorded_on"]}">{r["recorded_on"]}</time></td>'
+                           + "".join(f"<td>{r[key]}</td>" for key in ("total", "added", "removed"))
+                           + "".join(f'<td>{r["by_city"].get(name, "—")}</td>' for name in cities) + "</tr>"
+                           for r in records)
+            history = (f'<section class="camera-history"><h3>{self.t("map.history_title")}</h3>'
+                       f'<p>{self.t("map.history_note")}</p><table><thead><tr>{head}</tr></thead>'
+                       f'<tbody>{body}</tbody></table></section>')
         main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Mapped points</p>'
                 '<h2>Community-mapped points; ownership unconfirmed.</h2></div>'
                 '<p>Points are community reports from OpenStreetMap, not confirmed agency ownership.</p></div>'
-                f'<p>{e(self.map["attribution"])}</p><p class="map-date">{self.map_date_line()}</p>{sections}</section>\n')
+                f'<p>{e(self.map["attribution"])}</p><p class="map-date">{self.map_date_line()}</p>{sections}'
+                f'{history}</section>\n')
         return self.page("cameras", "Mapped points", "List of community-mapped points by city; ownership unconfirmed",
                          "/cameras.html", main)
 
@@ -1092,8 +1162,8 @@ class Site:
         profile["name"] = self.cfg["county"]
         if not profile["facts"]:
             count = len(self.model["findings"])
-            profile["facts"] = [f"{count} published finding(s) with hashed sources." if count else
-                                "No findings have been published yet; records requests are in progress."]
+            profile["facts"] = [self.labels["js.county_findings"].format(count=count) if count else
+                                self.labels["js.county_no_findings"]]
         return profile
 
     def cards_config(self):
@@ -1136,22 +1206,21 @@ class Site:
             entry.update(agency["profile"], **({"flockTransparencyUrl": agency["flock_transparency_url"]} if agency["flock_transparency_url"] else {}))
             if entry["cameraCount"] == "" and entry["name"] in counts:  # an organizer-typed value always wins
                 n = counts[entry["name"]]
-                entry["cameraCount"] = f"{n} community-mapped point{'' if n == 1 else 's'} inside city limits; ownership unconfirmed"
+                entry["cameraCount"] = self.labels["js.city_points_one" if n == 1 else "js.city_points_many"].format(count=n)
             if not entry["facts"]:
                 findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
-                entry["facts"] = [f["title"] for f in findings] or ["No published findings for this agency yet."]
+                entry["facts"] = [f["title"] for f in findings] or [self.labels["js.city_no_findings"]]
             if agency["agency_id"] in self.agency_pages():
                 entry["agencyPage"] = self.agency_pages()[agency["agency_id"]]
                 entry["findingCount"] = sum(f["agency_id"] == agency["agency_id"] for f in self.model["findings"])
             cities[agency["slug"]] = entry
         if self.map:
-            slug = self.map["controller"]["group_slug"]
+            slug, label = self.map["controller"]["group_slug"], self.labels.__getitem__
             cities[slug] = {"name": self.map["group_label"], "displayName": self.map["group_label"],
-                            "bounds": self.map["county_bounds"], "vendor": "Not applicable",
-                            "status": "Ownership unconfirmed", "summary": self.map["group_label"]
-                            + ". Points outside city boundaries without an operator tag are research leads, not evidence of agency ownership.",
-                            "cameraCount": "", "facts": ["Community-mapped points; verify with records requests."],
-                            "open": "Which agency, if any, operates these points is unconfirmed.", "flags": ["Unconfirmed"]}
+                            "bounds": self.map["county_bounds"], "vendor": label("js.group_vendor"),
+                            "status": label("js.group_status"), "summary": label("js.group_summary").format(name=self.map["group_label"]),
+                            "cameraCount": "", "facts": [label("js.group_fact")],
+                            "open": label("js.group_open"), "flags": [label("js.group_flag")]}
         return cities
 
     def site_data_js(self):
@@ -1160,11 +1229,12 @@ class Site:
         return ("// Generated by campaign_tool build from content/. Reviewed campaign data only.\n"
                 f"var CITIES={js_json(self.cities())};\nvar COUNTY_BOUNDS={js_json(county_bounds)};\n"
                 f"var MAP_STYLE={js_json(style)};\nvar CAMERA_DATA_URL=\"/data/cameras.geojson\";\n"
-                "var BOUNDARY_DATA_URL=\"/data/county.geojson\";\n")
+                "var BOUNDARY_DATA_URL=\"/data/county.geojson\";\n"
+                + (f"var LABELS={js_json(self.js_labels)};\n" if self.js_labels else ""))
 
     def app_js(self):
         if self.map:
-            controller = map_controller.render(self.map["controller"], "")
+            controller = map_controller.render(self.map["controller"], "", relabel=bool(self.js_labels))
             boot = ("document.addEventListener(\"DOMContentLoaded\",function(){"
                     "document.querySelectorAll(\".city-choice\").forEach(function(b){b.addEventListener(\"click\",function(){chooseCity(b.getAttribute(\"data-city\")||null);});});"
                     "chooseCity(null);initMap();});\n")
@@ -1417,12 +1487,13 @@ def _plan_site(root, today=None, notes=None):
     files.update({
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
         **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
-        "site-data.js": site.site_data_js(), "agency-cards.js": agency_cards.render(site.cards_config()),
+        "site-data.js": site.site_data_js(),
+        "agency-cards.js": agency_cards.render(site.cards_config(), relabel=bool(site.js_labels)),
         "app.js": site.app_js(), "data/findings.json": site.findings_json(),
         "data/sources.json": site.sources_json(),
     })
     if site.finding_filter():  # written only when the findings index loads it
-        files["findings/filter.js"] = FILTER_JS
+        files["findings/filter.js"] = filter_js(bool(site.js_labels))
     files.update(site.agency_feeds())
     plan = []
     if model["map"]:

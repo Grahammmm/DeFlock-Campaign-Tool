@@ -24,7 +24,10 @@ review-required, not a legal conclusion.
 
 ## Approve
 - **NEEDS G**: G approves the exact texts (approve all / a subset / hold).
-- The operator sets `status: approved`, `approved_by`, `approved_on` and `approval_ref` (G-DECISIONS line or card id).
+- The operator sets `status: approved`, `approved_by`, `approved_on` and `approval_ref` (G-DECISIONS line or card id),
+  and `content_hash` to the value the review queue prints beside that exact text. The hash binds the approval to the
+  text as approved: any later change to the entry or the run voids it. An approval without it (recorded before
+  DF-APPROVAL-TIME-BIND) approves nothing until a person re-reads the text and records its hash; never copy hashes in bulk.
 
 ## Check
 - `python3 tools/flock_publish.py --check FILE --run <run folder>` until exit 0, before G sees approvals: any entry whose
@@ -54,6 +57,7 @@ review-required, not a legal conclusion.
 - Private draft (**NEEDS G** before any send): `python3 tools/flock_publish.py brief STORE --agency SLUG --out FILE.md`
   (same as `python3 tools/flock_publish_brief.py STORE --agency SLUG --out FILE.md`) writes one 0600 Markdown draft of the agency's
   approved entries from runs that pass `--check`; FILE is new and outside the repo and `STORE/agencies`. Never sent, posted or built.
+  Before asking G: `... brief STORE --agency SLUG --against FILE.md` re-derives it read-only (exit 0 current, 3 drifted by finding id).
 
 ## Withdraw
 - Withdraw or correct a published entry. **NEEDS G**: G approves a withdrawal or correction; record his approval_ref.

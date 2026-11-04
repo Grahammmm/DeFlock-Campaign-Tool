@@ -115,7 +115,14 @@ when `site.json.base_url` is set on non-finding pages. A finding emits `og:url` 
 origin (for example `https://example.invalid`, optionally ending in `/`), without credentials, port,
 subpath, query or fragment. Configure that origin for a complete absolute preview; this build does
 not provision one. Accepted non-root base values keep their existing canonical behavior, but no
-finding `og:url` is invented. There is no share image by design and nothing is fetched.
+finding `og:url` is invented. An optional share image
+is set with `site.json.share_image` = `{"path": "<file in public-assets>", "alt": "<1-300 characters, one line>"}`:
+the file must be a PNG or JPEG (WebP and SVG are refused) with no image metadata, 1200x630 to 2400x1260
+pixels at about a 1.905 ratio, and the alt text is required. Each indexed page then adds `og:image` (with
+`og:image:width`, `og:image:height`, `og:image:alt`) and `twitter:card` `summary_large_image` with
+`twitter:image:alt`; the image URL is absolute and `twitter:image` is added only when `base_url` is set (without it
+`og:image` is root-relative). Refusals name `site.json.share_image.path` or `.alt`. 404 and noindex pages carry no
+share tags. Without the key output is unchanged; nothing is fetched.
 
 Each finding has a **Share this finding** link to `/findings/<slug>.html`; copy its target with normal
 browser behavior. No clipboard script, send endpoint, tracking or new approval is involved. Preview
@@ -161,6 +168,14 @@ YYYY-MM-DD dates not after the build date, `updated_on` not before `asked_on`; `
 `acknowledged`, `partly_answered`, `answered`, `declined_in_writing`, `withdrawn`. A bad item stops the build naming
 `content/agencies.json[n].asked[i].<field>`; `content-check` lists every such problem, one line each. Kit agencies
 never carry it. It is shown only on `agencies.html` (docs/AGENCY-CARDS.md), never exported to data or feeds.
+
+`agencies.html` opens with an "At a glance" table (`#at-a-glance`, labels `agencies.glance_*`): one row per agency in
+the list's own order, never sorted by any number, with no ranking, score or "best/worst" wording. Cells: cameras,
+searches in the last 30 days and retention days from the newest `profile.transparency` snapshot (each linked to its
+`source_url`, checked date shown), the posted `alpr_policy` ("posted", linked to the policy), `contract.end` linked
+to the contract source, and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0").
+A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
+No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
 
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
@@ -346,15 +361,28 @@ every page is byte-identical to the English defaults in `campaign_tool/labels.py
 ```
 Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descriptions), `eyebrow.*`, `heading.*`,
 `intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
-`signup.*`, and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out keeps its English default.
+`signup.*`, `js.*` (scripts, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
+keeps its English default.
 Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds
 `<`, `>` or a control character; a `{placeholder}` the key's default does not use (only `{name}`, `{county}`,
-`{state}`, `{count}`, `{date}` exist) or an unpaired brace; another top-level field, `schema_version` other than 1, a
+`{state}`, `{count}`, `{date}` exist, plus `{shown}`/`{total}` in `js.filter_count` and `{evidence}`/`{source}` in
+`js.map_failed`/`js.data_failed`) or an unpaired brace; another top-level field, `schema_version` other than 1, a
 file over 64 KiB or a symlink. `content-check` names the same refusals, with the build's text, beside every other
 problem. Text is HTML-escaped once (`&`, `"`); `lang` still comes only from `site.json.language`.
+Scripts (`js.*`): the fixed text the generated JavaScript writes into the page. Defaults are the English the scripts
+always used. While every `js.*` label equals its default every script file is byte-identical; once one differs,
+`site-data.js` gains one line `var LABELS={...}` holding every `js.*` key (unset keys keep English), the findings index
+loads `/site-data.js` before `/findings/filter.js`, and the scripts read `LABELS` (placeholders filled through
+`textContent`; popup text through the map's escaper; never raw HTML). Keys: `js.filter_count` ("Showing {shown} of
+{total}", findings filter); `js.mapped_point`/`js.mapped_points` (map selection count); `js.map_failed` with
+`js.map_evidence`/`js.map_source` (map could not load; the two link texts fill `{evidence}`/`{source}`);
+`js.data_failed` with `js.data_source` (camera data could not load); `js.popup_title`, `js.popup_no_manufacturer`,
+`js.popup_no_operator`, `js.popup_source` (point popup); `js.county_findings`/`js.county_no_findings` (county card
+facts when site.json lists none); `js.city_points_one`/`js.city_points_many`, `js.city_no_findings` (agency cards);
+`js.group_vendor`, `js.group_status`, `js.group_summary` (`{name}` is the map's group label), `js.group_fact`,
+`js.group_open`, `js.group_flag` (the unconfirmed-ownership group card).
 Stays English by design: the starter page, `feed.xml`/agency feeds, `sitemap.xml`, `robots.txt`, `_headers`,
-`data/findings.json`, all JavaScript (`site-data.js`, `agency-cards.js`, `app.js`, `findings/filter.js`, which
-rewrites the "Showing N of M" count), and text from shared modules: the source sentence and provenance explainer
+`data/findings.json`, and text from shared modules: the source sentence and provenance explainer
 (`provenance_text.py`) and the corrections policy (`corrections_policy.py`). Content-supplied text is never touched.
 
 ## Redirects (`content/redirects.json`, optional)
@@ -431,6 +459,20 @@ edge counts once). A typed `cameraCount` always wins. `build` prints `note: boun
 A writing run needs `D/campaign.json` (exit 2 otherwise, before any network call). An answer with no points never
 replaces a map that has points (exit 3) unless `--allow-empty` is given. Each file is replaced atomically
 through a fresh temp file; a symlinked `content`, `content/map` or output file is refused (exit 2).
+
+Each writing run (never `--check`, never a refused write) also records one dated entry in
+`content/map/history.json` (`{"schema_version": 1, "records": [...]}`): `recorded_on` (the OpenStreetMap data day
+from `osm_base`, else the run's UTC day), `osm_base` (or null), `source`, `total` points, `by_city` (points inside each
+`content/map/city-boundaries.geojson` feature by the build's own boundary rule, or null without that file) and
+`added`/`removed` node counts against the map the run replaced (0/0 for a first map). A later run on the same day
+(so the same `osm_base` too) replaces that day's record; the newest 120 records are kept and the oldest dropped. A
+history file the build would refuse is never overwritten, and a map day older than the last record is not recorded
+(exit 2 for both; the new map is still written). `build` validates
+the file and refuses an unknown key, `schema_version` other than 1, more than 120 records, a non-ISO date, dates
+that do not strictly increase, a negative or non-integer count, a symlink or a file over 256 KiB, naming the field
+and never its value; `content-check` lists the same line. With two or more records `cameras.html` shows "Mapped points
+over time", a plain table (date, total, added, removed, and per-city columns when every record has `by_city`); with
+none or one the built site is unchanged. A mapped point, and a rising count, is not evidence of agency ownership.
 
 The build never downloads MapLibre. To enable the interactive map, copy the
 library into `content/vendor/maplibre-gl.js` and `content/vendor/maplibre-gl.css`

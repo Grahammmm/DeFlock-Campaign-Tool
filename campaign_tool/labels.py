@@ -102,6 +102,14 @@ DEFAULTS = {
     "agency.transparency_shared_with_agencies": "Shared with agencies: {count}",
     "agency.transparency_up": "up {count} since {date}", "agency.transparency_down": "down {count} since {date}",
     "agency.transparency_same": "no change since {date}",
+    "agencies.glance_heading": "At a glance",
+    "agencies.glance_note": "Numbers are as each source reported them on the date shown. This table does not rank agencies.",
+    "agencies.glance_caption": "Each tracked agency side by side, in the order of the list below",
+    "agencies.glance_agency": "Agency", "agencies.glance_cameras": "Cameras (portal)",
+    "agencies.glance_searches_last_30_days": "Searches last 30 days (portal)",
+    "agencies.glance_retention_days": "Retention days (portal)", "agencies.glance_policy": "ALPR policy",
+    "agencies.glance_contract": "Contract ends", "agencies.glance_asked": "Records items asked",
+    "agencies.glance_not_checked": "not checked", "agencies.glance_posted": "posted", "agencies.glance_checked": "checked {date}",
     "officials.heading": "Who decides", "officials.source": "source",
     "officials.listed": ("Listed from the body's official site ({source}), checked {date}. "
                          "Contact officials only through the channels on that site."),
@@ -111,10 +119,37 @@ DEFAULTS = {
     "map.source_map": "open the DeFlock source map", "map.region": "Community-mapped points",
     "map.count": "{count} mapped points", "map.hint": "Points are community reports, not confirmed agency ownership.",
     "map.date": "Map data as of {date} (OpenStreetMap)", "map.date_unknown": "Map data date unknown (OpenStreetMap)",
+    "map.history_title": "Mapped points over time", "map.history_date": "Date", "map.history_total": "Mapped points",
+    "map.history_added": "Added", "map.history_removed": "Removed",
+    "map.history_note": "One row per map refresh. A mapped point is not evidence of agency ownership.",
     "signup.email": "Email address", "signup.placeholder": "you@example.org",
     "signup.provider_note": "Submitting opens the provider's hosted confirmation page.",
     "signup.none": "No email addresses are collected by this site. Follow meetings and findings here or by feed.",
 }
+# DF0137-14: fixed strings the generated scripts write into the page. Defaults are today's exact English; site.py
+# switches the scripts to LABELS lookups (site-data.js) only when a js.* key differs from its default.
+JS_DEFAULTS = {
+    "js.filter_count": "Showing {shown} of {total}",
+    "js.mapped_point": "{count} mapped point", "js.mapped_points": "{count} mapped points",
+    "js.map_failed": "The interactive map could not load in this browser. You can still select a city below, {evidence}, or {source}.",
+    "js.map_evidence": "review the evidence notes", "js.map_source": "open the DeFlock source map",
+    "js.data_failed": "Camera data could not load. {source}", "js.data_source": "Open the DeFlock source map",
+    "js.popup_title": "Community-mapped ALPR point", "js.popup_no_manufacturer": "Manufacturer not specified",
+    "js.popup_no_operator": "Operator not specified", "js.popup_source": "View source record",
+    "js.county_findings": "{count} published finding(s) with hashed sources.",
+    "js.county_no_findings": "No findings have been published yet; records requests are in progress.",
+    "js.city_points_one": "{count} community-mapped point inside city limits; ownership unconfirmed",
+    "js.city_points_many": "{count} community-mapped points inside city limits; ownership unconfirmed",
+    "js.city_no_findings": "No published findings for this agency yet.",
+    "js.agency_findings_zero": "no published findings yet",
+    "js.agency_findings_one": "{count} published finding",
+    "js.agency_findings_many": "{count} published findings",
+    "js.group_vendor": "Not applicable", "js.group_status": "Ownership unconfirmed",
+    "js.group_summary": "{name}. Points outside city boundaries without an operator tag are research leads, not evidence of agency ownership.",
+    "js.group_fact": "Community-mapped points; verify with records requests.",
+    "js.group_open": "Which agency, if any, operates these points is unconfirmed.", "js.group_flag": "Unconfirmed",
+}
+DEFAULTS.update(JS_DEFAULTS)
 for _family, _labels in (("classification", CLASSIFICATION_LABELS), ("confidence", CONFIDENCE_LABELS), ("kind", KIND_LABELS)):
     DEFAULTS.update({f"{_family}.{code}": text for code, text in _labels.items()})
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
