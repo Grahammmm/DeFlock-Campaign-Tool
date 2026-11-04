@@ -16,11 +16,14 @@ Nothing is sent, no custodian is contacted, and no agency is asserted to use
 ALPR. Drafts are built from the jurisdiction law package when one exists and
 from templates/records-request.md with a banner when it does not.
 """
+import csv
 import hashlib
+import io
 import json
 import math
 import os
 import re
+import stat
 import tempfile
 import urllib.parse
 from datetime import date
@@ -493,19 +496,22 @@ def _https_url(value, field):
         raise ValueError(f"{field} must be an https:// URL with a host")
 
 
-def verify_agency(root, agency_id, *, source_url, checked_on, records_email=None, records_url=None,
-                  portal=None, today=None):
-    """Record an organizer-checked contact, its official source and date; never fetches source_url."""
-    path = Path(root) / "kit" / "agencies.json"
-    if not path.is_file() or path.is_symlink():
-        raise ValueError("run kit first: kit/agencies.json is missing")
-    _load_existing(path)
-    agencies = _read_json(path)
+def _check_verification(agencies, agency_id, *, source_url, checked_on, records_email=None, records_url=None,
+                        portal=None, today=None, portal_vendor=None):
+    """Every kit-verify-agency rule for one agency in ``agencies``: (entry, given, verification), or ValueError.
+
+    Changes nothing; ``portal_vendor`` (import only) needs ``portal`` and must be a known vendor."""
     matches = [entry for entry in agencies if entry["agency_id"] == agency_id]
     if len(matches) != 1:
         raise ValueError(f"agency_id {agency_id!r} must appear exactly once in kit/agencies.json (found {len(matches)})")
     given = {name: value for name, value in (("records_email", records_email), ("records_url", records_url),
                                              ("portal", portal)) if value is not None}
+    if portal_vendor is not None:
+        from .content import PORTAL_VENDORS
+        if portal_vendor not in PORTAL_VENDORS:
+            raise ValueError(f"portal_vendor must be one of {', '.join(PORTAL_VENDORS)}")
+        if portal is None:
+            raise ValueError("portal_vendor needs a portal_url")
     if not given:
         raise ValueError("give at least one of records_email, records_url, portal")
     _https_url(source_url, "source_url")
@@ -525,12 +531,104 @@ def verify_agency(root, agency_id, *, source_url, checked_on, records_email=None
     entry = matches[0]
     if "portal" in given:
         base = entry["portal"] if isinstance(entry.get("portal"), dict) else {"vendor": "unknown"}
-        given["portal"] = {**base, "url": given["portal"]}
+        given["portal"] = {**base, **({"vendor": portal_vendor} if portal_vendor else {}), "url": given["portal"]}
+    return entry, given, {"source_url": source_url, "checked_on": checked_on, "fields": sorted(given)}
+
+
+def _apply_verification(entry, given, verification):
     entry.update(given)
     entry["verified"] = True
-    entry["verification"] = {"source_url": source_url, "checked_on": checked_on, "fields": sorted(given)}
+    entry["verification"] = verification
+
+
+def _agencies_for_verify(root):
+    path = Path(root) / "kit" / "agencies.json"
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("run kit first: kit/agencies.json is missing")
+    _load_existing(path)
+    return path, _read_json(path)
+
+
+def verify_agency(root, agency_id, *, source_url, checked_on, records_email=None, records_url=None,
+                  portal=None, today=None):
+    """Record an organizer-checked contact, its official source and date; never fetches source_url."""
+    path, agencies = _agencies_for_verify(root)
+    entry, given, verification = _check_verification(
+        agencies, agency_id, source_url=source_url, checked_on=checked_on, records_email=records_email,
+        records_url=records_url, portal=portal, today=today)
+    _apply_verification(entry, given, verification)
     _write_json(path, agencies)
     return {"agency_id": agency_id, "fields": sorted(given), "checked_on": checked_on, "verified": True}
+
+
+class VerifyImportError(ValueError):
+    exit_code = 2
+
+
+VERIFY_COLUMNS = ("agency_id", "source_url", "checked_on", "records_email", "records_url", "portal_vendor", "portal_url")
+VERIFY_MAX_BYTES, VERIFY_MAX_ROWS, VERIFY_SHOWN = 512 * 1024, 500, 20
+
+
+def _read_verify_csv(csv_path):
+    """[(line, cells)] for the non-blank data rows of a small regular UTF-8 CSV with the seven-column header."""
+    try:
+        fd = os.open(csv_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:  # O_NOFOLLOW: a symlink fails here with ELOOP
+        raise VerifyImportError(f"csv cannot be opened as a regular file (symlinks are refused): {exc.strerror}") from None
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise VerifyImportError("csv must be a regular file")
+    with os.fdopen(fd, "rb") as handle:
+        data = handle.read(VERIFY_MAX_BYTES + 1)
+    if len(data) > VERIFY_MAX_BYTES:
+        raise VerifyImportError("csv is larger than 512 KiB")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise VerifyImportError("csv is not UTF-8") from None
+    reader, rows, start = csv.reader(io.StringIO(text, newline="")), [], 1
+    try:
+        for cells in reader:
+            if cells:
+                rows.append((start, [cell.strip() for cell in cells]))
+            start = reader.line_num + 1
+    except csv.Error as exc:
+        raise VerifyImportError(f"csv line {start}: {exc}") from None
+    if not rows or rows[0][1] != list(VERIFY_COLUMNS):
+        raise VerifyImportError("csv header must be exactly " + ",".join(VERIFY_COLUMNS))
+    return rows[1:]
+
+
+def verify_agencies_csv(root, csv_path, *, check=False, today=None):
+    """Check every CSV row with the kit-verify-agency rules, then apply them all in one write, or write nothing.
+
+    Never fetches a URL or sends to an address; errors name the line and never echo an e-mail address."""
+    path, agencies = _agencies_for_verify(root)
+    rows, errors, first_line, applied = _read_verify_csv(csv_path), [], {}, []
+    if not 1 <= len(rows) <= VERIFY_MAX_ROWS:
+        raise VerifyImportError(f"csv must have 1-{VERIFY_MAX_ROWS} data rows (found {len(rows)})")
+    for line, cells in rows:
+        try:
+            if len(cells) != len(VERIFY_COLUMNS):
+                raise ValueError(f"expected {len(VERIFY_COLUMNS)} cells, found {len(cells)}")
+            agency_id, source_url, checked_on, email, url, vendor, portal_url = (cell or None for cell in cells)
+            if agency_id in first_line:
+                raise ValueError(f"same agency as line {first_line[agency_id]}")
+            applied.append(_check_verification(
+                agencies, agency_id, source_url=source_url, checked_on=checked_on, records_email=email,
+                records_url=url, portal=portal_url, today=today, portal_vendor=vendor))
+        except ValueError as exc:
+            errors.append(f"line {line}: {EMAIL.sub('[address]', str(exc))}")
+        first_line.setdefault(cells[0] or None, line)
+    if errors:
+        more = f"\nand {len(errors) - VERIFY_SHOWN} more" if len(errors) > VERIFY_SHOWN else ""
+        raise VerifyImportError(f"{len(errors)} bad row(s); kit/agencies.json was not changed:\n"
+                                + "\n".join(errors[:VERIFY_SHOWN]) + more)
+    for entry, given, verification in applied:
+        _apply_verification(entry, given, verification)
+    if not check:
+        _write_json(path, agencies)
+    return {"verified": [entry["agency_id"] for entry, _, _ in applied], "count": len(applied), "written": not check}
 
 
 def kit_status(root):

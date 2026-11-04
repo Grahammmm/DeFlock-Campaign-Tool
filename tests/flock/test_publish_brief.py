@@ -2,10 +2,11 @@
 import json, os, shutil, subprocess, sys, unittest
 from pathlib import Path
 from unittest import mock
+from campaign_tool import publication_gate as gate
 from tests.flock import test_publish as base
 
 A, B = "2026-10-30", "2026-10-29"  # run A (newest) is the base fixture run; run B is its copy one day older
-PENDING = {"status": "pending", "approved_by": "", "approved_on": "", "approval_ref": ""}
+PENDING = {"status": "pending", "approved_by": "", "approved_on": "", "approval_ref": "", "content_hash": ""}
 FIRST = "DRAFT - not sent - G approval required"
 LAST = "END OF BRIEF DRAFT. Do not send, post or share without G's approval. Contact details are intentionally omitted."
 EMAIL = r"[^\s@]+@[^\s@]+\.[a-z]{2,}"
@@ -31,10 +32,11 @@ class PublishBriefTest(base.FlockPublishTest):
     def save(self, day):
         (self.runs / day / "PUBLISH.json").write_text(json.dumps(self.docs[day]))
 
-    def approve(self, day, *ids, ref="G-1", on="2026-10-30"):
+    def approve(self, day, *ids, ref="G-1", on="2026-10-30"):  # DF-APPROVAL-TIME-BIND: records the hash as approved
         for f in self.docs[day]["findings"]:
             if f["finding_id"] in ids:
-                f["review"] = {"status": "approved", "approved_by": "G", "approved_on": on, "approval_ref": ref}
+                f["review"] = {"status": "approved", "approved_by": "G", "approved_on": on, "approval_ref": ref,
+                               "content_hash": gate.content_digest({k: v for k, v in f.items() if k != "review"})}
         self.save(day)
 
     def entry(self, day, fid):

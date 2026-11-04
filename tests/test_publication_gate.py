@@ -154,6 +154,11 @@ class EnumCases(unittest.TestCase):
                 self.assertEqual(refusal(approvals=[approval(status=status)]).reason, "status_not_approved")
         self.assertEqual(refusal(approvals=[{k: v for k, v in approval().items() if k != "status"}]).reason, "status_not_approved")
 
+    def test_enum_is_fixed_at_eight(self):  # DF-APPROVAL-TIME-BIND added approval_unbound
+        self.assertEqual(len(gate.REASONS), 8)
+        with self.assertRaises(AssertionError):
+            gate.PublicationRefused("a1", "because")
+
 
 class SeededFailureControls(unittest.TestCase):
     def test_1_path_without_its_gate_call_fails_the_coverage_test_naming_it(self):
