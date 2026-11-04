@@ -11,7 +11,9 @@ from pathlib import Path
 
 from . import kit, kit_check, law
 
-CHANNELS = ("email", "portal", "mail")
+CHANNELS = ("email", "portal", "mail", "muckrock")
+MUCKROCK_URL = re.compile(r"https://www\.muckrock\.com/foi/(?:[a-z0-9-]+/){0,2}[a-z0-9-]*-[0-9]+/?")  # recorded, never fetched
+MUCKROCK_ID = re.compile(r"-([0-9]+)/?\Z")
 KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed", "fee_estimate",
          "clarification_requested", "clarified", "fee_paid", "fee_waived")
 SETTLED = {"fee_paid": "paid", "fee_waived": "waived"}  # a payment or waiver of the latest estimate before it
@@ -120,6 +122,16 @@ def _corr_ok(value):  # a stored correspondence list: 1..RECORDS_MAX unique full
             and _hashes(value) == value and len(set(value)) == len(value))
 
 
+def _request_url(value):  # a valid MuckRock request URL (<= 300 chars, no query, fragment, userinfo or port)
+    return isinstance(value, str) and len(value) <= 300 and bool(MUCKROCK_URL.fullmatch(value))
+
+
+def muckrock_id(entry):  # the request id (digits) at the end of a muckrock entry's request_url, else None
+    url = entry.get("request_url")
+    found = MUCKROCK_ID.search(url) if entry.get("channel") == "muckrock" and _request_url(url) else None
+    return found.group(1) if found else None
+
+
 def _entry_ok(key, entry):
     parts = _split(key)
     return (parts and kit.AGENCY_ID.match(parts[0]) and isinstance(entry, dict) and _day(entry.get("sent_on"))
@@ -128,7 +140,8 @@ def _entry_ok(key, entry):
             and _day(entry.get("recorded_at"), STAMP, datetime.fromisoformat) and isinstance(entry.get("steps"), list)
             and ("reference" not in entry or isinstance(entry["reference"], str)
                  and REFERENCE.fullmatch(entry["reference"]))
-            and ("correspondence" not in entry or _corr_ok(entry["correspondence"])))
+            and ("correspondence" not in entry or _corr_ok(entry["correspondence"]))
+            and ("request_url" not in entry or entry["channel"] == "muckrock" and _request_url(entry["request_url"])))
 
 
 def read_sent(root):
@@ -173,10 +186,14 @@ def _check(root, agency, request):  # main: kit-check's own report; a named requ
 
 
 def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=False, today=None, reference=None,
-                replace_reference=False, correspondence=()):
+                replace_reference=False, correspondence=(), request_url=None):
     """Record one hand-sent request in kit/sent.json and return its entry."""
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
+    if (request_url is None) == (channel == "muckrock"):  # required with muckrock, refused with any other channel
+        raise ValueError("--request-url is required with --channel muckrock and only allowed there")
+    if request_url is not None and not _request_url(request_url):
+        raise ValueError("--request-url must be https://www.muckrock.com/foi/.../<name>-<id> (no query, port or login)")
     path = root / "kit" / "agencies.json"
     if not path.is_file() or path.is_symlink():
         raise ValueError("run kit first: kit/agencies.json is missing")
@@ -211,6 +228,8 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
         raise ValueError(f"{label} has recorded steps; its entry sent on {previous['sent_on']} cannot be replaced")
     entry = {"sent_on": sent_on, "channel": channel, "draft": draft, "draft_sha256": digest,
              "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "steps": []}
+    if request_url:
+        entry["request_url"] = request_url
     if previous and "reference" in previous:  # a --replace correction keeps the stored reference
         entry["reference"] = previous["reference"]
     _set_reference(entry, reference, replace_reference)
@@ -346,8 +365,9 @@ def _next_installment(steps):  # the latest expected_on on or after the latest p
 
 
 def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None,
-                expected_on=None, reference=None, replace_reference=False, partial=False, correspondence=()):
-    """Append one dated agency response step to a hand-sent request and return the updated entry."""
+                expected_on=None, reference=None, replace_reference=False, partial=False, correspondence=(),
+                dry_run=False):
+    """Append one dated agency response step (``dry_run``: check and return it, write nothing)."""
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
     if kind not in KINDS:
@@ -434,8 +454,9 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
             **({"note": note} if note else {}), **({"records": hashes} if hashes else {}),
             **({"correspondence": corr} if corr else {}), "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     entry["steps"] = [*steps, step]
-    kit._write_json(root / "kit" / "sent.json",
-                    {"schema_version": 1, "requests": dict(sorted(requests.items()))})
+    if not dry_run:
+        kit._write_json(root / "kit" / "sent.json",
+                        {"schema_version": 1, "requests": dict(sorted(requests.items()))})
     return {"agency_id": agency_id, "request": request, **_shown(entry), "steps": list(map(_shown, entry["steps"]))}
 
 
@@ -561,7 +582,7 @@ def format_coverage(report, as_csv=False):
         for row in report["rows"]:
             writer.writerow([_csv_cell(c) for c in _cells(row)])
         return out.getvalue()
-    line = "{:<36} {:<40} {:<7} {:<10} {:<7} {:<10} {:<13} {:>7} {:>7} {:>8} {}"
+    line = "{:<36} {:<40} {:<7} {:<10} {:<9} {:<10} {:<13} {:>7} {:>7} {:>8} {}"
     lines = [line.format("agency_id", "name", "drafted", "sent_on", "channel", "last_on", "last_kind", "records",
                          "sources", "findings", "fee")]
     for row in report["rows"]:

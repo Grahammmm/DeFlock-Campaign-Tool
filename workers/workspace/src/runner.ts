@@ -5,6 +5,7 @@ import { HEX64, nowIso, sha256Hex } from "@deflock/shared/ids";
 import { requireRunner } from "./auth.ts";
 import { ACTION_KINDS, JOB_KINDS, MAIL_CLASSIFICATIONS, Repo, type ActionKind, type JobCompletion, type JobKind } from "./db.ts";
 import type { Env } from "./env.ts";
+import { readinessError, type ReadinessSnapshot } from "./readiness.ts";
 
 type Vars = { repo: Repo };
 
@@ -14,6 +15,27 @@ runnerApi.use("*", async (c, next) => {
   requireRunner(c.req.raw, c.env);
   c.set("repo", new Repo(c.env.DB, c.env.CAMPAIGN_ID));
   await next();
+});
+
+runnerApi.post("/readiness", async (c) => {
+  const body: unknown = await c.req.json().catch(() => null);
+  const error = readinessError(body);
+  if (error) return c.json({ error }, 400);
+  const snapshot = body as ReadinessSnapshot;
+  if (snapshot.campaign_id !== c.env.CAMPAIGN_ID) return c.json({ error: "campaign_id" }, 400);
+  if (Date.parse(snapshot.generated_at) > Date.now() + 300_000) return c.json({ error: "generated_at" }, 400);
+  let stored: unknown;
+  try {
+    stored = await c.var.repo.setting("readiness_snapshot");
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    stored = null;
+  }
+  if (stored && !readinessError(stored) && Date.parse(snapshot.generated_at) < Date.parse((stored as ReadinessSnapshot).generated_at)) {
+    return c.json({ error: "generated_at: older than stored snapshot" }, 409);
+  }
+  await c.var.repo.putSetting("readiness_snapshot", snapshot);
+  return c.json({ ok: true });
 });
 
 function jobPayload(row: import("./db.ts").JobRow, campaign: { privacy_tier: string } | null) {
