@@ -267,6 +267,28 @@ roles into `private/reviewers.json`, keeping `added_on`; `finding reviewers list
 roster, `finding review` refuses an unlisted name or unassigned role and `review-status` lists
 `unrostered_receipts`; without one nothing changes. Names stay self-asserted: roles, not identity.
 
+### Declared interests (private)
+
+`finding reviewers add --directory D --name N --role R --interest-agency ID [--interest-agency ID ...]
+[--interest-note T]` records, in `private/reviewers.json`, the agencies the reviewer works for, is employed by
+or otherwise declares (0 to 20 known agency ids, each distinct). Supplied `--interest-agency` flags replace the
+list (never merge); with none the declaration is kept. `--interest-note` (1 to 200 characters, no control
+characters, kept verbatim) needs a declared agency and is stored only in that file: `reviewers add`, `reviewers
+list` and every refusal omit it. `--clear-interests` removes the agencies and the note and cannot be combined
+with either. A roster without interests reads and behaves as before.
+
+The roster is evaluated as it stands now. `finding review` and `review-payload` refuse every decision and signed
+receipt from a rostered reviewer whose declared agencies include the finding's `agency_id` or any
+`also_agency_ids` (exact ids; the first match is named), before anything is written: `reviewer has declared
+interest in agency ID; receipt refused`. Earlier receipts stay as written. `review-status` lists those from a
+reviewer who now declares a matching agency under `declared_interest` (reviewer, role, decision, time, agency
+ids; no note, rationale or hash), and `review_blockers` leaves their approvals out of the role and two-reviewer
+counts at every gate (status, ready, publish, `correct --from`). Challenges (reject, changes_requested) still
+block. Changing a declaration reclassifies earlier receipts either way; this is declared-interest exclusion, not
+proof of independence, and nothing is re-signed, withdrawn or rebuilt. Nothing about a reviewer's interests is
+published; `methods.html` carries only the generic sentence that reviewers declare interests and a declared
+interest excludes their review from that agency's findings.
+
 ## Publication gate (one check at every publishing path)
 
 `campaign_tool/publication_gate.py` holds one check, `assert_publishable(artefact_id, content_hash, approvals)`,
