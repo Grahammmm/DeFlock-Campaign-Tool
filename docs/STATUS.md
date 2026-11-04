@@ -70,7 +70,7 @@ Only items with no implementation in this repository.
 | Item | Evidence that it is not built |
 | --- | --- |
 | Binding the outbox to the Worker `send_request`/`send_followup` executors | They refuse with `sender_not_configured`: `workers/workspace/src/executors/types.ts` |
-| Social posting | `post_social` is `not_implemented`: `workers/workspace/src/views/screens.ts` |
+| Live social posting | `post_social` has one Mastodon adapter behind per-post approval, but no account is configured: `workers/workspace/src/executors/post_social.ts` |
 | Independently reviewed state-law packages | California ships `status: draft`: `jurisdictions/us-ca/package.json` |
 | Automatic Legistar polling from the Worker | The CLI import exists; the Worker only lists imported meetings: [MEETINGS.md](MEETINGS.md) |
 | Backup encryption, scheduling and hosted restore | `campaign_tool/backup.py` writes a plain tar by hand; encryption and storage are left to the operator |
