@@ -162,6 +162,14 @@ YYYY-MM-DD dates not after the build date, `updated_on` not before `asked_on`; `
 `content/agencies.json[n].asked[i].<field>`; `content-check` lists every such problem, one line each. Kit agencies
 never carry it. It is shown only on `agencies.html` (docs/AGENCY-CARDS.md), never exported to data or feeds.
 
+`agencies.html` opens with an "At a glance" table (`#at-a-glance`, labels `agencies.glance_*`): one row per agency in
+the list's own order, never sorted by any number, with no ranking, score or "best/worst" wording. Cells: cameras,
+searches in the last 30 days and retention days from the newest `profile.transparency` snapshot (each linked to its
+`source_url`, checked date shown), the posted `alpr_policy` ("posted", linked to the policy), `contract.end` linked
+to the contract source, and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0").
+A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
+No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
+
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
 also the `id` of the matching section in `sources.html`. Agencies without
@@ -382,13 +390,19 @@ repeated `from`, a chain or a loop; a withdrawn finding's path pointed at a diff
 
 ## Brand (`site.json.brand`, optional)
 Example: `{"logo": "logo.png", "logo_alt": "Cedar Valley Watch", "accent": "#b83d2c", "ink": "#092b2d", "favicon": "favicon.ico"}`.
-Every key is optional. `logo` (a PNG or WebP in `content/public-assets/`, plain names, no symlink, no image metadata,
+Every key is optional. `logo` (a PNG, WebP or SVG in `content/public-assets/`, plain names, no symlink, no image metadata,
 1-2000 px each side) shows inside the header's brand link with its own width and height; `logo_alt` (1-120 characters
-of plain text) is required with it. `favicon` (`.ico` or a metadata-free `.png`) adds `<link rel="icon">` to every
+of plain text) is required with it. `favicon` (`.ico`, a metadata-free `.png` or an `.svg`) adds `<link rel="icon">` to every
 page. `accent` and `ink` (`#rrggbb`, stored lowercase) append one `:root{--coral:…;--ink:…}` rule to `style.css` for
 the keys set. The build checks WCAG 2.x contrast of at least 4.5:1 for `ink` on cream (`#fff8ec`) and paper
-(`#f3eee4`) and `accent` on cream, and refuses with the field, the pair and the ratio. SVG logos and favicons are
-refused until the SVG safety check exists. A missing, misnamed, oversize or unreadable file, an unknown key or a bad
+(`#f3eee4`) and `accent` on cream, and refuses with the field, the pair and the ratio. A logo or favicon may also be
+an `.svg` that passes the same SVG safety check as any public asset (no `DOCTYPE`/entity, `script`, `foreignObject`,
+`on*` handler, link, `url()` or external reference; a refusal names the kinds, never the value). Its size is the
+root's numeric `width` and `height` (unitless or `px`), else the root `viewBox` (four numbers, width and height above
+zero, rounded to whole pixels); percent, `em`, other units or neither readable is refused as `unreadable SVG (no
+readable width and height)`. A logo is 1-2000 px each side as for PNG; it is always an `<img>` (never inline SVG)
+and an SVG favicon is `<link rel="icon" type="image/svg+xml">`. The CSP is unchanged (`img-src 'self'` covers it).
+A missing, misnamed, oversize or unreadable file, an unknown key or a bad
 colour is refused by field name (the value is never printed); `content-check` lists the same lines. Without `brand`
 every built file is byte-identical.
 

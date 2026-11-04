@@ -43,7 +43,8 @@ class CorrectionRequestTests(unittest.TestCase):
         return cr.decide(self.root, request_id, decision, on, note, today=today)
 
     def correct(self, day):
-        findings.correct(self.root, FID, day, "Fixed the quote.", now=datetime(2026, 3, 19, tzinfo=timezone.utc))
+        findings.correct(self.root, FID, day, "Fixed the quote.", now=datetime(2026, 3, 19, tzinfo=timezone.utc),
+                          approved_by="Pat Organizer")
 
     def snapshot(self):
         return {str(p.relative_to(self.private)): p.read_bytes() for p in sorted(self.private.rglob("*")) if p.is_file()}

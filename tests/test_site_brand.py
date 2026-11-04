@@ -10,7 +10,7 @@ import unittest
 import zlib
 from pathlib import Path
 
-from campaign_tool.content import NO_SVG, TEXT_BACKGROUNDS, ContentError, contrast, load_brand
+from campaign_tool.content import TEXT_BACKGROUNDS, ContentError, contrast, load_brand
 from campaign_tool.content_check import content_problems
 from campaign_tool.image_meta import PNG_SIGNATURE
 from campaign_tool.site import EXTRA_CSS, build_site
@@ -130,8 +130,8 @@ class BrandSite(unittest.TestCase):
         (self.assets / f"{HIDDEN_NAME}.jpg").write_bytes(b"\xff\xd8\xff\xd9")
         cases = {f"missing-{HIDDEN_NAME}.png": "file not found", f"{HIDDEN_NAME}.png": "symlink",
                  "linked/logo.png": "symlink", f"../{HIDDEN_NAME}.png": "plain file name", f"/{HIDDEN_NAME}.png": "plain file name",
-                 f"dir//{HIDDEN_NAME}.png": "plain file name", f"{HIDDEN_NAME}.jpg": "use a .png or .webp file",
-                 f"{HIDDEN_NAME}.gif": "use a .png or .webp file", f"{HIDDEN_NAME}-text.png": "image metadata (text)",
+                 f"dir//{HIDDEN_NAME}.png": "plain file name", f"{HIDDEN_NAME}.jpg": "use a .png, .webp or .svg file",
+                 f"{HIDDEN_NAME}.gif": "use a .png, .webp or .svg file", f"{HIDDEN_NAME}-text.png": "image metadata (text)",
                  f"{HIDDEN_NAME}-exif.png": "image metadata (EXIF)", 7: "plain file name"}
         for value, reason in cases.items():
             with self.subTest(value=value):
@@ -198,9 +198,84 @@ class BrandSite(unittest.TestCase):
         self.assertEqual(self.refused({"logo": "wide.png", "logo_alt": "Logo"}, ".logo"),
                          "site.json.brand.logo: 4000x40 px; each side must be 1-2000 px")
         self.assertIn("10x2001 px", self.refused({"logo": "tall.webp", "logo_alt": "Logo"}, ".logo"))
-        for name in ("sized.svg", "bare.svg"):
-            self.assertEqual(self.refused({"logo": name, "logo_alt": "Logo"}, ".logo"), "site.json.brand.logo: " + NO_SVG)
-            self.assertEqual(self.refused({"favicon": name}, ".favicon"), "site.json.brand.favicon: " + NO_SVG)
+
+    def svg_file(self, name, attrs="", body="", prefix=""):
+        data = f"{prefix}<svg xmlns='http://www.w3.org/2000/svg'{attrs}>{body}</svg>".encode()
+        (self.assets / name).write_bytes(data)
+        return data
+
+    # DF0137-16 1/2/6: clean SVG logo sized by width/height, else viewBox; SVG favicon gets its type, on every page
+    def test_svg_logo_and_favicon(self):
+        data = self.svg_file("wide.svg", " width='240' height='80'", "<rect width='4' height='4'/>")
+        self.svg_file("box.svg", " viewBox='0 0 512 128'")
+        self.svg_file("px.svg", " width='30px' height='20.4' viewBox='0 0 9 9'")
+        built = self.build({"logo": "wide.svg", "logo_alt": "Wide", "favicon": "box.svg"})
+        img = ('<a class="brand" href="/"><img class="brand-logo" src="/wide.svg" alt="Wide" '
+               'width="240" height="80">Cedar County Records Project</a>')
+        pages = [name for name in built if name.endswith(".html")]
+        self.assertGreater(len(pages), 5)
+        for name in pages:
+            self.assertIn(img.encode(), built[name], name)
+            self.assertIn(b'<link rel="icon" type="image/svg+xml" href="/box.svg">\n', built[name], name)
+        self.assertEqual(built["wide.svg"], data)
+        self.assertTrue(built["style.css"].decode().endswith(EXTRA_CSS + LOGO_RULE))
+        self.assertEqual(built["_headers"], self.build(None)["_headers"])  # the CSP is unchanged
+        self.assertIn(b'src="/box.svg" alt="Box" width="512" height="128">',
+                      self.build({"logo": "box.svg", "logo_alt": "Box"})["index.html"])
+        self.assertIn(b'src="/px.svg" alt="Px" width="30" height="20">',
+                      self.build({"logo": "px.svg", "logo_alt": "Px"})["index.html"])
+        built = self.build({"favicon": "favicon.ico"})  # non-SVG favicons keep the plain link
+        self.assertIn(b'<link rel="icon" href="/favicon.ico">\n', built["index.html"])
+        self.assertNotIn(b"image/svg+xml", built["index.html"])
+
+    # DF0137-16 2/3: no readable size -> refused by field; the viewBox wins over a percent or em width
+    def test_svg_size_sources(self):
+        for name, attrs in {"three.svg": " viewBox='0 0 512'", "negative.svg": " viewBox='0 0 -5 10'",
+                            "zero.svg": " viewBox='0 0 0 128'", "text.svg": " viewBox='0 0 wide high'",
+                            "none.svg": "", "percent.svg": " width='100%' height='50%'",
+                            "em.svg": " width='10em' height='4em'", "half.svg": " width='10'",
+                            "huge.svg": " width='1e999' height='5'"}.items():
+            self.svg_file(name, attrs)
+            for field, brand in ((".logo", {"logo": name, "logo_alt": "Logo"}), (".favicon", {"favicon": name})):
+                with self.subTest(name=name, field=field):
+                    self.assertEqual(self.refused(brand, field),
+                                     f"site.json.brand{field}: unreadable SVG (no readable width and height)")
+        self.svg_file("percent-box.svg", " width='100%' height='10em' viewBox='0 0 300 100'")
+        self.assertIn(b'width="300" height="100">', self.build({"logo": "percent-box.svg", "logo_alt": "Box"})["index.html"])
+
+    # DF0137-16 4: unsafe SVG -> refused naming the kinds; the value (a URL, a script) is never printed
+    def test_svg_safety_check(self):
+        url = "https://" + HIDDEN_NAME + ".example/x"
+        sized = " width='10' height='10'"
+        cases = {"script": ("<script>alert('" + HIDDEN_NAME + "')</script>", "", ""),
+                 "event handler": ("<rect onload='x()'/>", "", ""),
+                 "foreignObject": ("<foreignObject><div/></foreignObject>", "", ""),
+                 "external reference": (f"<image href='{url}'/>", "", ""),
+                 "DOCTYPE": ("", "", f"<!DOCTYPE svg [<!ENTITY {HIDDEN_NAME} 'x'>]>")}
+        for kind, (body, attrs, prefix) in cases.items():
+            self.svg_file("unsafe.svg", sized + attrs, body, prefix)
+            for field, brand in ((".logo", {"logo": "unsafe.svg", "logo_alt": "Logo"}), (".favicon", {"favicon": "unsafe.svg"})):
+                with self.subTest(kind=kind, field=field):
+                    self.assertEqual(self.refused(brand, field), f"site.json.brand{field}: SVG ({kind})")
+        (self.assets / "unsafe.svg").write_bytes(b"<svg width='1' height='1'><rect></svg>")
+        self.assertEqual(self.refused({"favicon": "unsafe.svg"}, ".favicon"), "site.json.brand.favicon: SVG (unreadable SVG)")
+
+    # DF0137-16 5: 2001 px side refused with the size; 2000 accepted; over 5 MiB refused as today
+    def test_svg_size_limits(self):
+        self.svg_file("edge.svg", " width='2000' height='1'")
+        self.assertIn(b'width="2000" height="1"', self.build({"logo": "edge.svg", "logo_alt": "Edge"})["index.html"])
+        shutil.rmtree(self.root / "public")
+        self.svg_file("tall.svg", " viewBox='0 0 10 2001'")
+        self.assertEqual(self.refused({"logo": "tall.svg", "logo_alt": "Logo"}, ".logo"),
+                         "site.json.brand.logo: 10x2001 px; each side must be 1-2000 px")
+        self.svg_file("tiny.svg", " viewBox='0 0 0.4 10'")
+        self.assertEqual(self.refused({"logo": "tiny.svg", "logo_alt": "Logo"}, ".logo"),
+                         "site.json.brand.logo: 0x10 px; each side must be 1-2000 px")
+        (self.assets / "big.svg").write_bytes(b"<svg width='1' height='1'>" + b" " * (5 * 1024 * 1024) + b"</svg>")
+        for field, brand in ((".logo", {"logo": "big.svg", "logo_alt": "Logo"}), (".favicon", {"favicon": "big.svg"})):
+            self.assertIn("file not found in content/public-assets/ or over 5 MiB", self.refused(brand, field))
+        os.symlink(self.assets / "edge.svg", self.assets / "link.svg")
+        self.assertIn("symlink", self.refused({"favicon": "link.svg"}, ".favicon"))
 
     # 3/7 for the favicon: missing, wrong suffix, metadata, unreadable
     def test_favicon_refusals(self):
@@ -208,8 +283,8 @@ class BrandSite(unittest.TestCase):
         shutil.rmtree(self.root / "public")
         (self.assets / f"{HIDDEN_NAME}-text.png").write_bytes(TEXT_PNG)
         (self.assets / "trunc.png").write_bytes(TRUNCATED_PNG)
-        for value, reason in ((f"{HIDDEN_NAME}.ico", "file not found"), (f"{HIDDEN_NAME}.gif", "use a .ico or .png file"),
-                              ("logo.webp", "use a .ico or .png file"), (f"{HIDDEN_NAME}-text.png", "image metadata (text)"),
+        for value, reason in ((f"{HIDDEN_NAME}.ico", "file not found"), (f"{HIDDEN_NAME}.gif", "use a .ico, .png or .svg file"),
+                              ("logo.webp", "use a .ico, .png or .svg file"), (f"{HIDDEN_NAME}-text.png", "image metadata (text)"),
                               ("trunc.png", "unreadable image")):
             with self.subTest(value=value):
                 self.assertIn(reason, self.refused({"favicon": value}, ".favicon"))
@@ -228,8 +303,12 @@ class BrandSite(unittest.TestCase):
         self.assertTrue(message.startswith("site.json.brand.accent: contrast "))
         self.assertEqual(load_brand({"logo": "absent.png", "logo_alt": "Logo"}),
                          {"logo": "absent.png", "logo_alt": "Logo", "logo_size": None})
-        with self.assertRaises(ContentError):
-            load_brand({"logo": "absent.svg", "logo_alt": "Logo"})
+        with self.assertRaises(ContentError) as caught:
+            load_brand({"logo": "absent.svg", "logo_alt": "Logo"}, self.assets)
+        self.assertEqual(str(caught.exception),
+                         "site.json.brand.logo: file not found in content/public-assets/ or over 5 MiB")
+        self.assertEqual(load_brand({"logo": "absent.svg", "logo_alt": "Logo"}),  # no assets_dir: everything but the file
+                         {"logo": "absent.svg", "logo_alt": "Logo", "logo_size": None})
 
     def refused_check(self, brand):
         self.write_brand(brand)
