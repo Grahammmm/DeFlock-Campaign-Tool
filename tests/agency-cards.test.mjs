@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 const config=JSON.parse(fs.readFileSync('examples/fictional-campaign/agency-cards.json','utf8'));
 const result=spawnSync('python3',['campaign_tool/agency_cards.py'],{input:JSON.stringify(config),encoding:'utf8'});
@@ -59,6 +61,44 @@ test('Flock transparency link shows only for a payload URL on the transparency h
   }
   const {context:d}=setup(false);d.CITIES.cedar.flockTransparencyUrl='https://transparency.flocksafety.com/example-pd';
   assert.doesNotThrow(()=>d.setCityText('cedar'));
+});
+
+// DF0137-14: a relabelled site without a map (the app.js picker path) shows organizer js.* labels, never the English.
+test('no-map relabelled site: county and city fixed facts come from js.* labels through site-data.js',()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'relabel-cards-'));
+  fs.cpSync('examples/fictional-campaign',root,{recursive:true,filter:p=>!p.includes(`${path.sep}public`)&&!p.includes(`${path.sep}content${path.sep}map`)});
+  const sitePath=path.join(root,'content','site.json'),site=JSON.parse(fs.readFileSync(sitePath,'utf8'));
+  site.county_profile.facts=[];fs.writeFileSync(sitePath,JSON.stringify(site));
+  const labels={'js.county_findings':'{count} hallazgo(s) publicado(s) con fuentes.','js.city_no_findings':'Sin hallazgos publicados.',
+    'js.agency_findings_zero':'Sin hallazgos', 'js.agency_findings_one':'{count} hallazgo publicado',
+    'js.agency_findings_many':'Hallazgos publicados: {count}'};
+  fs.writeFileSync(path.join(root,'content','labels.json'),JSON.stringify({schema_version:1,labels}));
+  const built=spawnSync('python3',['-B','-m','campaign_tool','build','--directory',root],{encoding:'utf8'});
+  assert.equal(built.status,0,built.stderr);
+  const pub=name=>fs.readFileSync(path.join(root,'public',name),'utf8');
+  assert.match(pub('app.js'),/Agency picker without a map/);
+  const scripts=['site-data.js','agency-cards.js','app.js'].map(pub).join('\n');
+  for(const english of ['published finding(s) with hashed sources','No published findings for this agency yet',
+    '"no published findings yet"','" published finding"'])
+    assert.equal(scripts.includes(english),false,english);
+  const nodes={};const node=id=>nodes[id]||(nodes[id]={classList:{toggle(){}},setAttribute(){}});
+  const context={document:{getElementById:node,querySelectorAll:()=>[],addEventListener(){}}};
+  vm.createContext(context);vm.runInContext(scripts,context);
+  context.chooseCity(null);
+  assert.match(nodes['city-facts'].innerHTML,/^<li>\d+ hallazgo\(s\) publicado\(s\) con fuentes\.<\/li>$/);
+  const bare=Object.keys(context.CITIES).filter(slug=>context.CITIES[slug].facts.join()==='Sin hallazgos publicados.');
+  assert.ok(bare.length>0);
+  context.chooseCity(bare[0]);
+  assert.equal(nodes['city-facts'].innerHTML,'<li>Sin hallazgos publicados.</li>');
+  const a=nodes['city-agency-link']=agencyLink('Página de agencia');
+  Object.defineProperty(a,'innerHTML',{set(){throw Error('Labels must use textContent');}});
+  for(const [n,expected] of [[0,'Sin hallazgos'],[1,'1 hallazgo publicado'],[2,'Hallazgos publicados: 2']]){
+    context.CITIES.labelled={...context.CITIES[bare[0]],agencyPage:'/agencies/labelled.html',findingCount:n};
+    context.chooseCity('labelled');
+    assert.equal(a.textContent,'Página de agencia \u00b7 '+expected);
+    assert.equal(a.hidden,false);
+  }
+  fs.rmSync(root,{recursive:true,force:true});
 });
 function agencyLink(label='Agency page'){
   const node={dataset:label===null?{}:{label},removeAttribute(name){delete this[name];}};

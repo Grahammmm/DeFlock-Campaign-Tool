@@ -65,7 +65,7 @@ def problems(config):
     return sorted(found)
 
 
-def render(config):
+def render(config, *, relabel=False):
     found = problems(config)
     if found:
         raise ValueError("; ".join(found))
@@ -84,6 +84,11 @@ def render(config):
         "SOURCE_LINK_LABEL": quote(label)
     }
     template = ASSET.read_text(encoding="utf-8")
+    if relabel:
+        template = template.replace(
+            'n===0?"no published findings yet":n+" published finding"+(n===1?"":"s")',
+            'String(LABELS[n===0?"js.agency_findings_zero":n===1?"js.agency_findings_one":'
+            '"js.agency_findings_many"]).replace(/\\{count\\}/g,String(n))')
     token = re.compile(r"\{\{([A-Z_]+)\}\}")
     if set(token.findall(template)) != set(tokens):
         raise ValueError("Agency-card template contract mismatch")

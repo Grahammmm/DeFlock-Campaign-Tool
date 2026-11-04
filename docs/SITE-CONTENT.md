@@ -375,15 +375,28 @@ every page is byte-identical to the English defaults in `campaign_tool/labels.py
 ```
 Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descriptions), `eyebrow.*`, `heading.*`,
 `intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
-`signup.*`, and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out keeps its English default.
+`signup.*`, `js.*` (scripts, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
+keeps its English default.
 Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds
 `<`, `>` or a control character; a `{placeholder}` the key's default does not use (only `{name}`, `{county}`,
-`{state}`, `{count}`, `{date}` exist) or an unpaired brace; another top-level field, `schema_version` other than 1, a
+`{state}`, `{count}`, `{date}` exist, plus `{shown}`/`{total}` in `js.filter_count` and `{evidence}`/`{source}` in
+`js.map_failed`/`js.data_failed`) or an unpaired brace; another top-level field, `schema_version` other than 1, a
 file over 64 KiB or a symlink. `content-check` names the same refusals, with the build's text, beside every other
 problem. Text is HTML-escaped once (`&`, `"`); `lang` still comes only from `site.json.language`.
+Scripts (`js.*`): the fixed text the generated JavaScript writes into the page. Defaults are the English the scripts
+always used. While every `js.*` label equals its default every script file is byte-identical; once one differs,
+`site-data.js` gains one line `var LABELS={...}` holding every `js.*` key (unset keys keep English), the findings index
+loads `/site-data.js` before `/findings/filter.js`, and the scripts read `LABELS` (placeholders filled through
+`textContent`; popup text through the map's escaper; never raw HTML). Keys: `js.filter_count` ("Showing {shown} of
+{total}", findings filter); `js.mapped_point`/`js.mapped_points` (map selection count); `js.map_failed` with
+`js.map_evidence`/`js.map_source` (map could not load; the two link texts fill `{evidence}`/`{source}`);
+`js.data_failed` with `js.data_source` (camera data could not load); `js.popup_title`, `js.popup_no_manufacturer`,
+`js.popup_no_operator`, `js.popup_source` (point popup); `js.county_findings`/`js.county_no_findings` (county card
+facts when site.json lists none); `js.city_points_one`/`js.city_points_many`, `js.city_no_findings` (agency cards);
+`js.group_vendor`, `js.group_status`, `js.group_summary` (`{name}` is the map's group label), `js.group_fact`,
+`js.group_open`, `js.group_flag` (the unconfirmed-ownership group card).
 Stays English by design: the starter page, `feed.xml`/agency feeds, `sitemap.xml`, `robots.txt`, `_headers`,
-`data/findings.json`, all JavaScript (`site-data.js`, `agency-cards.js`, `app.js`, `findings/filter.js`, which
-rewrites the "Showing N of M" count), and text from shared modules: the source sentence and provenance explainer
+`data/findings.json`, and text from shared modules: the source sentence and provenance explainer
 (`provenance_text.py`) and the corrections policy (`corrections_policy.py`). Content-supplied text is never touched.
 
 ## Redirects (`content/redirects.json`, optional)
