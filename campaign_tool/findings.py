@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import unicodedata
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 try:
     import fcntl
@@ -685,6 +686,91 @@ def new_draft(root, agency_id, title, source_prefixes, author=None, now=None):
         raise ValueError(f"--agency {agency_id!r} is not one of the campaign's agencies")
     sources = _resolve_sources(root, list(source_prefixes or []))
     author = EDIT + "who wrote this finding]" if author is None else _text("author", author, 120)
+    return _write_draft(root, _skeleton(title, slug, agency_id, author, sources))
+
+
+GAP_KINDS = ("denied", "closed")  # the answers that can leave an information gap
+
+
+def _plain_basis(text):
+    """The agency's stated basis as one plain-text line: angle brackets become single guillemets (the finding
+    loader refuses < and >), and any run of whitespace or control characters becomes one space."""
+    text = text.replace("<", "\u2039").replace(">", "\u203a")
+    return " ".join("".join(" " if unicodedata.category(ch).startswith("C") or ch.isspace() else ch
+                            for ch in text).split())
+
+
+def new_gap_draft(root, agency_id, request="main", title=None, author=None, now=None):
+    """Write an information_gap draft from a denied or closed request that produced no records (facts only).
+
+    Returns {"id", "written", "blockers"}: ``blockers`` lists the 12-hex prefixes of the request's
+    correspondence records that are not in content/sources.json (the draft is written without them).
+    """
+    from . import kit_track  # local import: kit_track imports kit and law, which findings does not need
+    root = Path(root)
+    request = kit_track._request(request)
+    entry = kit_track.read_sent(root).get(kit_track._key(agency_id, request)) if "#" not in agency_id else None
+    if entry is None and request != "main":
+        raise ValueError(f"no sent request {agency_id}/{request}; run kit-sent --request {request} first")
+    if entry is None:
+        raise ValueError(f"no hand-sent request recorded for {agency_id}; run kit-sent first")
+    label = kit_track._label(agency_id, request)
+    steps = entry["steps"]
+    if not all(isinstance(s, dict) and s.get("kind") in kit_track.KINDS and kit_track._day(s.get("on"))
+               and kit_track._step_records(s) == s.get("records", []) and kit_track._steps_corr_ok(s)
+               for s in steps):
+        raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
+    if any(kit_track._step_records(s) for s in steps):
+        raise ValueError(f"request {label} produced records; a gap draft needs none (write a regular finding)")
+    if not steps or steps[-1]["kind"] not in GAP_KINDS:
+        raise ValueError(f"request {label} is still open")
+    names = {agency["agency_id"]: agency["name"] for agency in _known_agencies(root)}
+    if agency_id not in names:
+        raise ValueError(f"--gap {agency_id!r} is not one of the campaign's agencies")
+    title = EDIT + f"title] (records request to {names[agency_id]})" if title is None else _text("title", title, 200)
+    if not content.plain_text(title):
+        raise ValueError("--title must be plain text without angle brackets")
+    slug = _draft_slug(title)
+    last = steps[-1]
+    facts = [f"Request sent {entry['sent_on']} by {entry['channel']}. Agency answer: {last['kind']} on {last['on']}."]
+    facts += [f"Stated basis (as written by the agency): {_plain_basis(item['basis'])}"
+              for item in kit_track._bases(steps) if isinstance(item["basis"], str) and item["basis"].strip()]
+    letters = list(dict.fromkeys([*entry.get("correspondence", []),
+                                  *(h for s in steps for h in s.get("correspondence", []))]))
+    library = {record["sha256"] for record in _library(root)[1]} if letters else set()
+    present = [h for h in letters if h in library]
+    missing = [h for h in letters if h not in library]
+    try:
+        sources = _resolve_sources(root, present)
+    except ValueError as exc:
+        raise ValueError(str(exc).replace("--source ", "correspondence ")) from None
+    draft = _skeleton(title, slug, agency_id, EDIT + "who wrote this finding]" if author is None
+                      else _text("author", author, 120), sources)
+    draft["classification"], draft["event_date"] = "information_gap", last["on"]
+    draft["body_md"] = "\n".join(facts) + "\n\n" + draft["body_md"]
+    if missing:
+        draft["limitations"].append(EDIT + "add these sources before review: "
+                                    + ", ".join(h[:PREFIX] for h in missing) + "]")
+    written = _write_draft(root, draft)
+    return {**written, "blockers": [h[:PREFIX] for h in missing]}
+
+
+def _skeleton(title, slug, agency_id, author, sources):
+    """The draft every `finding new` form starts from: only the title, slug, agency, author and sources are filled."""
+    return {"title": title, "slug": slug, "agency_id": agency_id, "state": "draft", "published_at": None,
+            "corrections": [], "author": author,
+            "classification": EDIT + "one of " + ", ".join(sorted(CLASSIFICATIONS)) + "]",
+            "confidence": EDIT + "one of " + ", ".join(content.CONFIDENCE) + "]",
+            "event_date": EDIT + "YYYY-MM-DD of the event the records show]",
+            "summary": EDIT + "one or two plain sentences stating what the records show]",
+            "body_md": EDIT + "the finding in full, citing each source by its locator]",
+            "limitations": [EDIT + "what these records cannot show]"],
+            "counterevidence": [EDIT + "records or statements that point the other way, or 'None found.']"],
+            "sources": sources}
+
+
+def _write_draft(root, draft):
+    """Write ``draft`` as a new private/drafts/fnd_<12 hex>.json (0600, O_EXCL, never overwrites)."""
     folders = (root / "private", root / "private" / "drafts")
     for folder in folders:
         _real_dir(folder)  # a symlink or a file refuses before anything is written
@@ -692,16 +778,6 @@ def new_draft(root, agency_id, title, source_prefixes, author=None, now=None):
         if not os.path.lexists(folder):
             folder.mkdir(mode=0o700)
             os.chmod(folder, 0o700)
-    draft = {"title": title, "slug": slug, "agency_id": agency_id, "state": "draft", "published_at": None,
-             "corrections": [], "author": author,
-             "classification": EDIT + "one of " + ", ".join(sorted(CLASSIFICATIONS)) + "]",
-             "confidence": EDIT + "one of " + ", ".join(content.CONFIDENCE) + "]",
-             "event_date": EDIT + "YYYY-MM-DD of the event the records show]",
-             "summary": EDIT + "one or two plain sentences stating what the records show]",
-             "body_md": EDIT + "the finding in full, citing each source by its locator]",
-             "limitations": [EDIT + "what these records cannot show]"],
-             "counterevidence": [EDIT + "records or statements that point the other way, or 'None found.']"],
-             "sources": sources}
     for _ in range(DRAFT_ATTEMPTS):
         draft["id"] = "fnd_" + secrets.token_hex(6)
         path = folders[1] / (draft["id"] + ".json")

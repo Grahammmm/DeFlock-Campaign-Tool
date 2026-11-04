@@ -9,7 +9,7 @@ from . import kit_track
 
 HEADER = ("agency_id", "name", "sent_on", "channel", "provisional_determination_due", "provisional_with_extension",
           "extended", "closed", "steps", "last_step_on", "last_step_kind", "linked_records",
-          "draft_changed_since_sent", "fee_estimate", "fee_state", "fee_paid")
+          "draft_changed_since_sent", "fee_estimate", "fee_state", "fee_paid", "request_url")
 FORMULA_START = ("=", "+", "-", "@", "\t", "\r")  # a spreadsheet would run these as a formula
 
 
@@ -23,7 +23,8 @@ def _cells(row):
     return [_cell(value) for value in (
         row["agency_id"], row["name"], row["sent_on"], row["channel"], row["determination_due"],
         row["with_extension"], row["extended"], row["closed"], row["steps"], step.get("on"), step.get("kind"),
-        row["records"], row["draft_changed_since_sent"], row["fee_estimate"], row["fee_state"], row["fee_paid"])]
+        row["records"], row["draft_changed_since_sent"], row["fee_estimate"], row["fee_state"], row["fee_paid"],
+        row.get("request_url"))]
 
 
 def _target(root, out):
