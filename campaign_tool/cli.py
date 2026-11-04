@@ -997,6 +997,12 @@ def main():
     muckrock_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     muckrock_p.add_argument("--apply", action="store_true", help="Record the step (default: dry run, nothing written)")
     muckrock_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
+    import_p = commands.add_parser("kit-response-import", help="Record a transcribed portal or letter timeline (CSV) as "
+                                   "kit-response steps in one checked write; fetches and sends nothing")
+    for flag in ("--directory", "--agency", "--csv"):
+        import_p.add_argument(flag, required=True)
+    import_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    import_p.add_argument("--apply", action="store_true", help="Record every row (default: check only, nothing written)")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -1491,6 +1497,12 @@ def main():
             print(f"Read only from {args.from_json}. Nothing was fetched or sent.")
             if result.get("refusal"):
                 raise ValueError(result["refusal"])
+        elif args.command == "kit-response-import":
+            from .kit_import_steps import import_steps, render
+            result = import_steps(root, args.agency, Path(args.csv).expanduser(), request=args.request, apply=args.apply)
+            print(render(result))
+            print("Recorded only. Nothing was fetched or sent." if result["applied"] else
+                  "Checked only; nothing was written, fetched or sent.")
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
             kit_check_cli(root, as_json=args.as_json)
