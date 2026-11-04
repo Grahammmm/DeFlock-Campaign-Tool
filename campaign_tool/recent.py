@@ -5,11 +5,14 @@ withdrawn, and meetings held and their recorded outcomes, each with its stored d
 Only dates that are stored in a campaign file are used (never file times); an event without one is counted, not listed.
 Shows agency names, finding titles and 12-character record prefixes only: never request text, addresses, notes,
 reviewer names or full hashes. The only write is an explicit new ``--md`` file. Nothing is sent or published.
+A linked or non-directory input folder (``INPUT_DIRECTORIES``) is refused before anything is collected or written;
+a missing folder stays an empty input.
 """
 import json
 import os
 import re
 import shlex
+import stat
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -18,6 +21,8 @@ from .content import _read_json, load_meeting, load_sources
 
 AREAS = ("Requests", "Records", "Findings", "Meetings")
 MAX_DAYS, PREFIX_CHARS, PREFIXES_SHOWN, TEXT_CHARS = 366, 12, 8, 120
+INPUT_DIRECTORIES = ("kit", "content", "private", "content/findings", "content/meetings", "private/drafts",
+                     "private/withdrawn", "private/reviews")
 _DAY = re.compile(r"\d{4}-\d\d-\d\d")
 _MARKDOWN = re.compile(r"([\\`*_{}\[\]<>()#+!|~])")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
@@ -245,10 +250,32 @@ def _meetings(root, sink, today):
                 sink.add("Meetings", day, f"Outcome recorded for {body} ({ident}): {outcome['result']}", command)
 
 
+def _validate_input_directories(root):
+    """Refuse a linked or non-directory input folder before any event is collected (ValueError, exit 1).
+
+    Only the ``INPUT_DIRECTORIES`` allowlist is inspected, parents before children, without following links; a missing
+    folder is a valid empty input. Nothing below a refused folder is listed or opened, and the message never carries
+    a link target, a path outside the campaign or an OS error text.
+    """
+    for relative in INPUT_DIRECTORIES:
+        try:
+            info = os.lstat(Path(root) / relative)
+        except FileNotFoundError:
+            continue
+        except NotADirectoryError:  # a parent that is not a directory hides this entry
+            continue
+        except OSError:
+            raise ValueError(f"recent: {relative}/ cannot be inspected") from None
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"recent: {relative}/ must be a real directory, not a symlink or file")
+
+
 def collect(root, since, until, today=None):
-    """(events, undated, problems) for the inclusive window; reads only. Raises ``UsageError`` for a bad window."""
+    """(events, undated, problems) for the inclusive window; reads only. Raises ``UsageError`` for a bad window,
+    ``ValueError`` for a linked or non-directory input folder."""
     root, today = Path(root), _today() if today is None else today
     first, last = window(since, until, today)
+    _validate_input_directories(root)
     sink = _Sink(first, last)
     directory = shlex.quote(str(root))
     for read in (lambda: _requests(root, sink, directory), lambda: _records(root, sink, directory),

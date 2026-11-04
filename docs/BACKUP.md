@@ -24,6 +24,20 @@ Symlinks, `public/` (rebuildable), `.env` and anything else are never archived. 
 to overwrite an existing path and refuses a stored object whose bytes do not match its
 hash-named file (`intake integrity problem`), leaving nothing behind on failure.
 
+A plain archive (local or hosted) is built in a private sibling staging directory
+(`.deflock-archive-*`, mode 0700, payload `archive.partial`, mode 0600) in the same folder as the
+requested file, never under the requested name. Only after the complete archive passes the manifest,
+byte-hash and metadata-closure verification is it published under its final name with a same-filesystem
+hard link, which never replaces anything: if a file or link appears at that name first, export stops with
+`archive appeared before publication; choose a new file name` and the other file is untouched. A
+filesystem without hard links stops the export (no copy fallback). Ordinary failure, Ctrl-C and `SystemExit` remove the
+staging directory and leave nothing under the final name. A process killed abruptly (for example SIGKILL
+or a crash) before publication may leave its private `.deflock-archive-*` directory behind but never a
+partial archive under the requested name; it is not an archive and not a retention candidate, and nothing
+removes it automatically. After publication the final file is complete. This is process-crash safety, not a
+promise about power loss or a stronger snapshot of changing source files. Encrypted exports keep their own
+publication path.
+
 The ledger snapshot is taken before file enumeration. Every object referenced by
 that snapshot must have an archived original with the same SHA-256 and byte count;
 every receipt must reference an object in the snapshot. Missing originals, dangling
@@ -217,7 +231,9 @@ made it: encryption does not authenticate origin, so keep the digest from `backu
 (`.tar.gpg` when encrypting) and prints one line, `backup ok: NAME encrypted|UNENCRYPTED files=N bytes=B manifest_sha256=HEX`;
 a failure prints one `backup failed: ...` line on stderr and exits 1, leaving no partial archive. `DIR` must exist, be a
 real folder (not a link) and not be group- or other-writable. It never overwrites; `DIR/.deflock-backup.lock` stops
-overlapping runs (remove it by hand only after a crash). The key is `--encrypt-to`, else `"backup": {"encrypt_to":
+overlapping runs. After an abrupt stop (killed process, crash, power loss) the lock stays and is never removed
+automatically: first make sure no backup is running, then remove the lock and any leftover `.deflock-archive-*` directory by hand;
+neither is a finished archive. The key is `--encrypt-to`, else `"backup": {"encrypt_to":
 "organizer.asc"}` in `campaign.json` (relative to the campaign folder); with neither the line says `UNENCRYPTED`.
 
 User timer, two files in `~/.config/systemd/user/`

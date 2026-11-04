@@ -30,3 +30,14 @@ overwritten) or when its folder is missing. **`--json`** prints the events as a 
 
 **Unreadable files.** A file that cannot be read (for example a corrupt `kit/sent.json`) becomes one line in its area
 (`kit/sent.json unreadable`); the rest of the report is still printed and the exit code is 3.
+
+**Unsafe input folders.** Before anything is collected, `recent` checks these campaign folders, parents first, without
+following links: `kit/`, `content/`, `private/`, `content/findings/`, `content/meetings/`, `private/drafts/`,
+`private/withdrawn/` and `private/reviews/`. A folder that is missing is simply empty. One that exists must be a real
+folder: a symlink (even one that points inside the campaign, or dangles) or a regular file stops the run with
+`Stopped: recent: <folder>/ must be a real directory, not a symlink or file` (or `cannot be inspected`), exit code 1,
+no report on stdout and no `--md` file. This differs from an unreadable file above (exit 3, partial report). Nothing
+below a refused folder is read, and the message never shows where a link points. Replace the link with a real campaign
+folder yourself (an attended local copy or restore); `recent` never copies, unlinks, follows or repairs anything. The
+campaign folder you select may itself be reached through a link; only the folders listed above are checked. The check
+covers the folders as they are when the command starts, not a concurrent swap.
