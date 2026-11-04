@@ -1022,6 +1022,10 @@ def main():
     response_p.add_argument("--withheld-basis", action="append", default=[], metavar="TEXT",
                             help="denied or produced only, repeatable (at most 5): the agency's own stated reason or "
                             "code section, as written (1-200 chars, no control characters; never record contents)")
+    response_p.add_argument("--download-expires-on", metavar="YYYY-MM-DD", help="produced only: the date the agency says "
+                            "its download link expires (not before --date). Only the date is kept; the link itself is "
+                            "never stored or fetched. The production stays 'download pending' until records are "
+                            "linked with a later produced --record step")
     response_p.add_argument("--scope", action="append", default=[], metavar="ID",
                             help="repeatable, with --disposition: a law-package scope this request asked for that the "
                             "agency's answer covers (not on acknowledged, extension, clarification or fee_estimate steps)")
@@ -1602,6 +1606,8 @@ def main():
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
                 if row["fee_state"] == "unpaid":
                     print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
+                for item in row.get("downloads_pending", ()):
+                    print(f"{label}: {item['line']}", file=sys.stderr)
                 if row["channel"] == "portal" and row.get("request_url"):
                     print(f"{label}: Portal request: {row['request_url']}", file=sys.stderr)
         elif args.command == "kit-fees":
@@ -1629,7 +1635,8 @@ def main():
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
-            if report["past_due"] + report["stated_date_passed"] + report["installment_passed"]:
+            if report["past_due"] + report["stated_date_passed"] + report["installment_passed"] \
+                    + report.get("download_expired", 0):
                 sys.exit(3)
         elif args.command == "kit-calendar":
             from .kit_calendar import calendar
@@ -1645,7 +1652,7 @@ def main():
                                          reference=args.reference, replace_reference=args.replace_reference,
                                          partial=args.partial, correspondence=args.correspondence,
                                          withheld_basis=args.withheld_basis, scope_ids=args.scope,
-                                         disposition=args.disposition),
+                                         disposition=args.disposition, download_expires_on=args.download_expires_on),
                              indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-withheld":
