@@ -829,13 +829,14 @@ class OutboxFeeTests(unittest.TestCase):
             seen.append(kwargs["campaign_fee_cap_cents"])
             return real(*args, **kwargs)
 
-        for token, value in (("0", 0), ("007", 7), ("9223372036854775807", MAX_FEE), ("000000000000000000000000005", 5)):
+        for token, value in (("0", 0), ("007", 7), ("9223372036854775807", MAX_FEE), ("000000000000000000000000005", 5),
+                             ("0" * 5000, 0), ("0" * 5000 + "7", 7)):
             with unittest.mock.patch.object(ob, "Outbox", spy):
                 code, out, err = self.run_main("--journal", str(Path(self.tmp.name) / f"ok{self.n}" / "outbox.sqlite"),
                                                "--fee-cap-cents", token, "list")
             self.n += 1
             self.assertEqual((code, err), (0, ""))
-        self.assertEqual(seen, [0, 7, MAX_FEE, 5])
+        self.assertEqual(seen, [0, 7, MAX_FEE, 5, 0, 7])
         code, out, err = self.run_main("--journal", str(Path(self.tmp.name) / "default" / "outbox.sqlite"), "list")
         self.assertEqual(code, 0)
 

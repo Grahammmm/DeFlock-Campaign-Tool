@@ -122,10 +122,10 @@ def _fee_cents_arg(text):
     message = f"campaign fee cap must be an integer between 0 and {MAX_FEE_CENTS}"
     if not text or not text.isascii() or not text.isdigit():
         raise argparse.ArgumentTypeError(message)
-    try:
-        value = int(text)
-    except ValueError:  # beyond the interpreter's digit-count limit
-        raise argparse.ArgumentTypeError(message) from None
+    digits = text.lstrip("0") or "0"
+    if len(digits) > len(str(MAX_FEE_CENTS)):
+        raise argparse.ArgumentTypeError(message)
+    value = int(digits)
     if value > MAX_FEE_CENTS:
         raise argparse.ArgumentTypeError(message)
     return value
