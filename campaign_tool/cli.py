@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import fixes, registry
+from .agency_actions import ACTION_KINDS
 from .supporters import HOWS as SUPPORTER_HOWS, KINDS as SUPPORTER_KINDS
 
 MAX_BYTES = 50 * 1024 * 1024
@@ -1201,6 +1202,22 @@ def main():
     strip_p.add_argument("file")
     strip_p.add_argument("--out", default=None, help="Default <stem>.clean<suffix> beside FILE; never overwritten")
     strip_p.set_defaults(directory=".")
+    action_cmds = content_cmds.add_parser(
+        "agency-action", help="Record or remove an action an agency took outside a meeting, as its official source states it "
+        "(content/agency-actions.json only; nothing is built, sent or deployed)").add_subparsers(
+        dest="agency_action_command", required=True)
+    action_add = action_cmds.add_parser("add", help="Append one organizer-verified action; refuses a duplicate agency, date, kind and source")
+    for flag, text in (("--directory", "Campaign directory (required)"), ("--agency", "Agency id from the loaded agencies"),
+                       ("--on", "YYYY-MM-DD the action took effect"),
+                       ("--as-stated", "1-200 plain-text characters exactly as the official source states it"),
+                       ("--source-url", "https:// address of that official source (recorded, never fetched)"),
+                       ("--checked-on", "YYYY-MM-DD you checked the source (not before --on, not in the future)")):
+        action_add.add_argument(flag, required=True, help=text)
+    action_add.add_argument("--kind", required=True, choices=ACTION_KINDS, help="What kind of action it was")
+    action_remove = action_cmds.add_parser("remove", help="Remove one action by its 1-based position in the agency's stored order")
+    action_remove.add_argument("--directory", required=True, help="Campaign directory (required)")
+    action_remove.add_argument("--agency", required=True)
+    action_remove.add_argument("--index", required=True, help="1-based position among that agency's actions in the file, not the page order")
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
     review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
@@ -1706,6 +1723,18 @@ def main():
         elif args.command == "content" and args.content_command == "strip-metadata":
             from .image_meta import strip_file
             print(json.dumps(strip_file(args.file, args.out), indent=2))
+        elif args.command == "content" and args.content_command == "agency-action":
+            from . import agency_actions
+            if args.agency_action_command == "add":
+                done = agency_actions.add_action(root, args.agency, on=args.on, kind=args.kind, as_stated=args.as_stated,
+                                                 source_url=args.source_url, checked_on=args.checked_on)
+                for note in done["notes"]:  # alert-only legal-claim notes: stderr, never the supplied text, exit unchanged
+                    print(note, file=sys.stderr)
+                print(f"Agency action added: {done['agency_id']}, index {done['index']}.")
+            else:
+                done = agency_actions.remove_action(root, args.agency, agency_actions.parse_index(args.index))
+                print(f"Agency action removed: {done['agency_id']}, index {done['index']}.")
+            print("Content only; nothing was built, sent or deployed.")
         elif args.command == "content":
             from .content_init import init_content
             print(json.dumps(init_content(root, args.source_campaign), indent=2))
