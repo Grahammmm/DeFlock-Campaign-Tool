@@ -348,3 +348,10 @@ def write_weights(root, out, record):
         os.unlink(target)  # the file this call created with O_EXCL
         raise
     return target
+
+
+def check_data_catalogue(public):
+    """DF2207-12: raise ``ContentError`` with sorted ``path: reason`` diagnostics when ``data.html`` or
+    ``data/datapackage.json`` is missing, malformed or disagrees with a listed file's current size or SHA-256."""
+    from .site_data_catalogue import check_data_catalogue as check
+    check(public)
