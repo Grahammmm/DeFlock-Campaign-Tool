@@ -749,6 +749,41 @@ person. The two files are replaced one after the other with a rollback on an ord
 until the saved pair of files is restored. There is no crash-atomic transaction and no concurrent writer support; run
 one writer. Evidence originals are never deleted.
 
+## Regular meeting schedules (`content/body-schedules.json`, optional)
+
+A source-backed rule for when a body usually meets, for bodies with or without a Legistar feed. Organizers write it by
+hand from the body's own calendar page and re-check it; the tool never fetches it. Exactly:
+
+```json
+{"schema_version": 1, "schedules": [{"body": "Synthetic Council", "weekday": "tuesday", "ordinals": [1, 3, "last"],
+  "local_start_time": "18:30", "time_zone": "America/Los_Angeles", "source_url": "https://example.invalid/calendar",
+  "checked_on": "2026-11-01"}]}
+```
+
+- 0 to 100 rows, every key required, no others. `body` is written exactly as the staged meetings name it (1 to 200
+  plain-text characters, exact case and spacing, no leading or trailing space, newline or tab; never matched by agency,
+  fuzzy name or case) and may appear once. A body need not have a staged meeting yet.
+- `weekday`: `monday` to `sunday`. `ordinals`: unique, from `1`, `2`, `3`, `4` or `"last"` (never 5); `last` is the final
+  such weekday of the month and may coincide with `4`. `local_start_time`: `HH:MM`, 00:00 to 23:59.
+- `time_zone` is the IANA zone the body's meetings use (the organizer supplies it; staged meetings store only a UTC
+  offset). It decides which local calendar day a staged meeting is on, across daylight saving. Only dates are
+  calculated: no time of day is ever turned into a scheduled timestamp.
+- `source_url`: https, at most 500 characters. `checked_on`: a real `YYYY-MM-DD` date, not in the future. An unknown
+  weekday, an ordinal outside 1-4 or `last`, a duplicate body, an unknown zone or any other malformed row is refused by
+  `build` and named by `content-check` (field by field); invalid rows are never skipped. A symlink is refused.
+- A schedule checked more than 365 days ago (exactly 365 is fresh) is stale: `meetings.html` adds `Stale schedule:
+  re-check the source` and `today` lists a `stale_body_schedule` item.
+- `meetings.html` shows, once per body and sorted by body, `Usually meets: first and third Tuesday at 18:30
+  (America/Los_Angeles) (source, checked DATE)`. Labels: `schedule.usually`, `schedule.stale`, `schedule.rule`,
+  `schedule.ordinal_1` to `_4` and `_last`, `schedule.weekday_<day>`, `schedule.join_two`, `schedule.join_many`
+  (Spanish drafts in `examples/labels/es.json`, unreviewed). There is no new public JSON, calendar feed, sitemap entry
+  or meeting model; with no file every page is byte-identical.
+- `today` lists, for each body, an `expected_regular_meeting` item for each of the next two regular dates (today
+  included) on which no meeting of exactly that body is staged: `Expected BODY meeting D: watch for the agenda`. A staged
+  meeting of any status, including a cancelled one, answers the question for its local date. This is a prompt to check
+  the official agenda, never a claim that a meeting is scheduled, late or overdue. Holidays, special meetings and
+  skipped sessions stay unknown until a verified meeting is staged. Nothing is said about agenda posting deadlines.
+
 ## Generated pages and files
 
 `index.html` (hero map when configured, agency cards, mission, latest findings,
@@ -968,7 +1003,7 @@ every page is byte-identical to the English defaults in `campaign_tool/labels.py
 ```
 Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descriptions), `eyebrow.*`, `heading.*`,
 `intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
-`signup.*`, `glossary.*`, `js.*` (scripts, below), `handout.*` (the private meeting-pack handout, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
+`signup.*`, `glossary.*`, `schedule.*`, `js.*` (scripts, below), `handout.*` (the private meeting-pack handout, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
 keeps its English default.
 A complete Spanish draft of every key is in [`examples/labels/es.json`](../examples/labels/es.json) ([README](../examples/labels/README.md)).
 Machine-made draft. A fluent Spanish reader must check every line before a campaign uses it; nothing here is reviewed.

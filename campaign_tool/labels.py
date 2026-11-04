@@ -127,9 +127,21 @@ DEFAULTS = {
     "meeting.continued_to": "Continued to {date}", "meeting.continued_from": "Continued from {date}",
     "meeting.cosigned_one": "Co-signed by {count} organization", "meeting.cosigned_many": "Co-signed by {count} organizations",
     "meeting.staff_direction": "Staff were directed to: {direction} (by {date}, as stated in {source})",
+
+    "schedule.usually": "Usually meets: {rule} ({source}, checked {date})",
+    "schedule.stale": "Stale schedule: re-check the source",
+    "schedule.ordinal_1": "first", "schedule.ordinal_2": "second", "schedule.ordinal_3": "third",
+    "schedule.ordinal_4": "fourth", "schedule.ordinal_last": "last",
+    "schedule.weekday_monday": "Monday", "schedule.weekday_tuesday": "Tuesday", "schedule.weekday_wednesday": "Wednesday",
+    "schedule.weekday_thursday": "Thursday", "schedule.weekday_friday": "Friday", "schedule.weekday_saturday": "Saturday",
+    "schedule.weekday_sunday": "Sunday",
+    "schedule.rule": "{ordinals} {weekday} at {time} ({zone})",
+    "schedule.join_two": "{first} and {last}", "schedule.join_many": "{prefix}, and {last}",
+
     "meeting.comments_both": "{spoke} people spoke and {written} written comments were received, as stated in {source}",
     "meeting.comments_spoke": "{spoke} people spoke, as stated in {source}",
     "meeting.comments_written": "{written} written comments were received, as stated in {source}",
+
     "vote.absent": "Absent", "vote.recused": "Recused",
     "agency.votes_heading": "How members voted", "agency.votes_none": "No recorded vote",
     "agency.votes_source": "Official record", "agency.votes_more": "\u2026 and {count} earlier votes on the meeting pages",
