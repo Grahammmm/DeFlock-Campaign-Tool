@@ -861,10 +861,13 @@ def main():
             agency_p.add_argument("--kind", required=True, help="sheriff, police, chp, county_board, city_council, "
                                   "district_attorney or other")
             agency_p.add_argument("--note", default=None, help="Up to 300 characters")
+    from .kit_track import CHANNELS as kit_track_channels
     sent_p = commands.add_parser("kit-sent", help="Record a request the organizer sent by hand in kit/sent.json; sends nothing")
     for flag in ("--directory", "--agency", "--date"):
         sent_p.add_argument(flag, required=True)
-    sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail"))
+    sent_p.add_argument("--channel", required=True, choices=kit_track_channels)
+    sent_p.add_argument("--request-url", metavar="URL", help="With --channel muckrock only: the https://www.muckrock.com/foi/ "
+                        "page of the request you filed there (recorded, never fetched)")
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     sent_p.add_argument("--request", default="main", help="Name of a further request to this agency, drafted in "
                         "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
@@ -918,6 +921,13 @@ def main():
     response_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     response_p.add_argument("--partial", action="store_true", help="produced only: part of the records; the request "
                             "stays open (--expected-on: the agency's next installment date)")
+    muckrock_p = commands.add_parser("kit-muckrock-import", help="Propose the kit-response step a MuckRock request JSON you "
+                                     "saved by hand implies; fetches and sends nothing")
+    for flag in ("--directory", "--agency", "--from-json"):
+        muckrock_p.add_argument(flag, required=True)
+    muckrock_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    muckrock_p.add_argument("--apply", action="store_true", help="Record the step (default: dry run, nothing written)")
+    muckrock_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -1296,8 +1306,15 @@ def main():
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
                                          replace=args.replace, reference=args.reference,
                                          replace_reference=args.replace_reference,
-                                         correspondence=args.correspondence), indent=2))
+                                         correspondence=args.correspondence, request_url=args.request_url), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-muckrock-import":
+            from .kit_muckrock import render, run as muckrock_run
+            result = muckrock_run(root, args.agency, Path(args.from_json).expanduser(), args.request, args.apply)
+            print(json.dumps(result, indent=2) if args.as_json else render(result))
+            print(f"Read only from {args.from_json}. Nothing was fetched or sent.")
+            if result.get("refusal"):
+                raise ValueError(result["refusal"])
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
             kit_check_cli(root, as_json=args.as_json)
