@@ -202,6 +202,105 @@ class CamerasPageTests(unittest.TestCase):
         self.assertTrue(external)
         self.assertTrue(all(attrs == ' rel="noopener noreferrer"' for attrs in external), external)
 
+    # DF0137-13: map/history.json -> "Mapped points over time"
+    def history(self, records, **document):
+        self.write(self.map / "history.json", dict({"schema_version": 1, "records": records}, **document))
+
+    @staticmethod
+    def entry(day, total, by_city=None, **extra):
+        return dict({"recorded_on": day, "osm_base": None, "source": "saved_file", "total": total, "by_city": by_city,
+                     "added": total, "removed": 0}, **extra)
+
+    def built(self):
+        return {p.relative_to(self.public).as_posix(): p.read_bytes() for p in build_site(self.root)}
+
+    def test_history_table_with_city_columns(self):
+        self.history([self.entry("2026-10-01", 5, {"Pine": 2, "Cedar": 3}, osm_base="2026-10-01T06:00:00Z"),
+                      self.entry("2026-11-01", 6, {"Cedar": 3, "Pine": 2, "Oak & Elm": 1}, added=2, removed=1)])
+        self.built()
+        html = self.read("cameras.html")
+        section = re.search(r'<section class="camera-history">(.*?)</section>', html).group(1)
+        self.assertIn("<h3>Mapped points over time</h3>", section)
+        self.assertEqual(re.findall(r'<th scope="col">([^<]*)</th>', section),
+                         ["Date", "Mapped points", "Added", "Removed", "Cedar", "Oak &amp; Elm", "Pine"])
+        self.assertEqual(re.findall(r"<tr><td><time[^>]*>([^<]*)</time></td>((?:<td>[^<]*</td>)*)</tr>", section), [
+            ("2026-10-01", "<td>5</td><td>5</td><td>0</td><td>3</td><td>—</td><td>2</td>"),
+            ("2026-11-01", "<td>6</td><td>2</td><td>1</td><td>3</td><td>1</td><td>2</td>")])
+        self.assertNotIn("<script", html)
+        self.assertEqual(check_public_tree(self.public), [])
+        self.assertEqual([(name, count) for name, count, _ in self.sections(html)],
+                         [("Cedar", 3), ("Pine", 2), (GROUP, 1)])  # the point list is unchanged
+
+    # 4. a record without by_city (no boundary file at that run) -> totals only
+    def test_history_totals_only_when_a_record_lacks_by_city(self):
+        self.history([self.entry("2026-10-01", 5), self.entry("2026-11-01", 6, {"Cedar": 3})])
+        section = re.search(r'<section class="camera-history">(.*?)</section>', self.page()).group(1)
+        self.assertEqual(re.findall(r'<th scope="col">([^<]*)</th>', section), ["Date", "Mapped points", "Added", "Removed"])
+        self.assertEqual(len(re.findall(r"<tr>", section)), 3)  # header + 2 rows
+
+    # 7. no history, an empty one or a single record -> every built file byte-identical
+    def test_no_or_one_record_every_built_file_identical(self):
+        plain = self.built()
+        for records in ([], [self.entry("2026-10-01", 6)]):
+            with self.subTest(records=len(records)):
+                self.history(records)
+                self.assertEqual([name for name, data in self.built().items() if plain.get(name) != data], [])
+                self.assertEqual(sorted(self.built()), sorted(plain))
+        self.history([self.entry("2026-10-01", 6), self.entry("2026-11-01", 6)])
+        changed = [name for name, data in self.built().items() if plain.get(name) != data]
+        self.assertEqual(changed, ["cameras.html"])
+
+    # 5./6. a hand-edited or unsafe history.json: build refuses naming the field, content-check lists the same line
+    def test_invalid_history_refused_by_build_and_content_check(self):
+        from campaign_tool.content_check import content_problems
+        good = [self.entry("2026-10-01", 5), self.entry("2026-11-01", 6)]
+        cases = [
+            ({"note": "SECRETVALUE"}, good, "map/history.json: unknown field(s) ['note']"),
+            ({"schema_version": 2}, good, "map/history.json.schema_version: must be 1"),
+            ({}, [dict(good[0], extra="SECRETVALUE"), good[1]], "map/history.json.records[0]: unknown field(s) ['extra']"),
+            ({}, [good[1], good[0]], "map/history.json.records[1].recorded_on: dates must be strictly increasing"),
+            ({}, [good[0], good[0]], "map/history.json.records[1].recorded_on: dates must be strictly increasing"),
+            ({}, [dict(good[0], removed=-3)], "map/history.json.records[0].removed: must be a non-negative integer"),
+            ({}, [dict(good[0], total=True)], "map/history.json.records[0].total: must be a non-negative integer"),
+            ({}, [dict(good[0], added=1.5)], "map/history.json.records[0].added: must be a non-negative integer"),
+            ({}, [dict(good[0], recorded_on="2026-13-01")], "map/history.json.records[0].recorded_on: must be an ISO date YYYY-MM-DD"),
+            ({}, [dict(good[0], recorded_on="SECRETVALUE")], "map/history.json.records[0].recorded_on: must be an ISO date YYYY-MM-DD"),
+            ({}, [dict(good[0], osm_base="2026-09-30T00:00:00Z")],
+             "map/history.json.records[0].osm_base: must be null or a UTC timestamp on the recorded_on day"),
+            ({}, [dict(good[0], by_city={"Cedar": -1})],
+             "map/history.json.records[0].by_city: must be null or {city name: non-negative integer} (at most 500 names of plain text)"),
+            ({}, [self.entry(f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}", 1) for i in range(121)],
+             "map/history.json.records: expected a list of at most 120 records"),
+        ]
+        for extra, records, line in cases:
+            with self.subTest(line=line):
+                self.history(records, **extra)
+                with self.assertRaises(ContentError) as caught:
+                    build_site(self.root)
+                self.assertEqual(str(caught.exception), line)
+                self.assertFalse(self.public.exists())
+                self.assertEqual(content_problems(self.root), [line])
+                self.assertNotIn("SECRETVALUE", line)
+
+    def test_symlinked_or_oversize_history_refused(self):
+        from campaign_tool.content_check import content_problems
+        target = self.root / "elsewhere.json"
+        target.write_text(json.dumps({"schema_version": 1, "records": []}), encoding="utf-8")
+        link = self.map / "history.json"
+        for pointed in (target, self.root / "missing.json"):  # a dangling link is refused too, never skipped
+            with self.subTest(pointed=pointed.name):
+                link.unlink(missing_ok=True)
+                link.symlink_to(pointed)
+                with self.assertRaisesRegex(ContentError, r"^map/history\.json: symlinks are not read$"):
+                    build_site(self.root)
+                self.assertEqual(content_problems(self.root), ["map/history.json: symlinks are not read"])
+        link.unlink()
+        link.write_text(json.dumps({"schema_version": 1, "records": []}) + " " * (256 * 1024), encoding="utf-8")
+        with self.assertRaisesRegex(ContentError, r"^map/history\.json: file too large \(over 256 KiB\)$"):
+            build_site(self.root)
+        self.assertEqual(content_problems(self.root), ["map/history.json: file too large (over 256 KiB)"])
+        self.assertFalse(self.public.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

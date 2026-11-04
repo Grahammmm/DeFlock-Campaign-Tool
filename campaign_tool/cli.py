@@ -441,8 +441,14 @@ def kit(args, root):
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
-def social_cmd(root, platforms=None):
-    from .social import build_social, review_notes
+def social_cmd(root, platforms=None, meetings=False, within_days=14):
+    from .social import build_meeting_social, build_social, meeting_review_notes, review_notes
+    if meetings:  # DF1207-11: private drafts for upcoming meetings with verified participation; finding drafts untouched
+        print(json.dumps(build_meeting_social(root, platforms, within_days), indent=2, ensure_ascii=False))
+        for note in meeting_review_notes(root, within_days):
+            print(note, file=sys.stderr)
+        print("Drafts written to kit/social/meetings. Nothing was posted.")
+        return
     print(json.dumps(build_social(root, platforms), indent=2, ensure_ascii=False))
     for note in review_notes(root):  # DF-4 alert-only: stderr; the stdout summary and exit code are unchanged
         print(note, file=sys.stderr)
@@ -766,6 +772,10 @@ def main():
     social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
     social_p.add_argument("--platform", action="append", choices=["x", "bluesky", "mastodon"],
                           help="Draft for this platform's own length rule into kit/social/<platform> (repeatable)")
+    social_p.add_argument("--meetings", action="store_true",
+                          help="Draft one private post per scheduled upcoming meeting with verified participation into kit/social/meetings")
+    social_p.add_argument("--within-days", type=int, default=None, metavar="N",
+                          help="With --meetings: meetings starting within N days, 1 to 60 (default 14)")
     press = commands.add_parser("press", help="Draft private press material; sends nothing")
     press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
     press_draft.add_argument("--directory", required=True)
@@ -860,6 +870,8 @@ def main():
                         "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
     sent_p.add_argument("--reference", metavar="REF", help="The agency's own request number (1-40: A-Z a-z 0-9 - _ # .)")
     sent_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
+    sent_p.add_argument("--correspondence", action="append", default=[], metavar="PREFIX",
+                        help="Repeatable: >= 12 hex of the ingested sent message or confirmation; not records")
     status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
@@ -897,6 +909,8 @@ def main():
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
+    response_p.add_argument("--correspondence", action="append", default=[], metavar="PREFIX",
+                            help="any kind, repeatable: >= 12 hex of an ingested letter or confirmation; not records")
     response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     response_p.add_argument("--expected-on", metavar="YYYY-MM-DD", help="determination or a later step: the agency's "
                             "own stated production date (provisional, not a legal deadline)")
@@ -1067,6 +1081,12 @@ def main():
         parser.error("--json requires --checklist")
     if args.command == "social" and args.check and args.platform:
         parser.error("--check reads kit/social only; it cannot be combined with --platform")
+    if args.command == "social" and args.meetings and args.check:
+        parser.error("--check reads finding drafts only; it cannot be combined with --meetings")
+    if args.command == "social" and args.within_days is not None and not args.meetings:
+        parser.error("--within-days needs --meetings")
+    if args.command == "social" and args.within_days is not None and not 1 <= args.within_days <= 60:
+        parser.error("--within-days must be 1 to 60")
     if args.command == "build" and args.preview and args.budget is not None:
         parser.error("--budget measures a written build; it cannot be combined with --preview")
     if args.command in ("verify", "backup-drill", "backup-list"):
@@ -1101,7 +1121,7 @@ def main():
             print(json.dumps(report, indent=2, ensure_ascii=False))
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
-            social_cmd(root, args.platform)
+            social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days)
         elif args.command == "press":
             from .press import build_press
             print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
@@ -1275,7 +1295,8 @@ def main():
             from .kit_track import record_sent
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
                                          replace=args.replace, reference=args.reference,
-                                         replace_reference=args.replace_reference), indent=2))
+                                         replace_reference=args.replace_reference,
+                                         correspondence=args.correspondence), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
@@ -1323,7 +1344,7 @@ def main():
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
                                          reference=args.reference, replace_reference=args.replace_reference,
-                                         partial=args.partial),
+                                         partial=args.partial, correspondence=args.correspondence),
                              indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
