@@ -25,6 +25,7 @@ from itertools import chain
 from .content import ContentError, _read_json, _slug, load_content, load_meeting, load_site
 from .kit import _kit_folder, _write_json, _write_text
 from .legal_claims import legal_notes
+from .privacy_patterns import refusal
 from .site import CLASSIFICATION_LABELS, MONTHS, WEEKDAYS
 
 SOCIAL_MAX_CHARS = 280
@@ -192,6 +193,9 @@ def build_social(root, platforms=None):
 
 
 def _write_drafts(social_dir, suggested_dir, drafts):
+    for slug, text in sorted(drafts.items()):  # the shared privacy lint, before any file or folder is touched
+        if note := refusal(f"social draft {slug}", text):
+            raise ValueError(note)
     _kit_folder(social_dir)
     record_path = social_dir / ".written.json"
     record = _load_record(record_path)

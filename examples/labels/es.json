@@ -299,7 +299,7 @@
     "map.check_duplicate": "Duplicado de otro punto",
     "map.check_earlier": "y {count} anteriores",
     "signup.email": "Correo electrónico",
-    "signup.placeholder": "usted@ejemplo.org",
+    "signup.placeholder": "Su correo electrónico",
     "signup.provider_note": "Al enviar se abre la página de confirmación alojada por el proveedor.",
     "signup.none": "Este sitio no recopila direcciones de correo electrónico. Siga las reuniones y los hallazgos aquí o por el canal de noticias.",
     "supporters.title": "Organizaciones que apoyan",

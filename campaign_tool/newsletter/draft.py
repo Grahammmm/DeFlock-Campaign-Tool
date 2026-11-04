@@ -37,6 +37,7 @@ from ..agency_cards import text as plain_text
 from ..kit import _kit_folder
 from ..legal_claims import legal_notes as legal_claim_notes
 from ..markdown_lite import render
+from ..privacy_patterns import EMAIL, categories
 
 UNSUBSCRIBE_PLACEHOLDER = "{{ unsubscribe }}"
 MAX_FINDINGS = 12
@@ -49,7 +50,7 @@ _PREFIX = re.compile(r"[0-9a-f]{12}")
 _HTTPS = re.compile(r"https://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[A-Za-z0-9._~/?#&=%-]*)?")
 # Patterns that must never appear in a draft: emails and phone-like numbers
 # would mean personal data leaked into the manifest.
-_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_EMAIL = EMAIL  # the shared pattern (a superset of the old local one); only the stricter phone gate below stays local
 _PHONE = re.compile(r"(?<!\d)(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}(?!\d)")
 
 
@@ -503,7 +504,10 @@ def build_draft(manifest, now=None, *, archive_public=False):
         if "<script" in blob.lower():
             raise DraftError(f"{label}: script content refused")
         if _EMAIL.search(blob) or _PHONE.search(blob):
-            raise DraftError(f"{label}: contact details found; newsletters carry no personal data")
+            raise DraftError(f"{label}: contact details found; newsletters carry no personal data "
+                             f"({'email' if _EMAIL.search(blob) else 'phone'})")
+        if "plate" in categories(blob):  # the shared lint's third category; email and phone are refused above
+            raise DraftError(f"{label}: privacy lint: plate")
         if UNSUBSCRIBE_PLACEHOLDER not in blob:
             raise DraftError(f"{label}: unsubscribe placeholder missing")
     # DF-4 alert-only: wording that asserts a violation never blocks the draft; the notes travel with it to the approval card.

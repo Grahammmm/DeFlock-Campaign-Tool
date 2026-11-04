@@ -25,13 +25,14 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
+from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
 from .markdown_lite import render as markdown
+from .privacy_patterns import refusal
 from .shell import render
 from .provenance_text import EXPLAINER, source_line
 from .redirects import load_redirects
@@ -2337,6 +2338,52 @@ def _asset_plan(model):
     return plan
 
 
+PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map")
+# Fields an organizer fills with a contact on purpose, or that are never published: not scanned. A library entry is scanned
+# through its public projection only (never note, fragment or the full hash); an agency without its private contact and notes.
+PRIVACY_GATE_SKIP = {"how", "contact_email", "privacy_contact"}
+PRIVACY_GATE_AGENCY_SKIP = {"records_email", "notes", "muckrock_agency_id", "request"}
+PRIVACY_GATE_LIBRARY = ("title", "agency_id", "received_at", "public_url", "pages", "public_copy")
+
+
+def _privacy_gate(model, cfg=None):
+    """Refuse the build when an email, phone or plate pattern sits in published text (the shared privacy lint, before anything is
+    rendered or written). Names the category and the place, never the text. Scans the content parts, the source library's public
+    fields, the agencies without their private contact and notes, site.json and the campaign name; the fields an organizer fills
+    with a contact on purpose (a meeting's ``how``, the contact and privacy-contact addresses) are not scanned."""
+    def walk(value, where, skip=PRIVACY_GATE_SKIP):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key not in skip:
+                    yield from walk(item, f"{where}.{key}", skip)
+        elif isinstance(value, (list, tuple)):
+            for number, item in enumerate(value):
+                yield from walk(item, f"{where}[{number}]", skip)
+        elif isinstance(value, str):
+            yield where, value
+    parts = [(part, model.get(part)) for part in PRIVACY_GATE_PARTS]
+    # Only this exact built-in illustrative address is intentional. Overrides (including other labels) still run the lint.
+    parts.append(("labels", {key: value for key, value in (model.get("labels") or {}).items()
+                             if not (key == "signup.placeholder" and value == "you@example.org")}))
+    # A finding is scanned through its declared fields only: an undeclared key on the model is never published.
+    parts.append(("findings", [{key: value for key, value in finding.items() if key in FINDING_KEYS}
+                               for finding in model.get("findings") or ()]))
+    parts.append(("sources", [{key: source.get(key) for key in PRIVACY_GATE_LIBRARY} for source in model.get("sources") or ()]))
+    parts += [("site", model.get("site")), ("campaign", {key: (cfg or {}).get(key) for key in ("name", "county", "state")})]
+    for key in ("cameras_path", "boundary_path", "county_boundary_path"):
+        path = (model.get("map") or {}).get(key)
+        if path:
+            _check_copy(path, MAX_GEOJSON_BYTES)
+            # Decode JSON escapes, include property keys and never apply the meeting/contact field exemptions to copies.
+            text = json.dumps(_read_json(path, MAX_GEOJSON_BYTES), ensure_ascii=False)
+            if note := refusal("map." + key, text):
+                raise ContentError(note)
+    for part, value in parts + [("agencies", model.get("agencies"))]:
+        for where, text in walk(value, part, PRIVACY_GATE_SKIP | PRIVACY_GATE_AGENCY_SKIP if part == "agencies" else PRIVACY_GATE_SKIP):
+            if note := refusal(where, text):
+                raise ContentError(note)
+
+
 def _plan_site(root, today=None, notes=None):
     """Render every page and check every copy without writing: ``(files, copies)``, or None without content/."""
     from .cli import read_config
@@ -2347,6 +2394,7 @@ def _plan_site(root, today=None, notes=None):
     model = load_content(root, today)
     if model is None:
         return None
+    _privacy_gate(model, cfg)
     site = Site(root, cfg, model, today=today or date.today())
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
