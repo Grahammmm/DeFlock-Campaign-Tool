@@ -13,9 +13,14 @@ HEADER = ("agency_id", "name", "sent_on", "channel", "provisional_determination_
 FORMULA_START = ("=", "+", "-", "@", "\t", "\r")  # a spreadsheet would run these as a formula
 
 
-def _cell(value):
-    text = "" if value is None else ("yes" if value else "no") if isinstance(value, bool) else str(value)
+def formula_safe(text):
+    """``text`` with a leading ``'`` when a spreadsheet would run it as a formula (shared with the site's open-data CSVs)."""
     return "'" + text if text.startswith(FORMULA_START) else text
+
+
+def _cell(value):
+    text = "" if value is None else (("yes" if value else "no") if isinstance(value, bool) else str(value))
+    return formula_safe(text)
 
 
 def _cells(row):
