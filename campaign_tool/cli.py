@@ -1026,6 +1026,9 @@ def main():
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
     today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
+    from .today import CONTRACT_DAYS, contract_days
+    today_p.add_argument("--contract-days", type=contract_days, default=CONTRACT_DAYS, metavar="N", help="Contracts "
+                         "ending within N days, default 90; ended in the last 30 days are always listed")
     law_packet = commands.add_parser("law", help="Law package tools; nothing here marks a package reviewed"
                                      ).add_subparsers(dest="law_command", required=True).add_parser(
         "review-packet", help="Private packet for a human law reviewer in a new --out folder; reviews nothing")
@@ -1285,7 +1288,7 @@ def main():
         elif args.command == "today":
             from .today import run_cli as today_cli
             read_config(root)  # not a campaign folder: Stopped, before any source is read
-            print(today_cli(root, args.as_of, args.as_json))
+            print(today_cli(root, args.as_of, args.as_json, args.contract_days))
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)

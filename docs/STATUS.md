@@ -64,7 +64,7 @@ The hosted path is not deployed, and no deploy receipt exists; the fresh-account
 
 Before serving anyone, the hosted path still needs:
 - A registered outbox sender in the workspace (`df-bind-sender`).
-- A social posting adapter (`df-social-posting`).
+- Account configuration and verification for the social posting adapter (`df-social-posting`), now implemented offline.
 - Provider configuration and verification for the Brevo webhook and list count (`df-subscribe`); the code is tested offline.
 - Legistar polling (`df-legistar-poll`).
 - Deployment and integration verification for the two runner handlers (`df-runner-handlers`), now implemented offline.
@@ -84,7 +84,7 @@ Only items with no implementation in this repository.
 | Item | Evidence that it is not built |
 | --- | --- |
 | Registered sender for the Worker `send_request`/`send_followup` executors | Outbox code is bound; an unconfigured sender refuses with `sender_not_configured`: `workers/workspace/src/executors/types.ts`. A deployed workspace still needs a registered sender. |
-| Social posting | `post_social` is `not_implemented`: `workers/workspace/src/views/screens.ts` |
+| Live social posting | `post_social` has one Mastodon adapter behind per-post approval, but no account is configured: `workers/workspace/src/executors/post_social.ts` |
 | Independently reviewed state-law packages | California ships `status: draft`: `jurisdictions/us-ca/package.json` |
 | Automatic Legistar polling from the Worker | The CLI import exists; the Worker only lists imported meetings: [MEETINGS.md](MEETINGS.md) |
 | Backup encryption, scheduling and hosted restore | `campaign_tool/backup.py` writes a plain tar by hand; encryption and storage are left to the operator |
