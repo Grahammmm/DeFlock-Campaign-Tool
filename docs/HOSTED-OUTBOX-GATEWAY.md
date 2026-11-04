@@ -41,7 +41,7 @@ fill both the gateway URL and the signing secret:
 
 - The URL must be `https:` with a host and the path exactly `/send`, with no
   credentials, query or fragment.
-- The secret must be at least 32 bytes of base64url (43 or more characters).
+- The secret must be at least 32 bytes of base64url (43 or more characters; a length of 1 modulo 4 is not a valid encoding and is refused).
 - Exactly one of the two is refused as `outbox_sender: half configured — both
   settings or neither`; nothing is saved or emitted.
 
