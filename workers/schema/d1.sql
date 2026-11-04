@@ -92,6 +92,9 @@ CREATE TABLE IF NOT EXISTS correspondence (
   summary TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  reviewed_by TEXT,                      -- organizer who confirmed or corrected the classification
+  reviewed_at TEXT,
+  proposed_classification TEXT,          -- the classification before the first organizer review
   UNIQUE (campaign_id, provider_message_id)
 );
 CREATE INDEX IF NOT EXISTS correspondence_request ON correspondence(request_id, received_at);

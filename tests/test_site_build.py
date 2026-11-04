@@ -25,7 +25,7 @@ PAGES = ["index.html", "agencies.html", "findings/index.html", "findings/packet-
 FILES = PAGES + ["404.html", "cameras.html", "methods.html", "privacy.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                  "site-data.js", "agency-cards.js", "app.js", "data/cameras.geojson",
                  "data/city-boundaries.geojson", "findings/agency/cedar.xml", "data/findings.json", "data/sources.json",
-                 "findings/cite.js"]
+                 "data/meetings.json", "findings/cite.js"]
 EXPECTED_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; "
                 "img-src 'self' data: blob: https://tiles.example.invalid; "
                 "connect-src 'self' https://tiles.example.invalid; font-src 'self'; worker-src blob:; "
