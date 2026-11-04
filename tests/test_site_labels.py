@@ -65,6 +65,9 @@ def enrich(root, maplibre=False):
         "terms": [{"term": "Zq title", "aliases": ["Zq alias"], "definition_md": "Zq definition.",
                    "rule_id": "ca-civ-1798.90.5-definitions",
                    "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."}]})
+    _write(content / "faq.json", {  # DF0022-01: reaches every faq label (a cited finding, a law reference, a glossary term in the question)
+        "schema_version": 1, "entries": [{"question": "Zq title question?", "answer_md": "Zq answer.",
+                                          "finding_ids": ["fnd_0000000000000002"], "rule_id": "ca-civ-1798.90.5-definitions"}]})
     _write(content / "meetings" / "zq-cancelled.json", {
         "id": "zq-cancelled", "body": "Zq board", "starts_at": "2026-09-01T18:00:00-07:00", "status": "cancelled"})
     if maplibre:
@@ -252,7 +255,7 @@ class LabelsTest(unittest.TestCase):
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "agency.votes_heading", "agency.votes_more", "agency.votes_none", "agency.votes_source",
-                  "finding.agency_response", "finding.reply_declined", "finding.reply_no_response", "finding.reply_received",
+                  "finding.agency_response", "finding.quote_page", "finding.quote_transcribed", "finding.reply_declined", "finding.reply_no_response", "finding.reply_received",
                   "footer.license",
                   "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
                   "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.title",
@@ -263,7 +266,7 @@ class LabelsTest(unittest.TestCase):
                   "map.check_in_agency_record", "map.check_not_found_on_site", "map.check_seen_in_person",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
-                  "meeting.continued_from", "meeting.continued_to",
+                  "meeting.continued_from", "meeting.continued_to", "meeting.cosigned_many", "meeting.cosigned_one",
                   "meeting.minutes_confirmed", "meeting.minutes_pending", "meeting.recording", "meeting.recording_from",
                   "meeting.staff_direction",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",

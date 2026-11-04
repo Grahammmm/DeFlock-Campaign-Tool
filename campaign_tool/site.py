@@ -46,7 +46,7 @@ VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "press.html"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "press.html"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
@@ -205,7 +205,7 @@ def search_js():
 PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
                          "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
                          "counterevidence", "corrections", "url", "citation", "also_agency_ids", "agency_response")
-PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page")
+PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page", "quote")
 PUBLIC_CORRECTION_FIELDS = ("date", "note")
 # DF1103-08: only a received, declined or no_response reply is public; pending never is.
 PUBLIC_RESPONSE_FIELDS = ("status", "asked_on", "reply_by", "on", "text", "record_sha256_prefix")
@@ -592,6 +592,7 @@ class Site:
         self.timeline = timeline_events(model, self.today, self._agency_pages)
         # DF1952-04: content/glossary.json; an absent file or an empty terms list switches every glossary output off.
         self.glossary = model.get("glossary") if (model.get("glossary") or {}).get("terms") else None
+        self.faq = model.get("faq") or None  # DF0022-01: content/faq.json entries; an absent file switches every FAQ output off
         # DF1952-06: curated topics (slug order); each finding id -> the topics listing it. No topics key = none.
         self.topics = model.get("topics", [])
         self.supporters = model.get("supporters") or []  # DF2207-13: validated public rows; [] = no page, no link
@@ -766,6 +767,8 @@ class Site:
         archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
         parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a>{meetings_feed} · <a href="/search.html">{self.t("footer.search")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}{archive}'
                      ' · <a href="/methods.html">How to read our findings</a></p>')
+        if self.faq:  # DF0022-01: appended last, so every earlier footer paragraph is unchanged
+            parts.append(f'<p><a href="/faq.html">{self.t("footer.faq")}</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def share(self, title, description, path, kind, published, modified):
@@ -1381,7 +1384,7 @@ class Site:
                 if fragment:
                     title = f'<a href="/sources.html#{e(fragment)}">{title}</a>'
                 rule = f' · rule {e(source["rule_id"])}' if source.get("rule_id") else ''
-                sources.append(f'<li>{title} · sha256 {e(short_hash(source["sha256"]))} · {e(source["locator"])}{rule}</li>')
+                sources.append(f'<li>{title} · sha256 {e(short_hash(source["sha256"]))} · {e(source["locator"])}{rule}{self.source_quote(source)}</li>')
             links = self.agency_links(f)
             agency_line = f'<p>Agency: {links}</p>' if links else ''  # DF1952-07: primary first, then each extra agency
             limits = ''.join(f'<li>{e(item)}</li>' for item in f["limitations"]) or '<li>None stated.</li>'
@@ -1550,6 +1553,17 @@ class Site:
         return (f'<h3 id="discussed-at-public-meetings">Discussed at public meetings</h3><ul>{"".join(items)}</ul>'
                 if items else "")
 
+    def source_quote(self, source):
+        """DF1952-08: the transcribed excerpt of a finding source as an escaped blockquote with its attribution (and the
+        page when given); "" without a quote. Plain text only: never Markdown, never matched against the record."""
+        quote = source.get("quote")
+        if not quote:
+            return ""
+        page = source.get("page")
+        shown = f' · {self.t("finding.quote_page", page=page)}' if page is not None else ""
+        return (f'<blockquote class="source-quote"><p>{e(quote)}</p></blockquote>'
+                f'<p class="source-quote-note">{self.t("finding.quote_transcribed")}{shown}</p>')
+
     def finding_html(self, finding):
         sources = []
         for source in finding["sources"]:
@@ -1559,7 +1573,7 @@ class Site:
             sentence, record = source_line(entry, source, owner.get("name"))
             number = f'{self.t("sources.record_no")} <code>{record}</code>'
             number = f'<a href="{e(record_page)}">{number}</a>' if record_page else number
-            sources.append(f'<li><p>{sentence}</p>{page_link(entry, source.get("page"))}'
+            sources.append(f'<li><p>{sentence}</p>{self.source_quote(source)}{page_link(entry, source.get("page"))}'
                            f'<p class="record-no">{number}{copy_status(entry)}</p></li>')
         corrections = ("".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time>: {e(c["note"])}</li>' for c in finding["corrections"])
                        or f'<li>{self.t("notice.no_corrections")}</li>')
@@ -1632,6 +1646,28 @@ class Site:
                 + "".join(entries) + '</section>\n')
         return self.page("glossary", self.labels["title.glossary"], self.labels["title.glossary_description"],
                          "/glossary.html", main)
+
+    def faq_html(self):
+        """``/faq.html`` (DF0022-01): the questions in file order, each an ``h2`` with a one-based ``q-N`` id, the answer
+        through markdown_lite (no images), then the findings it cites, its law reference and the glossary terms used."""
+        entries = []
+        for number, entry in enumerate(self.faq, 1):
+            parts = [f'<h2 id="q-{number}">{e(entry["question"])}</h2>', markdown(entry["answer_md"])]
+            cited = [self.finding_by_id[finding_id] for finding_id in entry["finding_ids"]]
+            if cited:
+                links = "".join(f'<li><a href="/findings/{e(finding["slug"])}.html">{e(finding["title"])}</a></li>' for finding in cited)
+                parts.append(f'<h3>{self.t("faq.findings")}</h3><ul>{links}</ul>')
+            if "rule_id" in entry:
+                parts.append(f'<p>{self.t("faq.rule")}: {e(entry["citation"])} (<code>{e(entry["rule_id"])}</code>)</p>'
+                             f'<p class="notice">{self.t("faq.law_status", status=e(entry["law_status"]))}</p>')
+            used = (glossary_terms_used({"title": entry["question"], "summary": "", "body_md": entry["answer_md"]}, self.glossary)
+                    if self.glossary else [])
+            if used:
+                items = "".join(f'<li><a href="/glossary.html#{e(term["anchor"])}">{e(term["term"])}</a></li>' for term in used)
+                parts.append(f'<h3>{self.t("faq.terms")}</h3><ul>{items}</ul>')
+            entries.append("".join(parts))
+        main = '    <section class="section finding-body" id="content">' + "".join(entries) + '</section>\n'
+        return self.page("faq", self.labels["faq.title"], self.labels["faq.title"], "/faq.html", main)
 
     def agency_response_html(self, finding):
         """The agency's reply (or silence) under "Agency response" as escaped plain text, never Markdown; "" when
@@ -1784,6 +1820,14 @@ class Site:
                   for source in self._continuation_back.get(meeting["id"], []) if held(source)]
         return "".join(lines)
 
+    def _cosigned(self, meeting):
+        """DF2207-14: ``Co-signed by N organizations`` linking supporters.html, only for ids load_content validated."""
+        count = len(meeting.get("cosigners") or ())
+        if not count:
+            return ""
+        label = self.t("meeting.cosigned_one" if count == 1 else "meeting.cosigned_many", count=count)
+        return f'<p class="cosigned"><a href="/supporters.html">{label}</a></p>'
+
     def meeting_direction_html(self, meeting):
         """DF0022-08: ``Staff were directed to: T (by D, as stated in SOURCE)`` for a held meeting whose outcome carries a
         direction; "" otherwise. The words are the official source's, attributed to it; the source is a plain link, never
@@ -1795,6 +1839,7 @@ class Site:
         link = f'<a href="{source}" rel="noopener noreferrer">{source}</a>'
         return (f'<p class="meeting-direction">'
                 f'{self.t("meeting.staff_direction", direction=e(outcome["direction"]), date=e(outcome["return_by"]), source=link)}</p>')
+
 
     def meeting_html(self, meeting):
         """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
@@ -1814,6 +1859,7 @@ class Site:
                 + self.meeting_continuation_html(meeting)
                 + self.meeting_direction_html(meeting)
                 + self._written_deadline(meeting)
+                + self._cosigned(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
                 f'<p><a href="/meetings.html">{self.t("meeting.all")}</a></p></article>\n')
@@ -2160,6 +2206,7 @@ class Site:
                  "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html"]
         paths += ["/cameras.html"] if self.map else []
         paths += ["/glossary.html"] if self.glossary else []
+        paths += ["/faq.html"] if self.faq else []  # DF0022-01
         if self.topics:  # DF1952-06: the index file topics/index.html is served at /topics/
             paths += ["/topics/"] + [f'/topics/{t["slug"]}.html' for t in self.topics]
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
@@ -2314,7 +2361,8 @@ class Site:
             value["also_agency_ids"] = list(finding["also_agency_ids"])
         value["limitations"], value["counterevidence"] = list(finding["limitations"]), list(finding["counterevidence"])
         value["sources"] = [{"sha256_prefix": short_hash(s["sha256"]), "title": s["title"], "locator": s["locator"],
-                             "rule_id": s["rule_id"], **({"page": s["page"]} if s.get("page") is not None else {})}
+                             "rule_id": s["rule_id"], **({"page": s["page"]} if s.get("page") is not None else {}),
+                             **({"quote": s["quote"]} if s.get("quote") else {})}  # DF1952-08: optional, absent stays absent
                             for s in finding["sources"]]
         value["corrections"] = [{"date": c["date"], "note": c["note"]} for c in finding["corrections"]]
         value["url"] = f'{self.base}/findings/{finding["slug"]}.html'
@@ -2636,6 +2684,8 @@ def _plan_site(root, today=None, notes=None):
         pages["supporters.html"] = site.supporters_html()
     if site.glossary:  # DF1952-04: the slug is reserved, so no content page can already hold this name
         pages["glossary.html"] = site.glossary_html()
+    if site.faq:  # DF0022-01: the slug is reserved, so no content page can already hold this name
+        pages["faq.html"] = site.faq_html()
 
     if model["newsletters"]:  # DF1952-09: newest first; the slug is reserved, so nothing else can own these paths
         pages["newsletters.html"] = site.newsletters_html()

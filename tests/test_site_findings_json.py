@@ -86,7 +86,7 @@ class FindingsJsonTests(unittest.TestCase):
         source_doc = json.loads((self.content / "findings" / f"{SLUG}.json").read_text(encoding="utf-8"))
         self.assertEqual(len(finding["sources"]), len(source_doc["sources"]))
         for source, original in zip(finding["sources"], source_doc["sources"]):
-            self.assertEqual(set(source), set(PUBLIC_SOURCE_FIELDS) - {"page"})
+            self.assertEqual(set(source), set(PUBLIC_SOURCE_FIELDS) - {"page", "quote"})
             self.assertRegex(source["sha256_prefix"], r"^[0-9a-f]{12}$")
             self.assertEqual(source["sha256_prefix"], short_hash(original["sha256"]))
             self.assertIn(f"Record no. <code>{source['sha256_prefix']}</code>", page)
