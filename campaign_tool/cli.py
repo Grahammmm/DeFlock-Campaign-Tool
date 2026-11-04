@@ -642,7 +642,7 @@ def backup_list_cmd(args):
 
 def backup_diff_cmd(args, root):
     from .backup import diff
-    report = diff(args.file, root, expected_manifest_sha256=args.expect_manifest_sha256)
+    report = diff(args.file, root, expected_manifest_sha256=args.expect_manifest_sha256, gnupg_home=args.gnupg_home)
     print(json.dumps(report, indent=2))
     if not report["current"]:
         sys.exit(3)
@@ -873,6 +873,7 @@ def main():
     diff_p.add_argument("--file", required=True)
     diff_p.add_argument("--directory", required=True)
     diff_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
+    diff_p.add_argument("--gnupg-home", default=None, help="GnuPG home holding the private key (encrypted archives)")
     drill_p = commands.add_parser("backup-drill", help="Restore a backup into a temp copy, check it there, remove it (exit 3 on fail)")
     drill_p.add_argument("--file", required=True)
     drill_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
