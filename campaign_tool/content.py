@@ -1210,6 +1210,73 @@ def _policy_check(value, label, alpr_policy, today=None):
     return {"checked_on": value["checked_on"], "policy_url": value["policy_url"], "elements": elements}
 
 
+PRE_MEETING_KEYS = ("status", "checked_on", "meeting_on", "body", "source_url", "note")
+PRE_MEETING_STATUSES = ("found", "not_found_yet")
+PRE_MEETING_RULE_ID = "ca-civ-1798.90.55-public-comment-before-implementation"  # the law-package rule the section cites by id
+
+
+def _pre_meeting(value, label, today=None, problems=None):
+    """DF1207-07: the public meeting an organizer found before an ALPR program started (``profile.pre_implementation_meeting``).
+
+    ``found`` needs ``meeting_on``, ``body`` and an https ``source_url``; ``not_found_yet`` allows none of them.
+    Organizer-verified and never fetched. Every problem is named by field: with ``problems`` a list they are all
+    appended (content-check), else the first is raised (build). Returns the clean dict, or None when absent."""
+    if value is None:
+        return None
+    issues, today = [], today or date.today()
+    if not isinstance(value, dict):
+        issues, value = [f"{label}: must be an object"], {}
+    issues += [f"{label}: unknown field {str(key)[:40]!r}" for key in sorted(set(value) - set(PRE_MEETING_KEYS), key=str)]
+    status = value.get("status")
+    if status not in PRE_MEETING_STATUSES:
+        issues.append(f"{label}.status: choose one of {list(PRE_MEETING_STATUSES)}")
+    found = status == "found"
+    for key in ("meeting_on", "body", "source_url"):
+        if key in value and status == "not_found_yet":
+            issues.append(f"{label}.{key}: not allowed when status is not_found_yet")
+        elif key not in value and found:
+            issues.append(f"{label}.{key}: required when status is found")
+    days = {}
+    for key in ("meeting_on", "checked_on"):
+        if key not in value:
+            if key == "checked_on":
+                issues.append(f"{label}.checked_on: required")
+        elif key == "checked_on" or found:
+            try:
+                days[key] = _calendar_day(value[key], f"{label}.{key}")
+                if days[key] > today:
+                    issues.append(f"{label}.{key}: must not be after the build date")
+            except ContentError as exc:
+                issues.append(str(exc))
+    if "meeting_on" in days and "checked_on" in days and days["checked_on"] < days["meeting_on"]:
+        issues.append(f"{label}.checked_on: must not be before meeting_on")
+    if found and "body" in value:
+        body = value["body"]  # the page escapes it, so angle brackets are fine here
+        if not (isinstance(body, str) and body.strip() and len(body) <= 120 and all(map(visible, body))):
+            issues.append(f"{label}.body: 1-120 characters of visible text")
+    if found and "source_url" in value:
+        try:
+            _https(value["source_url"], f"{label}.source_url")
+        except ContentError as exc:
+            issues.append(str(exc))
+    if "note" in value:
+        try:
+            if len(str(_text(value, "note", label))) > 200:
+                raise ContentError(f"{label}.note: at most 200 characters")
+        except ContentError as exc:
+            issues.append(str(exc))
+    if problems is not None:
+        problems.extend(issues)
+    elif issues:
+        raise ContentError(issues[0])
+    if issues:
+        return None
+    clean = {key: value[key] for key in PRE_MEETING_KEYS if key in value}
+    if not clean.get("note"):
+        clean.pop("note", None)
+    return clean
+
+
 CONTRACT_CHECKLIST_PATH = Path(__file__).resolve().parent / "_resources" / "checklists" / "contract-checklist.json"
 CONTRACT_CHECKLIST_NAME, MAX_CONTRACT_CHECKLIST_BYTES = "checklists/contract-checklist.json", 64 * 1024
 CONTRACT_CHECK_IDS = ("term_renewal", "price_changes", "data_ownership", "retention", "sharing_network",
@@ -1451,7 +1518,7 @@ def load_agencies(document, label, today=None):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding", "pre_implementation_meeting"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -1475,6 +1542,8 @@ def load_agencies(document, label, today=None):
             "contract_check": _contract_check(profile.get("contract_check"), contract, f"{item}.profile.contract_check", today),  # likewise
             "alpr_policy": (alpr_policy := _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy")),  # likewise
             "policy_check": _policy_check(profile.get("policy_check"), f"{item}.profile.policy_check", alpr_policy, today),  # likewise
+            "pre_implementation_meeting": _pre_meeting(profile.get("pre_implementation_meeting"),  # likewise
+                                                       f"{item}.profile.pre_implementation_meeting", today),
             "transparency": _transparency(profile.get("transparency"), f"{item}.profile.transparency",  # likewise
                                           entry.get("flock_transparency_slug") if _flock_url(entry, item) else None, today),
             "profile": {
