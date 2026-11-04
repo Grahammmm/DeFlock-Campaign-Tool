@@ -225,6 +225,22 @@ class SourcesAddFromRequestTests(unittest.TestCase):
             self.assertIn("error:", refused.stderr)
         self.assertEqual(self.sources.read_bytes(), before)
 
+    def test_source_id_mode_rejects_explicit_request_options_even_at_defaults(self):
+        self.receive([("a", "Policy A.pdf")])
+        before = self.sources.read_bytes()
+        base = ("sources", "add-batch", "--directory", str(self.root),
+                "--source-id", "synthetic-production", "--agency-id", AGENCY,
+                "--received-at", "2026-10-20T09:00:00-07:00")
+        for flag, value in (("--request", "main"), ("--request", "audit"),
+                            ("--tz", "America/Los_Angeles"), ("--tz", "Pacific/Honolulu")):
+            for dry_run in ((), ("--dry-run",)):
+                with self.subTest(flag=flag, value=value, dry_run=dry_run):
+                    refused = cli(*base, flag, value, *dry_run)
+                    self.assertEqual(refused.returncode, 2, refused.stderr)
+                    self.assertIn("--request and --tz are only for --from-request", refused.stderr)
+                    self.assertEqual(refused.stdout, "")
+                    self.assertEqual(self.sources.read_bytes(), before)
+
     def test_more_than_the_batch_cap_is_refused(self):
         steps = [step(EARLY, records=[f"cap-{n}" for n in range(0, 200)]),
                  step(EARLY, records=[f"cap-{n}" for n in range(200, 400)]),

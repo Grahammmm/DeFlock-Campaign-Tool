@@ -964,8 +964,8 @@ def main():
         batch.add_argument(flag, default=None, help="Required unless --from-request")
     batch.add_argument("--from-request", metavar="AGENCY", default=None,
                        help="Use the production records linked on this agency's produced steps instead")
-    batch.add_argument("--request", default="main", help="With --from-request: the request name (default main)")
-    batch.add_argument("--tz", default="America/Los_Angeles",
+    batch.add_argument("--request", default=None, help="With --from-request: the request name (default main)")
+    batch.add_argument("--tz", default=None,
                        help="With --from-request: IANA time zone for received_at (default America/Los_Angeles)")
     batch.add_argument("--fragment", default=None, help="Default: the agency's one existing fragment")
     batch.add_argument("--dry-run", action="store_true", help="Print what would be added; write nothing")
@@ -1109,10 +1109,15 @@ def main():
             if any(value is not None for value in given.values()):
                 batch.error("--from-request takes the agency, records and dates from the request; "
                             "it cannot be combined with --source-id, --agency-id or --received-at")
+            # Resolve defaults only after preserving whether request-only options were supplied.
+            if args.request is None:
+                args.request = "main"
+            if args.tz is None:
+                args.tz = "America/Los_Angeles"
         elif any(value is None for value in given.values()):
             batch.error("the following arguments are required: --source-id, --agency-id, --received-at "
                         "(or --from-request AGENCY)")
-        elif args.request != "main" or args.tz != "America/Los_Angeles":
+        elif args.request is not None or args.tz is not None:
             batch.error("--request and --tz are only for --from-request")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
