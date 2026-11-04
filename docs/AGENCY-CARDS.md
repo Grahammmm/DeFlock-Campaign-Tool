@@ -74,6 +74,15 @@ the build date>", "Acknowledged <date>; no records yet.", "Partly answered <date
 writing on <date>.", "We withdrew this request <date>." (without a date when `updated_on` is absent). Never
 "ignored", "refused", "late", "overdue" or "violated"; no legal characterisation is made.
 
+## Map city panel: agency page link
+
+When an agency has an `/agencies/<slug>.html` page, its `CITIES` entry carries
+`agencyPage` (that path) and `findingCount` (published findings with its `agency_id`).
+The optional `#city-agency-link` shows "Agency page · N published findings"; its label
+comes from the `data-label` attribute in the page markup (the `agency.page` label),
+rendered only when agency pages exist, so neither `site-data.js` nor the card script
+carries a label. Other cities, the county view and the group hide the link.
+
 ## Pilot preservation and remaining work
 
 The pilot builds its profile renderer from campaign/agency-cards.json and a pinned
