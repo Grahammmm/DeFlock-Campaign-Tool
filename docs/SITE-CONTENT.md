@@ -227,6 +227,20 @@ one existing fragment. It prints `{"added": [12-char prefixes],
 "already_listed": n, "dry_run": bool}`; `--dry-run` writes nothing, and a
 second run adds nothing. Nothing is fetched or published.
 
+`sources add-batch --directory D --from-request AGENCY [--request NAME] [--tz ZONE] [--fragment F] [--dry-run]`
+fills the library from a request's production evidence instead of an ingest `source_id`: every record linked with
+`kit-response --kind produced --record` on that request's produced steps (`kit/sent.json`; `--request` defaults to
+`main`) that is not yet in the library, in the same one validated write (same 500-entry cap, fragment choice and size
+cap). Records linked as `--correspondence` are never added. `agency_id` is the request's agency (it must be one of the
+campaign's agencies) and `received_at` is the step's date at 00:00 in `--tz` (an IANA zone, default
+`America/Los_Angeles`; there is no campaign-wide time zone setting), written with its offset; a record linked on two
+steps takes the earlier date. The title is the ledger's original file name followed by `[EDIT ME: title]`, or
+`Record <12 hex> [EDIT ME: title]` when the ledger has no name. `--source-id`, `--agency-id` and `--received-at` cannot
+be combined with `--from-request`. It prints the same `{"added", "already_listed", "dry_run"}` summary and then
+`nothing to add` when every record is already listed (nothing is written). A request with no linked production records,
+an unknown request or agency, or an unknown `--tz` is refused and nothing is written. Nothing is fetched or published;
+`public_url` stays null.
+
 `sources verify-copy --directory D --sha256 PREFIX --file DOWNLOADED --checked-on YYYY-MM-DD
 [--differs-because redacted|converted|unknown]` hashes a copy you downloaded yourself from an entry's `public_url`
 (a regular local file, no symlink, at most 200 MiB; nothing is fetched, copied or stored) and records
