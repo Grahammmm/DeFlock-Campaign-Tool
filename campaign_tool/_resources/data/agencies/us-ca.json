@@ -12977,29 +12977,6 @@
           ]
         },
         {
-          "agency_id": "ca-coast-community-college-district-ccd-police",
-          "name": "Coast Community College District Police Department",
-          "kind": "ccd_police",
-          "jurisdiction_name": "Coast Community College District",
-          "place_fips": null,
-          "records_url": null,
-          "records_email": null,
-          "portal": {
-            "vendor": "unknown",
-            "url": null
-          },
-          "flock_transparency_slug": null,
-          "muckrock_agency_id": null,
-          "verified": false,
-          "sources": [
-            {
-              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
-              "url": null,
-              "accessed": "2026-09-30"
-            }
-          ]
-        },
-        {
           "agency_id": "ca-south-orange-county-community-college-district-ccd-police",
           "name": "South Orange County Community College District Campus Police Departments",
           "kind": "ccd_police",

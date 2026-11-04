@@ -35,12 +35,12 @@ contacts; its source note says to submit to the campus records office, which
 is separate from the city and county records offices and has its own
 procedure. Private universities and school police are not seeded.
 
-California community college district police departments (37, from the
+California community college district police departments (36, from the
 `CCD_POLICE` table) are seeded in the county of the district office as kind
 `ccd_police`, after the campus police entries. Only districts that operate
 their own police department are listed; a district that contracts a city
 police department or the county sheriff, or that staffs unsworn campus
-safety officers, is not, and 35 of the 72 districts in the Chancellor's
+safety officers, is not, and 36 of the 72 districts in the Chancellor's
 Office directory are absent for that reason or because no official page
 confirmed a department. They are opt-in: a kit lists them only with
 `--include ccd_police`, never by default, so a kit without it is unchanged.

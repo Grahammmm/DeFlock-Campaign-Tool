@@ -73,6 +73,17 @@ class SeedTests(unittest.TestCase):
             self.assertEqual(set(listed), expected_ids, path)
             self.assertEqual(len(listed), len(build_agency_seed.CCD_POLICE), path)
 
+    def test_coast_contract_policing_is_not_seeded(self):
+        # The district's 2025 ASFSR supersedes its 2019 police protocol manual:
+        # unsworn Public Safety staff rely on local police under MOUs.
+        for path in SEED_FILES:
+            seed = json.loads(path.read_text(encoding="utf-8"))
+            entries = [a for c in seed["counties"] for a in c["agencies"]]
+            self.assertNotIn("ca-coast-community-college-district-ccd-police",
+                             [a["agency_id"] for a in entries], path)
+            self.assertNotIn("Coast Community College District",
+                             [a["jurisdiction_name"] for a in entries], path)
+
     def test_schema_validates_and_rejects_unknown_kind(self):
         schema = json.loads((REPO_ROOT / "schemas" / "agency-seed.schema.json").read_text(encoding="utf-8"))
         seed = discovery.load_seed("us-ca")
