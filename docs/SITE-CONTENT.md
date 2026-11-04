@@ -92,6 +92,17 @@ Review receipts are not evaluated by the build; the organizer's publication
 approval (see [CONTRACTS.md](CONTRACTS.md), approval card `publish_finding`)
 remains the gate that moves a finding into `content/findings/`.
 
+Optional `also_agency_ids` (DF1952-07): a list of 1 to 10 distinct agency ids, none equal to `agency_id`, for a finding that
+is about several agencies. It needs a non-empty primary `agency_id` and every id (primary included) must be one of the
+campaign's agencies, or `load_finding`, `build`, `content-check`, `finding publish` and `finding correct` refuse it by
+field and index; the order you enter is kept. The one finding page then appears on every named agency's page and Atom
+feed, counts once in each agency card and city `findingCount`, is listed under each agency in the findings filter and in
+related findings (any shared agency counts as "same agency"), and its page and the printable packet link every agency.
+`data/findings.json` carries `also_agency_ids` only for such findings. The field is part of the reviewed content hash:
+adding, removing or reordering an agency invalidates earlier review receipts, so for a published finding it takes a
+`finding correct --from DRAFT` with fresh review. Findings without the field render byte for byte as before. Search,
+kits, meeting packs, newsletters, the timeline and law-rule scope still use the primary agency only.
+
 Rule check: every id in `rule_ids` (unique, non-empty, at most 120 characters) and every non-null `sources[].rule_id` must be a
 rule in the campaign's law package (`campaign.json` country-state) in force on `event_date`, or `build` stops and
 `content-check` names it; `content-check` also prints `law package <jurisdiction>: draft|reviewed|missing`.
@@ -272,6 +283,27 @@ markers are refused naming the file. `build` and `content-check` use the same va
 the sitemap entries; with none, output is unchanged. `newsletters` is a reserved page and finding slug, and
 `newsletters.html`/`newsletters/` cannot be `public-assets` names. The loader never reads `kit/`.
 
+### Topic pages (`content/topics/<slug>.json`, optional)
+
+An organizer groups an ordered series of already-published findings into a stable page. Each file becomes
+`/topics/<slug>.html` and holds exactly `{"title", "intro_md", "finding_ids"}`: `title` is 1-120 characters,
+`intro_md` a string of at most 200 KiB (empty allowed; rendered by `markdown_lite`, so raw HTML shows as text) and
+`finding_ids` 1-100 distinct ids (`fnd_...`, not slugs or file names) of findings loaded from `content/findings/`.
+An unknown, draft or withdrawn id is refused by file, field and id; remove it from the topic first, because a refused
+build leaves the previous `public/` tree untouched. The listing keeps the order of `finding_ids` and reuses the
+findings list, so each entry shows its classification, confidence, event date and newest correction marker. Each
+listed finding page gets `Part of: <topic links>` (topics in slug order, once each). `/topics/` lists every topic;
+a Topics nav item, a footer link and sitemap entries for `/topics/` and each topic appear only when topics exist. No
+`lastmod` is invented for a topic and topics are not in the Atom feeds.
+
+The file stem is the slug (`index`, `topics`, `timeline`, `cameras`, every reserved page name, an explainer page slug
+or a published finding slug is refused, naming both). At most 30 files; files not ending in `.json` are ignored;
+symlinks, folders named `*.json`, a symlinked or non-folder `topics` path, malformed UTF-8/JSON and files over
+2 MiB are refused. While topics exist a page or finding slug `topics` and `public-assets/topics/...` are also
+refused; without topics nothing changes and the output is byte-identical. `content-check` lists every bad topic file.
+New labels: `nav.topics`, `heading.topics`, `title.topics`, `title.topics_description`, `finding.part_of`
+(`{topic}` is the already-escaped link list); `examples/labels/es.json` carries each.
+
 ## Generated pages and files
 
 `index.html` (hero map when configured, agency cards, mission, latest findings,
@@ -302,7 +334,7 @@ present. `data/findings.json` is the published findings as open data
 `about.html`: per finding `id`, `slug`, `title`, `summary`, `body_md`,
 `classification`, `confidence`, `event_date`, `published_at`, `updated_at`,
 `agency_id`, `url` (absolute only when `base_url` is set; top-level `url_kind`
-says which), `limitations`, `counterevidence`, `corrections` (`date`, `note`) and
+says which), `also_agency_ids` (only on a finding that has it), `limitations`, `counterevidence`, `corrections` (`date`, `note`) and
 `sources` (`sha256_prefix`, the 12 hex characters shown on the page, `title`,
 `locator`, `rule_id`). It never includes `author`, `state`, `rule_version`,
 `duty`, `exceptions`, `rule_ids` or full hashes; the build refuses and writes
@@ -324,6 +356,16 @@ held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `
 `votes` as `{name, vote}` in stored order, each only when recorded). It never includes the comment kit, `participation`,
 contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
 `data/meetings.json: non-public key ...` and writes nothing.
+`data/agencies.json` is the agencies as open data (`schemas/agencies-open-data.schema.json`), linked from
+`agencies.html` and `about.html`: only agencies that have a public page (`/agencies/<slug>.html`), sorted by `name` then
+`agency_id` (`"agencies": []` with none). Top level `schema_version`, `campaign`, `generated_from`, `base_url`, `url_kind`
+and `agencies`; per agency `agency_id`, `name`, `kind`, `url` (the page path, with the base URL when one is set), `asked`
+(`topic`, `state`, `asked_on`, `updated_on` or null, newest `asked_on` first as the card lists them), `alpr_policy`
+(`url`, `checked_on`) or null, `contract` (`vendor`, `start`, `end`, `source_url`, `checked_on`) or null, `transparency`
+(the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, and `camera_count`
+(the card's camera-count sentence) or null. It never includes `records_email`, `records_url`, `portal`, the asked-item
+`note`, the contract `renewal_note`, kit files, notes or any other key; the build refuses with
+`data/agencies.json: non-public key ...` and writes nothing.
 `public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan

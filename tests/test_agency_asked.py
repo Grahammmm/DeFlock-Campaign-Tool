@@ -208,9 +208,12 @@ class AgencyAskedTests(unittest.TestCase):
         self.assertIn("data/findings.json", exported)
         self.assertIn("feed.xml", exported)
         for name in exported:
+            if name == "data/agencies.json":  # DF1422-12: the asked items are deliberately exported here, and only here
+                continue
             self.assertEqual(before[name], after[name], name)
             self.assertNotIn(b"Data-sharing list", after[name])
-        self.assertEqual([n for n in after if b"Data-sharing list" in after[n]], ["timeline.html", "agencies.html"])
+        self.assertEqual([n for n in after if b"Data-sharing list" in after[n]],
+                         ["timeline.html", "agencies.html", "data/agencies.json"])
 
 
 if __name__ == "__main__":
