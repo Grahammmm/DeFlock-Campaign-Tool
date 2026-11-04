@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "notice_md": "Draft glossary. The organizer must check every definition, citation and official source before use. This is not legal advice and makes no claim about whether any agency complied with or violated a rule.",
+  "terms": [
+    {
+      "term": "ALPR",
+      "aliases": ["automated license plate reader", "license plate reader", "LPR"],
+      "definition_md": "A camera system that photographs passing vehicles and turns the license plate images into searchable data. California law calls the searchable database an ALPR system; check its current wording.",
+      "rule_id": "ca-civ-1798.90.5-definitions",
+      "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."
+    },
+    {
+      "term": "ALPR information",
+      "aliases": ["ALPR data", "plate read data"],
+      "definition_md": "The data an ALPR system collects, such as a plate read with the time and place it was captured. The statute's own definition is the one to check.",
+      "rule_id": "ca-civ-1798.90.5-definitions",
+      "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."
+    },
+    {
+      "term": "ALPR operator",
+      "aliases": ["ALPR operators"],
+      "definition_md": "A person or agency that operates an ALPR system. Whether a particular organization counts as one depends on the statute's wording and the facts, which this glossary does not decide.",
+      "rule_id": "ca-civ-1798.90.5-definitions",
+      "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."
+    },
+    {
+      "term": "ALPR end-user",
+      "aliases": ["ALPR end user", "ALPR end-users"],
+      "definition_md": "A person who accesses or uses an ALPR system, as distinct from the operator that runs it. An agency can be one, the other, both or neither, and this entry does not decide that for any real organization.",
+      "rule_id": "ca-civ-1798.90.5-definitions",
+      "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."
+    },
+    {
+      "term": "hot list",
+      "aliases": ["hotlist", "hot-list", "watchlist"],
+      "definition_md": "A list of plates that a system is set to flag when a camera reads a match. Ask who builds the list, which sources feed it and whether alerts are recorded."
+    },
+    {
+      "term": "retention period",
+      "aliases": ["retention", "data retention"],
+      "definition_md": "How long an agency or vendor keeps ALPR data before deleting it. California lists the retention length among the topics an operator's usage and privacy policy covers; the actual period differs by agency and is not set here.",
+      "rule_id": "ca-civ-1798.90.51-usage-and-privacy-policy",
+      "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.51."
+    },
+    {
+      "term": "data sharing",
+      "aliases": ["ALPR data sharing", "sharing of ALPR data"],
+      "definition_md": "Giving, selling or transferring ALPR data to someone outside the agency that collected it. California law limits what public agencies may do and lists exceptions, so check the current text before relying on this summary.",
+      "rule_id": "ca-civ-1798.90.55-sharing-limits",
+      "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.55."
+    },
+    {
+      "term": "audit log",
+      "aliases": ["access log", "access records"],
+      "definition_md": "A record of who searched or opened ALPR data, when, and for what stated purpose. California law calls for an operator that accesses or gives access to ALPR information to keep a record of it, so ask what the agency's log actually contains.",
+      "rule_id": "ca-civ-1798.90.52-access-records",
+      "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.52."
+    },
+    {
+      "term": "search query",
+      "aliases": ["plate search", "ALPR search"],
+      "definition_md": "A search someone runs in an ALPR database, such as typing in a plate number or choosing a place and time. A log of searches shows how the data is used and may hold personal details an agency has to remove before release."
+    },
+    {
+      "term": "usage and privacy policy",
+      "aliases": ["privacy and usage policy", "ALPR policy", "usage policy"],
+      "definition_md": "A written policy explaining how an ALPR system may be used and how its data is protected. California law lists topics such a policy covers and calls for it to be public, so read the agency's actual document next to the statute.",
+      "rule_id": "ca-civ-1798.90.51-usage-and-privacy-policy",
+      "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.51."
+    },
+    {
+      "term": "records request",
+      "aliases": ["public records request", "PRA request", "CPRA request"],
+      "definition_md": "A written ask to an agency for copies of its records, here about ALPR use. What an agency must produce, and how fast, depends on the records law that applies; this glossary does not set a deadline or promise a result."
+    },
+    {
+      "term": "determination",
+      "aliases": ["agency determination", "disclosability determination"],
+      "definition_md": "An agency's decision, with reasons, on whether the records you asked for can be disclosed. It is not the same as handing the records over; check the statute for how it applies to your request.",
+      "rule_id": "ca-gov-7922.535-determination-and-extension-2026",
+      "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.535."
+    },
+    {
+      "term": "extension",
+      "aliases": ["unusual circumstances extension", "time extension"],
+      "definition_md": "A written notice from an agency that it needs more time to make its determination, with its stated reasons and an expected date. It is not automatic: the statute sets conditions and limits that the organizer must check against the current text and the agency's notice.",
+      "rule_id": "ca-gov-7922.535-determination-and-extension-2026",
+      "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.535."
+    },
+    {
+      "term": "exemption",
+      "aliases": ["disclosure exemption", "withholding ground"],
+      "definition_md": "A reason an agency gives for holding back a record or part of one. Exemptions vary by law and by record, so read the stated reason and check it against the current text before drawing any conclusion."
+    },
+    {
+      "term": "redaction",
+      "aliases": ["redacted", "redacting"],
+      "definition_md": "Blacking out or removing parts of a record, such as a name or a plate number, before it is released or shown. Ask the agency which parts were removed and the reason it gives."
+    },
+    {
+      "term": "fee estimate",
+      "aliases": ["cost estimate", "copying fee", "duplication fee"],
+      "definition_md": "An agency's statement of what it expects to charge for producing the records. The charges an agency may make depend on the law and the format, so compare the estimate with the current rules before agreeing to pay anything."
+    },
+    {
+      "term": "public record",
+      "aliases": ["public records", "government record"],
+      "definition_md": "Information an agency holds that relates to public business, in any format such as emails, spreadsheets, policies or logs. Which records are open to the public, and which are withheld, depends on the records law of the state."
+    },
+    {
+      "term": "custodian",
+      "aliases": ["records custodian", "custodian of records", "ALPR custodian"],
+      "definition_md": "The person or office that keeps a record or a system and can say where it is held. California lists the title of the custodian or owner of an ALPR system among the topics of the usage and privacy policy.",
+      "rule_id": "ca-civ-1798.90.51-usage-and-privacy-policy",
+      "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.51."
+    },
+    {
+      "term": "transparency portal",
+      "aliases": ["transparency page", "public dashboard", "vendor transparency portal"],
+      "definition_md": "A public web page where an agency or vendor lists details of its ALPR use, such as camera counts, policies or sharing partners. Note the date and who maintains it, and treat it as a starting point rather than proof."
+    },
+    {
+      "term": "sharing agreement",
+      "aliases": ["data sharing agreement", "memorandum of understanding", "MOU"],
+      "definition_md": "A written agreement that sets out who may receive ALPR data from an agency and on what terms. Ask for the signed document and any list of partners; whether an arrangement is allowed is not decided here."
+    },
+    {
+      "term": "access permissions",
+      "aliases": ["user permissions", "user access", "access rights"],
+      "definition_md": "Settings that decide which staff or outside users can sign in to an ALPR system and what they can see or do. Records often describe these by job title instead of by name."
+    },
+    {
+      "term": "public meeting",
+      "aliases": ["open meeting", "public hearing"],
+      "definition_md": "A meeting of a city council, board or similar body that the public may attend, usually with a posted agenda. Agendas, minutes and recordings are often where an ALPR contract or policy first appears."
+    },
+    {
+      "term": "source record",
+      "aliases": ["source document", "primary source"],
+      "definition_md": "The original document, email, log or web page a statement is based on. A finding is meant to point to one, so a reader can check it instead of relying on a summary."
+    },
+    {
+      "term": "correction",
+      "aliases": ["corrections", "correction note"],
+      "definition_md": "A published change that fixes a mistake in a finding or page, with a note of what changed. When someone reports a mistake, the organizer checks the source record and corrects the page."
+    },
+    {
+      "term": "information gap",
+      "aliases": ["coverage gap", "missing information", "gap in the records"],
+      "definition_md": "A question the records do not answer, such as a missing policy, log or date. A gap is a reason to ask for more records, not evidence that an agency did or did not do something."
+    }
+  ]
+}
