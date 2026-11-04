@@ -113,6 +113,15 @@ the bare URL, "Open the public copy (page N)"). `build` stops and `content-check
 in `sources.json`, has no `public_url`, or is above the entry's `pages` (when that is above 0). `data/findings.json`
 carries `page` only when it is set.
 
+Optional `sources[].quote` (DF1952-08) is a short passage you copied by hand from the cited record: 1 to 400
+characters, at least one that is not a space, plain text with no control or line-break characters (tabs, newlines, DEL,
+bidi marks), kept exactly as written (no trimming, no Markdown; angle brackets are ordinary text and are escaped). It
+needs the same `locator` as every source. The finding page and the packet show it as a blockquote under the source
+line with "Transcribed by the campaign; not checked against the record text." and, when `page` is set, "Page N".
+Nothing compares the quote with the record: the campaign checks the transcription by hand. `data/findings.json`
+carries `quote` only when it is set; a quote holding a 40-character hex run stops the build (it is never redacted or
+cut). The labels `finding.quote_transcribed` and `finding.quote_page` can be overridden in `labels.json`.
+
 Every finding page shows the classification, a confidence label, the event
 date, each source with the first 12 characters of its SHA-256 and its locator,
 limitations, counterevidence, a Corrections section and the
@@ -219,6 +228,21 @@ every field as `<file>[n].profile.policy_check.<field>` on one line. The agency 
 ("addressed (page N)", "not found in the posted policy" or "unclear"), the check date, a link to the posted policy and the
 law package status label. It is an organizer's reading of what the document says, not a finding about compliance, and
 `not found` is never read as more than that. Nothing is fetched; the section is not in card JS, open data or feeds.
+
+An agency's optional `profile.pre_implementation_meeting` records the public meeting an organizer found before the
+agency's ALPR program started, for the public-comment rule in Civ. Code § 1798.90.55(a):
+`{"status": "found"|"not_found_yet", "checked_on", "meeting_on"?, "body"?, "source_url"?, "note"?}`. `found` needs
+`meeting_on` (a real YYYY-MM-DD date not after the build date), `body` (1-120 characters) and an `https://` `source_url`
+(the official record); `not_found_yet` refuses all three. `checked_on` is a real date not after the build date and not
+before `meeting_on`; `note` is up to 200 plain-text characters. Unknown fields are refused. Each problem is named
+`<file>[n].profile.pre_implementation_meeting.<field>`; the build stops at the first and `content-check` lists them all.
+The agency page and the agencies-list card show "Public meeting before the camera program": "`{body}` discussed it on
+`{meeting_on}` (official record). Checked `{checked_on}`." or "We have not found a record of one yet (checked
+`{checked_on}`).", then "Rule: `{citation}`. Law package: `{status}`." and the note. The citation and status come from the
+shipped law package by rule id `ca-civ-1798.90.55-public-comment-before-implementation`; if the package lacks the rule
+the Rule line is left out and the build is not refused. It is an organizer-verified record and never fetched: "not found
+yet" is not a statement that no meeting was held, and the section makes no finding that one was required, missed or
+adequate. It is not in card JS, open data or feeds.
 
 An agency's optional `profile.contract_check` (DF2207-03) records an organizer's reading of the linked ALPR vendor
 agreement against the draft, tool-wide checklist `checklists/contract-checklist.json` (not part of any law package;
@@ -474,6 +498,52 @@ each finding that uses them. The file is `{"schema_version": 1, "terms": [...], 
 - Labels: `footer.glossary`, `title.glossary`, `title.glossary_description`, `heading.glossary`, `finding.terms` and
   `glossary.also`, `glossary.citation`, `glossary.source`, `glossary.status` (see Labels).
 
+### FAQ (`content/faq.json`, optional)
+
+Questions an organizer has checked, in the order written, become `/faq.html`. The file is
+`{"schema_version": 1, "entries": [...]}`; nothing else.
+```json
+{"schema_version": 1, "entries": [{"question": "What is a retention period?",
+  "answer_md": "How long a record is kept. See the finding below.",
+  "finding_ids": ["fnd_0000000000000001"], "rule_id": "ca-civ-1798.90.5-definitions"}]}
+```
+- `entries`: 1 to 40 entries (an empty list is refused; to switch the page off, remove the file). Each entry has
+  `question` and `answer_md` and may have `finding_ids` and `rule_id`; unknown keys, `null`, a boolean, a
+  `schema_version` other than the integer 1 and wrong types are refused rather than coerced.
+- `question`: 1-160 characters of trimmed plain single-line text (no `<`, `>`, line break, tab or other control or
+  invisible format character). Questions are compared after Unicode NFC, casefolding and collapsing whitespace; a
+  second one that repeats an earlier one is refused as `faq.json.entries[N].question: duplicates entries[M].question`
+  (zero-based positions).
+- `answer_md`: non-blank, at most 1500 characters, rendered by `markdown_lite` (raw HTML shows as text, images are not
+  resolved; `<` and `>` are refused). Each question is an `h2` with the anchor `#q-1`, `#q-2`, ... in file order, so
+  adding a question at the end never moves an earlier anchor.
+- `finding_ids` (optional, 0 to 3, no repeats): exact ids of findings that are published in this campaign's
+  `content/findings/`, not slugs. The page links each one under the answer, in the order given, as
+  `/findings/<slug>.html`. An id that is not a published finding is refused as
+  `faq.json.entries[N].finding_ids[J]: not a published finding id`, a repeated one as `... duplicate finding id`; a
+  finding that is later withdrawn blocks the rebuild until the entry is edited.
+- `rule_id` (optional): an exact rule id (at most 120 characters, no prefix matching) of the campaign's shipped law
+  package (`campaign.json`'s jurisdiction). It needs a usable package even when no finding cites a rule
+  (`... rule_id: no usable campaign law package`; an unknown id is `... rule_id: unknown law-package rule id`).
+  The page shows the package's citation, the rule id and the package's own status ("draft, not legally reviewed"
+  unless the package says reviewed). It is not an event-date check, a computed deadline or a claim that the FAQ was
+  legally reviewed. The package is read only when an entry has a `rule_id`.
+- Glossary terms are linked as on finding pages: when `content/glossary.json` has terms, "Terms used in this answer"
+  lists those whose name or alias is in the question or in the answer, each searched on its own.
+- The legal-claim guard is advisory: `build` and `content-check` print `review-required: faq.json.entries[N].answer_md:
+  legal-claim wording (...)` for every answer that asserts a legal violation (to stderr in `content-check`, which never
+  changes its JSON stdout, count or exit code). Notes name the place and the rule, never the text; a rule citation
+  does not silence them, and a note never fails a build.
+- `faq.html` joins the footer (last paragraph) and, with `base_url`, `sitemap.xml`. `faq` is a reserved page and finding
+  slug with or without the file, and `faq.html` cannot be a `public-assets` name. Without the file there is no page,
+  no link, and every other output is byte-identical; removing the file and rebuilding removes the page and its links.
+  A refused FAQ leaves the existing `public/` untouched, and the input JSON is never copied into `public/`.
+- `content-check` runs the build's own reader and lists every independent problem with `faq.json` in its path; a
+  symlink (even dangling), folder or other non-regular `faq.json`, an oversize file (2 MiB), invalid UTF-8 or JSON
+  or an unreadable file is refused, not skipped.
+- Labels: `faq.title`, `footer.faq`, `faq.findings`, `faq.terms`, `faq.rule` and `faq.law_status` (see Labels). The
+  Spanish values in `examples/labels/es.json` are a machine-made draft like the rest of that file.
+
 ### Newsletter archive (`content/newsletters/<YYYY-MM-DD>.json`, optional)
 
 Written by `newsletter archive --date D --publish` (see NEWSLETTER.md); exactly `{"schema_version": 1, "sent_on", "title",
@@ -545,6 +615,14 @@ is not a legal endorsement and does not let anyone speak for them. `supporters` 
 without a file. Labels: `supporters.title`, `supporters.description`, `supporters.joined` (`{date}`) and
 `supporters.kind.<kind>`; `examples/labels/es.json` carries Spanish drafts (still unreviewed).
 
+**Co-sign grant (DF2207-14).** A private record may also carry `cosign` (`"any"` or 1 to 100 meeting ids) with
+`cosign_confirmed_on`, `cosign_how` and `cosign_correspondence`: all four or none. Set it with
+`supporters consent --directory DIR --id ID --cosign any|MEETING_ID ... --confirmed-on D --how HOW [--correspondence PREFIX]`
+or remove it with `--clear-cosign` (see [MEETINGS.md](MEETINGS.md)). It is read only by `meetings-stage --cosign`,
+`load_content` and `content-check`; it never reaches the public file or the site. A listing alone never allows co-signing.
+Staged meetings store `cosigners` (1 to 30 supporter ids), shown on the meeting page as `Co-signed by N organizations`
+(labels `meeting.cosigned_one` and `meeting.cosigned_many`, both with `{count}`; Spanish drafts in `examples/labels/es.json`).
+
 Limits: the lint refuses `@`, phone-number-like digit runs and contact labels (`email:`, `phone:`, `contact:`, `mailto:`)
 in names and URLs, but it does not recognise a person's name. The organization attestation and the organizer's own
 review before every `add` remain mandatory; no program can prove that free text names an organization rather than a
@@ -610,6 +688,7 @@ per picker city by name, each point in the first city boundary holding it by the
 `group_label` section; manufacturer/operator or "not tagged", an OSM node link or "no OSM link"; over 2 000 points each
 section lists 500 rows, then "and N more on the map"; linked from the map fallback and footer, in `sitemap.xml`),
 `glossary.html` (only with a non-empty `content/glossary.json`: see Glossary),
+`faq.html` (only with a `content/faq.json`: see FAQ),
 `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or

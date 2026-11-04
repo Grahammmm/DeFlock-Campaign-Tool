@@ -7,22 +7,24 @@ metadata (build's ``image_meta.check_asset``). Cross-file rules use loaded files
 from datetime import date
 import json
 import os
+import sys
 from pathlib import Path
 
 from .body_schedules import read_body_schedules
-from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _alpr_policy, _asked, _bounds, _contract, _contract_check, _policy_check, _read_json,
+from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _alpr_policy, _asked, _bounds, _contract, _contract_check, _policy_check, _pre_meeting, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, continuation_problems,
                       default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
-                      load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_glossary,
+                      load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_faq, read_glossary,
                       topics_namespace_problem)
 from .finding_law import check as check_law, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
+from .legal_claims import faq_notes
 from .labels import MAX_LABELS_BYTES, load_labels
 from .newsletter.archive import FOLDER as NEWSLETTERS, issue_paths, load_public_issue
 from .redirects import check_file as check_redirects
-from .supporters import supporter_problems
+from .supporters import cosign_problems, supporter_problems
 
 LIMIT = 200
 SCHEMA = "content-check-v1"
@@ -188,8 +190,10 @@ def _asked_links(problems, root, document):
             problems.append(f"{label}: older than its request's latest step ({latest[0]} on {latest[1]}); run kit-asked")
 
 
-def content_problems(root, limit=LIMIT):
-    """Sorted, de-duplicated problem lines for ``root/content``; None when there is no content/."""
+def content_problems(root, limit=LIMIT, faq_out=None):
+    """Sorted, de-duplicated problem lines for ``root/content``; None when there is no content/.
+
+    ``faq_out``: a list that receives the validated FAQ entries when content/faq.json is present and valid."""
     root = Path(root)
     content_dir = root / "content"
     if not content_dir.is_dir():
@@ -226,6 +230,7 @@ def content_problems(root, limit=LIMIT):
         meeting_ids.add(meeting["id"])
         loaded_meetings.append(meeting)
     problems.extend(continuation_problems(loaded_meetings))  # DF0022-07: the same cross-record rule build enforces
+    problems.extend(cosign_problems(root, loaded_meetings))  # DF2207-14: every staged meeting naming a stale co-signer
 
     sources_path = content_dir / "sources.json"
     library = (_attempt(problems, "sources.json", lambda: load_sources(_read_json(sources_path)))
@@ -241,6 +246,10 @@ def content_problems(root, limit=LIMIT):
 
     read_glossary(root, problems)  # DF1952-04: the build's own reader; it names every independent problem itself
     _attempt(problems, "body-schedules.json", lambda: read_body_schedules(root))  # DF0022-10: the build's own reader
+    # DF0022-01: the build's own reader; with a refused finding file ids are not matched (that file is already named)
+    faq = read_faq(root, findings if findings_intact else None, problems)
+    if faq_out is not None and faq is not None:
+        faq_out.extend(faq)
 
     agencies_path = content_dir / "agencies.json"
     if agencies_path.is_file():
@@ -250,6 +259,10 @@ def content_problems(root, limit=LIMIT):
                 if isinstance(entry, dict) and entry.get("selected", True) is True:
                     _asked(entry, f"content/agencies.json[{index}].asked", problems=problems)
                     profile = entry.get("profile", {})
+                    if isinstance(profile, dict) and profile.get("pre_implementation_meeting") is not None:  # DF1207-07
+                        _pre_meeting(profile["pre_implementation_meeting"],
+                                     f"content/agencies.json[{index}].profile.pre_implementation_meeting", problems=problems)
+
                     if isinstance(profile, dict) and profile.get("contract_check") is not None:  # DF2207-03
                         label = f"content/agencies.json[{index}].profile"
                         contract = _attempt(problems, label + ".contract",
@@ -298,7 +311,8 @@ def content_problems(root, limit=LIMIT):
 
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
 FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "topics/", "kit/", "law/", "newsletters/",
-                 "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json", "body-schedules.json")
+                 "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json",
+                 "faq.json", "body-schedules.json")
 
 
 def problem_record(line):
@@ -323,7 +337,8 @@ def _law_package(root):
 
 def run_cli(root, as_json=False):
     """Print ``content/: N problem(s)`` and one line each (or one ``content-check-v1`` JSON line); exit 3 when any."""
-    problems = content_problems(root, limit=None)
+    faq = []
+    problems = content_problems(root, limit=None, faq_out=faq)
     if problems is None:
         if as_json:
             print(json.dumps({"schema": SCHEMA, "count": 0, "problems": [], "truncated": False,
@@ -343,5 +358,7 @@ def run_cli(root, as_json=False):
             print(package)
         for line in _cap(problems, LIMIT):
             print(line)
+    for note in faq_notes(faq):  # DF0022-01: stderr only, advisory; the stdout schema, count and exit code are unchanged
+        print(note, file=sys.stderr)
     if problems:
         raise SystemExit(3)

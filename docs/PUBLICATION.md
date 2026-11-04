@@ -71,6 +71,12 @@ finding that still carries one. Nothing is published.
 A volunteer reviewer's role-by-role walkthrough (what to read and check, how to choose a decision, a synthetic example)
 is in [REVIEW-GUIDE.md](REVIEW-GUIDE.md); this section stays the reference.
 
+A source's optional `quote` (see `docs/SITE-CONTENT.md`) is part of the reviewed content: adding, editing (even one
+space) or removing it changes the reviewed hash, so earlier receipts stop covering the text and `finding publish` or
+`finding correct --from` needs fresh approvals. `finding diff` names a changed `quote` on a source without printing it.
+Reviewers check the quote against the record by eye; the tool never does, and the page says the campaign transcribed it.
+`data/findings.json` publishes the quote, so do not quote personal details that the record's public copy would not show.
+
 `finding review` appends one receipt to `D/private/reviews/<finding id>.json` (directory 0700,
 file 0600, atomic write) under an exclusive lock on `D/private/reviews/.lock` (0600), so
 concurrent reviews never drop each other's receipts, and writes nothing else. Reviewer names
