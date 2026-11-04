@@ -80,7 +80,8 @@ class FindingReviewTests(unittest.TestCase):
         self.assertEqual(report["review_blockers"], [])
         self.assertEqual((report["receipts_for_this_content"], report["stale_receipts"]), (3, 0))
         receipt = json.loads(self.receipts.read_text())[0]
-        self.assertEqual(sorted(receipt), ["content_sha256", "decision", "rationale", "reviewed_at", "reviewer", "role"])
+        self.assertEqual(sorted(receipt), ["campaign_id", "content_sha256", "decision", "rationale", "reviewed_at",
+                                           "reviewer", "role"])
         self.assertRegex(receipt["reviewed_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(receipt["content_sha256"], report["content_sha256"])
 

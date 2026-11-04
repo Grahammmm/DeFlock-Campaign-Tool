@@ -60,8 +60,12 @@ def _who(value):
     return " ".join(value.split()).casefold() or None if isinstance(value, str) else None
 
 
-def review_blockers(finding, receipts):
-    """Caller must separately authenticate receipt issuers and validate artifacts."""
+def review_blockers(finding, receipts, campaign_id=None):
+    """Caller must separately authenticate receipt issuers and validate artifacts.
+
+    ``campaign_id`` (findings passes the campaign's own id, or "" before it has one): only approvals carrying
+    exactly that id count, and a current approval with no id or another campaign's id is named as a blocker
+    instead of being skipped silently. A challenge blocks whatever its binding. None keeps the unbound check."""
     if not isinstance(finding, dict):
         return ["invalid_finding"]
     published_view = receipts == []  # content.load_finding: see the wording gate below
@@ -98,7 +102,14 @@ def review_blockers(finding, receipts):
     valid = [r for r in receipts if r.get("content_sha256") == digest
              and r.get("decision") == "approve" and isinstance(r.get("role"), str)
              and _who(r.get("reviewer")) not in (None, _who(finding.get("author")))
-             and r.get("rationale") and r.get("reviewed_at")]
+             and r.get("rationale") and r.get("reviewed_at")
+             and (campaign_id is None or (bool(campaign_id) and r.get("campaign_id") == campaign_id))]
+    if campaign_id is not None:
+        approvals = [r for r in receipts if r.get("content_sha256") == digest and r.get("decision") == "approve"]
+        if any("campaign_id" not in r for r in approvals):
+            blockers.append("unbound_legacy_receipt")
+        if any("campaign_id" in r and (not campaign_id or r["campaign_id"] != campaign_id) for r in approvals):
+            blockers.append("foreign_campaign_receipt")
     if any(r.get("content_sha256") == digest and r.get("decision") in ("reject", "changes_requested")
            for r in receipts):
         blockers.append("unresolved_challenge")
