@@ -682,7 +682,8 @@ AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", 
                "portal", "selected", "verified", "sources", "slug", "profile", "place_fips",
                "flock_transparency_slug", "muckrock_agency_id", "notes", "verification", "asked"}
 ASKED_STATES = ("awaiting_response", "acknowledged", "partly_answered", "answered", "declined_in_writing", "withdrawn")
-ASKED_KEYS, ASKED_TEXT = ("topic", "asked_on", "state", "updated_on", "note"), {"topic": 120, "note": 200}
+ASKED_KEYS, ASKED_TEXT = ("topic", "asked_on", "state", "updated_on", "note", "request"), {"topic": 120, "note": 200}
+ASKED_REQUEST = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")  # DF1207-03: kit_track.REQUEST; private link to kit/sent.json, never rendered
 CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on"}
 FLOCK_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){0,7}")
 VERIFIED_FIELDS = ("records_email", "records_url", "portal")
@@ -824,7 +825,7 @@ def _agency_slug(agency):
 
 def _asked(entry, label, today=None, problems=None):
     """Organizer-entered requests; every problem goes to ``problems`` (content-check), else the first is raised."""
-    issues, result, values = [], [], entry.get("asked", [])
+    issues, result, values, linked = [], [], entry.get("asked", []), {}
     if not isinstance(values, list) or len(values) > 20:
         issues, values = [f"{label}: must be a list of at most 20 items"], []
     for index, value in enumerate(values):
@@ -839,6 +840,10 @@ def _asked(entry, label, today=None, problems=None):
                     raise ContentError(f"{item}.{key}: at most {ASKED_TEXT[key]} characters")
                 if key == "state" and value.get(key) not in ASKED_STATES:
                     raise ContentError(f"{item}.state: choose one of {list(ASKED_STATES)}")
+                if key == "request" and (not isinstance(value[key], str) or not ASKED_REQUEST.fullmatch(value[key])):
+                    raise ContentError(f"{item}.request: 1-40 characters a-z, 0-9 or -, starting with a letter or digit")
+                if key == "request" and value[key] in linked:
+                    raise ContentError(f"{item}.request: already linked by asked[{linked[value[key]]}]")
                 if key.endswith("_on") and _calendar_day(value.get(key), f"{item}.{key}") > (today or date.today()):
                     raise ContentError(f"{item}.{key}: must not be after the build date")
                 clean[key] = value[key]
@@ -846,6 +851,8 @@ def _asked(entry, label, today=None, problems=None):
                 issues.append(str(exc))
         if clean.get("updated_on", "9") < clean.get("asked_on", ""):
             issues.append(f"{item}.updated_on: must not be before asked_on")
+        if "request" in clean:
+            linked[clean["request"]] = index
         result.append(clean)
     if problems is not None:
         problems.extend(issues)

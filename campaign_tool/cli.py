@@ -1033,6 +1033,10 @@ def main():
     denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
                           help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
     denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
+    asked_p = commands.add_parser("kit-asked", help="Propose content/agencies.json 'asked' items from kit/sent.json "
+                                  "(dry run by default); nothing is sent or published")
+    asked_p.add_argument("--directory", required=True)
+    asked_p.add_argument("--apply", action="store_true", help="Write the proposal (validated, one atomic write)")
     withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
                                      "section number in the agency's own words (read-only)")
     withheld_p.add_argument("--directory", required=True)
@@ -1619,6 +1623,11 @@ def main():
                                          disposition=args.disposition),
                              indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-asked":
+            from .kit_asked import run_cli as kit_asked_cli
+            code = kit_asked_cli(root, args.apply)
+            if code:
+                sys.exit(code)
         elif args.command == "kit-withheld":
             from .kit_track import format_withheld, withheld
             report = withheld(root)
