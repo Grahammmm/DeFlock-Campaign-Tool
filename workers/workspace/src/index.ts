@@ -9,7 +9,7 @@ import { ApprovalError, approveAction, editAction, executeAction, rejectAction, 
 import { AuthError, requireIdentity, requireRunner, type AccessIdentity } from "./auth.ts";
 import { commentKitMarkdown, kitFinding } from "./comment_kit.ts";
 import { runScheduled } from "./cron.ts";
-import { Repo } from "./db.ts";
+import { MAIL_CLASSIFICATIONS, Repo } from "./db.ts";
 import type { Env } from "./env.ts";
 import { exportResponse } from "./export.ts";
 import { mailSenderConfigured } from "./executors/index.ts";
@@ -139,7 +139,19 @@ app.post("/requests/:id/draft-followup", async (c) => {
 app.get("/inbox", async (c) => {
   const requests = new Map((await c.var.repo.requests()).map((r) => [r.request_id, r]));
   const agencies = new Map((await c.var.repo.agencies()).map((a) => [a.agency_id, a]));
-  return render(c, "Inbox", V.inbox(await c.var.repo.inbox(), requests, agencies));
+  return render(c, "Inbox", V.inbox(await c.var.repo.inbox(), requests, agencies, c.req.query("notice") ?? null));
+});
+
+// An organizer confirms or corrects the classification of one inbound message. The reviewer
+// is the verified Access identity; a reviewed_by field in the body is ignored.
+app.post("/inbox/:id/classification", async (c) => {
+  const form = await formOrJson(c);
+  const classification = typeof form.classification === "string" ? form.classification : "";
+  if (classification === "unclassified" || !MAIL_CLASSIFICATIONS.includes(classification)) return c.json({ error: "classification invalid" }, 400);
+  const row = await c.var.repo.reviewClassification(c.req.param("id"), classification, c.var.identity.email);
+  if (!row) return c.text("not found", 404);
+  if (wantsJson(c) || c.req.header("content-type")?.includes("json")) return c.json(row);
+  return c.redirect("/inbox?notice=" + encodeURIComponent(`classification set to ${classification} by ${c.var.identity.email}`));
 });
 
 // Records ---------------------------------------------------------------------------
@@ -440,7 +452,7 @@ function secretPresence(env: Env): V.SecretPresence[] {
 
 app.get("/settings", async (c) => {
   const notice = c.req.query("notice");
-  return render(c, "Settings", V.settings(await c.var.repo.campaign(), await c.var.repo.settings(), secretPresence(c.env), notice ? html`${notice}`.value : null, await c.var.repo.setting<BrevoSettings>("brevo"), mailSenderConfigured(c.env)));
+  return render(c, "Settings", V.settings(await c.var.repo.campaign(), await c.var.repo.settings(), secretPresence(c.env), notice ? html`${notice}`.value : null, await c.var.repo.setting<BrevoSettings>("brevo"), mailSenderConfigured(c.env), await c.var.repo.setting<V.SignupTest>("signup_test")));
 });
 
 /** Non-secret Brevo settings: list id, hosted form URL, sender. The API key is a Worker secret. */
@@ -470,13 +482,26 @@ app.post("/settings/brevo", async (c) => {
   return c.redirect("/settings?notice=" + encodeURIComponent("Brevo settings saved (no contacts were read or written)"));
 });
 
+/** Records which signup-test steps were confirmed. Only six booleans plus the Access identity and time are stored; no address, name or free text. */
+app.post("/settings/signup-test", async (c) => {
+  const form = await formOrJson(c);
+  const checks = V.SIGNUP_TEST_CHECKLIST.map((_, i) => {
+    const v = form["signup_check_" + i];
+    return v === "on" || v === true;
+  });
+  const value: V.SignupTest = { checks, done: checks.filter(Boolean).length, recorded_by: c.var.identity.email, recorded_at: nowIso() };
+  await c.var.repo.putSetting("signup_test", value);
+  if (wantsJson(c)) return c.json(value);
+  return c.redirect("/settings?notice=" + encodeURIComponent(`Signup test recorded: ${value.done} of ${checks.length} steps confirmed`));
+});
+
 app.post("/settings/rotate-runner-token", async (c) => {
   const token = "rt_" + randomHex(32);
   const fingerprint = await sha256Hex(token);
   await c.var.repo.putSetting("runner_token_fingerprint", { sha256: fingerprint, rotated_by: c.var.identity.email, rotated_at: nowIso(), applied: false });
   if (wantsJson(c)) return c.json({ token, fingerprint });
   const notice = html`New runner token (shown once, not stored): <code>${token}</code><br>Set it as the Worker secret RUNNER_TOKEN and on the runner. Fingerprint ${fingerprint.slice(0, 16)}.`;
-  return render(c, "Settings", V.settings(await c.var.repo.campaign(), await c.var.repo.settings(), secretPresence(c.env), notice.value, await c.var.repo.setting<BrevoSettings>("brevo"), mailSenderConfigured(c.env)));
+  return render(c, "Settings", V.settings(await c.var.repo.campaign(), await c.var.repo.settings(), secretPresence(c.env), notice.value, await c.var.repo.setting<BrevoSettings>("brevo"), mailSenderConfigured(c.env), await c.var.repo.setting<V.SignupTest>("signup_test")));
 });
 
 export default {

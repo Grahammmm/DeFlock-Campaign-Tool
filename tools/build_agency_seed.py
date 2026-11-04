@@ -390,6 +390,33 @@ SCHOOL_POLICE = [
 SCHOOL_NOTE = ("school district police department; seeded from the district's official page; "
                "submit to the district records office, verify")
 
+# California special-district police departments (kind district_police, opt-in only):
+# (county_fips served, district, display name, district_type) with district_type one of DISTRICT_TYPES.
+# Only a special district or joint powers authority that employs its OWN sworn police department
+# (Penal Code 830.33 and similar) is listed; a department that contracts with a sheriff or city police
+# (for example SacRT, VTA, Oxnard Harbor District) is not, and neither is a harbor, airport or
+# port department that is a city department (Los Angeles, Long Beach, Oakland, San Francisco, San Jose).
+# A district serving several counties has ONE ROW PER COUNTY (same district and name), so a county kit
+# finds it. Each row was read from an official district page; those page titles and URLs are recorded
+# in the PR that added the row, not in the seed (url stays null). A row is admitted only when an
+# official district page names the county it serves; a district whose official pages do not name the
+# county (Burbank-Glendale-Pasadena Airport Authority, Stockton Port District) is omitted until one
+# does. Districts this table omits were not confirmed from an official source: add one with its page.
+DISTRICT_TYPES = ("transit", "port_harbor", "airport", "park")
+DISTRICT_POLICE = [
+    ("06001", "San Francisco Bay Area Rapid Transit District", "San Francisco Bay Area Rapid Transit District Police Department", "transit"),
+    ("06013", "San Francisco Bay Area Rapid Transit District", "San Francisco Bay Area Rapid Transit District Police Department", "transit"),
+    ("06075", "San Francisco Bay Area Rapid Transit District", "San Francisco Bay Area Rapid Transit District Police Department", "transit"),
+    ("06081", "San Francisco Bay Area Rapid Transit District", "San Francisco Bay Area Rapid Transit District Police Department", "transit"),
+    ("06085", "San Francisco Bay Area Rapid Transit District", "San Francisco Bay Area Rapid Transit District Police Department", "transit"),
+    ("06001", "East Bay Regional Park District", "East Bay Regional Park District Police Department", "park"),
+    ("06013", "East Bay Regional Park District", "East Bay Regional Park District Police Department", "park"),
+    ("06067", "Fulton-El Camino Recreation and Park District", "Fulton-El Camino Park Police Department", "park"),
+    ("06073", "San Diego Unified Port District", "San Diego Unified Port District Harbor Police Department", "port_harbor"),
+]
+DISTRICT_NOTE = ("special-district police department ({type}); serves {county} County; seeded from the "
+                 "district's official page; submit to the district records office, verify")
+
 
 def slugify(text):
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
@@ -456,6 +483,30 @@ def school_agencies(fips):
             for row_fips, district, name in SCHOOL_POLICE if row_fips == fips]
 
 
+def district_agencies(fips, reserved=()):
+    """Special-district police for county ``fips`` in DISTRICT_POLICE order.
+
+    A district with rows in several counties gets one entry per county, id ``<slug>-police-<county slug>``.
+    A single-county district gets ``<slug>-police``, or the ``-<county slug>`` form when that id is in
+    ``reserved`` (an id some other entry already uses, such as a city police department).
+    """
+    county_names = {row[0]: row[1] for row in COUNTIES}
+    rows_per_district = {}
+    for _fips, district, _name, _type in DISTRICT_POLICE:
+        rows_per_district[district] = rows_per_district.get(district, 0) + 1
+    entries = []
+    for row_fips, district, name, district_type in DISTRICT_POLICE:
+        if row_fips != fips:
+            continue
+        county = county_names[row_fips]
+        agency_id = f"{STATE}-{slugify(district)}-police"
+        if rows_per_district[district] > 1 or agency_id in reserved:
+            agency_id += "-" + slugify(county)
+        note = DISTRICT_NOTE.format(type=district_type, county=county)
+        entries.append(agency(agency_id, name, "district_police", district, sources=[source(note)]))
+    return entries
+
+
 def city_agencies(city, policing, overlay):
     slug = slugify(city)
     body = "Town" if city in TOWNS else "City"
@@ -484,6 +535,13 @@ def city_agencies(city, policing, overlay):
 
 def build(overlay=None):
     overlay = overlay or {}
+    reserved = set()  # ids of every non-district entry, so a district id never repeats one
+    for fips, name, _seat, cities in COUNTIES:
+        slug = slugify(name)
+        for entry in (county_agencies(fips, name, slug) + campus_agencies(fips, slug) + ccd_agencies(fips)
+                      + school_agencies(fips)
+                      + [e for city, policing in cities for e in city_agencies(city, policing, overlay)]):
+            reserved.add(entry["agency_id"])
     counties = []
     for fips, name, seat, cities in COUNTIES:
         slug = slugify(name)
@@ -491,6 +549,7 @@ def build(overlay=None):
         agencies.extend(campus_agencies(fips, slug))
         agencies.extend(ccd_agencies(fips))
         agencies.extend(school_agencies(fips))
+        agencies.extend(district_agencies(fips, reserved))
         for city, policing in cities:
             agencies.extend(city_agencies(city, policing, overlay))
         counties.append({"county_fips": fips, "name": name, "seat": seat, "agencies": agencies})
@@ -529,6 +588,14 @@ def check_tables():
     for fips, district, _name in SCHOOL_POLICE:
         if fips not in fips_seen:
             raise ValueError(f"school district {district}: {fips} is not a county fips")
+    district_rows = [(fips, district) for fips, district, _name, _type in DISTRICT_POLICE]
+    if len(set(district_rows)) != len(district_rows):
+        raise ValueError("duplicate special district row")
+    for fips, district, _name, district_type in DISTRICT_POLICE:
+        if fips not in fips_seen:
+            raise ValueError(f"special district {district}: {fips} is not a county fips")
+        if district_type not in DISTRICT_TYPES:
+            raise ValueError(f"special district {district}: unknown district type {district_type!r}")
     for county in build()["counties"]:
         for entry in county["agencies"]:
             if entry["agency_id"] in ids:

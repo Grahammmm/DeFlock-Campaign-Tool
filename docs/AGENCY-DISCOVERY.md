@@ -66,6 +66,32 @@ district records office, which is separate from the city, county, campus and
 community college records offices. The page each row came from is recorded in
 the pull request that added it, not in the seed.
 
+California special-district police departments (9 entries for 4 districts
+and joint powers authorities, from the `DISTRICT_POLICE` table) are seeded as
+kind `district_police`, after the school district entries: transit (BART),
+port and harbor (San Diego Unified Port District) and park district (East
+Bay Regional Park District, Fulton-El Camino Recreation and Park District)
+police. A district serving several counties has one entry per county it
+serves, with the county slug in its id (for example
+`ca-san-francisco-bay-area-rapid-transit-district-police-alameda`), so a
+county kit finds it; the entry's source note names its type and that county.
+Only a district that employs its own sworn police department, and whose
+official pages name each county it serves, is listed: the Burbank-Glendale-
+Pasadena Airport Authority and Stockton Port District police pages do not name
+a county, so those two are absent until an official page does. A
+district that contracts with a sheriff or a city police department (SacRT,
+VTA, the Oxnard Harbor District) is not listed: those officers' records are
+the contracted agency's, so request them from that agency. A port, harbor or
+airport police department that is a department of a city (Los Angeles, Long
+Beach, Oakland, San Francisco, San Jose) is not a district and is absent too.
+They are opt-in: a kit lists them only with `--include district_police`,
+never by default, so a kit without it is unchanged. Each entry is unverified
+with null contacts; its source note says the entry was seeded from the
+district's official page and to submit to the district records office, which
+is separate from the city, county, campus, community college and school
+records offices. The page each row came from is recorded in the pull request
+that added it, not in the seed.
+
 Coverage: all 58 counties, and all 482 incorporated cities, each with a
 `city_council` entry and a policing value (own police department, county
 sheriff, another agency, or not recorded). A city whose policing arrangement
@@ -74,6 +100,10 @@ is not recorded has a council entry only, and its source note says to verify.
 `flock_transparency_slug` and `muckrock_agency_id` are null until someone
 verifies them, and `verified` is false everywhere. A wrong policing value is
 a bug: open a PR against the table with the official page as the source.
+Still unseeded: private security, tribal police, harbor patrols run by a
+sheriff or a city, any special district whose police are contracted, and any
+transit, port, airport or park district department no official page has
+confirmed yet.
 
 `flock_transparency_slug` is the last path part of the agency's own Flock
 transparency page (`https://transparency.flocksafety.com/<slug>`), checked by
@@ -148,7 +178,7 @@ then the county-wide ones; for a county match the county-wide agencies come
 first, then every city's agencies in seed order. `--include` (repeatable)
 restricts and orders kinds: `sheriff`, `police`, `county_board`,
 `city_council`, `district_attorney`, `chp`, and the opt-in `campus_police`,
-`ccd_police` and `school_police`.
+`ccd_police`, `school_police` and `district_police`.
 
 ## Online mode
 
