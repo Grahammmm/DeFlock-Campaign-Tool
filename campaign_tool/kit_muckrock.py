@@ -1,5 +1,6 @@
 """Map a MuckRock request JSON the organizer saved by hand into a proposed kit-response step. Reads one local file
-and kit/sent.json; nothing is fetched or sent, and no MuckRock account or token is used."""
+and kit/sent.json; nothing is fetched or sent, and no MuckRock account or token is used.
+See docs/KIT-MUCKROCK-IMPORT.md for how a re-import is compared with the request's last step."""
 import json
 import os
 from pathlib import Path
@@ -48,7 +49,20 @@ def _price(value):  # plain USD text for the normal --amount rule; None when the
         return None
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         raise ValueError("price must be a decimal string or number")
-    return value if isinstance(value, str) else str(value)  # the --amount rule refuses a sign, exponent or NaN
+    text = value if isinstance(value, str) else str(value)
+    kit_track._amount_cents(text)  # the --amount rule refuses a sign, exponent, NaN or a value over the limit, before any skip
+    return text
+
+
+def _same_mapped_step(last, proposed):  # the request's last step already says what the saved JSON would add
+    kind, partial = proposed["kind"], bool(proposed.get("partial"))
+    if (last.get("kind"), last.get("on"), bool(last.get("partial"))) != (kind, proposed["on"], partial):
+        return False
+    if kind == "fee_estimate":
+        return last.get("amount_cents") == kit_track._amount_cents(proposed["amount"])
+    if kind == "closed":
+        return last.get("note") == proposed.get("note")
+    return True
 
 
 def propose(root, agency_id, path, request="main"):
@@ -82,7 +96,7 @@ def propose(root, agency_id, path, request="main"):
     step = {"on": on, "kind": kind, **({"partial": True} if partial else {}), **({"note": note} if note else {}),
             **({"amount": amount} if amount is not None else {})}
     last = entry["steps"][-1] if entry["steps"] else {}
-    if (last.get("kind"), last.get("on"), bool(last.get("partial"))) == (kind, on, partial):
+    if _same_mapped_step(last, step):
         return {**base, "step": None, "reason": "already recorded"}
     return {**base, "step": step, "reason": None}
 
