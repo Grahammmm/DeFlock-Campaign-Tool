@@ -290,6 +290,20 @@ the platform named. Each folder keeps its own `.written.json`, kept edits go to
 `kit/social/<P>.suggested/` and stale slugs are listed per platform. Without `--platform` the run is
 unchanged (`len()` within 280 into `kit/social/`); `--check` reads that folder only.
 
+### Social drafts for meetings (never posted)
+
+`social --directory D --meetings [--within-days N] [--platform P ...]` (N from 1 to 60, default 14)
+writes one private draft per staged meeting that is `scheduled`, starts between now and N days
+ahead and carries organizer-verified `participation`, to `kit/social/meetings/<id>.md` (or
+`kit/social/meetings/<P>/<id>.md` sized by that platform's rule; kept edits go to
+`kit/social/meetings.suggested/` or `kit/social/meetings/<P>.suggested/`). The post gives the body,
+the date and time in the meeting's own UTC offset (as the meeting page prints it), the agenda item,
+the verified written-comment deadline and how, how to attend, and `<base_url>/meetings/<id>.html`
+when `base_url` is set. Only the agenda item is shortened. Cancelled, past, later-than-window and
+unverified meetings get no draft and are counted under `skipped`; an unreadable meeting file is
+counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts and
+`--check` are unchanged. Nothing is posted.
+
 ## Posting one approved social draft (Worker `post_social`)
 
 A social post is a message to the public and cannot be recalled, so the approval is **per post**.
