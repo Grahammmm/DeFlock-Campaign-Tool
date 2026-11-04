@@ -13,7 +13,8 @@ from . import kit, kit_check, law
 
 CHANNELS = ("email", "portal", "mail")
 KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed", "fee_estimate",
-         "clarification_requested", "clarified")
+         "clarification_requested", "clarified", "fee_paid", "fee_waived")
+SETTLED = {"fee_paid": "paid", "fee_waived": "waived"}  # a payment or waiver of the latest estimate before it
 WAITING = "waiting on you since {} (the agency asked to clarify or narrow the request)"
 WAIT_NOTE = (" Waiting on you: the agency asked to clarify or narrow the request; reply first. Not counted as past"
              " due; no claim that this pauses any legal period.")
@@ -250,11 +251,23 @@ def _amount_cents(amount):  # decimal string to whole cents with no float math; 
     return cents
 
 
-def _amount_ok(step):  # amount_cents only on fee_estimate steps, always there, an int from 0 to 10,000,000
-    if step.get("kind") != "fee_estimate":
-        return "amount_cents" not in step
+def _amount_ok(step):  # amount_cents: always on fee_estimate, optional on fee_paid, never elsewhere; int 0-10,000,000
+    if step.get("kind") not in ("fee_estimate", "fee_paid") or "amount_cents" not in step:
+        return "amount_cents" not in step and step.get("kind") != "fee_estimate"
     value = step.get("amount_cents")
     return type(value) is int and 0 <= value <= AMOUNT_MAX_CENTS
+
+
+def _fee(steps):  # (latest fee_estimate index by date then recorded order, else None; a settlement step after it)
+    dated = [(s.get("on") if isinstance(s.get("on"), str) else "", i) for i, s in enumerate(steps)
+             if s.get("kind") == "fee_estimate"]
+    last = max(dated)[1] if dated else None
+    return last, None if last is None else next((s for s in steps[last + 1:] if s.get("kind") in SETTLED), None)
+
+
+def _fee_state(steps):  # null | "unpaid" | "paid" | "waived": from the latest estimate and any settlement after it
+    last, settled = _fee(steps)
+    return None if last is None else SETTLED[settled["kind"]] if settled else "unpaid"
 
 
 def _dollars(cents):
@@ -352,8 +365,13 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
         raise ValueError(f"production already final on {final[-1]}")
     if kind == "fee_estimate" and amount is None:
         raise ValueError("fee_estimate needs --amount USD")
-    if kind != "fee_estimate" and amount is not None:
-        raise ValueError("--amount is only for fee_estimate steps")
+    if kind not in ("fee_estimate", "fee_paid") and amount is not None:
+        raise ValueError("--amount is only for fee_estimate and fee_paid steps")
+    estimate, settled = _fee(steps) if kind in SETTLED else (0, None)
+    if estimate is None:
+        raise ValueError(f"{kind} needs a fee_estimate earlier on this request")
+    if settled is not None:
+        raise ValueError(f"the {steps[estimate]['on']} estimate is already {SETTLED[settled['kind']]}")
     if expected_on is not None and not partial and (kind in NOT_STATED or (kind != "determination"
                                                                            and "determination" not in kinds)):
         raise ValueError("--expected-on is for the determination or a later step that restates the date")
@@ -400,7 +418,9 @@ def status(root, today=None, law_base=None, *, request=None):
         fees = [(s.get("on"), i, s) for i, s in enumerate(steps) if "amount_cents" in s or kinds[i] == "fee_estimate"]
         if not all(_amount_ok(s) and _day(on) for on, _, s in fees) or not _expected_ok(steps):
             raise ValueError(f"kit/sent.json unreadable: malformed steps for {_label(agency_id, name)!r}")
-        estimate = max(fees)[2]["amount_cents"] if fees else None  # latest date, then the later recorded step
+        last, settled = _fee(steps)  # the latest estimate: latest date, then the later recorded step
+        estimate = None if last is None else steps[last]["amount_cents"]
+        fee_paid = _dollars(settled["amount_cents"]) if settled and "amount_cents" in settled else None
         stated = next((s["expected_on"] for s in reversed(steps) if "expected_on" in s and not _partial(s)), None)
         producing = _producing(steps)  # stated: latest one wins; a partial step's date is the next installment
         if estimate is not None and cap == ():
@@ -421,14 +441,14 @@ def status(root, today=None, law_base=None, *, request=None):
                      "over_fee_cap": None if estimate is None or cap is None else estimate > cap,
                      "stated_production_date": stated, "waiting_on_you_since": _waiting_since(steps),
                      "producing": producing, "next_installment": _next_installment(steps) if producing else None,
-                     "reference": entry.get("reference")})
+                     "reference": entry.get("reference"), "fee_state": _fee_state(steps), "fee_paid": fee_paid})
     waiting = any(row["waiting_on_you_since"] for row in rows)
     return {"requests": rows, "law_package_status": package_status, "note": NOTE + (WAIT_NOTE if waiting else "")}
 
 
 ANSWERED = {"determination", "produced", "denied"}
 CSV_HEADER = ("agency_id", "name", "drafted", "sent_on", "channel", "last_step_on", "last_step_kind", "records",
-              "sources", "findings")
+              "sources", "findings", "fee")
 
 
 def coverage(root):
@@ -456,13 +476,14 @@ def coverage(root):
                      "last_step": {"on": steps[-1].get("on"), "kind": steps[-1].get("kind")} if steps else None,
                      "records": len({h for s in steps if s.get("kind") == "produced" for h in _step_records(s)}),
                      "sources": sources.count(agency_id), "findings": findings.count(agency_id),
-                     "answered": bool(ANSWERED & {s.get("kind") for s in steps})})
+                     "fee_state": _fee_state(steps), "answered": bool(ANSWERED & {s.get("kind") for s in steps})})
     rows.sort(key=lambda row: (row["sent_on"] is not None, row["agency_id"]))
     totals = {"selected": len(rows), "drafted": sum(r["drafted"] for r in rows),
               "sent": sum(r["sent_on"] is not None for r in rows), "answered": sum(r.pop("answered") for r in rows),
               "with_records": sum(r["records"] > 0 for r in rows), "with_findings": sum(r["findings"] > 0 for r in rows),
               "unselected_with_requests": len({parts[0] for parts in map(_split, requests)
-                                               if parts and parts[0] not in selected})}
+                                               if parts and parts[0] not in selected}),
+              "fee_unpaid": sum(r["fee_state"] == "unpaid" for r in rows)}
     note = ("Read-only counts from kit/ and content/." if model else
             "No content/ folder: sources and findings are 0.") + " Agencies with no sent request come first."
     return {"rows": rows, "totals": totals, "note": note}
@@ -471,7 +492,7 @@ def coverage(root):
 def _cells(row):
     step = row["last_step"] or {}
     return [row["agency_id"], row["name"], row["drafted"], row["sent_on"], row["channel"], step.get("on"),
-            step.get("kind"), row["records"], row["sources"], row["findings"]]
+            step.get("kind"), row["records"], row["sources"], row["findings"], row["fee_state"]]
 
 
 def _csv_cell(value):
@@ -490,9 +511,9 @@ def format_coverage(report, as_csv=False):
         for row in report["rows"]:
             writer.writerow([_csv_cell(c) for c in _cells(row)])
         return out.getvalue()
-    line = "{:<36} {:<40} {:<7} {:<10} {:<7} {:<10} {:<13} {:>7} {:>7} {:>8}"
+    line = "{:<36} {:<40} {:<7} {:<10} {:<7} {:<10} {:<13} {:>7} {:>7} {:>8} {}"
     lines = [line.format("agency_id", "name", "drafted", "sent_on", "channel", "last_on", "last_kind", "records",
-                         "sources", "findings")]
+                         "sources", "findings", "fee")]
     for row in report["rows"]:
         cells = _cells(row)
         cells[1] = "".join(c if c.isprintable() else " " for c in cells[1])[:40]

@@ -211,24 +211,24 @@ def time_tag(value):
     return f'<time datetime="{e(value)}">{e(value)}</time>'
 
 
-ASKED_SENTENCES = {"awaiting_response": "No written response recorded as of{day}.", "answered": "Answered{day}.",
-                   "acknowledged": "Acknowledged{day}; no records yet.", "partly_answered": "Partly answered{day}.",
-                   "declined_in_writing": "Declined in writing{on}.", "withdrawn": "We withdrew this request{day}."}
-
-
-def asked_sentence(item, today):
-    """The agency page's state sentence for one ``asked`` item; awaiting with no update → ``today`` (a date)."""
-    when = item.get("updated_on") or (today.isoformat() if item["state"] == "awaiting_response" else "")
-    day, on = (f" {date_label(when)}", f" on {date_label(when)}") if when else ("", "")
-    return ASKED_SENTENCES[item["state"]].format(day=day, on=on)
-
-
 def policy_line(policy):  # links a posted ALPR usage policy an organizer found; fixed wording only
     if not policy:
         return ""
     return (f'<p class="policy-link"><a href="{e(policy["url"])}" rel="noopener noreferrer">Posted ALPR usage policy</a> '
             f'(checked {date_label(policy["checked_on"])}, <a href="{e(policy["source_url"])}" '
             'rel="noopener noreferrer">where we found it</a>)</p>')
+
+
+ASKED_SENTENCES = {"awaiting_response": "No written response recorded as of{day}.", "answered": "Answered{day}.",
+                   "acknowledged": "Acknowledged{day}; no records yet.", "partly_answered": "Partly answered{day}.",
+                   "declined_in_writing": "Declined in writing{on}.", "withdrawn": "We withdrew this request{day}."}
+
+
+def asked_sentence(item, today):
+    """Plain-text state sentence for one asked item; awaiting with no update uses the build date."""
+    when = item.get("updated_on") or (today.isoformat() if item["state"] == "awaiting_response" else "")
+    day, on = (f" {date_label(when)}", f" on {date_label(when)}") if when else ("", "")
+    return ASKED_SENTENCES[item["state"]].format(day=day, on=on)
 
 
 OUTCOME_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
@@ -299,7 +299,6 @@ class Site:
         self.root = Path(root)
         self.cfg = cfg
         self.model = model
-        self.timeline = timeline_events(model, today or date.today())
         self.today = today or date.today()  # build date: contract terms
         # Split on the meeting's own typed calendar date (no time-zone conversion); today counts as upcoming.
         # A cancelled meeting is never upcoming; it stays listed under past meetings.
@@ -350,6 +349,7 @@ class Site:
         qualifying = {f["agency_id"] for f in model["findings"]} | {s["agency_id"] for s in model["sources"]}
         self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
                               for a in model["agencies"] if a["agency_id"] in qualifying}
+        self.timeline = timeline_events(model, self.today, self._agency_pages)
 
     def agency_pages(self):
         """``{agency_id: "/agencies/<slug>.html"}`` for agencies with findings or sources, model order."""
@@ -435,7 +435,8 @@ class Site:
         extra = "".join(f'  <link rel="stylesheet" href="{href}">\n' for href in stylesheets)
         extra += "".join(f'  <script defer src="{src}"></script>\n' for src in scripts)
         favicon = self.site.get("brand", {}).get("favicon")
-        icon = f'  <link rel="icon" href="/{e(favicon)}">\n' if favicon else ""
+        svg_icon = ' type="image/svg+xml"' if favicon and favicon.lower().endswith(".svg") else ""
+        icon = f'  <link rel="icon"{svg_icon} href="/{e(favicon)}">\n' if favicon else ""
         return ('  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
                 f'  <meta name="description" content="{e(description)}">\n'
                 + (self.share(title, description, path, kind, published, modified) if index
@@ -553,7 +554,9 @@ class Site:
                 '<p class="city-meta"><span class="status-pill" id="city-status"></span> <span class="city-vendor" id="city-vendor"></span> '
                 '<span id="city-camera-count" hidden></span></p><p class="city-summary" id="city-summary"></p>'
                 '<ul class="city-facts" id="city-facts"></ul><p><a class="text-link" id="city-records-link" href="sources.html#library">' + e(self.site["source_link_label"]) + '</a> <a class="text-link" id="city-flock-link" rel="noopener noreferrer" hidden>'
-                f'{self.t("agency.flock_portal")}</a></p></div><aside class="city-watch"><p class="eyebrow">{self.t("eyebrow.open_questions")}</p><p id="city-open"></p>'
+                f'{self.t("agency.flock_portal")}</a> <a class="text-link" id="city-agency-link"'
+                + (f' data-label="{self.t("agency.page")}"' if self.agency_pages() else '')
+                + f' hidden></a></p></div><aside class="city-watch"><p class="eyebrow">{self.t("eyebrow.open_questions")}</p><p id="city-open"></p>'
                 '<div class="policy-flags" id="city-flags"></div></aside></article>')
 
     def map_section(self):
@@ -674,7 +677,7 @@ class Site:
         confirmed = [e(fact) for fact in profile["facts"]] + [f"{len(findings)} published finding(s) with sources"] * bool(findings)
         unknown = [e(text) for text in [profile["open"]] * bool(profile["open"]) + profile["flags"]]
         for item in sorted(agency.get("asked", []), key=lambda row: row["asked_on"], reverse=True):
-            asked.append(f'{e(item["topic"])} — asked {date_label(item["asked_on"])}. ' + asked_sentence(item, self.today)
+            asked.append(f'{e(item["topic"])} — asked {date_label(item["asked_on"])}. ' + e(asked_sentence(item, self.today))
                          + (f' {e(item["note"])}' if item.get("note") else ""))
         return "".join(f'<section class="agency-block"><h4>{title}</h4>' + (
             "<ul>" + "".join(f"<li>{value}</li>" for value in values) + "</ul>" if values else f"<p>{empty}</p>") + "</section>"
@@ -1124,6 +1127,9 @@ class Site:
             if not entry["facts"]:
                 findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
                 entry["facts"] = [f["title"] for f in findings] or ["No published findings for this agency yet."]
+            if agency["agency_id"] in self.agency_pages():
+                entry["agencyPage"] = self.agency_pages()[agency["agency_id"]]
+                entry["findingCount"] = sum(f["agency_id"] == agency["agency_id"] for f in self.model["findings"])
             cities[agency["slug"]] = entry
         if self.map:
             slug = self.map["controller"]["group_slug"]

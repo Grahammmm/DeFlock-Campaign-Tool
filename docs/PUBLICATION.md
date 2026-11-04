@@ -267,3 +267,28 @@ every chosen platform is made before anything is written, so one that cannot fit
 the platform named. Each folder keeps its own `.written.json`, kept edits go to
 `kit/social/<P>.suggested/` and stale slugs are listed per platform. Without `--platform` the run is
 unchanged (`len()` within 280 into `kit/social/`); `--check` reads that folder only.
+
+## Posting one approved social draft (Worker `post_social`)
+
+A social post is a message to the public and cannot be recalled, so the approval is **per post**.
+The CLI above still never posts. The workspace Worker posts only through a `post_social` approval
+card whose subject is the finding id and whose proposal names `finding_id`, `platform`, the exact
+`text` and its `content_sha256`. At execution the executor refuses by name, posting nothing, unless:
+
+- the card is approved by an Access identity, not yet used, and approved within 7 days
+  (`no_approval`, `approval_consumed`, `approval_expired`);
+- the card names this finding and the one configured platform (`approval_mismatch`);
+- sha256 of the exact text equals the approved hash, so an edited draft needs a new approval
+  (`content_hash_mismatch`);
+- the finding is `published` with a publication record for its current content, by field, never by
+  wording such as "APPROVED" in the draft (`finding_not_published`, `finding_not_approved`);
+- the text matches no email, phone or plate pattern (`privacy_lint`) and fits the platform.
+
+DF-4 legal-claim flags (`review_flags`) show on the card and are counted on the receipt
+(`legal_flag_count`); they never block. One adapter (Mastodon) is configured by `MASTODON_URL`
+and the `MASTODON_TOKEN` secret; without them every card fails `social_not_configured`
+(`social_posting: not configured`). `(finding, platform)` has one receipt slot taken before the
+call: a second card is `already_posted`. A timeout, 5xx or reply without a post id is recorded
+`post_uncertain`, raises one incident and is never retried; check the platform by hand. The receipt
+holds ids, hashes, counts and enums only, never post text, handle or personal data. There is no
+batch, schedule, edit, delete or recall path.
