@@ -66,17 +66,19 @@ district records office, which is separate from the city, county, campus and
 community college records offices. The page each row came from is recorded in
 the pull request that added it, not in the seed.
 
-California special-district police departments (11 entries for 6 districts
+California special-district police departments (9 entries for 4 districts
 and joint powers authorities, from the `DISTRICT_POLICE` table) are seeded as
 kind `district_police`, after the school district entries: transit (BART),
-port and harbor (San Diego Unified Port District, Stockton Port District),
-airport (Burbank-Glendale-Pasadena Airport Authority) and park district (East
+port and harbor (San Diego Unified Port District) and park district (East
 Bay Regional Park District, Fulton-El Camino Recreation and Park District)
 police. A district serving several counties has one entry per county it
 serves, with the county slug in its id (for example
 `ca-san-francisco-bay-area-rapid-transit-district-police-alameda`), so a
 county kit finds it; the entry's source note names its type and that county.
-Only a district that employs its own sworn police department is listed. A
+Only a district that employs its own sworn police department, and whose
+official pages name each county it serves, is listed: the Burbank-Glendale-
+Pasadena Airport Authority and Stockton Port District police pages do not name
+a county, so those two are absent until an official page does. A
 district that contracts with a sheriff or a city police department (SacRT,
 VTA, the Oxnard Harbor District) is not listed: those officers' records are
 the contracted agency's, so request them from that agency. A port, harbor or

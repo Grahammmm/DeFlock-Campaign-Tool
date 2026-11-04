@@ -84,7 +84,7 @@ class SeedTests(unittest.TestCase):
             self.assertIn(kind, build_agency_seed.DISTRICT_TYPES)
         self.assertEqual(set(build_agency_seed.DISTRICT_TYPES), {"transit", "port_harbor", "airport", "park"})
         self.assertEqual({kind for _f, _d, _n, kind in build_agency_seed.DISTRICT_POLICE},
-                         set(build_agency_seed.DISTRICT_TYPES))
+                         {"transit", "port_harbor", "park"})
         for county in discovery.load_seed("us-ca")["counties"]:
             for entry in district(county["agencies"]):
                 self.assertRegex(entry["sources"][0]["title"],
@@ -160,7 +160,7 @@ class SeedTests(unittest.TestCase):
 
     def test_order_is_school_then_district_in_table_order_per_county(self):
         seed = discovery.load_seed("us-ca")
-        la = next(c for c in seed["counties"] if c["county_fips"] == "06037")
+        la = next(c for c in seed["counties"] if c["county_fips"] == "06073")
         kinds = [a["kind"] for a in la["agencies"]]
         last_school = len(kinds) - 1 - kinds[::-1].index("school_police")
         first_district = kinds.index("district_police")
@@ -226,13 +226,13 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(self.names("Alameda County", ("sheriff", "district_police")),
                          ["Alameda County Sheriff's Office", BART, EBRPD])
         kinds = [a["kind"] for a in discovery.agencies_for(
-            discovery.locate("Los Angeles County", "CA", self.seed), self.seed,
+            discovery.locate("San Diego County", "CA", self.seed), self.seed,
             ("campus_police", "ccd_police", "school_police", "district_police"))]
         self.assertEqual(kinds, sorted(kinds, key=("campus_police", "ccd_police", "school_police", "district_police").index))
         self.assertEqual(kinds[-1], "district_police")
         self.assertEqual(kinds.count("district_police"), 1)
         reversed_kinds = [a["kind"] for a in discovery.agencies_for(
-            discovery.locate("Los Angeles County", "CA", self.seed), self.seed,
+            discovery.locate("San Diego County", "CA", self.seed), self.seed,
             ("district_police", "school_police", "ccd_police", "campus_police"))]
         self.assertEqual(reversed_kinds, sorted(reversed_kinds, key=("district_police", "school_police", "ccd_police",
                                                                       "campus_police").index))
@@ -295,7 +295,7 @@ class KitTests(unittest.TestCase):
         self.assertNotIn(b"east bay regional park district", joined)
 
     def test_cli_include_district_police_lists_unverified_after_other_opt_ins(self):
-        root = init(self.tmp / "campaign", "Los Angeles")
+        root = init(self.tmp / "campaign", "San Diego")
         result = self.run_kit(root, "campus_police", "ccd_police", "school_police", "district_police")
         self.assertEqual(result.returncode, 0, result.stderr)
         agencies = json.loads((root / "kit" / "agencies.json").read_text(encoding="utf-8"))
@@ -306,7 +306,7 @@ class KitTests(unittest.TestCase):
             self.assertIs(entry["verified"], False)
             self.assertIsNone(entry["records_email"])
         requests = {p.name for p in (root / "kit" / "requests").glob("*.md")}
-        self.assertIn("ca-burbank-glendale-pasadena-airport-authority-police.md", requests)
+        self.assertIn("ca-san-diego-unified-port-district-police.md", requests)
 
     def test_cli_include_only_district_police_and_unknown_kind_refused(self):
         root = init(self.tmp / "campaign", "Alameda")

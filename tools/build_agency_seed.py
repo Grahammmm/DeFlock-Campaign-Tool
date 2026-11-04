@@ -398,8 +398,10 @@ SCHOOL_NOTE = ("school district police department; seeded from the district's of
 # port department that is a city department (Los Angeles, Long Beach, Oakland, San Francisco, San Jose).
 # A district serving several counties has ONE ROW PER COUNTY (same district and name), so a county kit
 # finds it. Each row was read from an official district page; those page titles and URLs are recorded
-# in the PR that added the row, not in the seed (url stays null). Districts this table omits were not
-# confirmed from an official source: add one with its page.
+# in the PR that added the row, not in the seed (url stays null). A row is admitted only when an
+# official district page names the county it serves; a district whose official pages do not name the
+# county (Burbank-Glendale-Pasadena Airport Authority, Stockton Port District) is omitted until one
+# does. Districts this table omits were not confirmed from an official source: add one with its page.
 DISTRICT_TYPES = ("transit", "port_harbor", "airport", "park")
 DISTRICT_POLICE = [
     ("06001", "San Francisco Bay Area Rapid Transit District", "San Francisco Bay Area Rapid Transit District Police Department", "transit"),
@@ -409,10 +411,8 @@ DISTRICT_POLICE = [
     ("06085", "San Francisco Bay Area Rapid Transit District", "San Francisco Bay Area Rapid Transit District Police Department", "transit"),
     ("06001", "East Bay Regional Park District", "East Bay Regional Park District Police Department", "park"),
     ("06013", "East Bay Regional Park District", "East Bay Regional Park District Police Department", "park"),
-    ("06037", "Burbank-Glendale-Pasadena Airport Authority", "Burbank-Glendale-Pasadena Airport Authority Police Department", "airport"),
     ("06067", "Fulton-El Camino Recreation and Park District", "Fulton-El Camino Park Police Department", "park"),
     ("06073", "San Diego Unified Port District", "San Diego Unified Port District Harbor Police Department", "port_harbor"),
-    ("06077", "Stockton Port District", "Port of Stockton Police Department", "port_harbor"),
 ]
 DISTRICT_NOTE = ("special-district police department ({type}); serves {county} County; seeded from the "
                  "district's official page; submit to the district records office, verify")

@@ -7012,29 +7012,6 @@
           ]
         },
         {
-          "agency_id": "ca-burbank-glendale-pasadena-airport-authority-police",
-          "name": "Burbank-Glendale-Pasadena Airport Authority Police Department",
-          "kind": "district_police",
-          "jurisdiction_name": "Burbank-Glendale-Pasadena Airport Authority",
-          "place_fips": null,
-          "records_url": null,
-          "records_email": null,
-          "portal": {
-            "vendor": "unknown",
-            "url": null
-          },
-          "flock_transparency_slug": null,
-          "muckrock_agency_id": null,
-          "verified": false,
-          "sources": [
-            {
-              "title": "special-district police department (airport); serves Los Angeles County; seeded from the district's official page; submit to the district records office, verify",
-              "url": null,
-              "accessed": "2026-09-30"
-            }
-          ]
-        },
-        {
           "agency_id": "ca-agoura-hills-city-council",
           "name": "Agoura Hills City Council",
           "kind": "city_council",
@@ -19175,29 +19152,6 @@
           "sources": [
             {
               "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
-              "url": null,
-              "accessed": "2026-09-30"
-            }
-          ]
-        },
-        {
-          "agency_id": "ca-stockton-port-district-police",
-          "name": "Port of Stockton Police Department",
-          "kind": "district_police",
-          "jurisdiction_name": "Stockton Port District",
-          "place_fips": null,
-          "records_url": null,
-          "records_email": null,
-          "portal": {
-            "vendor": "unknown",
-            "url": null
-          },
-          "flock_transparency_slug": null,
-          "muckrock_agency_id": null,
-          "verified": false,
-          "sources": [
-            {
-              "title": "special-district police department (port_harbor); serves San Joaquin County; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
