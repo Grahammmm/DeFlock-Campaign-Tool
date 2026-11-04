@@ -2102,22 +2102,34 @@ def _asset_plan(model):
     return plan
 
 
-def _privacy_gate(model):
+PRIVACY_GATE_PARTS = ("findings", "meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map")
+# Fields an organizer fills with a contact on purpose, or that are never published: not scanned. A library entry is scanned
+# through its public projection only (never note, fragment or the full hash); an agency without its private contact and notes.
+PRIVACY_GATE_SKIP = {"how", "contact_email", "privacy_contact"}
+PRIVACY_GATE_AGENCY_SKIP = {"records_email", "notes", "muckrock_agency_id", "request"}
+PRIVACY_GATE_LIBRARY = ("title", "agency_id", "received_at", "public_url", "pages", "public_copy")
+
+
+def _privacy_gate(model, cfg=None):
     """Refuse the build when an email, phone or plate pattern sits in published text (the shared privacy lint, before anything is
-    rendered or written). Names the category and the place, never the text. The fields an organizer fills with a contact on purpose
-    (a meeting's ``how``) are not scanned; site.json's contact addresses are not part of these parts."""
-    def walk(value, where):
+    rendered or written). Names the category and the place, never the text. Scans the content parts, the source library's public
+    fields, the agencies without their private contact and notes, site.json and the campaign name; the fields an organizer fills
+    with a contact on purpose (a meeting's ``how``, the contact and privacy-contact addresses) are not scanned."""
+    def walk(value, where, skip=PRIVACY_GATE_SKIP):
         if isinstance(value, dict):
             for key, item in value.items():
-                if key != "how":
-                    yield from walk(item, f"{where}.{key}")
+                if key not in skip:
+                    yield from walk(item, f"{where}.{key}", skip)
         elif isinstance(value, (list, tuple)):
             for number, item in enumerate(value):
-                yield from walk(item, f"{where}[{number}]")
+                yield from walk(item, f"{where}[{number}]", skip)
         elif isinstance(value, str):
             yield where, value
-    for part in ("findings", "meetings", "pages", "newsletters", "topics", "glossary"):
-        for where, text in walk(model.get(part), part):
+    parts = [(part, model.get(part)) for part in PRIVACY_GATE_PARTS]
+    parts.append(("sources", [{key: source.get(key) for key in PRIVACY_GATE_LIBRARY} for source in model.get("sources") or ()]))
+    parts += [("site", model.get("site")), ("campaign", {key: (cfg or {}).get(key) for key in ("name", "county", "state")})]
+    for part, value in parts + [("agencies", model.get("agencies"))]:
+        for where, text in walk(value, part, PRIVACY_GATE_SKIP | PRIVACY_GATE_AGENCY_SKIP if part == "agencies" else PRIVACY_GATE_SKIP):
             if note := refusal(where, text):
                 raise ContentError(note)
 
@@ -2132,7 +2144,7 @@ def _plan_site(root, today=None, notes=None):
     model = load_content(root, today)
     if model is None:
         return None
-    _privacy_gate(model)
+    _privacy_gate(model, cfg)
     site = Site(root, cfg, model, today=today or date.today())
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
