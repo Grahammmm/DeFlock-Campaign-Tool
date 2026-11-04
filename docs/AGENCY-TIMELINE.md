@@ -329,3 +329,45 @@ stderr; `kit-sent --replace` keeps the count. Every status, due, fee and downloa
 that remain, so undoing a `closed` reopens the request, undoing a fee payment makes the estimate unpaid again, and
 undoing the final production leaves it partial or download-pending. Once every step is undone, `kit-sent --replace`
 can correct a wrong sent date. Nothing is fetched or sent.
+
+## Response times (kit-timing)
+
+`kit-timing --directory D [--as-of YYYY-MM-DD] [--csv FILE]` is a private, read-only report of how many **calendar days**
+each recorded request took between its steps. Every figure is labelled `calendar days; provisional; not a legal
+deadline`: it describes what the organizer recorded and judges nothing. It reads `kit/sent.json` (and the names in
+`kit/agencies.json` when that file is a regular file; otherwise the agency id is shown), never repairs either file, and
+sends and fetches nothing. A malformed step (unknown kind, bad or out-of-order date, a step after today, a partial that
+is not a produced step, a clarification answered twice or never asked, a second extension, a step after closed) refuses
+the whole report with `kit/sent.json unreadable: malformed timing steps`, even when the bad step is past `--as-of`.
+
+Per request, counted from the date it was sent (the same day is 0; a missing endpoint is `-`, never 0):
+
+- `first_step_days`: the first recorded step except `clarified` and `fee_paid`, which are the organizer's own actions
+  (`fee_waived` and `clarification_requested` are the agency's). The agency's first response, not the first answer.
+- `determination_days`: the first `determination` step only; a denial is not substituted for it.
+- `first_production_days`: the first `produced` step, partial or final. `final_production_days`: the first `produced`
+  step that is not partial; a later production does not move it.
+- `open_age_days`: the as-of date minus the sent date, only while no final production, `denied` or `closed` step is
+  recorded by the cutoff. A determination or a partial production alone leaves the request open.
+- A final production that is only a link counts as production even while `kit-status` lists its download as pending.
+  Fetching that download is a separate reminder, not the response time.
+
+Waits are their own spans and are **never subtracted** from any number above. `extension_spans` run from each extension
+to the first following determination, production, denial or closing step; `clarification_spans` run from each
+`clarification_requested` to the next `clarified` or `closed`. Each span is `{start_on, end_on, days, open}`; a span
+with no ending step runs to the as-of date and is `open`, a censored observation rather than a completed turnaround.
+A stated production date or a download expiry ends no wait.
+
+`--as-of` (default today, not in the future) is a date cutoff: requests sent after it, and steps dated after it, are
+left out after every stored step has been checked. It is a projection of the history recorded today, not a
+reconstruction of what was known on that date. Per agency the report gives the `count` and `median` of each of the five
+figures and of `extension_days` and `clarification_days` (one observation per wait; open waits are counted and flagged
+`open`). Nulls are left out, zeros are kept, an even number of observations can give a `.5` median, and no observations
+give a null median. There is no pooled median, ranking or score.
+
+`--csv FILE` writes the same report to a new private `.csv` (mode 0600, never overwritten, refused inside the
+campaign's `public/` or `content/`; spreadsheet formula prefixes are neutralised). Header:
+`row_type,agency_id,request,name,metric,start_on,end_on,days,open,count,median,note`; `request_metric` rows carry the
+five figures, `request_span` rows each wait (`open` is `yes` or `no`), `agency_metric` rows the counts and medians (the
+wait metrics put their number of open waits in `open`). The label is repeated on every row. Notes, references, hashes,
+amounts and contact details are never exported. The table still prints, followed by the new file's summary.

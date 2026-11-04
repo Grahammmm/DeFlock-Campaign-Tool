@@ -2,8 +2,11 @@
 
 Offline: synthetic campaign, synthetic agency seed and law package bases, fixed today.
 """
+import contextlib
+import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -28,6 +31,13 @@ class FixedDate(date):
 
 def ago(days):
     return (TODAY - timedelta(days=days)).isoformat()
+
+
+def ahead(days):
+    return (TODAY + timedelta(days=days)).isoformat()
+
+
+FUTURE = "Check the source date and local clock; then "
 
 
 class DoctorStaleTests(unittest.TestCase):
@@ -211,6 +221,166 @@ class DoctorStaleTests(unittest.TestCase):
         before = listing()
         self.report()
         self.assertEqual(listing(), before)
+
+    # --- future-dated inputs (RF0200-3) ---
+
+    def future_everywhere(self, days=3):
+        self.meetings_at(-days)
+        self.write_seed(ahead(days))
+        self.write_map({"schema_version": 1, "osm_base": ahead(days) + "T00:00:00Z", "source": "overpass"})
+        self.package["records_law"]["sources"][0]["accessed"] = ahead(days)
+        self.package["rules"][0]["sources"][0]["accessed"] = ahead(days)
+        self.write_package()
+
+    def test_future_meetings_map_and_seed_are_reported(self):
+        self.write_map({"schema_version": 1, "osm_base": ahead(1) + "T00:00:00Z", "source": "overpass"})
+        self.write_seed(ahead(4000))
+        self.meetings_at(-1)
+        for days in (1, 90, 3650):
+            with self.subTest(stale_days=days):
+                entries = self.entries(days)
+                for name, day, age in ((MEETINGS, ahead(1), -1), (MAP, ahead(1), -1), (SEED, ahead(4000), -4000)):
+                    self.assertEqual((entries[name]["status"], entries[name]["date"], entries[name]["age_days"]),
+                                     ("future", day, age), name)
+        # Today is fresh, whatever the clock time or offset; only the calendar day counts.
+        self.write_meetings(json.dumps({"generated": TODAY.isoformat() + "T23:59:59+00:00"}))
+        self.write_seed(TODAY.isoformat())
+        self.write_map({"schema_version": 1, "osm_base": TODAY.isoformat() + "T23:59:59Z", "source": "overpass"})
+        entries = self.entries(1)
+        for name in (MEETINGS, MAP, SEED):
+            self.assertNotIn(name, entries)
+        self.write_meetings(json.dumps({"generated": ahead(1) + "T00:30:00+14:00"}))
+        self.assertEqual(self.entries(1)[MEETINGS]["date"], ahead(1))
+        # A scheduled meeting's event date is not the scan date: only `generated` is aged.
+        self.write_meetings(json.dumps({"generated": ago(1) + "T00:00:00+00:00",
+                                        "meetings": [{"date": ahead(30), "title": "Synthetic council"}]}))
+        self.assertNotIn(MEETINGS, self.entries(90))
+        self.assertNotIn("future", {e["status"] for e in self.report(90)["stale_inputs"]})
+        # Unreadable or undated stays unknown, never future.
+        self.write_meetings(json.dumps({"generated": "2027-99-99T00:00:00+00:00"}))
+        self.assertEqual(self.entries()[MEETINGS]["status"], "unknown")
+
+    def test_future_law_sources_include_records_law_and_each_rule_source(self):
+        rule = self.package["rules"][0]
+        fresh, future_rule = dict(rule["sources"][0], title="Fresh"), dict(rule["sources"][0], title="Later")
+        stale = dict(rule["sources"][0], title="Old")
+        fresh["accessed"], future_rule["accessed"], stale["accessed"] = ago(1), ahead(2), ago(200)
+        rule["sources"] = [fresh, future_rule, stale]
+        self.package["records_law"]["sources"][0]["accessed"] = ahead(7)
+        self.write_package()
+        rows = [e for e in self.report()["stale_inputs"] if e["input"].startswith("law:")]
+        key = lambda e: (e["input"], e["title"])  # noqa: E731
+        self.assertEqual(sorted(rows, key=key), rows)
+        worksheet = f"python3 -m campaign_tool.law review-sheet us-ca --as-of {TODAY} --out FILE.csv"
+        self.assertEqual(rows, [
+            {"input": "law:" + rule["rule_id"], "status": "future", "title": "Later", "accessed": ahead(2),
+             "date": ahead(2), "age_days": -2, "refresh": FUTURE + worksheet},
+            {"input": "law:" + rule["rule_id"], "status": "stale", "title": "Old", "accessed": ago(200),
+             "date": ago(200), "age_days": 200, "refresh": worksheet},
+            {"input": "law:records_law", "status": "future",
+             "title": self.package["records_law"]["sources"][0]["title"], "accessed": ahead(7),
+             "date": ahead(7), "age_days": -7, "refresh": FUTURE + worksheet}])
+        # The legal worksheet is untouched: its stale list still counts only dates older than N.
+        _rows, stale_list = law.review_sheet(law.load_package("us-ca"), TODAY, 90)
+        self.assertEqual([s["title"] for s in stale_list], ["Old"])
+
+    def test_future_refresh_instructions_keep_original_commands(self):
+        self.future_everywhere()
+        self.meetings_at(200)  # stale: refresh text unchanged
+        stale = self.entries()[MEETINGS]
+        self.assertEqual(stale["refresh"], f"python3 -m campaign_tool meetings --directory {self.root} --online "
+                                           "--client synthetic-county")
+        self.meetings_at(-3)
+        with mock.patch.object(subprocess, "run", side_effect=AssertionError("no command is run")), \
+                mock.patch.object(socket, "socket", side_effect=AssertionError("no network")):
+            entries = self.entries()
+        self.assertEqual(entries[MEETINGS]["refresh"], FUTURE + f"python3 -m campaign_tool meetings --directory "
+                                                              f"{self.root} --online --client synthetic-county")
+        self.assertEqual(entries[MAP]["refresh"], FUTURE + freshness.MAP_REFRESH.format(self.root))
+        self.assertEqual(entries[SEED]["refresh"], FUTURE + "update the shared agency seed (package release)")
+        worksheet = f"python3 -m campaign_tool.law review-sheet us-ca --as-of {TODAY} --out FILE.csv"
+        for name in ("law:records_law", "law:" + self.package["rules"][0]["rule_id"]):
+            self.assertEqual(entries[name]["refresh"], FUTURE + worksheet)
+        self.assertEqual(FUTURE, "Check the source date and local clock; then ")
+        # Unknown and absent rows never carry the prefix.
+        self.write_meetings("{not json")
+        self.assertFalse(self.entries()[MEETINGS]["refresh"].startswith(FUTURE))
+        (self.root / "kit" / "meetings.json").unlink()
+        self.assertEqual(self.entries()[MEETINGS]["status"], "absent")
+        self.assertFalse(self.entries()[MEETINGS]["refresh"].startswith(FUTURE))
+
+    def test_future_dates_share_sorting_cap_and_recovery(self):
+        rule = self.package["rules"][0]
+        template = rule["sources"][0]
+        rule["sources"] = [dict(template, title=f"Source {i:03}", accessed=ahead(1 + i)) for i in range(105)]
+        self.write_package()
+        self.meetings_at(120)
+        self.write_seed(ahead(2))
+        (self.root / "content" / "map").mkdir(parents=True, exist_ok=True)
+        (self.root / "content" / "map" / "snapshot.json").write_text("{not json", encoding="utf-8")
+        report = self.report()
+        total = 105 + 3  # sources + meetings + seed + unknown map
+        self.assertEqual((len(report["stale_inputs"]), report["stale_inputs_more"]), (100, total - 100))
+        keys = [(e["input"], e.get("title", "")) for e in report["stale_inputs"]]
+        self.assertEqual(keys, sorted(keys))
+        self.assertEqual({e["status"] for e in report["stale_inputs"]}, {"future", "stale", "unknown"})
+        # Fixing only some dates removes only the repaired entries.
+        for source in rule["sources"][:100]:
+            source["accessed"] = ago(5)
+        self.write_seed(ago(5))
+        self.write_package()
+        remaining = self.report()["stale_inputs"]
+        self.assertEqual(sorted(e["title"] for e in remaining if e["input"].startswith("law:")),
+                         [f"Source {i:03}" for i in range(100, 105)])
+        self.assertNotIn(SEED, {e["input"] for e in remaining})
+        self.assertEqual({e["input"] for e in remaining} - {e["input"] for e in remaining if e["input"].startswith("law:")},
+                         {MEETINGS, MAP})
+        self.assertNotIn("stale_inputs_more", self.report())
+
+    def test_future_report_is_read_only_and_opt_in(self):
+        self.future_everywhere()
+
+        def listing():
+            return sorted((str(p.relative_to(p.anchor)), p.lstat().st_mtime_ns, p.lstat().st_mode,
+                           p.read_bytes() if p.is_file() else None)
+                          for top in (self.root, self.seed_dir, self.law_dir) for p in [top, *top.rglob("*")])
+        before = listing()
+        with mock.patch.object(socket, "socket", side_effect=AssertionError("no network")):
+            report = self.report()
+            plain = cli.doctor_report(self.root)
+        self.assertEqual(listing(), before)
+        self.assertEqual({e["status"] for e in report["stale_inputs"]}, {"future"})
+        self.assertNotIn("stale_inputs", plain)
+        # The real command line: still exit 0 with a future-dated scan; no flag, no stale_inputs.
+        self.write_meetings(json.dumps({"generated": (date.today() + timedelta(days=2)).isoformat() + "T00:00:00+00:00"}))
+        command = [sys.executable, "-B", "-m", "campaign_tool", "doctor", "--directory", str(self.root)]
+        result = subprocess.run(command + ["--stale-days", "90"], cwd=REPO_ROOT, capture_output=True, text=True,
+                                timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        meetings = {e["input"]: e for e in json.loads(result.stdout)["stale_inputs"]}[MEETINGS]
+        self.assertEqual((meetings["status"], meetings["age_days"]), ("future", -2))
+        result = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("stale_inputs", json.loads(result.stdout))
+
+    def test_future_inputs_project_into_local_readiness_counts(self):
+        self.future_everywhere()
+        config = json.loads((self.root / "campaign.json").read_text(encoding="utf-8"))
+        (self.root / "campaign.json").write_text(json.dumps(dict(config, campaign_id="synthetic-campaign")),
+                                                 encoding="utf-8")
+        report = self.report()
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), mock.patch.object(socket, "socket", side_effect=AssertionError):
+            cli.readiness(self.root, campaign_id="synthetic-campaign", stale_days=90)
+        snapshot = json.loads(buffer.getvalue())
+        self.assertEqual(snapshot["counts"]["stale_inputs"], len(report["stale_inputs"]) + report.get("stale_inputs_more", 0))
+        self.assertEqual(snapshot["counts"]["stale_inputs"], 5)
+        action = [a for a in snapshot["next_actions"] if a.startswith("Refresh stale inputs: ")]
+        self.assertEqual(len(action), 1)
+        for name in (MEETINGS, MAP, SEED, "law:records_law"):
+            self.assertIn(name, action[0])
+        for detail in (self.package["records_law"]["sources"][0]["title"], FUTURE, "age_days"):
+            self.assertNotIn(detail, buffer.getvalue())
 
 
 if __name__ == "__main__":

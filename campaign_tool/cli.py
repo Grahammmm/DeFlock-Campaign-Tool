@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import fixes, registry
+from .supporters import HOWS as SUPPORTER_HOWS, KINDS as SUPPORTER_KINDS
 
 MAX_BYTES = 50 * 1024 * 1024
 MAX_DIR_FILES = 2000
@@ -849,6 +850,24 @@ def main():
     press_draft.add_argument("--directory", required=True)
     press_draft.add_argument("--finding", action="append", default=[])
     press_draft.add_argument("--date")
+    supporters = commands.add_parser("supporters", help="Consent-backed supporting organizations: public entry in "
+                                     "content/supporters.json, private consent in kit/").add_subparsers(
+        dest="supporters_command", required=True)
+    supporters_add = supporters.add_parser("add", help="List one organization (never an individual) after recording its "
+                                           "permission; publishes nothing")
+    supporters_add.add_argument("--directory", required=True)
+    supporters_add.add_argument("--name", required=True)
+    supporters_add.add_argument("--kind", required=True, choices=SUPPORTER_KINDS)
+    supporters_add.add_argument("--url", default=None, help="Optional https address of the organization")
+    supporters_add.add_argument("--organization", action="store_true",
+                                help="Attest that this is an organization, not an individual (required)")
+    supporters_add.add_argument("--confirmed-on", required=True, metavar="DATE", help="YYYY-MM-DD the organization confirmed")
+    supporters_add.add_argument("--how", required=True, choices=SUPPORTER_HOWS)
+    supporters_add.add_argument("--correspondence", default=None, metavar="PREFIX",
+                                help="12 to 64 hex characters of an ingested record; kept privately")
+    supporters_remove = supporters.add_parser("remove", help="Drop one organization's public entry and private record")
+    supporters_remove.add_argument("--directory", required=True)
+    supporters_remove.add_argument("--id", required=True)
     press_letter = press_commands.add_parser("letter", help="Draft a private letter to the editor; sends nothing")
     press_letter.add_argument("--directory", required=True)
     press_letter.add_argument("--finding", action="append", default=[], help="Published finding id (repeat for 1 to 3)")
@@ -999,6 +1018,13 @@ def main():
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
     due_p.add_argument("--request", help="Only requests with this name (refused when none is recorded)")
+    timing_p = commands.add_parser("kit-timing", help="Private response-time report from kit/sent.json: calendar days "
+                                   "between recorded steps (read-only; provisional, not a legal deadline)",
+                                   description="Calendar days between recorded steps; provisional; not a legal deadline. "
+                                   "Reads kit/sent.json only; nothing is sent.")
+    timing_p.add_argument("--directory", required=True)
+    timing_p.add_argument("--as-of", help="YYYY-MM-DD to count to (default today); not a reconstruction of past knowledge")
+    timing_p.add_argument("--csv", metavar="FILE", help="Write a new private .csv (0600) outside public/ and content/")
     calendar_p = commands.add_parser("kit-calendar", help="Private .ics of open requests' dates and comment deadlines")
     for flag in ("--directory", "--out", "--as-of"):  # --as-of YYYY-MM-DD: earlier comment deadlines left out
         calendar_p.add_argument(flag, required=flag != "--as-of")
@@ -1427,6 +1453,13 @@ def main():
                      **({"letter_sha256_prefix": entry["letter_sha256"][:12]} if "letter_sha256" in entry else {})}
             print(json.dumps(shown, indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "supporters":
+            from .supporters import add_supporter, remove_supporter
+            print(json.dumps(remove_supporter(root, args.id) if args.supporters_command == "remove" else
+                             add_supporter(root, name=args.name, kind=args.kind, organization=args.organization,
+                                           confirmed_on=args.confirmed_on, how=args.how, url=args.url,
+                                           correspondence=args.correspondence)))
+            print("Recorded only. Nothing was published.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
@@ -1659,6 +1692,15 @@ def main():
             print(json.dumps(kit_fees.write_csv(root, args.csv, report) if args.csv else report, indent=2))
             print("Private file; nothing was sent or published." if args.csv else "Read-only. Nothing was sent.",
                   file=sys.stdout if args.csv else sys.stderr)
+        elif args.command == "kit-timing":
+            from . import kit_timing
+            report = kit_timing.report(root, args.as_of)
+            if args.csv:
+                kit_timing.check_csv(root, args.csv)  # a refused path prints no table
+            print(kit_timing.format_report(report))
+            if args.csv:
+                print(json.dumps(kit_timing.write_csv(root, args.csv, report), indent=2))
+            print("Read-only. Nothing was sent.", file=sys.stderr)
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))

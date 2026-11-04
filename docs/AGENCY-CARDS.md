@@ -63,6 +63,32 @@ that snapshot has the number, then "as reported by the vendor, checked DATE" lin
 own claims: the default wording never calls them verified, confirmed or fact, and reviewed `labels.json` wording must not
 either. Snapshots never enter the card JS config.
 
+## Reported and mapped counts together
+
+A city agency's own page (`agencies/<slug>.html`, not the card list) adds a section right after the transparency block
+when two numbers exist: the camera count of its **newest** `profile.transparency` snapshot (a `null` or missing count
+there means no section; an older snapshot is never used instead) and the community-mapped count that the build already
+computes for the same picker city (`map/cities.json` `name`, else `jurisdiction_name`, else the agency name, matched
+exactly against the boundary names). The agency must itself be a picker city, so county, sheriff, CHP, campus and other
+agencies, and city agencies outside the picker, show nothing, whatever their names look like. **Zero is a real count** on
+either side (it shows); a missing number is not zero (nothing shows). No map means no section.
+
+Two paragraphs, from the labels `agency.mapped_reported_counts` and `agency.mapped_reported_caveat`:
+
+> The agency's transparency portal reported N cameras (checked DATE). Community mappers have mapped M points inside the
+> city limits (map data as of DATE).
+>
+> These are counted differently: the portal counts the agency's own cameras, the map counts points inside a boundary
+> whoever owns them.
+
+The first date is the snapshot's `checked_on`; the second is the map data day from `map/snapshot.json` (never the build
+date or a file time). When that day is unknown the label `agency.mapped_reported_unknown` (`unknown`) stands in the
+sentence; it is a single word, not the full "Map data date unknown" sentence. The two counts measure different
+populations and are never subtracted, compared as a percentage, ranked, or described as missing cameras, and neither is
+called complete. The numbers stay the vendor's report and the community map; the page makes no ownership claim.
+Organizer verification of the agency is not verification of either number. Nothing changes in the camera cards, the card
+JS, the `cameraCount` text from the map counts (see above), or any page without both numbers.
+
 ## Confirmed, not known, asked
 
 Each agency on `agencies.html` has three blocks after its summary, from organizer-reviewed `content/agencies.json`

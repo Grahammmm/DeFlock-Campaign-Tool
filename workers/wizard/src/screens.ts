@@ -3,6 +3,7 @@ import { locationLabel, type SuggestedAgency } from "@deflock/shared/agencies";
 import { html, jsonBlock, raw, shell, type Safe } from "@deflock/shared/html";
 import { redactStep, type PlanStep } from "./plan.ts";
 import { CLOUDFLARE_TOKEN_SCOPES, COST_TABLE, STEP_TITLES, type WizardState } from "./state.ts";
+import { outboxSenderFields } from "./steps/outbox-sender.ts";
 
 export function frame(state: WizardState | null, step: number, body: Safe, error: string | null = null): string {
   const steps = html`<ol class="steps">${STEP_TITLES.map((t, i) => html`<li class="${i + 1 === step ? "is-active" : i + 1 < (state?.step ?? 1) ? "is-done" : ""}">${i + 1}. ${t}</li>`)}</ol>`;
@@ -93,6 +94,7 @@ export function screenAccounts(state: WizardState): Safe {
 <label class="field">Base URL <input type="url" name="model_base_url" value="${a?.model?.base_url ?? (strict ? "http://127.0.0.1:11434/v1" : "")}"></label>
 <label class="field">API key <input type="password" name="model_api_key" autocomplete="off"></label>
 <label class="field">Model id <input type="text" name="model_id" value="${a?.model?.model_id ?? ""}"></label>
+${outboxSenderFields(a?.outbox)}
 <h2>What this will cost</h2>
 <table class="data cost-table"><tr><th>Item</th><th>Billing basis</th><th>Note</th></tr>${COST_TABLE.map((c) => html`<tr><td>${c.item}</td><td>${c.basis}</td><td>${c.note}</td></tr>`)}</table>
 <p class="meta">No price or capacity guarantee is made; check the providers' current pages before you authorize anything.</p>
