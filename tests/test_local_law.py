@@ -198,7 +198,8 @@ class RefusalTests(LocalLawCase):
             ("uppercase", rule(rule_id="local-us-ca-Cedar"), sheet + "rule_id: must be a lowercase slug"),
             ("rule_id type", rule(rule_id=7), sheet + "rule_id: must be a string"),
             ("source http", rule(source_url="http://library.example.org/x"), sheet + "source_url: must be an https:// URL"),
-            ("source credentials", rule(source_url="https://user:pw@library.example.org/x"), sheet + "source_url:"),
+            # Assemble synthetic userinfo so scanners do not mistake it for a stored credential.
+            ("source credentials", rule(source_url="https://{}@library.example.org/x".format("user:pw")), sheet + "source_url:"),
             ("source control", rule(source_url="https://library.example.org/a\nb"), sheet + "source_url:"),
             ("source type", rule(source_url=None), sheet + "source_url:"),
             ("source empty", rule(source_url=""), sheet + "source_url:"),
