@@ -309,7 +309,9 @@ refuses with `data/sources.json: ...` and writes nothing on any other key or a
 top level `schema_version`, `generated_at` (the build date at 00:00 UTC) and `meetings`; per meeting `id`, `body`,
 `agency_id` or null, `starts_at`, `status`, `agenda_url` or null, `url` (the page path `/meetings/<id>.html`) and, for a
 held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `source_url`, `vote` and the per-member
-`votes` as `{name, vote}` in stored order, each only when recorded). It never includes the comment kit, `participation`,
+`votes` as `{name, vote}` in stored order, each only when recorded), plus the pair `minutes_url` and
+`minutes_approved_on` (the body's approved official minutes, both or neither; no derived confirmation flag). It never
+includes the comment kit, `participation`,
 contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
 `data/meetings.json: non-public key ...` and writes nothing.
 `public/` is

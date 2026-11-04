@@ -99,6 +99,9 @@ def validate(document, schema, root=None, where="$"):
             if key not in document:
                 raise ValueError(f"{where}: missing required field {key!r}")
         properties = schema.get("properties", {})
+        for key, needed in schema.get("dependentRequired", {}).items():  # DF2207-05: a pair present only in part
+            if key in document and (missing := [name for name in needed if name not in document]):
+                raise ValueError(f"{where}: field {key!r} needs {missing}")
         if schema.get("additionalProperties") is False:
             extra = sorted(set(document) - set(properties))
             if extra:

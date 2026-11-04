@@ -884,8 +884,12 @@ def main():
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
     outcome_p = commands.add_parser("meetings-outcome", help="Record an organizer-verified outcome on a past staged meeting")
-    for flag in ("--directory", "--id", "--result", "--on", "--source", "--verified-by"):
+    for flag in ("--directory", "--id"):
         outcome_p.add_argument(flag, required=True)
+    for flag in ("--result", "--on", "--source", "--verified-by"):  # required in creation mode, checked there (DF2207-05)
+        outcome_p.add_argument(flag)
+    outcome_p.add_argument("--minutes-url", help="https URL of the body's approved official minutes (confirms an existing outcome)")
+    outcome_p.add_argument("--minutes-approved-on", metavar="YYYY-MM-DD", help="Day the body approved those minutes")
     outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
     outcome_p.add_argument("--votes", metavar="FILE", help="name,vote CSV (yes|no|abstain|absent|recused) read from the --source record")
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
@@ -1334,13 +1338,8 @@ def main():
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
         elif args.command == "meetings-outcome":
-            from .meeting_outcome import record_outcome
-            print(json.dumps(record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by,
-                                            args.vote, args.replace, votes_file=args.votes,
-                                            recording_url=args.recording_url, recording_start=args.recording_start), indent=2))
-            if args.replace and args.votes is None:  # the new outcome replaced the old one whole
-                print("votes: none")
-            print("Recorded only. Nothing was published.")
+            from .meeting_outcome import run_outcome_command
+            print("\n".join(run_outcome_command(root, args)))
         elif args.command == "meetings-comment-sent":
             from .meeting_comments import record
             entry = record(root, args.id, args.on, args.channel, args.file, args.replace)
