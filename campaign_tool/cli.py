@@ -947,6 +947,10 @@ def main():
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
     status_p.add_argument("--csv", metavar="FILE", help="Write a new private .csv tracker (0600) outside public/ and content/")
+    fees_p = commands.add_parser("kit-fees", help="Fee estimates, payments and waivers across every recorded request, "
+                                 "with exact totals (read-only)")
+    fees_p.add_argument("--directory", required=True)
+    fees_p.add_argument("--csv", metavar="FILE", help="Write a new private .csv (0600) outside public/ and content/")
     check_p = commands.add_parser("kit-check", help="Unfilled [placeholders] and unverified recipients in each "
                                   "selected agency's draft (read-only; exit 3)")
     check_p.add_argument("--directory", required=True)
@@ -1526,6 +1530,12 @@ def main():
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
                 if row["fee_state"] == "unpaid":
                     print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
+        elif args.command == "kit-fees":
+            from . import kit_fees
+            report = kit_fees.fees(root)
+            print(json.dumps(kit_fees.write_csv(root, args.csv, report) if args.csv else report, indent=2))
+            print("Private file; nothing was sent or published." if args.csv else "Read-only. Nothing was sent.",
+                  file=sys.stdout if args.csv else sys.stderr)
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
