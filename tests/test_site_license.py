@@ -141,11 +141,13 @@ class LicenseTests(unittest.TestCase):
 
     def test_csv_links_carry_the_licence_name_and_the_csv_bytes_do_not_change(self):
         self.build(present=False)
-        before = {name: (self.public / "data" / name).read_bytes() for name in ("findings.csv", "sources.csv")}
+        before = {name: (self.public / "data" / name).read_bytes()
+                  for name in ("findings.csv", "sources.csv", "agencies.csv", "meetings.csv")}
         name = LICENSES["CC0-1.0"][0]
         self.build({"id": "CC0-1.0"})
         for page, target in (("findings/index.html", "findings"), ("sources.html", "sources"), ("about.html", "findings"),
-                             ("about.html", "sources")):
+                             ("about.html", "sources"), ("about.html", "agencies"), ("about.html", "meetings"),
+                             ("agencies.html", "agencies"), ("meetings.html", "meetings")):
             self.assertIn(f'<a href="/data/{target}.csv" type="text/csv">Spreadsheet (CSV) (license: {escape(name)})</a>',
                           self.read(page), (page, target))
         for csv_name, data in before.items():

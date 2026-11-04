@@ -1141,7 +1141,7 @@ class Site:
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
                 f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")} '
                 f'<a href="/data/agencies.json" type="application/json">{self.t("intro.agencies_open_data")}</a> · '
-                f'<a href="/data/agencies.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p></div>'
+                f'{self.csv_link("/data/agencies.csv")}.</p></div>'
                 + ('<div class="agency-list">' + self.glance_section() + "".join(articles) + '</div>' if articles
                    else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
@@ -1581,7 +1581,7 @@ class Site:
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p>'
                 f'<h2>{self.t("heading.meetings")}</h2></div><p>{self.t("intro.meetings")} '
                 f'<a href="/data/meetings.json" type="application/json">{self.t("intro.meetings_open_data")}</a> · '
-                f'<a href="/data/meetings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p></div>'
+                f'{self.csv_link("/data/meetings.csv")}.</p></div>'
                 '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
                 + '</div></section>\n')
         if self.past:
