@@ -2,11 +2,18 @@
 kit/outgoing/<id>.eml: the Subject line and the request text after it, before ``Statutory context`` or ``Operator
 checklist:`` (banner, ``To:`` and ``Agency:`` come before Subject). Nothing is sent: no network or SMTP code, and
 kit/sent.json is not touched (record a send with kit-sent).
+
+``--for mail`` writes a printable private letter, kit/outgoing/<id>.letter.html, and its plain .txt twin: the
+requester block from kit/request-settings.json, today's date, the verified postal address and the sendable text.
+Nothing is printed or sent. The two files are replaced one after the other, not as a pair: if the second write
+fails the first may already be new; the command reports the failure and running it again rewrites both.
 """
+import html
 import json
 import os
 import stat
 import sys
+from datetime import date
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -77,8 +84,70 @@ def _write(out, name, data):
         os.close(directory)
 
 
-def copy(root, agency_id, target):
-    """Write kit/outgoing/<id>.txt (``target`` portal) or an unsent .eml (email); return written/characters/subject."""
+LETTER_STYLE = ("@page{margin:1in}body{margin:0;font-family:Georgia,'Times New Roman',serif;font-size:12pt;"
+                "line-height:1.4;color:#000;background:#fff}.block{white-space:pre-wrap;margin:0 0 1.6em}")
+LETTER_CSP = "default-src 'none'; style-src 'unsafe-inline'"
+
+
+def _letter_texts(blocks):
+    """(html bytes, plain-text bytes, plain text) for the letter blocks; every block is escaped inert text."""
+    plain = "\n\n".join(blocks) + "\n"
+    paragraphs = "\n".join(f'<p class="block">{html.escape(block, quote=True)}</p>' for block in blocks)
+    page = (f'<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+            f'<meta http-equiv="Content-Security-Policy" content="{LETTER_CSP}">\n'
+            f'<title>Records request letter</title>\n<style>{LETTER_STYLE}</style>\n</head>\n'
+            f'<body>\n{paragraphs}\n</body>\n</html>\n')
+    return page.encode("utf-8"), plain.encode("utf-8"), plain
+
+
+def _preflight(out, names):
+    """Refuse a symlink or non-directory kit/outgoing and a non-regular destination before anything is written."""
+    if os.path.lexists(out) and (out.is_symlink() or not out.is_dir()):
+        raise ValueError("kit/outgoing must be a directory (not a symlink)")
+    for name in names:
+        target = out / name
+        if os.path.lexists(target) and not stat.S_ISREG(target.lstat().st_mode):
+            raise ValueError(f"kit/outgoing/{name} must be a regular file (not a symlink)")
+
+
+def _mail(root, entry, part, today):
+    """The letter for ``entry``: {"written": [html, txt], "characters", "subject"}; checks everything before writing."""
+    agency_id, kit_dir = entry["agency_id"], root / "kit"
+    report = kit_check.agency_report(root, entry)
+    if not report["ok"]:
+        shown = ", ".join(kit_check._shown(hit["placeholder"]) for hit in report.get("placeholders", [])[:3])
+        why = ([f"unfilled: {shown}"] if shown else []) + ([] if report["recipient_verified"] else ["recipient not verified"])
+        raise ValueError(f"kit-check fails for {agency_id} (whole draft{''.join('; ' + item for item in why)}); run kit-check")
+    address = kit.postal_proof(entry, today)
+    requester = kit.load_request_settings(kit_dir, today).get("requester_block")
+    if not requester:
+        raise ValueError("kit/request-settings.json needs a requester block for a mailed letter")
+    blocks = [requester, (today or date.today()).isoformat(), "\n".join(address),
+              "Subject: " + part["subject"], part["body"]]
+    hits = kit_check.draft_problems("\n".join(blocks))
+    if hits:
+        shown = ", ".join(kit_check._shown(hit["placeholder"]) for hit in hits[:3])
+        raise ValueError(f"{len(hits)} unfilled placeholder(s) in the letter: {shown}; fix the requester block or draft")
+    page, text, plain = _letter_texts(blocks)
+    names = (f"{agency_id}.letter.html", f"{agency_id}.letter.txt")
+    out = kit_dir / "outgoing"
+    _preflight(out, names)
+    if not os.path.lexists(out):
+        out.mkdir(mode=0o700)
+    for index, (name, data) in enumerate(zip(names, (page, text))):
+        try:
+            _write(out, name, data)
+        except OSError as exc:
+            window = f"; {names[0]} was already replaced, run the same command again" if index else ""
+            raise ValueError(f"kit/outgoing/{name} could not be written ({exc.strerror or 'I/O error'}){window}") from None
+    return {"written": [f"kit/outgoing/{name}" for name in names], "characters": len(plain),
+            "subject": part["subject"]}
+
+
+def copy(root, agency_id, target, *, today=None):
+    """Write kit/outgoing/<id>.txt (``target`` portal), an unsent .eml (email) or the letter pair (mail)."""
+    if target not in ("portal", "email", "mail"):
+        raise ValueError("copy target must be portal, email or mail")
     root = Path(root)
     entry = _agency(root, agency_id)
     kit_dir = root / "kit"
@@ -87,6 +156,8 @@ def copy(root, agency_id, target):
     part = sendable(_regular(kit_dir / "requests" / f"{agency_id}.md", f"kit/requests/{agency_id}.md"))
     if not part["subject"] or not part["body"]:
         raise ValueError(f"kit/requests/{agency_id}.md has no subject or no request text after its Subject line")
+    if target == "mail":
+        return _mail(root, entry, part, today)
     hits = kit_check.draft_problems(part["subject"] + "\n" + part["body"])
     if hits:
         shown = ", ".join(kit_check._shown(hit["placeholder"]) for hit in hits[:3])
@@ -116,5 +187,6 @@ def run_cli(root, agency_id, target, as_json=False):
     except ValueError as exc:
         print(f"Stopped: {exc}", file=sys.stderr)
         sys.exit(3)
-    print(json.dumps(result, indent=2, ensure_ascii=False) if as_json else "\n".join(f"{k}: {v}" for k, v in result.items()))
+    print(json.dumps(result, indent=2, ensure_ascii=False) if as_json else "\n".join(
+        f"{k}: {', '.join(v) if isinstance(v, list) else v}" for k, v in result.items()))
     print("Copy only. Nothing was sent.", file=sys.stderr)
