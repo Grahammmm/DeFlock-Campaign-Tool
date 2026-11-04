@@ -648,8 +648,9 @@ MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 CONTINUATION_KEYS = ("continued_to", "continued_to_date")  # DF0022-07: where the official source says an item went
+DIRECTION_KEYS = ("direction", "return_by", "direction_source")  # DF0022-08: a staff direction the source states, as a trio
 OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes", "recording_url",
-                "recording_start", "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS}
+                "recording_start", "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS, *DIRECTION_KEYS}
 RECORDING_START = re.compile(r"([0-9]{1,2}):([0-5][0-9]):([0-5][0-9])")
 VOTE_VALUES = ("yes", "no", "abstain", "absent", "recused")
 PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
@@ -697,7 +698,8 @@ def load_outcome(value, starts_at, status, label, today=None):
     if status == "cancelled":
         raise ContentError(f"{label}: a cancelled meeting has no outcome")
     _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes", "recording_url", "recording_start",
-                                                       "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS}, label)
+                                                       "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS,
+                                                       *DIRECTION_KEYS}, label)
     if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
         raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
     held, now = starts_at[:10], (today or date.today()).isoformat()
@@ -737,12 +739,44 @@ def load_outcome(value, starts_at, status, label, today=None):
             raise ContentError(f"{label}.recording_start: use H:MM:SS, at most 12:00:00")
     minutes = _load_minutes(value, held, now, label)  # DF2207-05: the body's approved minutes, always as a pair
     continued = _load_continuation(value, held, label)  # DF0022-07: where a continued item went, as the source states
+    direction = _load_direction(value, held, label)  # DF0022-08: what the body told its staff, as the source states
     return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
             "verified_by": value["verified_by"], "verified_at": value["verified_at"],
             **({"vote": value["vote"]} if "vote" in value else {}),
             **({"votes": [{"name": v["name"], "vote": v["vote"]} for v in votes]} if "votes" in value else {}),
             **({"recording_url": recording} if "recording_url" in value else {}),
-            **({"recording_start": start} if "recording_start" in value else {}), **minutes, **continued}
+            **({"recording_start": start} if "recording_start" in value else {}), **minutes, **continued, **direction}
+
+
+def direction_text_ok(value):
+    """DF0022-08: a literal one-line plain-text string of 1 to 200 characters with no edge whitespace."""
+    return (isinstance(value, str) and 1 <= len(value) <= 200 and plain_text(value) and value == value.strip()
+            and not any(char in value for char in "\r\n\t"))
+
+
+def _load_direction(value, held, label):
+    """``{direction, return_by, direction_source}`` or ``{}``. All three or none; a null, an empty or a partial group is
+    refused by field name. ``return_by`` is the date the official source states (a real ASCII calendar day on or after the
+    meeting's own date; it may be long past or far ahead), never a legal deadline."""
+    present = [key for key in DIRECTION_KEYS if key in value]
+    if not present:
+        return {}
+    for key in DIRECTION_KEYS:
+        if key not in value:
+            raise ContentError(f"{label}.{key}: needed together with {present[0]}")
+    text, day, source = (value[key] for key in DIRECTION_KEYS)
+    if not direction_text_ok(text):
+        raise ContentError(f"{label}.direction: must be 1 to 200 characters of plain text on one line")
+    try:
+        real = isinstance(day, str) and day.isascii() and _calendar_day(day, label) is not None
+    except ContentError:
+        real = False
+    if not real or day < held:
+        raise ContentError(f"{label}.return_by: must be a YYYY-MM-DD date on or after the meeting")
+    if isinstance(source, str) and len(source) > 500:
+        raise ContentError(f"{label}.direction_source: at most 500 characters")
+    _https(source, f"{label}.direction_source")
+    return {"direction": text, "return_by": day, "direction_source": source}
 
 
 def _load_continuation(value, held, label):
