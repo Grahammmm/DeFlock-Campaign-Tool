@@ -539,12 +539,14 @@ has one, `cost`: `amount_usd`, `period`, `as_stated_in`) or null, `transparency`
 `data/agencies.json: non-public key ...` and writes nothing.
 `data/agencies.csv` and `data/meetings.csv` (DF2207-11) are spreadsheet copies of those two files, linked beside every link
 to the matching JSON (`agencies.html`, `meetings.html` and `about.html`; label `intro.open_data_csv`, not in `sitemap.xml`).
-Each is read back from the JSON text the build has already rendered and checked, so no column exists that the JSON does not
-carry, and there is no CSV without its JSON. The header is the record keys in the order the JSON file writes them (alphabetical),
-for no records too, and a key a record lacks (a meeting without `outcome`, a null) is an empty cell, never a missing column;
+Each is read back from the JSON text the build has already rendered and checked, so columns contain only allowlisted public
+JSON fields, and there is no CSV without its JSON. The header includes required and optional public record keys in the order
+the JSON file writes them (alphabetical), for no records too. In particular, agencies always have a `funding` column, even
+when no agency has recorded funding. A key a record lacks (including `funding` or a meeting's `outcome`) or a null is an empty
+cell, never a missing column;
 then one row per record in the JSON array's order. Text stays as it is, a number keeps its JSON spelling, `true`/`false` stay
 `true`/`false`, a list is joined with `; ` in stored order (a string item as text, any other item as compact JSON), and an
-object (`asked` items, `alpr_policy`, `contract`, `transparency`, a meeting's `outcome` with its `votes`) is one cell of compact
+object (`asked` or `funding` items, `alpr_policy`, `contract`, `transparency`, a meeting's `outcome` with its `votes`) is one cell of compact
 JSON (`{"checked_on":"2026-10-20","url":"..."}`), never spread over more columns. Encoding and the formula guard are those of
 `findings.csv`: UTF-8 without a byte-order mark, CRLF line ends, standard quoting, and a cell that begins with `=`, `+`, `-`, `@`,
 a tab or a carriage return is written with a leading `'` (interior characters are not touched; the JSON is not changed).

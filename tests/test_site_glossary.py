@@ -30,6 +30,7 @@ NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network acc
 # sha256 of every file the fictional example renders on origin/main (514d4f03) with today=2026-10-01 and no
 # glossary.json: captured from an untouched detached main worktree, never from the candidate. A later change to the
 # generated site re-captures this table (render the example with today=2026-10-01 and no glossary.json; sha256 each file).
+# DF2207-11 funding parity: only agencies.csv gains an empty funding column; removing it restores its previous digest.
 BASELINE = {
     "404.html": "de1094d7b8cb47ad4d2725c3bbc91e05c5fe550651ebecaca4271bf927531cc0",  # pragma: allowlist secret -- public rendered-file SHA-256
     "_headers": "d8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e",  # pragma: allowlist secret -- public rendered-file SHA-256
@@ -40,7 +41,7 @@ BASELINE = {
     "app.js": "ab63767de14fee8703a11531e24ebcfc4a8b845f986208772f242ef8d447db9e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "cameras.html": "0b8fa66897e3b3e1a0e139758b4f53063c62d330f39be15c1bdd34fbfdb779db",  # pragma: allowlist secret -- public rendered-file SHA-256
     "corrections.html": "aa8cabda98e4f5294ea8b9ff0103a731cb45e69c181ba9552218f486badc72a1",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "data/agencies.csv": "45deeb3a1ff0e150af936b55f9bc1921925b5eacdffc46fba9975fc651976442",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "data/agencies.csv": "de226f37600fdaac36bacba18473551b0a724fa89dcd3c8a743a7442cf1bb477",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/agencies.json": "9c3dd727cbd33c726007e50c84daab6bd9d38cffa53e4941aefdff67a707f7bb",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/cameras.geojson": "6778a5778765c0aa2460e0cddf3056e885318d86196a03097f545927165c47f6",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/city-boundaries.geojson": "68593cd8443c2ec42b01e4153cf28386727a9486503eccb5dc42ea1961511f19",  # pragma: allowlist secret -- public rendered-file SHA-256

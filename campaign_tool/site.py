@@ -2222,7 +2222,7 @@ def _plan_site(root, today=None, notes=None):
         "data/sources.json": site.sources_json(), "data/sources.csv": site.sources_csv(), "data/meetings.json": meetings_text,
         "data/agencies.json": agencies_text,
         "data/meetings.csv": public_records_csv(meetings_text, "meetings", PUBLIC_MEETING_FIELDS),
-        "data/agencies.csv": public_records_csv(agencies_text, "agencies", PUBLIC_AGENCY_FIELDS),
+        "data/agencies.csv": public_records_csv(agencies_text, "agencies", PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL),
     })
     if site.finding_filter():  # written only when the findings index loads it
         files["findings/filter.js"] = filter_js(bool(site.js_labels), site.multi_agency)

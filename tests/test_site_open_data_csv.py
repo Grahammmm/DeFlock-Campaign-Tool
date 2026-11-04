@@ -18,7 +18,7 @@ from unittest import mock
 
 from campaign_tool import kit_export, site as site_module
 from campaign_tool.content import ContentError
-from campaign_tool.site import (PUBLIC_AGENCY_FIELDS, PUBLIC_COPY_FIELDS, PUBLIC_FINDING_FIELDS, PUBLIC_LIBRARY_FIELDS,
+from campaign_tool.site import (PUBLIC_AGENCY_FIELDS, PUBLIC_AGENCY_OPTIONAL, PUBLIC_COPY_FIELDS, PUBLIC_FINDING_FIELDS, PUBLIC_LIBRARY_FIELDS,
                                 PUBLIC_MEETING_FIELDS, build_site, public_records_csv)
 from tests.test_site_agencies_open_data import ASKED, CONTRACT, EMAIL, NEW, OLD, POLICY, PORTAL
 from tests.test_site_meetings_open_data import CONTACT, OUTCOME, PARTICIPATION, VOTES
@@ -268,7 +268,7 @@ class OpenDataCsvTests(unittest.TestCase):
         self.assertEqual(self.build(), self.build())
 
 
-AGENCY_COLUMNS = ["agency_id", "alpr_policy", "asked", "camera_count", "contract", "kind", "name", "transparency", "url"]
+AGENCY_COLUMNS = ["agency_id", "alpr_policy", "asked", "camera_count", "contract", "funding", "kind", "name", "transparency", "url"]
 MEETING_COLUMNS = ["agency_id", "agenda_url", "body", "id", "outcome", "starts_at", "status", "url"]
 DAY = date(2026, 11, 1)
 SHERIFF = "ca-cedar-county-sheriff"
@@ -359,7 +359,7 @@ class AgencyMeetingCsvTests(unittest.TestCase):
     def test_agency_csv_matches_public_json(self):
         self.rich_agencies(sheriff_name="Sheriff, Cedar County (fictional)")
         self.build()
-        self.assertEqual(AGENCY_COLUMNS, sorted(PUBLIC_AGENCY_FIELDS))
+        self.assertEqual(AGENCY_COLUMNS, sorted(PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL))
         records = self.check_against_json("agencies", "agencies", AGENCY_COLUMNS)
         self.assertEqual(len(records), 2)
         _, rows = self.table("agencies.csv")
@@ -375,7 +375,7 @@ class AgencyMeetingCsvTests(unittest.TestCase):
         self.assertTrue(cedar["camera_count"])  # the card's sentence, unchanged
         self.assertEqual(cedar["url"], "https://cedar-records.example.invalid/agencies/cedar.html")
         sheriff = next(dict(zip(AGENCY_COLUMNS, row)) for row in rows if row[0] == SHERIFF)
-        self.assertEqual((sheriff["asked"], sheriff["contract"], sheriff["transparency"]), ("", "", ""))  # absent values are blank
+        self.assertEqual((sheriff["asked"], sheriff["contract"], sheriff["transparency"], sheriff["funding"]), ("", "", "", ""))  # absent values are blank
         self.assertEqual(set(json.loads(sheriff["alpr_policy"])), {"url", "checked_on"})
         self.assertEqual(sheriff["name"], "Sheriff, Cedar County (fictional)")
         text = self.raw("agencies.csv").decode("utf-8")
@@ -446,7 +446,7 @@ class AgencyMeetingCsvTests(unittest.TestCase):
     def test_empty_arrays_have_stable_headers(self):
         self.assertEqual(public_records_csv(compact({"meetings": []}), "meetings", PUBLIC_MEETING_FIELDS),
                          ",".join(MEETING_COLUMNS) + "\r\n")
-        self.assertEqual(public_records_csv(compact({"agencies": []}), "agencies", PUBLIC_AGENCY_FIELDS),
+        self.assertEqual(public_records_csv(compact({"agencies": []}), "agencies", PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL),
                          ",".join(AGENCY_COLUMNS) + "\r\n")
         (self.content / "sources.json").write_text("[]", encoding="utf-8")  # no finding or source: no agency has a page
         shutil.rmtree(self.content / "findings")
