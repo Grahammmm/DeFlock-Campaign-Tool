@@ -201,8 +201,6 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
     if channel not in CHANNELS:
         raise ValueError("--channel must be one of " + ", ".join(CHANNELS))
     correspondence = list(correspondence or ())
-    if len(correspondence) > RECORDS_MAX:
-        raise ValueError(f"--correspondence: at most {RECORDS_MAX} per request")
     requests = read_sent(root)
     key, label = _key(agency_id, request), _label(agency_id, request)
     previous = requests.get(key)
@@ -216,7 +214,7 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
         entry["reference"] = previous["reference"]
     _set_reference(entry, reference, replace_reference)
     if correspondence:  # a new list replaces the stored one; none given keeps it (as reference)
-        entry["correspondence"] = _resolve_hashes(root, correspondence, {}, "correspondence")
+        entry["correspondence"] = _resolve_correspondence(root, correspondence, {})
     elif previous and "correspondence" in previous:
         entry["correspondence"] = previous["correspondence"]
     requests[key] = entry
@@ -248,18 +246,36 @@ def _steps_corr_ok(step):
     return "correspondence" not in step or _corr_ok(step["correspondence"])
 
 
-def _resolve_hashes(root, prefixes, linked, flag):  # every prefix is resolved before anything is written
+def _resolve_records(root, records, linked):  # every prefix is resolved before anything is written
     from .sources_cmd import resolve_hash
+    hashes = []
+    for number, prefix in enumerate(records, 1):
+        try:
+            digest = resolve_hash(root, prefix)
+        except ValueError as exc:
+            raise ValueError(f"--record #{number}: " + str(exc).removeprefix("--sha256: ")) from None
+        if digest in hashes:
+            raise ValueError(f"--record #{number}: the same record is given twice")
+        if digest in linked:
+            raise ValueError(f"--record #{number}: already linked on {linked[digest]}")
+        hashes.append(digest)
+    return sorted(hashes)
+
+
+def _resolve_correspondence(root, prefixes, linked):  # same resolver and refusals as --record, own flag name
+    from .sources_cmd import resolve_hash
+    if len(prefixes) > RECORDS_MAX:
+        raise ValueError(f"--correspondence: at most {RECORDS_MAX} records")
     hashes = []
     for number, prefix in enumerate(prefixes, 1):
         try:
             digest = resolve_hash(root, prefix)
         except ValueError as exc:
-            raise ValueError(f"--{flag} #{number}: " + str(exc).removeprefix("--sha256: ")) from None
+            raise ValueError(f"--correspondence #{number}: " + str(exc).removeprefix("--sha256: ")) from None
         if digest in hashes:
-            raise ValueError(f"--{flag} #{number}: the same record is given twice")
+            raise ValueError(f"--correspondence #{number}: the same record is given twice")
         if digest in linked:
-            raise ValueError(f"--{flag} #{number}: already linked on {linked[digest]}")
+            raise ValueError(f"--correspondence #{number}: already linked on {linked[digest]}")
         hashes.append(digest)
     return sorted(hashes)
 
@@ -341,9 +357,8 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     if records and kind != "produced":
         raise ValueError("--record is only for produced steps")
     correspondence = list(correspondence or ())  # any kind: letters and confirmations, never production evidence
-    if len(records) > RECORDS_MAX or len(correspondence) > RECORDS_MAX:
-        raise ValueError(f"--{'record' if len(records) > RECORDS_MAX else 'correspondence'}: "
-                         f"at most {RECORDS_MAX} records per step")
+    if len(records) > RECORDS_MAX:
+        raise ValueError(f"--record: at most {RECORDS_MAX} records per step")
     note = _clean_note(note)
     requests = read_sent(root)
     entry = requests.get(_key(agency_id, request)) if "#" not in agency_id else None
@@ -408,9 +423,9 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     for s in steps:
         linked.update({h: f"{s['on']} as {k}" for k, key in (("record", "records"), ("correspondence", "correspondence"))
                        for h in s.get(key, [])})
-    hashes = _resolve_hashes(root, records, linked, "record") if records else []
-    corr = _resolve_hashes(root, correspondence, {**linked, **{h: "this call as record" for h in hashes}},
-                           "correspondence") if correspondence else []
+    hashes = _resolve_records(root, records, linked) if records else []
+    corr = _resolve_correspondence(root, correspondence, {**linked, **{h: "this call as record" for h in hashes}}) \
+        if correspondence else []
     _set_reference(entry, reference, replace_reference)  # last refusal: nothing written on a conflict
     step = {"on": on, "kind": kind, **({"partial": True} if partial else {}),
             **({"expected_on": expected_on} if expected_on is not None else {}),
@@ -468,7 +483,8 @@ def status(root, today=None, law_base=None, *, request=None):
                      "last_step": {"on": steps[-1].get("on"), "kind": kinds[-1]} if steps else None,
                      "records": len(linked), "record_prefixes": [h[:12] for h in linked[:PREFIXES_MAX]],
                      **({"more": len(linked) - PREFIXES_MAX} if len(linked) > PREFIXES_MAX else {}),
-                     "correspondence": len(letters), "correspondence_prefixes": [h[:12] for h in letters[:PREFIXES_MAX]],
+                     **({"correspondence": len(letters), "correspondence_prefixes": [h[:12] for h in letters[:PREFIXES_MAX]]}
+                        if letters else {}),  # absent when none: an old request's row reads as before
                      **({"correspondence_more": len(letters) - PREFIXES_MAX} if len(letters) > PREFIXES_MAX else {}),
                      "fee_estimate": None if estimate is None else _dollars(estimate),
                      "over_fee_cap": None if estimate is None or cap is None else estimate > cap,

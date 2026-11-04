@@ -128,7 +128,8 @@ class KitCorrespondenceTests(unittest.TestCase):
         before = self.sent.read_bytes()
         row = self.row()
         self.assertEqual((row["records"], row["record_prefixes"]), (2, sorted([a[:12], b[:12]])))
-        self.assertEqual((row["correspondence"], row["correspondence_prefixes"]), (0, []))
+        self.assertNotIn("correspondence", row)
+        self.assertNotIn("correspondence_prefixes", row)
         self.assertNotIn("correspondence_more", row)
         self.assertEqual(self.production()[1:3], (2, 1))
         self.assertEqual(self.sent.read_bytes(), before)
@@ -240,6 +241,12 @@ class KitCorrespondenceTests(unittest.TestCase):
         self.refused(self.step("2026-03-20", "produced"), ["kit/sent.json unreadable: malformed steps"])
         with self.assertRaisesRegex(ValueError, "malformed steps"):
             kit_track.status(self.root)
+
+    def test_too_many_correspondence_refused_untouched(self):
+        self.sends()
+        flags = [p for n in range(201) for p in ("--correspondence", synthetic(f"x{n}")[:12])]
+        self.refused(self.step("2026-03-20", "acknowledged", *flags), ["--correspondence: at most 200 records"])
+        self.refused(self.sentcmd("--replace", *flags), ["--correspondence: at most 200 records"])
 
     def test_prefix_list_capped_with_more(self):
         many = sorted(synthetic(f"letter-{n}") for n in range(60))
