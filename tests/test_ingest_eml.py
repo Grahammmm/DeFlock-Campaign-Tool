@@ -24,6 +24,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HEADER_VALUES = ("Synthetic production subject 7Q", "records-clerk-7q@example.org", "organizer-7q@example.org")
 PDF, CSV = b"%PDF-1.4 synthetic\n\x00\xff binary\n", b"col_a,col_b\n1,2\n"
+REFUSAL = "malformed MIME (InvalidAttachmentEncoding); nothing was imported"
 
 
 def message(*attachments, html=True):
@@ -43,6 +44,18 @@ def raw(boundary_header, body):
     head = [f"Subject: {HEADER_VALUES[0]}", f"From: {HEADER_VALUES[1]}", f"To: {HEADER_VALUES[2]}",
             "MIME-Version: 1.0", boundary_header, "", ""]
     return ("\r\n".join(head) + body).encode()
+
+
+def mixed(*parts):
+    """A multipart message whose attachments p1.bin, p2.bin, ... are (Content-Transfer-Encoding value, payload text)
+    pairs; the value may be None (no header), one string or a list (one header line each)."""
+    body = "--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+    for number, (header, payload) in enumerate(parts, 1):
+        lines = [] if header is None else [header] if isinstance(header, str) else header
+        body += ("--B\r\nContent-Type: application/octet-stream\r\n"
+                 + "".join(f"Content-Transfer-Encoding: {line}\r\n" for line in lines)
+                 + f'Content-Disposition: attachment; filename="p{number}.bin"\r\n\r\n{payload}\r\n')
+    return raw('Content-Type: multipart/mixed; boundary="B"', body + "--B--\r\n")
 
 
 class IngestEmlTests(unittest.TestCase):
@@ -246,6 +259,120 @@ class IngestEmlTests(unittest.TestCase):
         result = self.ingest(link, returncode=1)
         self.assertIn("Stopped: --eml must be a regular, non-symlink file", result.stderr)
         self.assertFalse((self.root / "private" / "ledger.sqlite").exists())
+
+    # RF0200-1: strict attachment transfer decoding (docs/INGEST-MAIL.md)
+    def snapshot(self):
+        return {str(p.relative_to(self.base)): (p.stat().st_mtime_ns, p.read_bytes())
+                for p in self.base.rglob("*") if p.is_file()}
+
+    def refused(self, data, label=""):
+        """Real and dry-run both exit 1 with the one fixed message and change no byte or mtime, fresh or populated."""
+        path = self.write(data, "bad.eml")
+        for populated in (False, True):
+            if populated:
+                self.ingest(self.write(message((CSV, "text", "csv", "good.csv")), "good.eml"), source_id="synthetic-0")
+            before = self.snapshot()
+            for dry in (False, True):
+                result = self.ingest(path, dry=dry, returncode=1)
+                self.assertEqual(result.stderr.strip(), f"Stopped: {REFUSAL}", label)
+                self.assertEqual(result.stdout, "", label)
+                self.assertEqual(self.snapshot(), before, label)
+
+    def test_strict_base64_refuses_repairs_before_any_write(self):
+        cases = {"invalid-character": "AP8B*gM=", "missing-padding": "AP8BAgM", "excess-padding": "AP8BAgM==",
+                 "interior-padding": "AP8B=AgM=", "invalid-length": "A", "noncanonical-pad-bits": "AP8BAgN=",
+                 "non-ascii": "AP8B\u00e9AgM=", "vertical-tab": "AP8B\x0bAgM=", "form-feed": "AP8B\x0cAgM="}
+        for label, payload in cases.items():
+            with self.subTest(label):
+                self.refused(mixed(("base64", payload)), label)
+        with self.subTest("valid first then invalid second"):
+            self.refused(mixed(("base64", "AP8BAgM="), ("base64", "AP8BAgM")), "second")
+
+    def test_strict_base64_accepts_mime_whitespace_and_exact_bytes(self):
+        folded = "AP8B\r\n AgM=" + "\t"
+        data = mixed(("base64", folded), ("base64", "AP8B"), ("base64", "AP8BAgM="), ("base64", ""))
+        path = self.write(data)
+        report = self.ingest(path)
+        self.assertEqual(report["skipped"], [{"name": "p4.bin", "code": "empty"}])
+        want = [b"\x00\xff\x01\x02\x03", b"\x00\xff\x01", b"\x00\xff\x01\x02\x03"]
+        self.assertEqual([item["sha256"] for item in report["attachments"]], [hashlib.sha256(b).hexdigest() for b in want])
+        for item, blob in zip(report["attachments"], want):
+            self.assertEqual((self.root / "private" / "objects" / item["sha256"]).read_bytes(), blob)
+        counts = "SELECT (SELECT count(*) FROM objects), (SELECT count(*) FROM contains)"
+        before = self.rows(counts)
+        again = self.ingest(path)
+        self.assertEqual([a["outcome"] for a in again["attachments"]], ["present"] * 3)
+        self.assertEqual(self.rows(counts), before)
+
+    def test_quoted_printable_validates_escapes_not_text(self):
+        good = mixed(("quoted-printable", "caf=c3=A9 =3D=3d ok"), ("quoted-printable", "one=\r\ntwo=\nthree"),
+                     ("quoted-printable", "line\r\n\u00e9 literal"))
+        report = self.ingest(self.write(good))
+        stored = [(self.root / "private" / "objects" / a["sha256"]).read_bytes() for a in report["attachments"]]
+        self.assertEqual(stored, ["caf\u00e9 == ok".encode(), b"onetwothree", "line\r\n\u00e9 literal".encode()])
+        bad = {"dangling": "abc=", "bad-first-digit": "caf=Z0", "bad-second-digit": "caf=0Z", "cr-without-lf": "a=\rb",
+               "incomplete-hex": "x=C", "lone-equals-mid": "a= b"}
+        for label, payload in bad.items():
+            with self.subTest(label):
+                self.refused(mixed(("quoted-printable", "fine"), ("quoted-printable", payload)), label)
+
+    def test_attachment_encoding_header_is_unambiguous(self):
+        for header in (None, "7BIT", "8bit", "Binary", "Base64", "base64 ", "base64\t",
+                       " QUOTED-Printable ", "quoted-printable ", "quoted-printable\t"):
+            with self.subTest(header):
+                encoding = header.strip().lower() if header is not None else "7bit"
+                payload, expected = {"base64": ("AP8BAgM=", b"\x00\xff\x01\x02\x03"),
+                                     "quoted-printable": ("a=3Db", b"a=b")}.get(
+                                         encoding, ("plain \u00e9 \x01", "plain \u00e9 \x01".encode()))
+                path = self.write(mixed((header, payload)), "ok.eml")
+                preview = self.ingest(path, dry=True)
+                self.assertEqual(len(preview["attachments"]), 1)
+                self.assertEqual(preview["attachments"][0]["sha256"], hashlib.sha256(expected).hexdigest())
+                report = self.ingest(path)
+                self.assertEqual(report["attachments"][0]["sha256"], preview["attachments"][0]["sha256"])
+                blob = (self.root / "private" / "objects" / report["attachments"][0]["sha256"]).read_bytes()
+                self.assertEqual(blob, expected)
+        report = self.ingest(self.write(mixed(("8bit", "\u00e9\xff")), "id.eml"))
+        blob = (self.root / "private" / "objects" / report["attachments"][0]["sha256"]).read_bytes()
+        self.assertEqual(blob, "\u00e9\xff".encode())
+        for label, header in {"unknown": "x-uuencode", "empty": "", "malformed": "base64 (comment)",
+                              "duplicate-equal": ["base64", "base64"],
+                              "duplicate-conflicting": ["base64", "7bit"]}.items():
+            with self.subTest(label):
+                self.refused(mixed((header, "AP8BAgM=")), label)
+
+    def test_encoding_validation_scope_preserves_opaque_parts(self):
+        body = ("--B\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\nnot*base64\r\n"
+                "--B\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: quoted-printable\r\n"
+                "\r\nbad=\r\n--B--\r\n")
+        report = self.ingest(self.write(raw('Content-Type: multipart/mixed; boundary="B"', body)), dry=True)
+        self.assertEqual((report["attachments"], report["skipped"]), ([], []))
+        inner = raw('Content-Type: multipart/mixed; boundary="I"', "--I\r\nContent-Type: text/plain\r\n\r\nfwd\r\n--I\r\n"
+                    "Content-Type: application/pdf\r\nContent-Transfer-Encoding: base64\r\n"
+                    "Content-Disposition: attachment; filename=\"inner.pdf\"\r\n\r\nAP8BAgM\r\n--I--\r\n").decode()
+        outer = raw('Content-Type: multipart/mixed; boundary="B"',
+                    "--B\r\nContent-Type: message/rfc822\r\nContent-Disposition: attachment; filename=\"fwd.eml\"\r\n\r\n"
+                    + inner + "\r\n--B--\r\n")
+        report = self.ingest(self.write(outer, "fwd.eml"), dry=True)
+        self.assertEqual(self.names(report), ["fwd.eml"])
+        single = 'Content-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n' \
+                 'Content-Disposition: attachment; filename="r.bin"'
+        self.assertEqual(self.names(self.ingest(self.write(raw(single, "AP8BAgM=\r\n")), dry=True)), ["r.bin"])
+        self.refused(raw(single, "AP8BAgM\r\n"), "single-part root")
+
+    def test_invalid_attachment_diagnostic_has_no_private_values(self):
+        sentinels = ("sentinel-header-8k", "SENTINELBODY8K", "sentinel-name-8k")
+        data = raw('Content-Type: multipart/mixed; boundary="B"',
+                   "--B\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n"
+                   f"X-Private: {sentinels[0]}\r\nContent-Disposition: attachment; filename=\"{sentinels[2]}.bin\"\r\n\r\n"
+                   f"{sentinels[1]}*\r\n--B--\r\n")
+        path = self.write(data, "sentinel.eml")
+        digest = hashlib.sha256(data).hexdigest()
+        result = self.ingest(path, returncode=1)
+        self.assertEqual(result.stderr.strip(), f"Stopped: {REFUSAL}")
+        for value in sentinels:
+            self.assertNotIn(value, result.stdout + result.stderr)
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
 
 
 if __name__ == "__main__":

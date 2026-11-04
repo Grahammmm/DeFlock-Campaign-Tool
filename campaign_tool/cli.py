@@ -691,8 +691,11 @@ def _read_previous(path):
 
 def meeting_stage_cmd(args, root):
     from .meeting_stage import stage
-    print(json.dumps(stage(root, args.id, args.agency_id, args.location, args.replace, args.participation,
-                           finding_ids=args.finding), indent=2))
+    report = stage(root, args.id, args.agency_id, args.location, args.replace, args.participation,
+                   finding_ids=args.finding, asks=args.ask)
+    print(json.dumps(report, indent=2))
+    for note in report.get("review_flags", []):  # DF2207-07: advisory legal-claim notes, positions only
+        print(note, file=sys.stderr)
 
 
 def finding_preview(root, draft_path, out, now=None):
@@ -917,6 +920,9 @@ def main():
     stage_p.add_argument("--agency-id", help="The meeting's agency; its published findings are cited first")
     stage_p.add_argument("--finding", action="append", metavar="ID",
                          help="Published finding id to cite (repeatable, max 3, in this order; default: 3 chosen)")
+    stage_p.add_argument("--ask", action="append", metavar="T", default=None,
+                         help="This meeting's own public-comment ask (repeatable, 1-3, 1-200 characters); "
+                              "replaces site.json comment_asks for this kit only")
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
@@ -1061,6 +1067,11 @@ def main():
                             "agency's answer covers (not on acknowledged, extension, clarification or fee_estimate steps)")
     response_p.add_argument("--disposition", choices=("produced", "partly_produced", "withheld", "no_records_stated"),
                             help="with --scope: what the agency said about those scopes (your record, not a legal finding)")
+    undo_p = commands.add_parser("kit-response-undo", help="Take the latest recorded step off a hand-sent request (kept in "
+                                 "the private kit/sent-undone.json); fetches and sends nothing")
+    for flag in ("--directory", "--agency", "--reason"):
+        undo_p.add_argument(flag, required=True)
+    undo_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     muckrock_p = commands.add_parser("kit-muckrock-import", help="Propose the kit-response step a MuckRock request JSON you "
                                      "saved by hand implies; fetches and sends nothing")
     for flag in ("--directory", "--agency", "--from-json"):
@@ -1675,6 +1686,8 @@ def main():
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
                 if row["fee_state"] == "unpaid":
                     print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
+                if row.get("undone_steps"):
+                    print(f"{label}: {row['undone_steps']} step(s) undone", file=sys.stderr)
                 for item in row.get("downloads_pending", ()):
                     print(f"{label}: {item['line']}", file=sys.stderr)
                 if row["channel"] == "portal" and row.get("request_url"):
@@ -1732,6 +1745,12 @@ def main():
                                          withheld_basis=args.withheld_basis, scope_ids=args.scope,
                                          disposition=args.disposition, download_expires_on=args.download_expires_on),
                              indent=2))
+            print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-response-undo":
+            from .kit_undo import undo_step
+            result = undo_step(root, args.agency, request=args.request, reason=args.reason)
+            print(f"{result['label']}: removed the {result['kind']} step of {result['on']}; "
+                  f"{result['undone_steps']} step(s) undone.")
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-asked":
             from .kit_asked import run_cli as kit_asked_cli

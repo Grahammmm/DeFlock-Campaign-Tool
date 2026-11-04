@@ -9,8 +9,10 @@ from datetime import date, datetime
 from pathlib import Path
 
 from .cli import read_config
-from .content import _read_json, load_content, load_finding, load_meeting, load_participation
+from .content import (_read_json, load_comment_asks, load_content, load_finding, load_meeting,
+                      load_participation)
 from .kit import _kit_folder, _write_json
+from .legal_claims import legal_notes
 from .meetings import _clean, comment_kit_md
 
 MAX_KIT_BYTES = 4 * 1024 * 1024
@@ -69,7 +71,8 @@ def _chosen_findings(findings, finding_ids):
 
 
 def stage(root, meeting_id, agency_id=None, location=None, replace=False, participation=None, today=None,
-          finding_ids=None):
+          finding_ids=None, asks=None):
+    override = load_comment_asks(asks, "--ask") if asks is not None else None  # DF2207-07: before anything is read or written
     cfg = read_config(root)
     meeting = _find(_read_kit(root), meeting_id)
     if meeting.get("status") == "cancelled":
@@ -83,6 +86,8 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     model = load_content(root)
     if model is None:
         raise MeetingStageError("content/ is required (the site reads content/meetings/); create content/site.json first")
+    site_asks = model["site"].get("comment_asks")  # --ask wins as a whole, then site.json, then the built-in defaults
+    custom = override if override is not None else site_asks
     findings = (_chosen_findings(model["findings"], list(finding_ids)) if finding_ids is not None
                 else _default_findings(model["findings"], agency_id))
     cited = [{**f, "path": f"/findings/{f['slug']}.html"} for f in findings]
@@ -105,7 +110,8 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
         "body": entry["body"],
         "starts_at": meeting.get("starts_at"),
         "agenda_item": entry["agenda_item"],
-        "comment_kit_md": comment_kit_md(entry, cited, cfg["name"], base_url=model["site"].get("base_url")),
+        "comment_kit_md": comment_kit_md(entry, cited, cfg["name"], base_url=model["site"].get("base_url"),
+                                    asks=custom),
     }
     if isinstance(meeting.get("agenda_url"), str):
         document["agenda_url"] = meeting["agenda_url"]
@@ -139,9 +145,23 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     if replaced and not replace:
         raise MeetingStageError(f"content/meetings/{target.name} exists; pass --replace to overwrite")
     _write_json(target, document)
-    return {"written": f"content/meetings/{target.name}", "findings_cited": len(cited),
-            "findings": [f["id"] for f in cited], "replaced": replaced,
-            "note": NOTE}
+    report = {"written": f"content/meetings/{target.name}", "findings_cited": len(cited),
+              "findings": [f["id"] for f in cited], "replaced": replaced,
+              "note": NOTE}
+    flags = _ask_notes(custom, "--ask" if override is not None else "site.json.comment_asks")
+    if flags:  # advisory only: positions and rule names, never the text; the kit is written either way
+        report["review_flags"] = flags
+    return report
+
+
+def _ask_notes(custom, label):
+    """review-required notes for the resolved custom asks; a guard fault is a note, never a failure."""
+    if custom is None:
+        return []
+    try:
+        return legal_notes((f"{label}[{n}]", ask) for n, ask in enumerate(custom, 1))
+    except Exception:  # noqa: BLE001 - alert-only
+        return ["review-required: legal-claim wording (guard-error)"]
 
 
 def stale_kits(root):

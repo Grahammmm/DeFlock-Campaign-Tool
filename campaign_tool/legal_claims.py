@@ -120,7 +120,8 @@ def site_notes(root):
         model = load_content(root)
         walk = lambda v: [t for x in v.values() for t in walk(x)] if isinstance(v, dict) else \
             [t for x in v for t in walk(x)] if isinstance(v, (list, tuple)) else [v] if isinstance(v, str) else []
-        return (legal_notes((f"findings/{f.get('slug', '?')}", t) for f in (model or {}).get("findings", []) for t in walk(f))
+        asks = ((f"site.json.comment_asks[{n}]", ask) for n, ask in enumerate((model or {}).get("site", {}).get("comment_asks", []), 1))
+        return (legal_notes([*((f"findings/{f.get('slug', '?')}", t) for f in (model or {}).get("findings", []) for t in walk(f)), *asks])
                 + faq_notes((model or {}).get("faq")))  # DF0022-01: every FAQ answer, scanned on its own
     except Exception:  # noqa: BLE001 - alert-only: a scan that cannot run is itself a flag, never a failure
         return ["review-required: legal-claim wording (site content could not be scanned; read the findings before publishing)"]

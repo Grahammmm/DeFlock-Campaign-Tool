@@ -141,7 +141,9 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image"}
+             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image",
+             "comment_asks"}
+MAX_COMMENT_ASKS, MAX_ASK_CHARS = 3, 200
 SHARE_IMAGE_KEYS = {"path", "alt"}
 SHARE_RATIO, SHARE_RATIO_TOLERANCE = 1.905, 0.02  # 1200x630
 BRAND_KEYS = {"logo", "logo_alt", "accent", "ink", "favicon"}
@@ -251,6 +253,27 @@ def load_share_image(value, assets_dir=None):
     return {"path": value["path"], "alt": alt, "size": size}
 
 
+def load_comment_asks(value, label):
+    """DF2207-07: the campaign's own public-comment asks, 1-3 plain-text strings of 1-200 characters.
+
+    Checked on the raw text; nothing is coerced, trimmed or dropped. A refusal names the one-based position, never the text.
+    Control and format characters (newline, tab, DEL, bidi, zero-width) and U+2028/U+2029 are refused as well as angle brackets."""
+    if not isinstance(value, list) or not value:
+        raise ContentError(f"{label}: must be a list of 1 to {MAX_COMMENT_ASKS} asks")
+    if len(value) > MAX_COMMENT_ASKS:
+        raise ContentError(f"{label}[{MAX_COMMENT_ASKS + 1}]: at most {MAX_COMMENT_ASKS} asks")
+    for index, ask in enumerate(value, 1):
+        where = f"{label}[{index}]"
+        if not isinstance(ask, str) or not ask.strip():
+            raise ContentError(f"{where}: must be a non-empty string")
+        if len(ask) > MAX_ASK_CHARS:
+            raise ContentError(f"{where}: at most {MAX_ASK_CHARS} characters")
+        if (not plain_text(ask) or "\u2028" in ask or "\u2029" in ask
+                or any(unicodedata.category(char) in ("Cc", "Cf") for char in ask)):
+            raise ContentError(f"{where}: must be plain text on one line without angle brackets or control characters")
+    return list(value)
+
+
 def load_site(document, assets_dir=None):
     """``assets_dir`` (content/public-assets) lets ``brand`` check its logo and favicon files."""
     _require_keys(document, SITE_KEYS, {"schema_version", "tagline", "about_md"}, "site.json")
@@ -317,6 +340,8 @@ def load_site(document, assets_dir=None):
                                   default="This is not legal advice. Findings describe records and "
                                           "published rules as of the event date; consult counsel "
                                           "before relying on them."),
+        **({"comment_asks": load_comment_asks(document["comment_asks"], "site.json.comment_asks")}
+           if "comment_asks" in document else {}),
         **({"brand": load_brand(document["brand"], assets_dir)} if "brand" in document else {}),
         **({"share_image": load_share_image(document["share_image"], assets_dir)} if "share_image" in document else {}),
     }
