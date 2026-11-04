@@ -270,7 +270,7 @@ describe("stub executors", () => {
     const repo = await seedCampaign();
     const { row: s } = await repo.propose("post_social", null, { text: "hello" }, "ps-1", ORG.email);
     await approveAction(repo, s.action_id, ORG);
-    expect((await executeAction(repo, env as Env, s.action_id, ORG)).error).toMatch(/^not_implemented: /);
+    expect((await executeAction(repo, env as Env, s.action_id, ORG)).error).toMatch(/^social_not_configured: /);
     const { row: p } = await repo.propose("pay_fee", null, { amount_cents: 12000, fee_cap_cents: 5000 }, "pf-1", ORG.email);
     await approveAction(repo, p.action_id, ORG);
     const done = await executeAction(repo, env as Env, p.action_id, ORG);
