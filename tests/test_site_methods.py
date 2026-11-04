@@ -76,6 +76,16 @@ class MethodsPageTests(unittest.TestCase):
             self.assertIn(role, html)
         self.assertNotIn("<script", html)
 
+    # DF0022-05: generic policy prose only, in its own paragraph after the pinned review sentence
+    def test_methods_page_says_reviewers_declare_interests(self):
+        self.build()
+        html = self.read("methods.html")
+        gate = "Until then the build refuses to publish it.</p>"
+        paragraph = ("<p>Reviewers declare agency interests privately. A declared interest excludes their review "
+                     "from findings about that agency.</p>")
+        self.assertIn(gate + paragraph, html)
+        self.assertEqual(html.count("declared interest"), 1)
+
     # 2. every label badge / confidence link on finding pages, the findings index and home resolves in methods.html
     def test_every_badge_links_to_an_existing_anchor(self):
         self.second_finding(classification="information_gap", confidence="likely")
