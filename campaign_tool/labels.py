@@ -75,6 +75,7 @@ DEFAULTS = {
     "intro.meetings": "Comment kits summarize reviewed findings; they are not legal advice and do not ask anyone to flood a meeting.",
     "intro.open_data_about": "Published findings are also available as open data:",
     "intro.meetings_open_data": "Meetings and outcomes as open data (JSON)",
+    "intro.meetings_calendar": "Subscribe to the meetings calendar (.ics)",
     "intro.meetings_open_data_about": "Meetings with their recorded outcomes, votes and official sources:",
     "intro.agencies_open_data": "Agencies as open data (JSON)",
     "intro.agencies_open_data_about": "Agencies with their asked items, posted policy, contract end and portal numbers, as each source reported them:",

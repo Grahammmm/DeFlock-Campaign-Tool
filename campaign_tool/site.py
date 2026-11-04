@@ -25,13 +25,14 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
+from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
 from .markdown_lite import render as markdown
+from .privacy_patterns import refusal
 from .shell import render
 from .provenance_text import EXPLAINER, source_line
 from .redirects import load_redirects
@@ -43,7 +44,7 @@ ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
-                       "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+                       "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
                        "_redirects", "methods.html", "privacy.html", "glossary.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "requests.html"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
@@ -469,6 +470,26 @@ def point_check_renderer(labels):
     names = {status: labels["map.check_" + status] for status in POINT_CHECK_STATUSES}
     return ("(function(LABELS,HEADING){return " + POINT_CHECK_RENDERER + ";})("
             + js_json(names) + "," + js_json(labels["map.check_heading"]) + ")")
+
+
+def ics_text(value):
+    """RFC 5545 TEXT value: control characters (CR included) dropped, then \\ ; , and newline escaped."""
+    value = re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", "", str(value))
+    return value.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def ics_fold(line):
+    """Fold to at most 75 octets per line (CRLF + one space), never inside a UTF-8 sequence."""
+    parts, chunk, size, limit = [], "", 0, 75
+    for char in line:
+        width = len(char.encode("utf-8"))
+        if size + width > limit:
+            parts.append(chunk)
+            chunk, size, limit = "", 0, 74  # the leading space of a continuation line is one octet
+        chunk += char
+        size += width
+    parts.append(chunk)
+    return "\r\n ".join(parts)
 
 
 class Site:
@@ -1581,7 +1602,7 @@ class Site:
                 f'<a href="/data/meetings.json" type="application/json">{self.t("intro.meetings_open_data")}</a> · '
                 f'<a href="/data/meetings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.'
                 + (f' <a href="/meetings.xml" type="application/atom+xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else "")
-                + '</p></div>'
+                + f' <a href="/meetings.ics">{self.t("intro.meetings_calendar")}</a></p></div>'
                 '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
                 + '</div></section>\n')
         if self.past:
@@ -2059,6 +2080,26 @@ class Site:
             ET.SubElement(entry, f"{{{ns}}}category", term=finding["classification"])
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(feed, encoding="unicode") + "\n"
 
+    def meetings_ics(self):
+        """Upcoming (not cancelled) meetings as an RFC 5545 calendar; deterministic for one build day."""
+        host = urlsplit(self.base).hostname if self.base else "deflock-campaign.invalid"
+        stamp = self.today.strftime("%Y%m%d") + "T000000Z"
+        lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DeFlock Campaign Tool//meetings//EN", "CALSCALE:GREGORIAN",
+                 "X-WR-CALNAME:" + ics_text(self.cfg["name"] + " meetings")]
+        for meeting in self.upcoming:
+            start = datetime.fromisoformat(meeting["starts_at"].replace("Z", "+00:00")).astimezone(timezone.utc)
+            lines += ["BEGIN:VEVENT", f'UID:meeting-{meeting["id"]}@{host}', "DTSTAMP:" + stamp,
+                      "DTSTART:" + start.strftime("%Y%m%dT%H%M%SZ"), "SUMMARY:" + ics_text(meeting["body"])]
+            if meeting["location"]:
+                lines.append("LOCATION:" + ics_text(meeting["location"]))
+            if meeting["agenda_url"]:
+                lines.append("URL:" + meeting["agenda_url"])
+            link = f'{self.base}/meetings.html#meeting-{meeting["id"]}'
+            lines += ["DESCRIPTION:" + ics_text((meeting["agenda_item"] + "\n" if meeting["agenda_item"] else "") + link),
+                      "END:VEVENT"]
+        lines.append("END:VCALENDAR")
+        return "".join(ics_fold(line) + "\r\n" for line in lines)
+
     def meetings_feed_entries(self):
         """DF1103-10: the staged meetings the feed lists, newest ``updated`` first, one per id, as plain dicts.
 
@@ -2372,6 +2413,52 @@ def _asset_plan(model):
     return plan
 
 
+PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map")
+# Fields an organizer fills with a contact on purpose, or that are never published: not scanned. A library entry is scanned
+# through its public projection only (never note, fragment or the full hash); an agency without its private contact and notes.
+PRIVACY_GATE_SKIP = {"how", "contact_email", "privacy_contact"}
+PRIVACY_GATE_AGENCY_SKIP = {"records_email", "notes", "muckrock_agency_id", "request"}
+PRIVACY_GATE_LIBRARY = ("title", "agency_id", "received_at", "public_url", "pages", "public_copy")
+
+
+def _privacy_gate(model, cfg=None):
+    """Refuse the build when an email, phone or plate pattern sits in published text (the shared privacy lint, before anything is
+    rendered or written). Names the category and the place, never the text. Scans the content parts, the source library's public
+    fields, the agencies without their private contact and notes, site.json and the campaign name; the fields an organizer fills
+    with a contact on purpose (a meeting's ``how``, the contact and privacy-contact addresses) are not scanned."""
+    def walk(value, where, skip=PRIVACY_GATE_SKIP):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key not in skip:
+                    yield from walk(item, f"{where}.{key}", skip)
+        elif isinstance(value, (list, tuple)):
+            for number, item in enumerate(value):
+                yield from walk(item, f"{where}[{number}]", skip)
+        elif isinstance(value, str):
+            yield where, value
+    parts = [(part, model.get(part)) for part in PRIVACY_GATE_PARTS]
+    # Only this exact built-in illustrative address is intentional. Overrides (including other labels) still run the lint.
+    parts.append(("labels", {key: value for key, value in (model.get("labels") or {}).items()
+                             if not (key == "signup.placeholder" and value == "you@example.org")}))
+    # A finding is scanned through its declared fields only: an undeclared key on the model is never published.
+    parts.append(("findings", [{key: value for key, value in finding.items() if key in FINDING_KEYS}
+                               for finding in model.get("findings") or ()]))
+    parts.append(("sources", [{key: source.get(key) for key in PRIVACY_GATE_LIBRARY} for source in model.get("sources") or ()]))
+    parts += [("site", model.get("site")), ("campaign", {key: (cfg or {}).get(key) for key in ("name", "county", "state")})]
+    for key in ("cameras_path", "boundary_path", "county_boundary_path"):
+        path = (model.get("map") or {}).get(key)
+        if path:
+            _check_copy(path, MAX_GEOJSON_BYTES)
+            # Decode JSON escapes, include property keys and never apply the meeting/contact field exemptions to copies.
+            text = json.dumps(_read_json(path, MAX_GEOJSON_BYTES), ensure_ascii=False)
+            if note := refusal("map." + key, text):
+                raise ContentError(note)
+    for part, value in parts + [("agencies", model.get("agencies"))]:
+        for where, text in walk(value, part, PRIVACY_GATE_SKIP | PRIVACY_GATE_AGENCY_SKIP if part == "agencies" else PRIVACY_GATE_SKIP):
+            if note := refusal(where, text):
+                raise ContentError(note)
+
+
 def _plan_site(root, today=None, notes=None):
     """Render every page and check every copy without writing: ``(files, copies)``, or None without content/."""
     from .cli import read_config
@@ -2382,6 +2469,7 @@ def _plan_site(root, today=None, notes=None):
     model = load_content(root, today)
     if model is None:
         return None
+    _privacy_gate(model, cfg)
     site = Site(root, cfg, model, today=today or date.today())
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
@@ -2433,7 +2521,7 @@ def _plan_site(root, today=None, notes=None):
     files.update({
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
         **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
-        "site-data.js": site.site_data_js(), "search.js": search_js(),
+        "meetings.ics": site.meetings_ics(), "site-data.js": site.site_data_js(), "search.js": search_js(),
         "agency-cards.js": agency_cards.render(site.cards_config(), relabel=bool(site.js_labels)),
         "app.js": site.app_js(), "data/findings.json": site.findings_json(), "data/findings.csv": site.findings_csv(),
         "data/sources.json": site.sources_json(), "data/sources.csv": site.sources_csv(), "data/meetings.json": meetings_text,

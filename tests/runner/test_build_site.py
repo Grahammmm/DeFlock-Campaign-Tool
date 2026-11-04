@@ -38,7 +38,7 @@ class BuildSiteTests(unittest.TestCase):
         result = build_site.run(ctx)
         self.assertEqual(result.status, "done", result.error)
         paths = [m["path"] for m in result.outputs["manifest"]]
-        for expected in ("index.html", "findings/index.html", "findings/cedar-policy-posted.html", "_headers", "style.css", "data/cameras.geojson", "sitemap.xml"):
+        for expected in ("index.html", "findings/index.html", "findings/cedar-policy-posted.html", "_headers", "style.css", "data/cameras.geojson", "sitemap.xml", "meetings.ics"):
             self.assertIn(expected, paths)
         self.assertEqual(result.outputs["version"], "v2026-09-30.1")
         for entry in result.outputs["manifest"]:
@@ -47,6 +47,7 @@ class BuildSiteTests(unittest.TestCase):
             self.assertEqual(len(data), entry["bytes"])
         self.assertEqual(ws.site_files["sites/v2026-09-30.1/index.html"][1], "text/html; charset=utf-8")
         self.assertEqual(ws.site_files["sites/v2026-09-30.1/_headers"][1], "text/plain; charset=utf-8")
+        self.assertEqual(ws.site_files["sites/v2026-09-30.1/meetings.ics"][1], "text/calendar; charset=utf-8")
         self.assertEqual(len(ws.proposals), 1)
         action = next(iter(ws.proposals.values()))
         self.assertEqual(action["kind"], "deploy_site")
