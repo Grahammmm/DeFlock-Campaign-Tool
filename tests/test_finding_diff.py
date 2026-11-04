@@ -136,13 +136,14 @@ class FindingDiffTests(unittest.TestCase):
     def test_every_public_field_in_order_via_old_new(self):
         old = self.draft("old.json")
         new = self.draft("new.json", title="T2", summary="S2", body_md="x", sources=[], classification="opinion",
-                         confidence="likely", limitations=[], counterevidence=["Other."])
+                         confidence="likely", limitations=[], counterevidence=["Other."],
+                         agency_id="ca-syn-city", also_agency_ids=["ca-syn-county"])
         fields = [change["field"] for change in self.as_json(old, new)]
         self.assertEqual(fields, list(finding_diff.FIELDS))
         text = self.cli(old, new, returncode=3).stdout.splitlines()
         self.assertIn('limitations:\n- "Synthetic limits."\ncounterevidence:\n- "None found."\n+ "Other."',
                       "\n".join(text))
-        self.assertEqual(text[-1], "8 field(s) differ")
+        self.assertEqual(text[-1], "10 field(s) differ")
 
     def test_publication_only_fields_are_not_a_public_difference(self):
         old = self.write(self.base / "old.json", published())

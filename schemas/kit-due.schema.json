@@ -26,8 +26,10 @@
           "days": {"type": ["integer", "null"]},
           "state": {
             "enum": ["waiting_on_you", "producing", "installment_passed", "no_law_package", "past_due",
-                     "due_today", "upcoming"]
+                     "due_today", "upcoming", "download_pending", "download_expired"]
           },
+          "kind": {"const": "download"},
+          "produced_on": {"$ref": "#/$defs/date"},
           "since": {"$ref": "#/$defs/date"},
           "note": {"type": "string", "minLength": 1}
         }
@@ -79,6 +81,7 @@
     "stated_date_passed": {"type": "integer", "minimum": 0},
     "installment_passed": {"type": "integer", "minimum": 0},
     "waiting_on_you": {"type": "integer", "minimum": 0},
+    "download_expired": {"type": "integer", "minimum": 0},
     "note": {"type": "string", "minLength": 1}
   },
   "$defs": {

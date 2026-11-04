@@ -27,6 +27,7 @@ NAMES = ["Ash Example", "Birch Example", "Cedar Example", "Dale Example", "Zo\u0
 FIVE = "name,vote\nAsh Example,yes\nBirch Example,no\nCedar Example,abstain\nDale Example,absent\nZo\u00eb Example,recused\n"
 LINE = ('<p class="meeting-outcome">Outcome: Approved on <time datetime="2026-10-14">2026-10-14</time>'
         f' · <a href="{SOURCE}" rel="noopener noreferrer">Official record</a> · verified by Synthetic Organizer</p>')
+PENDING = '<p class="meeting-minutes">Recorded by the campaign; minutes not yet approved</p>'  # DF2207-05
 
 
 def official(name):
@@ -102,7 +103,7 @@ class MeetingVotesTests(unittest.TestCase):
         table = ('<h3>Recorded votes</h3><table class="recorded-votes"><thead><tr><th scope="col">Member</th>'
                  f'<th scope="col">Vote</th></tr></thead><tbody>{rows}</tbody></table><p class="notice">'
                  f'From the official record: <a href="{SOURCE}" rel="noopener noreferrer">{SOURCE}</a></p>')
-        self.assertEqual(self.page().count(LINE + table), 1)
+        self.assertEqual(self.page().count(LINE + PENDING + table), 1)
         self.assertEqual((self.root / "public" / "meetings.html").read_bytes(), listing)
 
     def test_names_match_after_nfc_and_whitespace_collapse_and_store_the_official_name(self):

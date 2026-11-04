@@ -4,7 +4,16 @@ Open-source tools to help local organizers investigate automated license plate r
 
 **Status: early development, not a production-ready campaign platform.** The initial implementation is an offline starter. It does not contact agencies, send email, provision infrastructure, determine legal violations, or publish findings automatically.
 
+## Organizer entry point
+
+If your campaign has a hosted workspace, sign in there: its home screen shows
+what is waiting on you, request reminders, snapshot age and every organizer action.
+The previous dashboard is at `/status`. [Workers setup and status](docs/WORKERS.md)
+explain this interface; this repository does not provision a workspace for you.
+
 ## Start locally
+
+This is the documented fallback when a hosted workspace is not available.
 
 New organizer? After cloning, run `python3 -m campaign_tool setup --directory ../my-campaign`.
 Answer name, county, two-letter state and optional city/place; setup runs offline and lists drafts to review.
@@ -61,7 +70,7 @@ Original bytes are preserved under their SHA-256 hash. Separate receipt identiti
 - Offline agency discovery for all 58 California counties (`data/agencies/us-ca.json`, unverified seed) and a drafted-request kit.
 - Static, mobile-friendly website generation: a neutral starter from `campaign.json` alone, or a multi-page campaign site (findings with hashed sources, agencies, source library, meetings, Atom feed, agency cards and optional MapLibre map) from a reviewed `content/` directory with a generated Content-Security-Policy; see [docs/SITE-CONTENT.md](docs/SITE-CONTENT.md).
 - Private local document storage and SQLite receipt ledger.
-- A review-gate library binding independent review receipts to finding content.
+- A review-gate library binding independent review receipts to finding content; volunteer reviewers follow the role-by-role [review guide](docs/REVIEW-GUIDE.md).
 - Synthetic policy, search log, agreement, and agency reply fixtures.
 - Offline newsletter drafts (`python3 -m campaign_tool.newsletter`), Legistar meeting import with an ALPR keyword filter (`campaign_tool meetings`, fixture-driven without `--online`), and verified `backup` / `verify` / `restore` of a campaign directory.
 - Portable records-analysis and review skills.

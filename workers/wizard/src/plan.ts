@@ -2,6 +2,7 @@
 // its rollback call, and the placeholders resolved from earlier outputs.
 import type { WizardState } from "./state.ts";
 import { campaignSlug } from "./state.ts";
+import { outboxSecrets } from "./steps/outbox-sender.ts";
 
 export type StepKind = "api" | "worker_upload" | "secret" | "d1_query";
 
@@ -194,6 +195,7 @@ export function buildPlan(state: WizardState): PlanStep[] {
     steps.push(secret("MODEL_API_KEY", state.accounts.model.api_key, "Secret MODEL_API_KEY"));
     steps.push(secret("MODEL_ID", state.accounts.model.model_id, "Secret MODEL_ID"));
   }
+  for (const [name, value] of outboxSecrets(state.accounts.outbox)) steps.push(secret(name, value, `Secret ${name} (Outbox sender)`));
   steps.push(api({ id: "cron.workspace", title: `Cron triggers ${crons.join(" ; ")}`, resource: "cron", method: "PUT", path: `${acct}/workers/scripts/${n.workspaceScript}/schedules`, body: crons.map((cron) => ({ cron })), rollback: { method: "PUT", path: `${acct}/workers/scripts/${n.workspaceScript}/schedules`, body: [] } }));
   return steps;
 }

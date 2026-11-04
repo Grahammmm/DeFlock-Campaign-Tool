@@ -1,4 +1,6 @@
 export interface Env {
+  /** Optional HTTPS navigation to guided setup; never provisions from the workspace. */
+  SETUP_URL?: string;
   DB: D1Database;
   ORIGINALS: R2Bucket;
   PUBLIC_BUCKET: R2Bucket;

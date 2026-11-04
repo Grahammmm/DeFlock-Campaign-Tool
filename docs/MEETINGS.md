@@ -74,6 +74,18 @@ the agency's when `--agency-id` was given) in load order; `--agency-id` now orde
 sets the meeting's `agency_id` but never filters `--finding` ids. The command prints the cited ids as
 `findings` next to the `findings_cited` count.
 
+**Cited findings (DF2207-06).** The staged file also stores the ids the kit cites as `cited_findings` (1 to 3
+unique ids, in the order the kit cites them), so each published finding page can list the staged meetings
+that cite it. The ids come from the same selection that wrote the kit, never from the kit text. A kit that
+cites no finding (the "No published findings yet" text) omits the field. `--replace` replaces the whole list
+(or omits it when nothing is cited now) and keeps a recorded outcome as before. Meetings staged before this
+field existed have no list: their kit text is never parsed, so they are not listed on any finding page. A
+finding page's **Discussed at public meetings** section shows each citing meeting (body linked to its
+`meetings/<id>.html`, recorded date and time in its own UTC offset, agenda item, and the outcome result when one
+was recorded) newest first, ties by meeting id; cancelled and future staged meetings are listed too. A meeting
+citing a finding that was withdrawn, never published or unknown never fails the build and lists nothing for it.
+The list records what a staged kit cites; it is not proof of attendance, speaking, adoption or endorsement.
+
 ### Participation (organizer-verified)
 
 `meetings-stage --participation FILE` adds the facts an organizer checked on the agency's own page.
@@ -254,6 +266,31 @@ given again). The URL must be https with no user name or password, at most 500 c
 and `content-check` and `build` refuse the same mistakes in a hand-edited file. Past meetings in the meetings
 list and the meeting page then end the outcome line with `Watch the discussion (from H:MM:SS)`; the wording
 comes from the `meeting.recording` and `meeting.recording_from` labels. Outcomes without a recording render as before.
+
+### Confirming an outcome against the approved minutes
+
+`python3 -m campaign_tool meetings-outcome --directory D --id <meeting id> --minutes-url <https URL> --minutes-approved-on YYYY-MM-DD [--replace]`
+is the second mode of the same command. It attaches the body's approved official minutes to an outcome that is
+already recorded, without retyping or replacing its result, votes, recording or verifier. Both flags are needed
+together and cannot be mixed with `--result`, `--on`, `--source`, `--verified-by`, `--vote`, `--votes`,
+`--recording-url` or `--recording-start`; without either minutes flag all four creation flags are required, as before.
+The URL must be https with no user name or password, at most 500 characters. The date must be a real `YYYY-MM-DD` day
+from the meeting's own date to today inclusive (the approval may come after the outcome was recorded, so it is not
+compared with `--on`). It refuses a meeting with no recorded outcome (`minutes_url: needs a recorded outcome`), a
+cancelled or not yet held one, a symlinked file and a malformed value, each naming the field, and writes nothing.
+Minutes already attached are kept unless `--replace`, which replaces only that pair. It prints the whole outcome
+then `Recorded only. Nothing was published.` The tool fetches nothing; the link is an organizer-attested pointer.
+
+Caveat: an ordinary full `--replace` of the outcome (creation mode) drops the old minutes, as it drops omitted votes
+and recording, so a changed result must be confirmed against the minutes again.
+
+The meeting page, the meetings list and the agency page's "Past meetings" then show a second line under the outcome:
+`Confirmed in the minutes approved on D` (a link to the minutes) when both fields are present, otherwise
+`Recorded by the campaign; minutes not yet approved`. A meeting with no outcome shows neither. The wording comes
+from the `meeting.minutes_confirmed` (with `{date}`), `meeting.minutes_pending` and `agency.past_meetings` labels.
+`data/meetings.json` carries `minutes_url` and `minutes_approved_on` on the outcome, both or neither.
+`today` lists a `minutes_pending` item for each outcome recorded more than 45 days ago (by `--on`) that has no
+minutes, with the command to attach them; it only asks you to check whether the minutes are approved.
 
 ## Meetings feed (`meetings.xml`)
 

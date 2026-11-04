@@ -45,7 +45,7 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 | --- | --- | --- |
 | `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below) |
 | `content/findings/*.json` | no | one published finding per file (schema below) |
-| `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id` |
+| `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id`, optional `cited_findings` (1 to 3 unique finding ids, written by `meetings-stage`) |
 | `content/sources.json` | no | source-library entries: `sha256`, `title`, `agency_id`, `received_at`, `public_url` or null, `fragment`, `pages`, `note` |
 | `content/agencies.json` | no | override list; default is the selected entries of `kit/agencies.json` plus `kit/governing-bodies.json` |
 | `content/map/map-config.json` | no | controller settings (`schemas/map-controller.schema.json` keys) plus `county_bounds`, `style_url`, `tile_hosts`, `group_label`, `attribution` |
@@ -92,6 +92,17 @@ Review receipts are not evaluated by the build; the organizer's publication
 approval (see [CONTRACTS.md](CONTRACTS.md), approval card `publish_finding`)
 remains the gate that moves a finding into `content/findings/`.
 
+Optional `also_agency_ids` (DF1952-07): a list of 1 to 10 distinct agency ids, none equal to `agency_id`, for a finding that
+is about several agencies. It needs a non-empty primary `agency_id` and every id (primary included) must be one of the
+campaign's agencies, or `load_finding`, `build`, `content-check`, `finding publish` and `finding correct` refuse it by
+field and index; the order you enter is kept. The one finding page then appears on every named agency's page and Atom
+feed, counts once in each agency card and city `findingCount`, is listed under each agency in the findings filter and in
+related findings (any shared agency counts as "same agency"), and its page and the printable packet link every agency.
+`data/findings.json` carries `also_agency_ids` only for such findings. The field is part of the reviewed content hash:
+adding, removing or reordering an agency invalidates earlier review receipts, so for a published finding it takes a
+`finding correct --from DRAFT` with fresh review. Findings without the field render byte for byte as before. Search,
+kits, meeting packs, newsletters, the timeline and law-rule scope still use the primary agency only.
+
 Rule check: every id in `rule_ids` (unique, non-empty, at most 120 characters) and every non-null `sources[].rule_id` must be a
 rule in the campaign's law package (`campaign.json` country-state) in force on `event_date`, or `build` stops and
 `content-check` names it; `content-check` also prints `law package <jurisdiction>: draft|reviewed|missing`.
@@ -112,6 +123,14 @@ first (same date: by finding slug, then the order in the finding), each linking
 to the finding's `#corrections` section. The footer and each finding page link
 to it, and finding lists mark a corrected finding with a "Corrected" pill
 showing its latest correction date. The starter preview has no such page.
+
+A finding page also lists, under **Discussed at public meetings**, the staged meetings whose
+`cited_findings` include its id (DF2207-06): newest first, each linking `meetings/<id>.html` with the body,
+the recorded date and time in its own UTC offset, the agenda item and the recorded outcome result when any.
+Cancelled and future staged meetings are listed. It records that a staged comment kit cites the finding, not
+attendance, speaking, adoption or endorsement. Meetings without `cited_findings` (staged earlier, or whose kit
+cited nothing) are never inferred from their kit text; a cited id that is not a published finding renders
+nothing and never fails the build. A finding with no such meetings renders unchanged.
 
 Share previews: every page carries `og:*` and `twitter:card` `summary` tags from its own title and description
 (a finding page: its title and summary, `og:type` `article` with its published/updated times); `og:url` only
@@ -177,9 +196,49 @@ never carry it. It is shown only on `agencies.html` (docs/AGENCY-CARDS.md), neve
 the list's own order, never sorted by any number, with no ranking, score or "best/worst" wording. Cells: cameras,
 searches in the last 30 days and retention days from the newest `profile.transparency` snapshot (each linked to its
 `source_url`, checked date shown), the posted `alpr_policy` ("posted", linked to the policy), `contract.end` linked
-to the contract source, and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0").
+to the contract source, `contract.cost` as stated (`$12,345.60 per year`, linked to the contract source with its checked
+date; "not checked" without a cost) and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0").
 A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
 No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
+
+### Contract cost as stated (`profile.contract.cost`)
+
+A contract may carry an optional `cost`, `{amount_usd, period, as_stated_in}` (exactly these three; `null` is invalid),
+transcribed by an organizer from the document the contract's own `source_url` points to. It adds no second source or
+date: the enclosing contract's `source_url` and `checked_on` are mandatory and are the cost's provenance. `amount_usd`
+is a decimal string from 0 to 100000000 with at most two decimals, no sign, exponent, spaces, separators or leading
+zeroes (a JSON number is refused; it is never converted to a float and the accepted string is kept as written).
+`period` is `annual`, `total` or `one_time`. `as_stated_in` is the document's plain title, 1 to 120 characters, with no
+angle brackets, control or invisible characters and not a URL. The card and the agency page then show
+`Contract cost as stated: $12,345.60 per year (Example agreement; source, checked 2026-10-21).` (`total`, `one time`
+for the other periods; `source` links the contract source), and the glance table has a "Contract cost as stated"
+column between "Contract ends" and "Records items asked". A bad cost stops `build` (`Stopped: ...`, exit 1) and is
+listed by `content-check` (exit 3) with the same line, e.g.
+`content/agencies.json[1].profile.contract.cost.period: choose annual, total or one_time`; the supplied value is never
+echoed. The site never adds costs up, ranks by them or divides them by camera counts; agencies keep the list's order.
+Labels: `agency.contract_cost`, `agency.cost_annual`, `agency.cost_total`, `agency.cost_one_time`, `agency.cost_source`,
+`agencies.glance_cost`. A contract without a cost reads and renders exactly as before.
+
+### How an agency is paid for, as stated (`profile.funding`)
+
+An optional `profile.funding` is a list of 1 to 10 entries (`null`, `[]` and a single object are refused), each
+transcribed by an organizer from one document: `kind` (`grant`, `general_fund`, `asset_forfeiture`, `donation` or
+`other`), `name` (the program or donor organization exactly as the document writes it, 1 to 120 characters, already
+trimmed, no angle brackets, control or invisible characters; the organizer checks that it is not a person), `as_stated_in`
+(the document's plain title, the same rule as the contract cost), `source_url` (https, never fetched) and `checked_on`
+(a real `YYYY-MM-DD` day not after the build date). Optional `amount_usd` with `period` (both or neither; the contract
+cost rules and display), and `fiscal_year` (four ASCII digits as the document states it, first digit 1 to 9; a future year
+is allowed, `checked_on` is not). Each entry carries its own document, source and date, so two entries never share
+provenance. Entries keep the order written and are never summed, sorted, merged or compared. The agency card and an
+existing agency page then show `How it is paid for, as stated in DOC (source, checked DATE)` after the kind, name,
+amount and fiscal year of each entry; funding alone does not create a page. `data/agencies.json` carries an optional
+`funding` array (the same keys; omitted when none) for agencies that have a page. A bad entry stops `build` (exit 1) and
+is listed by `content-check` (exit 3) with the entry's path and rule, e.g.
+`content/agencies.json[1].profile.funding[0].kind: choose one of [...]`; the supplied name or key is never echoed.
+The site says nothing about a donor beyond the name in the document. Labels: `agency.funding_provenance`,
+`agency.funding_fiscal_year`, `agency.funding_kind_grant`, `agency.funding_kind_general_fund`,
+`agency.funding_kind_asset_forfeiture`, `agency.funding_kind_donation`, `agency.funding_kind_other`. A profile without
+`funding` reads and renders exactly as before.
 
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
@@ -242,13 +301,28 @@ an unknown request or agency, or an unknown `--tz` is refused and nothing is wri
 `public_url` stays null.
 
 `sources verify-copy --directory D --sha256 PREFIX --file DOWNLOADED --checked-on YYYY-MM-DD
-[--differs-because redacted|converted|unknown]` hashes a copy you downloaded yourself from an entry's `public_url`
-(a regular local file, no symlink, at most 200 MiB; nothing is fetched, copied or stored) and records
-`public_copy: {"matches", "checked_on", "reason"?}` on every entry of that record that has a `public_url`. A differing
-copy needs `--differs-because`; a matching one refuses it. `checked_on` may not be in the future or before
-`received_at`. Refusals print `Stopped: <reason>`, exit 3 and write nothing. `sources.html`, the citing finding pages
-and `data/sources.json` then show "Public copy checked D: same file as this record number" or "differs (redacted
-copy)", with a short "How to check a copy" note. `sources edit --public-url`/`--clear-public-url` drops the check.
+[--fragment FRAGMENT] [--differs-because redacted|converted|unknown]` hashes a copy you downloaded yourself from an
+entry's `public_url` (a regular local file, no symlink, at most 200 MiB; nothing is fetched, copied or stored) and
+records `public_copy: {"matches", "checked_on", "reason"?}` on every entry of that record whose `public_url` is the
+same string as the one you checked. A record whose entries all share one URL needs no `--fragment`. When the record
+has several different public URLs the command refuses (`record has multiple public URLs; add --fragment to choose
+the copy`) before it reads the file: `--fragment` names a library fragment of that record, and the check covers
+every entry of the record with that entry's exact `public_url`, whatever their fragments. URLs are compared as
+stored, character for character: a different scheme case, trailing slash, query or `#fragment` is a different URL,
+and nothing is normalized, decoded or fetched. `--fragment` is the library grouping name, not a URL fragment. Other
+URLs of the record keep their own check untouched, so a redaction warning on one copy is never overwritten by a
+match on another. A differing copy needs `--differs-because`; a matching one refuses it. `checked_on` may not be in
+the future or before the `received_at` of the entries being checked. Refusals print `Stopped: <reason>`, exit 3 and
+write nothing. `sources.html`, the citing finding pages and `data/sources.json` then show "Public copy checked D:
+same file as this record number" or "differs (redacted copy)" per entry, with a short "How to check a copy" note.
+`sources edit --public-url`/`--clear-public-url` drops the check. Checking bytes proves neither where a file came
+from nor what the remote address serves today. Checks saved by earlier versions covered every URL of a record; they
+are not migrated, so with several URLs re-download and recheck each one. Two synthetic examples, one per copy:
+
+```
+sources verify-copy --directory D --sha256 0123456789ab --fragment agency-original --file ./original.pdf --checked-on 2026-02-01
+sources verify-copy --directory D --sha256 0123456789ab --fragment agency-redacted --file ./redacted.pdf --checked-on 2026-02-01 --differs-because redacted
+```
 
 ### Pages (`content/pages/<slug>.json`, optional)
 
@@ -259,6 +333,61 @@ ignored, symlinks and folders are refused, at most 50 files. Slugs that are star
 `corrections`, `feed`, `sitemap`, `robots`, `style`, `site-data`, `agency-cards`, `app`, `data`, `vendor`) or a
 published finding slug are refused, as is a `public-assets/<slug>.html` entry. Every page is listed in
 `sitemap.xml`; `nav: true` (strictly a boolean, at most 3 pages) adds the title to the header nav after About.
+
+### Glossary (`content/glossary.json`, optional)
+
+Definitions an organizer has checked, written once, become `/glossary.html` and a "Terms used on this page" list on
+each finding that uses them. The file is `{"schema_version": 1, "terms": [...], "notice_md"?}`; nothing else.
+```json
+{"schema_version": 1, "notice_md": "Plain-language notes, not legal advice.",
+ "terms": [{"term": "ALPR", "aliases": ["license plate reader"], "definition_md": "A camera system that reads plates.",
+            "rule_id": "ca-civ-1798.90.5-definitions", "source_url": "https://leginfo.legislature.ca.gov/..."}]}
+```
+- `terms`: 0 to 80 entries; an empty list (or no file) switches the feature off completely: no page, no footer link, no
+  sitemap line, no list on findings, and every other output is byte-identical to a build without the file.
+- `term`: 1-100 characters of plain single-line text (no `<`, `>` or control characters), trimmed. `aliases`: 1 to 3 names
+  of the same kind. `definition_md`: non-blank, at most 8000 characters, rendered by the same escaped `markdown_lite` as
+  pages, so raw HTML shows as text. `notice_md` (at most 1000 characters, rendered above the entries) is optional;
+  `null` is refused, never read as "absent". Unknown keys, a `schema_version` other than the integer 1, wrong types and
+  non-string aliases are refused rather than coerced.
+- Names are compared after Unicode NFC, casefolding and collapsing whitespace. A term or alias that repeats another
+  one (across entries or within one) is refused naming both names and `glossary.json`; nothing is silently merged.
+- Terms are sorted by that normalized term, then spelling. Each gets the anchor `term-` plus the normalized term with
+  every run outside `a-z0-9` turned into `-`, so editing a definition or reordering the file never moves an anchor. A term
+  with no `a-z`/`0-9` at all, or two terms whose anchors would collide, is refused by name (no `-2` suffixes).
+- `rule_id` (optional) must be an exact rule id in the campaign's shipped law package (`campaign.json`'s jurisdiction)
+  and needs `source_url`, which must be one of that rule's `sources[].url`; no package, no rule or another URL refuses
+  the term. The page then shows the rule's citation and the package's own status ("draft, not legally reviewed" unless
+  the package says reviewed). Definitions are not gated on a finding's event date and never promote a review state.
+  `source_url` alone is only checked as an https URL: the organizer attests that it is the official source, and the build
+  never fetches it or judges its host.
+- `Terms used on this page` on a finding lists, in glossary order, each term whose name or alias appears in the
+  finding's `title`, `summary` or `body_md`. Each field is searched on its own (a phrase never spans two fields), after the
+  same normalization, as a literal (no patterns, stems or plurals) with a non-word character or the text edge on both
+  sides; letters, digits and `_` of any script are word characters. Markdown is searched as written, so link
+  destinations and code spans count. Definitions, sources, the footer and other findings never count. Nothing in the
+  prose is rewritten or auto-linked, and the finding hash, packet and open data are unchanged.
+- `glossary.html` joins the footer (next to Privacy) and, with `base_url`, `sitemap.xml`. `glossary` is a reserved slug
+  with or without the file: a `pages/glossary.json`, a finding slugged `glossary` and a `public-assets/glossary.html/...`
+  file are refused. The input JSON is never copied into `public/`.
+- `content-check` runs the build's own reader and lists every independent problem with `glossary.json` in its path;
+  a symlink (even dangling), folder or other non-regular `glossary.json`, an oversize file (2 MiB) or invalid UTF-8
+  or JSON is refused, not skipped. A refused glossary leaves the existing `public/` untouched; removing the file and
+  rebuilding removes the page and all its links.
+- Labels: `footer.glossary`, `title.glossary`, `title.glossary_description`, `heading.glossary`, `finding.terms` and
+  `glossary.also`, `glossary.citation`, `glossary.source`, `glossary.status` (see Labels).
+
+### Newsletter archive (`content/newsletters/<YYYY-MM-DD>.json`, optional)
+
+Written by `newsletter archive --date D --publish` (see NEWSLETTER.md); exactly `{"schema_version": 1, "sent_on", "title",
+"body_md"}`. The file name is the sent day and must match `sent_on`; `title` is 1-200 characters, `body_md` non-blank and at
+most 256 KiB, the file at most 512 KiB, at most 1000 issues. Raw HTML, non-https links, email addresses, phone numbers,
+64-hex hash runs, control characters (other than newline and tab), duplicate JSON keys, unsubscribe wording and template
+markers are refused naming the file. `build` and `content-check` use the same validator, and a refusal leaves the previous
+`public/` untouched. With at least one issue the build writes `newsletters.html` (newest first) and
+`newsletters/<D>.html` (the Markdown through `markdown_lite`, a backlink, no signup or consent text), adds a footer link and
+the sitemap entries; with none, output is unchanged. `newsletters` is a reserved page and finding slug, and
+`newsletters.html`/`newsletters/` cannot be `public-assets` names. The loader never reads `kit/`.
 
 ### Topic pages (`content/topics/<slug>.json`, optional)
 
@@ -281,6 +410,52 @@ refused; without topics nothing changes and the output is byte-identical. `conte
 New labels: `nav.topics`, `heading.topics`, `title.topics`, `title.topics_description`, `finding.part_of`
 (`{topic}` is the already-escaped link list); `examples/labels/es.json` carries each.
 
+### Supporting organizations (`content/supporters.json`, optional)
+
+An organizer lists an organization only after recording its permission privately:
+
+```
+supporters add --directory DIR --name N --kind civil_liberties|community|faith|labor|neighborhood|business|other \
+  [--url https://...] --organization --confirmed-on YYYY-MM-DD --how email|letter|meeting|form [--correspondence PREFIX]
+supporters remove --directory DIR --id ID
+```
+
+`--organization` is required and is an explicit attestation, never inferred from the name or kind: only organizations
+are listed, never individuals. `add` writes the public row to `content/supporters.json` and the consent record to
+`kit/supporters-consent.json` (the `kit/` folder is created, or tightened, to 0700; the file is 0600) together; `remove` drops both. The command prints only
+`{"id", "action"}`: no consent record, hash, evidence text or private path. `--correspondence` is optional: 12 to 64
+lowercase hex characters of one ingested record, stored privately as its full digest; it is never published.
+
+The public file is exactly `{"schema_version": 1, "supporters": [{"id", "name", "kind", "url", "joined_on",
+"organization": true}]}` (all keys required, `url` null or https, at most 200 rows and 1 MiB, unknown or duplicate keys
+refused). The id is the lowercase name with other characters turned into single hyphens and must start with a letter and
+fit in 64 characters; a duplicate id or name (Unicode-folded) is refused. Names are never cleaned silently: leading or
+trailing spaces, control characters, angle brackets, a duplicate or a failed lint is a refusal. `joined_on` is the
+confirmation date (a real date from 2000-01-01 up to today).
+
+The private record is `{"organization": true, "confirmed_on", "how", "public_sha256", "correspondence"}` and
+`public_sha256` is the SHA-256 of the exact public row, so editing a listed row (name, kind, URL or date) needs a new
+confirmation: a matching id alone is not permission. `build` refuses with a `ContentError` (before any public write)
+for a public row with no record, a hash or date mismatch, a future date, a malformed store or a private store that
+group/other can read; `content-check` names every such id (sorted, no values) as `content/supporters.json: <id>: ...`.
+Read-only commands never create, change or fix either store.
+
+`supporters.html` appears only when at least one organization is listed. It groups organizations by kind (civil
+liberties, community, faith, labor, neighborhood, business, other), alphabetically by name, each with its
+`<time>` joined date and an optional external link. A footer link and a `sitemap.xml` entry appear with it; with no file,
+or an empty list, the site is byte-identical to before. The page says only that these are supporting organizations; it
+is not a legal endorsement and does not let anyone speak for them. `supporters` is a reserved page and finding slug even
+without a file. Labels: `supporters.title`, `supporters.description`, `supporters.joined` (`{date}`) and
+`supporters.kind.<kind>`; `examples/labels/es.json` carries Spanish drafts (still unreviewed).
+
+Limits: the lint refuses `@`, phone-number-like digit runs and contact labels (`email:`, `phone:`, `contact:`, `mailto:`)
+in names and URLs, but it does not recognise a person's name. The organization attestation and the organizer's own
+review before every `add` remain mandatory; no program can prove that free text names an organization rather than a
+person. The two files are replaced one after the other with a rollback on an ordinary write failure; an interrupted
+`add` can leave an orphan private record (never a public row without consent), which blocks further `add`/`remove`
+until the saved pair of files is restored. There is no crash-atomic transaction and no concurrent writer support; run
+one writer. Evidence originals are never deleted.
+
 ## Generated pages and files
 
 `index.html` (hero map when configured, agency cards, mission, latest findings,
@@ -302,6 +477,7 @@ pages, listed in the sitemap; other agencies get no page and no link; a `public-
 per picker city by name, each point in the first city boundary holding it by the counts' half-open rule, then the
 `group_label` section; manufacturer/operator or "not tagged", an OSM node link or "no OSM link"; over 2 000 points each
 section lists 500 rows, then "and N more on the map"; linked from the map fallback and footer, in `sitemap.xml`),
+`glossary.html` (only with a non-empty `content/glossary.json`: see Glossary),
 `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or
@@ -311,7 +487,7 @@ present. `data/findings.json` is the published findings as open data
 `about.html`: per finding `id`, `slug`, `title`, `summary`, `body_md`,
 `classification`, `confidence`, `event_date`, `published_at`, `updated_at`,
 `agency_id`, `url` (absolute only when `base_url` is set; top-level `url_kind`
-says which), `limitations`, `counterevidence`, `corrections` (`date`, `note`) and
+says which), `also_agency_ids` (only on a finding that has it), `limitations`, `counterevidence`, `corrections` (`date`, `note`) and
 `sources` (`sha256_prefix`, the 12 hex characters shown on the page, `title`,
 `locator`, `rule_id`). It never includes `author`, `state`, `rule_version`,
 `duty`, `exceptions`, `rule_ids` or full hashes; the build refuses and writes
@@ -325,12 +501,27 @@ configured), `received_at`, `public_url` or null, `pages` or null and
 never count). It never includes `note`, `fragment` or the full hash; the build
 refuses with `data/sources.json: ...` and writes nothing on any other key or a
 40+ hex string. The starter build (no `content/`) writes no `data/sources.json`.
+`data/findings.csv` and `data/sources.csv` (DF1207-14) are spreadsheet copies of those two files, linked beside each JSON link
+on `findings/index.html`, `sources.html` and `about.html` (label `intro.open_data_csv`, default "Spreadsheet (CSV)"; not in
+`sitemap.xml`, like the JSON). Each is built from the already-checked JSON document, so a column the JSON does not carry cannot
+exist: one header row, then one row per record in the JSON's order, columns in the order of the JSON's keys; UTF-8 without a
+byte-order mark, CRLF line ends, standard quoting. Flattening: `null` is an empty cell, `true`/`false` stay `true`/`false`, a
+list of strings is joined with `; `, `sources` (findings) is the `; `-joined `sha256_prefix` values, `corrections` the
+`; `-joined `date: note`, `cited_by` the `; `-joined finding ids, and `public_copy` (sources) becomes the three columns
+`public_copy_matches`, `public_copy_checked_on` and `public_copy_reason`. Optional `also_agency_ids` and `agency_response`
+are empty cells when omitted by the public JSON (including a pending response); present `also_agency_ids` are joined with
+`; `, and a present `agency_response` is a JSON object serialized with sorted keys in one cell, using only its public fields.
+A cell that begins with `=`, `+`, `-`, `@`, a tab or a
+carriage return is written with a leading `'` so a spreadsheet does not run it as a formula (the `kit-status --csv` rule; the JSON
+is not changed). A meetings CSV is not built.
 `data/meetings.json` is the staged meetings as open data (`schemas/meetings-open-data.schema.json`), linked from
 `meetings.html` and `about.html`, newest `starts_at` first, cancelled ones included (`"meetings": []` with none):
 top level `schema_version`, `generated_at` (the build date at 00:00 UTC) and `meetings`; per meeting `id`, `body`,
 `agency_id` or null, `starts_at`, `status`, `agenda_url` or null, `url` (the page path `/meetings/<id>.html`) and, for a
 held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `source_url`, `vote` and the per-member
-`votes` as `{name, vote}` in stored order, each only when recorded). It never includes the comment kit, `participation`,
+`votes` as `{name, vote}` in stored order, each only when recorded), plus the pair `minutes_url` and
+`minutes_approved_on` (the body's approved official minutes, both or neither; no derived confirmation flag). It never
+includes the comment kit, `participation`,
 contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
 `data/meetings.json: non-public key ...` and writes nothing.
 `data/agencies.json` is the agencies as open data (`schemas/agencies-open-data.schema.json`), linked from
@@ -338,8 +529,11 @@ contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other k
 `agency_id` (`"agencies": []` with none). Top level `schema_version`, `campaign`, `generated_from`, `base_url`, `url_kind`
 and `agencies`; per agency `agency_id`, `name`, `kind`, `url` (the page path, with the base URL when one is set), `asked`
 (`topic`, `state`, `asked_on`, `updated_on` or null, newest `asked_on` first as the card lists them), `alpr_policy`
-(`url`, `checked_on`) or null, `contract` (`vendor`, `start`, `end`, `source_url`, `checked_on`) or null, `transparency`
-(the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, and `camera_count`
+(`url`, `checked_on`) or null, `contract` (`vendor`, `start`, `end`, `source_url`, `checked_on` and, only when the contract
+has one, `cost`: `amount_usd`, `period`, `as_stated_in`) or null, `transparency`
+(the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, an optional
+`funding` array (only when recorded: `kind`, `name`, `as_stated_in`, `source_url`, `checked_on` and, when given,
+`amount_usd` with `period`, and `fiscal_year`), and `camera_count`
 (the card's camera-count sentence) or null. It never includes `records_email`, `records_url`, `portal`, the asked-item
 `note`, the contract `renewal_note`, kit files, notes or any other key; the build refuses with
 `data/agencies.json: non-public key ...` and writes nothing.
@@ -462,7 +656,7 @@ every page is byte-identical to the English defaults in `campaign_tool/labels.py
 ```
 Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descriptions), `eyebrow.*`, `heading.*`,
 `intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
-`signup.*`, `js.*` (scripts, below), `handout.*` (the private meeting-pack handout, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
+`signup.*`, `glossary.*`, `js.*` (scripts, below), `handout.*` (the private meeting-pack handout, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
 keeps its English default.
 A complete Spanish draft of every key is in [`examples/labels/es.json`](../examples/labels/es.json) ([README](../examples/labels/README.md)).
 Machine-made draft. A fluent Spanish reader must check every line before a campaign uses it; nothing here is reviewed.

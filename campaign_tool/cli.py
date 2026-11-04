@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import fixes, registry
+from .supporters import HOWS as SUPPORTER_HOWS, KINDS as SUPPORTER_KINDS
 
 MAX_BYTES = 50 * 1024 * 1024
 MAX_DIR_FILES = 2000
@@ -471,8 +472,15 @@ def kit(args, root):
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
-def social_cmd(root, platforms=None, meetings=False, within_days=14):
-    from .social import build_meeting_social, build_social, meeting_review_notes, review_notes
+def social_cmd(root, platforms=None, meetings=False, within_days=14, outcomes=False):
+    from .social import (build_meeting_social, build_outcome_social, build_social, meeting_review_notes,
+                         outcome_review_notes, review_notes)
+    if outcomes:  # DF1952-14: private drafts quoting recorded meeting outcomes; nothing is posted
+        print(json.dumps(build_outcome_social(root, platforms, within_days), indent=2, ensure_ascii=False))
+        for note in outcome_review_notes(root, within_days):
+            print(note, file=sys.stderr)
+        print("Drafts written to kit/social/outcomes. Nothing was posted.")
+        return
     if meetings:  # DF1207-11: private drafts for upcoming meetings with verified participation; finding drafts untouched
         print(json.dumps(build_meeting_social(root, platforms, within_days), indent=2, ensure_ascii=False))
         for note in meeting_review_notes(root, within_days):
@@ -635,7 +643,7 @@ def backup_list_cmd(args):
 
 def backup_diff_cmd(args, root):
     from .backup import diff
-    report = diff(args.file, root, expected_manifest_sha256=args.expect_manifest_sha256)
+    report = diff(args.file, root, expected_manifest_sha256=args.expect_manifest_sha256, gnupg_home=args.gnupg_home)
     print(json.dumps(report, indent=2))
     if not report["current"]:
         sys.exit(3)
@@ -831,13 +839,41 @@ def main():
                           help="Draft for this platform's own length rule into kit/social/<platform> (repeatable)")
     social_p.add_argument("--meetings", action="store_true",
                           help="Draft one private post per scheduled upcoming meeting with verified participation into kit/social/meetings")
+    social_p.add_argument("--outcomes", action="store_true",
+                          help="Draft one private post per meeting with a recorded outcome dated in the last N days into kit/social/outcomes")
     social_p.add_argument("--within-days", type=int, default=None, metavar="N",
-                          help="With --meetings: meetings starting within N days, 1 to 60 (default 14)")
+                          help="With --meetings: meetings starting within N days; with --outcomes: outcomes recorded in the last N "
+                               "calendar days, today included; 1 to 60 (default 14)")
     press = commands.add_parser("press", help="Draft private press material; sends nothing")
-    press_draft = press.add_subparsers(dest="press_command", required=True).add_parser("draft")
+    press_commands = press.add_subparsers(dest="press_command", required=True)
+    press_draft = press_commands.add_parser("draft")
     press_draft.add_argument("--directory", required=True)
     press_draft.add_argument("--finding", action="append", default=[])
     press_draft.add_argument("--date")
+    supporters = commands.add_parser("supporters", help="Consent-backed supporting organizations: public entry in "
+                                     "content/supporters.json, private consent in kit/").add_subparsers(
+        dest="supporters_command", required=True)
+    supporters_add = supporters.add_parser("add", help="List one organization (never an individual) after recording its "
+                                           "permission; publishes nothing")
+    supporters_add.add_argument("--directory", required=True)
+    supporters_add.add_argument("--name", required=True)
+    supporters_add.add_argument("--kind", required=True, choices=SUPPORTER_KINDS)
+    supporters_add.add_argument("--url", default=None, help="Optional https address of the organization")
+    supporters_add.add_argument("--organization", action="store_true",
+                                help="Attest that this is an organization, not an individual (required)")
+    supporters_add.add_argument("--confirmed-on", required=True, metavar="DATE", help="YYYY-MM-DD the organization confirmed")
+    supporters_add.add_argument("--how", required=True, choices=SUPPORTER_HOWS)
+    supporters_add.add_argument("--correspondence", default=None, metavar="PREFIX",
+                                help="12 to 64 hex characters of an ingested record; kept privately")
+    supporters_remove = supporters.add_parser("remove", help="Drop one organization's public entry and private record")
+    supporters_remove.add_argument("--directory", required=True)
+    supporters_remove.add_argument("--id", required=True)
+    press_letter = press_commands.add_parser("letter", help="Draft a private letter to the editor; sends nothing")
+    press_letter.add_argument("--directory", required=True)
+    press_letter.add_argument("--finding", action="append", default=[], help="Published finding id (repeat for 1 to 3)")
+    press_letter.add_argument("--words", type=int, default=250, metavar="N", help="Word limit, 150 to 400 (default 250)")
+    press_letter.add_argument("--outlet", help="Outlet name for the salutation (plain text)")
+    press_letter.add_argument("--date")
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
     backup_out = backup_p.add_mutually_exclusive_group(required=True)
@@ -856,6 +892,7 @@ def main():
     diff_p.add_argument("--file", required=True)
     diff_p.add_argument("--directory", required=True)
     diff_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
+    diff_p.add_argument("--gnupg-home", default=None, help="GnuPG home holding the private key (encrypted archives)")
     drill_p = commands.add_parser("backup-drill", help="Restore a backup into a temp copy, check it there, remove it (exit 3 on fail)")
     drill_p.add_argument("--file", required=True)
     drill_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
@@ -884,8 +921,12 @@ def main():
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
     outcome_p = commands.add_parser("meetings-outcome", help="Record an organizer-verified outcome on a past staged meeting")
-    for flag in ("--directory", "--id", "--result", "--on", "--source", "--verified-by"):
+    for flag in ("--directory", "--id"):
         outcome_p.add_argument(flag, required=True)
+    for flag in ("--result", "--on", "--source", "--verified-by"):  # required in creation mode, checked there (DF2207-05)
+        outcome_p.add_argument(flag)
+    outcome_p.add_argument("--minutes-url", help="https URL of the body's approved official minutes (confirms an existing outcome)")
+    outcome_p.add_argument("--minutes-approved-on", metavar="YYYY-MM-DD", help="Day the body approved those minutes")
     outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
     outcome_p.add_argument("--votes", metavar="FILE", help="name,vote CSV (yes|no|abstain|absent|recused) read from the --source record")
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
@@ -977,6 +1018,13 @@ def main():
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
     due_p.add_argument("--request", help="Only requests with this name (refused when none is recorded)")
+    timing_p = commands.add_parser("kit-timing", help="Private response-time report from kit/sent.json: calendar days "
+                                   "between recorded steps (read-only; provisional, not a legal deadline)",
+                                   description="Calendar days between recorded steps; provisional; not a legal deadline. "
+                                   "Reads kit/sent.json only; nothing is sent.")
+    timing_p.add_argument("--directory", required=True)
+    timing_p.add_argument("--as-of", help="YYYY-MM-DD to count to (default today); not a reconstruction of past knowledge")
+    timing_p.add_argument("--csv", metavar="FILE", help="Write a new private .csv (0600) outside public/ and content/")
     calendar_p = commands.add_parser("kit-calendar", help="Private .ics of open requests' dates and comment deadlines")
     for flag in ("--directory", "--out", "--as-of"):  # --as-of YYYY-MM-DD: earlier comment deadlines left out
         calendar_p.add_argument(flag, required=flag != "--as-of")
@@ -1004,6 +1052,15 @@ def main():
     response_p.add_argument("--withheld-basis", action="append", default=[], metavar="TEXT",
                             help="denied or produced only, repeatable (at most 5): the agency's own stated reason or "
                             "code section, as written (1-200 chars, no control characters; never record contents)")
+    response_p.add_argument("--download-expires-on", metavar="YYYY-MM-DD", help="produced only: the date the agency says "
+                            "its download link expires (not before --date). Only the date is kept; the link itself is "
+                            "never stored or fetched. The production stays 'download pending' until records are "
+                            "linked with a later produced --record step")
+    response_p.add_argument("--scope", action="append", default=[], metavar="ID",
+                            help="repeatable, with --disposition: a law-package scope this request asked for that the "
+                            "agency's answer covers (not on acknowledged, extension, clarification or fee_estimate steps)")
+    response_p.add_argument("--disposition", choices=("produced", "partly_produced", "withheld", "no_records_stated"),
+                            help="with --scope: what the agency said about those scopes (your record, not a legal finding)")
     muckrock_p = commands.add_parser("kit-muckrock-import", help="Propose the kit-response step a MuckRock request JSON you "
                                      "saved by hand implies; fetches and sends nothing")
     for flag in ("--directory", "--agency", "--from-json"):
@@ -1028,6 +1085,10 @@ def main():
     denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
                           help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
     denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
+    asked_p = commands.add_parser("kit-asked", help="Propose content/agencies.json 'asked' items from kit/sent.json "
+                                  "(dry run by default); nothing is sent or published")
+    asked_p.add_argument("--directory", required=True)
+    asked_p.add_argument("--apply", action="store_true", help="Write the proposal (validated, one atomic write)")
     withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
                                      "section number in the agency's own words (read-only)")
     withheld_p.add_argument("--directory", required=True)
@@ -1070,6 +1131,8 @@ def main():
     for flag in ("--directory", "--sha256", "--file", "--checked-on"):
         verify.add_argument(flag, required=True)
     verify.add_argument("--differs-because", choices=("redacted", "converted", "unknown"), default=None)
+    verify.add_argument("--fragment", default=None, help="Library fragment whose public_url identifies the copy; "
+                        "needed when the record has several public URLs")
     content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
         dest="content_command", required=True)
     content_init = content_cmds.add_parser(
@@ -1102,6 +1165,19 @@ def main():
     publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
     for flag in ("--directory", "--approved-by"):
         publish_p.add_argument(flag, required=True)
+    reply_req_p = finding_cmds.add_parser("reply-request", help="Write a private, never-sent request for comment to the "
+                                          "draft's agency (kit/replies/<id>.md); preparing it is not asking")
+    reply_req_p.add_argument("--directory", required=True)
+    reply_req_p.add_argument("--by", required=True, metavar="YYYY-MM-DD", help="Reply deadline, today or later")
+    reply_p = finding_cmds.add_parser("reply", help="Record the agency's reply or silence on the draft (nothing is sent; "
+                                      "any change needs fresh review)")
+    reply_p.add_argument("--directory", required=True)
+    reply_p.add_argument("--status", required=True, choices=("received", "declined", "no_response"))
+    reply_p.add_argument("--on", required=True, metavar="YYYY-MM-DD", help="Date of the reply, or of the check for no_response")
+    reply_p.add_argument("--asked-on", required=True, metavar="YYYY-MM-DD", help="Date YOU actually asked the agency, by hand; "
+                         "an unsent prepared request is not evidence of asking")
+    reply_p.add_argument("--text", help="The reply as written, 1-2000 characters (received needs it)")
+    reply_p.add_argument("--record", metavar="PREFIX", help="With received: 12-64 hex of the library record holding the reply")
     preview_p = finding_cmds.add_parser("preview", help="Render one draft's finding page privately to --out "
                                         "(banner, noindex; never public/, feed or sitemap)")
     for flag in ("--directory", "--out"):
@@ -1137,6 +1213,10 @@ def main():
     roster_add.add_argument("--name", required=True)
     roster_add.add_argument("--role", action="append", required=True, help="factual, legal or privacy; repeatable")
     roster_add.add_argument("--ssh-key", metavar="FILE.pub", help="Set or replace this reviewer's signing key")
+    roster_add.add_argument("--interest-agency", metavar="ID", action="append",
+                            help="Agency this reviewer works for or otherwise declares; repeatable; replaces the list")
+    roster_add.add_argument("--interest-note", metavar="T", help="Private note (1-200 characters); never printed or published")
+    roster_add.add_argument("--clear-interests", action="store_true", help="Remove the declared agencies and note")
     roster_cmds.add_parser("list", help="Print the roster (read-only)")
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
@@ -1243,8 +1323,10 @@ def main():
         parser.error("--check reads kit/social only; it cannot be combined with --platform")
     if args.command == "social" and args.meetings and args.check:
         parser.error("--check reads finding drafts only; it cannot be combined with --meetings")
-    if args.command == "social" and args.within_days is not None and not args.meetings:
-        parser.error("--within-days needs --meetings")
+    if args.command == "social" and args.outcomes and (args.meetings or args.check):
+        parser.error("--outcomes cannot be combined with " + ("--meetings" if args.meetings else "--check (--check reads finding drafts only)"))
+    if args.command == "social" and args.within_days is not None and not (args.meetings or args.outcomes):
+        parser.error("--within-days needs --meetings or --outcomes")
     if args.command == "social" and args.within_days is not None and not 1 <= args.within_days <= 60:
         parser.error("--within-days must be 1 to 60")
     if args.command == "build" and args.preview and args.budget is not None:
@@ -1299,11 +1381,20 @@ def main():
             print(json.dumps(report, indent=2, ensure_ascii=False))
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
-            social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days)
+            social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days, args.outcomes)
         elif args.command == "press":
-            from .press import build_press
-            print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
-            print("Draft written to kit/press. Nothing was sent.")
+            if args.press_command == "letter":
+                from .press import build_letter
+                result = build_letter(root, args.finding, args.date, words=args.words, outlet=args.outlet)
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+                print(f"Letter word count: {result['words']}/{result['word_limit']}.")
+                for note in result["review_flags"]:
+                    print(note, file=sys.stderr)
+                print("Private letter draft written. Nothing was sent.")
+            else:
+                from .press import build_press
+                print(json.dumps(build_press(root, args.finding, args.date), indent=2, ensure_ascii=False))
+                print("Draft written to kit/press. Nothing was sent.")
         elif args.command == "build" and args.preview:
             from .site import preview_site
             report = preview_site(root)
@@ -1348,13 +1439,8 @@ def main():
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
         elif args.command == "meetings-outcome":
-            from .meeting_outcome import record_outcome
-            print(json.dumps(record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by,
-                                            args.vote, args.replace, votes_file=args.votes,
-                                            recording_url=args.recording_url, recording_start=args.recording_start), indent=2))
-            if args.replace and args.votes is None:  # the new outcome replaced the old one whole
-                print("votes: none")
-            print("Recorded only. Nothing was published.")
+            from .meeting_outcome import run_outcome_command
+            print("\n".join(run_outcome_command(root, args)))
         elif args.command == "meetings-comment-sent":
             from .meeting_comments import record
             entry = record(root, args.id, args.on, args.channel, args.file, args.replace)
@@ -1362,6 +1448,13 @@ def main():
                      **({"letter_sha256_prefix": entry["letter_sha256"][:12]} if "letter_sha256" in entry else {})}
             print(json.dumps(shown, indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "supporters":
+            from .supporters import add_supporter, remove_supporter
+            print(json.dumps(remove_supporter(root, args.id) if args.supporters_command == "remove" else
+                             add_supporter(root, name=args.name, kind=args.kind, organization=args.organization,
+                                           confirmed_on=args.confirmed_on, how=args.how, url=args.url,
+                                           correspondence=args.correspondence)))
+            print("Recorded only. Nothing was published.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
@@ -1384,7 +1477,8 @@ def main():
         elif args.command == "sources" and args.sources_command == "verify-copy":
             from .sources_cmd import verify_copy
             try:
-                print(json.dumps(verify_copy(root, args.sha256, args.file, args.checked_on, args.differs_because)))
+                print(json.dumps(verify_copy(root, args.sha256, args.file, args.checked_on, args.differs_because,
+                                              fragment=args.fragment)))
             except ValueError as exc:
                 print(f"Stopped: {exc}", file=sys.stderr)
                 sys.exit(3)
@@ -1401,7 +1495,10 @@ def main():
             from . import findings
             read_config(root)
             add = args.reviewers_command == "add"
-            print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key) if add
+            print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key,
+                                                   interest_agencies=args.interest_agency,
+                                                   interest_note=args.interest_note,
+                                                   clear_interests=args.clear_interests) if add
                              else findings.list_reviewers(root), indent=2, ensure_ascii=False))
             if add:
                 print("Private roster updated; nothing was published.")
@@ -1457,6 +1554,16 @@ def main():
                 print(json.dumps({k: v for k, v in result.items() if k != "receipt_trust"}))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 print(findings.trust_line(result["receipt_trust"]))
+                return
+            if args.finding_command == "reply-request":
+                print(json.dumps(findings.reply_request(root, args.draft, args.by)))
+                print("Recorded only. Nothing was sent. Asking the agency is your manual step; "
+                      "record it with finding reply --asked-on.")
+                return
+            if args.finding_command == "reply":
+                print(json.dumps(findings.record_reply(root, args.draft, args.status, args.on, args.asked_on,
+                                                       text=args.text, record=args.record)))
+                print("Recorded only. Nothing was sent. The reply changes the reviewed text: review it again.")
                 return
             draft = findings.load_draft(args.draft)
             if args.finding_command == "review-payload":
@@ -1568,6 +1675,8 @@ def main():
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
                 if row["fee_state"] == "unpaid":
                     print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
+                for item in row.get("downloads_pending", ()):
+                    print(f"{label}: {item['line']}", file=sys.stderr)
                 if row["channel"] == "portal" and row.get("request_url"):
                     print(f"{label}: Portal request: {row['request_url']}", file=sys.stderr)
         elif args.command == "kit-fees":
@@ -1576,6 +1685,15 @@ def main():
             print(json.dumps(kit_fees.write_csv(root, args.csv, report) if args.csv else report, indent=2))
             print("Private file; nothing was sent or published." if args.csv else "Read-only. Nothing was sent.",
                   file=sys.stdout if args.csv else sys.stderr)
+        elif args.command == "kit-timing":
+            from . import kit_timing
+            report = kit_timing.report(root, args.as_of)
+            if args.csv:
+                kit_timing.check_csv(root, args.csv)  # a refused path prints no table
+            print(kit_timing.format_report(report))
+            if args.csv:
+                print(json.dumps(kit_timing.write_csv(root, args.csv, report), indent=2))
+            print("Read-only. Nothing was sent.", file=sys.stderr)
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
@@ -1595,7 +1713,8 @@ def main():
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
-            if report["past_due"] + report["stated_date_passed"] + report["installment_passed"]:
+            if report["past_due"] + report["stated_date_passed"] + report["installment_passed"] \
+                    + report.get("download_expired", 0):
                 sys.exit(3)
         elif args.command == "kit-calendar":
             from .kit_calendar import calendar
@@ -1610,9 +1729,15 @@ def main():
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
                                          reference=args.reference, replace_reference=args.replace_reference,
                                          partial=args.partial, correspondence=args.correspondence,
-                                         withheld_basis=args.withheld_basis),
+                                         withheld_basis=args.withheld_basis, scope_ids=args.scope,
+                                         disposition=args.disposition, download_expires_on=args.download_expires_on),
                              indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-asked":
+            from .kit_asked import run_cli as kit_asked_cli
+            code = kit_asked_cli(root, args.apply)
+            if code:
+                sys.exit(code)
         elif args.command == "kit-withheld":
             from .kit_track import format_withheld, withheld
             report = withheld(root)

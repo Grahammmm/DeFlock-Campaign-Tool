@@ -27,6 +27,7 @@
         "asked": {"type": "array", "items": {"$ref": "#/$defs/asked"}},
         "alpr_policy": {"$ref": "#/$defs/policy"},
         "contract": {"$ref": "#/$defs/contract"},
+        "funding": {"$ref": "#/$defs/funding"},
         "transparency": {"$ref": "#/$defs/transparency"},
         "camera_count": {"type": ["string", "null"]}
       }
@@ -62,7 +63,42 @@
         "start": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
         "end": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
         "source_url": {"type": "string", "pattern": "^https://"},
-        "checked_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
+        "checked_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "cost": {"$ref": "#/$defs/cost"}
+      }
+    },
+    "cost": {
+      "description": "The amount a contract document states, as the organizer transcribed it; never summed, ranked or divided. Its provenance is the enclosing contract's source_url and checked_on.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount_usd", "period", "as_stated_in"],
+      "properties": {
+        "amount_usd": {"type": "string", "pattern": "^(0|[1-9][0-9]*)([.][0-9]{1,2})?$"},
+        "period": {"enum": ["annual", "total", "one_time"]},
+        "as_stated_in": {"type": "string", "minLength": 1, "maxLength": 120}
+      }
+    },
+    "funding": {
+      "description": "How the agency says it is paid for, one entry per document an organizer transcribed from; present only when recorded, in recorded order, never summed, ranked or explained. Each entry has its own source_url and checked_on; the build checks the calendar day, the amount range and that a name is plain text.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {"$ref": "#/$defs/funding_entry"}
+    },
+    "funding_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "as_stated_in", "source_url", "checked_on"],
+      "dependentRequired": {"amount_usd": ["period"], "period": ["amount_usd"]},
+      "properties": {
+        "kind": {"enum": ["grant", "general_fund", "asset_forfeiture", "donation", "other"]},
+        "name": {"type": "string", "minLength": 1, "maxLength": 120},
+        "as_stated_in": {"type": "string", "minLength": 1, "maxLength": 120},
+        "source_url": {"type": "string", "pattern": "^https://"},
+        "checked_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "amount_usd": {"type": "string", "pattern": "^(0|[1-9][0-9]*)([.][0-9]{1,2})?$"},
+        "period": {"enum": ["annual", "total", "one_time"]},
+        "fiscal_year": {"type": "string", "pattern": "^[1-9][0-9]{3}$"}
       }
     },
     "transparency": {
