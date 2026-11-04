@@ -104,7 +104,7 @@ def load_facts(path, slug, recorder):
             records = list(csv.reader(handle))
     except (OSError, UnicodeDecodeError, csv.Error):
         return [], ["FACTS.csv: file unreadable"]
-    if not records or records[0] not in (facts.V1, facts.V2):
+    if not records or records[0] not in (facts.V1, facts.V2, facts.V3):
         return [], ["FACTS.csv: header does not match FACTS.csv"]
     usable, errors = [], []
     for num, rec in enumerate(records[1:], 2):
@@ -112,7 +112,7 @@ def load_facts(path, slug, recorder):
             errors += ["FACTS.csv: row %d: columns do not match the header" % num] if rec else []
             continue
         row = dict(zip(records[0], (c.strip() for c in rec)))
-        bad = [(f, w) for f, w in facts.validate(row, records[0] == facts.V2, slug)
+        bad = [(f, w) for f, w in facts.validate(row, records[0] in (facts.V2, facts.V3), slug)
                if not (f == "effective_from" and _prec(row.get(f, "")) in (1, 2))]  # a stated year or month is kept as stated
         errors += ["FACTS.csv: row %d: %s %s" % (num, f, w) for f, w in bad]
         usable += [] if bad else [row]

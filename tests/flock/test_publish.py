@@ -1,7 +1,10 @@
-import csv, json, shutil, subprocess, sys, tempfile, unittest
+import csv, hashlib, importlib.util, io, json, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS = ROOT / "tools"
+_spec = importlib.util.spec_from_file_location("_publish_fixture_facts", TOOLS / "flock_facts.py")
+flock_facts = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(flock_facts)
 FIXTURES = ROOT / "tests" / "fixtures" / "flock"
 AGENCY = "sample-city-police-department"
 def run(tool, *args):
@@ -19,26 +22,41 @@ class FlockPublishTest(unittest.TestCase):
         source = self.store / "original.txt"
         source.write_bytes(b"synthetic original\n")
         facts = self.store / "agencies" / AGENCY / "FACTS.csv"
+        source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+        self.fact_ids = {}
         with facts.open(newline="") as handle:
-            rows = list(csv.reader(handle))
+            table = list(csv.DictReader(handle))
+        for row in table:
+            old_id = row['fact_id']
+            row['source_sha256'] = source_sha
+            row['fact_id'] = flock_facts.fact_id(row)
+            row['source_path'] = str(source)
+            self.fact_ids[old_id] = row['fact_id']
         with facts.open("w", newline="") as handle:
-            csv.writer(handle).writerows([rows[0] + ["source_path"]] + [r + [str(source)] for r in rows[1:]])
-        redaction = facts.parent / "redaction" / ("b" * 64)
+            writer = csv.DictWriter(handle, fieldnames=list(table[0]))
+            writer.writeheader()
+            writer.writerows(table)
+        redaction = facts.parent / "redaction" / source_sha
         redaction.mkdir(parents=True, mode=0o700)
         redaction.parent.chmod(0o700)
         proposal = redaction / "PROPOSAL.json"
-        proposal.write_text(json.dumps({"schema_version": 1, "document_id": "synthetic", "source_sha256": "b" * 64,
+        proposal.write_text(json.dumps({"schema_version": 1, "document_id": "synthetic", "source_sha256": source_sha,
             "redaction_required": False, "proposed": [], "not_detected_note": "synthetic fixture",
             "scan_receipt": "c" * 64, "created_at": "2026-10-30T00:00:00Z"}))
         proposal.chmod(0o600)
         self.run_dir = self.store / "agencies" / AGENCY / "runs" / "2026-10-30"
         self.assertEqual(run("flock_compare.py", "scaffold", "--store", str(self.store), "--agency", AGENCY, "--date", "2026-10-30",
                              "--provider", "anthropic", "--model", "claude-opus-5-5", "--applicability", "Sample city police")[0], 0)
-        shutil.copy(FIXTURES / "findings-sample.csv", self.run_dir / "FINDINGS.csv")
+        (self.run_dir / "FINDINGS.csv").write_text(self.fixture_text("findings-sample.csv"))
         self.rd, self.out = str(self.run_dir), self.run_dir / "PUBLISH.json"
         self.assertEqual(run("flock_verify.py", "start", self.rd, "--provider", "openai", "--model", "gpt-5-codex")[0], 0)
-        shutil.copy(FIXTURES / "verify-sample.csv", self.run_dir / "VERIFY.csv")
+        (self.run_dir / "VERIFY.csv").write_text(self.fixture_text("verify-sample.csv"))
         self.assertEqual(run("flock_verify.py", "finish", self.rd), (0, "public_ok=4 questions=2 rejected=1\n"))
+    def fixture_text(self, name):
+        text = (FIXTURES / name).read_text()
+        for old, new in self.fact_ids.items():
+            text = text.replace(old, new)
+        return text
     def export(self):
         return run("flock_publish.py", "export", self.rd, "--site-slug", "sample")
     def check(self, doc):
@@ -63,10 +81,9 @@ class FlockPublishTest(unittest.TestCase):
         self.assertEqual(self.export(), (3, "refused: verifier family equals author family\n"))
         self.assertFalse(self.out.exists())
         (self.run_dir / "VERIFY.json").write_text(signed)
-        with open(FIXTURES / "findings-sample.csv", newline="") as handle:
-            base, doc = list(csv.reader(handle)), {}
+        base, doc = list(csv.reader(io.StringIO(self.fixture_text("findings-sample.csv")))), {}
         o1 = {"claim": "The sample department admitted outside agencies have query access.",
-              "quote": "Twelve outside agencies have query access.", "quote_fact_id": "F-76dbe8a9b4ac"}
+              "quote": "Twelve outside agencies have query access.", "quote_fact_id": self.fact_ids["F-76dbe8a9b4ac"]}
         mutations = [("T1", {"claim": "The sample training materials were withheld; ask records@sample.org."}, "email")]
         # DF-4 ruling 1 (alert-only): quote-gated wording is a review-required note; the finding is still exported.
         table = [list(r) for r in base]

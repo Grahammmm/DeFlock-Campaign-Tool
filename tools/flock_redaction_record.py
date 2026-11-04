@@ -119,12 +119,10 @@ def eligibility(store, slug, source_sha256, document_bytes_sha256):
             if part == Path(store):
                 break
         proposal, raw = _record(folder, "PROPOSAL.json", "redaction-proposal")
-        if proposal["source_sha256"] != source_sha256:
+        if proposal["source_sha256"] != source_sha256 or document_bytes_sha256 != source_sha256:
             return bad("source_mismatch")
         if not proposal["redaction_required"]:
             return "eligible", "not_required"
-        if document_bytes_sha256 != source_sha256:
-            return bad("source_mismatch")
         if not os.path.lexists(folder / "SIGNOFF.json"):
             return bad("unsigned")
         try:

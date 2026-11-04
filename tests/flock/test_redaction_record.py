@@ -119,6 +119,20 @@ class RedactionRecordTest(unittest.TestCase):
         self.export()
         self.verify.assert_not_called()
 
+    def test_not_required_refuses_changed_original(self):
+        self.record('PROPOSAL.json', dict(self.proposal, redaction_required=False))
+        self.source.write_bytes(self.source.read_bytes() + b'x')
+        self.assertEqual(self.outcome(), ('ineligible', 'source_mismatch'))
+        self.export('source_mismatch')
+        self.verify.assert_not_called()
+
+    def test_not_required_refuses_missing_original(self):
+        self.record('PROPOSAL.json', dict(self.proposal, redaction_required=False))
+        self.source.unlink()
+        self.assertEqual(self.outcome(), ('ineligible', 'source_mismatch'))
+        self.export('source_mismatch')
+        self.verify.assert_not_called()
+
     def test_unsigned(self):
         (self.folder / 'SIGNOFF.json').unlink()
         self.assertEqual(self.outcome(), ('ineligible', 'unsigned'))
