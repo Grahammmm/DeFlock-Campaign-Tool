@@ -250,6 +250,7 @@ raises `PublicationRefused` (a `ValueError`) naming the artefact id and one reas
 | `approver_unnamed` | `approved_by` is empty, a placeholder (`-`, `n/a`, `tbd`, `auto`, `system`, `agent`) or a model or lane name |
 | `approval_consumed` | the matching approval carries a truthy `consumed` |
 | `redaction_unsigned` | the approval carries `redaction_signed` and it is not true |
+| `approval_unbound` | (`stage`/`brief`) the approved `PUBLISH.json` entry records no `review.content_hash` |
 
 The gate reads those fields, never prose in the artefact or its file name. `redaction_signed` is set by no path
 yet; it is reachable once a redaction sign-off exists. A legal-claim flag is recorded on a refusal and never causes
@@ -257,13 +258,17 @@ one. A refusal prints only the id and reasons, exits non-zero and writes nothing
 gate has no writer, and `tests/test_publication_gate.py` fails if any other module writes an approval field outside
 the existing human review surface (Python modules by syntax tree, other languages by a literal pattern).
 `finding publish` and `finding correct` (`--approved-by`, refused without a named person) bind the approval to the exact
-draft content, re-read just before the write. For `stage` and `brief` the approval is the `PUBLISH.json` review fields
-and the entry is compared with the entry the run re-derives (the run's findings are frozen to the verifier's plan hash).
-Known limit, not solved here: those review fields hold no content hash from the moment of approval (the schema is the
-fixed four keys `flock_publish.py` checks, outside this unit's files), so an edit to an approved entry and to the run
-it derives from together is not detected by the gate. Closing it needs an approval-time hash in the review surface.
-A clean gate does not prove an artefact is fit to publish: redaction sign-off, the privacy lint and the legal-claim
-notes are separate conditions.
+draft content, re-read just before the write.
+For `stage` and `brief` the approval is the `PUBLISH.json` review fields, bound to the content as it stood when the
+person approved it (DF-APPROVAL-TIME-BIND): `review.content_hash` is the sha256 of the entry without `review`, which
+the person records with the approval (`flock_review_queue.py show` prints it beside the text). The gate compares that
+recorded hash with the entry the run re-derives now, and the filed entry must equal that re-derivation; a hash is
+never recomputed from the file to stand in for the recorded one, so editing an approved entry together with the run
+that derives it voids the approval. **Legacy approvals** (recorded before this field existed) carry no hash: they
+stay in the file untouched, `--check` still accepts them, and the review queue lists them again with an
+`approval-unbound` warning, but they approve nothing (`approval_unbound`) until a person re-reads the text and records
+its hash. Nothing stamps them automatically. A clean gate does not prove an artefact is fit to publish: redaction
+sign-off, the privacy lint and the legal-claim notes are separate conditions.
 
 ## Not done
 
@@ -289,6 +294,20 @@ every chosen platform is made before anything is written, so one that cannot fit
 the platform named. Each folder keeps its own `.written.json`, kept edits go to
 `kit/social/<P>.suggested/` and stale slugs are listed per platform. Without `--platform` the run is
 unchanged (`len()` within 280 into `kit/social/`); `--check` reads that folder only.
+
+### Social drafts for meetings (never posted)
+
+`social --directory D --meetings [--within-days N] [--platform P ...]` (N from 1 to 60, default 14)
+writes one private draft per staged meeting that is `scheduled`, starts between now and N days
+ahead and carries organizer-verified `participation`, to `kit/social/meetings/<id>.md` (or
+`kit/social/meetings/<P>/<id>.md` sized by that platform's rule; kept edits go to
+`kit/social/meetings.suggested/` or `kit/social/meetings/<P>.suggested/`). The post gives the body,
+the date and time in the meeting's own UTC offset (as the meeting page prints it), the agenda item,
+the verified written-comment deadline and how, how to attend, and `<base_url>/meetings/<id>.html`
+when `base_url` is set. Only the agenda item is shortened. Cancelled, past, later-than-window and
+unverified meetings get no draft and are counted under `skipped`; an unreadable meeting file is
+counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts and
+`--check` are unchanged. Nothing is posted.
 
 ## Posting one approved social draft (Worker `post_social`)
 

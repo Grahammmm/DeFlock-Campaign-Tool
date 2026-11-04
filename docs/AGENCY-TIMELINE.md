@@ -185,6 +185,11 @@ estimate is already settled (a new estimate re-opens it). `kit-status`, its `--c
 (`unpaid`/`paid`/`waived`) beside the estimate and `fee_paid`; `kit-status` names each unpaid estimate on stderr.
 Nothing is paid by the tool; the fee-cap reminder is unchanged.
 
+`records` are what the agency produced (`--kind produced --record PREFIX`); `correspondence` is the letters and
+confirmations: `kit-sent --correspondence PREFIX` (the sent message or portal confirmation) and `kit-response
+--correspondence PREFIX` on any kind, produced included. Both take >= 12 hex of an ingested hash, repeatable; a hash
+linked once (either way) is refused. `kit-status` lists `correspondence_prefixes`; the `records` counts never include them.
+
 ## Private calendar (kit-calendar)
 
 `kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import

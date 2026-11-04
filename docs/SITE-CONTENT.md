@@ -19,6 +19,10 @@ a legal review or an HTML sanitizer.
 lists every problem in `content/` at once (`content/: N problem(s)`, one line per
 file problem, capped at 200) with exactly the rules `build` enforces. It is
 read-only and exits 0 when clean or without `content/`, 3 when anything is listed.
+Add `--json` for one JSON line (`content-check-v1`, [schema](../schemas/content-check.schema.json)):
+`{"count": N, "law_package": ..., "problems": [{"file": "findings/x.json", "message": "..."}], "schema": ..., "truncated": false}`
+with the same problems, the first 200 only (`truncated` says more exist, `count` is the full number), `file` null
+when a line names no file, and the same exit codes, so an editor or CI step can show each problem at its file.
 
 ## Content directory
 
@@ -361,15 +365,28 @@ every page is byte-identical to the English defaults in `campaign_tool/labels.py
 ```
 Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descriptions), `eyebrow.*`, `heading.*`,
 `intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
-`signup.*`, and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out keeps its English default.
+`signup.*`, `js.*` (scripts, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
+keeps its English default.
 Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds
 `<`, `>` or a control character; a `{placeholder}` the key's default does not use (only `{name}`, `{county}`,
-`{state}`, `{count}`, `{date}` exist) or an unpaired brace; another top-level field, `schema_version` other than 1, a
+`{state}`, `{count}`, `{date}` exist, plus `{shown}`/`{total}` in `js.filter_count` and `{evidence}`/`{source}` in
+`js.map_failed`/`js.data_failed`) or an unpaired brace; another top-level field, `schema_version` other than 1, a
 file over 64 KiB or a symlink. `content-check` names the same refusals, with the build's text, beside every other
 problem. Text is HTML-escaped once (`&`, `"`); `lang` still comes only from `site.json.language`.
+Scripts (`js.*`): the fixed text the generated JavaScript writes into the page. Defaults are the English the scripts
+always used. While every `js.*` label equals its default every script file is byte-identical; once one differs,
+`site-data.js` gains one line `var LABELS={...}` holding every `js.*` key (unset keys keep English), the findings index
+loads `/site-data.js` before `/findings/filter.js`, and the scripts read `LABELS` (placeholders filled through
+`textContent`; popup text through the map's escaper; never raw HTML). Keys: `js.filter_count` ("Showing {shown} of
+{total}", findings filter); `js.mapped_point`/`js.mapped_points` (map selection count); `js.map_failed` with
+`js.map_evidence`/`js.map_source` (map could not load; the two link texts fill `{evidence}`/`{source}`);
+`js.data_failed` with `js.data_source` (camera data could not load); `js.popup_title`, `js.popup_no_manufacturer`,
+`js.popup_no_operator`, `js.popup_source` (point popup); `js.county_findings`/`js.county_no_findings` (county card
+facts when site.json lists none); `js.city_points_one`/`js.city_points_many`, `js.city_no_findings` (agency cards);
+`js.group_vendor`, `js.group_status`, `js.group_summary` (`{name}` is the map's group label), `js.group_fact`,
+`js.group_open`, `js.group_flag` (the unconfirmed-ownership group card).
 Stays English by design: the starter page, `feed.xml`/agency feeds, `sitemap.xml`, `robots.txt`, `_headers`,
-`data/findings.json`, all JavaScript (`site-data.js`, `agency-cards.js`, `app.js`, `findings/filter.js`, which
-rewrites the "Showing N of M" count), and text from shared modules: the source sentence and provenance explainer
+`data/findings.json`, and text from shared modules: the source sentence and provenance explainer
 (`provenance_text.py`) and the corrections policy (`corrections_policy.py`). Content-supplied text is never touched.
 
 ## Redirects (`content/redirects.json`, optional)
@@ -446,6 +463,20 @@ edge counts once). A typed `cameraCount` always wins. `build` prints `note: boun
 A writing run needs `D/campaign.json` (exit 2 otherwise, before any network call). An answer with no points never
 replaces a map that has points (exit 3) unless `--allow-empty` is given. Each file is replaced atomically
 through a fresh temp file; a symlinked `content`, `content/map` or output file is refused (exit 2).
+
+Each writing run (never `--check`, never a refused write) also records one dated entry in
+`content/map/history.json` (`{"schema_version": 1, "records": [...]}`): `recorded_on` (the OpenStreetMap data day
+from `osm_base`, else the run's UTC day), `osm_base` (or null), `source`, `total` points, `by_city` (points inside each
+`content/map/city-boundaries.geojson` feature by the build's own boundary rule, or null without that file) and
+`added`/`removed` node counts against the map the run replaced (0/0 for a first map). A later run on the same day
+(so the same `osm_base` too) replaces that day's record; the newest 120 records are kept and the oldest dropped. A
+history file the build would refuse is never overwritten, and a map day older than the last record is not recorded
+(exit 2 for both; the new map is still written). `build` validates
+the file and refuses an unknown key, `schema_version` other than 1, more than 120 records, a non-ISO date, dates
+that do not strictly increase, a negative or non-integer count, a symlink or a file over 256 KiB, naming the field
+and never its value; `content-check` lists the same line. With two or more records `cameras.html` shows "Mapped points
+over time", a plain table (date, total, added, removed, and per-city columns when every record has `by_city`); with
+none or one the built site is unchanged. A mapped point, and a rising count, is not evidence of agency ownership.
 
 The build never downloads MapLibre. To enable the interactive map, copy the
 library into `content/vendor/maplibre-gl.js` and `content/vendor/maplibre-gl.css`
