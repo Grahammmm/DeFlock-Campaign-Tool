@@ -494,14 +494,14 @@ class KitSentImportTests(unittest.TestCase):
             self.assertIn(word, out)
         self.assertEqual(run("kit-sent-import", "--directory", self.root)[0], 2)  # argparse misuse
         self.assertEqual(run("kit-sent-import", "--csv", "x.csv")[0], 2)
-        secret_ref = "SECRET-REF-1"
-        path = self.csv(f"{self.a},contract,2026-03-02,email,{secret_ref},{self.letters['x'][:14]}")
+        private_reference = "SECRET-REF-1"
+        path = self.csv(f"{self.a},contract,2026-03-02,email,{private_reference},{self.letters['x'][:14]}")
         for extra in ((), ("--apply",)):
             code, out, err = self.do(path, *extra)
             self.assertEqual(code, 0, err)
             terminal = out + err
             self.assertEqual(set(json.loads(out)), {"checked", "imported", "written"})
-            for value in (secret_ref, self.letters["x"][:14], self.a, "contract", "2026-03-02", "Traceback"):
+            for value in (private_reference, self.letters["x"][:14], self.a, "contract", "2026-03-02", "Traceback"):
                 self.assertNotIn(value, terminal)
             self.assertIsNone(FULL_HEX.search(terminal))
         # a refusal exits 2 with one Stopped block and names no input value
