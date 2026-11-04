@@ -88,6 +88,8 @@ DEFAULTS = {
     "meeting.votes": "Recorded votes", "meeting.votes_member": "Member", "meeting.votes_vote": "Vote",
     "meeting.votes_source": "From the official record:", "vote.yes": "Yes", "vote.no": "No", "vote.abstain": "Abstained",
     "vote.absent": "Absent", "vote.recused": "Recused",
+    "agency.votes_heading": "How members voted", "agency.votes_none": "No recorded vote",
+    "agency.votes_source": "Official record", "agency.votes_more": "\u2026 and {count} earlier votes on the meeting pages",
     "sources.record_no": "Record no.", "sources.public_copy": "Public copy", "agency.official_source": "the official source",
     "sources.private": "Original held in the private archive; not downloadable here", "sources.pages": "{count} page(s)",
     "sources.cited_by": "Cited by:", "sources.not_cited": "Not cited by a published finding",
