@@ -690,8 +690,11 @@ def _read_previous(path):
 
 def meeting_stage_cmd(args, root):
     from .meeting_stage import stage
-    print(json.dumps(stage(root, args.id, args.agency_id, args.location, args.replace, args.participation,
-                           finding_ids=args.finding), indent=2))
+    report = stage(root, args.id, args.agency_id, args.location, args.replace, args.participation,
+                   finding_ids=args.finding, asks=args.ask)
+    print(json.dumps(report, indent=2))
+    for note in report.get("review_flags", []):  # DF2207-07: advisory legal-claim notes, positions only
+        print(note, file=sys.stderr)
 
 
 def finding_preview(root, draft_path, out, now=None):
@@ -898,6 +901,9 @@ def main():
     stage_p.add_argument("--agency-id", help="The meeting's agency; its published findings are cited first")
     stage_p.add_argument("--finding", action="append", metavar="ID",
                          help="Published finding id to cite (repeatable, max 3, in this order; default: 3 chosen)")
+    stage_p.add_argument("--ask", action="append", metavar="T", default=None,
+                         help="This meeting's own public-comment ask (repeatable, 1-3, 1-200 characters); "
+                              "replaces site.json comment_asks for this kit only")
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
