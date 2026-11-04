@@ -83,6 +83,17 @@ class FromContentTests(unittest.TestCase):
         self.assertIn("**Synthetic finding oak-retention**:", text)
         self.assertLess(text.index("Synthetic Council Soon"), text.index("Synthetic Council Late"))
 
+    def test_draft_json_carries_the_public_projection_only_here(self):
+        self.standard()
+        out, text = self.ok("--from-content")
+        self.assertEqual(set(out), KEYS)  # stdout keys are unchanged
+        draft = json.loads((self.kit / "newsletter-draft.json").read_text())
+        public = draft["public_archive"]
+        self.assertEqual((set(public), public["title"]), ({"schema_version", "title", "body_md"}, out["subject"]))
+        self.assertTrue(text.startswith(public["body_md"]))
+        self.assertNotIn("nsubscribe", public["body_md"])
+        self.assertNotIn("TEMPLATE", public["body_md"])
+
     def test_since_excludes_older_findings(self):
         self.standard()
         out, text = self.ok("--from-content", "--since", "2026-03-01")
