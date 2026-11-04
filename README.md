@@ -4,7 +4,14 @@ Open-source tools to help local organizers investigate automated license plate r
 
 **Status: early development, not a production-ready campaign platform.** The initial implementation is an offline starter. It does not contact agencies, send email, provision infrastructure, determine legal violations, or publish findings automatically.
 
-## Start locally
+## Organizer entry point
+
+If your campaign has a hosted workspace, sign in there: its home screen shows
+what is waiting on you, request reminders, snapshot age and every organizer action.
+The previous dashboard is at `/status`. [Workers setup and status](docs/WORKERS.md)
+explain this interface; this repository does not provision a workspace for you.
+
+## Start locally (documented fallback)
 
 New organizer? After cloning, run `python3 -m campaign_tool setup --directory ../my-campaign`.
 Answer name, county, two-letter state and optional city/place; setup runs offline and lists drafts to review.
