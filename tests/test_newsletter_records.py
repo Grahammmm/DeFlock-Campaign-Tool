@@ -22,10 +22,10 @@ CFG = {"name": "Synthetic Campaign", "county": "Synthetic"}
 BASE = "https://cedar-records.example.invalid"
 POLICE = "Cedar Police Department (fictional)"
 HEADINGS = ("## New in the records library", "<h3>New in the records library</h3>")
-FULL = "ab12cd34ef56" + "0" * 52
+FULL = "abcdefabcdef" + "0" * 52
 
 
-def record(title, received_at, prefix="ab12cd34ef56", agency=POLICE, public_url=None, path="/sources.html#cedar-police-records"):
+def record(title, received_at, prefix="abcdefabcdef", agency=POLICE, public_url=None, path="/sources.html#cedar-police-records"):
     return {"title": title, "agency": agency, "received_at": received_at, "prefix": prefix, "public_url": public_url, "path": path}
 
 
@@ -44,9 +44,9 @@ class RecordsSectionTests(unittest.TestCase):
         item = record("ALPR policy", "2026-10-10T16:30:00+00:00", public_url="https://records.example.invalid/policy.pdf")
         draft = build_draft(manifest([item]), now=NOW)
         self.assertEqual(lines(draft["text"]), [
-            f"- **ALPR policy** ({POLICE}), received 2026-10-10, record ab12cd34ef56 "
+            f"- **ALPR policy** ({POLICE}), received 2026-10-10, record abcdefabcdef "
             f"[Public copy](https://records.example.invalid/policy.pdf) [Sources page]({BASE}/sources.html#cedar-police-records)"])
-        self.assertIn(f"<li><strong>ALPR policy</strong> ({POLICE}), received 2026-10-10, record ab12cd34ef56 "
+        self.assertIn(f"<li><strong>ALPR policy</strong> ({POLICE}), received 2026-10-10, record abcdefabcdef "
                       '<a href="https://records.example.invalid/policy.pdf" rel="noopener noreferrer">Public copy</a> '
                       f'<a href="{BASE}/sources.html#cedar-police-records" rel="noopener noreferrer">Sources page</a></li>', draft["html"])
         self.assertEqual(draft["counts"]["records"], 1)
@@ -94,7 +94,7 @@ class RecordsSectionTests(unittest.TestCase):
             with self.assertRaisesRegex(DraftError, "records must be a list"):
                 build_draft({**MANIFEST, "records": bad}, now=WORKER_NOW)
         good = record("Ask", "2026-10-10T00:00:00Z")
-        for prefix in ("ABC", "AB12CD34EF56", "ab12cd34ef5", "ab12cd34ef567", FULL, None):
+        for prefix in ("ABC", "ABCDEFABCDEF", "abcdefabcde", "abcdefabcdef7", FULL, None):
             with self.subTest(prefix=prefix):
                 with self.assertRaisesRegex(DraftError, r"records\[0\]\.prefix"):
                     build_draft(manifest([{**good, "prefix": prefix}]), now=NOW)
