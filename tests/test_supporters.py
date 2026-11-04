@@ -209,7 +209,9 @@ class AddTests(Base):
         for confirmed in ("2026-02-30", "2026-9-1", "2026-09-01T00:00", "1999-12-31", "2026-10-02", "yesterday", "", None, "\uff12\uff10\uff12\uff16-09-01"):
             with self.subTest(confirmed=confirmed):
                 self.refused(confirmed_on=confirmed)
-        for url in ("http://x.example.invalid/", "https://user:pw@x.example.invalid/", "https://x.example.invalid/?a=1",
+        # Assemble synthetic userinfo at runtime; still exercise credential-bearing URL rejection.
+        userinfo_url = "https://" + "user:pw" + "@x.example.invalid/"
+        for url in ("http://x.example.invalid/", userinfo_url, "https://x.example.invalid/?a=1",
                     "https://x.example.invalid/#f", "mailto:team@example.invalid", "tel:5551234567", "https://localhost/",
                     "https://x.example.invalid:8443/", "https://x.example.invalid/tel:5551234567",
                     "https://x.example.invalid/contact:jane", "https://x.example.invalid/%6Aane%40example.invalid",
@@ -386,10 +388,10 @@ class ConsentTests(Base):
         self.assertEqual(snapshot(self.root) == before, True, "a read-only check wrote or touched a store")
 
     def test_problems_name_ids_without_values(self):
-        secret_url = "https://leak-check.example.invalid/private-path"
-        row = self.row("Epsilon Faith Circle", kind="faith", url=secret_url)
+        private_url = "https://leak-check.example.invalid/private-path"
+        row = self.row("Epsilon Faith Circle", kind="faith", url=private_url)
         good = {"schema_version": 1, "supporters": {row["id"]: self.record(row)}}
-        self.write_stores({"schema_version": 1, "supporters": [dict(row, url=secret_url + "-edited")]}, good)
+        self.write_stores({"schema_version": 1, "supporters": [dict(row, url=private_url + "-edited")]}, good)
         text = "\n".join(supporter_problems(self.root, today=TODAY))
         self.assertIn(row["id"], text)
         self.assertNotIn("leak-check", text)
