@@ -190,6 +190,18 @@ confirmations: `kit-sent --correspondence PREFIX` (the sent message or portal co
 --correspondence PREFIX` on any kind, produced included. Both take >= 12 hex of an ingested hash, repeatable; a hash
 linked once (either way) is refused. `kit-status` lists `correspondence_prefixes`; the `records` counts never include them.
 
+## Withheld basis (kit requests)
+
+`kit-response --kind denied|produced --withheld-basis TEXT` (repeatable, at most 5 per step) records the reason or code
+section the agency itself gave for withholding, as written: 1-200 characters after stripping, no control characters, no
+duplicate within a step, refused on any other kind. Quote the agency; never put record contents in it. It is stored on
+the step as `withheld_basis`; `kit-status` lists each one (`on`, `kind`, `basis`) and `kit-denial-reply` quotes each
+under "The agency stated these reasons, as written:" and asks only for any withheld record or category those reasons do
+not cover. `kit-withheld --directory D [--json]` lists every recorded basis across agencies, grouped by each Gov. Code
+section number found in the agency's own text (`Gov. Code § 7923.600`, `Government Code section 7927.705(a)`,
+`GC 7922.000`; a basis naming two sections appears under both; none: `no section number stated`). It is read-only and
+adds no legal reading. Older `kit/sent.json` files with no `withheld_basis` read unchanged.
+
 ## Private calendar (kit-calendar)
 
 `kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import
@@ -209,3 +221,17 @@ under the normal step rules. `processed` is `acknowledged`; `fix` is `clarificat
 `fee_estimate` from `price` (none: record it by hand); `rejected` is `denied`; `no_docs` and `abandoned` are `closed`
 with a note; `partial` is `produced --partial`; `done` is `produced`. `started`, `submitted`, `ack`, `appealing` and
 `lawsuit` propose no step, and any other status is refused by name. Nothing is fetched or sent.
+
+## A transcribed timeline in one write (kit-response-import)
+
+`kit-response-import --directory D --agency ID --csv FILE [--request NAME] [--apply]` records a portal or letter history
+you copied into a CSV by hand instead of one `kit-response` call per event. The file is UTF-8 (a BOM is fine), at most
+256 KiB and 1-200 data rows, a regular file (a symlink is refused), with the header exactly
+`date,kind,note,amount,expected_on,partial`; an empty cell means not given and `partial` is empty, `yes` or `no`.
+`--record`, `--correspondence` and `--reference` are not columns: link records with `kit-response --record`; the agency
+reference is stored once. Each row is checked in file order by the same rules as `kit-response` (a dry run) against the
+recorded steps plus the rows before it, so a closing step in row 2 refuses an extension in row 3. Any refused row is
+named as `line <L>: <the kit-response message>` (the header is line 1; up to 20 are listed, then `and N more`), the
+command exits 2 and nothing is written. A row equal to a step already recorded on that request is reported
+`already recorded, skipped`; the same row twice in the file is refused on its second line. Without `--apply` the command
+only checks; with `--apply` every new step is recorded in file order in one atomic write. Nothing is fetched or sent.

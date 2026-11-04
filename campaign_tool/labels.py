@@ -65,6 +65,8 @@ DEFAULTS = {
                      "published findings that cite it.",
     "intro.meetings": "Comment kits summarize reviewed findings; they are not legal advice and do not ask anyone to flood a meeting.",
     "intro.open_data_about": "Published findings are also available as open data:",
+    "intro.meetings_open_data": "Meetings and outcomes as open data (JSON)",
+    "intro.meetings_open_data_about": "Meetings with their recorded outcomes, votes and official sources:",
     "notice.no_findings": "No findings have been published yet.", "notice.no_upcoming": "No upcoming meetings are listed.",
     "notice.past_meetings_link": "Past meetings and their comment kits", "notice.no_meetings": "No meetings are listed yet.",
     "notice.no_agencies": "No agencies are configured yet.", "notice.no_filter_match": "No published finding matches these filters.",
@@ -165,7 +167,19 @@ JS_DEFAULTS = {
     "js.group_fact": "Community-mapped points; verify with records requests.",
     "js.group_open": "Which agency, if any, operates these points is unconfirmed.", "js.group_flag": "Unconfirmed",
 }
+# DF0137-17: the fixed text of the private meeting-pack handout (meeting_pack.py), today's exact English.
+HANDOUT_DEFAULTS = {
+    "handout.title": "Meeting handout", "handout.what_we_found": "What we found", "handout.agenda": "Agenda",
+    "handout.nothing_published": "Records are requested; nothing is published yet.",
+    "handout.source_line": "Source: {title}, received {date}, record {record}",
+    "handout.not_recorded": "not recorded", "handout.corrected": "corrected {date}",
+    "handout.more_on_site": "{count} more on the site",
+    "handout.record_explainer": "What the record number means: the first 12 characters of a SHA-256 fingerprint of the "
+                                "file exactly as received. It shows the file has not changed since; it does not by "
+                                "itself prove who wrote it.",
+}
 DEFAULTS.update(JS_DEFAULTS)
+DEFAULTS.update(HANDOUT_DEFAULTS)
 for _family, _labels in (("classification", CLASSIFICATION_LABELS), ("confidence", CONFIDENCE_LABELS), ("kind", KIND_LABELS)):
     DEFAULTS.update({f"{_family}.{code}": text for code, text in _labels.items()})
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")

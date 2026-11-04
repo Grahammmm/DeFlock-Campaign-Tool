@@ -134,6 +134,10 @@ PUBLIC_LIBRARY_FIELDS = ("sha256_prefix", "title", "agency_id", "agency_name", "
                          "cited_by", "public_copy")
 PUBLIC_COPY_FIELDS = ("matches", "checked_on", "reason")
 PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "sources")
+PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0137-09: meetings open data
+PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
+PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes")  # never verified_by / verified_at
+PUBLIC_VOTE_FIELDS = ("name", "vote")
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
 EXTRA_CSS = """
 /* Content-model pages */
@@ -1116,7 +1120,8 @@ class Site:
 
     def meetings_html(self):
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p>'
-                f'<h2>{self.t("heading.meetings")}</h2></div><p>{self.t("intro.meetings")}</p></div>'
+                f'<h2>{self.t("heading.meetings")}</h2></div><p>{self.t("intro.meetings")} '
+                f'<a href="/data/meetings.json" type="application/json">{self.t("intro.meetings_open_data")}</a>.</p></div>'
                 '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
                 + '</div></section>\n')
         if self.past:
@@ -1165,7 +1170,9 @@ class Site:
                 f'<h2>{self.name}</h2>{self.md(self.site["about_md"])}{contact}'
                 f'<p>{self.t("intro.open_data_about")} '
                 '<a href="/data/findings.json" type="application/json">data/findings.json</a> and '
-                '<a href="/data/sources.json" type="application/json">data/sources.json</a>.</p>'
+                '<a href="/data/sources.json" type="application/json">data/sources.json</a>. '
+                f'{self.t("intro.meetings_open_data_about")} <a href="/data/meetings.json" type="application/json">data/meetings.json</a>.'
+                + (f' {self.t("notice.no_meetings")}' if not self.model["meetings"] else "") + '</p>'
                 + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", self.labels["title.about"], self.labels["title.about_description"], "/about.html", main)
@@ -1570,6 +1577,28 @@ class Site:
                        {"sources": (PUBLIC_LIBRARY_FIELDS, {"public_copy": (PUBLIC_COPY_FIELDS, {})})})
         return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
+    def _public_meeting(self, meeting):
+        """One staged meeting, copied key by key: what its page shows, never the kit, participation or verifier."""
+        value = {"id": meeting["id"], "body": meeting["body"], "agency_id": meeting.get("agency_id"),
+                 "starts_at": meeting["starts_at"], "status": meeting["status"], "agenda_url": meeting["agenda_url"],
+                 "url": f'/meetings/{meeting["id"]}.html'}
+        outcome = meeting.get("outcome")
+        if outcome and meeting["status"] != "cancelled" and meeting["starts_at"][:10] < self.today.isoformat():
+            value["outcome"] = {key: outcome[key] for key in ("result", "on", "source_url", "vote") if key in outcome}
+            if "votes" in outcome:  # DF0137-07 per-member votes, in stored order
+                value["outcome"]["votes"] = [{"name": v["name"], "vote": v["vote"]} for v in outcome["votes"]]
+        return value
+
+    def meetings_json(self):
+        """``data/meetings.json`` (DF0137-09): staged meetings with outcomes and votes, newest first; refuses any other key."""
+        ordered = sorted(self.model["meetings"], key=lambda m: (utc_moment(m["starts_at"]), m["id"]), reverse=True)
+        doc = {"schema_version": 1, "generated_at": f"{self.today.isoformat()}T00:00:00Z",
+               "meetings": [self._public_meeting(m) for m in ordered]}
+        vote = (PUBLIC_VOTE_FIELDS, {})
+        _assert_public(doc, "data/meetings.json", PUBLIC_MEETING_TOP_LEVEL,
+                       {"meetings": (PUBLIC_MEETING_FIELDS, {"outcome": (PUBLIC_OUTCOME_FIELDS, {"votes": vote})})})
+        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
 
 def _assert_public(doc, name, top, nested):
     """Raise ``ContentError`` naming ``name`` if ``doc`` holds a key outside the public allowlists (``top`` at the top
@@ -1677,7 +1706,7 @@ def _plan_site(root, today=None, notes=None):
         "site-data.js": site.site_data_js(),
         "agency-cards.js": agency_cards.render(site.cards_config(), relabel=bool(site.js_labels)),
         "app.js": site.app_js(), "data/findings.json": site.findings_json(),
-        "data/sources.json": site.sources_json(),
+        "data/sources.json": site.sources_json(), "data/meetings.json": site.meetings_json(),
     })
     if site.finding_filter():  # written only when the findings index loads it
         files["findings/filter.js"] = filter_js(bool(site.js_labels))

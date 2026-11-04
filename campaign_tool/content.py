@@ -634,6 +634,20 @@ ASKED_KEYS, ASKED_TEXT = ("topic", "asked_on", "state", "updated_on", "note"), {
 CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on"}
 FLOCK_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){0,7}")
 VERIFIED_FIELDS = ("records_email", "records_url", "portal")
+KIT_POSTAL_KEYS = {"mailing_address", "mailing_verification"}  # private kit/agencies.json only; never published
+
+
+def _private_postal(entry, item, today=None):
+    """Validate the kit-only postal proof (both keys or neither); the public model never carries it."""
+    from . import kit
+    if ("mailing_address" in entry) != ("mailing_verification" in entry):
+        raise ContentError(f"{item}: mailing_address and mailing_verification go together")
+    if "mailing_address" not in entry:
+        return
+    try:
+        kit.postal_proof({**entry, "verified": True}, today)
+    except ValueError as exc:
+        raise ContentError(f"{item}: {exc}") from None
 
 
 def _verification(entry, item):
@@ -794,7 +808,10 @@ def load_agencies(document, label, today=None):
     agencies, ids, slugs = [], set(), set()
     for index, entry in enumerate(document):
         item = f"{label}[{index}]"
-        _require_keys(entry, AGENCY_KEYS, {"agency_id", "name"}, item)
+        private = label == "kit/agencies.json"
+        _require_keys(entry, AGENCY_KEYS | KIT_POSTAL_KEYS if private else AGENCY_KEYS, {"agency_id", "name"}, item)
+        if private:
+            _private_postal(entry, item, today)
         if not isinstance(entry["agency_id"], str) or not AGENCY_ID.fullmatch(entry["agency_id"]):
             raise ContentError(f"{item}.agency_id: invalid agency identifier")
         if entry.get("selected", True) is not True:
