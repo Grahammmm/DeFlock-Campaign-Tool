@@ -81,6 +81,8 @@ def initialize(args, root):
         json.dump(cfg, out, indent=2)
         out.write("\n")
     (root / "private").mkdir(mode=0o700, exist_ok=True)
+    from .findings import _ensure_campaign_id
+    _ensure_campaign_id(root)  # a new campaign binds its review receipts from birth (private/campaign-id.json)
     print("Campaign initialized. No accounts created, messages sent, or laws verified.")
 
 
@@ -984,11 +986,16 @@ def main():
     status_p.add_argument("--draft", dest="extra_drafts", action="append", default=[], metavar="PATH",
                           help="Also list this draft (private/drafts/*.json are always listed); repeatable")
     status_p.add_argument("--json", dest="as_json", action="store_true", help="Print the rows as JSON")
+    bind_p = finding_cmds.add_parser("bind-receipts", help="Bind this campaign's pre-binding review receipts to it "
+                                     "(dry run unless --confirm; receipts bound elsewhere are never touched)")
+    bind_p.add_argument("--directory", required=True)
+    bind_p.add_argument("--confirm", action="store_true", help="Stamp and log them; without it nothing is written")
     correct_p = finding_cmds.add_parser("correct", help="Append a dated correction to a published finding (no build)")
     correct_p.add_argument("id", metavar="ID")
     for flag in ("--directory", "--date", "--note"):
         correct_p.add_argument(flag, required=True)
     correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
+    correct_p.add_argument("--approved-by", help="Named person approving this correction (the publication gate refuses without one)")
     withdraw_p = finding_cmds.add_parser("withdraw", help="Move a published finding to private/withdrawn/ (no notice page, no build)")
     withdraw_p.add_argument("id", metavar="ID")
     for flag in ("--directory", "--reason"):
@@ -1199,8 +1206,14 @@ def main():
                 rows = findings.status_rows(root, [Path(p).expanduser() for p in args.extra_drafts])
                 print(json.dumps(rows, indent=2, ensure_ascii=False) if args.as_json else findings.status_table(rows))
                 return
+            if args.finding_command == "bind-receipts":
+                print(json.dumps(findings.bind_receipts(root, confirm=args.confirm)))
+                print("Receipts bound and logged in private/reviews/binding-log.jsonl; nothing was published."
+                      if args.confirm else "Dry run: Nothing was changed. Check that every listed receipt was granted "
+                      "in this campaign, then rerun with --confirm.")
+                return
             if args.finding_command == "correct":
-                print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft)))
+                print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft, None, args.approved_by)))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 return
             if args.finding_command == "withdraw":

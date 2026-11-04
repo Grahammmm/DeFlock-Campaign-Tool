@@ -23,7 +23,10 @@ STRICT_PATTERNS = {
 }
 DENIED_PARTS = {"private", "originals", "mail-history", "blobs", "credentials"}
 DENIED_SUFFIXES = {".eml", ".mbox", ".sqlite", ".sqlite3", ".db", ".pem", ".key", ".p12", ".pfx", ".rsidx"}
-DENIED_NAMES = {"records-search.rsidx"}  # tools/records_search.py private index: it holds record text
+DENIED_NAMES = {
+    "records-search.rsidx",  # tools/records_search.py private index: it holds record text
+    "custody.md", "custody.json",  # tools/custody_report.py private artefacts: never in the public tree
+}  # compared against p.name.lower()
 
 
 def violations(path, data, *, strict=False, private_index=None):

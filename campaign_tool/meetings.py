@@ -17,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .agency_cards import text as plain_text
@@ -24,7 +25,7 @@ from .kit import _kit_folder, _write_text
 
 DEFAULT_ZONE = "America/Los_Angeles"
 API_BASE = "https://webapi.legistar.com/v1"
-KEYWORDS = re.compile(r"license[ -]?plate|\bALPRs?\b|\bFlock\b|surveillance", re.IGNORECASE)
+KEYWORDS_FILE = Path(__file__).resolve().parents[1] / "data" / "meeting-keywords.json"
 CLIENT = re.compile(r"[a-z0-9-]{2,64}")
 MAX_EVENTS = 60
 MAX_BYTES = 4 * 1024 * 1024
@@ -33,6 +34,27 @@ TIMEOUT = 20
 
 class MeetingsError(ValueError):
     """Fetch or parse failure; the kit is not written."""
+
+
+def load_keywords(path=KEYWORDS_FILE):
+    """Compile the one ALPR keyword list (also generated for the Workers); no built-in fallback."""
+    problem = None
+    try:
+        spec = json.loads(Path(path).read_text(encoding="utf-8"))
+        alternatives = spec["alternatives"]
+        if type(spec["schema_version"]) is not int or spec["schema_version"] != 1 or spec["flags"] != "i":
+            problem = "ValueError: expected schema_version 1 and flags \"i\""
+        elif not isinstance(alternatives, list) or not alternatives or not all(
+                isinstance(a, str) and a for a in alternatives):
+            problem = "ValueError: alternatives must be a non-empty list of non-empty strings"
+        else:
+            return re.compile("|".join(alternatives), re.IGNORECASE)
+    except (OSError, ValueError, TypeError, KeyError, re.error) as exc:
+        problem = f"{type(exc).__name__}: {exc}"
+    raise MeetingsError(f"meeting keywords {path}: {problem}")
+
+
+KEYWORDS = load_keywords()
 
 
 def default_opener(url):

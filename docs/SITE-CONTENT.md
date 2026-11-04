@@ -115,7 +115,14 @@ when `site.json.base_url` is set on non-finding pages. A finding emits `og:url` 
 origin (for example `https://example.invalid`, optionally ending in `/`), without credentials, port,
 subpath, query or fragment. Configure that origin for a complete absolute preview; this build does
 not provision one. Accepted non-root base values keep their existing canonical behavior, but no
-finding `og:url` is invented. There is no share image by design and nothing is fetched.
+finding `og:url` is invented. An optional share image
+is set with `site.json.share_image` = `{"path": "<file in public-assets>", "alt": "<1-300 characters, one line>"}`:
+the file must be a PNG or JPEG (WebP and SVG are refused) with no image metadata, 1200x630 to 2400x1260
+pixels at about a 1.905 ratio, and the alt text is required. Each indexed page then adds `og:image` (with
+`og:image:width`, `og:image:height`, `og:image:alt`) and `twitter:card` `summary_large_image` with
+`twitter:image:alt`; the image URL is absolute and `twitter:image` is added only when `base_url` is set (without it
+`og:image` is root-relative). Refusals name `site.json.share_image.path` or `.alt`. 404 and noindex pages carry no
+share tags. Without the key output is unchanged; nothing is fetched.
 
 Each finding has a **Share this finding** link to `/findings/<slug>.html`; copy its target with normal
 browser behavior. No clipboard script, send endpoint, tracking or new approval is involved. Preview
@@ -161,6 +168,14 @@ YYYY-MM-DD dates not after the build date, `updated_on` not before `asked_on`; `
 `acknowledged`, `partly_answered`, `answered`, `declined_in_writing`, `withdrawn`. A bad item stops the build naming
 `content/agencies.json[n].asked[i].<field>`; `content-check` lists every such problem, one line each. Kit agencies
 never carry it. It is shown only on `agencies.html` (docs/AGENCY-CARDS.md), never exported to data or feeds.
+
+`agencies.html` opens with an "At a glance" table (`#at-a-glance`, labels `agencies.glance_*`): one row per agency in
+the list's own order, never sorted by any number, with no ranking, score or "best/worst" wording. Cells: cameras,
+searches in the last 30 days and retention days from the newest `profile.transparency` snapshot (each linked to its
+`source_url`, checked date shown), the posted `alpr_policy` ("posted", linked to the policy), `contract.end` linked
+to the contract source, and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0").
+A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
+No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
 
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is

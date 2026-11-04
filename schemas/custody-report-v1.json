@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deflock-campaign-tool.invalid/schemas/custody-report-v1.json",
+  "title": "Custody report v1 (tools/custody_report.py custody.json)",
+  "description": "PRIVATE, review-required custody page for one published finding: document identity, not document text. Ids, dates, hashes, enums and the reviewer's name as recorded only; never a quote, summary, title, rationale, note, file name or record text. Every state comes from a recorded field. A hash establishes byte identity, not authenticity. Never published by this tool.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "review_required", "finding_id", "as_of", "sections", "verdict", "source_errors"],
+  "properties": {
+    "schema": {"const": "custody-report-v1"},
+    "review_required": {"const": true},
+    "finding_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
+    "as_of": {"type": "string"},
+    "sections": {
+      "type": "object", "additionalProperties": false,
+      "required": ["finding", "sources", "receipt_chain", "review", "establishes"],
+      "properties": {
+        "finding": {
+          "type": "object", "additionalProperties": false,
+          "required": ["id", "classification", "publication_state", "published_at", "content_sha256", "drifted", "publication_record"],
+          "properties": {
+            "id": {"type": "string"}, "classification": {"type": "string"}, "publication_state": {"type": "string"},
+            "published_at": {"type": "string"}, "content_sha256": {"$ref": "#/$defs/sha"},
+            "drifted": {"enum": ["yes", "no", "unknown"]}, "publication_record": {"type": "string"}
+          }
+        },
+        "sources": {"type": "array", "items": {
+          "type": "object", "additionalProperties": false, "required": ["source", "sha256", "page", "rehash"],
+          "properties": {
+            "source": {"type": "string"}, "sha256": {"type": "string"}, "page": {"type": ["integer", "string"]},
+            "rehash": {"enum": ["matches", "differs", "not-in-ledger", "not-checked"]}, "problem": {"type": "string"}
+          }}},
+        "receipt_chain": {"type": "array", "items": {
+          "type": "object", "additionalProperties": false, "required": ["source", "received", "contact_role", "preservation"],
+          "properties": {
+            "source": {"type": "string"}, "received": {"$ref": "#/$defs/step"}, "contact_role": {"type": "string"},
+            "preservation": {"$ref": "#/$defs/step"}
+          }}},
+        "review": {
+          "type": "object", "additionalProperties": false, "required": ["counted_reviews", "receipts", "owed"],
+          "properties": {
+            "counted_reviews": {"type": "integer", "minimum": 0},
+            "receipts": {"type": "array", "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["status", "reviewer", "role", "decision", "reviewed_at", "checks"],
+              "properties": {
+                "status": {"enum": ["current", "stale review (content changed after review)"]},
+                "reviewer": {"type": "string"}, "role": {"type": "string"}, "decision": {"type": "string"},
+                "reviewed_at": {"type": "string"}, "checks": {"type": "array", "items": {"type": "string"}}
+              }}},
+            "owed": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "establishes": {"type": "array", "items": {"type": "string"}, "minItems": 4}
+      }
+    },
+    "verdict": {
+      "type": "object", "additionalProperties": false, "required": ["state", "first_missing", "missing"],
+      "properties": {
+        "state": {"enum": ["chain complete", "chain incomplete"]},
+        "first_missing": {"type": ["string", "null"]}, "missing": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "source_errors": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "step": {"type": "object", "required": ["state"], "properties": {"state": {"enum": ["receipt", "no-receipt"]}}}
+  }
+}
