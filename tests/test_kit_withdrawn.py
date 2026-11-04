@@ -28,7 +28,7 @@ SENT_ON = "2026-03-02"
 AS_OF = "2026-06-01"
 STAMP = "2026-04-01T09:30:00+00:00"
 NOTE = "Sent twice; this request is superseded"
-SECRET = "PRIVATE-WITHDRAWAL-NOTE-5519"
+SYNTHETIC_PRIVATE_NOTE = "PRIVATE-WITHDRAWAL-NOTE-5519"
 
 
 def run(*arguments):
@@ -444,7 +444,7 @@ class WithdrawnAskedTests(ExampleBase):
     def test_asked_withdrawn_precedes_produced(self):
         self.write_sent([step("2026-03-12", "produced", scope_answers={A: "produced", B: "produced"}),
                          step("2026-03-15", "produced", partial=True, correspondence=["c" * 64]),
-                         step("2026-03-25", "withdrawn", note=SECRET, correspondence=["d" * 64])],
+                         step("2026-03-25", "withdrawn", note=SYNTHETIC_PRIVATE_NOTE, correspondence=["d" * 64])],
                         extra={"reference": "PRIVATE-REF-5519"})
         before = self.path.read_bytes()
         code, out, err = self.propose()
@@ -456,7 +456,7 @@ class WithdrawnAskedTests(ExampleBase):
         self.assertEqual(item, {"topic": f"{TITLE[A]}; {TITLE[B]}", "asked_on": SENT_ON, "state": "withdrawn",
                                 "updated_on": "2026-03-25", "request": "main"})
         content = self.path.read_text(encoding="utf-8")
-        for private in (SECRET, "PRIVATE-REF-5519", "c" * 64, "d" * 64):
+        for private in (SYNTHETIC_PRIVATE_NOTE, "PRIVATE-REF-5519", "c" * 64, "d" * 64):
             self.assertNotIn(private, content)
 
     def test_apply_updates_only_linked_fields_and_keeps_organizer_items(self):
@@ -464,7 +464,7 @@ class WithdrawnAskedTests(ExampleBase):
         linked = {"topic": "Old topic", "asked_on": SENT_ON, "state": "partly_answered", "updated_on": "2026-03-12",
                   "request": "main", "note": "linked note"}
         self.set_asked([organizer, linked])
-        self.write_sent([step("2026-03-12", "produced", partial=True), step("2026-03-25", "withdrawn", note=SECRET)])
+        self.write_sent([step("2026-03-12", "produced", partial=True), step("2026-03-25", "withdrawn", note=SYNTHETIC_PRIVATE_NOTE)])
         self.assertEqual(self.propose("--apply")[0], 0)
         first, second = self.asked()
         self.assertEqual(first, organizer)
@@ -475,13 +475,13 @@ class WithdrawnAskedTests(ExampleBase):
 
     def test_overflow_and_closed_semantics_are_unchanged(self):
         self.set_asked([{"topic": f"T{i}", "asked_on": SENT_ON, "state": "awaiting_response"} for i in range(20)])
-        self.write_sent([step("2026-03-25", "withdrawn", note=SECRET)])
+        self.write_sent([step("2026-03-25", "withdrawn", note=SYNTHETIC_PRIVATE_NOTE)])
         before = self.path.read_bytes()
         code, out, err = self.propose("--apply")
         self.assertEqual(code, 3)
         self.assertIn("at most 20", err)
         self.assertEqual(self.path.read_bytes(), before)
-        self.assertNotIn(SECRET, out + err)
+        self.assertNotIn(SYNTHETIC_PRIVATE_NOTE, out + err)
         self.set_asked(None)
         self.write_sent([step("2026-03-04", "acknowledged"), step("2026-03-20", "closed")], scopes=(A,))
         code, out, _ = self.propose("--apply")
@@ -497,7 +497,7 @@ class WithdrawnUndoTests(ExampleBase):
                  step("2026-03-12", "produced", partial=True, expected_on="2026-04-10", records=["e" * 64],
                       correspondence=["f" * 64])]
         self.write_sent(prior)
-        code, _, err = self.response("withdrawn", "2026-03-20", "--note", SECRET)
+        code, _, err = self.response("withdrawn", "2026-03-20", "--note", SYNTHETIC_PRIVATE_NOTE)
         self.assertEqual((code, err), (0, ""))
         content_before = self.path.read_bytes()
         before = self.entry()
@@ -511,7 +511,7 @@ class WithdrawnUndoTests(ExampleBase):
         self.assertEqual(self.path.read_bytes(), content_before)  # undo never writes public content
         (receipt,) = json.loads((self.root / "kit" / "sent-undone.json").read_text(encoding="utf-8"))["undos"]
         self.assertEqual(receipt["step"]["kind"], "withdrawn")
-        self.assertEqual(receipt["step"]["note"], SECRET)
+        self.assertEqual(receipt["step"]["note"], SYNTHETIC_PRIVATE_NOTE)
         self.assertEqual(receipt["step"]["on"], "2026-03-20")
         self.assertEqual((receipt["reason"], receipt["undo_id"]), ("Withdrew the wrong request", after["undo_ids"][0]))
         self.assertEqual(receipt["entry_before_sha256"], kit_undo._digest(before))
