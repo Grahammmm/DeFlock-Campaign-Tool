@@ -228,7 +228,7 @@ class LabelsTest(unittest.TestCase):
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
-                  "officials.heading", "officials.listed", "officials.source"]
+                  "officials.heading", "officials.listed", "officials.source", "privacy.signup_policy"]
         self.assertEqual(sorted(set(DEFAULTS) - seen), absent)
 
     def test_non_page_outputs_and_starter_ignore_labels(self):

@@ -171,12 +171,12 @@ class SiteMobileTests(unittest.TestCase):
             pages = {p.relative_to(root / "public").as_posix(): Page(p.read_text())
                      for p in (root / "public").rglob("*.html")}
             # 404.html (RF1510-5), cameras.html (DF1507-13) and methods.html (DF2037-14) are generated pages outside
-            # PAGES; 404.html and cameras.html mark no nav item current by design.
-            self.assertEqual(set(pages), set(PAGES) | {"404.html", "cameras.html", "methods.html"})
+            # PAGES; 404.html, cameras.html and privacy.html mark no nav item current by design.
+            self.assertEqual(set(pages), set(PAGES) | {"404.html", "cameras.html", "methods.html", "privacy.html"})
             for name, page in pages.items():
                 self.assertEqual(page.viewport, 1, name)
                 self.assertEqual(len(page.navs), 1, name)
-                self.assertEqual(len(page.current), 0 if name in ("404.html", "cameras.html") else 1, name)
+                self.assertEqual(len(page.current), 0 if name in ("404.html", "cameras.html", "privacy.html") else 1, name)
                 self.assertTrue(all(inside for _, inside in page.current), name)
                 self.assertFalse(page.inline, name)
 
