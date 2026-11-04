@@ -995,6 +995,13 @@ def main():
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
     due_p.add_argument("--request", help="Only requests with this name (refused when none is recorded)")
+    timing_p = commands.add_parser("kit-timing", help="Private response-time report from kit/sent.json: calendar days "
+                                   "between recorded steps (read-only; provisional, not a legal deadline)",
+                                   description="Calendar days between recorded steps; provisional; not a legal deadline. "
+                                   "Reads kit/sent.json only; nothing is sent.")
+    timing_p.add_argument("--directory", required=True)
+    timing_p.add_argument("--as-of", help="YYYY-MM-DD to count to (default today); not a reconstruction of past knowledge")
+    timing_p.add_argument("--csv", metavar="FILE", help="Write a new private .csv (0600) outside public/ and content/")
     calendar_p = commands.add_parser("kit-calendar", help="Private .ics of open requests' dates and comment deadlines")
     for flag in ("--directory", "--out", "--as-of"):  # --as-of YYYY-MM-DD: earlier comment deadlines left out
         calendar_p.add_argument(flag, required=flag != "--as-of")
@@ -1639,6 +1646,15 @@ def main():
             print(json.dumps(kit_fees.write_csv(root, args.csv, report) if args.csv else report, indent=2))
             print("Private file; nothing was sent or published." if args.csv else "Read-only. Nothing was sent.",
                   file=sys.stdout if args.csv else sys.stderr)
+        elif args.command == "kit-timing":
+            from . import kit_timing
+            report = kit_timing.report(root, args.as_of)
+            if args.csv:
+                kit_timing.check_csv(root, args.csv)  # a refused path prints no table
+            print(kit_timing.format_report(report))
+            if args.csv:
+                print(json.dumps(kit_timing.write_csv(root, args.csv, report), indent=2))
+            print("Read-only. Nothing was sent.", file=sys.stderr)
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
