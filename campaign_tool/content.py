@@ -157,7 +157,10 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image", "license", "comment_asks"}
+             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image", "license", "comment_asks", "press"}
+# DF2207-10: the optional reporter page. contact_role is required; the address defaults to site.json.contact_email.
+PRESS_KEYS = {"contact_role", "contact_email", "about_md"}
+MAX_PRESS_ROLE, MAX_PRESS_ABOUT = 80, 1500
 # DF1422-13: the open-data licences an organizer may pick: id -> (name, deed URL). Nothing else is accepted.
 LICENSES = {
     "CC-BY-4.0": ("Creative Commons Attribution 4.0 International (CC BY 4.0)", "https://creativecommons.org/licenses/by/4.0/"),
@@ -298,6 +301,32 @@ def load_license(value):
     return found
 
 
+def load_press(value, contact_email):
+    """DF2207-10 site.json.press: ``{"contact_role", optional "contact_email", optional "about_md"}``.
+
+    ``contact_email`` is the validated site.json.contact_email (or None); it is the address when press names none.
+    No field is trimmed or coerced; the page escapes the text. A refusal names the field, never the text."""
+    label = "site.json.press"
+    _require_keys(value, PRESS_KEYS, {"contact_role"}, label)
+    role = value["contact_role"]
+    if (not isinstance(role, str) or not role.strip() or len(role) > MAX_PRESS_ROLE
+            or any(unicodedata.category(char) == "Cc" or char in "\u2028\u2029" for char in role)):
+        raise ContentError(f"{label}.contact_role: required, 1-{MAX_PRESS_ROLE} characters on one line, no control characters")
+    if "contact_email" in value:
+        address = value["contact_email"]
+        if not isinstance(address, str) or not address:
+            raise ContentError(f"{label}.contact_email: must be a non-empty email address")
+        address = _email(address, f"{label}.contact_email")
+    elif contact_email:
+        address = contact_email
+    else:
+        raise ContentError(f"{label}.contact_email: required when site.json.contact_email is not set")
+    about = value.get("about_md", "")
+    if not plain_text(about) or len(about) > MAX_PRESS_ABOUT:
+        raise ContentError(f"{label}.about_md: must be plain text without angle brackets, at most {MAX_PRESS_ABOUT} characters")
+    return {"contact_role": role, "contact_email": address, "about_md": about}
+
+
 def load_comment_asks(value, label):
     """DF2207-07: the campaign's own public-comment asks, 1-3 plain-text strings of 1-200 characters.
 
@@ -390,6 +419,8 @@ def load_site(document, assets_dir=None):
         **({"brand": load_brand(document["brand"], assets_dir)} if "brand" in document else {}),
         **({"share_image": load_share_image(document["share_image"], assets_dir)} if "share_image" in document else {}),
         **({"license": load_license(document["license"])} if "license" in document else {}),
+        **({"press": load_press(document["press"], _email(document.get("contact_email"), "site.json.contact_email"))}
+           if "press" in document else {}),
     }
 
 
@@ -637,8 +668,10 @@ MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 CONTINUATION_KEYS = ("continued_to", "continued_to_date")  # DF0022-07: where the official source says an item went
 DIRECTION_KEYS = ("direction", "return_by", "direction_source")  # DF0022-08: a staff direction the source states, as a trio
+COMMENT_KEYS = ("spoke", "written", "comment_source_url")  # DF0022-09: public-comment totals the official record states
 OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes", "recording_url",
-                "recording_start", "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS, *DIRECTION_KEYS}
+                "recording_start", "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS, *DIRECTION_KEYS,
+                *COMMENT_KEYS}
 RECORDING_START = re.compile(r"([0-9]{1,2}):([0-5][0-9]):([0-5][0-9])")
 VOTE_VALUES = ("yes", "no", "abstain", "absent", "recused")
 PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
@@ -687,7 +720,7 @@ def load_outcome(value, starts_at, status, label, today=None):
         raise ContentError(f"{label}: a cancelled meeting has no outcome")
     _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes", "recording_url", "recording_start",
                                                        "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS,
-                                                       *DIRECTION_KEYS}, label)
+                                                       *DIRECTION_KEYS, *COMMENT_KEYS}, label)
     if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
         raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
     held, now = starts_at[:10], (today or date.today()).isoformat()
@@ -728,12 +761,35 @@ def load_outcome(value, starts_at, status, label, today=None):
     minutes = _load_minutes(value, held, now, label)  # DF2207-05: the body's approved minutes, always as a pair
     continued = _load_continuation(value, held, label)  # DF0022-07: where a continued item went, as the source states
     direction = _load_direction(value, held, label)  # DF0022-08: what the body told its staff, as the source states
+    comments = load_comment_counts(value, label)  # DF0022-09: how many people spoke or wrote, as the record states
     return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
             "verified_by": value["verified_by"], "verified_at": value["verified_at"],
             **({"vote": value["vote"]} if "vote" in value else {}),
             **({"votes": [{"name": v["name"], "vote": v["vote"]} for v in votes]} if "votes" in value else {}),
             **({"recording_url": recording} if "recording_url" in value else {}),
-            **({"recording_start": start} if "recording_start" in value else {}), **minutes, **continued, **direction}
+            **({"recording_start": start} if "recording_start" in value else {}), **minutes, **continued, **direction,
+            **comments}
+
+
+def load_comment_counts(value, label):
+    """DF0022-09: ``{spoke?, written?, comment_source_url}`` or ``{}``. Each count is a whole number (``type is int``,
+    never a bool, float, string or null) from 0 to 999 exactly as the official record states it, and a count never
+    appears without the https record that states it. Zero is a stated count; an absent count is simply not stated."""
+    present = [key for key in ("spoke", "written") if key in value]
+    if not present:
+        if "comment_source_url" in value:
+            raise ContentError(f"{label}.comment_source_url: needs spoke or written")
+        return {}
+    for key in present:
+        if type(value[key]) is not int or not 0 <= value[key] <= 999:
+            raise ContentError(f"{label}.{key}: must be a whole number from 0 to 999")
+    if "comment_source_url" not in value:
+        raise ContentError(f"{label}.comment_source_url: required with spoke or written")
+    source = value["comment_source_url"]
+    if isinstance(source, str) and len(source) > 500:
+        raise ContentError(f"{label}.comment_source_url: at most 500 characters")
+    _https(source, f"{label}.comment_source_url")
+    return {**{key: value[key] for key in present}, "comment_source_url": source}
 
 
 def direction_text_ok(value):
@@ -1310,6 +1366,74 @@ def _pre_meeting(value, label, today=None, problems=None):
     return clean
 
 
+SHARING_KEYS = ("checked_on", "source_url", "recipients")
+SHARING_KINDS = ("local", "state", "federal", "private", "unknown")
+SHARING_STATES = frozenset("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR "
+                           "PA RI SC SD TN TX UT VT VA WA WV WI WY DC AS GU MP PR VI".split()) | {"US"}  # US = federal
+SHARING_HEADER = ["name", "state", "kind"]  # the import CSV's exact header
+SHARING_MAX_ROWS = 2000
+SHARING_HOST = "transparency.flocksafety.com"
+SHARING_RULE_ID = "ca-civ-1798.90.55-sharing-limits"  # the law-package rules the agency page cites by id (DF1207-08)
+SHARING_BULLETIN_ID = "ca-oag-2023-dle-06-out-of-state-sharing-guidance"
+
+
+def sharing_row_problems(name, state, kind):
+    """DF1207-08: ``[(field, message)]`` for one recipient the organizer transcribed from the vendor portal; [] when fine."""
+    found = []
+    if not (isinstance(name, str) and name.strip() and name == name.strip()):
+        found.append(("name", "required, without leading or trailing spaces"))
+    elif len(name) > 160 or any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in name):
+        found.append(("name", "at most 160 characters, no control characters"))
+    if not (isinstance(state, str) and state in SHARING_STATES):
+        found.append(("state", "a two-letter USPS state or territory code, or US for a federal agency"))
+    if not (isinstance(kind, str) and kind in SHARING_KINDS):
+        found.append(("kind", f"choose one of {list(SHARING_KINDS)}"))
+    elif state == "US" and kind != "federal":
+        found.append(("state", "US is only for kind federal"))
+    return found
+
+
+def sharing_source_problem(value):
+    """DF1207-08: why ``value`` is not an https URL on the vendor transparency portal host, else None."""
+    try:
+        _https(value, "source_url")
+        parsed = urlsplit(value)
+        if parsed.hostname != SHARING_HOST or parsed.port is not None:
+            raise ValueError
+    except ValueError:  # ContentError is one
+        return f"must be an https:// URL on {SHARING_HOST}"
+    return None
+
+
+def _sharing(value, label, today=None):
+    """DF1207-08: the organizer-transcribed list of agencies the vendor transparency portal names as receiving data
+    (``profile.sharing``), as the portal shows it; never fetched and never read as a finding. Recipients are returned
+    sorted by state then name; a duplicate (name casefolded, state) is refused."""
+    if value is None:
+        return None
+    _require_keys(value, SHARING_KEYS, SHARING_KEYS, label)
+    if _calendar_day(value["checked_on"], f"{label}.checked_on") > (today or date.today()):
+        raise ContentError(f"{label}.checked_on: must not be after the build date")
+    if (problem := sharing_source_problem(value["source_url"])) is not None:
+        raise ContentError(f"{label}.source_url: {problem}")
+    rows = value["recipients"]
+    if not isinstance(rows, list) or not 1 <= len(rows) <= SHARING_MAX_ROWS:
+        raise ContentError(f"{label}.recipients: must list 1 to {SHARING_MAX_ROWS} agencies")
+    clean, seen = [], {}
+    for index, row in enumerate(rows):
+        item = f"{label}.recipients[{index}]"
+        _require_keys(row, ("name", "state", "kind"), ("name", "state", "kind"), item)
+        for field, message in sharing_row_problems(row["name"], row["state"], row["kind"]):
+            raise ContentError(f"{item}.{field}: {message}")
+        key = (row["name"].casefold(), row["state"])
+        if key in seen:
+            raise ContentError(f"{item}: duplicate of recipients[{seen[key]}] (same name and state)")
+        seen[key] = index
+        clean.append({"name": row["name"], "state": row["state"], "kind": row["kind"]})
+    clean.sort(key=lambda r: (r["state"], r["name"].casefold(), r["name"]))
+    return {"checked_on": value["checked_on"], "source_url": value["source_url"], "recipients": clean}
+
+
 CONTRACT_CHECKLIST_PATH = Path(__file__).resolve().parent / "_resources" / "checklists" / "contract-checklist.json"
 CONTRACT_CHECKLIST_NAME, MAX_CONTRACT_CHECKLIST_BYTES = "checklists/contract-checklist.json", 64 * 1024
 CONTRACT_CHECK_IDS = ("term_renewal", "price_changes", "data_ownership", "retention", "sharing_network",
@@ -1551,7 +1675,7 @@ def load_agencies(document, label, today=None):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding", "pre_implementation_meeting"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding", "pre_implementation_meeting", "sharing"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -1591,6 +1715,8 @@ def load_agencies(document, label, today=None):
         })
         if "funding" in profile:  # DF2207-02: only when the organizer recorded it, so other profiles keep their shape
             agencies[-1]["funding"] = _funding(profile["funding"], f"{item}.profile.funding", today)
+        if profile.get("sharing") is not None:  # DF1207-08: likewise only when recorded, so other agencies keep their shape
+            agencies[-1]["sharing"] = _sharing(profile["sharing"], f"{item}.profile.sharing", today)
     return agencies
 
 
@@ -1945,7 +2071,8 @@ def load_map(content_dir, sources=None, today=None):
 # --- explainer pages (DF2237-07): content/pages/<slug>.json -> /<slug>.html ----
 PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
 RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
-                                       "agency-cards", "app", "data", "vendor", "meetings", "methods", "privacy", "search"}  # generated top-level names
+                                       "agency-cards", "app", "data", "vendor", "meetings", "methods", "privacy", "search",
+                                       "press"}  # generated top-level names (press: DF2207-10, reserved even when disabled)
 
 
 def _page_string(document, key, label, limit, required):
@@ -2655,4 +2782,8 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
         model["redirects"] = _read_json(redirects_path)
     if supporters is not None:  # DF2207-13: public rows only (never the private consent records)
         model["supporters"] = supporters
+    from .body_schedules import read_body_schedules  # local: body_schedules imports this module
+    schedules = read_body_schedules(root, today=today)  # DF0022-10: optional; the key exists only with rows
+    if schedules:
+        model["body_schedules"] = schedules
     return model

@@ -34,6 +34,8 @@ FOOTER_FAQ = '<p><a href="/faq.html">FAQ</a></p>'
 # Fixed-day (2026-10-01) legacy pins from untouched main b3afc286.
 # The merged render adds only the exact catalogue outputs, footer paragraph and
 # sitemap URL normalized below; source-filter assets retain main's bytes.
+# Source-filter inventory and digests independently captured on main
+# 6123a134c44a2f60934c063e814dafd9fc68db51 are preserved by this merge.
 BASELINE = {
     "404.html": "b2991c912cf60b9f6da98217067eb5de2346263569dccb68e458107bdb4c2819",  # pragma: allowlist secret -- public rendered-file SHA-256
     "_headers": "d8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e",  # pragma: allowlist secret -- public rendered-file SHA-256
