@@ -260,6 +260,27 @@ ignored, symlinks and folders are refused, at most 50 files. Slugs that are star
 published finding slug are refused, as is a `public-assets/<slug>.html` entry. Every page is listed in
 `sitemap.xml`; `nav: true` (strictly a boolean, at most 3 pages) adds the title to the header nav after About.
 
+### Topic pages (`content/topics/<slug>.json`, optional)
+
+An organizer groups an ordered series of already-published findings into a stable page. Each file becomes
+`/topics/<slug>.html` and holds exactly `{"title", "intro_md", "finding_ids"}`: `title` is 1-120 characters,
+`intro_md` a string of at most 200 KiB (empty allowed; rendered by `markdown_lite`, so raw HTML shows as text) and
+`finding_ids` 1-100 distinct ids (`fnd_...`, not slugs or file names) of findings loaded from `content/findings/`.
+An unknown, draft or withdrawn id is refused by file, field and id; remove it from the topic first, because a refused
+build leaves the previous `public/` tree untouched. The listing keeps the order of `finding_ids` and reuses the
+findings list, so each entry shows its classification, confidence, event date and newest correction marker. Each
+listed finding page gets `Part of: <topic links>` (topics in slug order, once each). `/topics/` lists every topic;
+a Topics nav item, a footer link and sitemap entries for `/topics/` and each topic appear only when topics exist. No
+`lastmod` is invented for a topic and topics are not in the Atom feeds.
+
+The file stem is the slug (`index`, `topics`, `timeline`, `cameras`, every reserved page name, an explainer page slug
+or a published finding slug is refused, naming both). At most 30 files; files not ending in `.json` are ignored;
+symlinks, folders named `*.json`, a symlinked or non-folder `topics` path, malformed UTF-8/JSON and files over
+2 MiB are refused. While topics exist a page or finding slug `topics` and `public-assets/topics/...` are also
+refused; without topics nothing changes and the output is byte-identical. `content-check` lists every bad topic file.
+New labels: `nav.topics`, `heading.topics`, `title.topics`, `title.topics_description`, `finding.part_of`
+(`{topic}` is the already-escaped link list); `examples/labels/es.json` carries each.
+
 ## Generated pages and files
 
 `index.html` (hero map when configured, agency cards, mission, latest findings,
@@ -312,6 +333,16 @@ held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `
 `votes` as `{name, vote}` in stored order, each only when recorded). It never includes the comment kit, `participation`,
 contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
 `data/meetings.json: non-public key ...` and writes nothing.
+`data/agencies.json` is the agencies as open data (`schemas/agencies-open-data.schema.json`), linked from
+`agencies.html` and `about.html`: only agencies that have a public page (`/agencies/<slug>.html`), sorted by `name` then
+`agency_id` (`"agencies": []` with none). Top level `schema_version`, `campaign`, `generated_from`, `base_url`, `url_kind`
+and `agencies`; per agency `agency_id`, `name`, `kind`, `url` (the page path, with the base URL when one is set), `asked`
+(`topic`, `state`, `asked_on`, `updated_on` or null, newest `asked_on` first as the card lists them), `alpr_policy`
+(`url`, `checked_on`) or null, `contract` (`vendor`, `start`, `end`, `source_url`, `checked_on`) or null, `transparency`
+(the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, and `camera_count`
+(the card's camera-count sentence) or null. It never includes `records_email`, `records_url`, `portal`, the asked-item
+`note`, the contract `renewal_note`, kit files, notes or any other key; the build refuses with
+`data/agencies.json: non-public key ...` and writes nothing.
 `public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan

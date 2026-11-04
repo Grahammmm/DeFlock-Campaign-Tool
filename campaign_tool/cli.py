@@ -941,8 +941,9 @@ def main():
     for flag in ("--directory", "--agency", "--date"):
         sent_p.add_argument(flag, required=True)
     sent_p.add_argument("--channel", required=True, choices=kit_track_channels)
-    sent_p.add_argument("--request-url", metavar="URL", help="With --channel muckrock only: the https://www.muckrock.com/foi/ "
-                        "page of the request you filed there (recorded, never fetched)")
+    sent_p.add_argument("--request-url", metavar="URL", help="With --channel portal: the https:// page of the request you "
+                        "filed there, on the agency's verified portal host (kit-verify-agency --portal); with --channel "
+                        "muckrock: the https://www.muckrock.com/foi/ page. Recorded, never fetched")
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     sent_p.add_argument("--request", default="main", help="Name of a further request to this agency, drafted in "
                         "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
@@ -1199,6 +1200,10 @@ def main():
     pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
+    flyer = commands.add_parser("flyer", help="Write a private printable one-page campaign flyer; prints and publishes nothing")
+    flyer.add_argument("--directory", required=True)
+    flyer.add_argument("--max-findings", type=int, choices=range(1, 7), default=3)
+    flyer.add_argument("--replace", action="store_true")
     _campaign_option(parser)
     campaigns = commands.add_parser("campaigns", help="A named register of campaign directories; names and paths only"
                                     ).add_subparsers(dest="campaigns_command", required=True)
@@ -1310,6 +1315,10 @@ def main():
             backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "flyer":
+            from .flyer import build as flyer_build
+            print(json.dumps(flyer_build(Path(args.directory).expanduser(), args.max_findings, replace=args.replace)))
+            print("Private file; nothing was printed, sent or published.")
         elif args.command == "meeting-pack" and args.upcoming:
             from .meeting_pack import build_upcoming
             report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
@@ -1545,6 +1554,8 @@ def main():
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
                 if row["fee_state"] == "unpaid":
                     print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
+                if row["channel"] == "portal" and row.get("request_url"):
+                    print(f"{label}: Portal request: {row['request_url']}", file=sys.stderr)
         elif args.command == "kit-fees":
             from . import kit_fees
             report = kit_fees.fees(root)
