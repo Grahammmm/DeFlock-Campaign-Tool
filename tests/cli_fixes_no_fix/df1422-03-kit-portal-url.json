@@ -1,0 +1,12 @@
+{
+  "--request-url is only for portal or muckrock requests": "kit-sent names the option and the two channels that take it",
+  "--request-url must be at most 300 characters": "kit-sent names the option and the limit directly",
+  "--request-url must not contain spaces or control characters": "kit-sent names the option and the rule directly",
+  "--request-url must start with https:// and name a host": "kit-sent names the option and the required form directly",
+  "--request-url must not include a login (user@)": "kit-sent names the option and the forbidden part directly",
+  "--request-url must not include a port": "kit-sent names the option and the forbidden part directly",
+  "--request-url must not include a query (?...)": "kit-sent names the option and the forbidden part directly",
+  "--request-url must not include a fragment (#...)": "kit-sent names the option and the forbidden part directly",
+  "--request-url host 5 is not the agency's verified portal host 5": "kit-sent names both hosts, so the organizer sees which one to correct",
+  "record the agency's portal first (kit-verify-agency --portal)": "kit-sent names the command to run first"
+}
