@@ -140,7 +140,19 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image"}
+             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image", "license"}
+# DF1422-13: the open-data licences an organizer may pick: id -> (name, deed URL). Nothing else is accepted.
+LICENSES = {
+    "CC-BY-4.0": ("Creative Commons Attribution 4.0 International (CC BY 4.0)", "https://creativecommons.org/licenses/by/4.0/"),
+    "CC-BY-SA-4.0": ("Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)",
+                     "https://creativecommons.org/licenses/by-sa/4.0/"),
+    "CC0-1.0": ("CC0 1.0 Universal (Public Domain Dedication)", "https://creativecommons.org/publicdomain/zero/1.0/"),
+}
+LICENSE_KEYS = {"id", "attribution"}
+MAX_LICENSE_ATTRIBUTION = 200
+# Camera points come from OpenStreetMap, so they carry ODbL whatever licence the campaign picks (a fixed fact, not a choice).
+ODBL = {"id": "ODbL-1.0", "name": "Open Database License (ODbL) 1.0", "url": "https://opendatacommons.org/licenses/odbl/1-0/",
+        "attribution": "\u00a9 OpenStreetMap contributors", "attribution_url": "https://www.openstreetmap.org/copyright"}
 SHARE_IMAGE_KEYS = {"path", "alt"}
 SHARE_RATIO, SHARE_RATIO_TOLERANCE = 1.905, 0.02  # 1200x630
 BRAND_KEYS = {"logo", "logo_alt", "accent", "ink", "favicon"}
@@ -250,6 +262,24 @@ def load_share_image(value, assets_dir=None):
     return {"path": value["path"], "alt": alt, "size": size}
 
 
+def load_license(value):
+    """site.json.license: ``{"id": <LICENSES key>, "attribution": <optional plain text, one line, 1-200 characters>}``."""
+    label = "site.json.license"
+    _require_keys(value, LICENSE_KEYS, {"id"}, label)
+    if not isinstance(value["id"], str) or value["id"] not in LICENSES:
+        raise ContentError(f"{label}.id: choose one of {list(LICENSES)}")
+    name, url = LICENSES[value["id"]]
+    found = {"id": value["id"], "name": name, "url": url}
+    if "attribution" in value:
+        text = value["attribution"]
+        if (not isinstance(text, str) or not plain_text(text) or not text.strip() or len(text) > MAX_LICENSE_ATTRIBUTION
+                or any(ord(char) < 32 or ord(char) == 127 for char in text) or CONTACT_LIKE.search(text)):
+            raise ContentError(f"{label}.attribution: must be plain text on one line of 1-{MAX_LICENSE_ATTRIBUTION} characters, "
+                               "without angle brackets, an address or a phone-like number")
+        found["attribution"] = text
+    return found
+
+
 def load_site(document, assets_dir=None):
     """``assets_dir`` (content/public-assets) lets ``brand`` check its logo and favicon files."""
     _require_keys(document, SITE_KEYS, {"schema_version", "tagline", "about_md"}, "site.json")
@@ -318,6 +348,7 @@ def load_site(document, assets_dir=None):
                                           "before relying on them."),
         **({"brand": load_brand(document["brand"], assets_dir)} if "brand" in document else {}),
         **({"share_image": load_share_image(document["share_image"], assets_dir)} if "share_image" in document else {}),
+        **({"license": load_license(document["license"])} if "license" in document else {}),
     }
 
 
