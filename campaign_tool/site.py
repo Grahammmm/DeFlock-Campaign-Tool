@@ -2152,11 +2152,22 @@ def _privacy_gate(model, cfg=None):
         elif isinstance(value, str):
             yield where, value
     parts = [(part, model.get(part)) for part in PRIVACY_GATE_PARTS]
+    # Only this exact built-in illustrative address is intentional. Overrides (including other labels) still run the lint.
+    parts.append(("labels", {key: value for key, value in (model.get("labels") or {}).items()
+                             if not (key == "signup.placeholder" and value == "you@example.org")}))
     # A finding is scanned through its declared fields only: an undeclared key on the model is never published.
     parts.append(("findings", [{key: value for key, value in finding.items() if key in FINDING_KEYS}
                                for finding in model.get("findings") or ()]))
     parts.append(("sources", [{key: source.get(key) for key in PRIVACY_GATE_LIBRARY} for source in model.get("sources") or ()]))
     parts += [("site", model.get("site")), ("campaign", {key: (cfg or {}).get(key) for key in ("name", "county", "state")})]
+    for key in ("cameras_path", "boundary_path", "county_boundary_path"):
+        path = (model.get("map") or {}).get(key)
+        if path:
+            _check_copy(path, MAX_GEOJSON_BYTES)
+            # Decode JSON escapes, include property keys and never apply the meeting/contact field exemptions to copies.
+            text = json.dumps(_read_json(path, MAX_GEOJSON_BYTES), ensure_ascii=False)
+            if note := refusal("map." + key, text):
+                raise ContentError(note)
     for part, value in parts + [("agencies", model.get("agencies"))]:
         for where, text in walk(value, part, PRIVACY_GATE_SKIP | PRIVACY_GATE_AGENCY_SKIP if part == "agencies" else PRIVACY_GATE_SKIP):
             if note := refusal(where, text):

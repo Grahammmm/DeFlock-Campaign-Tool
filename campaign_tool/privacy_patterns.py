@@ -35,6 +35,7 @@ PLATE = re.compile(r"\b(?:\d[A-Z]{3}[ -]?\d{3}|\d[A-Z]\d{5})\b")
 PATTERNS = (("email", EMAIL), ("phone", PHONE), ("plate", PLATE))
 
 PATTERN_EXCEPTIONS = (
+    ("campaign_tool/content.py", "email", "_email fullmatch validates intentional contact addresses with length bounds, not a privacy lint"),
     ("campaign_tool/newsletter/draft.py", "phone", "newsletter gate: also refuses a bare 10-digit run and unseparated groups, stricter than the shared phone"),
     ("campaign_tool/digest/redact.py", "email", "digest redaction: replaces with placeholders and over-redacts on purpose, a different job from a refusal lint"),
     ("campaign_tool/digest/redact.py", "phone", "digest redaction: also matches a bare 10-digit run"),

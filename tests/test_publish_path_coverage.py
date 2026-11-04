@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "fictional-campaign"
 VALUES = {"email": "jane.doe@example.invalid", "phone": "805-555-0142", "plate": "7ABC123"}
 EXPECTED_EXCEPTIONS = [
+    ("campaign_tool/content.py", "email"),
     ("campaign_tool/newsletter/draft.py", "phone"), ("campaign_tool/digest/redact.py", "email"), ("campaign_tool/digest/redact.py", "phone"),
     ("campaign_tool/digest/redact.py", "plate"), ("tools/flock_email.py", "email"), ("campaign_tool/kit.py", "email"),
     ("workers/workspace/src/executors/social_adapter.ts", "all")]
@@ -66,7 +67,8 @@ SKIP = re.compile(r"tools/(accept_|fc\d)|^campaign_tool/records/|^campaign_tool/
 # What each site-driven entry is fed: the published field that reaches its artefact.
 PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name"), "atom-feed": ("finding.summary",),
           "agency-feeds": ("finding.summary",), "open-graph-meta": ("finding.title",),
-          "agency-cards": ("site.county_profile.summary", "agency.profile.summary"), "data-exports": ("source.title", "agency.name")}
+          "agency-cards": ("site.county_profile.summary", "agency.profile.summary"), "data-exports": ("source.title", "agency.name"),
+          "map-geojson": ("map.cameras.geojson", "map.city-boundaries.geojson", "map.county.geojson")}
 TEXT_ONLY = {"flock-page", "flock-publish-brief", "flock-publish-stage"}  # these tools refuse without printing the category per value
 
 
@@ -181,17 +183,21 @@ def worker_problems(root):
 
 def pattern_copies(root):
     """(module, category) for every module other than the shared home that defines an email, phone or plate pattern."""
-    found = set()
-    for rel, tree in modules(root):
+    found = []
+    trees = list(modules(root))
+    public_scan = root / "campaign_tool/records/public_scan.py"
+    if public_scan.is_file():
+        trees.append(("campaign_tool/records/public_scan.py", ast.parse(public_scan.read_text(encoding="utf-8"))))
+    for rel, tree in trees:
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and 6 < len(node.value) < 700:
                 s = node.value
                 if "@" in s and "\\." in s and "{2" in s:
-                    found.add((rel, "email"))
+                    found.append((rel, "email"))
                 if "\\d{3}" in s and "\\d{4}" in s:
-                    found.add((rel, "phone"))
+                    found.append((rel, "phone"))
                 if ("[A-Z]{3}" in s or "[A-Za-z]{3}" in s) and ("\\d{3}" in s or "\\d{4}" in s):
-                    found.add((rel, "plate"))
+                    found.append((rel, "plate"))
     return found
 
 
@@ -204,8 +210,15 @@ def claim_copies(root):
 def second_copies(root):
     allowed = {(m, c) for m, c, _ in privacy_patterns.PATTERN_EXCEPTIONS}
     allowed |= {(m, c) for m, c, _ in privacy_patterns.PATTERN_EXCEPTIONS if c == "all" for c in ("email", "phone", "plate")}
-    return sorted(pair for pair in pattern_copies(root) - allowed
-                  if pair[0] not in {"campaign_tool/content.py", "campaign_tool/records/public_scan.py"} or pair[1] != "email")
+    found = pattern_copies(root)
+    # An exception permits one definition, not unlimited additional regexes in that module.
+    for pair in allowed:
+        # The broad heuristic also counts the digest's SSN and plate regexes as phone-shaped (both contain 3/4-digit groups).
+        count = 3 if pair == ("campaign_tool/digest/redact.py", "phone") else 1
+        for _ in range(count):
+            if pair in found:
+                found.remove(pair)
+    return sorted(found)
 
 
 def tool(name):
@@ -237,6 +250,13 @@ class Drivers:
     def edit(self, root, probe, value):
         """Put value into the published field named by probe: finding.<key>, site.<dotted key>, source.title or agency.<dotted key>."""
         kind, _, key = probe.partition(".")
+        if kind == "map":
+            path = root / "content" / "map" / key
+            original = path if path.exists() else path.with_name("city-boundaries.geojson")
+            document = json.loads(original.read_text(encoding="utf-8"))
+            document["features"][0].setdefault("properties", {})["how"] = value
+            path.write_text(json.dumps(document), encoding="utf-8")
+            return
         path = {"finding": next((root / "content" / "findings").glob("*.json")), "site": root / "content" / "site.json",
                 "source": root / "content" / "sources.json", "agency": root / "content" / "agencies.json"}[kind]
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -256,8 +276,10 @@ class Drivers:
     def drive_site(self, entry, value, probe):
         root = self.campaign()
         self.edit(root, probe, value)
-        build_site(root)
-        self.case.assertFalse((root / "public").exists(), "a refused build must write nothing")
+        try:
+            build_site(root)
+        finally:
+            self.case.assertFalse((root / "public").exists(), "a refused build must write nothing")
 
     def drive_runner(self, entry, value, probe):
         from runner.client import FakeWorkspace
@@ -473,6 +495,16 @@ class RegistryTests(unittest.TestCase):
                     _privacy_gate(model, cfg)
                 self.assertEqual(str(raised.exception), "privacy lint: %s: %s" % (where, category))
 
+    def test_label_overrides_are_refused_before_writing(self):
+        for key in ("signup.placeholder", "signup.email"):
+            for category, value in VALUES.items():
+                with self.subTest(key=key, category=category):
+                    root = Drivers(self).campaign()
+                    (root / "content" / "labels.json").write_text(json.dumps({"schema_version": 1, "labels": {key: value}}), encoding="utf-8")
+                    with self.assertRaisesRegex(ContentError, "labels.*" + category):
+                        build_site(root)
+                    self.assertFalse((root / "public").exists())
+
     def test_gate_leaves_intentional_contacts_and_private_fields_alone(self):
         email, phone, plate = VALUES["email"], VALUES["phone"], VALUES["plate"]
         _privacy_gate({"findings": [{"summary": "clean", "reviewer_email": email}]})  # an undeclared model key is never published
@@ -560,6 +592,14 @@ class SeededFailureControls(unittest.TestCase):
         folder = self.tree()
         (folder / "campaign_tool" / "weak_copy.py").write_text('import re\nMAIL = re.compile(r"[a-z]+@[a-z]+\\.[a-z]{2,}")\n')
         self.assertEqual(second_copies(folder), [("campaign_tool/weak_copy.py", "email")])
+        for rel in ("campaign_tool/content.py", "campaign_tool/records/public_scan.py"):
+            with self.subTest(module=rel):
+                path = folder / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text((ROOT / rel).read_text(encoding="utf-8") +
+                                '\nMAIL = re.compile(r"[a-z]+@[a-z]+\\.[a-z]{2,}")\n', encoding="utf-8")
+                self.assertIn((rel, "email"), second_copies(folder))
+                path.unlink()
 
 
 class PublicTreeScanTests(unittest.TestCase):

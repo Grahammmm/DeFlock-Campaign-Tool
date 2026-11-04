@@ -36,6 +36,8 @@ PUBLISH_PATHS = (
            "agency-cards.js, built inside the site plan"),
     _entry("data-exports", "campaign_tool/site.py", "Site.findings_json", "export", "public", "privacy+legal", GATE, "site",
            "data/findings.json, .csv, sources, meetings, agencies"),
+    _entry("map-geojson", "campaign_tool/site.py", "_plan_site", "export", "public", "privacy", GATE, "site",
+           "camera, city and county GeoJSON copies; all decoded JSON text is linted before any write"),
     _entry("runner-build-site", "runner/handlers/build_site.py", "run", "page", "public", "privacy+legal", "build_site(root)", "runner",
            "calls campaign_tool.site.build_site, so it inherits site-pages; a refusal fails the job and uploads nothing"),
     _entry("newsletter-draft", "campaign_tool/newsletter/draft.py", "build_draft", "draft", "pre-public", "privacy+legal",
