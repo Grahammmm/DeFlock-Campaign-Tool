@@ -31,51 +31,35 @@
       ],
       "properties": {
         "name": {
-          "type": "string",
-          "maxLength": 20000,
-          "pattern": "^[^<>]*$"
+          "$ref": "#/$defs/plainText"
         },
         "vendor": {
-          "type": "string",
-          "maxLength": 20000,
-          "pattern": "^[^<>]*$"
+          "$ref": "#/$defs/plainText"
         },
         "status": {
-          "type": "string",
-          "maxLength": 20000,
-          "pattern": "^[^<>]*$"
+          "$ref": "#/$defs/plainText"
         },
         "summary": {
-          "type": "string",
-          "maxLength": 20000,
-          "pattern": "^[^<>]*$"
+          "$ref": "#/$defs/plainText"
         },
         "cameraCount": {
-          "type": "string",
-          "maxLength": 20000,
-          "pattern": "^[^<>]*$"
+          "$ref": "#/$defs/plainText"
         },
         "facts": {
           "type": "array",
           "maxItems": 100,
           "items": {
-            "type": "string",
-            "maxLength": 20000,
-            "pattern": "^[^<>]*$"
+            "$ref": "#/$defs/plainText"
           }
         },
         "open": {
-          "type": "string",
-          "maxLength": 20000,
-          "pattern": "^[^<>]*$"
+          "$ref": "#/$defs/plainText"
         },
         "flags": {
           "type": "array",
           "maxItems": 100,
           "items": {
-            "type": "string",
-            "maxLength": 20000,
-            "pattern": "^[^<>]*$"
+            "$ref": "#/$defs/plainText"
           }
         }
       }
@@ -100,10 +84,20 @@
       }
     },
     "source_link_label": {
+      "$ref": "#/$defs/plainText",
+      "description": "Plain text with at least one character that str.strip() would keep. minLength 1 alone accepts a label of only spaces, which the renderer refuses; the pattern below carries BOTH the plainText forbidden-character rule and the nonblank rule (the explicit whitespace set is Python's str.isspace, Unicode 15.0.0), because a validator that lets a sibling pattern replace the referenced one must not lose the forbidden-character rule.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000,
+      "pattern": "^(?=[^\\u0000-\\u0008\\u000b-\\u001f\\u003c\\u003e\\u007f-\\u009f\\u00ad\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\ud804\udcbd\ud804\udccd\ud80d\udc30-\ud80d\udc3f\ud82f\udca0-\ud82f\udca3\ud834\udd73-\ud834\udd7a\udb40\udc01\udb40\udc20-\udb40\udc7f]*(?![\\s\\S]))(?=[\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]*[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000])"
+    }
+  },
+  "$defs": {
+    "plainText": {
+      "description": "Reviewed plain text, the same policy as campaign_tool.agency_cards.text: at most 20000 characters, none of < >, Unicode Cc other than U+0009/U+000A, any Unicode Cf (zero-width and bidirectional controls, tag characters), U+2028 or U+2029. Newline and tab are kept as written. The forbidden code points are a static, coalesced list generated with Unicode 15.0.0 (Python unicodedata); the schema/runtime drift test in tests/test_agency_cards_schema_text.py fails when a newer database adds a Cc/Cf character, and the list is then regenerated and reviewed. The pattern needs a Unicode-mode (code point) regular-expression engine, as JSON Schema 2020-12 validators use; the end anchor (?![\\s\\S]) avoids the permissive $ of some engines.",
       "type": "string",
       "maxLength": 20000,
-      "pattern": "^[^<>]*$",
-      "minLength": 1
+      "pattern": "^[^\\u0000-\\u0008\\u000b-\\u001f\\u003c\\u003e\\u007f-\\u009f\\u00ad\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\ud804\udcbd\ud804\udccd\ud80d\udc30-\ud80d\udc3f\ud82f\udca0-\ud82f\udca3\ud834\udd73-\ud834\udd7a\udb40\udc01\udb40\udc20-\udb40\udc7f]*(?![\\s\\S])"
     }
   }
 }

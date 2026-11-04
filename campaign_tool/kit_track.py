@@ -238,11 +238,17 @@ def _latest_contact(entry, as_of=None):  # latest by date, a tie going to the la
     return max(found, key=lambda item: item[:2])[2] if found else None
 
 
+def _origin_ok(parts, entry):  # exactly one origin: a checked kit draft (no marker), or an imported historical request
+    if "imported" in entry:  # kit-sent-import: the letter was sent before the tool, so no draft and no draft hash
+        return entry["imported"] is True and "draft" not in entry and "draft_sha256" not in entry
+    return (entry.get("draft") == _draft_path(*parts) and isinstance(entry.get("draft_sha256"), str)
+            and bool(SHA256.fullmatch(entry["draft_sha256"])))
+
+
 def _entry_ok(key, entry):
     parts = _split(key)
     return (parts and kit.AGENCY_ID.match(parts[0]) and isinstance(entry, dict) and _day(entry.get("sent_on"))
-            and entry.get("channel") in CHANNELS and entry.get("draft") == _draft_path(*parts)
-            and isinstance(entry.get("draft_sha256"), str) and SHA256.fullmatch(entry["draft_sha256"])
+            and entry.get("channel") in CHANNELS and _origin_ok(parts, entry)
             and _day(entry.get("recorded_at"), STAMP, datetime.fromisoformat) and isinstance(entry.get("steps"), list)
             and ("reference" not in entry or isinstance(entry["reference"], str)
                  and REFERENCE.fullmatch(entry["reference"]))
@@ -338,6 +344,8 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
     draft, stem = _draft_path(agency_id, request), _stem(agency_id, request)
     if request != "main" and any(entry["agency_id"] == stem for entry in agencies):
         raise ValueError(f"kit/requests/{stem}.md is another agency's draft; choose another --request name")
+    if (read_sent(root).get(_key(agency_id, request)) or {}).get("imported") is True:  # origin is immutable
+        raise ValueError(f"{_label(agency_id, request)} was imported; imported requests cannot be replaced with kit-sent")
     digest = _draft(root, agency_id, request)
     if digest is None:
         raise ValueError(f"kit/requests/{stem}.md must be a regular file (not a symlink)")
@@ -904,7 +912,9 @@ def status(root, today=None, law_base=None, *, request=None):
         last_contact = _latest_contact(entry)
         rows.append({"agency_id": agency_id, "request": name, "name": names.get(agency_id),
                      "sent_on": entry["sent_on"], "channel": entry["channel"],
-                     "draft_changed_since_sent": _draft(root, agency_id, name) != entry["draft_sha256"],
+                     "draft_changed_since_sent": None if entry.get("imported") is True  # no draft was ever checked
+                     else _draft(root, agency_id, name) != entry["draft_sha256"],
+                     **({"imported": True} if entry.get("imported") is True else {}),
                      "determination_due": due, "with_extension": extended, "steps": len(entry["steps"]),
                      "extended": "extension" in kinds, "closed": "closed" in kinds,
                      "last_step": {"on": steps[-1].get("on"), "kind": kinds[-1]} if steps else None,
