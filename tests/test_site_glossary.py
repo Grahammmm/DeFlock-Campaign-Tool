@@ -27,12 +27,13 @@ RULE = "ca-civ-1798.90.5-definitions"
 RULE_URL = "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."
 NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network access attempted"))
 
-# sha256 of every file the fictional example renders on origin/main (bfc8dedb) with today=2026-10-01 and no
-# glossary.json: captured from main before this feature existed, never from the candidate.
+# sha256 of every file the fictional example renders on origin/main (82d4f767) with today=2026-10-01 and no
+# glossary.json: captured from main before this feature existed, never from the candidate. A later change to the
+# generated site re-captures this table (render the example with today=2026-10-01 and no glossary.json; sha256 each file).
 BASELINE = {
     "404.html": "705d63a46b3dfceb14bce8f4616c20a413637ac4b59fb7206c8a2ea3e320068c",
     "_headers": "d8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e",
-    "about.html": "38dead938b58813a186741f5052fc35980fabba3f7dbee47cb837074b3388fbb",
+    "about.html": "8f9b52c675ddfea6267a8a6f62505d2d4095c3a83ebfa0101ad796838d09f85c",
     "agencies.html": "f09c7e7523a9ecaea4ecbaa72890dc60fc3d7c14f914cb905aa35ca7cd1840cf",
     "agencies/cedar.html": "28719b492fbf7b46eedbc1108c4cc5e1debc9acf5c11ade01c79217891aa193d",
     "agency-cards.js": "95d2218da220b6ec4ecd303342c0aaa090f5ea4999b0ffd05b3454c46719ca00",
@@ -41,6 +42,7 @@ BASELINE = {
     "corrections.html": "d324e89d1dc824b27820183d53f747d043055a1a9487ea4d7e865cb3afc789da",
     "data/cameras.geojson": "6778a5778765c0aa2460e0cddf3056e885318d86196a03097f545927165c47f6",
     "data/city-boundaries.geojson": "68593cd8443c2ec42b01e4153cf28386727a9486503eccb5dc42ea1961511f19",
+    "data/meetings.json": "7a024cb7b2a582f5095553011fbc7062e6807a0c75cdb14336a58019959405ee",
     "data/findings.json": "09d948c3ea4c0e3501f9f5b686f576c42c3f8c720dfb5ab8fcf61440396cc2b7",
     "data/sources.json": "be46346e4e80de79575cc5250b27a921b329f22ffd8dd3a81b18a4a1bc603caf",
     "feed.xml": "e6c4da912d1ea1bee41a34396d0dfb0187aeed960758830ad033f74afcbabf54",
@@ -50,7 +52,7 @@ BASELINE = {
     "findings/index.html": "79db3d294e9681cd20167c811962a83a22d6e1115eb703d714324e2ee92bfad6",
     "findings/packet-all.html": "8b9d6924eb1e95a91a98059ccb5975892e6c12ff83d5533190d15977b4e68708",
     "index.html": "0e61b5c4950f96b79624c915abe71ff51e65cc6b5ce54faea6ed2b970d5f2116",
-    "meetings.html": "50d9ee44a4e4b4277597c682189fba9d9e59a292a0ca41d502113fe1fb66da2c",
+    "meetings.html": "c75a6b28e3a89115e02fae170dd4156a75eb442bf54e2ef502ffb8b65a4866bc",
     "meetings/cedar-council-2026-10.html": "5ffd3f5fdc5a4b359bf79a668d9297a2f551ab3aaa52eae2db9b9c2372140182",
     "methods.html": "4ccdc3655ea8c3792a584b194a15ba6c6bc822a95468385ccd183c6b977c3573",
     "privacy.html": "1b3fcf29a1f0694d69475be2fbf5befeec10758277bc6bd0f59085214243c208",
