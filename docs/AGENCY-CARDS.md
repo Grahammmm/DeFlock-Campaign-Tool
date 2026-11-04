@@ -34,6 +34,21 @@ this is not an HTML sanitization boundary. Do not wire user input or AI drafts
 directly to it. A later data-only adapter must validate every selected-agency field
 before this compatibility global is retired.
 
+**Schema and renderer agree on text.** `schemas/agency-cards.schema.json` carries the same plain-text policy as
+`agency_cards.text`, so a tool that prepares reviewed JSON can catch a refused character before handing it to the
+renderer: every profile string and every `facts`/`flags` item uses `$defs.plainText` (≤ 20000 characters; no `<` or `>`,
+no `Cc` other than tab/newline, no `Cf`, no U+2028/U+2029; newline and tab are kept as written, nothing is trimmed or
+normalized, and empty profile text stays valid). `source_link_label` adds one rule: it needs at least one character that
+Python's `str.strip()` would keep, which `minLength: 1` alone does not say (a label of only spaces passes it and the
+renderer refuses it); its own pattern repeats the forbidden-character rule so a validator that lets a sibling pattern
+replace the referenced one cannot lose it. The forbidden code points are a **static, coalesced list** of Unicode code
+point ranges (Unicode 15.0.0, recorded in the definition's description), checked in Unicode mode (code points, as
+JSON Schema 2020-12 validators do), not generated at run time. When a newer Python's Unicode database adds a `Cc`/`Cf`
+character, `tests/test_agency_cards_schema_text.py` fails by design: regenerate the ranges from
+`agency_cards.visible`, update the recorded version, and review the diff, rather than letting the schema admit it. Schema
+conformance is structural only; it is not a factual, privacy or legal review, and `agency_cards.problems` remains the
+authority and the only source of the named refusal messages.
+
 The synthetic example makes no real agency allegation and supplies no real
 contact address, subscriber, production configuration or private record.
 

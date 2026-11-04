@@ -264,6 +264,26 @@ the Rule line is left out and the build is not refused. It is an organizer-verif
 yet" is not a statement that no meeting was held, and the section makes no finding that one was required, missed or
 adequate. It is not in card JS, open data or feeds.
 
+An agency's optional `profile.sharing` (DF1207-08) records the agencies the vendor transparency portal names as receiving
+the agency's data, as an organizer transcribed them: `{"checked_on", "source_url", "recipients": [{"name", "state", "kind"}]}`.
+Record it with `python3 -m campaign_tool content agency-sharing --directory D --agency ID --csv FILE --checked-on YYYY-MM-DD
+--source-url URL [--replace]`. The CSV is UTF-8 (a BOM is allowed) with the header exactly `name,state,kind`: `name` 1-160
+characters without control characters, `state` a two-letter USPS code (50 states, DC, PR, AS, GU, MP, VI) or `US` for a
+federal agency (`US` only with `federal`), `kind` one of `local`, `state`, `federal`, `private`, `unknown`; 1 to 2000 rows,
+and the same name (any letter case) and state twice is refused. `--source-url` is an `https://` page on
+`transparency.flocksafety.com`; `--checked-on` is a real date not after today. Every bad row is named by its line (at most 20,
+then "and N more"); on any error nothing is written. The file is read as a plain file, never fetched, and a symlink is refused.
+The whole `content/agencies.json` is validated and then written once; an agency that already has a list needs `--replace`.
+Recipients are stored sorted by state, then name. The agency page and the agencies-list card show "Who the vendor portal lists
+as receiving data": "As listed on the vendor transparency portal, transcribed by the organizer (checked `{date}`): `{n}`
+agencies.", a count by state (the campaign's own state first) and by kind, then "Out of state and federal:" with the name,
+state and kind of every entry outside the campaign's state or of kind `federal` (at most 100, then "and N more"), then the
+sharing rule (`ca-civ-1798.90.55-sharing-limits`) and the 2023 Attorney General bulletin
+(`ca-oag-2023-dle-06-out-of-state-sharing-guidance`) as cited by the shipped law package, and "Law package: `{status}`." A
+rule the package lacks leaves out its line and never refuses the build. It lists what the portal names and draws no
+conclusion about any agency; `build` and `content-check` refuse a hand-edited list that breaks these rules. It is not in card
+JS, open data or feeds, and the portal is never contacted.
+
 An agency's optional `profile.contract_check` (DF2207-03) records an organizer's reading of the linked ALPR vendor
 agreement against the draft, tool-wide checklist `checklists/contract-checklist.json` (not part of any law package;
 status `draft`, packaged byte-identical and checked by `tools/sync_campaign_resources.py`): `{"checked_on": "YYYY-MM-DD",
@@ -385,10 +405,37 @@ overwritten or merged for you: consolidate the aliases by hand (keep one entry p
 `sources/` is reserved: `public-assets/sources/...` is refused as a generated path, with or without entries, and the slug
 `sources` is already a reserved content page.
 
-Downstream hook contract (for the library filter): each outer library `<li>` has `class="source-entry"`,
+Hook contract (read by the library filter below): each outer library `<li>` has `class="source-entry"`,
 `data-agency` (the entry's `agency_id`), `data-year` (the first four characters of `received_at`, no time-zone conversion),
 `data-cited` (`true` when a published finding cites it, else `false`) and `data-record` (the 12 lowercase hex characters).
 Every entry stays visible; the agency-document-group sections keep their ids.
+
+#### Filtering the library (`sources/filter.js`)
+
+A library with at least one record gets a hidden filter form above the groups on `sources.html`: an **Agency** select
+(agencies by display name, then id; an `agency_id` the campaign does not list is shown as written), a **Received year**
+select (newest first, the calendar year in the stored `received_at`, no time-zone conversion), a **Cited by a finding**
+checkbox and a live count ("Showing N of M", counted in records, not groups). Both selects and the checkbox appear even
+for one agency or one year. `sources/filter.js` (first-party, under 4096 bytes, `textContent` and `hidden` only, no
+fetch, storage or `innerHTML`) applies agency AND year AND cited, hides a group when none of its records is visible,
+shows "No source record matches these filters." at zero, and reveals the form only after it has applied the filter once.
+Only the outer `source-entry` rows are records.
+
+The state lives in the URL hash, in the order `agency`, `year`, `cited`; defaults are omitted and a checked box is
+`cited=1` (for example `/sources.html#agency=ca-example-police&year=2026&cited=1`). A value that is not one of the
+form's options is ignored, the last valid duplicate wins, a malformed escape or unknown key is ignored, and every
+`hashchange` is read from fresh defaults. A hash with a filter key is rewritten to its normalized form with
+`history.replaceState` (never by assigning `location.hash`); a hash with no filter key, such as a group anchor
+`#cedar-police-records`, is left alone and shows the full list. Changing a control back to all defaults resets the
+address to the path and query string. Without the History API the filter still works.
+
+Without JavaScript nothing changes: every group and record is visible in `content/sources.json` order with its anchors
+and record links; only the form and the empty message are hidden. Printing shows the complete library whatever the
+filter hid on screen, and hides the controls. The count text always comes from `js.filter_count`: `sources.html`
+loads `/site-data.js` before `/sources/filter.js`, and on a site with no relabelled `js.*` key `site-data.js` carries a
+one-key `LABELS` line (`js.filter_count` only) so long as the library is not empty. An empty library has no form, no
+script and no such line. Labels: `sources.filter_label`, `sources.filter_agency`, `sources.filter_year`,
+`sources.filter_all_agency`, `sources.filter_all_year`, `sources.filter_cited`, `sources.filter_empty`.
 
 `content/officials.json` (optional, never fetched) lists who decides for a body:
 `{"schema_version": 1, "bodies": [{"agency_id", "officials": [{"name", "role",
@@ -888,7 +935,8 @@ classification and confidence use `classification.<code>` and `confidence.<code>
 once and filled into the label only: a title that contains `{count}` prints as written. `comment.md` and
 `sources.csv` do not change with the labels.
 Scripts (`js.*`): the fixed text the generated JavaScript writes into the page. Defaults are the English the scripts
-always used. While every `js.*` label equals its default every script file is byte-identical; once one differs,
+always used. While every `js.*` label equals its default every script file is byte-identical (a nonempty source library adds only
+the one-key `LABELS` line for `js.filter_count` to `site-data.js`, for `sources/filter.js`); once one differs,
 `site-data.js` gains one line `var LABELS={...}` holding every `js.*` key (unset keys keep English), the findings index
 loads `/site-data.js` before `/findings/filter.js`, and the scripts read `LABELS` (placeholders filled through
 `textContent`; popup text through the map's escaper; never raw HTML). Keys: `js.filter_count` ("Showing {shown} of
