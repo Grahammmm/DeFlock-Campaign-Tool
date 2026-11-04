@@ -88,8 +88,10 @@ def _find(folder, meeting_id):
 
 
 def record_outcome(root, meeting_id, result, on, source_url, verified_by, vote=None, replace=False, today=None,
-                   votes_file=None):
+                   votes_file=None, recording_url=None, recording_start=None):
     today = today or date.today()
+    if recording_start is not None and recording_url is None:  # DF1422-10: a start time is part of a recording
+        raise MeetingOutcomeError("recording_start needs recording_url")
     rows = read_votes(votes_file) if votes_file is not None else None  # before any read of the meeting
     path, document = _find(root / "content" / "meetings", meeting_id)
     label = f"meetings/{path.name}"
@@ -103,7 +105,9 @@ def record_outcome(root, meeting_id, result, on, source_url, verified_by, vote=N
                                   "pass --replace to overwrite it")
     outcome = {"result": result, "on": on, "source_url": source_url, "verified_by": verified_by,
                "verified_at": today.isoformat(), **({"vote": vote} if vote is not None else {}),
-               **({"votes": check_votes(rows, root, meeting["agency_id"], today)} if rows is not None else {})}
+               **({"votes": check_votes(rows, root, meeting["agency_id"], today)} if rows is not None else {}),
+               **({"recording_url": recording_url} if recording_url is not None else {}),
+               **({"recording_start": recording_start} if recording_start is not None else {})}
     updated = {**document, "outcome": outcome}
     load_meeting(updated, label, today=today)
     if os.path.islink(path):  # checked again right before the write

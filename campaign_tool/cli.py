@@ -832,6 +832,8 @@ def main():
     outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
     outcome_p.add_argument("--votes", metavar="FILE", help="name,vote CSV (yes|no|abstain|absent|recused) read from the --source record")
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
+    outcome_p.add_argument("--recording-url", help="https URL of the body's official video or audio of the meeting")
+    outcome_p.add_argument("--recording-start", metavar="H:MM:SS", help="Where the discussion starts in the recording, at most 12:00:00")
     sent_p = commands.add_parser("meetings-comment-sent", help="Record a comment you submitted by hand on a staged "
                                  "meeting in kit/comments-sent.json; sends nothing")
     for flag in ("--directory", "--id", "--on"):
@@ -1181,7 +1183,8 @@ def main():
         elif args.command == "meetings-outcome":
             from .meeting_outcome import record_outcome
             print(json.dumps(record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by,
-                                            args.vote, args.replace, votes_file=args.votes), indent=2))
+                                            args.vote, args.replace, votes_file=args.votes,
+                                            recording_url=args.recording_url, recording_start=args.recording_start), indent=2))
             if args.replace and args.votes is None:  # the new outcome replaced the old one whole
                 print("votes: none")
             print("Recorded only. Nothing was published.")
