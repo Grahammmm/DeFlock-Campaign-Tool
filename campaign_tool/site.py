@@ -1100,7 +1100,8 @@ class Site:
             articles.append(f'<article id="{e(agency["slug"])}">{body}</article>')
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
                 f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")} '
-                f'<a href="/data/agencies.json" type="application/json">{self.t("intro.agencies_open_data")}</a>.</p></div>'
+                f'<a href="/data/agencies.json" type="application/json">{self.t("intro.agencies_open_data")}</a> · '
+                f'<a href="/data/agencies.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p></div>'
                 + ('<div class="agency-list">' + self.glance_section() + "".join(articles) + '</div>' if articles
                    else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
@@ -1539,7 +1540,8 @@ class Site:
     def meetings_html(self):
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p>'
                 f'<h2>{self.t("heading.meetings")}</h2></div><p>{self.t("intro.meetings")} '
-                f'<a href="/data/meetings.json" type="application/json">{self.t("intro.meetings_open_data")}</a>.</p></div>'
+                f'<a href="/data/meetings.json" type="application/json">{self.t("intro.meetings_open_data")}</a> · '
+                f'<a href="/data/meetings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p></div>'
                 '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
                 + '</div></section>\n')
         if self.past:
@@ -1620,9 +1622,11 @@ class Site:
                 f'<a href="/data/findings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a> and '
                 '<a href="/data/sources.json" type="application/json">data/sources.json</a> · '
                 f'<a href="/data/sources.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>. '
-                f'{self.t("intro.meetings_open_data_about")} <a href="/data/meetings.json" type="application/json">data/meetings.json</a>.'
+                f'{self.t("intro.meetings_open_data_about")} <a href="/data/meetings.json" type="application/json">data/meetings.json</a> · '
+                f'<a href="/data/meetings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.'
                 + (f' {self.t("notice.no_meetings")}' if not self.model["meetings"] else "")
-                + f' {self.t("intro.agencies_open_data_about")} <a href="/data/agencies.json" type="application/json">data/agencies.json</a>.</p>'
+                + f' {self.t("intro.agencies_open_data_about")} <a href="/data/agencies.json" type="application/json">data/agencies.json</a> · '
+                + f'<a href="/data/agencies.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p>'
                 + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", self.labels["title.about"], self.labels["title.about_description"], "/about.html", main)
@@ -2175,6 +2179,33 @@ def _flat_source(entry):
     return {key: _cell(row[key]) for key in SOURCES_CSV_COLUMNS}
 
 
+def _record_cell(value):
+    """One agency or meeting CSV cell (DF2207-11) from a parsed public JSON value, with the shared formula guard.
+
+    Strings stay as they are, numbers use their JSON spelling, ``true``/``false``, null is empty; a list joins its items with
+    ``; `` (string items as text, others as compact JSON) and an object is one compact JSON cell."""
+    from .kit_export import formula_safe  # local, as the other optional site steps
+
+    def compact(item):
+        return json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+
+    def text(item):
+        return item if isinstance(item, str) else compact(item)
+    if value is None:
+        return ""
+    return formula_safe("; ".join(text(item) for item in value) if isinstance(value, list) else text(value))
+
+
+def public_records_csv(json_text, record_key, fields):
+    """CSV text (DF2207-11) for the records of an already-built, allowlist-checked open-data JSON text.
+
+    Columns are the allowed record keys in the order the JSON writer serializes them (``sort_keys``), also for no records and
+    for optional keys the first record lacks; a record is one row in array order, a missing key is an empty cell."""
+    columns = sorted(fields)
+    records = json.loads(json_text)[record_key]
+    return _csv_text(columns, [{column: _record_cell(record.get(column)) for column in columns} for record in records])
+
+
 def _csv_text(columns, rows):
     """RFC 4180 text (CRLF, header first); the file is written as UTF-8 without a byte-order mark."""
     out = io.StringIO()
@@ -2300,14 +2331,17 @@ def _plan_site(root, today=None, notes=None):
     css = (pages["index.html"]["css"] + EXTRA_CSS + (f":root{{{colours}}}\n" if colours else "")
            + (".brand-logo{max-height:48px;width:auto;height:auto}\n" if "logo" in brand else ""))
     files = {name: page["html"] for name, page in pages.items()}
+    agencies_text, meetings_text = site.agencies_json(), site.meetings_json()  # each rendered once; its CSV is read back from it
     files.update({
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
         **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
         "site-data.js": site.site_data_js(), "search.js": search_js(),
         "agency-cards.js": agency_cards.render(site.cards_config(), relabel=bool(site.js_labels)),
         "app.js": site.app_js(), "data/findings.json": site.findings_json(), "data/findings.csv": site.findings_csv(),
-        "data/sources.json": site.sources_json(), "data/sources.csv": site.sources_csv(), "data/meetings.json": site.meetings_json(),
-        "data/agencies.json": site.agencies_json(),
+        "data/sources.json": site.sources_json(), "data/sources.csv": site.sources_csv(), "data/meetings.json": meetings_text,
+        "data/agencies.json": agencies_text,
+        "data/meetings.csv": public_records_csv(meetings_text, "meetings", PUBLIC_MEETING_FIELDS),
+        "data/agencies.csv": public_records_csv(agencies_text, "agencies", PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL),
     })
     if site.finding_filter():  # written only when the findings index loads it
         files["findings/filter.js"] = filter_js(bool(site.js_labels), site.multi_agency)

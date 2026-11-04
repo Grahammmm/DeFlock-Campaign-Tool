@@ -33,7 +33,8 @@ NOT_CHECKED = "not checked"
 EMPTY_MAIN = ('<section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Agencies</p>'
               '<h2>Public bodies in Cedar County (fictional).</h2></div><p>Listing an agency here says only that we asked or'
               ' intend to ask it for records. No agency is asserted to operate license plate readers unless a published '
-              'finding says so with sources. <a href="/data/agencies.json" type="application/json">Agencies as open data (JSON)</a>.'
+              'finding says so with sources. <a href="/data/agencies.json" type="application/json">Agencies as open data (JSON)</a> · '
+              '<a href="/data/agencies.csv" type="text/csv">Spreadsheet (CSV)</a>.'
               '</p></div><p>No agencies are configured yet.</p></section>')
 
 
