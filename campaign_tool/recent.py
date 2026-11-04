@@ -168,15 +168,20 @@ def _findings(root, sink, directory):
                          + " unreadable")
         elif row.get("draft_path"):  # a draft stores no creation date, so "drafted" can never be dated
             sink.undated += 1
-    titles = {}
-    for sub, what in (("private/drafts", "draft"), ("content/findings", "published finding"),
-                      ("private/withdrawn", "withdrawn finding")):
+    titles, seen = {}, set()
+    # A withdrawn document retains the publication history and takes precedence
+    # over any public copy left behind by an interrupted withdrawal.
+    for sub, what in (("private/drafts", "draft"), ("private/withdrawn", "withdrawn finding"),
+                      ("content/findings", "published finding")):
         for path, document in _documents(root, sub, what):
             if not isinstance(document, dict) or not isinstance(document.get("id"), str):
                 continue
+            if document["id"] in seen:
+                continue
             title = _clean(document.get("title")) or document["id"]
             titles[document["id"]] = title
-            if sub == "content/findings":
+            if sub != "private/drafts":
+                seen.add(document["id"])
                 day = _day_of(document.get("published_at"))
                 if day is None:
                     sink.undated += 1
@@ -188,7 +193,7 @@ def _findings(root, sink, directory):
                         sink.undated += 1
                     else:
                         sink.add("Findings", day, f"Finding corrected: {title}", command)
-            elif sub == "private/withdrawn":
+            if sub == "private/withdrawn":
                 withdrawn = document.get("withdrawn")
                 day = _day_of(withdrawn.get("at")) if isinstance(withdrawn, dict) else None
                 if day is None:

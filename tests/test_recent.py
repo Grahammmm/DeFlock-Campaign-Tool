@@ -22,7 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from campaign_tool import cli, recent  # noqa: E402
 
 TODAY = date(2026, 11, 4)
-SECRET_NOTE, SECRET_EMAIL = "Synthetic private note: call back Tuesday", "records-clerk@agency.synthetic.example"
+SYNTHETIC_NOTE, SYNTHETIC_ADDRESS = "Synthetic private note: call back Tuesday", "records-clerk@agency.synthetic.example"
 REVIEWER, REASON, CORRECTION = "Synthetic Reviewer Pat", "Synthetic withdrawal reason", "Synthetic correction note"
 HASH_A, HASH_B, HASH_C = (c * 64 for c in "abc")
 
@@ -72,7 +72,7 @@ class RecentTests(unittest.TestCase):
     def sent(self, *requests):
         """kit/sent.json from (agency, sent_on, steps) triples, with the agency list that names them."""
         self.put("kit/agencies.json", [{"agency_id": agency, "name": f"Synthetic {agency} Police",
-                                        "records_email": SECRET_EMAIL} for agency, _, _ in requests])
+                                        "records_email": SYNTHETIC_ADDRESS} for agency, _, _ in requests])
         self.put("kit/sent.json", {"schema_version": 1, "requests": {
             agency: {"sent_on": on, "channel": "email", "draft": f"requests/{agency}.md", "draft_sha256": HASH_C,
                      "recorded_at": f"{on}T10:00:00+00:00", "steps": steps} for agency, on, steps in requests}})
@@ -151,9 +151,31 @@ class RecentTests(unittest.TestCase):
             "2026-11-01  Finding published: Title of fnd_fix",
             "2026-11-03  Outcome recorded for Synthetic Council (council): approved",
             "2026-11-02  Meeting on 2026-11-02: Synthetic Council (council)"])
-        for text in (HASH_B, SECRET_NOTE, REVIEWER, REASON, CORRECTION, "5-0"):
+        for text in (HASH_B, SYNTHETIC_NOTE, REVIEWER, REASON, CORRECTION, "5-0"):
             self.assertNotIn(text, out)
         self.assertNotIn("2026-10-31", out)  # outside the window
+
+    def test_withdrawn_finding_keeps_publication_and_correction_history(self):
+        fields = {"published_at": "2026-11-01T09:00:00Z",
+                  "corrections": [{"date": "2026-11-02", "note": CORRECTION}]}
+        self.finding("private/withdrawn", "fnd_gone", **fields,
+                     withdrawn={"at": "2026-11-03T12:00:00Z", "reason": REASON})
+        expected = [("2026-11-03", "Finding withdrawn: Title of fnd_gone"),
+                    ("2026-11-02", "Finding corrected: Title of fnd_gone"),
+                    ("2026-11-01", "Finding published: Title of fnd_gone")]
+        for leftover_public in (False, True):
+            with self.subTest(leftover_public=leftover_public):
+                if leftover_public:
+                    self.finding("content/findings", "fnd_gone", **fields)
+                before = tree(self.root)
+                code, out, err = self.report("2026-11-01", "2026-11-03", as_json=True)
+                self.assertEqual((code, err), (0, ""))
+                self.assertEqual([(e["on"], e["what"]) for e in json.loads(out)], expected)
+                _, limited, _ = self.report("2026-11-02", "2026-11-02", as_json=True)
+                self.assertEqual([(e["on"], e["what"]) for e in json.loads(limited)], expected[1:2])
+                for private_text in (CORRECTION, REASON):
+                    self.assertNotIn(private_text, out)
+                self.assertEqual(tree(self.root), before)
 
     # 2
     def test_window_is_inclusive_of_since_and_until(self):
@@ -191,24 +213,24 @@ class RecentTests(unittest.TestCase):
 
     # 4
     def test_no_notes_addresses_reviewers_or_full_hashes(self):
-        self.sent(("ca-priv", "2026-11-02", [{"on": "2026-11-03", "kind": "produced", "note": SECRET_NOTE,
+        self.sent(("ca-priv", "2026-11-02", [{"on": "2026-11-03", "kind": "produced", "note": SYNTHETIC_NOTE,
                                               "records": [HASH_B], "correspondence": [HASH_C]}]))
-        self.put("content/sources.json", [{"sha256": HASH_A, "title": "Secret title " + SECRET_NOTE,
+        self.put("content/sources.json", [{"sha256": HASH_A, "title": "Secret title " + SYNTHETIC_NOTE,
                                            "agency_id": "ca-priv", "received_at": "2026-11-02", "public_url": None,
-                                           "fragment": "f", "note": SECRET_NOTE}])
+                                           "fragment": "f", "note": SYNTHETIC_NOTE}])
         self.put("private/reviews/fnd_x.json", [{"content_sha256": HASH_A, "role": "privacy", "decision": "approve",
-                                                 "reviewer": REVIEWER, "rationale": SECRET_NOTE,
+                                                 "reviewer": REVIEWER, "rationale": SYNTHETIC_NOTE,
                                                  "reviewed_at": "2026-11-02T09:00:00Z"}])
         target = self.tmp / "report.md"
         code, out, err = self.report("2026-11-01", md=str(target))
         self.assertEqual(code, 0, err)
         written = target.read_text(encoding="utf-8")
-        for text in (SECRET_NOTE, SECRET_EMAIL, REVIEWER, HASH_A, HASH_B, HASH_C, "Secret title", "Body"):
+        for text in (SYNTHETIC_NOTE, SYNTHETIC_ADDRESS, REVIEWER, HASH_A, HASH_B, HASH_C, "Secret title", "Body"):
             self.assertNotIn(text, out)
             self.assertNotIn(text, written)
         self.assertIn(HASH_A[:12], out)  # the prefix is the only trace of the record
         _, as_json, as_json_err = self.report("2026-11-01", as_json=True)
-        for text in (SECRET_NOTE, SECRET_EMAIL, REVIEWER, HASH_A, HASH_B, HASH_C):
+        for text in (SYNTHETIC_NOTE, SYNTHETIC_ADDRESS, REVIEWER, HASH_A, HASH_B, HASH_C):
             self.assertNotIn(text, as_json + as_json_err)
 
     # 5
@@ -267,11 +289,11 @@ class RecentTests(unittest.TestCase):
         self.assertNotIn("ca-one", out)
 
     def test_an_unreadable_finding_is_named_by_path_only(self):
-        self.put("content/findings/broken.json", '{"id": "bad id", "title": "Quoted ' + SECRET_NOTE + '"}')
+        self.put("content/findings/broken.json", '{"id": "bad id", "title": "Quoted ' + SYNTHETIC_NOTE + '"}')
         code, out, _ = self.report("2026-11-01")
         self.assertEqual(code, 3)
         self.assertIn("content/findings/broken.json unreadable", out)
-        self.assertNotIn(SECRET_NOTE, out)
+        self.assertNotIn(SYNTHETIC_NOTE, out)
 
     # 7
     def test_md_is_refused_in_public_content_symlink_existing_or_missing_folder(self):
