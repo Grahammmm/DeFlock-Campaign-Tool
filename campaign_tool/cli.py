@@ -945,8 +945,9 @@ def main():
     for flag in ("--directory", "--agency", "--date"):
         sent_p.add_argument(flag, required=True)
     sent_p.add_argument("--channel", required=True, choices=kit_track_channels)
-    sent_p.add_argument("--request-url", metavar="URL", help="With --channel muckrock only: the https://www.muckrock.com/foi/ "
-                        "page of the request you filed there (recorded, never fetched)")
+    sent_p.add_argument("--request-url", metavar="URL", help="With --channel portal: the https:// page of the request you "
+                        "filed there, on the agency's verified portal host (kit-verify-agency --portal); with --channel "
+                        "muckrock: the https://www.muckrock.com/foi/ page. Recorded, never fetched")
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     sent_p.add_argument("--request", default="main", help="Name of a further request to this agency, drafted in "
                         "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
@@ -1547,6 +1548,8 @@ def main():
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
                 if row["fee_state"] == "unpaid":
                     print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
+                if row["channel"] == "portal" and row.get("request_url"):
+                    print(f"{label}: Portal request: {row['request_url']}", file=sys.stderr)
         elif args.command == "kit-fees":
             from . import kit_fees
             report = kit_fees.fees(root)

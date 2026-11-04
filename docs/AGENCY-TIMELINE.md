@@ -222,6 +222,18 @@ under the normal step rules. `processed` is `acknowledged`; `fix` is `clarificat
 with a note; `partial` is `produced --partial`; `done` is `produced`. `started`, `submitted`, `ack`, `appealing` and
 `lawsuit` propose no step, and any other status is refused by name. Nothing is fetched or sent.
 
+## Requests filed on an agency portal (kit requests)
+
+`kit-sent --channel portal --request-url https://<portal host>/...` keeps a link back to a request you filed on the
+agency's NextRequest, GovQA or JustFOIA portal. The agency must already have its portal recorded by `kit-verify-agency
+--portal`, and the URL's host (compared lower-case) must equal that portal's host; the URL must be `https` with no
+login, port, query or fragment, at most 300 characters. It is refused with `--channel email` or `mail`, and for an agency
+with no verified portal. The link is stored as `request_url`, never fetched: the tool opens no portal page and uses no
+portal login. `kit-status` and `kit-due` show it on the request's row (`kit-status` also prints `Portal request: URL` on
+stderr), `kit-status --csv` adds a `request_url` column, and the `kit-followup` and `kit-denial-reply` drafts quote
+`Portal request: URL` after the reference line. `kit-sent --replace` keeps a stored link unless you give a new one.
+Older `kit/sent.json` files, with no `request_url`, read and write as before.
+
 ## A transcribed timeline in one write (kit-response-import)
 
 `kit-response-import --directory D --agency ID --csv FILE [--request NAME] [--apply]` records a portal or letter history
