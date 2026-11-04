@@ -63,9 +63,10 @@ class ReportSurfaceTest(unittest.TestCase):
 
 class PublishSurfaceTest(unittest.TestCase):
     setUp, export = _tp.FlockPublishTest.setUp, _tp.FlockPublishTest.export
+    fixture_text = _tp.FlockPublishTest.fixture_text
 
     def test_publish_flag_is_exported_pending_for_the_human_gate(self):
-        with open(FIXTURES / "findings-sample.csv", newline="") as handle:
+        with open(self.run_dir / "FINDINGS.csv", newline="") as handle:
             table = list(csv.reader(handle))
         row = next(r for r in table if r[0] == "O1")
         row[table[0].index("claim")] = WORDING
@@ -206,7 +207,7 @@ class ExplicitExampleTest(unittest.TestCase):
         t = PublishSurfaceTest()
         t.setUp()
         self.addCleanup(t.doCleanups)
-        with open(FIXTURES / "findings-sample.csv", newline="") as handle:
+        with open(t.run_dir / "FINDINGS.csv", newline="") as handle:
             table = list(csv.reader(handle))
         row = next(r for r in table if r[0] == "O1")
         row[table[0].index("claim")] = self.EXAMPLE

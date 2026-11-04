@@ -140,7 +140,12 @@ class PublishChangeDryRunTest(tw.PublishWithdrawTest):  # setUp: verified run A 
         argv = ["withdraw", self.rd, "--finding", "N1", "--on", A, "--by", BY, "--approval-ref", REF, "--dry-run"]
         boom = AssertionError("write reached")
         buf = io.StringIO()
-        with mock.patch.object(tool.verify_tool, "write", side_effect=boom), mock.patch.object(tool.os, "open", side_effect=boom), \
+        real_open = os.open
+        def read_only_open(path, flags, *args, **kwargs):
+            if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+                raise boom
+            return real_open(path, flags, *args, **kwargs)
+        with mock.patch.object(tool.verify_tool, "write", side_effect=boom), mock.patch.object(tool.os, "open", side_effect=read_only_open), \
                 mock.patch.object(tool.os, "truncate", side_effect=boom), contextlib.redirect_stdout(buf):
             self.assertEqual(tool.main(argv), 0)
         self.assertEqual(buf.getvalue(), "would withdrawn | N1 | 2026-10-30\n" + DRY)
