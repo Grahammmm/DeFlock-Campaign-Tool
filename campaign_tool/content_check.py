@@ -4,12 +4,13 @@
 invariant: ``content_problems(root) == []`` iff ``load_content(root)`` returns and no public-assets image carries
 metadata (build's ``image_meta.check_asset``). Cross-file rules use loaded files.
 """
+import json
 from pathlib import Path
 
 from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, _asked, _bounds, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, check_source_pages, default_agencies,
-                      load_agencies, load_finding, load_map, load_meeting, load_site, load_snapshot, load_sources,
-                      plain_text)
+                      history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
+                      load_snapshot, load_sources, plain_text)
 from .finding_law import check_findings, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
@@ -17,6 +18,7 @@ from .labels import MAX_LABELS_BYTES, load_labels
 from .redirects import check_file as check_redirects
 
 LIMIT = 200
+SCHEMA = "content-check-v1"
 CAMERAS_MISSING = "map/cameras.geojson is missing; run tools/fetch_osm_alprs.py or supply reviewed data"
 
 
@@ -77,7 +79,8 @@ def _map(problems, content_dir):
         return config
     config_named = problems[-1].startswith("map/map-config.json")  # else load_map passed the config's head
     checks = {"cameras.geojson": lambda p, n: _validate_cameras(_read_json(p, MAX_GEOJSON_BYTES), "map/" + n),
-              "cities.json": _cities, "snapshot.json": lambda p, _n: load_snapshot(p)}  # snapshot: optional
+              "cities.json": _cities, "snapshot.json": lambda p, _n: load_snapshot(p),  # snapshot: optional
+              "history.json": lambda p, _n: load_history(p)}  # optional; any entry, a dangling link too, is judged
     missing = {"cameras.geojson": CAMERAS_MISSING}
     document = None
     try:
@@ -90,7 +93,7 @@ def _map(problems, content_dir):
         pass  # map-config.json's own refusal is already listed
     cities = set()  # an absent cities.json means no city bounds, as in load_map
     for name, check in checks.items():
-        if (map_dir / name).is_file():
+        if (map_dir / name).is_file() or (name == "history.json" and history_present(map_dir / name)):
             result = _attempt(problems, "map/" + name, lambda: check(map_dir / name, name))
             if name == "cities.json":
                 cities = result
@@ -194,20 +197,52 @@ def content_problems(root, limit=LIMIT):
     return _cap(sorted(set(problems)), limit)
 
 
-def run_cli(root):
-    """Print ``content/: N problem(s)`` and one line each; exit 3 when any problem is listed."""
-    problems = content_problems(root, limit=None)
-    if problems is None:
-        print("no content/ directory")
-        return
-    print(f"content/: {len(problems)} problem(s)")
+# Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
+FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "kit/",
+                 "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json")
+
+
+def problem_record(line):
+    """``{"file", "message"}`` for one problem line; ``file + ": " + message == line`` whenever file is set.
+
+    ``file`` is the text before the first ``": "`` when it is a single token starting with a known content path;
+    otherwise None and the whole line is the message. The message text is never parsed further.
+    """
+    head, sep, rest = line.partition(": ")
+    if sep and head.startswith(FILE_PREFIXES) and not any(c.isspace() for c in head):
+        return {"file": head, "message": rest}
+    return {"file": None, "message": line}
+
+
+def _law_package(root):
     try:
         name = jurisdiction(root)
     except ContentError:  # an unreadable campaign.json is already a listed problem when a rule is cited
-        name = None
-    if name is not None:
-        print(package_line(name))
-    for line in _cap(problems, LIMIT):
-        print(line)
+        return None
+    return None if name is None else package_line(name)
+
+
+def run_cli(root, as_json=False):
+    """Print ``content/: N problem(s)`` and one line each (or one ``content-check-v1`` JSON line); exit 3 when any."""
+    problems = content_problems(root, limit=None)
+    if problems is None:
+        if as_json:
+            print(json.dumps({"schema": SCHEMA, "count": 0, "problems": [], "truncated": False,
+                              "law_package": None, "no_content": True}, sort_keys=True, ensure_ascii=False))
+        else:
+            print("no content/ directory")
+        return
+    package = _law_package(root)
+    if as_json:
+        print(json.dumps({"schema": SCHEMA, "count": len(problems),
+                          "problems": [problem_record(line) for line in problems[:LIMIT]],
+                          "truncated": len(problems) > LIMIT, "law_package": package},
+                         sort_keys=True, ensure_ascii=False))
+    else:
+        print(f"content/: {len(problems)} problem(s)")
+        if package is not None:
+            print(package)
+        for line in _cap(problems, LIMIT):
+            print(line)
     if problems:
         raise SystemExit(3)

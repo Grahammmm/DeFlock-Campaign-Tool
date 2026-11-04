@@ -2,6 +2,7 @@
 needs-review (exit 3). Its gate is the unchanged schema check plus drift with one allowance: a FACTS.csv edit."""
 import contextlib, csv, hashlib, importlib.util, io, json, shutil, unittest
 from unittest import mock
+from campaign_tool import publication_gate as gate
 from tests.flock import test_publish as base
 
 APPROVED = {"status": "approved", "approved_by": "G", "approved_on": "2026-10-30", "approval_ref": "G-1"}
@@ -188,6 +189,10 @@ class PublishRecheckTest(base.FlockPublishTest):  # setUp: verified run (F4 fini
         self.assertEqual(base.run("flock_publish.py", "status", str(self.store))[1].splitlines(True)[0],
                          line % (base.AGENCY, "partly-approved", 3, 1))
         copy = self.tmp / "copy.json"
+        doc = json.loads(self.out.read_text())  # DF-APPROVAL-TIME-BIND: a legacy approval stages only once a person binds it
+        n1 = next(f for f in doc["findings"] if f["finding_id"] == "N1")
+        n1["review"]["content_hash"] = gate.content_digest({k: v for k, v in n1.items() if k != "review"})
+        self.out.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
         copy.write_text(json.dumps({"N1": {"title": "Search purpose field", "slug": "search-purpose", "event_date": "2026-10-01",
                                            "limitations": ["One records response only."], "counterevidence": [],
                                            "author": "organizer"}}))

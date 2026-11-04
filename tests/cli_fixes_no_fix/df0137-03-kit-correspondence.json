@@ -1,0 +1,6 @@
+{
+  "--correspondence: at most 5 records": "kit-sent and kit-response --correspondence message that names the flag and the limit; not in the table",
+  "--correspondence #5: the same record is given twice": "kit-sent and kit-response --correspondence message that names the record number and the rule to change; not in the table",
+  "--correspondence #5: already linked on 5": "kit-sent and kit-response --correspondence message that names the record number and the rule to change; not in the table",
+  "--correspondence #5: name": "kit-sent and kit-response --correspondence message that names the record number and the rule to change; not in the table"
+}

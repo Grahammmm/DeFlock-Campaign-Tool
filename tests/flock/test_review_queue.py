@@ -74,7 +74,8 @@ class ReviewQueueTest(base.FlockPublishTest):
     def test_expired_recheck_first_and_approved_counted_only(self):
         for f in self.doc['findings']:
             if f['finding_id'] in ('O1', 'N1'):
-                f['review'] = dict(status='approved', approved_by='G', approved_on='2026-10-30', approval_ref='R-1')
+                f['review'] = dict(status='approved', approved_by='G', approved_on='2026-10-30', approval_ref='R-1',
+                                   content_hash=queue.content_hash(f))  # DF-APPROVAL-TIME-BIND: bound when approved
         self.save()
         facts = self.store / 'agencies' / base.AGENCY / 'FACTS.csv'
         with facts.open(newline='') as h:

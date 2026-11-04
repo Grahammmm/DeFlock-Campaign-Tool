@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deflock-campaign-tool.invalid/schemas/historical-coverage-v1.json",
+  "title": "Historical coverage v1",
+  "description": "Private per-agency earliest evidenced date for installation, policy and vendor relationship. Document identity only: dates, hashes, pages, enums, counts; never document text or personal data. A period no held document speaks for is unevidenced with a reason, never an inferred date. Review-required, not a legal finding.",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "review_required", "as_of", "agencies", "totals", "note"],
+  "properties": {
+    "schema": {"const": "historical-coverage-v1"},
+    "review_required": {"const": true},
+    "as_of": {"anyOf": [{"$ref": "#/$defs/date"}, {"type": "null"}]},
+    "note": {"type": "string"},
+    "totals": {
+      "type": "object", "additionalProperties": false,
+      "required": ["agencies", "evidenced", "partial", "unevidenced", "no_text", "documents"],
+      "properties": {"agencies": {"$ref": "#/$defs/count"}, "evidenced": {"$ref": "#/$defs/count"}, "partial": {"$ref": "#/$defs/count"},
+                     "unevidenced": {"$ref": "#/$defs/count"}, "no_text": {"$ref": "#/$defs/count"}, "documents": {"$ref": "#/$defs/count"}}
+    },
+    "agencies": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false, "required": ["agency", "dimensions", "gaps", "sequence", "errors"],
+      "properties": {
+        "agency": {"type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"},
+        "dimensions": {"type": "object", "additionalProperties": false, "required": ["installation", "policy", "vendor"],
+                       "properties": {"installation": {"$ref": "#/$defs/dimension"}, "policy": {"$ref": "#/$defs/dimension"},
+                                      "vendor": {"$ref": "#/$defs/dimension"}}},
+        "gaps": {"type": "array", "items": {
+          "type": "object", "additionalProperties": false, "required": ["from", "to", "dimension", "reason"],
+          "properties": {"from": {"$ref": "#/$defs/date"}, "to": {"$ref": "#/$defs/date"},
+                         "dimension": {"enum": ["installation", "policy", "vendor"]}, "reason": {"$ref": "#/$defs/reason"}}}},
+        "sequence": {"type": ["object", "null"], "additionalProperties": false,
+                     "required": ["installation", "policy", "interval_days", "heading", "sentence"],
+                     "properties": {"installation": {"$ref": "#/$defs/date"}, "policy": {"$ref": "#/$defs/date"},
+                                    "interval_days": {"type": ["integer", "null"], "minimum": 1},
+                                    "heading": {"const": "Dates in sequence"},
+                                    "sentence": {"const": "These are dates from documents the campaign holds; this is not a claim that any agency violated a law."}}},
+        "errors": {"type": "array", "items": {"type": "string"}}}}}
+  },
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "date": {"type": "string", "pattern": "^[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?$"},
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "reason": {"enum": ["no-document", "no-date-in-document", "no-text", "document-unreadable"]},
+    "citation": {"type": "object", "additionalProperties": false, "required": ["date", "document_id", "page", "source_sha256"],
+                 "properties": {"date": {"$ref": "#/$defs/date"}, "document_id": {"$ref": "#/$defs/hash"},
+                                "page": {"type": ["integer", "string"]}, "source_sha256": {"$ref": "#/$defs/hash"}}},
+    "dimension": {"oneOf": [
+      {"type": "object", "additionalProperties": false,
+       "required": ["status", "date", "document_id", "page", "source_sha256", "basis", "corroborating"],
+       "properties": {"status": {"const": "evidenced"}, "date": {"$ref": "#/$defs/date"}, "document_id": {"$ref": "#/$defs/hash"},
+                      "page": {"type": ["integer", "string"]}, "source_sha256": {"$ref": "#/$defs/hash"},
+                      "basis": {"enum": ["document_date", "effective_date", "in_force_statement", "contract_term_start"]},
+                      "corroborating": {"type": "array", "items": {"$ref": "#/$defs/citation"}}}},
+      {"type": "object", "additionalProperties": false, "required": ["status", "reason"],
+       "properties": {"status": {"const": "unevidenced"}, "reason": {"$ref": "#/$defs/reason"}}}]}
+  }
+}

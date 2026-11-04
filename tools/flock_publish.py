@@ -21,6 +21,9 @@ SLUG = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 PRIVACY = (("email", privacy.EMAIL), ("phone", privacy.PHONE), ("url", re.compile(r"https?://|www\.", re.I)),
            ("plate", privacy.PLATE), ("hex", re.compile(r"[0-9a-f]{32,}", re.I)))
 FINDING_KEYS = {"finding_id", "topic", "claim_class", "rating", "text", "cites", "review"}
+# review: these four, plus content_hash (DF-APPROVAL-TIME-BIND): "" or the sha256 of the entry minus `review` that the
+# person recorded when approving; publication_gate.entry_refusals refuses an approval without one (approval_unbound).
+REVIEW_KEYS = {"status", "approved_by", "approved_on", "approval_ref"}
 TOP_KEYS = {"schema_version", "slug", "agency", "run_date", "header", "author_family", "verifier_family", "findings"}
 def text_rules(text, vigilant_only):  # categories that refuse publication; quote-gated wording is a note, not a refusal (DF-4 ruling 1)
     cats = [name for name, rx in (("always", compare.ALWAYS),) + PRIVACY if rx.search(text)]
@@ -123,8 +126,9 @@ def derive(run, site_slug, new=False, recheck=False):  # export's checks and doc
             continue
         out.append({"finding_id": f["finding_id"], "topic": f["topic"], "claim_class": f["claim_class"], "rating": "strong",
                     "text": text, "cites": cites,
-                    "review": {"status": "pending", "approved_by": "", "approved_on": "", "approval_ref": ""}})
-    flags = list(dict.fromkeys(redaction_notes)) + claim_notes(out)  # notes do not increment refused
+                    "review": {"status": "pending", "approved_by": "", "approved_on": "", "approval_ref": "", "content_hash": ""}})
+    # DF-4 alert-only: the entry is still exported, pending; its human approval is the gate. Redaction notes do not increment refused.
+    flags = list(dict.fromkeys(redaction_notes)) + claim_notes(out)
     if not out:
         return 1, lines + ["exported=0 refused=%d" % len(lines)], None
     meta = json.loads((run / "RUN.json").read_text(encoding="utf-8"))
@@ -206,7 +210,8 @@ def finding_errors(f, logged=None):  # logged (recheck): [finding_id, action] ro
     if any(k == "law" and not law_url_ok(c["url"]) for k, c in zip(kinds, cites)):
         errs.append("law cite url is not https on " + " or ".join(HOSTS))
     r = f["review"] if isinstance(f["review"], dict) else {}
-    if set(r) != {"status", "approved_by", "approved_on", "approval_ref"} or not all(isinstance(v, str) for v in r.values()):
+    if set(r) - {"content_hash"} != REVIEW_KEYS or not all(isinstance(v, str) for v in r.values()) or \
+            not re.fullmatch(r"(?:[0-9a-f]{64})?", r.get("content_hash", "")):  # DF-APPROVAL-TIME-BIND: absent = legacy
         return errs + ["review keys or values differ from the schema"]
     if r["status"] not in ("pending", "approved", "needs-review") + tuple(s for s in ACTIONS if logged is None or [f["finding_id"], ACTIONS[s]] in logged):
         errs.append("review status is not pending, approved or needs-review")

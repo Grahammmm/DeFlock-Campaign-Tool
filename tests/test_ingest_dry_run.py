@@ -67,6 +67,8 @@ class IngestDryRunTests(unittest.TestCase):
         return path
 
     def test_fresh_campaign_without_private_would_store_and_creates_nothing(self):
+        # Model a legacy campaign without private state, including the init identity.
+        (self.root / "private" / "campaign-id.json").unlink()
         (self.root / "private").rmdir()
         data = b"Synthetic fresh\n"
         report = self.dry_file(self.write("a.txt", data), "synthetic-1")
@@ -149,13 +151,13 @@ class IngestDryRunTests(unittest.TestCase):
         self.assertEqual(db.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
         db.close()
         self.assertEqual(ledger.read_bytes()[18:20], b"\2\2")
-        self.assertEqual(sorted(p.name for p in private.iterdir()), ["ledger.sqlite", "objects"])
+        self.assertEqual(sorted(p.name for p in private.iterdir()), ["campaign-id.json", "ledger.sqlite", "objects"])
         same = self.dry_file(source, "synthetic-1")  # dry() asserts the tree is unchanged
         self.assertEqual((same["outcome"], same["new_receipt"], same["receipt_id"]),
                          ("present", False, real["receipt_id"]))
         preview = json.loads(self.dry("--dir", self.folder, "--source-id", "synthetic-1").stdout)
         self.assertEqual(preview["counts"]["present"], 1)
-        self.assertEqual(sorted(p.name for p in private.iterdir()), ["ledger.sqlite", "objects"])
+        self.assertEqual(sorted(p.name for p in private.iterdir()), ["campaign-id.json", "ledger.sqlite", "objects"])
 
     def test_ledger_sidecar_refused_without_writing(self):
         source = self.write("a.txt", b"Synthetic sidecar\n")
@@ -173,6 +175,8 @@ class IngestDryRunTests(unittest.TestCase):
             sidecar.unlink()
 
     def test_more_than_max_dir_files_refused_like_a_real_run(self):
+        # Model a legacy campaign without private state, including the init identity.
+        (self.root / "private" / "campaign-id.json").unlink()
         (self.root / "private").rmdir()
         for index in range(2001):
             (self.folder / f"empty-{index:04d}.txt").write_bytes(b"")
