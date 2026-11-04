@@ -21,7 +21,7 @@ DUE = json.loads((REPO_ROOT / "schemas" / "kit-due.schema.json").read_text(encod
 ROW = STATUS["properties"]["requests"]["items"]
 OPEN = DUE["properties"]["open"]["items"]
 CONDITIONAL = {"more", "correspondence", "correspondence_prefixes", "correspondence_more", "downloads_pending",
-               "contacts", "last_contact"}
+               "contacts", "last_contact", "withdrawn_on"}
 STATES = {"waiting_on_you", "producing", "installment_passed", "no_law_package", "past_due", "due_today", "upcoming",
           "download_pending", "download_expired"}
 STAMP = "2026-03-01T00:00:00+00:00"
@@ -117,6 +117,8 @@ class KitJsonContractTests(unittest.TestCase):
             (c, "rolling-later"): ("2026-03-02", {}, [step("2026-03-10", "produced", partial=True,
                                                            expected_on="2026-03-25")]),
             (c, "closed"): ("2026-03-02", {}, [step("2026-03-03", "acknowledged"), step("2026-03-04", "closed")]),
+            (c, "withdrawn"): ("2026-03-02", {}, [step("2026-03-03", "acknowledged"),
+                                                  step("2026-03-04", "withdrawn", note="Sent twice; superseded")]),
         }
         requests = {}
         for (agency, name), (sent, extra, steps) in rows.items():
@@ -174,12 +176,13 @@ class KitJsonContractTests(unittest.TestCase):
         document, stderr = self.status()
         law.validate(document, STATUS)
         check_keys(document, STATUS)
-        self.assertEqual(len(document["requests"]), 12)
+        self.assertEqual(len(document["requests"]), 13)
         extras = {(r["agency_id"], r["request"]): set(r) & CONDITIONAL for r in document["requests"]}
         self.assertEqual({k: v for k, v in extras.items() if v}, {
             (self.b, "main"): {"correspondence", "correspondence_prefixes"},
             (self.b, "bulk"): {"more"},
-            (self.b, "letters"): {"correspondence", "correspondence_prefixes", "correspondence_more"}})
+            (self.b, "letters"): {"correspondence", "correspondence_prefixes", "correspondence_more"},
+            (self.c, "withdrawn"): {"withdrawn_on"}})
         rows = {(r["agency_id"], r["request"]): r for r in document["requests"]}
         self.assertEqual((rows[(self.b, "bulk")]["more"], rows[(self.b, "bulk")]["records"]), (1, 51))
         self.assertEqual(len(rows[(self.b, "bulk")]["record_prefixes"]), kit_track.PREFIXES_MAX)

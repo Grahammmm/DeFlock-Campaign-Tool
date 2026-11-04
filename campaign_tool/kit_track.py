@@ -17,16 +17,20 @@ MUCKROCK_URL = re.compile(r"https://www\.muckrock\.com/foi/(?:[a-z0-9-]+/){0,2}[
 MUCKROCK_ID = re.compile(r"-([0-9]+)/?\Z")
 URL_MAX = 300  # a request_url, either channel
 KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed", "fee_estimate",
-         "clarification_requested", "clarified", "fee_paid", "fee_waived")
+         "clarification_requested", "clarified", "fee_paid", "fee_waived", "withdrawn")  # withdrawn: the campaign's own act
 SETTLED = {"fee_paid": "paid", "fee_waived": "waived"}  # a payment or waiver of the latest estimate before it
 WAITING = "waiting on you since {} (the agency asked to clarify or narrow the request)"
 WAIT_NOTE = (" Waiting on you: the agency asked to clarify or narrow the request; reply first. Not counted as past"
              " due; no claim that this pauses any legal period.")
 
 
-def _waiting_since(steps):  # date of the latest clarification_requested not yet clarified (or closed), else None
+def _withdrawn_on(steps):  # the day the campaign withdrew its own request (terminal), else None
+    return next((s.get("on") for s in steps if s.get("kind") == "withdrawn"), None)
+
+
+def _waiting_since(steps):  # date of the latest clarification_requested not yet clarified (closed or withdrawn), else None
     asked = [i for i, s in enumerate(steps) if s.get("kind") == "clarification_requested"]
-    ended = asked and any(s.get("kind") in ("clarified", "closed") for s in steps[asked[-1] + 1:])
+    ended = asked and any(s.get("kind") in ("clarified", "closed", "withdrawn") for s in steps[asked[-1] + 1:])
     return steps[asked[-1]].get("on") if asked and not ended else None
 
 
@@ -505,7 +509,7 @@ def _bases(steps):  # [{"on", "kind", "basis"}] for every recorded basis, in ste
 
 
 DISPOSITIONS = ("produced", "partly_produced", "withheld", "no_records_stated")  # the agency's answer, per scope
-NO_SCOPE_KINDS = ("acknowledged", "extension", "clarification_requested", "clarified", "fee_estimate")
+NO_SCOPE_KINDS = ("acknowledged", "extension", "clarification_requested", "clarified", "fee_estimate", "withdrawn")
 
 
 def _scopes_ok(entry):  # entry["scopes"]: absent, or a non-empty list of unique strings
@@ -573,7 +577,7 @@ def _dollars(cents):
     return f"${cents // 100:,}.{cents % 100:02d}"
 
 
-NOT_STATED = ("produced", "denied", "closed")  # kinds that never carry the agency's stated production date
+NOT_STATED = ("produced", "denied", "closed", "withdrawn")  # kinds that never carry the agency's stated production date
 STATED = "stated date passed — the agency's own date; provisional, not a legal deadline"
 
 
@@ -598,9 +602,9 @@ def _download_pending(step):  # the agency sent an expiring download link and no
 def _downloads(steps, day):
     """Pending downloads of one request on ``day``: [{produced_on, expires_on, days_left, state, line}].
 
-    A later produced step that links records clears the latest earlier pending step; a closed request lists none.
-    The link itself is never stored: only the agency's stated expiry date is."""
-    if any(s.get("kind") == "closed" for s in steps):
+    A later produced step that links records clears the latest earlier pending step; a closed or withdrawn request
+    lists none. The link itself is never stored: only the agency's stated expiry date is."""
+    if any(s.get("kind") in ("closed", "withdrawn") for s in steps):
         return []
     pending = []
     for s in steps:
@@ -634,8 +638,9 @@ def _expected_ok(steps):  # expected_on only on the determination or a later res
     return True
 
 
-def _producing(steps):  # >= 1 partial produced step and no final produced, denied or closed step
-    return any(map(_partial, steps)) and not any(s.get("kind") in ("denied", "closed") or s.get("kind") == "produced"
+def _producing(steps):  # >= 1 partial produced step and no final produced, denied, closed or withdrawn step
+    return any(map(_partial, steps)) and not any(s.get("kind") in ("denied", "closed", "withdrawn")
+                                                 or s.get("kind") == "produced"
                                                  and not _partial(s) for s in steps)
 
 
@@ -656,7 +661,7 @@ def _steps_ok(entry, steps):
 
 
 def _check_step(entry, steps, label, on, kind, *, today=None, partial=False, expected_on=None, amount=None,
-                download_expires_on=None, scope_ids=()):
+                download_expires_on=None, scope_ids=(), note=None):
     """The kit-response rules for adding one step after ``steps`` (pure: reads and writes nothing).
 
     Shared by ``record_step`` and ``validate_steps`` (kit-response-undo), so there is a single ruleset."""
@@ -679,6 +684,10 @@ def _check_step(entry, steps, label, on, kind, *, today=None, partial=False, exp
     kinds = [s["kind"] for s in steps]
     if "closed" in kinds:
         raise ValueError(f"{label} is closed; no step can follow closed")
+    if "withdrawn" in kinds:  # the campaign's own act ends the request: not even a second withdrawal may follow
+        raise ValueError(f"{label} is withdrawn by us; no step can follow withdrawn")
+    if kind == "withdrawn" and not note:
+        raise ValueError("withdrawn needs --note T: why the campaign withdrew its own request")
     if kind == "acknowledged" and kinds:
         raise ValueError("acknowledged is allowed only as the first step, once")
     if kind == "extension" and "extension" in kinds:
@@ -752,7 +761,8 @@ def validate_steps(entry, label, *, today=None):
     for number, step in enumerate(steps):
         _check_step(entry, steps[:number], label, step["on"], step["kind"], today=today, partial=_partial(step),
                     expected_on=step.get("expected_on"), amount=step.get("amount_cents"),
-                    download_expires_on=step.get("download_expires_on"), scope_ids=list(step.get("scope_answers", ())))
+                    download_expires_on=step.get("download_expires_on"), scope_ids=list(step.get("scope_answers", ())),
+                    note=step.get("note"))
 
 
 def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None,
@@ -792,7 +802,7 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     if not _steps_ok(entry, steps):
         raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
     _check_step(entry, steps, label, on, kind, today=today, partial=partial, expected_on=expected_on, amount=amount,
-                download_expires_on=download_expires_on, scope_ids=scope_ids)
+                download_expires_on=download_expires_on, scope_ids=scope_ids, note=note)
     cents = None if amount is None else _amount_cents(amount)  # every refusal above and here writes nothing
     linked = {h: f"{entry['sent_on']} as correspondence" for h in entry.get("correspondence", [])}
     for s in steps:
@@ -898,6 +908,7 @@ def status(root, today=None, law_base=None, *, request=None):
                      "determination_due": due, "with_extension": extended, "steps": len(entry["steps"]),
                      "extended": "extension" in kinds, "closed": "closed" in kinds,
                      "last_step": {"on": steps[-1].get("on"), "kind": kinds[-1]} if steps else None,
+                     **({"withdrawn_on": _withdrawn_on(steps)} if "withdrawn" in kinds else {}),
                      "records": len(linked), "record_prefixes": [h[:12] for h in linked[:PREFIXES_MAX]],
                      **({"more": len(linked) - PREFIXES_MAX} if len(linked) > PREFIXES_MAX else {}),
                      **({"correspondence": len(letters), "correspondence_prefixes": [h[:12] for h in letters[:PREFIXES_MAX]]}
@@ -1004,7 +1015,7 @@ def format_coverage(report, as_csv=False):
 
 
 def due(root, as_of=None, *, today=None, law_base=None, request=None):
-    """Open (unanswered, unclosed) requests with days to or past the provisional determination date (read-only)."""
+    """Open (not answered, closed or withdrawn) requests with days to or past the provisional determination date."""
     day = _day(as_of) if as_of is not None else (today or date.today())
     if day is None:
         raise ValueError("--as-of must be a real YYYY-MM-DD date")
@@ -1014,7 +1025,7 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None):
     entries = {_split(key): [s for s in entry["steps"] if isinstance(s, dict)] for key, entry in read_sent(root).items()}
     open_rows, answered, stated_passed = [], [], []
     for row in report["requests"]:
-        if row["closed"]:
+        if row["closed"] or "withdrawn_on" in row:  # the agency's or the campaign's own end: no work follows
             continue
         base = {"agency_id": row["agency_id"], "request": row["request"], "name": row["name"],
                 "sent_on": row["sent_on"], "reference": row["reference"],
@@ -1093,6 +1104,8 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
     steps = [s for s in entry["steps"] if isinstance(s, dict)]
     if any(s.get("kind") == "closed" for s in steps):
         raise ValueError(f"request for {label} is closed")
+    if any(s.get("kind") == "withdrawn" for s in steps):
+        raise ValueError(f"request for {label} was withdrawn by us on {_withdrawn_on(steps)}; no follow-up drafted")
     if _waiting_since(steps):
         raise WaitingOnYou(f"waiting on you since {_waiting_since(steps)} — reply to the agency's clarification first")
     answer = next((s for s in steps if s.get("kind") in ANSWERED), None)

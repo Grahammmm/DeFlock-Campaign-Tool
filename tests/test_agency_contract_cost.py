@@ -248,7 +248,7 @@ class ContractCostTests(unittest.TestCase):
         self.assertEqual(none["agencies/cedar.html"], page_with_term_only)  # a no-cost page is byte-identical, as before
         self.assertIn('data-label="Contract cost as stated">not checked</td>', self.glance_row())
         self.assertIn('data-label="Contract ends">not checked</td>', self.glance_row())
-        self.assertEqual({k for k in old if old[k] != none[k]}, {"agencies.html", "data/agencies.json", "index.html"} & set(old))
+        self.assertEqual({k for k in old if old[k] != none[k]}, {"agencies.html", "data/agencies.json", "data/agencies.csv", "index.html"} & set(old))
         # a cost on a contract with the optional renewal_note omitted is valid, and the private note never leaves
         self.contract(COST, renewal_note="")
         no_note = {k: v for k, v in self.agencies[CEDAR]["profile"]["contract"].items() if k != "renewal_note"}
@@ -257,7 +257,7 @@ class ContractCostTests(unittest.TestCase):
         self.build()
         # the amount appears on the card, the agency page and the open data only: never a feed, map, sitemap or the card JS
         carriers = sorted(name for name, data in self.snapshot().items() if b"12,345.60" in data or b"12345.6" in data)
-        self.assertEqual(carriers, ["agencies.html", "agencies/cedar.html", "data/agencies.json"])
+        self.assertEqual(carriers, ["agencies.html", "agencies/cedar.html", "data/agencies.csv", "data/agencies.json"])
         for name, data in self.snapshot().items():
             self.assertNotIn(b"Example agreement", data if name not in carriers else b"")
         # an agency whose card exists but has no page is not exported, cost included

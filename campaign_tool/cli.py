@@ -938,6 +938,8 @@ def main():
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
     outcome_p.add_argument("--recording-url", help="https URL of the body's official video or audio of the meeting")
     outcome_p.add_argument("--recording-start", metavar="H:MM:SS", help="Where the discussion starts in the recording, at most 12:00:00")
+    outcome_p.add_argument("--continued-to", metavar="MEETING_ID", help="With --result continued: the staged later meeting of the same body the official source says the item moved to")
+    outcome_p.add_argument("--continued-to-date", metavar="YYYY-MM-DD", help="With --result continued: the later date the official source states (not with --continued-to)")
     sent_p = commands.add_parser("meetings-comment-sent", help="Record a comment you submitted by hand on a staged "
                                  "meeting in kit/comments-sent.json; sends nothing")
     for flag in ("--directory", "--id", "--on"):
@@ -1040,10 +1042,11 @@ def main():
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
                                                                "produced", "denied", "closed", "fee_estimate",
                                                                "clarification_requested", "clarified", "fee_paid",
-                                                               "fee_waived"))
+                                                               "fee_waived", "withdrawn"))
     response_p.add_argument("--amount", metavar="USD", help="fee_estimate (required) or fee_paid (optional): 0-100000 "
                             "(e.g. 245.50); recorded only, nothing is paid")
-    response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
+    response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents); required for "
+                            "withdrawn, the campaign's own withdrawal of its request (not an agency closure)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
     response_p.add_argument("--correspondence", action="append", default=[], metavar="PREFIX",
@@ -1211,6 +1214,11 @@ def main():
         packet_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
+    plain_p = finding_cmds.add_parser("check-plain", help="Advisory plain-language check of a draft or published finding "
+                                      "(read-only, never a gate; exit 3 when it has suggestions)")
+    plain_p.add_argument("target", metavar="DRAFT|ID", help="Finding draft JSON file, or the id of a published finding")
+    plain_p.add_argument("--directory", required=True)
+    plain_p.add_argument("--json", dest="as_json", action="store_true", help="Print the report as one JSON object")
     status_p = finding_cmds.add_parser("status", help="Every draft, published and withdrawn finding with its state "
                                        "and blockers by name (read-only)")
     status_p.add_argument("--directory", required=True)
@@ -1515,6 +1523,12 @@ def main():
         elif args.command == "finding" and args.finding_command == "diff":
             from .finding_diff import run_cli as diff_cli
             sys.exit(diff_cli(root, args.inputs, args.from_draft, args.as_json))
+        elif args.command == "finding" and args.finding_command == "check-plain":
+            from .plain_language import run_cli as plain_cli
+            read_config(root)
+            code = plain_cli(root, args.target, args.as_json)
+            if code:
+                sys.exit(code)
         elif args.command == "finding" and args.finding_command == "reviewers":
             from . import findings
             read_config(root)
@@ -1534,6 +1548,9 @@ def main():
                 sys.exit(2)
             print(json.dumps(result))
             print("Private preview only; public/ was not changed and nothing was published.")
+            from .plain_language import preview_lines
+            for line in preview_lines(root, args.draft):  # DF0022-04: advisory only; never changes the exit code
+                print(line)
         elif args.command == "finding" and args.finding_command == "packet":
             from .finding_packet import build_packet
             try:
@@ -1695,9 +1712,11 @@ def main():
             print(json.dumps(report, indent=2))
             for row in report["requests"]:  # a reminder on stderr; stdout stays one JSON document
                 label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
-                if row["over_fee_cap"]:
+                if "withdrawn_on" in row:  # ended by us: history stays in the JSON, but no reminder is actionable
+                    print(f"{label}: withdrawn by us on {row['withdrawn_on']}", file=sys.stderr)
+                if row["over_fee_cap"] and "withdrawn_on" not in row:
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
-                if row["fee_state"] == "unpaid":
+                if row["fee_state"] == "unpaid" and "withdrawn_on" not in row:
                     print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
                 if row.get("undone_steps"):
                     print(f"{label}: {row['undone_steps']} step(s) undone", file=sys.stderr)

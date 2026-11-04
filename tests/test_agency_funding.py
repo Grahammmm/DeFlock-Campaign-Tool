@@ -3,6 +3,8 @@
 The card, the agency page and data/agencies.json show each entry with its own document, source and checked date; nothing
 is summed, ranked or said about a donor beyond the name in the document. Offline, synthetic names and documents only.
 """
+import csv
+import io
 import json
 import os
 import shutil
@@ -374,7 +376,13 @@ class FundingTests(unittest.TestCase):
         self.assertEqual(len([n for n in funded if n.startswith("agencies/")]), len([n for n in plain if n.startswith("agencies/")]))
         self.assertEqual(set(funded), set(plain))  # no new page or path because funding exists
         self.assertEqual(self.read("agencies.html").count("How it is paid for, as stated in"), 4)  # both cards still show it
-        shown = {"agencies.html", "agencies/cedar.html", "data/agencies.json"}
+        rows = list(csv.DictReader(io.StringIO(self.read("data/agencies.csv"))))
+        self.assertEqual([row["agency_id"] for row in rows], ["ca-cedar-police"])
+        self.assertEqual(rows[0]["funding"], "; ".join(json.dumps(entry, ensure_ascii=False, separators=(",", ":"),
+                                                               sort_keys=True) for entry in entries))
+        plain_rows = list(csv.DictReader(io.StringIO(plain["data/agencies.csv"].decode("utf-8"))))
+        self.assertEqual([row["funding"] for row in plain_rows], [""])
+        shown = {"agencies.html", "agencies/cedar.html", "data/agencies.json", "data/agencies.csv"}
         for name, data in funded.items():
             if name not in shown:
                 self.assertNotIn(b"Synthetic Giving Org", data, name)  # not in feeds, scripts, search, maps or other pages
