@@ -56,6 +56,11 @@ def enrich(root, maplibre=False):
     police["profile"]["contract"] = contract
     agencies[0]["profile"]["contract"] = dict(contract, end="2026-01-01")
     _write(content / "agencies.json", agencies)
+    _write(content / "glossary.json", {  # DF1952-04: reaches every glossary label (a rule-linked term, an alias, a finding that uses it)
+        "schema_version": 1, "notice_md": "Zq glossary notice.",
+        "terms": [{"term": "Zq title", "aliases": ["Zq alias"], "definition_md": "Zq definition.",
+                   "rule_id": "ca-civ-1798.90.5-definitions",
+                   "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."}]})
     _write(content / "meetings" / "zq-cancelled.json", {
         "id": "zq-cancelled", "body": "Zq board", "starts_at": "2026-09-01T18:00:00-07:00", "status": "cancelled"})
     if maplibre:
