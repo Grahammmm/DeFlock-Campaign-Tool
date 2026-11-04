@@ -333,6 +333,16 @@ held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `
 `votes` as `{name, vote}` in stored order, each only when recorded). It never includes the comment kit, `participation`,
 contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
 `data/meetings.json: non-public key ...` and writes nothing.
+`data/agencies.json` is the agencies as open data (`schemas/agencies-open-data.schema.json`), linked from
+`agencies.html` and `about.html`: only agencies that have a public page (`/agencies/<slug>.html`), sorted by `name` then
+`agency_id` (`"agencies": []` with none). Top level `schema_version`, `campaign`, `generated_from`, `base_url`, `url_kind`
+and `agencies`; per agency `agency_id`, `name`, `kind`, `url` (the page path, with the base URL when one is set), `asked`
+(`topic`, `state`, `asked_on`, `updated_on` or null, newest `asked_on` first as the card lists them), `alpr_policy`
+(`url`, `checked_on`) or null, `contract` (`vendor`, `start`, `end`, `source_url`, `checked_on`) or null, `transparency`
+(the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, and `camera_count`
+(the card's camera-count sentence) or null. It never includes `records_email`, `records_url`, `portal`, the asked-item
+`note`, the contract `renewal_note`, kit files, notes or any other key; the build refuses with
+`data/agencies.json: non-public key ...` and writes nothing.
 `public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan

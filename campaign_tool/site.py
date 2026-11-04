@@ -195,6 +195,14 @@ PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
 PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes")  # never verified_by / verified_at
 PUBLIC_VOTE_FIELDS = ("name", "vote")
+# data/agencies.json (DF1422-12): what each agency card and page already show; never contacts, kit data or notes.
+PUBLIC_AGENCY_TOP_LEVEL = {"schema_version", "campaign", "generated_from", "base_url", "url_kind", "agencies"}
+PUBLIC_AGENCY_FIELDS = ("agency_id", "name", "kind", "url", "asked", "alpr_policy", "contract", "transparency", "camera_count")
+PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
+PUBLIC_POLICY_FIELDS = ("url", "checked_on")
+PUBLIC_CONTRACT_FIELDS = ("vendor", "start", "end", "source_url", "checked_on")  # never renewal_note
+PUBLIC_TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts",
+                              "shared_with_agencies", "source_url", "checked_on")
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
 EXTRA_CSS = """
 /* Content-model pages */
@@ -891,7 +899,8 @@ class Site:
                     + ('' if agency["verified"] else f'<p class="archive-hint">{self.t("agency.unverified")}</p>'))
             articles.append(f'<article id="{e(agency["slug"])}">{body}</article>')
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
-                f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")}</p></div>'
+                f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")} '
+                f'<a href="/data/agencies.json" type="application/json">{self.t("intro.agencies_open_data")}</a>.</p></div>'
                 + ('<div class="agency-list">' + self.glance_section() + "".join(articles) + '</div>' if articles
                    else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
@@ -1271,7 +1280,8 @@ class Site:
                 '<a href="/data/findings.json" type="application/json">data/findings.json</a> and '
                 '<a href="/data/sources.json" type="application/json">data/sources.json</a>. '
                 f'{self.t("intro.meetings_open_data_about")} <a href="/data/meetings.json" type="application/json">data/meetings.json</a>.'
-                + (f' {self.t("notice.no_meetings")}' if not self.model["meetings"] else "") + '</p>'
+                + (f' {self.t("notice.no_meetings")}' if not self.model["meetings"] else "")
+                + f' {self.t("intro.agencies_open_data_about")} <a href="/data/agencies.json" type="application/json">data/agencies.json</a>.</p>'
                 + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", self.labels["title.about"], self.labels["title.about_description"], "/about.html", main)
@@ -1701,6 +1711,36 @@ class Site:
         return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
+    def _public_agency(self, agency, cities):
+        """One agency with a public page, copied key by key: what its card and page show, never contacts or notes."""
+        asked = sorted(agency.get("asked", []), key=lambda row: row["asked_on"], reverse=True)  # the page's order
+        newest, policy, contract = (agency.get("transparency") or [None])[0], agency.get("alpr_policy"), agency["contract"]
+        return {"agency_id": agency["agency_id"], "name": agency["name"], "kind": agency["kind"],
+                "url": self.base + self.agency_pages()[agency["agency_id"]],
+                "asked": [{"topic": a["topic"], "state": a["state"], "asked_on": a["asked_on"],
+                           "updated_on": a.get("updated_on")} for a in asked],
+                "alpr_policy": {k: policy[k] for k in PUBLIC_POLICY_FIELDS} if policy else None,
+                "contract": {k: contract[k] for k in PUBLIC_CONTRACT_FIELDS} if contract else None,
+                "transparency": ({k: newest[k] for k in PUBLIC_TRANSPARENCY_FIELDS if newest.get(k) is not None}
+                                 if newest else None),
+                "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
+
+    def agencies_json(self):
+        """``data/agencies.json`` (DF1422-12): agencies with a public page as open data; refuses any other key."""
+        cities = self.cities()
+        listed = sorted((a for a in self.model["agencies"] if a["agency_id"] in self.agency_pages()),
+                        key=lambda a: (a["name"], a["agency_id"]))
+        doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/agencies.json",
+               "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
+               "agencies": [self._public_agency(a, cities) for a in listed]}
+        _assert_public(doc, "data/agencies.json", PUBLIC_AGENCY_TOP_LEVEL,
+                       {"agencies": (PUBLIC_AGENCY_FIELDS, {"asked": (PUBLIC_ASKED_FIELDS, {}),
+                                                            "alpr_policy": (PUBLIC_POLICY_FIELDS, {}),
+                                                            "contract": (PUBLIC_CONTRACT_FIELDS, {}),
+                                                            "transparency": (PUBLIC_TRANSPARENCY_FIELDS, {})})})
+        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
 def _assert_public(doc, name, top, nested):
     """Raise ``ContentError`` naming ``name`` if ``doc`` holds a key outside the public allowlists (``top`` at the top
     level, ``nested`` maps a key to its ``(allowed, nested)`` pair) or a 40+ hex string."""
@@ -1813,6 +1853,7 @@ def _plan_site(root, today=None, notes=None):
         "agency-cards.js": agency_cards.render(site.cards_config(), relabel=bool(site.js_labels)),
         "app.js": site.app_js(), "data/findings.json": site.findings_json(),
         "data/sources.json": site.sources_json(), "data/meetings.json": site.meetings_json(),
+        "data/agencies.json": site.agencies_json(),
     })
     if site.finding_filter():  # written only when the findings index loads it
         files["findings/filter.js"] = filter_js(bool(site.js_labels))
