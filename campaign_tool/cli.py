@@ -1104,6 +1104,8 @@ def main():
     for flag in ("--directory", "--sha256", "--file", "--checked-on"):
         verify.add_argument(flag, required=True)
     verify.add_argument("--differs-because", choices=("redacted", "converted", "unknown"), default=None)
+    verify.add_argument("--fragment", default=None, help="Library fragment whose public_url identifies the copy; "
+                        "needed when the record has several public URLs")
     content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
         dest="content_command", required=True)
     content_init = content_cmds.add_parser(
@@ -1442,7 +1444,8 @@ def main():
         elif args.command == "sources" and args.sources_command == "verify-copy":
             from .sources_cmd import verify_copy
             try:
-                print(json.dumps(verify_copy(root, args.sha256, args.file, args.checked_on, args.differs_because)))
+                print(json.dumps(verify_copy(root, args.sha256, args.file, args.checked_on, args.differs_because,
+                                              fragment=args.fragment)))
             except ValueError as exc:
                 print(f"Stopped: {exc}", file=sys.stderr)
                 sys.exit(3)
