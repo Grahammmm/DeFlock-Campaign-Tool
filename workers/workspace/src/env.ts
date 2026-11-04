@@ -1,4 +1,6 @@
 export interface Env {
+  /** Optional HTTPS navigation to guided setup; never provisions from the workspace. */
+  SETUP_URL?: string;
   DB: D1Database;
   ORIGINALS: R2Bucket;
   PUBLIC_BUCKET: R2Bucket;
@@ -19,6 +21,8 @@ export interface Env {
   /** Optional post_social platform (Mastodon instance https URL) plus its access-token Worker secret. Absent: social_not_configured. */
   MASTODON_URL?: string;
   MASTODON_TOKEN?: string;
+  /** Optional Legistar events feed URLs (https, whitespace/comma separated) polled inline on each cron slot. Absent: legistar_poll: not configured. */
+  LEGISTAR_FEEDS?: string;
   /** Test hook: replaces global fetch for the Access certificate download. */
   ACCESS_CERTS_JSON?: string;
 }

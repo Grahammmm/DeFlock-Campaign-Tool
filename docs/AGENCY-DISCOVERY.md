@@ -33,7 +33,7 @@ opt-in: a kit lists them only with `--include campus_police`, never by
 default, so a kit without it is unchanged. Each entry is unverified with null
 contacts; its source note says to submit to the campus records office, which
 is separate from the city and county records offices and has its own
-procedure. Private universities and school police are not seeded.
+procedure. Private universities are not seeded.
 
 California community college district police departments (36, from the
 `CCD_POLICE` table) are seeded in the county of the district office as kind
@@ -50,6 +50,48 @@ records office, which is separate from the city, county and campus records
 offices. The page each row came from is recorded in the pull request that
 added it, not in the seed.
 
+California K-12 school district police departments (19, from the
+`SCHOOL_POLICE` table) are seeded in the county of the district office as kind
+`school_police`, after the community college district entries. Only districts
+that operate their own police department (Education Code 38000) are listed. A
+district served by school resource officers from a city police department or
+the county sheriff is not listed: those officers' records are the city's or
+the sheriff's, so request them from that agency. A district with only a
+security or safety division, or whose department could not be confirmed from
+an official page, is also absent. They are opt-in: a kit lists them only with
+`--include school_police`, never by default, so a kit without it is
+unchanged. Each entry is unverified with null contacts; its source note says
+the entry was seeded from the district's official page and to submit to the
+district records office, which is separate from the city, county, campus and
+community college records offices. The page each row came from is recorded in
+the pull request that added it, not in the seed.
+
+California special-district police departments (9 entries for 4 districts
+and joint powers authorities, from the `DISTRICT_POLICE` table) are seeded as
+kind `district_police`, after the school district entries: transit (BART),
+port and harbor (San Diego Unified Port District) and park district (East
+Bay Regional Park District, Fulton-El Camino Recreation and Park District)
+police. A district serving several counties has one entry per county it
+serves, with the county slug in its id (for example
+`ca-san-francisco-bay-area-rapid-transit-district-police-alameda`), so a
+county kit finds it; the entry's source note names its type and that county.
+Only a district that employs its own sworn police department, and whose
+official pages name each county it serves, is listed: the Burbank-Glendale-
+Pasadena Airport Authority and Stockton Port District police pages do not name
+a county, so those two are absent until an official page does. A
+district that contracts with a sheriff or a city police department (SacRT,
+VTA, the Oxnard Harbor District) is not listed: those officers' records are
+the contracted agency's, so request them from that agency. A port, harbor or
+airport police department that is a department of a city (Los Angeles, Long
+Beach, Oakland, San Francisco, San Jose) is not a district and is absent too.
+They are opt-in: a kit lists them only with `--include district_police`,
+never by default, so a kit without it is unchanged. Each entry is unverified
+with null contacts; its source note says the entry was seeded from the
+district's official page and to submit to the district records office, which
+is separate from the city, county, campus, community college and school
+records offices. The page each row came from is recorded in the pull request
+that added it, not in the seed.
+
 Coverage: all 58 counties, and all 482 incorporated cities, each with a
 `city_council` entry and a policing value (own police department, county
 sheriff, another agency, or not recorded). A city whose policing arrangement
@@ -58,6 +100,10 @@ is not recorded has a council entry only, and its source note says to verify.
 `flock_transparency_slug` and `muckrock_agency_id` are null until someone
 verifies them, and `verified` is false everywhere. A wrong policing value is
 a bug: open a PR against the table with the official page as the source.
+Still unseeded: private security, tribal police, harbor patrols run by a
+sheriff or a city, any special district whose police are contracted, and any
+transit, port, airport or park district department no official page has
+confirmed yet.
 
 `flock_transparency_slug` is the last path part of the agency's own Flock
 transparency page (`https://transparency.flocksafety.com/<slug>`), checked by
@@ -131,8 +177,8 @@ with `suggested: true`. For a city match the city's own agencies come first,
 then the county-wide ones; for a county match the county-wide agencies come
 first, then every city's agencies in seed order. `--include` (repeatable)
 restricts and orders kinds: `sheriff`, `police`, `county_board`,
-`city_council`, `district_attorney`, `chp`, and the opt-in `campus_police` and
-`ccd_police`.
+`city_council`, `district_attorney`, `chp`, and the opt-in `campus_police`,
+`ccd_police`, `school_police` and `district_police`.
 
 ## Online mode
 
@@ -214,6 +260,20 @@ Give one or more of `--records-email`, `--records-url` and `--portal` (URLs must
 and changes only the fields it names. The organizer, not the tool, checks the page: `source_url` is never
 fetched and nothing is sent. Re-running `kit` keeps the entry and uses the email in unedited drafts.
 
+To request by post, record the custodian's postal address from the same official page:
+
+    python3 -m campaign_tool kit-verify-agency --directory ../my-campaign --agency-id ca-example-police \
+      --source-url https://police.example/records --checked-on 2026-10-01 \
+      --mailing-address 'Records Unit|123 Example Street|Exampleville, CA 90000'
+
+`--mailing-address` is 2-5 lines separated by `|`, each 1-80 characters after trimming; angle brackets, control or
+format characters and line separators are refused, and an error names the rule, never the address. It can be the only
+contact given. It is stored as `mailing_address` with its own `mailing_verification` (`source_url`, `checked_on`: this
+call's source and date) in `kit/agencies.json`, which stays private: the public site never carries either key, and
+`content/agencies.json` refuses them. A later electronic `kit-verify-agency` (single or `import`) keeps the postal proof,
+and `verification.fields` lists only the electronic fields. The organizer, not the tool, checks the page; nothing is
+fetched. `import --csv` does not take postal addresses and refuses `--mailing-address` (exit 2).
+
 To record many checked contacts at once, use `kit-verify-agency import --directory D --csv FILE [--check]`. The
 first row must be exactly `agency_id,source_url,checked_on,records_email,records_url,portal_vendor,portal_url`
 (UTF-8, a leading byte-order mark is fine); 1-500 data rows, at most 512 KiB, and an empty cell means "not given".
@@ -238,12 +298,24 @@ verified` (no `verified: true`; see `kit-verify-agency`), then `N of M drafts ne
 exits 3 when any draft needs attention. A Markdown link `[text](url)` is not a placeholder. `kit-sent` runs the same
 check for its agency and refuses a draft that still fails it.
 
-To copy a draft out, `kit-copy --directory D --agency ID --for portal|email [--json]` writes only the sendable part,
+To copy a draft out, `kit-copy --directory D --agency ID --for portal|email|mail [--json]` writes only the sendable part,
 the Subject line and the request text after it, to `kit/outgoing/ID.txt` (with its `characters` count, to compare a
 portal's limit) or an unsent `kit/outgoing/ID.eml` addressed to the verified `records_email` (no From or Date; your
 mail client adds them). The banner, `To:`/`Agency:` lines, `Statutory context` and `Operator checklist` are left out:
 they are notes for you, not for the agency. Unfilled `[placeholders]` in that part, or (email) no verified address,
 stop with exit 3. Nothing is sent and `kit/sent.json` is untouched; record the send yourself with `kit-sent`.
+
+To post a request, `kit-copy --directory D --agency ID --for mail [--json]` writes `kit/outgoing/ID.letter.html`, a
+printable letter, and `kit/outgoing/ID.letter.txt`, its plain-text twin: the requester block, today's date, the
+verified postal address, then the `Subject:` line and the sendable text exactly as `portal` copies it, signature
+included (the repeated return address is intended). The HTML is inert escaped text with inline print styles: no
+scripts, links, images, forms or external loads, and nothing opens a print dialog. It needs `requester` in
+`kit/request-settings.json`, a verified postal address, and a draft that passes `kit-check` for that agency in full
+(including a hand-filled `To:` line and the parts left out of the copy); other agencies' drafts do not matter. Anything
+missing stops with exit 3 before a file is written. The two files are written one after the other, not as a pair: if
+the second write fails, the first may already be the new letter; the command says so, and running it again rewrites both.
+Review, print and post the letter yourself, then record it with the unchanged `kit-sent --channel mail`. Nothing is
+printed or sent and `kit/sent.json` is untouched.
 
 After you send a draft yourself, record it (nothing is sent by the tool):
 
@@ -254,6 +326,7 @@ keeps the date, channel and SHA-256 of `requests/<agency_id>.md`. A second recor
 one with no steps. `kit-status --directory D` lists each request with `determination_due` and `with_extension` from
 the law package (`null` when it is missing) and flags drafts edited since sending. Dates are provisional reminders:
 the period runs from the agency's receipt and holidays are not modelled. `kit` re-runs never touch `sent.json`.
+The JSON it prints is described by `schemas/kit-status.schema.json`; `tests/test_kit_json_contracts.py` fails when the keys drift.
 
 ### Several requests to one agency
 
@@ -282,11 +355,19 @@ latest estimate (latest date, then the later recorded step) as `fee_estimate`, a
 the cap also prints `<agency>: fee estimate $245.50 is over your fee cap: decide before paying` on stderr. The check is
 a reminder, not advice: the tool never pays, replies to or contacts the agency.
 
+`kit-fees --directory D [--csv FILE]` is the one read-only fee report over every recorded request: only requests with a
+recorded estimate appear (latest estimate, `fee_state` `unpaid`, `paid` or `waived`, `fee_paid` when the payment step
+carried an amount, `over_fee_cap`), unpaid first, plus exact-cents totals (`quoted`, `paid`, `unpaid` and a `counts`
+object), taken from the stored `amount_cents` with the same rules `kit-status` uses. `--csv` writes the rows and a final
+`TOTAL` row to a new private file (0600, never overwritten, refused inside `public/` or `content/`, spreadsheet-formula
+safe). The amounts are what the organizer recorded: not an invoice, not legal advice, and nothing is paid or sent.
+
 `kit-due --directory D [--as-of YYYY-MM-DD]` (default today) lists requests still waiting on the agency under `open`,
 sorted by provisional `due` date (extended when recorded), with `days` left (negative once past) and `state`
 `past_due`, `due_today` or `upcoming`. Requests with a `determination`, `produced` or `denied` step appear under
 `answered`; closed requests are left out. Without a law package `state` is `no_law_package`. It exits 3 when any
 request is past due, else 0. These are reminders, not lateness conclusions.
+The JSON it prints is described by `schemas/kit-due.schema.json`; `tests/test_kit_json_contracts.py` fails when the keys or `state` values drift.
 
 `kit-followup --directory D --agency ID [--as-of YYYY-MM-DD] [--replace]` (as-of not after today) writes a private
 draft `kit/followups/<agency_id>-<as_of>.md` (0600, folder 0700) for a request that `kit-due` lists as `past_due`. It

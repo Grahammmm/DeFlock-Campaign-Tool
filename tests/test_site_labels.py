@@ -17,6 +17,7 @@ from campaign_tool.cli import read_config
 from campaign_tool.content import ContentError, load_content
 from campaign_tool.labels import DEFAULTS, JS_DEFAULTS, PLACEHOLDER, html_text, load_labels
 from campaign_tool.site import FILTER_JS, build_site, preview
+from campaign_tool.supporters import KINDS, add_supporter
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "fictional-campaign"
 SOON, LATE = date(2026, 10, 1), date(2027, 1, 1)  # LATE: every meeting past, every contract ended
@@ -56,6 +57,13 @@ def enrich(root, maplibre=False):
     police["profile"]["contract"] = contract
     agencies[0]["profile"]["contract"] = dict(contract, end="2026-01-01")
     _write(content / "agencies.json", agencies)
+    _write(content / "topics" / "zq-topic.json", {"title": "Zq topic", "intro_md": "Zq intro.",
+                                                  "finding_ids": ["fnd_0000000000000002", "fnd_0000000000000003"]})
+    _write(content / "glossary.json", {  # DF1952-04: reaches every glossary label (a rule-linked term, an alias, a finding that uses it)
+        "schema_version": 1, "notice_md": "Zq glossary notice.",
+        "terms": [{"term": "Zq title", "aliases": ["Zq alias"], "definition_md": "Zq definition.",
+                   "rule_id": "ca-civ-1798.90.5-definitions",
+                   "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."}]})
     _write(content / "meetings" / "zq-cancelled.json", {
         "id": "zq-cancelled", "body": "Zq board", "starts_at": "2026-09-01T18:00:00-07:00", "status": "cancelled"})
     if maplibre:
@@ -224,21 +232,58 @@ class LabelsTest(unittest.TestCase):
         # Codes the fixture has no finding or agency for; they render through the same t("<family>." + code) call.
         # officials.*: the fixture has no officials.json (tests/test_site_officials.py covers those labels).
         # map.history_*: the fixture has no map/history.json (tests/test_site_cameras_page.py covers those labels).
+        # map.check_*: the fixture has no map/point-checks.json (tests/test_map_point_checks.py covers those labels).
         # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
+        # agency.mapped_reported_*: the fixture has no transparency snapshot (tests/test_agency_mapped_reported.py covers those).
         # meeting.votes*, vote.*: the fixture records no votes (tests/test_meeting_votes.py covers those labels).
+        # handout.*: only the private meeting-pack handout writes these (tests/test_meeting_pack.py covers them).
         # agency.votes_*: the fixture records no votes (tests/test_site_member_votes.py covers those labels).
-        absent = ["agency.transparency_cameras", "agency.transparency_checked", "agency.transparency_down",
+        # agency.contract_cost, agency.cost_*: the fixture has no contract cost (tests/test_agency_contract_cost.py covers those).
+        # agency.funding_*: the fixture records no funding (tests/test_agency_funding.py covers those).
+        absent = ["agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
+                  "agency.cost_total", "agency.funding_fiscal_year", "agency.funding_kind_asset_forfeiture",
+                  "agency.funding_kind_donation", "agency.funding_kind_general_fund", "agency.funding_kind_grant",
+                  "agency.funding_kind_other", "agency.funding_provenance",
+                  "agency.mapped_reported_caveat", "agency.mapped_reported_counts", "agency.mapped_reported_unknown",
+                  "agency.transparency_cameras", "agency.transparency_checked", "agency.transparency_down",
                   "agency.transparency_heading", "agency.transparency_hotlist_alerts", "agency.transparency_retention_days",
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "agency.votes_heading", "agency.votes_more", "agency.votes_none", "agency.votes_source",
+                  "finding.agency_response", "finding.reply_declined", "finding.reply_no_response", "finding.reply_received",
+                  "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
+                  "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.title",
+                  "handout.what_we_found",
                   "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
+                  "map.check_duplicate", "map.check_earlier", "map.check_heading",
+                  "map.check_in_agency_record", "map.check_not_found_on_site", "map.check_seen_in_person",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
+                  "meeting.minutes_confirmed", "meeting.minutes_pending", "meeting.recording", "meeting.recording_from",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
                   "officials.heading", "officials.listed", "officials.source", "privacy.signup_policy",
+                  "supporters.description", "supporters.joined", "supporters.kind.business",
+                  "supporters.kind.civil_liberties", "supporters.kind.community", "supporters.kind.faith",
+                  "supporters.kind.labor", "supporters.kind.neighborhood", "supporters.kind.other", "supporters.title",
                   "vote.absent", "vote.abstain", "vote.no", "vote.recused", "vote.yes"]
         self.assertEqual(sorted(set(DEFAULTS) - set(JS_DEFAULTS) - seen), absent)  # js.*: the script tests below
+
+    def test_supporters_labels_replace_every_fixed_string_when_organizations_are_listed(self):
+        root = self.root("rich", labels={key: f"X{key}X" for key in DEFAULTS})
+        for kind in KINDS:
+            add_supporter(root, name=f"Zq {kind} Org", kind=kind, organization=True, confirmed_on="2026-09-01", how="form",
+                          today=SOON)
+        build_site(root, today=SOON)
+        page = (root / "public" / "supporters.html").read_text(encoding="utf-8")
+        keys = [key for key in DEFAULTS if key.startswith("supporters.")]
+        self.assertEqual(len(keys), 10)
+        for key in keys:
+            self.assertIn(f"X{key}X", page, key)
+        for text in (DEFAULTS[key] for key in keys):
+            for chunk in PLACEHOLDER.split(text):
+                if len(chunk.split()) >= 2:
+                    self.assertNotIn(chunk.strip(), page)
+        self.assertIn('<a href="/supporters.html">Xsupporters.titleX</a>', (root / "public" / "index.html").read_text(encoding="utf-8"))
 
     def test_non_page_outputs_and_starter_ignore_labels(self):
         markers = {key: f"X{key}X" for key in DEFAULTS if key not in JS_DEFAULTS}  # no js.* key: scripts unchanged
@@ -291,7 +336,7 @@ class ScriptLabelsTest(unittest.TestCase):
         self.assertNotIn("innerHTML", app)
         self.assertEqual(files["_headers"], plain["_headers"])  # CSP unchanged: no inline script, same origins
         changed = sorted(p for p in plain if plain[p] != files[p])
-        self.assertEqual(changed, ["agency-cards.js", "app.js", "findings/filter.js", "findings/index.html", "site-data.js"])
+        self.assertEqual(changed, ["agency-cards.js", "app.js", "findings/filter.js", "findings/index.html", "search.html", "site-data.js"])
         cards = files["agency-cards.js"].decode()
         for english in ('"no published findings yet"', '" published finding"'):
             self.assertNotIn(english, cards)

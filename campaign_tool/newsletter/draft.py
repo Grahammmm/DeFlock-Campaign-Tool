@@ -11,7 +11,10 @@ The manifest shape matches ``newsletterManifest`` in the workspace Worker::
      "meetings": [{"body", "starts_at", "agenda_item", "agenda_url", "relevance",
                    "participation"?: {...} | null}],  # --from-content: content.load_participation's dict
      "decisions": [{"body", "on", "result", "vote", "source_url", "meeting_path"}],  # optional, --from-content
-     "requests": [{"agency", "topic", "asked_on", "updated_on", "state", "sentence", "path"}]}  # optional, --from-content
+     "requests": [{"agency", "topic", "asked_on", "updated_on", "state", "sentence", "path"}],  # optional, --from-content
+     "records": [{"title", "agency", "received_at", "prefix", "public_url", "path"}],  # optional, --from-content
+     "map": {"records": [{"recorded_on", "osm_base", "source", "total", "by_city", "added", "removed"}],
+             "label": "...", "path": "/cameras.html"}}  # optional, --from-content, only with map history
 
 ``corrections`` is optional (``--from-content`` sets it; Worker manifests omit it).
 ``participation`` likewise: an object adds a "How to take part" line, null the
@@ -42,6 +45,7 @@ MAX_CORRECTIONS = 50
 NOTE_LIMIT = 200
 _PATH = re.compile(r"/[A-Za-z0-9._/-]{0,200}")
 _AGENCY_PATH = re.compile(r"/[A-Za-z0-9._/-]{0,200}(?:#[A-Za-z0-9_-]{1,80})?")
+_PREFIX = re.compile(r"[0-9a-f]{12}")
 _HTTPS = re.compile(r"https://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[A-Za-z0-9._~/?#&=%-]*)?")
 # Patterns that must never appear in a draft: emails and phone-like numbers
 # would mean personal data leaked into the manifest.
@@ -181,6 +185,103 @@ def _requests(items, since, now, base_url):
     return lines
 
 
+def _records(items, since, now, base_url):
+    """Lines for ``records`` (DF1422-15): library entries whose ``received_at`` day is inside the window.
+
+    The window is the ``since`` day through ``now``'s day; an entry received after ``now`` is never listed. Only the
+    12-character record prefix is shown. The sources page link is added only when the campaign has a ``base_url``.
+    """
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise DraftError("records must be a list")
+    low, high = (since.date() if since else None), now.date()
+    lines = []
+    for index, item in enumerate(_entries(items, "records")):
+        label = f"records[{index}]"
+        received = item.get("received_at")
+        day = _day(received[:10] if isinstance(received, str) else received, label + ".received_at")
+        title, agency = _clean(item.get("title"), label + ".title", 160), _clean(item.get("agency"), label + ".agency", 120)
+        prefix, url, path = item.get("prefix"), item.get("public_url"), item.get("path")
+        if not title or not agency:
+            raise DraftError(f"{label}: title and agency are required")
+        if not isinstance(prefix, str) or not _PREFIX.fullmatch(prefix):
+            raise DraftError(f"{label}.prefix: 12 lowercase hex characters required, got {str(prefix)[:20]!r}")
+        if url is not None and (not isinstance(url, str) or not _HTTPS.fullmatch(url)):
+            raise DraftError(f"{label}.public_url: must be an https:// URL")
+        if not isinstance(path, str) or not _AGENCY_PATH.fullmatch(path) or ".." in path.split("/"):
+            raise DraftError(f"{label}.path: invalid public path")
+        if day > high or (low is not None and day < low):
+            continue
+        entry = f"- **{title}** ({agency}), received {day.isoformat()}, record {prefix}"
+        entry += f" [Public copy]({url})" if url else ""
+        lines.append(entry + (f" [Sources page]({base_url.rstrip('/') + path})" if base_url else ""))
+    return lines
+
+
+def _map_record(item, label):
+    """Validate one ``map.records`` entry (DF0137-13 shape); returns ``(day, osm_day, item)``."""
+    if not isinstance(item, dict):
+        raise DraftError(f"{label}: must be an object")
+    day = _day(item.get("recorded_on"), label + ".recorded_on")
+    base = item.get("osm_base")
+    osm_day = _day(base[:10] if isinstance(base, str) else base, label + ".osm_base") if base is not None else day
+    for key in ("total", "added", "removed"):
+        if type(item.get(key)) is not int or item[key] < 0:
+            raise DraftError(f"{label}.{key}: non-negative integer required")
+    cities = item.get("by_city")
+    if cities is not None:
+        if not isinstance(cities, dict):
+            raise DraftError(f"{label}.by_city: must be an object or null")
+        for name, count in cities.items():
+            _clean(name, label + ".by_city name", 120)
+            if type(count) is not int or count < 0:
+                raise DraftError(f"{label}.by_city: non-negative integer counts required")
+    return day, osm_day, item
+
+
+def _map(doc, since, now, base_url):
+    """Lines for ``map`` (DF1422-16): the newest history record inside the window against the one before it.
+
+    The window is the ``since`` day through ``now``'s day; a record after ``now`` is never used. The previous
+    record is the one just before it on any date. An in-window record that changed nothing gives no section.
+    Per-city lines need ``by_city`` on both records. Wording says community-mapped, ownership unconfirmed.
+    """
+    if doc is None:
+        return []
+    if not isinstance(doc, dict):
+        raise DraftError("map must be an object")
+    items = doc.get("records")
+    if not isinstance(items, list):
+        raise DraftError("map.records must be a list")
+    records = sorted((_map_record(item, f"map.records[{index}]") for index, item in enumerate(items)), key=lambda r: r[0])
+    low, high = (since.date() if since else None), now.date()
+    inside = [i for i, r in enumerate(records) if r[0] <= high and (low is None or r[0] >= low)]
+    if not inside:
+        return []
+    day, osm_day, current = records[inside[-1]]
+    previous = records[inside[-1] - 1] if inside[-1] > 0 else None
+    old = previous[2] if previous else None
+    cities = {}
+    if old is not None and old["by_city"] is not None and current["by_city"] is not None:
+        for name in sorted(set(old["by_city"]) | set(current["by_city"])):
+            before, after = old["by_city"].get(name, 0), current["by_city"].get(name, 0)
+            if before != after:
+                cities[name] = (before, after)
+    if old is not None and current["added"] == 0 and current["removed"] == 0 and old["by_city"] == current["by_city"]:
+        return []
+    link = ""
+    if base_url:
+        link = f" [Cameras page]({_link(base_url, doc.get('path', '/cameras.html'), 'map.path')})"
+    lines = [f"- {current['total']} community-mapped points (ownership unconfirmed), OpenStreetMap data of {osm_day.isoformat()}.{link}"]
+    if old is not None:
+        lines.append(f"- Since {previous[0].isoformat()}: {current['added']} added, {current['removed']} removed.")
+    lines += [f"- {name}: {before} → {after}" for name, (before, after) in list(cities.items())[:MAX_MEETINGS]]
+    if len(cities) > MAX_MEETINGS:
+        lines.append(f"- and {len(cities) - MAX_MEETINGS} more on the cameras page.")
+    return lines
+
+
 def _how(value, label, excluded):
     """Organizer ``how`` text, or "see official details" when it holds an email or phone (DF2037-15)."""
     if isinstance(value, str) and (_EMAIL.search(value) or _PHONE.search(value)):
@@ -240,7 +341,7 @@ CONSENT_FOOTER_TEMPLATE_MARKER = "[TEMPLATE CONSENT FOOTER: replace with the cam
 DEFAULT_CONSENT_FOOTER = "You receive this because you signed up for {name} updates. Unsubscribe at any time."
 
 
-def build_draft(manifest, now=None):
+def build_draft(manifest, now=None, *, archive_public=False):
     """Return ``{"subject", "html", "text", "counts", "excluded", "consent_footer"}``.
 
     Only findings published at or after ``since`` and meetings starting at or
@@ -253,6 +354,11 @@ def build_draft(manifest, now=None):
     wording (it must keep the sentence ``Unsubscribe at any time.`` for the
     provider placeholder). Without it the engine's template footer is used and
     marked, and the send executor refuses the draft.
+
+    ``archive_public=True`` (DF1952-09, only ``--from-content``) adds ``public_archive``
+    ``{"schema_version": 1, "title": SUBJECT, "body_md": PUBLIC_MARKDOWN}``: the Markdown
+    exactly as assembled before the consent footer, so no footer, sender or unsubscribe
+    wording, review flag or count can be in it. HTML and text are unchanged.
     """
     if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
         raise DraftError("manifest.schema_version must be 1")
@@ -271,6 +377,8 @@ def build_draft(manifest, now=None):
         raise DraftError("findings and meetings must be lists")
     decisions = _decisions(manifest.get("decisions"))
     requests = _requests(manifest.get("requests"), since, now, base_url)
+    records = _records(manifest.get("records"), since, now, base_url)
+    camera_map = _map(manifest.get("map"), since, now, base_url)
     # The engine applies the documented window itself: findings published since the
     # last send, meetings that have not started yet (soonest first). Labels keep the
     # manifest index so a bad entry is named where the organizer can find it.
@@ -333,6 +441,16 @@ def build_draft(manifest, now=None):
         if len(requests) > MAX_MEETINGS:
             lines.append(f"- and {len(requests) - MAX_MEETINGS} more on the site.")
         lines.append("")
+    if records:
+        lines.append("## New in the records library")
+        lines += records[:MAX_FINDINGS]
+        if len(records) > MAX_FINDINGS:
+            lines.append(f"- and {len(records) - MAX_FINDINGS} more on the sources page.")
+        lines.append("")
+    if camera_map:
+        lines.append("## Camera map")
+        lines += camera_map
+        lines.append("")
     if decisions:
         lines.append("## Decisions")
         lines += decisions[:MAX_MEETINGS]
@@ -360,6 +478,7 @@ def build_draft(manifest, now=None):
         lines.append(f"Read everything, with source hashes, at [{base_url}]({base_url}).")
     lines.append("Findings describe records and published rules as of the event date. This is not legal advice.")
     lines.append("")
+    public_markdown = "\n".join(lines).rstrip("\n") + "\n"  # frozen here, before any consent-footer text exists
     footer = campaign.get("consent_footer")
     if isinstance(footer, str) and footer.strip():
         footer = _clean(footer, "campaign.consent_footer", 600)
@@ -392,12 +511,16 @@ def build_draft(manifest, now=None):
     result = {"subject": subject[:200], "html": html, "text": text,
               "counts": {"findings": len(findings), "meetings": len(meetings),
                          **({"requests": len(requests)} if requests else {}),
+                         **({"records": len(records)} if records else {}),
+                         **({"map": 1} if camera_map else {}),
                          **({"decisions": len(decisions)} if decisions else {})}, "excluded": excluded,
               "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
     if review_flags:  # absent otherwise, so unflagged drafts stay byte-identical (same convention as corrections_listed)
         result["review_flags"] = review_flags
     if corrections:  # absent otherwise, so drafts without listed corrections stay byte-identical
         result["corrections_listed"] = len(corrections)
+    if archive_public:  # absent otherwise, so default, manifest and Worker callers are unchanged
+        result["public_archive"] = {"schema_version": 1, "title": result["subject"], "body_md": public_markdown}
     return result
 
 

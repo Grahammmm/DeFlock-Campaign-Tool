@@ -1,10 +1,13 @@
 """`sources add | add-batch | list | edit | remove | verify-copy`: look after content/sources.json, the source library.
 
 `verify-copy` hashes a local copy the organizer downloaded from an entry's public_url (nothing is fetched) and
-records `public_copy` {matches, checked_on, reason?}; `edit` drops that check when public_url changes.
+records `public_copy` {matches, checked_on, reason?} on the entries of that record sharing that exact public_url
+string (`--fragment` picks the URL when a record has several; no URL is normalized); `edit` drops that check when
+public_url changes.
 
 `add` resolves the hash against the private ledger (read-only); `add-batch` appends every not-yet-listed record
-of one ingest source_id (read via `status --list`'s in-memory ledger copy); `list` prints every entry with the slugs of the
+of one ingest source_id (read via `status --list`'s in-memory ledger copy); `add-batch --from-request AGENCY` instead takes the
+production records linked on that request's produced steps (kit/sent.json, never its correspondence); `list` prints every entry with the slugs of the
 published findings citing its record; `edit` changes title/note/public_url/pages of one entry chosen by >= 12 hex
 of its library hash (+ `--fragment`); `remove` deletes one, refused while a published finding cites the record and
 no other entry for it remains. Writers validate the whole new list with the content loader, then replace the file
@@ -166,18 +169,7 @@ def add_batch(root, source_id, agency_id, received_at, fragment=None, dry_run=Fa
         raise ContentError("--received-at: use an ISO timestamp with a UTC offset") from None
     if moment.tzinfo is None:
         raise ContentError("--received-at: must include a time zone offset")
-    if agency_id not in {agency["agency_id"] for agency in _known_agencies(root)}:
-        raise ContentError(f"agency_id {agency_id!r} is not one of the campaign's agencies")
-    path = content / "sources.json"
-    raw, document = _read_existing(path)
-    load_sources(document)
-    if fragment is None:
-        fragments = sorted({entry["fragment"] for entry in document if entry["agency_id"] == agency_id})
-        if len(fragments) != 1:
-            raise ContentError(f"agency {agency_id!r} has {len(fragments)} existing fragments; give --fragment")
-        fragment = fragments[0]
-    if fragment == "library":
-        raise ContentError("--fragment: 'library' is the page anchor; choose another slug")
+    path, raw, document, fragment = _batch_target(root, agency_id, fragment)
     listing = list_receipts(root, source_id)
     if listing.get("more"):
         raise ContentError(f"more than {listing['count']} receipts for source_id; nothing written")
@@ -194,6 +186,32 @@ def add_batch(root, source_id, agency_id, received_at, fragment=None, dry_run=Fa
             new[sha] = {"sha256": sha, "title": _batch_title(receipt["original_name"]), "agency_id": agency_id,
                         "received_at": received_at, "public_url": None, "fragment": fragment, "pages": None,
                         "note": f"added in batch from {source_id}"}
+    _batch_write(path, raw, document, new, dry_run)
+    return {"added": [sha[:12] for sha in new], "already_listed": len(already), "dry_run": dry_run}
+
+
+def _batch_target(root, agency_id, fragment):
+    """Shared head of the batch writers: (sources.json path, raw text, validated list, fragment to use)."""
+    content = Path(root) / "content"
+    if content.is_symlink() or not content.is_dir():
+        raise ContentError("content/ is required")
+    if agency_id not in {agency["agency_id"] for agency in _known_agencies(root)}:
+        raise ContentError(f"agency_id {agency_id!r} is not one of the campaign's agencies")
+    path = content / "sources.json"
+    raw, document = _read_existing(path)
+    load_sources(document)
+    if fragment is None:
+        fragments = sorted({entry["fragment"] for entry in document if entry["agency_id"] == agency_id})
+        if len(fragments) != 1:
+            raise ContentError(f"agency {agency_id!r} has {len(fragments)} existing fragments; give --fragment")
+        fragment = fragments[0]
+    if fragment == "library":
+        raise ContentError("--fragment: 'library' is the page anchor; choose another slug")
+    return path, raw, document, fragment
+
+
+def _batch_write(path, raw, document, new, dry_run):
+    """Shared tail of the batch writers: cap, validate the whole list, append in memory, write once."""
     if len(new) > BATCH_MAX:
         raise ContentError(f"{len(new)} new records; at most {BATCH_MAX} per run, nothing written")
     updated, text, existing = document + list(new.values()), raw or "", document
@@ -206,7 +224,69 @@ def add_batch(root, source_id, agency_id, received_at, fragment=None, dry_run=Fa
         raise ContentError("sources.json: file too large")
     if new and not dry_run:
         _write_atomic(path, text)
-    return {"added": [sha[:12] for sha in new], "already_listed": len(already), "dry_run": dry_run}
+
+
+def _production_dates(root, agency_id, request):
+    """{full hash: earliest produced-step date} of one request, in step order; correspondence is never read."""
+    from . import kit_track
+    request = kit_track._request(request)
+    if "#" in agency_id:
+        raise ValueError(f"no hand-sent request recorded for {agency_id}; run kit-sent first")
+    entry = kit_track.read_sent(root).get(kit_track._key(agency_id, request))
+    if entry is None and request != "main":
+        raise ValueError(f"no sent request {agency_id}/{request}; run kit-sent --request {request} first")
+    if entry is None:
+        raise ValueError(f"no hand-sent request recorded for {agency_id}; run kit-sent first")
+    dates = {}
+    for step in entry["steps"]:
+        day = kit_track._day(step.get("on")) if isinstance(step, dict) and step.get("kind") == "produced" else None
+        for sha in kit_track._step_records(step) if day else ():
+            if sha not in dates or day < dates[sha]:
+                dates[sha] = day
+    if not dates:
+        raise ContentError(f"request {kit_track._label(agency_id, request)} has no linked production records")
+    return dates
+
+
+def _original_names(root, wanted):
+    """{full hash: first non-empty original file name} from the ledger copy; {} without a ledger."""
+    path = Path(root) / "private" / "ledger.sqlite"
+    if path.parent.is_symlink() or path.is_symlink() or not path.is_file():
+        return {}
+    from .ledger_list import _snapshot
+    db = _snapshot(path)
+    try:
+        rows = db.execute("SELECT object_sha256, original_name FROM receipts ORDER BY received_at, receipt_id")
+        names = {}
+        for sha, name in rows:
+            if sha in wanted and sha not in names and name and str(name).strip():
+                names[sha] = str(name)
+    finally:
+        db.close()
+    return names
+
+
+def add_from_request(root, agency_id, *, request="main", tz="America/Los_Angeles", fragment=None, dry_run=False):
+    """Add the production records linked on one request's produced steps that the library does not list yet."""
+    from .meetings import resolve_zone
+    zone = resolve_zone(tz)
+    if zone is None:
+        raise ContentError(f"unknown time zone {tz}")
+    dates = _production_dates(root, agency_id, request)
+    path, raw, document, fragment = _batch_target(root, agency_id, fragment)
+    listed = {entry["sha256"] for entry in document}
+    names = _original_names(root, set(dates) - listed)
+    label = f"{agency_id}/{request}"
+    new = {}
+    for sha, day in dates.items():
+        if sha not in listed:
+            title = _batch_title(names[sha]) if sha in names else f"Record {sha[:12]} [EDIT ME: title]"
+            moment = datetime(day.year, day.month, day.day, tzinfo=zone)  # the step date at 00:00 in --tz
+            new[sha] = {"sha256": sha, "title": title, "agency_id": agency_id, "received_at": moment.isoformat(),
+                        "public_url": None, "fragment": fragment, "pages": None,
+                        "note": f"added in batch from request {label}"}
+    _batch_write(path, raw, document, new, dry_run)
+    return {"added": [sha[:12] for sha in new], "already_listed": len(dates) - len(new), "dry_run": dry_run}
 
 
 def _library(root):
@@ -323,8 +403,32 @@ def _hash_copy(file):
     return digest.hexdigest()
 
 
-def verify_copy(root, prefix, file, checked_on, differs_because=None, today=None):
-    """Hash a copy the organizer downloaded from an entry's public_url; record public_copy on that record's entries."""
+def _copy_targets(document, sha, fragment=None):
+    """Indices of the entries one verification covers: entries of ``sha`` sharing one exact public_url string.
+
+    Without ``fragment`` the record must have a single distinct URL; with it, that library fragment's URL chooses the group.
+    """
+    entries = [(index, entry) for index, entry in enumerate(document) if entry["sha256"] == sha]
+    if fragment is None:
+        urls = {entry["public_url"] for _, entry in entries if entry["public_url"]}
+        if not urls:
+            raise ValueError("entry has no public_url; nothing to compare")
+        if len(urls) > 1:
+            raise ValueError("record has multiple public URLs; add --fragment to choose the copy")
+        return [index for index, entry in entries if entry["public_url"]]
+    if not isinstance(fragment, str) or not fragment:
+        raise ValueError("--fragment: give a non-empty library fragment")
+    chosen = [entry for _, entry in entries if entry["fragment"] == fragment]
+    if not chosen:
+        raise ValueError("no library entry for this record in the selected fragment")
+    url = chosen[0]["public_url"]
+    if not url:
+        raise ValueError("selected entry has no public_url; nothing to compare")
+    return [index for index, entry in entries if entry["public_url"] == url]
+
+
+def verify_copy(root, prefix, file, checked_on, differs_because=None, today=None, *, fragment=None):
+    """Hash a copy the organizer downloaded from a public_url; record public_copy on the entries sharing that URL."""
     path, document = _library(root)
     if not isinstance(prefix, str) or not PREFIX.fullmatch(prefix):
         raise ValueError("--sha256: give 12 to 64 lowercase hex characters of a library entry's hash")
@@ -334,9 +438,7 @@ def verify_copy(root, prefix, file, checked_on, differs_because=None, today=None
     if len(records) > 1:
         raise ValueError(f"prefix matches {len(records)} entries; give more characters")
     sha = records.pop()
-    targets = [index for index, entry in enumerate(document) if entry["sha256"] == sha and entry["public_url"]]
-    if not targets:
-        raise ValueError("entry has no public_url; nothing to compare")
+    targets = _copy_targets(document, sha, fragment)
     if differs_because is not None and differs_because not in COPY_REASONS:
         raise ValueError("--differs-because: one of " + ", ".join(COPY_REASONS))
     try:

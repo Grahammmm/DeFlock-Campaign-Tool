@@ -5,6 +5,7 @@
 import { sha256Hex } from "@deflock/shared/ids";
 import { Repo, type JobKind } from "./db.ts";
 import type { Env } from "./env.ts";
+import { pollLegistar, type LegistarPollResult } from "./legistar_poll.ts";
 import { newsletterManifest } from "./manifest.ts";
 
 export interface RunSummary {
@@ -12,6 +13,7 @@ export interface RunSummary {
   slot: string;
   jobs_created: number;
   job_ids: string[];
+  legistar: LegistarPollResult;
 }
 
 export function scheduleSlot(scheduledTime: number): string {
@@ -39,6 +41,8 @@ export async function runScheduled(env: Env, scheduledTime: number, trigger = "c
   for (const req of await repo.overdueRequests(today)) {
     await enqueue("draft_followup", { request_id: req.request_id, due: req.determination_due }, req.request_id + ":" + today);
   }
-  await repo.finishRun(run.run_id, { jobs_created: created, summary_json: JSON.stringify({ slot, job_ids: jobIds }) });
-  return { run_id: run.run_id, slot, jobs_created: created, job_ids: jobIds };
+  // Legistar is polled inline in this slot (no job row, the runner is not involved).
+  const legistar = await pollLegistar(env, repo, slot, run.run_id);
+  await repo.finishRun(run.run_id, { jobs_created: created, summary_json: JSON.stringify({ slot, job_ids: jobIds, legistar }) });
+  return { run_id: run.run_id, slot, jobs_created: created, job_ids: jobIds, legistar };
 }

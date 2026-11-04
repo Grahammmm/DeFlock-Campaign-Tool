@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document_id",
+    "source_sha256",
+    "redaction_required",
+    "proposed",
+    "not_detected_note",
+    "scan_receipt",
+    "created_at"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "schema_version": {"const": 1, "type": "integer"},
+    "document_id": {"pattern": "[A-Za-z0-9_-]{1,128}", "type": "string"},
+    "source_sha256": {"pattern": "[0-9a-f]{64}", "type": "string"},
+    "redaction_required": {"type": "boolean"},
+    "proposed": {"items": {"additionalProperties": false, "properties": {"category": {"enum": ["email", "phone", "plate"], "type": "string"}, "locator": {"additionalProperties": false, "properties": {"length": {"minimum": 1, "type": "integer"}, "line": {"minimum": 1, "type": "integer"}, "offset": {"minimum": 0, "type": "integer"}}, "required": ["line", "offset", "length"], "type": "object"}}, "required": ["locator", "category"], "type": "object"}, "type": "array"},
+    "not_detected_note": {"type": "string"},
+    "scan_receipt": {"pattern": "[0-9a-f]{64}", "type": "string"},
+    "created_at": {"pattern": "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", "type": "string"}
+  }
+}

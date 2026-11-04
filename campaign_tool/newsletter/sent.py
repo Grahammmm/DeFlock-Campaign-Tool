@@ -6,7 +6,8 @@
      "issues": [{"sent_on": "YYYY-MM-DD", "draft_sha256": "<hex>", "subject": "...", "recorded_at": "<ISO>"}]}
 
 ``draft_sha256`` is the sha256 of ``kit/newsletter-draft.json``, which holds the
-subject, HTML and text of the draft that went out. ``last_sent`` gives the next
+subject, HTML and text of the draft that went out; the same bytes are kept privately as
+``kit/newsletter-issues/<sent_on>.json`` (DF1952-09). ``last_sent`` gives the next
 ``--from-content`` run its window when ``--since`` is not passed.
 """
 import contextlib
@@ -21,6 +22,7 @@ from pathlib import Path
 
 SENT_NAME = "newsletter-sent.json"
 DRAFT_NAME = "newsletter-draft.json"
+ISSUES_DIR = "newsletter-issues"
 MAX_DRAFT_BYTES = 4 * 1024 * 1024
 MAX_SENT_BYTES = 1024 * 1024
 MAX_ISSUES = 1000
@@ -94,8 +96,45 @@ def last_sent(root):
     return issues[-1]["sent_on"] if issues else None
 
 
+def _issues_dir(kit, create=False):
+    """``kit/newsletter-issues`` as a real, non-link folder (mode 0700); ``None`` when absent and not created.
+
+    Returns ``(path, created_here)``. A symlink or non-folder is refused; ``kit/`` itself is checked by ``_load``."""
+    folder = kit / ISSUES_DIR
+    try:
+        info = os.lstat(folder)
+    except FileNotFoundError:
+        if not create:
+            return None, False
+        os.mkdir(folder, 0o700)
+        os.chmod(folder, 0o700)
+        return folder, True
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError(f"kit/{ISSUES_DIR} must be a real folder, not a link or file")
+    return folder, False
+
+
+def kept_copy_path(root, day):
+    """Path of the kept sent draft for ``day`` (``kit/newsletter-issues/<day>.json``); nothing is read."""
+    return Path(root) / "kit" / ISSUES_DIR / (day + ".json")
+
+
+def read_kept_copy(root, day):
+    """Bytes of the kept copy for ``day`` (regular, non-link, at most MAX_DRAFT_BYTES), or ``None`` when absent."""
+    folder, _ = _issues_dir(Path(root) / "kit")
+    if folder is None:
+        return None
+    return _read_regular(folder / (day + ".json"), MAX_DRAFT_BYTES, f"kit/{ISSUES_DIR}/{day}.json")
+
+
 def record_sent(root, sent_on, today=None):
-    """Append ``{"sent_on", "draft_sha256", "subject", "recorded_at"}`` for the current draft; returns it."""
+    """Keep the current draft as ``kit/newsletter-issues/<sent_on>.json`` and append its sent record; returns the record.
+
+    The kept copy holds the draft's exact bytes (mode 0600, created exclusively, never overwritten) and the record's
+    ``draft_sha256`` is the hash of those bytes. One issue per day. If recording fails after the copy was created,
+    that copy is removed again. No lock is taken and the two files are not one transaction: a crash between them can
+    leave a copy with no record, which is refused later and never adopted.
+    """
     today = today or date.today()
     day = _valid_day(sent_on)
     if day is None:
@@ -121,6 +160,8 @@ def record_sent(root, sent_on, today=None):
             raise ValueError(f"this draft was already recorded as sent on {issue['sent_on']}")
     if issues and sent_on < issues[-1]["sent_on"]:
         raise ValueError(f"sent date {sent_on} is before the last recorded send ({issues[-1]['sent_on']})")
+    if any(issue["sent_on"] == sent_on for issue in issues):
+        raise ValueError(f"an issue was already recorded as sent on {sent_on}; one kept copy per day")
     if len(issues) >= MAX_ISSUES:
         raise ValueError(f"kit/{SENT_NAME} already holds {MAX_ISSUES} issues")
     record = {"sent_on": sent_on, "draft_sha256": digest, "subject": subject,
@@ -129,13 +170,35 @@ def record_sent(root, sent_on, today=None):
     encoded = text.encode("utf-8")
     if len(encoded) > MAX_SENT_BYTES:  # _load would refuse the result; keep the existing archive
         raise ValueError(f"kit/{SENT_NAME} would exceed {MAX_SENT_BYTES} bytes; nothing recorded")
-    fd, temp = tempfile.mkstemp(dir=kit, prefix="." + SENT_NAME + ".", suffix=".tmp")  # mode 0600
+    folder, made = _issues_dir(kit, create=True)
+    copy = folder / (sent_on + ".json")
+    created = None
+    fd, temp = tempfile.mkstemp(dir=kit, prefix="." + SENT_NAME + ".", suffix=".tmp")  # mode 0600; staged before the copy
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            copy_fd = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        except FileExistsError:
+            raise ValueError(f"kit/{ISSUES_DIR}/{sent_on}.json already exists with no matching record; "
+                             "it is never overwritten or adopted") from None
+        created = copy
+        with os.fdopen(copy_fd, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temp, kit / SENT_NAME)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(temp)
+        if created is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(created)
+        if made:
+            with contextlib.suppress(OSError):
+                os.rmdir(folder)
         raise
     return record

@@ -15,6 +15,54 @@ production campaign; the pilot's private repository still runs its own code.
 | `workers/workspace` | Access-protected organizer UI + API, runner API, approvals, cron, inbound mail. | Implemented core; sends are interfaces |
 | `workers/public-site` | Serves `sites/<version>/` from the public bucket with the site's `_headers` CSP. | Implemented |
 
+## Organizer entry point
+
+G's item-1 decision chose the Workers organizer workspace, not a second local web UI.
+After Access sign-in, `/` shows four blocks: Waiting on you, Where every request
+stands, Next action, and Everything you can do. Approval counts come only from
+proposed external actions; request groups and reminders come from recorded fields.
+Closed and denied requests are collapsed, not counted as open. Dates are reminders,
+not legal due dates. The law package remains provisional until reviewed.
+Each failed source is explicitly NOT CURRENT without hiding the other blocks.
+Next actions come verbatim from the private readiness snapshot with timestamp and
+age; absent, invalid, wrong-campaign or stale snapshots never supply actions.
+`/status` keeps the previous dashboard. All existing organizer screens remain linked.
+
+Optional `SETUP_URL` links to guided setup only when it is a valid HTTPS URL without
+embedded credentials. Unset or refused values show `python3 -m campaign_tool setup`
+instead. This is navigation only: destination Access/auth and provisioning approvals
+still apply. It adds no provisioning, secret, authentication or deployment change.
+The README's `init`, `kit`, `doctor`, `build` path remains the offline fallback.
+The `flock_*` operator scripts need the operator's private store and are labelled,
+not linked as organizer actions. No deployment or new readiness schedule is included.
+
+## Private readiness snapshot (offline emitter; runner-authenticated transport)
+
+`python3 -m campaign_tool readiness --directory ../my-campaign --campaign-id CAMPAIGN_ID --out snapshot.json`
+projects one `doctor_report` into `readiness-snapshot-v1`; it does not post or contact anything.
+`--campaign-id` overrides the campaign config's `campaign_id`; if neither is present the command
+refuses with `readiness_campaign_id_absent`, writing and posting nothing. No ID is derived.
+Counts replace private lists (including doctor's truncated-list remainder counts).
+Pass `--contact-max-age-days N` (at least 1) and `--stale-days N` (1–3650) to
+check contact and input ages using the same thresholds as `doctor`. These checks
+are opt-in, as in `doctor`; without the corresponding flag, that count is 0
+because the age check was not requested, not a claim that the data is fresh.
+Every next-action sentence is checked using `tools/flock_privacy.py`'s shared patterns.
+An unsafe sentence refuses the whole snapshot with its index and category, never its text.
+Nothing is filtered, redacted or reworded: emitted actions are exactly doctor's sentences.
+Over 40 actions or an action over 240 characters also refuses, without truncation or output.
+
+The organizer/runner who invokes the CLI may separately post that JSON to
+`POST /api/runner/readiness`, using the existing runner bearer token. There is no automatic
+post or new schedule. The route checks every field, campaign ID and the 300-second future
+clock allowance before saving `setting` key `readiness_snapshot`. Older timestamps return
+409 without replacing it; equal timestamps are accepted. No approval or request state moves.
+`readReadiness(repo, now)` returns presence, currentness, reason, actions, counts, timestamp
+and age in seconds. Only valid same-campaign snapshots no older than 36 hours are current;
+exactly 36 hours is current, one second beyond is stale. Missing/corrupt/wrong-campaign data
+never supplies a default action. Consumers must show age alongside the readiness claim.
+This is private organizer metadata, not publication or substantive/legal acceptance.
+
 ## Commands
 
 ```sh
@@ -90,7 +138,7 @@ identity check, so an attacker page cannot drive an organizer's Access cookie th
 approval routes. Finding authors are always the verified identity of the submitter.
 
 Screens: Dashboard, Requests (+ detail with the correspondence timeline and a "Draft
-follow-up" button that enqueues a `draft_followup` job), Inbox, Records (signed ten-minute
+follow-up" button that enqueues a `draft_followup` job), Inbox (an organizer confirms or corrects a message classification with `POST /inbox/:id/classification`; the reviewer is the Access identity, and a later `classify_mail` result never overwrites a reviewed row), Records (signed ten-minute
 download links served by the Worker; the bucket has no public URL), Findings (review gate
 computed by the `review_blockers` port; review receipts take the reviewer from the Access
 identity), Approvals (Approve / Edit / Reject / Execute; `approved_by` is the Access email),

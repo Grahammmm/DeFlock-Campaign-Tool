@@ -94,6 +94,30 @@ then "and N more on the site."; the heading is omitted when no item is kept and 
 present only when the section is. Worker manifests carry no `requests` key and render exactly as
 before; a `requests` that is not a list is refused (`DraftError`).
 
+`--from-content` also lists, under **New in the records library** (after Records requests, before
+Decisions), each `content/sources.json` entry whose `received_at` day is on or after the `--since` day (all
+of them without `--since`) and not after the day the draft is built. Each line is `**TITLE** (AGENCY), received
+YYYY-MM-DD, record PREFIX`, with a "Public copy" link when the entry has a `public_url` and a "Sources page"
+link (`/sources.html#<fragment>`) only when `campaign.base_url` is set. AGENCY is the agency name, else the
+agency id the sources page shows. Only the 12-character record number is shown, never the full hash, `note`,
+`pages` or the public-copy check. Newest first; at most 12 lines, then "and N more on the sources page.";
+the heading is omitted when no entry is kept and `counts.records` is present only when the section is.
+Worker manifests carry no `records` key and render exactly as before; a `records` that is not a list, or a
+prefix that is not 12 lowercase hex characters, is refused (`DraftError`).
+
+`--from-content` also adds a **Camera map** section (after New in the records library, before Decisions) when
+`content/map/history.json` (DF0137-13) has a record whose `recorded_on` day is on or after the `--since` day
+(any day without `--since`) and not after the day the draft is built. Lines: `N community-mapped points
+(ownership unconfirmed), OpenStreetMap data of DAY.` (DAY is the `osm_base` day, else `recorded_on`) with a
+"Cameras page" link only when `campaign.base_url` is set; `Since PREVIOUS: A added, R removed.` (omitted for the
+first record ever; PREVIOUS is the record just before it on any date); and, when both records have `by_city`,
+`CITY: OLD → NEW` for each city whose count changed, sorted by city, at most 8 lines then "and N more on the
+cameras page.". The section is omitted when no record is in the window, and when the in-window record has `added`
+and `removed` both 0 and the same `by_city` as the previous one; `counts.map` is 1 only when it is shown. The
+manifest's `map` key (`records`, `label`, `path`) exists only when the history has a record; Worker manifests
+carry none and render exactly as before. A `map` that is not an object, `map.records` that is not a list or a
+malformed record is refused (`DraftError`). The wording never says cameras were installed and names no owner.
+
 Under each upcoming meeting `--from-content` adds one indented line. With participation facts an
 organizer verified (see MEETINGS.md) it reads `How to take part: In person: yes|no; Remote: HOW;
 Written comments: HOW, by DEADLINE; Speaker limit: N minutes (checked DAY) [Official details](URL)`,
@@ -117,6 +141,31 @@ in date order. A linked, non-regular or malformed `kit/newsletter-sent.json` is 
 `--from-content` without `--since` starts the day after the last recorded send (UTC midnight); an
 explicit `--since` wins. The draft JSON output names where the window came from in `since_from`:
 `"record"`, `"flag"` or `null`. This is the offline counterpart of the hosted `campaign_sent` event.
+
+### Kept issues and the local public archive (DF1952-09)
+
+`newsletter sent --date D` and `--record-sent D` are one writer. Besides the record it keeps the draft's exact bytes as
+the private `kit/newsletter-issues/D.json` (folder mode 0700, file 0600, created exclusively, never overwritten), and the
+record's `draft_sha256` is the sha256 of those bytes. One issue per day: a second record for a recorded day is refused,
+even for a different draft (older histories with two issues on one day stay readable but cannot be archived). A symlinked
+folder or target, a non-regular file or a copy with no matching record (a crash between the two writes) is refused and
+never overwritten or adopted. If recording fails after the copy was created, that copy is removed again. There is no
+lock and no cross-file transaction: run one recording at a time. Nothing deletes or changes the current draft.
+
+`--from-content` (and only it) also stores `public_archive` `{schema_version, title, body_md}` inside the draft JSON: the
+Markdown exactly as assembled before the consent footer (intro, findings, corrections, requests, library, map with its
+"ownership unconfirmed" wording, decisions, meetings, site link and the not-legal-advice sentence). The footer, sender and
+unsubscribe wording, review flags, counts and excluded notes are never in it, and the HTML and text are unchanged. Default,
+`--manifest` and Worker drafts have no such key, so their bytes are unchanged and they can be kept but not archived.
+
+`newsletter archive --date D` checks one issue (exactly one record for D, a regular kept copy of the recorded hash, a valid
+projection) and prints it, writing nothing. `newsletter archive --date D --publish` then writes only
+`{schema_version, sent_on, title, body_md}` to `content/newsletters/D.json`. `--publish` means a local, reviewable content
+file, not hosting or sending: read that file, commit it and run `build` yourself. It never replaces a file, never falls
+back to the current draft or current content, and refuses an issue without a projection (draft again with
+`--from-content` and record that one; old copies are never reconstructed). Hash equality shows the bytes are the recorded
+ones, not that anyone reviewed them. Usage errors (an action mixed with drafting flags, `--publish` without `archive`)
+exit 2; refusals print `Stopped:` and exit 1. Output is one JSON document with `"sent": false`.
 
 ## Approve & send
 

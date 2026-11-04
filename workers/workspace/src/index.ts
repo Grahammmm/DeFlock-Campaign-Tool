@@ -9,9 +9,10 @@ import { ApprovalError, approveAction, editAction, executeAction, rejectAction, 
 import { AuthError, requireIdentity, requireRunner, type AccessIdentity } from "./auth.ts";
 import { commentKitMarkdown, kitFinding } from "./comment_kit.ts";
 import { runScheduled } from "./cron.ts";
-import { Repo } from "./db.ts";
+import { MAIL_CLASSIFICATIONS, Repo } from "./db.ts";
 import type { Env } from "./env.ts";
 import { exportResponse } from "./export.ts";
+import { mailSenderConfigured } from "./executors/index.ts";
 import { UNSUBSCRIBE_PLACEHOLDER } from "./executors/send_newsletter.ts";
 import { emailHandler } from "./mail.ts";
 import { assembleManifest, type BrevoSettings } from "./manifest.ts";
@@ -98,13 +99,18 @@ app.use("*", async (c, next) => {
 });
 
 async function render(c: { env: Env; var: Vars; req: { path: string } }, title: string, body: import("@deflock/shared/html").Safe): Promise<Response> {
-  const campaign = await c.var.repo.campaign();
+  // Home loads each source independently; do not repeat a failing campaign read in the shell.
+  const campaign = c.req.path === "/" ? null : await c.var.repo.campaign();
   return new Response(page(title, campaign?.name ?? "Workspace", c.req.path, c.var.identity, body), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "private, no-store", "x-frame-options": "DENY", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" },
   });
 }
 
 app.get("/", async (c) => {
+  return render(c, "Waiting on you", await V.home(c.var.repo, c.env));
+});
+
+app.get("/status", async (c) => {
   const repo = c.var.repo;
   return render(c, "Dashboard", V.dashboard(await repo.campaign(), await repo.counts(), await repo.incidents(), await repo.runs(), await repo.jobs(30)));
 });
@@ -138,7 +144,19 @@ app.post("/requests/:id/draft-followup", async (c) => {
 app.get("/inbox", async (c) => {
   const requests = new Map((await c.var.repo.requests()).map((r) => [r.request_id, r]));
   const agencies = new Map((await c.var.repo.agencies()).map((a) => [a.agency_id, a]));
-  return render(c, "Inbox", V.inbox(await c.var.repo.inbox(), requests, agencies));
+  return render(c, "Inbox", V.inbox(await c.var.repo.inbox(), requests, agencies, c.req.query("notice") ?? null));
+});
+
+// An organizer confirms or corrects the classification of one inbound message. The reviewer
+// is the verified Access identity; a reviewed_by field in the body is ignored.
+app.post("/inbox/:id/classification", async (c) => {
+  const form = await formOrJson(c);
+  const classification = typeof form.classification === "string" ? form.classification : "";
+  if (classification === "unclassified" || !MAIL_CLASSIFICATIONS.includes(classification)) return c.json({ error: "classification invalid" }, 400);
+  const row = await c.var.repo.reviewClassification(c.req.param("id"), classification, c.var.identity.email);
+  if (!row) return c.text("not found", 404);
+  if (wantsJson(c) || c.req.header("content-type")?.includes("json")) return c.json(row);
+  return c.redirect("/inbox?notice=" + encodeURIComponent(`classification set to ${classification} by ${c.var.identity.email}`));
 });
 
 // Records ---------------------------------------------------------------------------
@@ -315,7 +333,7 @@ app.post("/approvals/:id/execute", async (c) => {
 
 // Publish ---------------------------------------------------------------------------
 app.get("/publish", async (c) =>
-  render(c, "Publish", V.publish(await c.var.repo.publications(), await c.var.repo.setting<string>("site_version"), await c.var.repo.setting<string>("site_version_previous"), await c.var.repo.campaign())),
+  render(c, "Publish", V.publish(await c.var.repo.publications(), await c.var.repo.setting<string>("site_version"), await c.var.repo.setting<string>("site_version_previous"), await c.var.repo.campaign(), (await c.var.repo.jobsByKind("build_site"))[0] ?? null)),
 );
 
 app.get("/api/manifest.json", async (c) => c.json(await assembleManifest(c.var.repo)));
@@ -432,12 +450,14 @@ function secretPresence(env: Env): V.SecretPresence[] {
     { name: "ACCESS_TEAM_DOMAIN", present: Boolean(env.ACCESS_TEAM_DOMAIN), note: "Access team domain used to fetch signing certificates" },
     { name: "BREVO_API_KEY", present: Boolean(env.BREVO_API_KEY), note: "Brevo v3 key used only by the send_newsletter executor (campaign create + send)" },
     { name: "SUBSCRIBE_WEBHOOK_SECRET", present: Boolean(env.SUBSCRIBE_WEBHOOK_SECRET), note: "HMAC secret verifying POST /api/webhooks/subscribe deliveries" },
+    { name: "OUTBOX_GATEWAY_URL", present: Boolean(env.OUTBOX_GATEWAY_URL), note: "Signed outbox gateway URL; with OUTBOX_SIGNING_KEY lets approved send_request / send_followup cards deliver" },
+    { name: "OUTBOX_SIGNING_KEY", present: Boolean(env.OUTBOX_SIGNING_KEY), note: "HMAC key signing each outbox submission" },
   ];
 }
 
 app.get("/settings", async (c) => {
   const notice = c.req.query("notice");
-  return render(c, "Settings", V.settings(await c.var.repo.campaign(), await c.var.repo.settings(), secretPresence(c.env), notice ? html`${notice}`.value : null, await c.var.repo.setting<BrevoSettings>("brevo")));
+  return render(c, "Settings", V.settings(await c.var.repo.campaign(), await c.var.repo.settings(), secretPresence(c.env), notice ? html`${notice}`.value : null, await c.var.repo.setting<BrevoSettings>("brevo"), mailSenderConfigured(c.env), await c.var.repo.setting<V.SignupTest>("signup_test")));
 });
 
 /** Non-secret Brevo settings: list id, hosted form URL, sender. The API key is a Worker secret. */
@@ -467,13 +487,26 @@ app.post("/settings/brevo", async (c) => {
   return c.redirect("/settings?notice=" + encodeURIComponent("Brevo settings saved (no contacts were read or written)"));
 });
 
+/** Records which signup-test steps were confirmed. Only six booleans plus the Access identity and time are stored; no address, name or free text. */
+app.post("/settings/signup-test", async (c) => {
+  const form = await formOrJson(c);
+  const checks = V.SIGNUP_TEST_CHECKLIST.map((_, i) => {
+    const v = form["signup_check_" + i];
+    return v === "on" || v === true;
+  });
+  const value: V.SignupTest = { checks, done: checks.filter(Boolean).length, recorded_by: c.var.identity.email, recorded_at: nowIso() };
+  await c.var.repo.putSetting("signup_test", value);
+  if (wantsJson(c)) return c.json(value);
+  return c.redirect("/settings?notice=" + encodeURIComponent(`Signup test recorded: ${value.done} of ${checks.length} steps confirmed`));
+});
+
 app.post("/settings/rotate-runner-token", async (c) => {
   const token = "rt_" + randomHex(32);
   const fingerprint = await sha256Hex(token);
   await c.var.repo.putSetting("runner_token_fingerprint", { sha256: fingerprint, rotated_by: c.var.identity.email, rotated_at: nowIso(), applied: false });
   if (wantsJson(c)) return c.json({ token, fingerprint });
   const notice = html`New runner token (shown once, not stored): <code>${token}</code><br>Set it as the Worker secret RUNNER_TOKEN and on the runner. Fingerprint ${fingerprint.slice(0, 16)}.`;
-  return render(c, "Settings", V.settings(await c.var.repo.campaign(), await c.var.repo.settings(), secretPresence(c.env), notice.value, await c.var.repo.setting<BrevoSettings>("brevo")));
+  return render(c, "Settings", V.settings(await c.var.repo.campaign(), await c.var.repo.settings(), secretPresence(c.env), notice.value, await c.var.repo.setting<BrevoSettings>("brevo"), mailSenderConfigured(c.env), await c.var.repo.setting<V.SignupTest>("signup_test")));
 });
 
 export default {

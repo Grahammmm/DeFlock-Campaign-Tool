@@ -16,7 +16,8 @@ from tests.test_kit_response import SENT_ON, run  # noqa: E402
 STAMP = "2026-03-25T12:00:00+00:00"
 LEGACY_STEPS = [{"on": "2026-03-05", "kind": "determination", "expected_on": "2026-03-20", "recorded_at": STAMP},
                 {"on": "2026-03-25", "kind": "produced", "note": "partial set", "recorded_at": STAMP}]
-NEW_ROW_KEYS = {"producing": False, "next_installment": None, "fee_state": None, "fee_paid": None}
+NEW_ROW_KEYS = {"producing": False, "next_installment": None, "fee_state": None, "fee_paid": None,
+                "withheld_basis": []}
 MALFORMED = "kit/sent.json unreadable: malformed steps"
 
 
@@ -83,6 +84,10 @@ class PartialProductionTests(unittest.TestCase):
         code, out, err = self.cli("kit-status")
         self.assertEqual((code, err), (0, ""))
         rows = json.loads(out)["requests"]
+        entries = json.loads(self.sent.read_text())["requests"]
+        for row in rows:
+            self.assertEqual(row.pop("scopes"), [{"scope_id": scope, "answer": None, "on": None}
+                                                 for scope in entries[row["agency_id"]]["scopes"]])
         self.assertEqual([{k: r.pop(k) for k in NEW_ROW_KEYS} for r in rows], [NEW_ROW_KEYS, NEW_ROW_KEYS])
         self.assertEqual(json.dumps(rows), GOLDEN_STATUS_ROWS.replace("AGENCY", self.agency)
                          .replace("OTHER", self.other))

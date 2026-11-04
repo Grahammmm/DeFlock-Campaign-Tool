@@ -4,18 +4,23 @@
 invariant: ``content_problems(root) == []`` iff ``load_content(root)`` returns and no public-assets image carries
 metadata (build's ``image_meta.check_asset``). Cross-file rules use loaded files.
 """
+from datetime import date
 import json
+import os
 from pathlib import Path
 
-from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, _alpr_policy, _asked, _bounds, _policy_check, _read_json,
-                      _require_keys, _slug, _text, _validate_cameras, check_source_pages, default_agencies,
+from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _alpr_policy, _asked, _bounds, _policy_check, _read_json,
+                      _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
-                      load_snapshot, load_sources, plain_text)
+                      load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_glossary,
+                      topics_namespace_problem)
 from .finding_law import check_findings, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
 from .labels import MAX_LABELS_BYTES, load_labels
+from .newsletter.archive import FOLDER as NEWSLETTERS, issue_paths, load_public_issue
 from .redirects import check_file as check_redirects
+from .supporters import supporter_problems
 
 LIMIT = 200
 SCHEMA = "content-check-v1"
@@ -71,10 +76,27 @@ def _config_tail(document, cities):  # load_map's map-config.json checks that ru
     _text(document, "group_label", "map/map-config.json", default="Unincorporated area (ownership unconfirmed)")
 
 
-def _map(problems, content_dir):
-    """load_map stops at its first bad file; once it has refused (so parity holds), name the other files' too."""
+def _point_checks(problems, map_dir, library):
+    """DF1422-11: every refused entry of map/point-checks.json (load_map names only the first)."""
+    path = map_dir / "point-checks.json"
+    if not history_present(path):
+        return
+    nodes = set()
+    try:
+        nodes = point_nodes(_read_json(map_dir / "cameras.geojson", MAX_GEOJSON_BYTES))
+    except (ContentError, AttributeError, TypeError, OSError):
+        return  # an unreadable cameras.geojson is already named; every node would only add false lines
+    known = SOURCES_UNKNOWN if library is None else library
+    problems.extend(point_check_problems(path, nodes, known, date.today())[0])
+
+
+def _map(problems, content_dir, library=None):
+    """load_map stops at its first bad file; once it has refused (so parity holds), name the other files' too.
+
+    ``library``: the validated sources.json entries, or None when that file is itself refused."""
     before, map_dir = len(problems), content_dir / "map"
-    config = _attempt(problems, "map/map-config.json", lambda: load_map(content_dir))
+    config = _attempt(problems, "map/map-config.json",
+                      lambda: load_map(content_dir, SOURCES_UNKNOWN if library is None else library))
     if len(problems) == before:
         return config
     config_named = problems[-1].startswith("map/map-config.json")  # else load_map passed the config's head
@@ -99,6 +121,7 @@ def _map(problems, content_dir):
                 cities = result
         elif name in missing:
             problems.append(missing[name])
+    _point_checks(problems, map_dir, library)
     if not config_named:
         _attempt(problems, "map/attribution.txt", lambda: _attribution(document, map_dir))
         _attempt(problems, "map/map-config.json", lambda: _config_tail(document, cities))
@@ -116,10 +139,51 @@ def _meeting(path, label):
     return meeting
 
 
+def _topics(problems, content_dir, findings, finding_slugs):
+    """DF1952-06: every refused content/topics/<slug>.json by file (load_topics stops at the first). ``findings`` None:
+    a finding file is itself refused, so ids are not matched. Page slugs are the page file stems, as load_pages names them."""
+    paths = _attempt(problems, "topics/", lambda: topic_paths(content_dir))
+    folder = content_dir / "pages"
+    pages = [{"slug": path.stem} for path in (sorted(folder.iterdir()) if folder.is_dir() else [])
+             if path.name.endswith(".json")]
+    loaded = [topic for path in paths or []
+              for topic in [_attempt(problems, "topics/" + path.name, lambda: load_topic(path, findings, pages))]
+              if topic is not None]
+    clash = loaded and topics_namespace_problem({p["slug"] for p in pages}, finding_slugs)
+    if clash:
+        problems.append(clash)
+
+
 def _cap(problems, limit):
     if limit is None or len(problems) <= limit:
         return problems
     return problems[:limit] + [f"\u2026 and {len(problems) - limit} more"]
+
+
+def _asked_links(problems, root, document):
+    """DF1207-03: an asked item linked to a kit/sent.json request is named when the request moved on after it
+    (its latest step is dated after the item's updated_on, else asked_on) or the request is not there. Read-only."""
+    from . import kit_asked, kit_track  # local import: only content-check reads the private tracker
+    rows = [(index, number, agency["agency_id"], item) for index, agency in enumerate(document)
+            if isinstance(agency, dict) and agency.get("selected", True) is True and isinstance(agency.get("agency_id"), str)
+            for number, item in enumerate(agency["asked"] if isinstance(agency.get("asked"), list) else [])
+            if isinstance(item, dict) and isinstance(item.get("request"), str) and ASKED_REQUEST.fullmatch(item["request"])]
+    if not rows or not os.path.lexists(root / "kit" / "sent.json"):
+        return
+    try:
+        sent = kit_track.read_sent(root)
+    except ValueError as exc:
+        problems.append(str(exc))
+        return
+    for index, number, agency_id, item in rows:
+        label, request = f"content/agencies.json[{index}].asked[{number}]", item["request"]
+        entry = sent.get(kit_track._key(agency_id, request))
+        if entry is None:
+            problems.append(f"{label}: links request {request} not in kit/sent.json")
+            continue
+        latest, shown = kit_asked.latest_step(entry["steps"]), item.get("updated_on") or item.get("asked_on")
+        if latest and kit_track._day(shown) and latest[1] > shown:
+            problems.append(f"{label}: older than its request's latest step ({latest[0]} on {latest[1]}); run kit-asked")
 
 
 def content_problems(root, limit=LIMIT):
@@ -135,7 +199,7 @@ def content_problems(root, limit=LIMIT):
     else:
         _attempt(problems, "site.json", lambda: load_site(_read_json(site_path), content_dir / "public-assets"))
 
-    slugs, ids, findings = set(), set(), []
+    slugs, ids, findings, labelled = set(), set(), [], []
     for path in _files(content_dir, "findings"):
         label = "findings/" + path.name
         finding = _attempt(problems, label, lambda: load_finding(_read_json(path), label))
@@ -145,8 +209,10 @@ def content_problems(root, limit=LIMIT):
             problems.append(f"findings/{path.name}: duplicate finding slug or id")
         slugs.add(finding["slug"])
         ids.add(finding["id"])
+        labelled.append((label, finding))
         findings.append(finding)
     _attempt(problems, "campaign.json", lambda: problems.extend(check_findings(root, findings)))
+    findings_intact = len(findings) == len(_files(content_dir, "findings"))
 
     meeting_ids = set()
     for path in _files(content_dir, "meetings"):
@@ -164,9 +230,13 @@ def content_problems(root, limit=LIMIT):
     if library is not None:  # an unreadable library is already named; build refuses it before the page check
         problems.extend(check_source_pages(findings, library))
 
+    _topics(problems, content_dir, findings if findings_intact else None, slugs)
+
     labels_path = content_dir / "labels.json"  # optional, read exactly as load_content: a symlink is named, not read
     if labels_path.is_file() or labels_path.is_symlink():
         _attempt(problems, "labels.json", lambda: load_labels(_read_json(labels_path, MAX_LABELS_BYTES)))
+
+    read_glossary(root, problems)  # DF1952-04: the build's own reader; it names every independent problem itself
 
     agencies_path = content_dir / "agencies.json"
     if agencies_path.is_file():
@@ -182,12 +252,17 @@ def content_problems(root, limit=LIMIT):
                                         lambda: _alpr_policy(profile.get("alpr_policy"), label + ".alpr_policy"))
                         _attempt(problems, label + ".policy_check",
                                  lambda: _policy_check(profile["policy_check"], label + ".policy_check", alpr))
+            _asked_links(problems, root, document)
         agencies = _attempt(problems, "content/agencies.json",
                             lambda: load_agencies(_read_json(agencies_path), "content/agencies.json"))
     else:
         agencies = _attempt(problems, "kit/agencies.json", lambda: default_agencies(root))
+    if agencies is not None:  # DF1952-07: a failed agency pass is already named; do not add an unknown-id line per finding
+        known = {agency["agency_id"] for agency in agencies}
+        for label, finding in labelled:
+            _attempt(problems, label, lambda: check_finding_agencies(finding, known, label))
 
-    map_config = _map(problems, content_dir)
+    map_config = _map(problems, content_dir, library)
     if map_config and agencies is not None:  # a broken agency list would only add false lines
         known = {agency["slug"] for agency in agencies if agency["kind"] in CITY_KINDS}
         for slug in map_config["controller"]["bounding_box_fallbacks"]:
@@ -200,13 +275,17 @@ def content_problems(root, limit=LIMIT):
             relative = path.relative_to(assets_dir)
             _attempt(problems, f"public-assets/{relative}", lambda: check_asset(path, relative))
             _attempt(problems, f"public-assets/{relative}", lambda: check_doc_asset(path, relative))
+    paths = _attempt(problems, NEWSLETTERS, lambda: issue_paths(content_dir))  # DF1952-09: the loader's own validator
+    for path in paths or []:
+        _attempt(problems, f"{NEWSLETTERS}/{path.name}", lambda: load_public_issue(path))
     check_redirects(root, problems)  # DF2037-16: content/redirects.json with build's own refusal text
+    problems.extend(supporter_problems(root))  # DF2207-13: every invalid or unconsented supporter id, no values
     return _cap(sorted(set(problems)), limit)
 
 
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
-FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "kit/",
-                 "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json")
+FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "topics/", "kit/", "newsletters/",
+                 "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json")
 
 
 def problem_record(line):

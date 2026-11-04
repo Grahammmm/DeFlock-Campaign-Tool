@@ -79,14 +79,15 @@ Python API: `backup.export(root, out_path) -> manifest` (with `manifest_sha256`)
 `backup.restore(path, root) -> report`, `backup.export_hosted(client, out_path) -> manifest`
 where `client.get(path) -> bytes` is bound to the runner token.
 
-`python3 -m campaign_tool backup-diff --file backup.tar --directory D [--expect-manifest-sha256 <digest>]`
+`python3 -m campaign_tool backup-diff --file backup.tar --directory D [--expect-manifest-sha256 <digest>] [--gnupg-home DIR]`
 answers "is my backup current?". It re-verifies the archive first (a damaged or rewritten
 archive stops with `Stopped: ...`, exit 1, and no diff), then compares the manifest with the
 files a new `backup` of D would include and prints JSON: `current`, sorted `added`, `removed`
 and `changed` names (each capped at 200, the rest counted under `more`) and `unchanged`.
 Names only, no hashes or content. Exit 0 when current, 3 on drift. The ledger is hashed from
-a temporary snapshot, as in `backup`; nothing is written in D or the archive.
-Python API: `backup.diff(archive, root, expected_manifest_sha256=None) -> report`.
+a temporary snapshot, as in `backup`; nothing is written in D or the archive. An encrypted
+archive (see Encrypted archives) is read too; its report adds `encrypted: true`.
+Python API: `backup.diff(archive, root, expected_manifest_sha256=None, gnupg_home=None) -> report`.
 
 ## Hosted campaigns
 
@@ -198,7 +199,17 @@ it into a private temp copy (removed afterwards) with your normal GnuPG key, or 
 read exactly as before. `backup` names the key's fingerprint instead of the unencrypted warning.
 Decryption needs the private key and its passphrase: keep them apart from the archives. Losing the
 private key loses every backup encrypted to it. `backup-drill` and `backup-list` read encrypted archives
-(see above); `backup-diff` does not read them yet.
+(see above).
+
+`backup-diff --file F.tar.gpg --directory D [--gnupg-home DIR] [--expect-manifest-sha256 <digest>]`
+detects an encrypted archive by content, decrypts it once with your normal GnuPG key (or the one in
+`--gnupg-home DIR`) into the same private temp copy the other readers use, runs the whole comparison
+against that single copy, and removes it afterwards, also on failure. It prints the same added,
+removed and changed lists as for a plain archive plus `encrypted: true`; plain reports have no such
+key. A key that cannot decrypt, a missing `gpg`, or decrypted bytes that are not a valid archive stop
+with `Stopped: ...`, exit 1, empty output and nothing left behind. `--expect-manifest-sha256` works as
+for plain archives. The check proves the archive is intact and matches the recorded digest, not who
+made it: encryption does not authenticate origin, so keep the digest from `backup` out of band.
 
 ## Scheduled backups
 

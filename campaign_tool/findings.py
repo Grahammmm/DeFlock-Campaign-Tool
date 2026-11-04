@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import unicodedata
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 try:
     import fcntl
@@ -25,7 +26,7 @@ except ImportError:  # Windows
 from . import content, publication_gate
 from .content import FINDING_KEYS
 from .evidence import PREFIX, _ledger_hashes, _object_present
-from .review import CLASSIFICATIONS, ROLES, _who, content_hash, review_blockers
+from .review import CLASSIFICATIONS, EDIT_MARKER, ROLES, _who, content_hash, declared_interest_agencies, review_blockers
 from .sources_cmd import PREFIX as HEX_PREFIX, _known_agencies, _library
 
 PUBLICATION_FIELDS = ("state", "published_at", "updated_at", "corrections")
@@ -36,6 +37,7 @@ _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 MAX_ROSTER_BYTES, MAX_REVIEWERS = 256 * 1024, 200
 ROSTER_KEYS, REVIEWER_KEYS = frozenset(("schema_version", "reviewers")), frozenset(("name", "roles", "added_on"))
+MAX_INTERESTS, MAX_INTEREST_NOTE = 20, 200  # DF0022-05: private declared agency interests of a rostered reviewer
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 SIGN_NAMESPACE, MAX_KEY_BYTES, MAX_SIGNATURE_BYTES = "deflock-finding-review", 1024, 8192
 _KEY, _PRINCIPAL = re.compile(r"(ssh-ed25519|ecdsa-sha2-nistp256) [A-Za-z0-9+/]+={0,3}"), re.compile(r"[A-Za-z0-9._-]+")
@@ -210,7 +212,7 @@ def _ensure_campaign_id(root, now=None):
 
 def _bound_blockers(root, draft, receipts):
     """review_blockers with this campaign's binding: approvals from no or another campaign never count."""
-    return review_blockers(reviewed_view(draft), receipts, campaign_id(root) or "")
+    return review_blockers(reviewed_view(draft), receipts, campaign_id(root) or "", _load_roster(root))
 
 
 def _checked(root, draft, role, decision, reviewer, rationale):
@@ -222,12 +224,20 @@ def _checked(root, draft, role, decision, reviewer, rationale):
     rationale = _text("rationale", rationale, 2000)
     if _who(reviewer) == _who(draft.get("author")):
         raise ValueError("the author cannot review their own finding")
+    entry = _roster_entry(root, role, reviewer)
+    for agency in declared_interest_agencies(draft, entry):  # DF0022-05: before any id, signature or receipt write
+        raise ValueError(f"{reviewer} has declared interest in agency {agency}; receipt refused")
+    return reviewer, rationale, entry
+
+
+def _roster_entry(root, role, reviewer):
+    """The reviewer's roster entry (None with no roster); with a roster, refuse an unlisted name or a missing role."""
     roster = _load_roster(root)
     entry = roster and _rostered(roster, reviewer)
     if roster is not None and (entry is None or role not in entry["roles"]):
         raise ValueError(f"{reviewer} is not " + ("on the reviewer roster" if entry is None
                                                   else f"assigned the {role} role"))
-    return reviewer, rationale, entry
+    return entry
 
 
 def review_payload(root, draft, role, decision, reviewer, rationale):
@@ -358,7 +368,95 @@ def review_status(root, draft):
             "stale_receipts": len(receipts) - current, "campaign_id": bound, "unbound_receipts": unbound,
             "foreign_campaign_receipts": foreign, **receipt_trust(root, draft, receipts),
             "review_blockers": _bound_blockers(root, draft, receipts),
-            **({} if roster is None else {"unrostered_receipts": _unrostered(roster, receipts)})}
+            **({} if roster is None else {"unrostered_receipts": _unrostered(roster, receipts)}),
+            **({"declared_interest": interest} if (interest := _declared_interest(roster, draft, receipts)) else {})}
+
+
+def _declared_interest(roster, draft, receipts):
+    """Every stored receipt (current, stale or foreign) whose rostered reviewer now declares an interest in an agency
+    the finding is about; reviewer, role, decision, time and agency ids only, never the note or the rationale."""
+    rows = []
+    for r in receipts if roster is not None else ():
+        agencies = isinstance(r, dict) and declared_interest_agencies(draft, _rostered(roster, r.get("reviewer")))
+        if agencies:
+            rows.append({**{k: r.get(k) for k in ("reviewer", "role", "decision", "reviewed_at")},
+                         "agency_ids": agencies})
+    return rows
+
+
+def _assignments_path(root, draft):
+    for folder in (root / "private", root / "private" / "review-assignments"):
+        if os.path.lexists(folder) and (os.path.islink(folder) or not os.path.isdir(folder)):
+            raise _PathError(f"{folder}: must be a real directory, not a symlink or a file")
+    return root / "private" / "review-assignments" / (draft["id"] + ".json")
+
+
+def _day(value, where):
+    try:
+        return date.fromisoformat(value if isinstance(value, str) and _DAY.fullmatch(value) else "")
+    except ValueError:
+        raise ValueError(f"{where} must be a real YYYY-MM-DD date") from None
+
+
+def load_assignments(root, draft):
+    """Read-only ``{role: {reviewer, on, recorded_at}}`` from private/review-assignments/<id>.json ({} if absent)."""
+    path = _assignments_path(root, draft)
+    if not os.path.lexists(path):
+        return {}
+    document = _read_json(path, MAX_RECEIPTS_BYTES, "review assignment file")
+    if (not isinstance(document, dict) or set(document) != {"schema_version", "assignments"}
+            or type(document["schema_version"]) is not int or document["schema_version"] != 1
+            or not isinstance(document["assignments"], dict)):
+        raise _PathError(f"{path}: review assignment file must hold schema_version 1 and assignments")
+    for role, entry in document["assignments"].items():
+        if (role not in ROLES or not isinstance(entry, dict) or set(entry) != {"reviewer", "on", "recorded_at"}
+                or not isinstance(entry["reviewer"], str) or not isinstance(entry["recorded_at"], str)):
+            raise _PathError(f"{path}: each assignment must be a known role with reviewer, on and recorded_at")
+        _day(entry["on"], f"{path}: assignment 'on'")
+    return document["assignments"]
+
+
+def assign(root, draft, role, reviewer, on, today=None, replace=False, now=None):
+    """Record who was asked to review ``role`` of ``draft`` since ``on`` (private; sends nothing, counts as no review).
+    One assignment per (draft, role): the same reviewer again is a no-op, another needs ``replace``."""
+    if role not in ROLES:
+        raise ValueError(f"--role must be one of {sorted(ROLES)}")
+    reviewer = _text("reviewer", reviewer, 120)
+    if _who(reviewer) == _who(draft.get("author")):
+        raise ValueError("the author cannot review their own finding")
+    _roster_entry(root, role, reviewer)
+    if _day(on, "--on") > (today or date.today()):
+        raise ValueError("--on must not be after today")
+    path = _assignments_path(root, draft)  # refuses a symlinked private/ or private/review-assignments before any write
+    load_assignments(root, draft)  # refuse a bad existing file before any write
+    for folder in (root / "private", path.parent):
+        folder.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(folder, 0o700)
+    with _locked(path.parent):
+        assignments = load_assignments(root, draft)
+        held = assignments.get(role)
+        if held is not None and _who(held["reviewer"]) == _who(reviewer):
+            return dict(held, id=draft["id"], role=role, unchanged=True, written=str(path))
+        if held is not None and not replace:
+            raise ValueError(f"{role} review of {draft['id']} is already assigned to {held['reviewer']} since "
+                             f"{held['on']}; use --replace to assign {reviewer} instead")
+        when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        entry = {"reviewer": reviewer, "on": on, "recorded_at": when}
+        _write_private(path, {"schema_version": 1, "assignments": {**assignments, role: entry}}, ".assign-")
+    return dict(entry, id=draft["id"], role=role, unchanged=False, written=str(path))
+
+
+def assignment_states(root, draft):
+    """Read-only ``{role: {state, reviewer?, since?}}`` for all three roles: receipt_recorded when a current-content
+    receipt for that role exists (any reviewer), else assigned (since the assignment date), else unassigned.
+    An assignment is not a review: this feeds no blocker, receipt count or publication check."""
+    digest = reviewed_hash(draft)
+    receipts = _load_receipts(_receipts_path(root, draft))
+    assigned = load_assignments(root, draft)
+    done = {r.get("role") for r in receipts if isinstance(r, dict) and r.get("content_sha256") == digest}
+    return {role: {"state": "receipt_recorded"} if role in done
+            else {"state": "assigned", "reviewer": assigned[role]["reviewer"], "since": assigned[role]["on"]}
+            if role in assigned else {"state": "unassigned"} for role in sorted(ROLES)}
 
 
 def bind_receipts(root, confirm=False, now=None):
@@ -463,7 +561,7 @@ def _load_roster(root):
     seen, principals = set(), set()
     for index, entry in enumerate(roster["reviewers"]):
         where = f"{path}: reviewers[{index}]"
-        _object(where, entry, REVIEWER_KEYS, frozenset(("ssh_public_key",)))
+        _object(where, entry, REVIEWER_KEYS, frozenset(("ssh_public_key", "interest_agencies", "interest_note")))
         who, roles, added = _who(entry["name"]), entry["roles"], entry["added_on"]
         if who is None or who in seen:
             raise ValueError(f"{where}.name is empty or duplicates an earlier reviewer")
@@ -473,6 +571,10 @@ def _load_roster(root):
                     or principal(entry["name"]) in principals:
                 raise ValueError(f"{where}.ssh_public_key must be a bare key line under a unique principal")
             principals.add(principal(entry["name"]))
+        if "interest_agencies" in entry:  # format, duplicates and bounds only: a retired agency keeps its conflict
+            _interest_agencies(entry["interest_agencies"], f"{where}.interest_agencies", None, minimum=0)
+        if "interest_note" in entry:
+            _interest_note(entry["interest_note"], f"{where}.interest_note")
         if not isinstance(roles, list) or not roles or not all(isinstance(r, str) and r in ROLES for r in roles):
             raise ValueError(f"{where}.roles must be a non-empty list of {sorted(ROLES)}")
         try:
@@ -482,14 +584,58 @@ def _load_roster(root):
     return roster
 
 
-def add_reviewer(root, name, roles, today=None, ssh_key=None):
-    """Add a reviewer or merge roles into an existing one (roles are never removed; added_on is kept)."""
+def _interest_agencies(value, where, known, minimum=1):
+    """0/1-20 distinct canonical agency ids (no coercion, no deduplication); ``known`` (a set) also requires each to exist."""
+    if not isinstance(value, list) or not minimum <= len(value) <= MAX_INTERESTS:
+        raise ValueError(f"{where} must be a list of {minimum} to {MAX_INTERESTS} agency ids")
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not content.AGENCY_ID.fullmatch(item):
+            raise ValueError(f"{where}[{index}] is not a valid agency id")
+        if item in value[:index]:
+            raise ValueError(f"{where}[{index}] repeats an earlier agency id")
+        if known is not None and item not in known:
+            raise ValueError(f"{where}[{index}]: unknown agency {item!r}")
+    return list(value)
+
+
+def _interest_note(value, where):
+    """1-200 characters, not blank, no control or format characters; kept verbatim (never normalized)."""
+    if (not isinstance(value, str) or not value.strip() or len(value) > MAX_INTEREST_NOTE
+            or any(unicodedata.category(ch) in ("Cc", "Cf") for ch in value)):
+        raise ValueError(f"{where} must be 1 to {MAX_INTEREST_NOTE} characters, not blank, without control characters")
+    return value
+
+
+def _interest_change(entry, agencies, note, clear, known):
+    """The prospective interest keys for a reviewer row: {} to leave them, else {key: value or None to drop}.
+    Raises before anything is written; ``entry`` is the current row (None for a new reviewer)."""
+    if clear and (agencies is not None or note is not None):
+        raise ValueError("--clear-interests cannot be combined with --interest-agency or --interest-note")
+    if clear:
+        return {"interest_agencies": None, "interest_note": None}
+    change = {}
+    if agencies is not None:
+        change["interest_agencies"] = _interest_agencies(list(agencies), "--interest-agency", known)
+    if note is not None:
+        change["interest_note"] = _interest_note(note, "--interest-note")
+        if not (change.get("interest_agencies") or (entry or {}).get("interest_agencies")):
+            raise ValueError("--interest-note needs at least one --interest-agency (or an existing declaration)")
+    return change
+
+
+def add_reviewer(root, name, roles, today=None, ssh_key=None, *, interest_agencies=None, interest_note=None,
+                 clear_interests=False):
+    """Add a reviewer or merge roles into an existing one (roles are never removed; added_on is kept).
+    DF0022-05: ``interest_agencies`` replaces the reviewer's declared agencies, ``clear_interests`` drops the
+    declaration and its note; neither supplied keeps what is declared. Declarations are private."""
     name = _text("name", name, 120)
     if not roles or any(role not in ROLES for role in roles):
         raise ValueError(f"--role must be one of {sorted(ROLES)}")
     key = None if ssh_key is None else _public_key(_read_json(ssh_key, MAX_KEY_BYTES, "SSH key", raw=True), ssh_key)
     path, signers = _roster_path(root), _signers_path(root)
-    _load_roster(root)  # refuse a bad roster before any write
+    known = None if interest_agencies is None or clear_interests else {a["agency_id"] for a in _known_agencies(root)}
+    _interest_change(_rostered(_load_roster(root) or {"reviewers": []}, name), interest_agencies, interest_note,
+                     clear_interests, known)  # refuse a bad roster or declaration before any write
     path.parent.mkdir(mode=0o700, exist_ok=True)
     os.chmod(path.parent, 0o700)
     with _locked(path.parent):
@@ -501,6 +647,11 @@ def add_reviewer(root, name, roles, today=None, ssh_key=None):
             entry = {"name": name, "roles": [], "added_on": str(today or date.today())}
             roster["reviewers"].append(entry)
         entry["roles"] = sorted(set(entry["roles"]) | set(roles))
+        for field, value in _interest_change(entry, interest_agencies, interest_note, clear_interests, known).items():
+            if value is None:
+                entry.pop(field, None)
+            else:
+                entry[field] = value
         if key is not None:
             who = principal(entry["name"])  # before any write
             if any(e is not entry and "ssh_public_key" in e and principal(e["name"]) == who for e in roster["reviewers"]):
@@ -511,12 +662,17 @@ def add_reviewer(root, name, roles, today=None, ssh_key=None):
             f'{principal(e["name"])} namespaces="{SIGN_NAMESPACE}" {e["ssh_public_key"]}\n'
             for e in roster["reviewers"] if "ssh_public_key" in e))
         _ensure_campaign_id(root)  # after the roster write, so a refusal writes nothing; review-payload needs it
-    return dict(entry, written=str(path))
+    return dict(_without_note(entry), written=str(path))
+
+
+def _without_note(entry):
+    return {k: v for k, v in entry.items() if k != "interest_note"}  # the note stays in the roster file only
 
 
 def list_reviewers(root):
     roster = _load_roster(root)  # read-only
-    return {"roster": "absent" if roster is None else "present", "reviewers": roster["reviewers"] if roster else []}
+    return {"roster": "absent" if roster is None else "present",
+            "reviewers": [_without_note(e) for e in roster["reviewers"]] if roster else []}
 
 
 def _real_dir(path):
@@ -605,6 +761,91 @@ def new_draft(root, agency_id, title, source_prefixes, author=None, now=None):
         raise ValueError(f"--agency {agency_id!r} is not one of the campaign's agencies")
     sources = _resolve_sources(root, list(source_prefixes or []))
     author = EDIT + "who wrote this finding]" if author is None else _text("author", author, 120)
+    return _write_draft(root, _skeleton(title, slug, agency_id, author, sources))
+
+
+GAP_KINDS = ("denied", "closed")  # the answers that can leave an information gap
+
+
+def _plain_basis(text):
+    """The agency's stated basis as one plain-text line: angle brackets become single guillemets (the finding
+    loader refuses < and >), and any run of whitespace or control characters becomes one space."""
+    text = text.replace("<", "\u2039").replace(">", "\u203a")
+    return " ".join("".join(" " if unicodedata.category(ch).startswith("C") or ch.isspace() else ch
+                            for ch in text).split())
+
+
+def new_gap_draft(root, agency_id, request="main", title=None, author=None, now=None):
+    """Write an information_gap draft from a denied or closed request that produced no records (facts only).
+
+    Returns {"id", "written", "blockers"}: ``blockers`` lists the 12-hex prefixes of the request's
+    correspondence records that are not in content/sources.json (the draft is written without them).
+    """
+    from . import kit_track  # local import: kit_track imports kit and law, which findings does not need
+    root = Path(root)
+    request = kit_track._request(request)
+    entry = kit_track.read_sent(root).get(kit_track._key(agency_id, request)) if "#" not in agency_id else None
+    if entry is None and request != "main":
+        raise ValueError(f"no sent request {agency_id}/{request}; run kit-sent --request {request} first")
+    if entry is None:
+        raise ValueError(f"no hand-sent request recorded for {agency_id}; run kit-sent first")
+    label = kit_track._label(agency_id, request)
+    steps = entry["steps"]
+    if not all(isinstance(s, dict) and s.get("kind") in kit_track.KINDS and kit_track._day(s.get("on"))
+               and kit_track._step_records(s) == s.get("records", []) and kit_track._steps_corr_ok(s)
+               for s in steps):
+        raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
+    if any(kit_track._step_records(s) for s in steps):
+        raise ValueError(f"request {label} produced records; a gap draft needs none (write a regular finding)")
+    if not steps or steps[-1]["kind"] not in GAP_KINDS:
+        raise ValueError(f"request {label} is still open")
+    names = {agency["agency_id"]: agency["name"] for agency in _known_agencies(root)}
+    if agency_id not in names:
+        raise ValueError(f"--gap {agency_id!r} is not one of the campaign's agencies")
+    title = EDIT + f"title] (records request to {names[agency_id]})" if title is None else _text("title", title, 200)
+    if not content.plain_text(title):
+        raise ValueError("--title must be plain text without angle brackets")
+    slug = _draft_slug(title)
+    last = steps[-1]
+    facts = [f"Request sent {entry['sent_on']} by {entry['channel']}. Agency answer: {last['kind']} on {last['on']}."]
+    facts += [f"Stated basis (as written by the agency): {_plain_basis(item['basis'])}"
+              for item in kit_track._bases(steps) if isinstance(item["basis"], str) and item["basis"].strip()]
+    letters = list(dict.fromkeys([*entry.get("correspondence", []),
+                                  *(h for s in steps for h in s.get("correspondence", []))]))
+    library = {record["sha256"] for record in _library(root)[1]} if letters else set()
+    present = [h for h in letters if h in library]
+    missing = [h for h in letters if h not in library]
+    try:
+        sources = _resolve_sources(root, present)
+    except ValueError as exc:
+        raise ValueError(str(exc).replace("--source ", "correspondence ")) from None
+    draft = _skeleton(title, slug, agency_id, EDIT + "who wrote this finding]" if author is None
+                      else _text("author", author, 120), sources)
+    draft["classification"], draft["event_date"] = "information_gap", last["on"]
+    draft["body_md"] = "\n".join(facts) + "\n\n" + draft["body_md"]
+    if missing:
+        draft["limitations"].append(EDIT + "add these sources before review: "
+                                    + ", ".join(h[:PREFIX] for h in missing) + "]")
+    written = _write_draft(root, draft)
+    return {**written, "blockers": [h[:PREFIX] for h in missing]}
+
+
+def _skeleton(title, slug, agency_id, author, sources):
+    """The draft every `finding new` form starts from: only the title, slug, agency, author and sources are filled."""
+    return {"title": title, "slug": slug, "agency_id": agency_id, "state": "draft", "published_at": None,
+            "corrections": [], "author": author,
+            "classification": EDIT + "one of " + ", ".join(sorted(CLASSIFICATIONS)) + "]",
+            "confidence": EDIT + "one of " + ", ".join(content.CONFIDENCE) + "]",
+            "event_date": EDIT + "YYYY-MM-DD of the event the records show]",
+            "summary": EDIT + "one or two plain sentences stating what the records show]",
+            "body_md": EDIT + "the finding in full, citing each source by its locator]",
+            "limitations": [EDIT + "what these records cannot show]"],
+            "counterevidence": [EDIT + "records or statements that point the other way, or 'None found.']"],
+            "sources": sources}
+
+
+def _write_draft(root, draft):
+    """Write ``draft`` as a new private/drafts/fnd_<12 hex>.json (0600, O_EXCL, never overwrites)."""
     folders = (root / "private", root / "private" / "drafts")
     for folder in folders:
         _real_dir(folder)  # a symlink or a file refuses before anything is written
@@ -612,16 +853,6 @@ def new_draft(root, agency_id, title, source_prefixes, author=None, now=None):
         if not os.path.lexists(folder):
             folder.mkdir(mode=0o700)
             os.chmod(folder, 0o700)
-    draft = {"title": title, "slug": slug, "agency_id": agency_id, "state": "draft", "published_at": None,
-             "corrections": [], "author": author,
-             "classification": EDIT + "one of " + ", ".join(sorted(CLASSIFICATIONS)) + "]",
-             "confidence": EDIT + "one of " + ", ".join(content.CONFIDENCE) + "]",
-             "event_date": EDIT + "YYYY-MM-DD of the event the records show]",
-             "summary": EDIT + "one or two plain sentences stating what the records show]",
-             "body_md": EDIT + "the finding in full, citing each source by its locator]",
-             "limitations": [EDIT + "what these records cannot show]"],
-             "counterevidence": [EDIT + "records or statements that point the other way, or 'None found.']"],
-             "sources": sources}
     for _ in range(DRAFT_ATTEMPTS):
         draft["id"] = "fnd_" + secrets.token_hex(6)
         path = folders[1] / (draft["id"] + ".json")
@@ -639,6 +870,13 @@ def new_draft(root, agency_id, title, source_prefixes, author=None, now=None):
     raise ValueError(f"{folders[1]}: {DRAFT_ATTEMPTS} generated ids already exist; nothing written")
 
 
+def _known_for(root, document):
+    """DF1952-07: ids of the campaign's agencies when ``document`` uses also_agency_ids, else None (no lookup)."""
+    if isinstance(document, dict) and "also_agency_ids" in document:
+        return {agency["agency_id"] for agency in _known_agencies(root)}
+    return None
+
+
 def publish(root, draft_path, approved_by, now=None):
     """Write content/findings/<slug>.json as published and log it privately; never builds or deploys."""
     draft = load_draft(draft_path)
@@ -652,7 +890,7 @@ def publish(root, draft_path, approved_by, now=None):
         raise ValueError("the author cannot approve publication of their own finding")
     when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     document = dict(reviewed_view(draft), state="published", published_at=when, corrections=[])
-    finding = content.load_finding(document, str(draft_path))
+    finding = content.load_finding(document, str(draft_path), known_agency_ids=_known_for(root, document))
     if not _real_dir(root / "content"):
         raise ValueError(f"{root / 'content'}: no content/ directory in this campaign")
     if not _real_dir(root / "private"):
@@ -889,7 +1127,8 @@ def _correct_locked(root, finding_id, date, note, from_draft, moment, approved_b
         if blockers:
             raise ValueError(f"review blockers: {blockers}")
         document = dict(reviewed_view(draft), **kept)
-    finding = content.load_finding(document, f"content/findings/{target.name}")
+    finding = content.load_finding(document, f"content/findings/{target.name}",
+                                   known_agency_ids=_known_for(root, document))
     if from_draft is not None:
         problems = cited_problems(root, finding)
         if problems:
@@ -947,3 +1186,166 @@ def _withdraw_locked(root, finding_id, reason, when):
     finally:
         os.close(log_fd)
     return {"withdrawn": slug, "path": f"private/withdrawn/{target.name}"}
+
+
+# --- agency right of reply (DF1103-08) -----------------------------------------------------------------------
+# Preparing a request for comment is NOT evidence that anyone was asked: the organizer attests the manual ask with
+# --asked-on. agency_response stays inside reviewed_view, so every change makes earlier review receipts stale.
+
+_FULL_HEX = re.compile(r"[0-9a-fA-F]{40,}")
+
+
+def _reply_draft_path(root, draft_path):
+    """The absolute DRAFT path, which must lie in this campaign's private/drafts with no symlink on the way."""
+    path = Path(os.path.abspath(Path(draft_path).expanduser()))
+    for base in dict.fromkeys((Path(os.path.abspath(root)), Path(os.path.realpath(root)))):
+        try:
+            parts = path.relative_to(base / "private" / "drafts").parts
+        except ValueError:
+            continue
+        walk = base
+        for part in ("private", "drafts", *parts):
+            walk = walk / part
+            if os.path.islink(walk):
+                raise _PathError(f"{walk}: is a symlink; refusing to follow it")
+        if parts:
+            return path
+    raise ValueError("DRAFT must be a file inside this campaign's private/drafts folder")
+
+
+def _reply_context(root, draft_path):
+    """(path, draft, agency) of a draft that may take a reply: state draft or ready, agency known to the campaign."""
+    path = _reply_draft_path(root, draft_path)
+    draft = load_draft(path)
+    if draft.get("state") not in ("draft", "ready"):
+        raise ValueError("the draft's state must be draft or ready (not published or withdrawn)")
+    agency = next((a for a in _known_agencies(root) if a["agency_id"] == draft.get("agency_id")), None)
+    if agency is None:
+        raise ValueError("the draft's agency_id is not one of the campaign's agencies")
+    return path, draft, agency
+
+
+def _cited_hashes(draft):
+    sources = draft.get("sources")
+    return {s["sha256"] for s in sources if isinstance(s, dict) and isinstance(s.get("sha256"), str)} \
+        if isinstance(sources, list) else set()
+
+
+def _create_text(path, text):
+    """Create ``path`` (0600, O_EXCL, no symlink followed) holding ``text``; never overwrites."""
+    if os.path.islink(path):
+        raise _PathError(f"{path}: is a symlink; refusing to follow it")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except FileExistsError:
+        raise ValueError("reply request already exists; keep the original draft") from None
+    except OSError as exc:
+        raise ValueError(f"{path}: cannot create the reply request ({exc.strerror})") from None
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            if hasattr(os, "fchmod"):
+                os.fchmod(out.fileno(), 0o600)  # whatever the umask
+            out.write(text)
+            out.flush()
+            os.fsync(out.fileno())
+    except BaseException:
+        os.unlink(path)
+        raise
+
+
+def _reply_request_text(draft, agency, today, deadline):
+    for name in ("title", "summary"):
+        value = draft.get(name)
+        if not isinstance(value, str) or not value.strip() or EDIT_MARKER.search(value) or _FULL_HEX.search(value):
+            raise ValueError(f"the draft {name} must be finished text, without [EDIT ME] markers or full hashes, "
+                             "before a request for comment is prepared")
+    prefixes = list(dict.fromkeys(sha[:PREFIX] for sha in sorted(_cited_hashes(draft))))
+    if any(not content.SHA256.fullmatch(sha) for sha in _cited_hashes(draft)):
+        raise ValueError("the draft's sources must each hold a 64-character lowercase sha256")
+    cited = "".join(f"- {prefix}\n" for prefix in prefixes) or "- (none cited yet)\n"
+    return (f"# Request for comment: {draft['title']}\n\nDraft only. Nothing was sent.\n\n"
+            f"Agency: {agency['name']}\nComment requested by: {deadline}\nPrepared on: {today}\n\n"
+            f"Finding: {draft['title']}\n\nSummary: {draft['summary']}\n\n"
+            f"Records cited (the first {PREFIX} characters of each record's SHA-256 fingerprint):\n{cited}\n"
+            f"We may publish the finding summarized above. Before we do, we invite {agency['name']} to comment on it, "
+            f"including any correction or added context, by {deadline}. A reply received will be recorded as "
+            "written. This is a request for comment only.\n")
+
+
+def reply_request(root, draft_path, by, today=None):
+    """Write the private, never-sent kit/replies/<id>.md asking the draft's agency for comment by ``by`` and store
+    ``agency_response: {status: pending, prepared_on, reply_by}`` on the draft. Sends nothing; pending is not 'asked'."""
+    root, today = Path(root), today or date.today()
+    deadline = content.reply_day(by)
+    if deadline is None or deadline < today:
+        raise ValueError("--by: invalid date or date order")
+    pending = {"status": "pending", "prepared_on": str(today), "reply_by": str(deadline)}
+    _reply_draft_path(root, draft_path)
+    with _locked(root / "private", ".publish.lock"):
+        path, draft, agency = _reply_context(root, draft_path)  # re-read under the lock
+        if "agency_response" in draft:
+            raise ValueError("reply request already exists; keep the original draft")
+        text = _reply_request_text(draft, agency, today, deadline)
+        folders = (root / "kit", root / "kit" / "replies")
+        for folder in folders:
+            _real_dir(folder)  # a symlink or a file refuses before anything is written
+        for folder in folders:
+            if not os.path.lexists(folder):
+                folder.mkdir(mode=0o700)
+                os.chmod(folder, 0o700)
+        target = folders[1] / (draft["id"] + ".md")
+        _create_text(target, text)
+        try:
+            _write_private(path, dict(sorted({**draft, "agency_response": pending}.items())), ".reply-")
+        except (OSError, ValueError):
+            raise ValueError("reply request template saved but draft update failed; remove or retain the "
+                             "template manually") from None
+    return {"id": draft["id"], "status": "pending", "written": str(target)}
+
+
+def record_reply(root, draft_path, status, on, asked_on, text=None, record=None, today=None):
+    """Record the agency's reply (or silence) on the prepared draft; only the draft is rewritten, atomically.
+    ``asked_on`` attests that the organizer really asked; ``record``: a library prefix of the record received."""
+    root, today = Path(root), today or date.today()
+    if status not in content.REPLY_STATUSES:
+        raise ValueError("--status must be one of: " + ", ".join(content.REPLY_STATUSES))
+    when, asked = content.reply_day(on), content.reply_day(asked_on)
+    if when is None or when > today:
+        raise ValueError("--on: invalid date or date order")
+    if asked is None or asked > when:
+        raise ValueError("--asked-on: invalid date or date order")
+    if record is not None and status != "received":
+        raise ValueError("--record is only for --status received")
+    _reply_draft_path(root, draft_path)
+    with _locked(root / "private", ".publish.lock"):
+        path, draft, _ = _reply_context(root, draft_path)
+        if "agency_response" not in draft:
+            raise ValueError("prepare a reply request first")
+        prepared = content._agency_response(draft["agency_response"], "agency_response", _cited_hashes(draft), today)
+        if not content.reply_day(prepared["prepared_on"]) <= asked <= content.reply_day(prepared["reply_by"]):
+            raise ValueError("--asked-on: invalid date or date order")
+        if status == "no_response" and when < content.reply_day(prepared["reply_by"]):
+            raise ValueError("no_response requires --on on or after the reply deadline")
+        reply = {"status": status, "prepared_on": prepared["prepared_on"], "reply_by": prepared["reply_by"],
+                 "asked_on": asked_on, "on": on}
+        if text is not None:
+            reply["text"] = text
+        sources = draft.get("sources")
+        if record is not None:
+            try:
+                [entry] = _resolve_sources(root, [record])
+            except ValueError as exc:
+                raise ValueError(str(exc).replace("--source ", "--record ")) from None
+            problems = cited_problems(root, {"sources": [{"sha256": entry["sha256"]}]})
+            if problems:
+                raise ValueError(f"--record {record}: the record is not registered and stored: {problems}")
+            reply["record_sha256"] = entry["sha256"]
+            if not isinstance(sources, list):
+                raise ValueError("the draft's sources must be a list")
+            if entry["sha256"] not in _cited_hashes(draft):
+                sources = sources + [{"sha256": entry["sha256"], "title": entry["title"],
+                                      "locator": f"Agency response received {on}"}]
+        reply = content._agency_response(reply, "agency_response", _cited_hashes({"sources": sources}), today)
+        updated = {**draft, "agency_response": reply, **({"sources": sources} if record is not None else {})}
+        _write_private(path, dict(sorted(updated.items())), ".reply-")
+    return {"id": draft["id"], "status": status}

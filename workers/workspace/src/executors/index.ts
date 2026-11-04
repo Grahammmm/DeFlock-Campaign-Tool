@@ -32,11 +32,16 @@ export function buildExecutors(opts: RegistryOptions = {}): Map<ActionKind, Acti
   return new Map(list.map((e) => [e.kind, e]));
 }
 
+/** True when both outbox secrets are set (non-empty): the one rule `defaultExecutors` and the Settings screen share. */
+export function mailSenderConfigured(env: Pick<Env, "OUTBOX_GATEWAY_URL" | "OUTBOX_SIGNING_KEY"> | undefined): boolean {
+  return Boolean(env?.OUTBOX_GATEWAY_URL && env.OUTBOX_SIGNING_KEY);
+}
+
 /** Production registry from the Worker environment: Brevo when the secret is present. */
 export function defaultExecutors(env?: Pick<Env, "BREVO_API_KEY" | "OUTBOX_GATEWAY_URL" | "OUTBOX_SIGNING_KEY">): Map<ActionKind, ActionExecutor> {
   const brevo = env?.BREVO_API_KEY ? new FetchBrevo(env.BREVO_API_KEY) : null;
-  const mailSender = env?.OUTBOX_GATEWAY_URL && env.OUTBOX_SIGNING_KEY
-    ? new SignedOutboxSender(env.OUTBOX_GATEWAY_URL, env.OUTBOX_SIGNING_KEY) : undefined;
+  const mailSender = env && mailSenderConfigured(env)
+    ? new SignedOutboxSender(env.OUTBOX_GATEWAY_URL!, env.OUTBOX_SIGNING_KEY!) : undefined;
   return buildExecutors({ brevo, mailSender });
 }
 

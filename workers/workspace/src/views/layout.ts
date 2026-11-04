@@ -2,7 +2,8 @@ import { html, shell, type Safe } from "@deflock/shared/html";
 import type { AccessIdentity } from "../auth.ts";
 
 export const NAV = [
-  ["/", "Dashboard"],
+  ["/", "Waiting on you"],
+  ["/status", "Dashboard"],
   ["/requests", "Requests"],
   ["/inbox", "Inbox"],
   ["/records", "Records"],

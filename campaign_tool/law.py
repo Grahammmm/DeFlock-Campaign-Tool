@@ -26,6 +26,7 @@ import sys
 import tempfile
 from datetime import date, timedelta
 from pathlib import Path
+from urllib.parse import quote, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RESOURCE_ROOT = Path(__file__).resolve().parent / "_resources"
@@ -99,6 +100,9 @@ def validate(document, schema, root=None, where="$"):
             if key not in document:
                 raise ValueError(f"{where}: missing required field {key!r}")
         properties = schema.get("properties", {})
+        for key, needed in schema.get("dependentRequired", {}).items():  # DF2207-05: a pair present only in part
+            if key in document and (missing := [name for name in needed if name not in document]):
+                raise ValueError(f"{where}: field {key!r} needs {missing}")
         if schema.get("additionalProperties") is False:
             extra = sorted(set(document) - set(properties))
             if extra:
@@ -620,6 +624,111 @@ def _review_sheet_output(args, package):
                      f"stays {package['status']} until a human reviewer records reviewed_by and reviewed_at.")}
 
 
+SUPPORT_MATRIX_COMMAND = "python3 -m campaign_tool.law support-matrix --md > docs/LAW-SUPPORT.md"
+SUPPORT_MATRIX_COLUMNS = ("Rule ID", "Citation", "Effective from", "Effective to", "Review label", "Request scopes")
+_NONE = "—"
+
+
+def support_matrix(base=None):
+    """Document of every shipped package: status, review metadata, records_law and rule-to-scope rows.
+
+    Enumerates ``<base>/<slug>/package.json`` sorted by slug through ``load_package``; directories without a
+    package.json are ignored and a malformed package stops the whole run naming its path. Read-only.
+    """
+    root = JURISDICTIONS if base is None else Path(base)
+    if not root.is_dir():
+        raise ValueError(f"--base is not a directory: {root}")
+    packages = []
+    for entry in sorted(root.iterdir(), key=lambda item: item.name):
+        path = entry / "package.json"
+        if not (entry.is_dir() and path.is_file()):
+            continue
+        try:
+            package = load_package(entry.name, root)
+        except ValueError as exc:
+            raise ValueError(str(exc) if str(path) in str(exc) else f"{path}: {exc}") from None
+        law = package["records_law"]
+        scopes = {}
+        for scope in package["request_scopes"]:
+            for rule_id in scope["rule_ids"]:
+                scopes.setdefault(rule_id, set()).add(scope["scope_id"])
+        packages.append({
+            "jurisdiction": package["jurisdiction"], "status": package["status"],
+            "reviewed_by": list(package["reviewed_by"]), "reviewed_at": package["reviewed_at"],
+            "records_law": {**{key: law[key] for key in ("name", "citation", "determination_days",
+                                                          "determination_extension_days", "day_type")},
+                            "sources": [{key: s[key] for key in ("title", "url", "accessed")}
+                                        for s in law["sources"]]},
+            "rules": [{**_rule_view(rule), "request_scopes": sorted(scopes.get(rule["rule_id"], ()))}
+                      for rule in sorted(package["rules"], key=lambda item: item["rule_id"])]})
+    return {"schema_version": 1, "packages": packages}
+
+
+def _md_text(value):
+    """Data as inert Markdown text: one line, HTML-escaped, Markdown punctuation and bare-link triggers broken."""
+    text = re.sub(r"[\x00-\x20\x7f-\x9f\u2028\u2029]+", " ", "" if value is None else str(value)).strip()
+    for raw, safe in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ('"', "&quot;"), ("'", "&#x27;"),
+                      ("\\", "\\\\"), ("`", "\\`"), ("*", "\\*"), ("_", "\\_"), ("[", "\\["), ("]", "\\]"),
+                      ("|", "\\|"), ("~", "\\~"), ("://", "&#58;//"), ("@", "&#64;"), ("www.", "www&#46;")):
+        text = text.replace(raw, safe)
+    return text or _NONE
+
+
+def _md_url(url):
+    """A link destination for an https URL; anything else is refused rather than rendered."""
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname or re.search(r"[\x00-\x1f\x7f]", url):
+        raise ValueError(f"records_law source URL is not a plain https URL: {url!r}")
+    return quote(url, safe="!#$&'*+,/:;=?@-._~%").replace("&", "&amp;")
+
+
+def render_support_matrix(matrix):
+    """Deterministic Markdown (LF, final newline) for a ``support_matrix`` document; nothing computed from today."""
+    lines = [
+        "# Law support matrix", "",
+        "> Generated file. Do not edit by hand; regenerate it from the repository root with:", ">",
+        f"> `{SUPPORT_MATRIX_COMMAND}`", "",
+        "Each row restates a rule as recorded in a shipped jurisdiction package. Package status and author review",
+        "labels are not independent legal acceptance, and a listed jurisdiction is not all-state support. Nothing here",
+        "is legal advice or a finding about any agency.", ""]
+    if not matrix["packages"]:
+        lines += ["No shipped jurisdiction packages.", ""]
+    for package in matrix["packages"]:
+        law = package["records_law"]
+        reviewers = ", ".join(_md_text(name) for name in package["reviewed_by"]) or "none recorded"
+        lines += [
+            f"## {_md_text(package['jurisdiction'])}", "",
+            f"- Package status: `{_md_text(package['status'])}`",
+            f"- Reviewed by (as recorded): {reviewers}",
+            f"- Reviewed at (as recorded): {_md_text(package['reviewed_at'] or 'none recorded')}",
+            f"- Rules: {len(package['rules'])}", "",
+            "| " + " | ".join(SUPPORT_MATRIX_COLUMNS) + " |", "|" + " --- |" * len(SUPPORT_MATRIX_COLUMNS)]
+        for rule in package["rules"]:
+            cells = (rule["rule_id"], rule["citation"], rule["effective_from"], rule["effective_to"] or "open",
+                     rule["review"], ", ".join(rule["request_scopes"]) or _NONE)
+            lines.append("| " + " | ".join(_md_text(cell) for cell in cells) + " |")
+        lines += [
+            "", "### Records-law determination reminder", "",
+            f"- Records law: {_md_text(law['name'])}, {_md_text(law['citation'])}",
+            f"- Determination period as encoded: {law['determination_days']} {_md_text(law['day_type'])} days",
+            f"- One extension as encoded: up to {law['determination_extension_days']} days",
+            "- The determination period is not a production deadline.",
+            "- The period usually runs from the agency's receipt; a send date is not proof of receipt.",
+            "- An extension counts only when the jurisdiction's own prerequisites are met; confirm them in the cited sources.",
+            f"- {HOLIDAY_NOTE}",
+            "- This table encodes the package's data; it computes no date and claims no agency is late.",
+            "- Deadline sources recorded in the package:"]
+        lines += [f"  - [Source {number}]({_md_url(source['url'])}): {_md_text(source['title'])}, "
+                  f"accessed {_md_text(source['accessed'])}" for number, source in enumerate(law["sources"], 1)]
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _support_matrix_output(args):
+    matrix = support_matrix(args.base)
+    return render_support_matrix(matrix) if args.md else json.dumps(matrix, indent=2, ensure_ascii=False) + "\n"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="campaign_tool.law", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -642,10 +751,27 @@ def main(argv=None):
     impact.add_argument("new", metavar="NEW.json")
     impact.add_argument("--directory", required=True, help="Campaign folder holding the findings and drafts")
     impact.add_argument("--json", dest="as_json", action="store_true", help="Print the report as JSON")
+    matrix = commands.add_parser("support-matrix", help="Print every shipped package's rules and scopes (read-only)")
+    matrix.add_argument("--md", action="store_true", help="Print Markdown instead of one JSON document")
+    matrix.add_argument("--base", help="Alternate jurisdictions directory")
     for sub in (show, rules, remind, sheet, apply):
         sub.add_argument("jurisdiction")
         sub.add_argument("--base", help="Alternate jurisdictions directory")
     args = parser.parse_args(argv)
+    if args.command == "support-matrix":
+        try:
+            text = _support_matrix_output(args)
+        except (OSError, ValueError) as exc:
+            print("Stopped: " + str(exc), file=sys.stderr)
+            return 1
+        stream = getattr(sys.stdout, "buffer", None)  # exact UTF-8 and LF bytes, whatever the locale
+        if stream is None:
+            sys.stdout.write(text)
+        else:
+            sys.stdout.flush()
+            stream.write(text.encode("utf-8"))
+            stream.flush()
+        return 0
     if args.command == "impact":
         from .law_impact import run_cli
         return run_cli(args.old, args.new, args.directory, args.as_json)

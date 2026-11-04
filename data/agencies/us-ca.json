@@ -170,6 +170,52 @@
           ]
         },
         {
+          "agency_id": "ca-san-francisco-bay-area-rapid-transit-district-police-alameda",
+          "name": "San Francisco Bay Area Rapid Transit District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "San Francisco Bay Area Rapid Transit District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (transit); serves Alameda County; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-east-bay-regional-park-district-police-alameda",
+          "name": "East Bay Regional Park District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "East Bay Regional Park District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (park); serves Alameda County; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-alameda-police",
           "name": "Alameda Police Department",
           "kind": "police",
@@ -1983,6 +2029,52 @@
           ]
         },
         {
+          "agency_id": "ca-san-francisco-bay-area-rapid-transit-district-police-contra-costa",
+          "name": "San Francisco Bay Area Rapid Transit District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "San Francisco Bay Area Rapid Transit District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (transit); serves Contra Costa County; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-east-bay-regional-park-district-police-contra-costa",
+          "name": "East Bay Regional Park District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "East Bay Regional Park District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (park); serves Contra Costa County; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-antioch-police",
           "name": "Antioch Police Department",
           "kind": "police",
@@ -3263,6 +3355,29 @@
           "sources": [
             {
               "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-clovis-unified-school-district-school-police",
+          "name": "Clovis Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Clovis Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -5236,6 +5351,29 @@
           ]
         },
         {
+          "agency_id": "ca-kern-high-school-district-school-police",
+          "name": "Kern High School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Kern High School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-arvin-police",
           "name": "Arvin Police Department",
           "kind": "police",
@@ -6730,6 +6868,144 @@
           "sources": [
             {
               "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-compton-unified-school-district-school-police",
+          "name": "Compton Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Compton Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-el-rancho-unified-school-district-school-police",
+          "name": "El Rancho Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "El Rancho Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-hacienda-la-puente-unified-school-district-school-police",
+          "name": "Hacienda La Puente Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Hacienda La Puente Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-inglewood-unified-school-district-school-police",
+          "name": "Inglewood Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Inglewood Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-los-angeles-unified-school-district-school-police",
+          "name": "Los Angeles School Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Los Angeles Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-montebello-unified-school-district-school-police",
+          "name": "Montebello Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Montebello Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -13000,6 +13276,29 @@
           ]
         },
         {
+          "agency_id": "ca-santa-ana-unified-school-district-school-police",
+          "name": "Santa Ana Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Santa Ana Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-aliso-viejo-city-council",
           "name": "Aliso Viejo City Council",
           "kind": "city_council",
@@ -14861,6 +15160,29 @@
           ]
         },
         {
+          "agency_id": "ca-val-verde-unified-school-district-school-police",
+          "name": "Val Verde Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Val Verde Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-banning-police",
           "name": "Banning Police Department",
           "kind": "police",
@@ -15926,6 +16248,52 @@
           ]
         },
         {
+          "agency_id": "ca-twin-rivers-unified-school-district-school-police",
+          "name": "Twin Rivers Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Twin Rivers Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-fulton-el-camino-recreation-and-park-district-police",
+          "name": "Fulton-El Camino Park Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "Fulton-El Camino Recreation and Park District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (park); serves Sacramento County; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-citrus-heights-police",
           "name": "Citrus Heights Police Department",
           "kind": "police",
@@ -16555,6 +16923,144 @@
           "sources": [
             {
               "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-apple-valley-unified-school-district-school-police",
+          "name": "Apple Valley Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Apple Valley Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-fontana-unified-school-district-school-police",
+          "name": "Fontana Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Fontana Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-hesperia-unified-school-district-school-police",
+          "name": "Hesperia Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Hesperia Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-bernardino-city-unified-school-district-school-police",
+          "name": "San Bernardino City Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "San Bernardino City Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-snowline-joint-unified-school-district-school-police",
+          "name": "Snowline Joint Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Snowline Joint Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-victor-valley-union-high-school-district-school-police",
+          "name": "Victor Valley Union High School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Victor Valley Union High School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -17603,6 +18109,52 @@
           ]
         },
         {
+          "agency_id": "ca-san-diego-unified-school-district-school-police",
+          "name": "San Diego Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "San Diego Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-diego-unified-port-district-police",
+          "name": "San Diego Unified Port District Harbor Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "San Diego Unified Port District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (port_harbor); serves San Diego County; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-carlsbad-police",
           "name": "Carlsbad Police Department",
           "kind": "police",
@@ -18392,6 +18944,29 @@
           ]
         },
         {
+          "agency_id": "ca-san-francisco-bay-area-rapid-transit-district-police-san-francisco",
+          "name": "San Francisco Bay Area Rapid Transit District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "San Francisco Bay Area Rapid Transit District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (transit); serves San Francisco County; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-san-francisco-police",
           "name": "San Francisco Police Department",
           "kind": "police",
@@ -18554,6 +19129,29 @@
           "sources": [
             {
               "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-stockton-unified-school-district-school-police",
+          "name": "Stockton Unified School District Police Department",
+          "kind": "school_police",
+          "jurisdiction_name": "Stockton Unified School District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "school district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -19419,6 +20017,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-francisco-bay-area-rapid-transit-district-police-san-mateo",
+          "name": "San Francisco Bay Area Rapid Transit District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "San Francisco Bay Area Rapid Transit District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (transit); serves San Mateo County; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -20836,6 +21457,29 @@
           "sources": [
             {
               "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-francisco-bay-area-rapid-transit-district-police-santa-clara",
+          "name": "San Francisco Bay Area Rapid Transit District Police Department",
+          "kind": "district_police",
+          "jurisdiction_name": "San Francisco Bay Area Rapid Transit District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "special-district police department (transit); serves Santa Clara County; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }

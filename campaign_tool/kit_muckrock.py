@@ -1,0 +1,115 @@
+"""Map a MuckRock request JSON the organizer saved by hand into a proposed kit-response step. Reads one local file
+and kit/sent.json; nothing is fetched or sent, and no MuckRock account or token is used."""
+import json
+import os
+from pathlib import Path
+
+from . import kit_track
+
+MAX_BYTES = 1 << 20
+# MuckRock request status -> (kit step kind, partial, note, uses datetime_done); or a reason there is no step.
+STEPS = {"processed": ("acknowledged", False, None, False), "fix": ("clarification_requested", False, None, False),
+         "payment": ("fee_estimate", False, None, False), "rejected": ("denied", False, None, True),
+         "no_docs": ("closed", False, "no responsive documents (MuckRock)", True),
+         "partial": ("produced", True, None, True), "done": ("produced", False, None, True),
+         "abandoned": ("closed", False, "withdrawn (MuckRock)", True)}
+NO_STEP = {**dict.fromkeys(("started", "submitted", "ack"), "waiting for the agency"),
+           **dict.fromkeys(("appealing", "lawsuit"), "record by hand")}
+
+
+def _load(path):  # a regular, small, UTF-8 JSON object; refused before kit/sent.json is read
+    path = Path(path)
+    if not os.path.lexists(path) or path.is_symlink() or not path.is_file():
+        raise ValueError(f"{path}: not a regular file (symlinks are refused)")
+    if path.stat().st_size > MAX_BYTES:
+        raise ValueError(f"{path}: larger than 1 MiB")
+    try:
+        document = json.loads(path.read_bytes().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError(f"{path}: not UTF-8 JSON") from None
+    if not isinstance(document, dict):
+        raise ValueError(f"{path}: expected one JSON object (a single request)")
+    return document
+
+
+def _date(document, *fields):  # the date part of the first field present; refused when none or malformed
+    for field in fields:
+        value = document.get(field)
+        if value not in (None, ""):
+            day = kit_track._day(value[:10]) if isinstance(value, str) else None
+            if day is None:
+                raise ValueError(f"{field} must be an ISO 8601 date or datetime")
+            return day.isoformat()
+    raise ValueError(f"the JSON has no {' or '.join(fields)} to date the step")
+
+
+def _price(value):  # plain USD text for the normal --amount rule; None when the JSON carries no price
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError("price must be a decimal string or number")
+    return value if isinstance(value, str) else str(value)  # the --amount rule refuses a sign, exponent or NaN
+
+
+def propose(root, agency_id, path, request="main"):
+    """The step the saved JSON implies for the kit's MuckRock request: a dict with ``step`` (a record_step keyword
+    set, or None) and ``reason``. Raises ValueError (nothing written) when the file or the status is refused."""
+    document = _load(path)
+    request_id, status = document.get("id"), document.get("status")
+    if type(request_id) is not int or not isinstance(status, str):
+        raise ValueError("the JSON needs an integer id and a text status")
+    request = kit_track._request(request)
+    entry = None if "#" in agency_id else kit_track.read_sent(root).get(kit_track._key(agency_id, request))
+    if entry is None:
+        raise ValueError(f"no hand-sent request recorded for {kit_track._label(agency_id, request)}; run kit-sent first")
+    kit_id = kit_track.muckrock_id(entry)
+    if kit_id is None:
+        raise ValueError(f"{kit_track._label(agency_id, request)} was not recorded with --channel muckrock and a request URL")
+    if str(request_id) != kit_id:
+        raise ValueError(f"this JSON is request {request_id}, not {kit_id}")
+    base = {"agency_id": agency_id, "request": request, "muckrock_id": request_id, "muckrock_status": status}
+    if status in NO_STEP:
+        return {**base, "step": None, "reason": NO_STEP[status]}
+    if status not in STEPS:
+        raise ValueError(f"unknown MuckRock status {status!r}; record the step by hand with kit-response")
+    kind, partial, note, finished = STEPS[status]
+    on = _date(document, *(("datetime_done",) if finished else ()), "datetime_updated")
+    amount = None
+    if kind == "fee_estimate":
+        amount = _price(document.get("price"))
+        if amount is None:
+            return {**base, "step": None, "reason": "no price in the JSON; record the estimate by hand"}
+    step = {"on": on, "kind": kind, **({"partial": True} if partial else {}), **({"note": note} if note else {}),
+            **({"amount": amount} if amount is not None else {})}
+    last = entry["steps"][-1] if entry["steps"] else {}
+    if (last.get("kind"), last.get("on"), bool(last.get("partial"))) == (kind, on, partial):
+        return {**base, "step": None, "reason": "already recorded"}
+    return {**base, "step": step, "reason": None}
+
+
+def run(root, agency_id, path, request="main", apply=False):
+    """``propose`` plus the normal step rules: a dry run by default, one ``record_step`` write with ``apply``.
+    The result carries ``recorded`` (the entry as it is or would be) or ``refusal`` (the step rule that stops it)."""
+    result = propose(root, agency_id, path, request)
+    if result["step"] is None:
+        return {**result, "applied": False}
+    step = result["step"]
+    try:
+        entry = kit_track.record_step(root, agency_id, step["on"], step["kind"], note=step.get("note"),
+                                      amount=step.get("amount"), partial=bool(step.get("partial")), request=request,
+                                      dry_run=not apply)
+    except ValueError as exc:
+        return {**result, "applied": False, "refusal": str(exc)}
+    return {**result, "applied": apply, "recorded": entry}
+
+
+def render(result):  # the plain-text proposal printed by kit-muckrock-import
+    lines = [f"MuckRock request {result['muckrock_id']} has status '{result['muckrock_status']}'."]
+    step = result["step"]
+    if step is None:
+        return "\n".join(lines + [f"Nothing to do: {result['reason']}."])
+    flags = "".join(f" --{k} {step[k]}" for k in ("amount", "note") if k in step) + " --partial" * bool(step.get("partial"))
+    lines.append(f"Proposed: kit-response --agency {result['agency_id']} --kind {step['kind']} --date {step['on']}{flags}")
+    lines.append(f"Refused by the normal step rules: {result['refusal']}" if "refusal" in result else
+                 "Recorded." if result["applied"] else "Dry run: nothing written. Add --apply to record it.")
+    return "\n".join(lines)

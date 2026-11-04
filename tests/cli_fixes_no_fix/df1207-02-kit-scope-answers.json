@@ -1,0 +1,9 @@
+{
+  "--scope and --disposition go together: give both or neither": "The message names both options and tells the organizer to give both or neither.",
+  "--disposition must be one of name": "The message lists the accepted dispositions directly.",
+  "--scope is not allowed on a 5 step": "The message identifies the step kind that cannot take a scope answer.",
+  "scopes not recorded for this request; --scope cannot be checked": "The message explains why this older request cannot take a checked scope answer; an unscoped step remains available.",
+  "kit/summary.json names scope 5, which is not in the law package; rebuild the kit": "The message names the invalid scope and explicitly tells the organizer to rebuild the kit.",
+  "--scope 5: the same scope is given twice": "The message identifies the repeated scope directly.",
+  "--scope 5 was not asked in this request": "The message identifies the scope outside this request's recorded scope list."
+}

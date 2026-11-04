@@ -65,16 +65,16 @@ class ContentPagesTests(unittest.TestCase):
     def test_two_pages_written_one_in_nav_on_every_page_both_in_sitemap(self):
         self.page("how-to-request.json", title="How to request records", description="Steps.", nav=True,
                   body_md="Ask the **clerk**.")
-        self.page("glossary.json", title="Glossary", body_md="- ALPR: plate reader")
+        self.page("terminology.json", title="Terminology", body_md="- ALPR: plate reader")
         written = {p.relative_to(self.public).as_posix() for p in build_site(self.root)}
-        self.assertTrue({"how-to-request.html", "glossary.html", "404.html"} <= written)
+        self.assertTrue({"how-to-request.html", "terminology.html", "404.html"} <= written)
         link = '<a href="/how-to-request.html">How to request records</a>'
         html_files = sorted(p for p in written if p.endswith(".html"))
         self.assertGreater(len(html_files), 8)
         for name in html_files:
             nav = self.nav(self.read(name))
             self.assertEqual(nav.count('href="/how-to-request.html"'), 1, name)
-            self.assertNotIn("glossary.html", nav, name)  # nav: false (the default) stays out of the nav
+            self.assertNotIn("terminology.html", nav, name)  # nav: false (the default) stays out of the nav
             self.assertIn('About</a><a href="/how-to-request.html"', nav, name)  # appended after About
             if name != "how-to-request.html":
                 self.assertIn(link, nav, name)
@@ -84,13 +84,13 @@ class ContentPagesTests(unittest.TestCase):
         self.assertIn("<h2>How to request records</h2><p>Ask the <strong>clerk</strong>.</p>", own)
         self.assertIn('<meta name="description" content="Steps.">', own)
         self.assertIn(f'<link rel="canonical" href="{BASE}/how-to-request.html">', own)
-        glossary = self.read("glossary.html")
-        self.assertIn('<meta name="description" content="Glossary">', glossary)  # description defaults to the title
-        self.assertIn("<li>ALPR: plate reader</li>", glossary)
-        self.assertNotIn("aria-current", self.nav(glossary))
+        terminology = self.read("terminology.html")
+        self.assertIn('<meta name="description" content="Terminology">', terminology)  # description defaults to the title
+        self.assertIn("<li>ALPR: plate reader</li>", terminology)
+        self.assertNotIn("aria-current", self.nav(terminology))
         locs = re.findall(r"<loc>([^<]+)</loc>", self.read("sitemap.xml"))
         self.assertIn(f"{BASE}/how-to-request.html", locs)
-        self.assertIn(f"{BASE}/glossary.html", locs)
+        self.assertIn(f"{BASE}/terminology.html", locs)
         self.assertEqual([loc for loc in locs if "404" in loc], [])
         self.assertEqual(len(locs), len(set(locs)))
 
@@ -107,7 +107,7 @@ class ContentPagesTests(unittest.TestCase):
     def test_reserved_and_finding_slugs_refused_and_public_unchanged(self):
         build_site(self.root)
         before = self.snapshot()
-        for slug in ("about", "404", "feed", "meetings", "corrections", "sitemap", "style", "index", FINDING_SLUG):
+        for slug in ("about", "404", "feed", "meetings", "corrections", "sitemap", "style", "index", "supporters", FINDING_SLUG):
             with self.subTest(slug=slug):
                 path = self.page(f"{slug}.json")
                 self.assert_refused(rf"^pages/{slug}\.json: slug {slug} is reserved$")
@@ -213,7 +213,7 @@ class ContentPagesTests(unittest.TestCase):
         without = self.snapshot()
         top = {n for n in without if n.endswith(".html") and "/" not in n}
         self.assertEqual(top, {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html",
-                               "corrections.html", "404.html", "cameras.html", "methods.html", "privacy.html", "timeline.html"})
+                               "corrections.html", "404.html", "cameras.html", "methods.html", "privacy.html", "search.html", "timeline.html"})
         self.page("README.md", "Pages go here.")
         build_site(self.root)
         self.assertTrue(self.snapshot() == without, "an ignored file in pages/ changed the output")
@@ -224,14 +224,14 @@ class ContentPagesTests(unittest.TestCase):
 
     # 7. public-assets entries named like a content page or 404.html collide
     def test_public_asset_colliding_with_a_page_is_refused(self):
-        folder = self.root / "content" / "public-assets" / "glossary.html"
+        folder = self.root / "content" / "public-assets" / "terminology.html"
         folder.mkdir(parents=True)
         (folder / "logo.png").write_bytes(CLEAN_PNG)
-        build_site(self.root)  # no glossary page yet: an ordinary asset folder
-        self.assertTrue((self.public / "glossary.html" / "logo.png").is_file())
+        build_site(self.root)  # no terminology page yet: an ordinary asset folder
+        self.assertTrue((self.public / "terminology.html" / "logo.png").is_file())
         before = self.snapshot()
-        self.page("glossary.json")
-        self.assert_refused(r"^public-assets/glossary\.html/logo\.png: collides with a generated path$")
+        self.page("terminology.json")
+        self.assert_refused(r"^public-assets/terminology\.html/logo\.png: collides with a generated path$")
         self.assertTrue(self.snapshot() == before)
         shutil.rmtree(folder)
         (self.root / "content" / "public-assets" / "404.html").mkdir()

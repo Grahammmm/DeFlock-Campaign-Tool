@@ -1,0 +1,5 @@
+{
+  "name": "kit-muckrock-import forwards the normal kit-response step refusal verbatim; that message already explains the step rule and is not a fixed literal",
+  "--request-url is required with --channel muckrock": "kit-sent names the required channel and request-url combination directly",
+  "--request-url must be https://www.muckrock.com/foi/.../<name>-<id> (no query, port or login)": "kit-sent states the accepted URL format and forbidden URL components directly"
+}

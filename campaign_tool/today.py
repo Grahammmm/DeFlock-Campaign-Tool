@@ -13,16 +13,24 @@ from . import findings, kit, kit_track, meeting_comments, meeting_stage
 from .content import _read_json, load_agencies, load_meeting
 
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
-         "request_installment_due", "finding_ready", "finding_blocked",
-         "contract_ending", "stale_comment_kit", "stale_contact", "unreadable")
-WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS = 7, 180, 120
-CONTRACT_DAYS, CONTRACT_ENDED_DAYS = 90, 30
+         "request_installment_due", "request_download_pending", "request_download_expired", "finding_ready",
+         "finding_blocked",
+         "contract_ending", "minutes_pending", "stale_comment_kit", "stale_contact", "review_waiting", "unreadable")
+WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS, REVIEW_DAYS = 7, 180, 120, 7
+CONTRACT_DAYS, CONTRACT_ENDED_DAYS, MINUTES_DAYS = 90, 30, 45
 
 
 def contract_days(text):
     """argparse type for ``today --contract-days``: a whole number of days, 1-365."""
     if not (text.isascii() and text.isdigit()) or not 1 <= int(text) <= 365:
         raise argparse.ArgumentTypeError(f"must be a whole number of days from 1 to 365, got {text!r}")
+    return int(text)
+
+
+def review_days(text):
+    """argparse type for ``today --review-days``: a whole number of days, 1-90."""
+    if not (text.isascii() and text.isdigit()) or not 1 <= int(text) <= 90:
+        raise argparse.ArgumentTypeError(f"must be a whole number of days from 1 to 90, got {text!r}")
     return int(text)
 
 
@@ -34,7 +42,7 @@ def _unreadable(label, exc):
     return _item("unreadable", f"fix {label}: {str(exc)[:ERROR_CHARS]}", f"open {label} and fix it", key=label)
 
 
-def _meetings(root, as_of):
+def _meetings(root, as_of, directory):
     folder, items = root / "content" / "meetings", []
     try:
         submitted = meeting_comments.read(root)  # a comment already sent by hand is not due again (DF1207-09)
@@ -44,22 +52,35 @@ def _meetings(root, as_of):
     for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
         label = "content/meetings/" + path.name
         try:
-            meeting = load_meeting(_read_json(path), "meetings/" + path.name)
+            meeting = load_meeting(_read_json(path), "meetings/" + path.name, today=as_of)
             written = (meeting["participation"] or {}).get("written_comment") or {}
             due = written.get("deadline")
             day = datetime.fromisoformat(due.replace("Z", "+00:00")).date() if due else None
         except (ValueError, OSError) as exc:
             items.append(_unreadable(label, exc))
             continue
+        ident = meeting["id"] or path.stem
+        if (pending := _minutes_item(meeting, ident, as_of, directory)) is not None:
+            items.append(pending)
         if meeting["status"] != "scheduled" or day is None or not as_of <= day <= as_of + timedelta(WINDOW_DAYS):
             continue
-        ident = meeting["id"] or path.stem
         if ident in submitted:
             continue
         agenda = f" (agenda: {meeting['agenda_url']})" if meeting["agenda_url"] else ""
         items.append(_item("comment_deadline", f"Written comment due {due} for {meeting['body']} ({ident})",
                            f"submit written comment: {written['how']}{agenda}", due, ident))
     return items
+
+
+def _minutes_item(meeting, ident, as_of, directory):
+    """DF2207-05: a recorded outcome older than MINUTES_DAYS days with no approved minutes linked (never an allegation)."""
+    outcome = meeting["outcome"]
+    if not outcome or "minutes_url" in outcome or (as_of - date.fromisoformat(outcome["on"])).days <= MINUTES_DAYS:
+        return None
+    return _item("minutes_pending", f"Outcome of {meeting['body']} ({ident}) recorded for {outcome['on']} has no approved "
+                 "minutes linked: check whether the body's official minutes are approved",
+                 f"meetings-outcome --directory {directory} --id {shlex.quote(ident)} "
+                 "--minutes-url OFFICIAL_MINUTES_URL --minutes-approved-on YYYY-MM-DD", outcome["on"], ident)
 
 
 def _requests(root, as_of, directory, law_base):
@@ -76,10 +97,15 @@ def _requests(root, as_of, directory, law_base):
         elif row["state"] == "producing" and row["days"] == 0:
             what, row = (f"Check on {name}: the next installment the agency stated for {row['due']} is due today",
                          {**row, "state": "installment_due"})
+        elif row["state"] == "download_pending":  # an expiring link: its own agency-stated date, days left
+            n = row["days"]
+            what = f"Download records from {name} before {row['due']} ({n} day{'' if n == 1 else 's'} left)"
+        elif row["state"] == "download_expired":
+            what = f"{name}: link expired {row['due']}: {kit_track.DOWNLOAD_ASK}"
         else:
             continue
         items.append(_item("request_" + row["state"], what, f"kit-status --directory {directory}", row["due"],
-                           row["agency_id"]))
+                           row["agency_id"] + (row["request"] if row.get("kind") == "download" else "")))
     return items
 
 
@@ -95,6 +121,29 @@ def _findings(root, directory):
                          if row["state"] == "ready" else
                          _item("finding_blocked", f"Finding {row['id']} is blocked: {', '.join(row['blockers'])}",
                                f"finding review-status {draft} --directory {directory}", key=key))
+    return items
+
+
+def _review_waiting(root, as_of, directory, days):
+    """Assigned review roles with no current-content receipt after ``days`` days (assignments never count as review)."""
+    items = []
+    for row in findings.status_rows(root, draft_paths=True):
+        if "draft_path" not in row or row["state"] == "withdrawn":  # unreadable rows are reported by _findings
+            continue
+        try:
+            draft = findings.load_draft(row["draft_path"])
+            assigned, states = findings.load_assignments(root, draft), None
+            if assigned:
+                states = findings.assignment_states(root, draft)
+        except ValueError as exc:  # one bad assignment or receipt file never hides another draft's items
+            items.append(_unreadable(f"private/review-assignments/{row['id']}.json", exc))
+            continue
+        for role, entry in sorted(assigned.items()):
+            if states[role]["state"] == "assigned" and (as_of - date.fromisoformat(entry["on"])).days >= days:
+                items.append(_item("review_waiting", f"Review ({role}) of {row['id']} assigned to "
+                                   f"{entry['reviewer']} since {entry['on']}",
+                                   f"finding review-status {shlex.quote(row['draft_path'])} --directory {directory}",
+                                   entry["on"], f"{row['id']} {role}"))
     return items
 
 
@@ -142,14 +191,15 @@ def _contracts(root, as_of, directory, days):
     return items
 
 
-def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS):
+def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS):
     """Ranked to-do items ``{rank, kind, what, due, command}``; reads only, never raises for a broken input."""
     root = Path(root)
     directory = shlex.quote(str(root))
-    sources = ((lambda: _meetings(root, as_of), "content/meetings/"),
+    sources = ((lambda: _meetings(root, as_of, directory), "content/meetings/"),
                (lambda: _requests(root, as_of, directory, law_base), "kit/sent.json"),
                (lambda: _findings(root, directory), "private/drafts/"),
                (lambda: _contracts(root, as_of, directory, contract_days), "content/agencies.json"),
+               (lambda: _review_waiting(root, as_of, directory, review_days), "private/review-assignments/"),
                (lambda: _stale_kits(root, directory), "content/"),
                (lambda: _contacts(root, as_of, directory), "kit/agencies.json"))
     items = []
@@ -162,11 +212,11 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS):
     return [{"rank": rank, **{k: v for k, v in item.items() if k != "_key"}} for rank, item in enumerate(items, 1)]
 
 
-def run_cli(root, as_of=None, as_json=False, contract_days=CONTRACT_DAYS):
+def run_cli(root, as_of=None, as_json=False, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS):
     day = date.today() if as_of is None else kit_track._day(as_of)
     if day is None:
         raise ValueError("--as-of must be a real YYYY-MM-DD date")
-    items = todo(root, day, contract_days=contract_days)
+    items = todo(root, day, contract_days=contract_days, review_days=review_days)
     if as_json:
         return json.dumps(items, indent=2, ensure_ascii=False)
     if not items:

@@ -7,15 +7,16 @@ from collections import Counter
 
 from .findings import _real_dir, load_draft
 
-FIELDS = ("title", "summary", "body_md", "sources", "classification", "confidence", "limitations", "counterevidence")
-LISTS = ("limitations", "counterevidence")
+FIELDS = ("title", "summary", "body_md", "sources", "classification", "confidence", "limitations", "counterevidence",
+          "agency_id", "also_agency_ids")
+LISTS = ("limitations", "counterevidence", "also_agency_ids")
 SOURCE_FIELDS = ("locator", "title", "rule_id")
 
 
 def load(path):
     """load_draft plus the shape the diff relies on; errors name the file."""
     document = load_draft(path)
-    for field in ("title", "summary", "body_md", "classification", "confidence"):
+    for field in ("title", "summary", "body_md", "classification", "confidence", "agency_id"):
         if document.get(field) is not None and not isinstance(document[field], str):
             raise ValueError(f"{path}: key {field!r} must be a string")
     for field in LISTS:
@@ -88,7 +89,11 @@ def diff(old, new):
                 changes.append(entry)
         elif field in LISTS:
             if (a or []) != (b or []):
-                changes.append({"field": field, "removed": _minus(a or [], b or []), "added": _minus(b or [], a or [])})
+                removed, added = _minus(a or [], b or []), _minus(b or [], a or [])
+                if field == "also_agency_ids" and not removed and not added:  # order only: show both ordered lists
+                    changes.append({"field": field, "old": a or [], "new": b or []})
+                else:
+                    changes.append({"field": field, "removed": removed, "added": added})
         elif a != b:
             changes.append({"field": field, "old": a, "new": b})
     return changes

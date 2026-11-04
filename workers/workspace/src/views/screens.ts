@@ -1,4 +1,4 @@
-import { executionClaimId, requiresDeliveryReconciliation, requiresExecutionQuiescence } from "../db.ts";
+import { MAIL_CLASSIFICATIONS, executionClaimId, requiresDeliveryReconciliation, requiresExecutionQuiescence } from "../db.ts";
 // Server-rendered workspace screens. Every value is escaped by the html tag.
 import { fmtDate, html, jsonBlock, raw, type Safe } from "@deflock/shared/html";
 import { reviewBlockers, type JsonObject } from "@deflock/shared/review";
@@ -8,11 +8,25 @@ import type {
 } from "../db.ts";
 import type { BrevoSettings } from "../manifest.ts";
 import { statePill } from "./layout.ts";
+export { home } from "./home.ts";
+
+/** Readiness of the inline Legistar poll, from the newest run receipt that recorded one (counts only). */
+export function legistarLine(runs: RunReceiptRow[]): string {
+  for (const r of runs) {
+    let p: { outcome?: string; filed?: number; revised?: number; discarded?: number; past?: number; failed_feeds?: unknown[] } | undefined;
+    try { p = JSON.parse(r.summary_json ?? "{}")?.legistar; } catch { p = undefined; }
+    if (!p?.outcome) continue;
+    if (p.outcome === "not_configured") return "legistar_poll: not configured";
+    return `legistar_poll: ${p.outcome} at ${r.started_at} - filed ${p.filed ?? 0}, revised ${p.revised ?? 0}, past ${p.past ?? 0}, discarded ${p.discarded ?? 0}, failed feeds ${p.failed_feeds?.length ?? 0}`;
+  }
+  return "legistar_poll: no scheduled run yet";
+}
 
 export function dashboard(campaign: CampaignRow | null, counts: Record<string, number>, incidents: IncidentRow[], runs: RunReceiptRow[], jobs: JobRow[]): Safe {
   const stat = (label: string, key: string) => html`<div class="card stat"><strong>${counts[key] ?? 0}</strong><span class="meta">${label}</span></div>`;
   return html`<h1>${campaign?.name ?? "Campaign"}</h1>
 <p class="meta">${campaign ? `${campaign.county_name} County, ${campaign.jurisdiction.toUpperCase()} - privacy tier ${campaign.privacy_tier} - external sends ${campaign.external_sends} - law package ${campaign.law_package_status}` : "No campaign row yet; the wizard writes it at launch."}</p>
+<p class="meta">${legistarLine(runs)}</p>
 <div class="cards">${stat("Selected agencies", "agencies")}${stat("Requests", "requests")}${stat("Open requests", "requests_open")}${stat("Inbound mail", "inbox")}${stat("Unclassified mail", "unclassified")}${stat("Preserved originals", "originals")}${stat("Findings", "findings")}${stat("Approvals waiting", "approvals_pending")}${stat("Jobs queued", "jobs_queued")}${stat("Jobs failed", "jobs_failed")}${stat("Open incidents", "incidents")}</div>
 <h2>Open incidents</h2>
 ${incidents.length ? html`<table class="data"><tr><th>Severity</th><th>Message</th><th>Count</th><th>Last seen</th></tr>${incidents.map((i) => html`<tr><td>${statePill(i.severity)}</td><td>${i.message}</td><td>${i.count}</td><td>${i.last_seen}</td></tr>`)}</table>` : html`<p>None.</p>`}
@@ -41,11 +55,21 @@ ${followupJob ? html`<p class="notice">Follow-up job ${followupJob.job_id} is ${
 <h2>Body (Markdown)</h2><pre class="json">${r.body_md}</pre>`;
 }
 
-export function inbox(rows: CorrespondenceRow[], requests: Map<string, RequestRow>, agencies: Map<string, AgencyRow>): Safe {
+export function inbox(rows: CorrespondenceRow[], requests: Map<string, RequestRow>, agencies: Map<string, AgencyRow>, notice: string | null = null): Safe {
+  const reviewable = MAIL_CLASSIFICATIONS.filter((v) => v !== "unclassified");
+  const classCell = (c: CorrespondenceRow): Safe => {
+    const current = c.classification ?? "unclassified";
+    if (c.direction !== "inbound") return html`${current}`;
+    const proposed = c.reviewed_at && c.proposed_classification && c.proposed_classification !== current ? html`<br><span class="meta">proposed: ${c.proposed_classification}</span>` : "";
+    const reviewed = c.reviewed_at ? html`<br><span class="meta">reviewed by ${c.reviewed_by ?? "unknown"} ${c.reviewed_at}</span>` : "";
+    const placeholder = reviewable.includes(current) ? "" : html`<option value="" selected disabled>choose...</option>`;
+    return html`<form method="post" action="/inbox/${c.correspondence_id}/classification"><select name="classification" required aria-label="Classification">${placeholder}${reviewable.map((v) => html`<option value="${v}"${v === current ? raw(" selected") : ""}>${v}</option>`)}</select> <button class="secondary" type="submit">Save review</button></form>${proposed}${reviewed}`;
+  };
   return html`<h1>Inbox</h1>
 <p>Raw messages are preserved by hash before anything else happens. Classification is proposed by the runner and reviewed here.</p>
+${notice ? html`<p class="notice">${notice}</p>` : ""}
 <table class="data"><tr><th>Received</th><th>Direction</th><th>From</th><th>Subject</th><th>Classification</th><th>Request</th><th>Raw</th></tr>
-${rows.map((c) => { const req = c.request_id ? requests.get(c.request_id) : null; return html`<tr><td>${c.received_at}</td><td>${c.direction}</td><td>${c.from_addr ?? ""}</td><td>${c.subject ?? ""}</td><td>${c.classification ?? "unclassified"}</td><td>${req ? html`<a href="/requests/${req.request_id}">${agencies.get(req.agency_id)?.name ?? req.agency_id}</a>` : ""}</td><td>${c.raw_sha256 ? html`<a href="/records/${c.raw_sha256}">${c.raw_sha256.slice(0, 12)}</a>` : ""}</td></tr>`; })}
+${rows.map((c) => { const req = c.request_id ? requests.get(c.request_id) : null; return html`<tr><td>${c.received_at}</td><td>${c.direction}</td><td>${c.from_addr ?? ""}</td><td>${c.subject ?? ""}</td><td>${classCell(c)}</td><td>${req ? html`<a href="/requests/${req.request_id}">${agencies.get(req.agency_id)?.name ?? req.agency_id}</a>` : ""}</td><td>${c.raw_sha256 ? html`<a href="/records/${c.raw_sha256}">${c.raw_sha256.slice(0, 12)}</a>` : ""}</td></tr>`; })}
 </table>${rows.length ? "" : html`<p>Nothing received yet.</p>`}`;
 }
 
@@ -154,9 +178,23 @@ ${notice ? html`<p class="notice">${notice}</p>` : ""}
 <h2>History</h2><div class="cards">${other.map(card)}</div>`;
 }
 
-export function publish(publications: PublicationRow[], siteVersion: string | null, previous: string | null, campaign: CampaignRow | null): Safe {
+/** site_version recorded in a build_site job's inputs; "?" when the JSON is malformed or lacks it (never throws). */
+function buildSiteVersion(job: JobRow): string {
+  try {
+    const inputs = JSON.parse(job.inputs_json) as { site_version?: unknown } | null;
+    return inputs && typeof inputs === "object" && typeof inputs.site_version === "string" && inputs.site_version ? inputs.site_version : "?";
+  } catch {
+    return "?";
+  }
+}
+
+export function publish(publications: PublicationRow[], siteVersion: string | null, previous: string | null, campaign: CampaignRow | null, lastBuild: JobRow | null = null): Safe {
   return html`<h1>Publish</h1>
 <p>The public site serves the R2 prefix <code>sites/${siteVersion ?? "(none)"}/</code>${previous ? html` (previous: <code>${previous}</code>)` : ""}${campaign?.public_hostname ? html` at <code>${campaign.public_hostname}</code>` : ""}. A version switch is a <code>deploy_site</code> approval card.</p>
+<h2>Rebuild from current data</h2>
+<p>Queues a build_site job from the current manifest and proposes a deploy_site card; nothing is served until that card is approved.</p>
+<form method="post" action="/publish/rebuild"><button class="secondary" type="submit">Rebuild site from manifest</button></form>
+${lastBuild ? html`<p class="meta">Last build: ${lastBuild.job_id} ${statePill(lastBuild.state)} for ${buildSiteVersion(lastBuild)} - enqueued ${lastBuild.enqueued_at}${lastBuild.state === "failed" && lastBuild.error ? html`<br><span class="pill bad">${lastBuild.error}</span>` : ""}</p>` : html`<p class="meta">No build yet.</p>`}
 <form method="post" action="/publish/propose" class="stack"><label class="field">Propose serving site version <input type="text" name="site_version" pattern="[a-z0-9._-]{1,64}" required></label><button class="secondary" type="submit">Create deploy_site card</button></form>
 <h2>Publications</h2>
 <table class="data"><tr><th>Path</th><th>Finding</th><th>Published</th><th>By</th><th>Content</th></tr>${publications.map((p) => html`<tr><td>${p.path}</td><td>${p.finding_id ?? ""}</td><td>${p.published_at}</td><td>${p.published_by}</td><td>${p.content_sha256.slice(0, 16)}</td></tr>`)}</table>`;
@@ -211,7 +249,15 @@ export const SIGNUP_TEST_CHECKLIST = [
   "Record the date, the address's last four characters and the result in the launch receipt; then delete the test contact.",
 ] as const;
 
-export function settings(campaign: CampaignRow | null, rows: SettingRow[], secrets: SecretPresence[], notice: string | null, brevo: BrevoSettings | null): Safe {
+/** Recorded outcome of the signup test: which steps were confirmed, by whom, when. No address or free text is ever stored. */
+export interface SignupTest {
+  checks: boolean[];
+  done: number;
+  recorded_by: string;
+  recorded_at: string;
+}
+
+export function settings(campaign: CampaignRow | null, rows: SettingRow[], secrets: SecretPresence[], notice: string | null, brevo: BrevoSettings | null, mailDelivery: boolean, signupTest: SignupTest | null = null): Safe {
   return html`<h1>Settings</h1>
 ${notice ? html`<p class="notice">${raw(notice)}</p>` : ""}
 <h2>Newsletter (Brevo, non-secret settings)</h2>
@@ -223,11 +269,13 @@ ${notice ? html`<p class="notice">${raw(notice)}</p>` : ""}
 <label class="field">Consent footer (your reviewed wording: why the reader receives this, who sends it and from where; must keep the sentence "Unsubscribe at any time." — drafts without a campaign footer carry a template marker and cannot be sent)<textarea name="consent_footer" rows="3" maxlength="600">${brevo?.consent_footer ?? ""}</textarea></label>
 <button class="secondary" type="submit">Save Brevo settings</button>${brevo?.updated_at ? html`<span class="meta"> saved ${brevo.updated_at} by ${brevo.updated_by ?? ""}</span>` : ""}</form>
 <h3>Test signup flow (docs/CLOUDFLARE.md step 9)</h3>
-<div class="checklist">${SIGNUP_TEST_CHECKLIST.map((item, i) => html`<label><input type="checkbox" name="signup_check_${i}"> ${item}</label>`)}</div>
+<form method="post" action="/settings/signup-test" class="stack"><div class="checklist">${SIGNUP_TEST_CHECKLIST.map((item, i) => html`<label><input type="checkbox" name="signup_check_${i}"${signupTest?.checks[i] ? raw(" checked") : ""}> ${item}</label>`)}</div>
+<button class="secondary" type="submit">Record signup test</button> <span class="meta">${signupTest ? (signupTest.done === SIGNUP_TEST_CHECKLIST.length ? html`All ${SIGNUP_TEST_CHECKLIST.length} steps confirmed` : html`Recorded ${signupTest.done} of ${SIGNUP_TEST_CHECKLIST.length}`) : ""}${signupTest ? html` by ${signupTest.recorded_by} at ${signupTest.recorded_at}` : "Not recorded yet."}</span></form>
 <h2>Backup</h2>
 <form method="post" action="/api/backup" class="stack"><p>Enqueues a <code>backup</code> job: the runner pulls <code>/api/runner/export.json</code> and every original by hash into one verified tar (docs/BACKUP.md). Organizers can also download <a href="/api/export.json">the D1 export</a> directly.</p><button class="secondary" type="submit">Queue backup job</button></form>
 <h2>Secrets (presence only; values are never displayed)</h2>
 <table class="data"><tr><th>Secret</th><th>Set</th><th>Purpose</th></tr>${secrets.map((s) => html`<tr><td><code>${s.name}</code></td><td>${s.present ? html`<span class="pill ok">present</span>` : html`<span class="pill bad">missing</span>`}</td><td>${s.note}</td></tr>`)}</table>
+<p>Request mail delivery: ${mailDelivery ? html`<span class="pill ok">configured</span>` : html`<span class="pill bad">not configured</span> - send_request and send_followup cards fail with <code>sender_not_configured</code> until both outbox secrets are set`}</p>
 <h2>Runner token</h2>
 <form method="post" action="/settings/rotate-runner-token" class="stack"><p>Rotating generates a new token, stores its SHA-256 fingerprint here and shows the value once. You must then set it as the Worker secret <code>RUNNER_TOKEN</code> and on the runner; the old token stops working when the secret is updated.</p><button class="danger" type="submit">Rotate runner token</button></form>
 <h2>Campaign</h2>${campaign ? jsonBlock(campaign) : html`<p>No campaign row.</p>`}

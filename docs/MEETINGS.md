@@ -74,6 +74,18 @@ the agency's when `--agency-id` was given) in load order; `--agency-id` now orde
 sets the meeting's `agency_id` but never filters `--finding` ids. The command prints the cited ids as
 `findings` next to the `findings_cited` count.
 
+**Cited findings (DF2207-06).** The staged file also stores the ids the kit cites as `cited_findings` (1 to 3
+unique ids, in the order the kit cites them), so each published finding page can list the staged meetings
+that cite it. The ids come from the same selection that wrote the kit, never from the kit text. A kit that
+cites no finding (the "No published findings yet" text) omits the field. `--replace` replaces the whole list
+(or omits it when nothing is cited now) and keeps a recorded outcome as before. Meetings staged before this
+field existed have no list: their kit text is never parsed, so they are not listed on any finding page. A
+finding page's **Discussed at public meetings** section shows each citing meeting (body linked to its
+`meetings/<id>.html`, recorded date and time in its own UTC offset, agenda item, and the outcome result when one
+was recorded) newest first, ties by meeting id; cancelled and future staged meetings are listed too. A meeting
+citing a finding that was withdrawn, never published or unknown never fails the build and lists nothing for it.
+The list records what a staged kit cites; it is not proof of attendance, speaking, adoption or endorsement.
+
 ### Participation (organizer-verified)
 
 `meetings-stage --participation FILE` adds the facts an organizer checked on the agency's own page.
@@ -188,6 +200,16 @@ Cancelled, past and stale kits stop: re-stage corrections with `meetings-stage -
 Use `--allow-past` for an archive, or `--replace` to regenerate an existing private pack.
 Nothing is sent or published. Review the print preview before handing it over.
 
+The handout follows the campaign's language: `<html lang>` is `site.json.language`, and its fixed headings and notes
+(title, "What we found", the empty-state sentence, the source line, "corrected", the agenda link, "N more on the
+site", the record-number explainer, and the classification and confidence wording) come from `content/labels.json`
+(`handout.*`, `classification.*`, `confidence.*`; see `docs/SITE-CONTENT.md`, Labels). The tool translates nothing:
+with no labels file the handout is the English it always was, byte for byte, and a Spanish `language` without
+translated labels gets `lang="es"` over English text. A labels file the site would refuse (unknown key, foreign
+placeholder, symlink) stops the pack with the same message and writes nothing. `comment.md` (the staged text
+verbatim), the `not_legal_advice` text (`site.json`) and `sources.csv` (English column headers, machine-readable) never
+change with the labels. `--upcoming` applies the same labels to every pack it builds.
+
 `meeting-pack --directory D --upcoming [--within-days N] [--replace]` builds the pack for every staged
 meeting that starts from now up to (not including) N days ahead (default 14, `1..90`), earliest first,
 through the same checks as `--id`. It prints `{window, built, skipped}`; each skipped meeting has the
@@ -234,8 +256,75 @@ spaces collapsed). Problems are listed together by file row (the header is row 1
 and nothing is written. Votes are never inferred from `--vote`. Changing votes needs `--replace`, and
 `--replace` without `--votes` drops them (`votes: none`). The meeting page shows a "Recorded votes" table.
 
+`--recording-url URL [--recording-start H:MM:SS]` adds the body's own official https video or audio of the meeting,
+which the organizer has checked, to the same outcome. It is only ever a link: the tool never fetches, embeds,
+downloads or rewrites it (the start time is shown as text, not added to the URL). There is no recording-only
+command; a recording goes in with the outcome, or with `--replace` (which drops the old recording unless it is
+given again). The URL must be https with no user name or password, at most 500 characters; the start is
+`H:MM:SS` (minutes and seconds two digits) and at most `12:00:00`, and needs a URL
+(`recording_start needs recording_url`). Bad values are refused naming `recording_url` or `recording_start`,
+and `content-check` and `build` refuse the same mistakes in a hand-edited file. Past meetings in the meetings
+list and the meeting page then end the outcome line with `Watch the discussion (from H:MM:SS)`; the wording
+comes from the `meeting.recording` and `meeting.recording_from` labels. Outcomes without a recording render as before.
+
+### Confirming an outcome against the approved minutes
+
+`python3 -m campaign_tool meetings-outcome --directory D --id <meeting id> --minutes-url <https URL> --minutes-approved-on YYYY-MM-DD [--replace]`
+is the second mode of the same command. It attaches the body's approved official minutes to an outcome that is
+already recorded, without retyping or replacing its result, votes, recording or verifier. Both flags are needed
+together and cannot be mixed with `--result`, `--on`, `--source`, `--verified-by`, `--vote`, `--votes`,
+`--recording-url` or `--recording-start`; without either minutes flag all four creation flags are required, as before.
+The URL must be https with no user name or password, at most 500 characters. The date must be a real `YYYY-MM-DD` day
+from the meeting's own date to today inclusive (the approval may come after the outcome was recorded, so it is not
+compared with `--on`). It refuses a meeting with no recorded outcome (`minutes_url: needs a recorded outcome`), a
+cancelled or not yet held one, a symlinked file and a malformed value, each naming the field, and writes nothing.
+Minutes already attached are kept unless `--replace`, which replaces only that pair. It prints the whole outcome
+then `Recorded only. Nothing was published.` The tool fetches nothing; the link is an organizer-attested pointer.
+
+Caveat: an ordinary full `--replace` of the outcome (creation mode) drops the old minutes, as it drops omitted votes
+and recording, so a changed result must be confirmed against the minutes again.
+
+The meeting page, the meetings list and the agency page's "Past meetings" then show a second line under the outcome:
+`Confirmed in the minutes approved on D` (a link to the minutes) when both fields are present, otherwise
+`Recorded by the campaign; minutes not yet approved`. A meeting with no outcome shows neither. The wording comes
+from the `meeting.minutes_confirmed` (with `{date}`), `meeting.minutes_pending` and `agency.past_meetings` labels.
+`data/meetings.json` carries `minutes_url` and `minutes_approved_on` on the outcome, both or neither.
+`today` lists a `minutes_pending` item for each outcome recorded more than 45 days ago (by `--on`) that has no
+minutes, with the command to attach them; it only asks you to check whether the minutes are approved.
+
+## Worker Legistar poll (inline, authored, undeployed)
+
+`runScheduled` (`workers/workspace/src/cron.ts`) polls Legistar inline on the existing cron slots
+through `pollLegistar` (`workers/workspace/src/legistar_poll.ts`). There is no second scheduler and no
+job row, so the runner is not involved. The optional `LEGISTAR_FEEDS` setting accepts https
+events feed URLs separated by spaces or commas, but a supported expanded collection source has
+**not been established**. If the setting is absent, nothing is
+fetched, the run summary records `not_configured`, and the dashboard shows
+`legistar_poll: not configured`.
+- Each feed gets one GET with no redirect followed, no credential and no cookie. Limits match the CLI:
+  20 s, 4 MiB and at most 60 events. A feed that breaks a limit, is not https, has credentials in its
+  URL, redirects, returns bad status/JSON, or has missing/null/non-array `EventItems` files nothing. It raises one deduplicated
+  incident naming the feed by host and path, with no response body, and the slot's outcome becomes
+  `partial`. The other feeds still run.
+- An expanded event is kept only when an agenda item matches `matchesMeetingKeywords`, the generated
+  copy of `data/meeting-keywords.json`. Only evaluated non-matches are counted as `discarded`.
+- A kept event is filed through `fileMeeting`, using the source URL `<feed path>/<EventId>` and the
+  item id `EventId`. A re-poll files nothing. Changed bytes file one revision, and the previous row is
+  left unchanged. Only the body name, date, ids, URL and hash are stored. Item text, comments and
+  attendee fields are not.
+- An event with no usable date or time is filed `date_state: unknown` with `starts_at` NULL and is never
+  guessed. A meeting already in the past is filed with its real date and counted `past`.
+
+**Source-contract hold:** Legistar documents `EventItems=1` on the
+[single-event endpoint](https://webapi.legistar.com/Help/Api/GET-v1-Client-Events-EventId_EventItems_AgendaNote_MinutesNote_EventItemAttachments),
+not the [events collection](https://webapi.legistar.com/Help/Api/GET-v1-Client-Events).
+The frozen one-request-per-feed design cannot discover events and then fetch their items.
+The spec owner must authorize bounded detail requests or establish an expanded collection source
+before this can be considered a supported live poll. No detail requests or new source are authorized here.
+
+
 ## Not done
 
-No automatic Legistar polling from the Worker, no RSVP collection (the `rsvp_count` column is
+No RSVP collection (the `rsvp_count` column is
 reserved), no other agenda platforms (Granicus, PrimeGov, CivicClerk), and no calendar
 feed. Each of those should keep the same keyword-lead, human-verify rule.

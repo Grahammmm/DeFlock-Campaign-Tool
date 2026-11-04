@@ -12,6 +12,15 @@ any sender.
 | Hosted gateway (`runner/outbox_gateway.py`) | the same columns | The Worker's HMAC-signed frame for this exact draft, re-verified before every send. It is honoured only inside the gateway. |
 | Flock email (`tools/flock_email.py`) | `EMAIL-APPROVAL.json` `"state": "approved"` | `tools/flock_approve.py` writes it only after the signature verifies. The stage reads `approval recorded` / `sent recorded` only when the signature is re-verified (`flock_approve.py status`, `flock_requests.py open` and `--check`); `flock_email.py` alone reports `approval unverified` (see below). |
 
+## Redaction sign-off (`flock-redaction`)
+
+`tools/flock_redact.py payload STORE SLUG SHA DOCUMENT` prints the exact canonical
+proposal to review and sign with the same `deflock-approval` namespace and trust
+file. `signoff STORE SLUG SHA DOCUMENT --signature FILE` records only the principal
+returned by the shared verifier. See [REDACTION.md](REDACTION.md) for the private
+ceremony. No typed name, setting or automation approves; apply re-verifies the
+signature. Redaction eligibility is not approval to publish or send anything.
+
 ## One-time setup (G, needs sudo; nothing works until this is done)
 
 1. Make an approval key that agents cannot use. Preferred is a hardware key, which needs a touch
