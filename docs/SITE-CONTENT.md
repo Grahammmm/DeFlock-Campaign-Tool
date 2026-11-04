@@ -318,6 +318,13 @@ weight (HTML plus site-local stylesheets, preloads, scripts and `img`/`source` f
 references, each once; on-disk bytes, uncompressed) and exits 3 naming every page over
 `KB*1024` bytes with its three largest assets. Files a script fetches at run time (map
 GeoJSON) are not counted; external hosts are never fetched; a failed `--check` wins.
+To see growth over time rather than only the ceiling, `--budget` also takes `--weights-out FILE`, which saves
+the per-page table as a private `page-weights-v1` JSON record (no timestamp, so equal builds give byte-identical files;
+a new file only, mode 0600, never inside `public/` or `content/`), and `--weights-baseline FILE`, which reads such a record
+and prints each page as `<page> <bytes> bytes (+N|-N|±0 since baseline)`, `(new page)`, or
+`removed since baseline: <page>`. The baseline never changes the exit code (3 only when a page is over budget); an
+unreadable, symlinked, over 2 MiB or wrong-schema baseline stops the build with exit 1 before the table. Both
+options need `--budget`. These are uncompressed first-party bytes of the built files, not a field measurement.
 Meetings on or after the build date (the typed
 `starts_at` date, no time-zone conversion) are upcoming, soonest first (home: next
 three); `meetings.html` then lists `#past-meetings`, most recent first.
