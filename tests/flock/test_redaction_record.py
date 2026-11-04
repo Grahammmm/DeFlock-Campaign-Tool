@@ -9,9 +9,12 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import unittest
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tests.flock import test_publish as base
 
 spec = importlib.util.spec_from_file_location('_redaction_publish_test', base.TOOLS / 'flock_publish.py')
@@ -293,5 +296,46 @@ class RedactionRecordTest(unittest.TestCase):
         self.assertIn('from campaign_tool import approval', text)
 
 
+def acceptance_proof(output):
+    """Real main baseline and an actual read-only mount; no live trust file is read."""
+    output = Path(output)
+    if not output.is_absolute() or base.ROOT == output or base.ROOT in output.parents:
+        raise ValueError('proof output must be absolute and outside repository')
+    case = RedactionRecordTest()
+    case.setUp()
+    try:
+        command = ['bwrap', '--ro-bind', '/', '/', sys.executable, '-B', str(Path(__file__).resolve()),
+                   '--readonly-reader', str(case.store), case.sha, str(case.source)]
+        done = subprocess.run(command, capture_output=True, text=True, check=True)
+        print(done.stdout, end='')
+        shutil.rmtree(case.folder.parent)
+        source = subprocess.run(['git', 'show', 'origin/main:tools/flock_publish.py'], cwd=base.ROOT,
+                                capture_output=True, text=True, check=True).stdout
+        main = {'__file__': str(base.TOOLS / 'flock_publish.py'), '__name__': '_baseline_publish'}
+        exec(compile(source, str(base.TOOLS / 'flock_publish.py'), 'exec'), main)
+        code, lines, expected = main['derive'](case.rundir, 'sample')
+        case.assertEqual(code, 0, lines)
+        raw, text = case.export()
+        case.assertEqual(raw, (json.dumps(expected, indent=2, ensure_ascii=False) + '\n').encode())
+        output.mkdir(mode=0o700, exist_ok=True)
+        (output / 'PUBLISH.json').write_bytes(raw)
+        (case.rundir / 'PUBLISH.json').unlink()
+        case.source.unlink()
+        _, refusal = case.export('source_mismatch')
+        (output / 'refusal-lines.txt').write_text(text + refusal)
+        print('BASELINE ok: byte-identical PUBLISH.json to actual origin/main with no redaction directory')
+        print('PRIVACY proof files: PUBLISH.json refusal-lines.txt')
+    finally:
+        case.doCleanups()
+
+
 if __name__ == '__main__':
-    unittest.main()
+    if sys.argv[1:2] == ['--readonly-reader']:
+        store, sha, source = sys.argv[2:]
+        reader.approval.verify = lambda data, signature: 'synthetic-reviewer'
+        assert reader.eligibility(store, base.AGENCY, sha, reader.original_hash(store, [source])) == ('eligible', 'ok')
+        print('READONLY ok: eligibility on read-only mounted store')
+    elif sys.argv[1:2] == ['--acceptance-proof']:
+        acceptance_proof(sys.argv[2])
+    else:
+        unittest.main()
