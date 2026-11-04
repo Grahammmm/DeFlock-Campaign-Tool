@@ -176,6 +176,7 @@ class FeeSettlementTests(unittest.TestCase):
         before = self.sent.read_bytes()
         row, err = self.status()
         self.assertEqual((row.pop("fee_state"), row.pop("fee_paid")), ("unpaid", None))
+        self.assertEqual(row.pop("withheld_basis"), [])
         self.assertEqual({k: v for k, v in row.items() if k not in ("agency_id", "name")}, GOLDEN_ROW)
         self.assertEqual(err, f"{self.agency}: fee estimate $245.50 is unpaid\n")
         cells, values = self.csv_row("legacy")
