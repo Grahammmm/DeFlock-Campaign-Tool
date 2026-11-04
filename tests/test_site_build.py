@@ -24,7 +24,8 @@ PAGES = ["index.html", "agencies.html", "findings/index.html", "findings/packet-
          "agencies/cedar.html"]  # DF2237-08: Cedar Police has a finding and sources
 FILES = PAGES + ["404.html", "cameras.html", "methods.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                  "site-data.js", "agency-cards.js", "app.js", "data/cameras.geojson",
-                 "data/city-boundaries.geojson", "findings/agency/cedar.xml", "data/findings.json", "data/sources.json"]
+                 "data/city-boundaries.geojson", "findings/agency/cedar.xml", "data/findings.json", "data/sources.json",
+                 "findings/cite.js"]
 EXPECTED_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; "
                 "img-src 'self' data: blob: https://tiles.example.invalid; "
                 "connect-src 'self' https://tiles.example.invalid; font-src 'self'; worker-src blob:; "
@@ -56,7 +57,7 @@ class SiteBuildTests(unittest.TestCase):
         for page in PAGES:
             html = self.read(page)
             for tag in re.findall(r"<script\b[^>]*>.*?</script>", html, flags=re.S):
-                self.assertRegex(tag, r'^<script defer src="/(?:vendor/maplibre-gl|site-data|agency-cards|app)\.js"></script>$', page)
+                self.assertRegex(tag, r'^<script defer src="/(?:vendor/maplibre-gl|site-data|agency-cards|app|findings/cite)\.js"></script>$', page)
             self.assertEqual(html.count("<script"), html.count("</script>"), page)
             self.assertNotIn("<iframe", html)
             self.assertNotRegex(html, r'href="(?:javascript|data):', page)
