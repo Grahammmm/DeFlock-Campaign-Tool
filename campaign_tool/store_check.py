@@ -2,7 +2,12 @@
 
 The result names only hashes, file names under objects/, sizes and problem
 codes. It never reads receipts, so no source id or original name can leak.
+
+Each object is verified through one no-follow, nonblocking regular-file descriptor
+with a bounded read; a change seen during the check stops it. Guarantee and limits:
+docs/STORE-CHECK.md.
 """
+import errno
 import hashlib
 import os
 import re
@@ -11,14 +16,25 @@ import stat
 
 HEX64 = re.compile(r"[0-9a-f]{64}")
 CHUNK = 1024 * 1024
+CHANGED = "Stored object changed during check; retry with the store idle"
+UNREADABLE = "Stored object could not be read; check permissions and retry"
+OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
 
 
-def _sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(CHUNK), b""):
-            digest.update(block)
-    return digest.hexdigest()
+def _sha256(fd, byte_limit):
+    """(hexdigest, bytes_read) from an open descriptor; never requests more than CHUNK or the bytes left of byte_limit."""
+    digest, total = hashlib.sha256(), 0
+    while total < byte_limit:
+        block = os.read(fd, min(CHUNK, byte_limit - total))
+        if not block:
+            break
+        digest.update(block)
+        total += len(block)
+    return digest.hexdigest(), total
+
+
+def _signature(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
 def _ledger_rows(path):
@@ -38,16 +54,52 @@ def _check_row(objects, sha, expected):
     path = objects / sha
     try:
         info = os.lstat(path)
-    except FileNotFoundError:
-        return {"sha256": sha, "problem": "missing_file"}
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return {"sha256": sha, "problem": "missing_file"}
+        raise ValueError(UNREADABLE) from None
     if not stat.S_ISREG(info.st_mode):
         return {"sha256": sha, "problem": "not_a_regular_file"}
     if info.st_size != expected:
         return {"sha256": sha, "problem": "size_mismatch", "expected": expected,
                 "actual": info.st_size}
-    if _sha256(path) != sha:
-        return {"sha256": sha, "problem": "hash_mismatch"}
-    return None
+    try:
+        fd = os.open(path, OPEN_FLAGS)
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return {"sha256": sha, "problem": "missing_file"}
+        if exc.errno in (errno.ELOOP, errno.ENXIO):  # replaced by a symlink / socket or device after the lstat
+            return {"sha256": sha, "problem": "not_a_regular_file"}
+        raise ValueError(UNREADABLE) from None
+    try:
+        try:
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode):
+                return {"sha256": sha, "problem": "not_a_regular_file"}
+            if opened.st_size != expected:
+                return {"sha256": sha, "problem": "size_mismatch", "expected": expected,
+                        "actual": opened.st_size}
+            digest, count = _sha256(fd, expected + 1)
+            closed = os.fstat(fd)
+        except OSError:
+            raise ValueError(UNREADABLE) from None
+        if count != expected or _signature(opened) != _signature(closed):
+            raise ValueError(CHANGED)
+        try:
+            final = os.lstat(path)
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                return {"sha256": sha, "problem": "missing_file"}
+            raise ValueError(UNREADABLE) from None
+        if not stat.S_ISREG(final.st_mode):
+            return {"sha256": sha, "problem": "not_a_regular_file"}
+        if _signature(final) != _signature(closed):
+            raise ValueError(CHANGED)
+        if digest != sha:
+            return {"sha256": sha, "problem": "hash_mismatch"}
+        return None
+    finally:
+        os.close(fd)
 
 
 def check_store(root, rows=None):
