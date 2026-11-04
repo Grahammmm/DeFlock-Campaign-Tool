@@ -197,3 +197,15 @@ into your own calendar: an all-day event for each open request's provisional det
 keep only the agency's stated production date) and a timed event for each staged, not cancelled meeting's verified
 written-comment deadline on or after `--as-of`. It holds ids, dates, agency or body names and the official source
 link only. It is refused inside the campaign's `public/` or `content/` and never overwrites: re-run into a new file.
+
+## Requests filed on MuckRock (kit requests)
+
+`kit-sent --channel muckrock --request-url https://www.muckrock.com/foi/.../<name>-<id>` records a request you filed
+there yourself; the URL is stored on the entry, never fetched. To track it, open the request in your browser and save
+its JSON (the request's API page) to a file, then run `kit-muckrock-import --directory D --agency ID --from-json
+FILE [--request NAME]`. It reads only `id`, `status`, `datetime_updated`, `datetime_done` and `price` from that file,
+checks the `id` against the stored URL and prints the proposed `kit-response` step as a dry run; `--apply` records it
+under the normal step rules. `processed` is `acknowledged`; `fix` is `clarification_requested`; `payment` is
+`fee_estimate` from `price` (none: record it by hand); `rejected` is `denied`; `no_docs` and `abandoned` are `closed`
+with a note; `partial` is `produced --partial`; `done` is `produced`. `started`, `submitted`, `ack`, `appealing` and
+`lawsuit` propose no step, and any other status is refused by name. Nothing is fetched or sent.
