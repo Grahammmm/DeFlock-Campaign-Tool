@@ -89,7 +89,6 @@ class PartialProductionTests(unittest.TestCase):
             self.assertEqual(row.pop("scopes"), [{"scope_id": scope, "answer": None, "on": None}
                                                  for scope in entries[row["agency_id"]]["scopes"]])
         self.assertEqual([{k: r.pop(k) for k in NEW_ROW_KEYS} for r in rows], [NEW_ROW_KEYS, NEW_ROW_KEYS])
-        self.assertEqual([{s["answer"] for s in r.pop("scopes")} for r in rows], [{None}, {None}])
         self.assertEqual(json.dumps(rows), GOLDEN_STATUS_ROWS.replace("AGENCY", self.agency)
                          .replace("OTHER", self.other))
         report = self.due("2026-04-01", 3)
