@@ -50,7 +50,35 @@ def problems(config, profile_renderer="", point_context_renderer=""):
     return sorted(found)
 
 
-def render(config, profile_renderer, point_context_renderer=""):
+# DF0137-14: with relabel=True each fixed English fragment becomes a lookup in LABELS (site-data.js). Label text reaches
+# the page through textContent (fmt, fill) or the existing mapText escaper; it is never inserted as raw HTML.
+RELABEL = (
+    ('document.getElementById("map-selection-count").textContent=count+(slug==={{GROUP_SLUG}}?{{CANDIDATE_COUNT_SUFFIX}}'
+     ':(count===1?" mapped point":" mapped points"));',
+     'document.getElementById("map-selection-count").textContent=slug==={{GROUP_SLUG}}?count+{{CANDIDATE_COUNT_SUFFIX}}'
+     ':fmt(LABELS[count===1?"js.mapped_point":"js.mapped_points"],{count:count});'),
+    ('notice.innerHTML="The interactive map could not load in this browser. You can still select a city below, '
+     '<a href=\\"sources.html#library\\">review the evidence notes</a>, or <a href=\\"{{SOURCE_MAP_URL}}\\" '
+     'target=\\"_blank\\" rel=\\"noopener noreferrer\\">open the DeFlock source map</a>.";',
+     'fill(notice,LABELS["js.map_failed"],{evidence:["sources.html#library",LABELS["js.map_evidence"]],'
+     'source:["{{SOURCE_MAP_URL}}",LABELS["js.map_source"],1]});'),
+    ('fallback.innerHTML="Camera data could not load. <a href=\\"{{SOURCE_MAP_URL}}\\" target=\\"_blank\\" '
+     'rel=\\"noopener noreferrer\\">Open the DeFlock source map</a>";',
+     'fill(fallback,LABELS["js.data_failed"],{source:["{{SOURCE_MAP_URL}}",LABELS["js.data_source"],1]});'),
+    ('"<strong>Community-mapped ALPR point</strong><br>"', '"<strong>"+mapText(LABELS["js.popup_title"])+"</strong><br>"'),
+    ('"Manufacturer not specified"', 'LABELS["js.popup_no_manufacturer"]'),
+    ('"Operator not specified"', 'LABELS["js.popup_no_operator"]'),
+    ('>View source record &nearr;</a>"', '>"+mapText(LABELS["js.popup_source"])+" &nearr;</a>"'),
+)
+RELABEL_HELPERS = (
+    r'  function fmt(s,o){return String(s).replace(/\{([a-z_]+)\}/g,function(m,k){return Object.prototype.hasOwnProperty.call(o,k)?String(o[k]):m;});}'
+    "\n"
+    r'  function fill(el,s,links){el.textContent="";String(s).split(/(\{[a-z_]+\})/).forEach(function(part){var k=/^\{([a-z_]+)\}$/.exec(part),l=k&&Object.prototype.hasOwnProperty.call(links,k[1])?links[k[1]]:null,a;'
+    r'if(l){a=document.createElement("a");a.href=l[0];a.textContent=l[1];if(l[2]){a.target="_blank";a.rel="noopener noreferrer";}el.appendChild(a);}else if(part)el.appendChild(document.createTextNode(part));});}'
+    "\n")
+
+
+def render(config, profile_renderer, point_context_renderer="", relabel=False):
     found = problems(config, profile_renderer, point_context_renderer)
     if found:
         raise ValueError("; ".join(found))
@@ -75,6 +103,12 @@ def render(config, profile_renderer, point_context_renderer=""):
     token = re.compile(r"\{\{([A-Z_]+)\}\}")
     if set(token.findall(template)) != set(tokens):
         raise ValueError("Map template contract mismatch")
+    if relabel:
+        for old, new in RELABEL:
+            if template.count(old) != 1:
+                raise ValueError("Map template contract mismatch")
+            template = template.replace(old, new)
+        template += RELABEL_HELPERS
     return token.sub(lambda match: tokens[match.group(1)], template)
 
 
