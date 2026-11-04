@@ -613,7 +613,7 @@ def load_finding_preview(document, label, now=None):
 
 FINDING_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # public finding ids; distinct from a slug
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
-                "status", "participation", "outcome", "cited_findings"}
+                "status", "participation", "outcome", "cited_findings", "cosigners"}
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 CONTINUATION_KEYS = ("continued_to", "continued_to_date")  # DF0022-07: where the official source says an item went
@@ -863,6 +863,18 @@ def load_cited_findings(value, label):
     return list(value)
 
 
+def load_cosigners(value, label):
+    """DF2207-14: supporter ids named under a staged written comment: 1 to 30 unique canonical ids, order kept."""
+    if not isinstance(value, list) or not 1 <= len(value) <= 30:
+        raise ContentError(f"{label}: must be a list of 1 to 30 supporter ids")
+    for index, supporter_id in enumerate(value):
+        if not isinstance(supporter_id, str) or not SLUG.fullmatch(supporter_id):
+            raise ContentError(f"{label}[{index}]: not a canonical supporter id")
+        if supporter_id in value[:index]:
+            raise ContentError(f"{label}[{index}]: {supporter_id!r} is listed more than once")
+    return list(value)
+
+
 def load_meeting(document, label, today=None):
     _require_keys(document, MEETING_KEYS, {"body", "starts_at"}, label)
     agency_id = document.get("agency_id")
@@ -890,6 +902,8 @@ def load_meeting(document, label, today=None):
                     if "outcome" in document else None),
         **({"cited_findings": load_cited_findings(document["cited_findings"], f"{label}.cited_findings")}
            if "cited_findings" in document else {}),
+        **({"cosigners": load_cosigners(document["cosigners"], f"{label}.cosigners")}
+           if "cosigners" in document else {}),
     }
 
 
@@ -2337,8 +2351,11 @@ def glossary_terms_used(finding, glossary):
 
 # --- assembly ---------------------------------------------------------------
 
-def load_content(root, today=None):
-    """Return the validated content model for ``root`` or None when no content/ exists."""
+def load_content(root, today=None, *, _replacing_cosign_id=None):
+    """Return the validated content model for ``root`` or None when no content/ exists.
+
+    ``_replacing_cosign_id`` is private to ``meetings-stage --replace``: it skips only that one staged meeting's
+    co-signer cross-check so a stale grant can be repaired; its structure is still validated."""
     root = Path(root)
     content_dir = root / "content"
     if not content_dir.is_dir():
@@ -2376,6 +2393,11 @@ def load_content(root, today=None):
     continued = continuation_problems(meetings)  # DF0022-07: a continued item names a real, later, same-body meeting
     if continued:
         raise ContentError(continued[0])
+
+    from .supporters import cosign_problems  # local: supporters imports this module
+    cosigned = cosign_problems(root, meetings, today=today, skip_meeting_id=_replacing_cosign_id)  # DF2207-14
+    if cosigned:
+        raise ContentError(cosigned[0])
 
     sources_path = content_dir / "sources.json"
     sources = load_sources(_read_json(sources_path)) if sources_path.is_file() else []

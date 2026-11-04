@@ -14,6 +14,7 @@ from .content import (_read_json, load_comment_asks, load_content, load_finding,
 from .kit import _kit_folder, _write_json
 from .legal_claims import legal_notes
 from .meetings import _clean, comment_kit_md
+from .supporters import MAX_COSIGNERS, cosign_problems, resolve_cosigners
 
 MAX_KIT_BYTES = 4 * 1024 * 1024
 MAX_CITED = 3  # comment_kit_md speaks at most three findings
@@ -70,9 +71,20 @@ def _chosen_findings(findings, finding_ids):
     return [published[finding_id] for finding_id in finding_ids]
 
 
+def _chosen_cosigners(cosign_ids):
+    """DF2207-14: the organizer's --cosign ids as given (order kept); never deduplicated or trimmed silently."""
+    if not 1 <= len(cosign_ids) <= MAX_COSIGNERS:
+        raise MeetingStageError(f"--cosign: give 1 to {MAX_COSIGNERS} supporter ids (got {len(cosign_ids)})")
+    for index, supporter_id in enumerate(cosign_ids):
+        if supporter_id in cosign_ids[:index]:
+            raise MeetingStageError(f"--cosign {supporter_id}: given more than once")
+    return list(cosign_ids)
+
+
 def stage(root, meeting_id, agency_id=None, location=None, replace=False, participation=None, today=None,
-          finding_ids=None, asks=None):
+          finding_ids=None, asks=None, cosign_ids=None):
     override = load_comment_asks(asks, "--ask") if asks is not None else None  # DF2207-07: before anything is read or written
+    cosign_ids = _chosen_cosigners(cosign_ids) if cosign_ids is not None else None
     cfg = read_config(root)
     meeting = _find(_read_kit(root), meeting_id)
     if meeting.get("status") == "cancelled":
@@ -83,7 +95,7 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
         naive = False  # unparseable: load_meeting names it below
     if naive:
         raise MeetingStageError("kit/meetings.json predates time zones; run meetings again")
-    model = load_content(root)
+    model = load_content(root, _replacing_cosign_id=meeting_id if replace else None)  # DF2207-14: --replace repairs it
     if model is None:
         raise MeetingStageError("content/ is required (the site reads content/meetings/); create content/site.json first")
     site_asks = model["site"].get("comment_asks")  # --ask wins as a whole, then site.json, then the built-in defaults
@@ -105,13 +117,18 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
                 value["how"] = _clean(value["how"])
         entry["participation"] = load_participation(part, str(meeting.get("starts_at")),
                                                     f"meetings/{meeting_id}.json.participation", today)
+    cosigners = []
+    if cosign_ids is not None:  # DF2207-14: only a validated written comment and this exact meeting's grants count
+        if participation is None or not entry["participation"].get("written_comment"):
+            raise MeetingStageError("--cosign: needs --participation with a verified written_comment to sign")
+        cosigners = resolve_cosigners(root, meeting_id, cosign_ids, today=today)
     document = {
         "id": meeting_id,
         "body": entry["body"],
         "starts_at": meeting.get("starts_at"),
         "agenda_item": entry["agenda_item"],
         "comment_kit_md": comment_kit_md(entry, cited, cfg["name"], base_url=model["site"].get("base_url"),
-                                    asks=custom),
+                                    asks=custom, **({"cosign_names": [row["name"] for row in cosigners]} if cosigners else {})),
     }
     if isinstance(meeting.get("agenda_url"), str):
         document["agenda_url"] = meeting["agenda_url"]
@@ -120,6 +137,8 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     if location is not None:
         document["location"] = location
     document.update({"participation": entry["participation"]} if participation is not None else {})
+    if cosigners:
+        document["cosigners"] = list(cosign_ids)
     if cited:  # DF2207-06: the exact ids the kit cites, once; a kit citing none omits the field
         document["cited_findings"] = [f["id"] for f in cited]
     kept = root / "content" / "meetings" / f"{meeting_id}.json"  # an organizer-verified outcome survives --replace
@@ -128,7 +147,11 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     except ValueError:
         old = {}  # unreadable: overwritten as before
     document.update({"outcome": old["outcome"]} if isinstance(old, dict) and "outcome" in old else {})
-    load_meeting(document, f"meetings/{meeting_id}.json", today=today)
+    loaded = load_meeting(document, f"meetings/{meeting_id}.json", today=today)
+    if cosigners:  # the whole new document is checked against the grants and the generated block before any write
+        problems = cosign_problems(root, [{**loaded, "id": meeting_id}], today=today)
+        if problems:
+            raise MeetingStageError(problems[0])
 
     folder = root / "content" / "meetings"
     _kit_folder(folder, mode=0o755)
@@ -148,6 +171,8 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     report = {"written": f"content/meetings/{target.name}", "findings_cited": len(cited),
               "findings": [f["id"] for f in cited], "replaced": replaced,
               "note": NOTE}
+    if cosigners:
+        report["cosigners"] = list(cosign_ids)
     flags = _ask_notes(custom, "--ask" if override is not None else "site.json.comment_asks")
     if flags:  # advisory only: positions and rule names, never the text; the kit is written either way
         report["review_flags"] = flags

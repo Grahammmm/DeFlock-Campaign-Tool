@@ -21,7 +21,7 @@ from .image_meta import check_asset
 from .labels import MAX_LABELS_BYTES, load_labels
 from .newsletter.archive import FOLDER as NEWSLETTERS, issue_paths, load_public_issue
 from .redirects import check_file as check_redirects
-from .supporters import supporter_problems
+from .supporters import cosign_problems, supporter_problems
 
 LIMIT = 200
 SCHEMA = "content-check-v1"
@@ -225,6 +225,7 @@ def content_problems(root, limit=LIMIT):
         meeting_ids.add(meeting["id"])
         loaded_meetings.append(meeting)
     problems.extend(continuation_problems(loaded_meetings))  # DF0022-07: the same cross-record rule build enforces
+    problems.extend(cosign_problems(root, loaded_meetings))  # DF2207-14: every staged meeting naming a stale co-signer
 
     sources_path = content_dir / "sources.json"
     library = (_attempt(problems, "sources.json", lambda: load_sources(_read_json(sources_path)))

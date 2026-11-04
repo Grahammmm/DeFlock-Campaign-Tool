@@ -1738,6 +1738,14 @@ class Site:
                   for source in self._continuation_back.get(meeting["id"], []) if held(source)]
         return "".join(lines)
 
+    def _cosigned(self, meeting):
+        """DF2207-14: ``Co-signed by N organizations`` linking supporters.html, only for ids load_content validated."""
+        count = len(meeting.get("cosigners") or ())
+        if not count:
+            return ""
+        label = self.t("meeting.cosigned_one" if count == 1 else "meeting.cosigned_many", count=count)
+        return f'<p class="cosigned"><a href="/supporters.html">{label}</a></p>'
+
     def meeting_direction_html(self, meeting):
         """DF0022-08: ``Staff were directed to: T (by D, as stated in SOURCE)`` for a held meeting whose outcome carries a
         direction; "" otherwise. The words are the official source's, attributed to it; the source is a plain link, never
@@ -1749,6 +1757,7 @@ class Site:
         link = f'<a href="{source}" rel="noopener noreferrer">{source}</a>'
         return (f'<p class="meeting-direction">'
                 f'{self.t("meeting.staff_direction", direction=e(outcome["direction"]), date=e(outcome["return_by"]), source=link)}</p>')
+
 
     def meeting_html(self, meeting):
         """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
@@ -1768,6 +1777,7 @@ class Site:
                 + self.meeting_continuation_html(meeting)
                 + self.meeting_direction_html(meeting)
                 + self._written_deadline(meeting)
+                + self._cosigned(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
                 f'<p><a href="/meetings.html">{self.t("meeting.all")}</a></p></article>\n')
