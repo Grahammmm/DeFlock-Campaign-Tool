@@ -207,3 +207,31 @@ test('popup replacement preserves safe source and individual review-date markup'
   assert.equal(second.html.includes('javascript:'),false);
   assert.equal(second.html.includes('2030-01-02'),false);
 });
+
+test('DF1422-11 popup adds one escaped organizer-check line only for a checked node',async()=>{
+  const built=spawnSync('python3',['-B','tests/test_map_point_checks.py','--popup-fixture'],{encoding:'utf8'});
+  assert.equal(built.status,0,built.stderr);
+  const fixture=JSON.parse(built.stdout);
+  const {context:c}=setup(fixture.controller);vm.runInContext(fixture.site_data,c);c.setCityText=()=>{};  // agency-cards.js owns it on a built page
+  const events={};let html='';
+  class MapStub {on(name,...args){events[name]=args.at(-1);} addControl(){} addSource(){} addLayer(){} getLayer(){return true;} setFilter(){} fitBounds(){} resize(){}}
+  class PopupStub {on(){return this;}remove(){return this;}setLngLat(){return this;}setHTML(value){html=value;return this;}addTo(){return this;}}
+  c.window.maplibregl=c.maplibregl={Map:MapStub,Popup:PopupStub,NavigationControl:class{},AttributionControl:class{}};
+  c.ResizeObserver=class{observe(){}};c.document.querySelector=()=>null;c.fetch=async()=>({json:async()=>({features:[]})});
+  c.initMap();events.load();await new Promise(resolve=>setImmediate(resolve));
+  const click=(url)=>{events.click({lngLat:[1,1],features:[{properties:{manufacturer:'Maker',operator:'Op',url}}]});return html;};
+  assert.deepEqual(JSON.parse(JSON.stringify(c.pointChecks)),{10:{status:'seen_in_person',checked_on:'2026-10-30'},20:{status:'duplicate',checked_on:'2026-10-02'}});
+  assert.ok(click('https://www.openstreetmap.org/node/10').endsWith('<br>Organizer check: Seen in person, 2026-10-30'));
+  assert.equal(click('https://www.openstreetmap.org/node/10').split('Organizer check').length,2);
+  assert.ok(click('https://www.openstreetmap.org/node/20').endsWith('<br>Organizer check: Duplicate of another point, 2026-10-02'));
+  assert.equal(click('https://www.openstreetmap.org/node/30').includes('Organizer check'),false);
+  assert.equal(click('https://www.openstreetmap.org/way/10').includes('Organizer check'),false);
+  assert.equal(click('https://www.openstreetmap.org.evil.invalid/node/10').includes('Organizer check'),false);
+  assert.ok(click(undefined).includes('View source record'));
+  c.pointChecks[10]={status:'seen_in_person',checked_on:'<img src=x onerror=bad>'};
+  assert.ok(click('https://www.openstreetmap.org/node/10').includes('2026-10-30')===false);
+  assert.ok(html.includes('Organizer check: Seen in person, &lt;img src=x onerror=bad&gt;'));
+  assert.equal(html.includes('<img'),false);
+  c.pointChecks[10]={status:'<script>',checked_on:'2026-10-30'};
+  assert.equal(click('https://www.openstreetmap.org/node/10').includes('Organizer check'),false);  // a status outside the enum draws nothing
+});

@@ -967,7 +967,117 @@ def load_history(path):
     return records
 
 
-def load_map(content_dir):
+POINT_CHECKS_KEYS = {"schema_version", "checks"}
+POINT_CHECK_KEYS = {"node", "status", "checked_on", "source", "note"}
+POINT_CHECK_STATUSES = ("seen_in_person", "in_agency_record", "not_found_on_site", "duplicate")
+MAX_POINT_CHECKS, MAX_POINT_CHECKS_PER_NODE, MAX_POINT_CHECKS_BYTES = 2000, 5, 512 * 1024
+MAX_POINT_NOTE, MAX_POINT_SOURCE = 200, 500
+LIBRARY_PREFIX = re.compile(r"[0-9a-f]{12}")
+OSM_NODE_URL = re.compile(r"https://www\.openstreetmap\.org/node/(\d+)")
+SOURCES_UNKNOWN = object()  # content-check passes this when sources.json is itself unreadable: skip prefix matching
+
+
+def point_nodes(cameras):
+    """The OSM node ids of a parsed cameras.geojson (its ``url`` property ``.../node/N``); ways have no node id."""
+    nodes = set()
+    for feature in cameras.get("features") or []:
+        url = (feature.get("properties") or {}).get("url")
+        match = OSM_NODE_URL.fullmatch(url) if isinstance(url, str) else None
+        if match:
+            nodes.add(int(match.group(1)))
+    return nodes
+
+
+def point_check_problems(path, nodes, sources, today):
+    """map/point-checks.json (DF1422-11) -> ``(problems, {node: [checks, newest first]})``.
+
+    Every entry is judged; a problem names its field, never a value. ``sources`` is the validated library list
+    (``SOURCES_UNKNOWN`` skips the prefix match); ``today`` is the build day, which a ``checked_on`` may not pass.
+    Nothing is fetched or written: a check never changes a point or the counts."""
+    path, label = Path(path), "map/point-checks.json"
+    if path.is_symlink():
+        return [f"{label}: symlinks are not read"], {}
+    if not path.is_file():  # a FIFO or directory is never opened
+        return [f"{label}: not a regular file"], {}
+    if path.stat().st_size > MAX_POINT_CHECKS_BYTES:
+        return [f"{label}: file too large (over {MAX_POINT_CHECKS_BYTES // 1024} KiB)"], {}
+    try:
+        document = _read_json(path, MAX_POINT_CHECKS_BYTES)
+        _require_keys(document, POINT_CHECKS_KEYS, POINT_CHECKS_KEYS, label)
+    except ContentError as exc:
+        text = str(exc)
+        return [text if text.startswith(label) else f"map/{text}"], {}
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        return [f"{label}.schema_version: must be 1"], {}
+    entries = document["checks"]
+    if not isinstance(entries, list) or len(entries) > MAX_POINT_CHECKS:
+        return [f"{label}.checks: expected a list of at most {MAX_POINT_CHECKS} checks"], {}
+    problems, found, seen = [], [], {}
+    for index, entry in enumerate(entries):
+        where = f"{label}.checks[{index}]"
+        try:
+            _require_keys(entry, POINT_CHECK_KEYS, POINT_CHECK_KEYS - {"note"}, where)
+        except ContentError as exc:
+            problems.append(str(exc))
+            continue
+        before = len(problems)
+        node = entry["node"]
+        if type(node) is not int or node < 1:
+            problems.append(f"{where}.node: must be a positive integer")
+        elif node not in nodes:
+            problems.append(f"{where}.node: not a mapped point")
+        else:
+            seen[node] = seen.get(node, 0) + 1
+            if seen[node] > MAX_POINT_CHECKS_PER_NODE:
+                problems.append(f"{where}.node: more than {MAX_POINT_CHECKS_PER_NODE} checks for one point")
+        if entry["status"] not in POINT_CHECK_STATUSES:
+            problems.append(f"{where}.status: must be one of {', '.join(POINT_CHECK_STATUSES)}")
+        day = entry["checked_on"]
+        try:
+            valid_day = isinstance(day, str) and DAY.fullmatch(day) and date.fromisoformat(day)
+        except ValueError:
+            valid_day = False
+        if not valid_day:
+            problems.append(f"{where}.checked_on: must be an ISO date YYYY-MM-DD")
+        elif valid_day > today:
+            problems.append(f"{where}.checked_on: must not be after the build day")
+        source, fragment, title = entry["source"], None, None
+        if isinstance(source, str) and LIBRARY_PREFIX.fullmatch(source):
+            if sources is not SOURCES_UNKNOWN:
+                matches = [item for item in sources if item["sha256"][:12] == source]
+                if len(matches) != 1:
+                    problems.append(f"{where}.source: library prefix must match exactly one sources.json entry")
+                else:
+                    fragment, title = matches[0]["fragment"], matches[0]["title"]
+        elif isinstance(source, str) and source.startswith("https://") and len(source) <= MAX_POINT_SOURCE:
+            try:
+                _https(source, f"{where}.source")
+            except ContentError as exc:
+                problems.append(str(exc))
+        else:
+            problems.append(f"{where}.source: must be a 12-hex library prefix or an https:// URL of at most "
+                            f"{MAX_POINT_SOURCE} characters")
+        note = entry.get("note", "")
+        if not isinstance(note, str) or not plain_text(note) or len(note) > MAX_POINT_NOTE or CONTACT_LIKE.search(note):
+            problems.append(f"{where}.note: must be plain text of at most {MAX_POINT_NOTE} characters, "
+                            "without an address or phone-like number")
+        if len(problems) == before:
+            found.append((day, index, node, {"status": entry["status"], "checked_on": day, "source": source,
+                                             "fragment": fragment, "title": title, "note": note}))
+    checks = {}
+    for day, index, node, check in sorted(found, key=lambda item: item[:2], reverse=True):  # newest first
+        checks.setdefault(node, []).append(check)
+    return problems, checks
+
+
+def load_point_checks(path, nodes, sources, today):
+    problems, checks = point_check_problems(path, nodes, sources, today)
+    if problems:
+        raise ContentError(problems[0])
+    return checks
+
+
+def load_map(content_dir, sources=None, today=None):
     map_dir = Path(content_dir) / "map"
     config_path = map_dir / "map-config.json"
     if not config_path.is_file():
@@ -998,7 +1108,8 @@ def load_map(content_dir):
     cameras_path = map_dir / "cameras.geojson"
     if not cameras_path.is_file():
         raise ContentError("map/cameras.geojson is missing; run tools/fetch_osm_alprs.py or supply reviewed data")
-    camera_count = _validate_cameras(_read_json(cameras_path, MAX_GEOJSON_BYTES), "map/cameras.geojson")
+    cameras_document = _read_json(cameras_path, MAX_GEOJSON_BYTES)
+    camera_count = _validate_cameras(cameras_document, "map/cameras.geojson")
     boundaries = _read_json(boundary_file, MAX_GEOJSON_BYTES)
     if not isinstance(boundaries, dict) or boundaries.get("type") != "FeatureCollection":
         raise ContentError(f"map/{boundary_file.name}: expected a GeoJSON FeatureCollection")
@@ -1027,6 +1138,14 @@ def load_map(content_dir):
             raise ContentError(f"map/map-config.json.bounding_box_fallbacks: {slug!r} has no bounds in map/cities.json")
     snapshot_path = map_dir / "snapshot.json"  # optional: a map fetched before DF1507-09 has none
     history_path = map_dir / "history.json"  # optional (DF0137-13): one record per writing fetch
+    checks_path = map_dir / "point-checks.json"  # optional (DF1422-11): organizer checks of single points
+    point_checks = {}
+    if history_present(checks_path):
+        if sources is None:  # a direct call: the library comes from this content directory
+            library = Path(content_dir) / "sources.json"
+            sources = load_sources(_read_json(library)) if library.is_file() else []
+        point_checks = load_point_checks(checks_path, point_nodes(cameras_document), sources,
+                                         today or date.today())
     return {
         "controller": controller,
         "county_bounds": _bounds(document["county_bounds"], "map/map-config.json.county_bounds"),
@@ -1043,6 +1162,7 @@ def load_map(content_dir):
         "cities": cities,
         "snapshot_date": load_snapshot(snapshot_path) if snapshot_path.is_file() else None,
         "history": load_history(history_path) if history_present(history_path) else [],
+        "point_checks": point_checks,
     }
 
 
@@ -1187,7 +1307,7 @@ def load_content(root, today=None):
     else:
         agencies = default_agencies(root)
 
-    map_config = load_map(content_dir)
+    map_config = load_map(content_dir, sources, today)
     if map_config:
         known = {agency["slug"] for agency in agencies if agency["kind"] in CITY_KINDS}
         for slug in map_config["controller"]["bounding_box_fallbacks"]:

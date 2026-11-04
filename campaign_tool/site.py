@@ -22,7 +22,8 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import CITY_KINDS, MAX_GEOJSON_BYTES, TRANSPARENCY_FIELDS, ContentError, _read_json, load_content, utc_moment
+from .content import (CITY_KINDS, MAX_GEOJSON_BYTES, OSM_NODE_URL, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
+                      ContentError, _read_json, load_content, utc_moment)
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, KIND_LABELS, html_text
@@ -292,6 +293,21 @@ def finding_updated(finding):
 
 def js_json(value):
     return json.dumps(value, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
+
+
+COUNTED_APART = ("duplicate", "not_found_on_site")  # DF1422-11: listed and kept on the map, counted on their own
+# Popup line for app.js: ``pointChecks`` comes from site-data.js; every shown text goes through the controller's mapText.
+POINT_CHECK_RENDERER = (
+    r'function(p){var m=/^https:\/\/www\.openstreetmap\.org\/node\/(\d+)$/.exec(String(p.url||""));'
+    r'var c=m&&typeof pointChecks==="object"?pointChecks[m[1]]:null;var l=c&&LABELS[c.status];'
+    r'return l?"<br>"+mapText(HEADING+": "+l+", "+c.checked_on):"";}')
+
+
+def point_check_renderer(labels):
+    """The trusted popup renderer for ``labels`` (raw label texts, escaped later by mapText)."""
+    names = {status: labels["map.check_" + status] for status in POINT_CHECK_STATUSES}
+    return ("(function(LABELS,HEADING){return " + POINT_CHECK_RENDERER + ";})("
+            + js_json(names) + "," + js_json(labels["map.check_heading"]) + ")")
 
 
 class Site:
@@ -1079,6 +1095,20 @@ class Site:
                          "What each finding label means, what record numbers show and how findings are reviewed",
                          "/methods.html", main)
 
+    def check_cell(self, items):
+        """DF1422-11: the newest organizer check as ``status · date · source`` (+ ``and N earlier``), or a dash."""
+        if not items:
+            return "—"
+        newest = items[0]
+        source = newest["source"]
+        if newest["fragment"] is not None:  # a library record: its row on the sources page
+            link = f'<a href="/sources.html#{e(newest["fragment"])}">{e(newest["title"])}</a>'
+        else:
+            link = f'<a href="{e(source)}" rel="noopener noreferrer">{e(urlsplit(source).hostname)}</a>'
+        cell = (f'{self.t("map.check_" + newest["status"])} · '
+                f'<time datetime="{newest["checked_on"]}">{newest["checked_on"]}</time> · {link}')
+        return cell + (f' · {self.t("map.check_earlier", count=len(items) - 1)}' if len(items) > 1 else "")
+
     def cameras_html(self):
         """No-JS list of mapped points (DF1507-13): each point in the first picker city (by name) whose boundary holds it,
         by the counts' own half-open test, else in the group section. Over 2 000 points: 500 rows per section."""
@@ -1095,6 +1125,8 @@ class Site:
                 shapes[name].append(((min(xs), max(xs), min(ys), max(ys)), camera_counts._Ring(rings[0]),
                                      [camera_counts._Ring(hole) for hole in rings[1:]]))
         groups, features = {name: [] for name in names + [None]}, cameras.get("features") or []
+        checks = self.map.get("point_checks") or {}  # DF1422-11: {node: [checks, newest first]}
+        check_head = f'<th scope="col">{self.t("map.check_heading")}</th>' if checks else ""
         for feature in features:
             props, (x, y) = feature.get("properties") or {}, feature["geometry"]["coordinates"]
             home = next((name for name in names for (w, east, s, n), outer, holes in shapes[name]
@@ -1105,13 +1137,14 @@ class Site:
             cells = [e(str(props.get(key)).strip() or "not tagged") if props.get(key) is not None else "not tagged"
                      for key in ("manufacturer", "operator")]
             link = (f'<a href="{e(url)}" rel="noopener noreferrer">node {node.group(1)}</a>' if node else "no OSM link")
-            groups[home].append((url is None, url or "", "".join(f"<td>{c}</td>" for c in cells + [link])))
+            extra = [self.check_cell(checks.get(int(node.group(1))) if node else None)] if checks else []
+            groups[home].append((url is None, url or "", "".join(f"<td>{c}</td>" for c in cells + [link] + extra)))
         sections = ""
         for name in names + [None]:
             rows = sorted(groups[name], key=lambda row: row[:2])
             shown = rows[:500] if len(features) > 2000 else rows
             table = ('<table><thead><tr><th scope="col">Manufacturer</th><th scope="col">Operator</th>'
-                     '<th scope="col">OpenStreetMap</th></tr></thead><tbody>'
+                     '<th scope="col">OpenStreetMap</th>' + check_head + '</tr></thead><tbody>'
                      + "".join(f"<tr>{row[2]}</tr>" for row in shown) + '</tbody></table>') if rows else ""
             more = f'<p>and {len(rows) - len(shown)} more on the map</p>' if len(shown) < len(rows) else ""
             sections += (f'<section class="camera-group"><h3>{e(name or self.map["group_label"])}</h3>'
@@ -1172,6 +1205,23 @@ class Site:
             self._map_docs = docs
         return self._mapped_counts
 
+    def counted_apart(self):
+        """DF1422-11: ``{boundary name: points inside whose newest check is duplicate or not_found_on_site}``."""
+        if not hasattr(self, "_counted_apart"):
+            flagged = {node for node, items in ((self.map or {}).get("point_checks") or {}).items()
+                       if items[0]["status"] in COUNTED_APART}
+            self._counted_apart = {}
+            if flagged:
+                self.mapped_counts()
+                cameras, boundaries = self._map_docs
+                kept = []
+                for feature in cameras.get("features") or []:
+                    match = OSM_NODE_URL.fullmatch((feature.get("properties") or {}).get("url") or "")
+                    if match and int(match.group(1)) in flagged:
+                        kept.append(feature)
+                self._counted_apart = camera_counts.count_by_name(dict(cameras, features=kept), boundaries)[0]
+        return self._counted_apart
+
     def camera_notes(self):  # boundary names matching no picker city, then every boundary problem
         counts, problems = self.mapped_counts()
         picker = {agency["slug"] for agency in self.picker_cities()}
@@ -1192,6 +1242,9 @@ class Site:
             if entry["cameraCount"] == "" and entry["name"] in counts:  # an organizer-typed value always wins
                 n = counts[entry["name"]]
                 entry["cameraCount"] = f"{n} community-mapped point{'' if n == 1 else 's'} inside city limits; ownership unconfirmed"
+                apart = self.counted_apart().get(entry["name"], 0)
+                if apart:  # DF1422-11: still in the count above, named here as an organizer's duplicate / not-found check
+                    entry["cameraCount"] += "; " + self.labels["map.check_apart"].format(count=apart)
             if not entry["facts"]:
                 findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
                 entry["facts"] = [f["title"] for f in findings] or ["No published findings for this agency yet."]
@@ -1209,17 +1262,25 @@ class Site:
                             "open": "Which agency, if any, operates these points is unconfirmed.", "flags": ["Unconfirmed"]}
         return cities
 
+    def point_checks_data(self):
+        """DF1422-11: ``{node: {status, checked_on}}``, the newest check only; no note and no source leave the build."""
+        return {str(node): {"status": items[0]["status"], "checked_on": items[0]["checked_on"]}
+                for node, items in sorted(self.map["point_checks"].items())}
+
     def site_data_js(self):
+        checks = (self.map or {}).get("point_checks")
         county_bounds = self.map["county_bounds"] if self.map else [[-180, -90], [180, 90]]
         style = self.map["style_url"] if self.map else ""
         return ("// Generated by campaign_tool build from content/. Reviewed campaign data only.\n"
                 f"var CITIES={js_json(self.cities())};\nvar COUNTY_BOUNDS={js_json(county_bounds)};\n"
                 f"var MAP_STYLE={js_json(style)};\nvar CAMERA_DATA_URL=\"/data/cameras.geojson\";\n"
-                "var BOUNDARY_DATA_URL=\"/data/county.geojson\";\n")
+                "var BOUNDARY_DATA_URL=\"/data/county.geojson\";\n"
+                + (f"var pointChecks={js_json(self.point_checks_data())};\n" if checks else ""))
 
     def app_js(self):
         if self.map:
-            controller = map_controller.render(self.map["controller"], "")
+            controller = map_controller.render(self.map["controller"], "",
+                                               point_check_renderer(self.labels) if self.map.get("point_checks") else "")
             boot = ("document.addEventListener(\"DOMContentLoaded\",function(){"
                     "document.querySelectorAll(\".city-choice\").forEach(function(b){b.addEventListener(\"click\",function(){chooseCity(b.getAttribute(\"data-city\")||null);});});"
                     "chooseCity(null);initMap();});\n")

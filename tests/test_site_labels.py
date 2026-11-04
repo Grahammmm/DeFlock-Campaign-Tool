@@ -223,6 +223,7 @@ class LabelsTest(unittest.TestCase):
         # Codes the fixture has no finding or agency for; they render through the same t("<family>." + code) call.
         # officials.*: the fixture has no officials.json (tests/test_site_officials.py covers those labels).
         # map.history_*: the fixture has no map/history.json (tests/test_site_cameras_page.py covers those labels).
+        # map.check_*: the fixture has no map/point-checks.json (tests/test_map_point_checks.py covers those labels).
         # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
         # meeting.votes*, vote.*: the fixture records no votes (tests/test_meeting_votes.py covers those labels).
         absent = ["agency.transparency_cameras", "agency.transparency_checked", "agency.transparency_down",
@@ -230,6 +231,8 @@ class LabelsTest(unittest.TestCase):
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
+                  "map.check_apart", "map.check_duplicate", "map.check_earlier", "map.check_heading",
+                  "map.check_in_agency_record", "map.check_not_found_on_site", "map.check_seen_in_person",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
