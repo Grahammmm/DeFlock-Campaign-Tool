@@ -41,7 +41,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about"}
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "newsletters"}  # newsletters: DF1952-09
 
 
 class ContentError(ValueError):
@@ -1244,6 +1244,17 @@ def load_pages(content_dir, finding_slugs):
     return pages
 
 
+def load_newsletters(content_dir):
+    """Public newsletter issues of ``content/newsletters/<day>.json`` (DF1952-09), oldest first; ``[]`` without any.
+
+    Read through the one validator ``content-check`` also uses; never reads ``kit/``."""
+    from .newsletter.archive import load_public_issues  # local: the newsletter package imports this module
+    try:
+        return load_public_issues(content_dir)
+    except ValueError as exc:
+        raise ContentError(str(exc)) from None
+
+
 OFFICIALS_KEYS = {"schema_version", "bodies"}
 OFFICIAL_KEYS = {"name", "role", "profile_url", "source_url", "checked_on"}
 CONTACT_LIKE = re.compile(r"@|\d(?:[\s().+-]*\d){6}")  # an address or a phone-like run of 7+ digits
@@ -1383,6 +1394,7 @@ def load_content(root, today=None):
         "site": site,
         "findings": findings,
         "pages": load_pages(content_dir, slugs),
+        "newsletters": load_newsletters(content_dir),
         "meetings": meetings,
         "sources": sources,
         "agencies": agencies,
