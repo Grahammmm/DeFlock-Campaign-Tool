@@ -60,6 +60,37 @@ merges that overlay whenever it exists, so the JSON stays a deterministic
 function of the tables plus the overlay. Tests and CI never run it; commit the
 overlay and the rebuilt seed together.
 
+## Automated evidence pass (`tools/agency_verify.py`)
+
+The seed above is unverified: it lists agencies, not ALPR users. `agency_verify` is the
+evidence pass that turns an unverified seed row into a **cited** verdict per agency. It reads
+public web pages the seed already names - it opens no gate and closes none.
+
+```sh
+python3 tools/agency_verify.py run --seed data/agencies/us-ca.json --out NEWDIR [--agency SLUG ...] [--limit N]
+python3 tools/agency_verify.py report NEWDIR
+```
+
+`run` fetches each agency's recorded index-page link (`records_url`) once and writes one
+`agency-evidence-v1` row per agency into a new `NEWDIR` (0700, the row file 0600). A verdict is
+a **field** decided from the citations alone, never from an agency's name, its county, or a
+neighbour's verdict: `evidenced` (a citation naming an ALPR system or vendor on a page under the
+agency's own domain), `likely` (a citation on a third-party or regional page), `no-evidence`
+(every recorded link fetched, nothing found), `unreachable` (a recorded link could not be
+fetched, the reason named), `not-checked` (no link recorded yet). `evidenced` with zero
+citations is structurally impossible. A citation stores the URL, fetch time, HTTP status, the
+SHA-256 of the fetched bytes, the quote, and the quote's byte offset - so the claim is
+checkable later and a page change shows as a changed hash, not a silent drift. The quote is
+rejected if it matches the shared email/phone/plate patterns, so a staff directory line can
+never become a citation.
+
+**Limits.** Fetching is https-only, one request per recorded link, no crawling, no off-host
+redirects, a fixed polite delay, a per-run cap (`--limit`, default 25), a byte cap, a fixed
+timeout, and a plain identifying user agent. Nothing is logged in, submitted, or sent; no form,
+no search query, no robots-disallowed path. Fetched bytes are not stored - only the hash, the
+status, and the quote. Nothing is written into the seed: promoting an `evidenced` row is a
+separate, attended decision. The verdict is evidence about a public body, not an allegation.
+
 ## How `locate` works
 
 `campaign_tool.discovery.locate(query, state, seed)` normalizes the query
