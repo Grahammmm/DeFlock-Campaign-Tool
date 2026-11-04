@@ -222,7 +222,9 @@ ASSET_RELS = {"stylesheet", "preload", "modulepreload"}
 
 
 class _AssetParser(HTMLParser):
-    """Site-local subresources a first visit downloads: stylesheets, preloads, scripts, img/source src."""
+    """Site-local subresource references in markup: stylesheets, preloads, scripts, img/source ``src`` and every
+    img/source ``srcset`` candidate. A conservative inventory of references, not what one visit downloads; see
+    ``docs/SITE-WEIGHTS.md``."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -234,6 +236,8 @@ class _AssetParser(HTMLParser):
             self.urls.append(attrs.get("href"))
         elif tag in ("script", "img", "source"):
             self.urls.append(attrs.get("src"))
+            if tag != "script":  # responsive candidates: the shared tokenizer, never a second one
+                self.urls.extend(_srcset_urls(attrs.get("srcset", "")))
 
     handle_startendtag = handle_starttag
 
@@ -242,8 +246,11 @@ def page_weights(public: Path) -> list:
     """Per-page first-party weight of ``public/``: on-disk (uncompressed) bytes of each page plus its assets.
 
     One dict per ``*.html`` page, sorted by page: ``{"page", "html_bytes", "assets": [(path, bytes)], "total"}``.
-    Each asset counts once per page; external, missing, escaping and symlinked targets are skipped (``--check``
-    owns broken links) and never fetched. ``fetch()``/XHR targets inside scripts are not seen: only markup counts.
+    Each asset counts once per page (deduplicated by normalized path across src, srcset, source, script and
+    preload references); external, missing, escaping and symlinked targets are skipped (``--check`` owns broken
+    links) and never fetched. ``fetch()``/XHR targets inside scripts are not seen: only markup counts.
+    Every img/source ``srcset`` candidate counts, including picture alternatives a browser would not pick: a
+    conservative inventory, not a viewport-selected download estimate (``docs/SITE-WEIGHTS.md``).
     """
     public = Path(public)
     rows = []

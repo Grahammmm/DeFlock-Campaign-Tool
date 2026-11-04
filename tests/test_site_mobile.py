@@ -17,11 +17,13 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples/fictional-campaign"
 # Captured from main before this CSS-only change; not candidate-derived snapshots.
 # STARTER_SHA re-captured from main a9db9b0c: the only starter CSS change since the
 # mobile pin (5926dda5) is #620's .record-no and .provenance-note rules.
+# Re-pinned after DF1103-12 deliberately extended the print block: the source-filter form and empty message are hidden and
+# filtered source rows / agency groups are restored (previous pin e01ceedc...5d3a).
 PRINT_SHA = (
-    "e01ceedc11aceb58"  # pragma: allowlist secret
-    "35275988a67a1e2f"  # pragma: allowlist secret
-    "eb29c644d71226a6"  # pragma: allowlist secret
-    "8200fb9eace85d3a"  # pragma: allowlist secret
+    "b456d4c2c5ecacc7"  # pragma: allowlist secret
+    "684a926801f2fb3c"  # pragma: allowlist secret
+    "b7f6635c98ac8786"  # pragma: allowlist secret
+    "905469355c5c829b"  # pragma: allowlist secret
 )
 # Re-pinned after DF0137-12 appended only the .at-a-glance/.glance-table rules to styles.css.tmpl;
 # previous pin a3a87040...0e7c (after BF-df-agency-cards-public's .agency-block rules).
@@ -145,6 +147,18 @@ class SiteMobileTests(unittest.TestCase):
             self.assertEqual(self.rules[selector]["min-height"], "44px", selector)
         self.assertEqual(self.rules[".campaign-banner .site-nav a"]["display"], "inline-flex")
         self.assertEqual(rule_map(self.css)[".site-nav a:focus-visible"]["outline"], "3px solid var(--mint)")
+
+    def test_source_filter_wraps_and_has_44px_targets(self):
+        css = rule_map(self.css)  # DF1103-12: screen rules apply at every width, not only inside the 850px block
+        form = css[".sources-filter"]
+        self.assertEqual((form["display"], form["flex-wrap"]), ("flex", "wrap"))
+        self.assertEqual(css[".sources-filter[hidden]"]["display"], "none")  # display:flex cannot show the hidden form
+        for selector in (".sources-filter select", ".sources-filter .sources-filter-check"):
+            self.assertEqual(css[selector]["min-height"], "44px", selector)
+        self.assertEqual(css[".sources-filter-count"]["flex-basis"], "100%")
+        for root in self.roots:
+            html = (root / "public/sources.html").read_text()
+            self.assertRegex(html, r'<form class="sources-filter" id="sources-filter" aria-label="[^"]+" hidden>')
 
     def test_narrow_grid_and_bounded_media(self):
         self.assertIn("minmax(min(280px,100%),1fr)", self.css)

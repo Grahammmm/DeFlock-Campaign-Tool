@@ -307,7 +307,10 @@ class LabelsTest(unittest.TestCase):
 
 SPANISH = {"js.filter_count": "Mostrando {shown} de {total}", "js.mapped_point": "{count} punto mapeado",
            "js.mapped_points": "{count} puntos mapeados", "js.city_no_findings": "Sin hallazgos publicados."}
-SCRIPTS = ("site-data.js", "agency-cards.js", "app.js", "findings/filter.js")
+SCRIPTS = ("site-data.js", "agency-cards.js", "app.js", "findings/filter.js", "sources/filter.js")
+# DF1103-12: a nonempty source library always transports the count label, so site-data.js carries exactly this line
+# when no js.* label differs; sources/filter.js reads LABELS by design and is not one of the unchanged-English scripts.
+SOURCES_TRANSPORT = b'var LABELS={"js.filter_count":"Showing {shown} of {total}"};\n'
 
 
 class ScriptLabelsTest(unittest.TestCase):
@@ -323,7 +326,9 @@ class ScriptLabelsTest(unittest.TestCase):
         for name, _, _ in SCENARIOS:
             with self.subTest(name):
                 files = self.build(name)
-                self.assertNotIn(b"LABELS", b"".join(files[p] for p in SCRIPTS if p in files))
+                self.assertEqual(files["site-data.js"].count(SOURCES_TRANSPORT), 1 if "sources/filter.js" in files else 0)
+                legacy = [p for p in SCRIPTS if p in files and p != "sources/filter.js"]
+                self.assertNotIn(b"LABELS", b"".join(files[p] for p in legacy).replace(SOURCES_TRANSPORT, b""))
                 if "findings/filter.js" in files:
                     self.assertEqual(files["findings/filter.js"].decode(), FILTER_JS)
                     self.assertNotIn("/site-data.js", files["findings/index.html"].decode())
@@ -343,7 +348,7 @@ class ScriptLabelsTest(unittest.TestCase):
         self.assertNotIn("innerHTML", app)
         self.assertEqual(files["_headers"], plain["_headers"])  # CSP unchanged: no inline script, same origins
         changed = sorted(p for p in plain if plain[p] != files[p])
-        self.assertEqual(changed, ["agency-cards.js", "app.js", "findings/filter.js", "findings/index.html", "search.html", "site-data.js"])
+        self.assertEqual(changed, ["agency-cards.js", "app.js", "findings/filter.js", "findings/index.html", "search.html", "site-data.js", "sources.html"])
         cards = files["agency-cards.js"].decode()
         for english in ('"no published findings yet"', '" published finding"'):
             self.assertNotIn(english, cards)
