@@ -26,8 +26,8 @@ from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
 from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
-                      ContentError, _read_json, check_finding_agencies, finding_agency_ids, glossary_terms_used,
-                      load_content, utc_moment)
+                      ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
+                      finding_agency_ids, glossary_terms_used, load_content, utc_moment)
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
@@ -213,7 +213,8 @@ PUBLIC_COPY_FIELDS = ("matches", "checked_on", "reason")
 PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "sources")
 PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0137-09: meetings open data
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
-PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes", "minutes_url", "minutes_approved_on")  # never verified_by / verified_at
+PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes", "minutes_url", "minutes_approved_on",
+                         "continued_to", "continued_to_date")  # never verified_by / verified_at
 PUBLIC_VOTE_FIELDS = ("name", "vote")
 # DF1207-14: data/findings.csv and data/sources.csv are flattened from the built public JSON documents, so no CSV column
 # can exist that the JSON does not carry; "sources", "corrections" and "public_copy" are the only nested values.
@@ -1545,6 +1546,34 @@ class Site:
                 f'</tr></thead><tbody>{rows}</tbody></table><p class="notice">{self.t("meeting.votes_source")} '
                 f'<a href="{source}" rel="noopener noreferrer">{source}</a></p>')
 
+    def meeting_continuation_html(self, meeting):
+        """DF0022-07: ``Continued to D`` (the stated destination of a continued item) and one ``Continued from D`` per
+        earlier meeting that points here; "" when neither applies. A date-only match is the same body on that exact
+        date, not a confirmed item identity. Plain links to the pages of this site; nothing is fetched or embedded."""
+        meetings, lines = self.model["meetings"], []
+        held = lambda m: m["status"] != "cancelled" and m["starts_at"][:10] < self.today.isoformat()  # noqa: E731
+
+        def line(key, day, target=None, more=""):
+            text = self.t(key, date="\0")
+            link = f'<a href="/meetings/{e(target["id"])}.html">{e(day)}</a>' if target else e(day)
+            return f'<p class="meeting-continuation">{text.replace(chr(0), link)}{more}</p>'
+
+        outcome = meeting.get("outcome") or {}
+        if held(meeting) and ("continued_to" in outcome or "continued_to_date" in outcome):
+            targets = continuation_targets(meeting, meetings)
+            day = outcome.get("continued_to_date") or (targets[0]["starts_at"][:10] if targets else None)
+            if day is not None:
+                if len(targets) > 1:  # several same-body meetings on the stated date: say so, never pick one
+                    lines.append(line("meeting.continued_to", day, more="".join(
+                        f' · <a href="/meetings/{e(t["id"])}.html">{self.t("meeting.page")} ({e(t["id"])})</a>' for t in targets)))
+                else:
+                    lines.append(line("meeting.continued_to", day, targets[0] if targets else None))
+        if getattr(self, "_continuation_back", None) is None:
+            self._continuation_back = continuation_back_links(meetings)
+        lines += [line("meeting.continued_from", source["starts_at"][:10], source)
+                  for source in self._continuation_back.get(meeting["id"], []) if held(source)]
+        return "".join(lines)
+
     def meeting_html(self, meeting):
         """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
         cancelled = meeting.get("status") == "cancelled"
@@ -1560,6 +1589,7 @@ class Site:
                 + self.who_decides(meeting.get("agency_id"))
                 + (meeting_outcome_html(meeting, self.t) + self.recorded_votes(meeting)
                    if meeting["starts_at"][:10] < self.today.isoformat() else "")
+                + self.meeting_continuation_html(meeting)
                 + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
@@ -2045,7 +2075,8 @@ class Site:
         outcome = meeting.get("outcome")
         if outcome and meeting["status"] != "cancelled" and meeting["starts_at"][:10] < self.today.isoformat():
             value["outcome"] = {key: outcome[key] for key in ("result", "on", "source_url", "vote", "minutes_url",
-                                                              "minutes_approved_on") if key in outcome}
+                                                              "minutes_approved_on", "continued_to",
+                                                              "continued_to_date") if key in outcome}
             if "votes" in outcome:  # DF0137-07 per-member votes, in stored order
                 value["outcome"]["votes"] = [{"name": v["name"], "vote": v["vote"]} for v in outcome["votes"]]
         return value

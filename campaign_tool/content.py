@@ -586,8 +586,9 @@ MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment
                 "status", "participation", "outcome", "cited_findings"}
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
+CONTINUATION_KEYS = ("continued_to", "continued_to_date")  # DF0022-07: where the official source says an item went
 OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes", "recording_url",
-                "recording_start", "minutes_url", "minutes_approved_on"}
+                "recording_start", "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS}
 RECORDING_START = re.compile(r"([0-9]{1,2}):([0-5][0-9]):([0-5][0-9])")
 VOTE_VALUES = ("yes", "no", "abstain", "absent", "recused")
 PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
@@ -635,7 +636,7 @@ def load_outcome(value, starts_at, status, label, today=None):
     if status == "cancelled":
         raise ContentError(f"{label}: a cancelled meeting has no outcome")
     _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes", "recording_url", "recording_start",
-                                                       "minutes_url", "minutes_approved_on"}, label)
+                                                       "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS}, label)
     if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
         raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
     held, now = starts_at[:10], (today or date.today()).isoformat()
@@ -674,12 +675,98 @@ def load_outcome(value, starts_at, status, label, today=None):
         if not match or (int(match[1]), int(match[2]), int(match[3])) > (12, 0, 0):
             raise ContentError(f"{label}.recording_start: use H:MM:SS, at most 12:00:00")
     minutes = _load_minutes(value, held, now, label)  # DF2207-05: the body's approved minutes, always as a pair
+    continued = _load_continuation(value, held, label)  # DF0022-07: where a continued item went, as the source states
     return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
             "verified_by": value["verified_by"], "verified_at": value["verified_at"],
             **({"vote": value["vote"]} if "vote" in value else {}),
             **({"votes": [{"name": v["name"], "vote": v["vote"]} for v in votes]} if "votes" in value else {}),
             **({"recording_url": recording} if "recording_url" in value else {}),
-            **({"recording_start": start} if "recording_start" in value else {}), **minutes}
+            **({"recording_start": start} if "recording_start" in value else {}), **minutes, **continued}
+
+
+def _load_continuation(value, held, label):
+    """``{continued_to: ID}``, ``{continued_to_date: D}`` or ``{}``. Only a continued result carries either, never both;
+    the date is a real ASCII calendar day strictly after the meeting's own date (never compared with ``on``, no ceiling)."""
+    present = [key for key in CONTINUATION_KEYS if key in value]
+    if len(present) == 2:
+        raise ContentError(f"{label}.continued_to: continued_to and continued_to_date are mutually exclusive")
+    if not present:
+        return {}
+    key = present[0]
+    if value["result"] != "continued":
+        raise ContentError(f"{label}.{key}: requires result continued")
+    if key == "continued_to":
+        return {key: _slug(value[key], f"{label}.continued_to")}
+    day = value[key]
+    try:
+        real = isinstance(day, str) and day.isascii() and _calendar_day(day, label) is not None
+    except ContentError:
+        real = False
+    if not real or day <= held:
+        raise ContentError(f"{label}.continued_to_date: must be a YYYY-MM-DD date after the meeting")
+    return {key: day}
+
+
+def _meeting_day(meeting):
+    return meeting["starts_at"][:10]  # the meeting's own local calendar date; no time zone is converted
+
+
+def _target_problem(source, target):
+    """Why ``target`` cannot be where ``source``'s item was continued to, or None."""
+    if target is None:
+        return "unknown meeting ID"
+    if target["status"] == "cancelled":
+        return "target is cancelled"
+    if target["body"] != source["body"]:
+        return "target must have the same body"
+    if _meeting_day(target) <= _meeting_day(source):
+        return "target must be dated after the meeting"
+    return None
+
+
+def continuation_targets(meeting, meetings):
+    """DF0022-07: the staged meetings ``meeting``'s continued outcome points at, sorted by start then id. ``meetings`` are
+    loaded meetings whose ``id`` is set (the explicit id or the filename stem). An explicit id gives its one valid
+    target; a stated date gives every non-cancelled meeting of the exact same body on that exact local date (none is
+    valid: not staged yet). A match is a follow-up cue, never evidence the item was heard."""
+    outcome = meeting.get("outcome") or {}
+    if "continued_to" in outcome:
+        found = [m for m in meetings if m["id"] == outcome["continued_to"]]
+        return found if len(found) == 1 and _target_problem(meeting, found[0]) is None else []
+    if "continued_to_date" not in outcome:
+        return []
+    return sorted((m for m in meetings if m["body"] == meeting["body"] and m["status"] != "cancelled"
+                   and _meeting_day(m) == outcome["continued_to_date"]), key=lambda m: (m["starts_at"], m["id"]))
+
+
+def continuation_back_links(meetings):
+    """DF0022-07: ``{target id: [source meetings]}``, each list sorted by the source's start then id. One pass over the
+    sources that carry a continuation; a chain shows each link once and nothing is followed recursively."""
+    back = {}
+    for source in sorted(meetings, key=lambda m: (m["starts_at"], m["id"])):
+        for target in continuation_targets(source, meetings):
+            if target["id"] != source["id"]:
+                back.setdefault(target["id"], []).append(source)
+    return back
+
+
+def continuation_issues(meetings):
+    """``[(source meeting, message)]`` for each explicit ``continued_to`` that does not name one valid later meeting."""
+    issues = []
+    for meeting in meetings:
+        outcome = meeting.get("outcome") or {}
+        if "continued_to" not in outcome:
+            continue
+        found = [m for m in meetings if m["id"] == outcome["continued_to"]]
+        problem = ("duplicate meeting ID" if len(found) > 1 else _target_problem(meeting, found[0] if found else None))
+        if problem:
+            issues.append((meeting, problem))
+    return issues
+
+
+def continuation_problems(meetings):
+    """DF0022-07: one ``meetings/<source-id>.outcome.continued_to: <why>`` line per broken explicit reference."""
+    return [f"meetings/{meeting['id']}.outcome.continued_to: {problem}" for meeting, problem in continuation_issues(meetings)]
 
 
 def _load_minutes(value, held, now, label):
@@ -2015,6 +2102,9 @@ def load_content(root, today=None):
         meeting_ids[meeting["id"]] = path.name
         meetings.append(meeting)
     meetings.sort(key=lambda m: m["starts_at"])
+    continued = continuation_problems(meetings)  # DF0022-07: a continued item names a real, later, same-body meeting
+    if continued:
+        raise ContentError(continued[0])
 
     sources_path = content_dir / "sources.json"
     sources = load_sources(_read_json(sources_path)) if sources_path.is_file() else []

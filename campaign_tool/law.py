@@ -103,6 +103,16 @@ def validate(document, schema, root=None, where="$"):
         for key, needed in schema.get("dependentRequired", {}).items():  # DF2207-05: a pair present only in part
             if key in document and (missing := [name for name in needed if name not in document]):
                 raise ValueError(f"{where}: field {key!r} needs {missing}")
+        for key, sub in schema.get("dependentSchemas", {}).items():  # DF0022-07: a field that brings its own conditions
+            if key in document:
+                validate(document, sub, root, where)
+        if "not" in schema:  # DF0022-07: only used here for "these fields together are refused"
+            try:
+                validate(document, schema["not"], root, where)
+            except ValueError:
+                pass
+            else:
+                raise ValueError(f"{where}: matches a combination the schema refuses")
         if schema.get("additionalProperties") is False:
             extra = sorted(set(document) - set(properties))
             if extra:
