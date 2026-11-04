@@ -33,7 +33,7 @@ opt-in: a kit lists them only with `--include campus_police`, never by
 default, so a kit without it is unchanged. Each entry is unverified with null
 contacts; its source note says to submit to the campus records office, which
 is separate from the city and county records offices and has its own
-procedure. Private universities and school police are not seeded.
+procedure. Private universities are not seeded.
 
 California community college district police departments (36, from the
 `CCD_POLICE` table) are seeded in the county of the district office as kind
@@ -49,6 +49,22 @@ was seeded from the district's official page and to submit to the district
 records office, which is separate from the city, county and campus records
 offices. The page each row came from is recorded in the pull request that
 added it, not in the seed.
+
+California K-12 school district police departments (19, from the
+`SCHOOL_POLICE` table) are seeded in the county of the district office as kind
+`school_police`, after the community college district entries. Only districts
+that operate their own police department (Education Code 38000) are listed. A
+district served by school resource officers from a city police department or
+the county sheriff is not listed: those officers' records are the city's or
+the sheriff's, so request them from that agency. A district with only a
+security or safety division, or whose department could not be confirmed from
+an official page, is also absent. They are opt-in: a kit lists them only with
+`--include school_police`, never by default, so a kit without it is
+unchanged. Each entry is unverified with null contacts; its source note says
+the entry was seeded from the district's official page and to submit to the
+district records office, which is separate from the city, county, campus and
+community college records offices. The page each row came from is recorded in
+the pull request that added it, not in the seed.
 
 Coverage: all 58 counties, and all 482 incorporated cities, each with a
 `city_council` entry and a policing value (own police department, county
@@ -131,8 +147,8 @@ with `suggested: true`. For a city match the city's own agencies come first,
 then the county-wide ones; for a county match the county-wide agencies come
 first, then every city's agencies in seed order. `--include` (repeatable)
 restricts and orders kinds: `sheriff`, `police`, `county_board`,
-`city_council`, `district_attorney`, `chp`, and the opt-in `campus_police` and
-`ccd_police`.
+`city_council`, `district_attorney`, `chp`, and the opt-in `campus_police`,
+`ccd_police` and `school_police`.
 
 ## Online mode
 

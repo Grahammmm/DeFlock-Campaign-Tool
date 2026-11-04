@@ -211,7 +211,7 @@ export const SIGNUP_TEST_CHECKLIST = [
   "Record the date, the address's last four characters and the result in the launch receipt; then delete the test contact.",
 ] as const;
 
-export function settings(campaign: CampaignRow | null, rows: SettingRow[], secrets: SecretPresence[], notice: string | null, brevo: BrevoSettings | null): Safe {
+export function settings(campaign: CampaignRow | null, rows: SettingRow[], secrets: SecretPresence[], notice: string | null, brevo: BrevoSettings | null, mailDelivery: boolean): Safe {
   return html`<h1>Settings</h1>
 ${notice ? html`<p class="notice">${raw(notice)}</p>` : ""}
 <h2>Newsletter (Brevo, non-secret settings)</h2>
@@ -228,6 +228,7 @@ ${notice ? html`<p class="notice">${raw(notice)}</p>` : ""}
 <form method="post" action="/api/backup" class="stack"><p>Enqueues a <code>backup</code> job: the runner pulls <code>/api/runner/export.json</code> and every original by hash into one verified tar (docs/BACKUP.md). Organizers can also download <a href="/api/export.json">the D1 export</a> directly.</p><button class="secondary" type="submit">Queue backup job</button></form>
 <h2>Secrets (presence only; values are never displayed)</h2>
 <table class="data"><tr><th>Secret</th><th>Set</th><th>Purpose</th></tr>${secrets.map((s) => html`<tr><td><code>${s.name}</code></td><td>${s.present ? html`<span class="pill ok">present</span>` : html`<span class="pill bad">missing</span>`}</td><td>${s.note}</td></tr>`)}</table>
+<p>Request mail delivery: ${mailDelivery ? html`<span class="pill ok">configured</span>` : html`<span class="pill bad">not configured</span> - send_request and send_followup cards fail with <code>sender_not_configured</code> until both outbox secrets are set`}</p>
 <h2>Runner token</h2>
 <form method="post" action="/settings/rotate-runner-token" class="stack"><p>Rotating generates a new token, stores its SHA-256 fingerprint here and shows the value once. You must then set it as the Worker secret <code>RUNNER_TOKEN</code> and on the runner; the old token stops working when the secret is updated.</p><button class="danger" type="submit">Rotate runner token</button></form>
 <h2>Campaign</h2>${campaign ? jsonBlock(campaign) : html`<p>No campaign row.</p>`}
