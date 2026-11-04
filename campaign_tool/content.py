@@ -1314,6 +1314,14 @@ def default_agencies(root):
     return unique
 
 
+def load_campaign_agencies(root, today=None):
+    """The campaign's loaded agencies: content/agencies.json when present, else the kit's selected agencies."""
+    path = Path(root) / "content" / "agencies.json"
+    if path.is_file():
+        return load_agencies(_read_json(path), "content/agencies.json", today)
+    return default_agencies(root)
+
+
 # --- map -------------------------------------------------------------------
 
 MAP_EXTRA_KEYS = {"county_bounds", "style_url", "tile_hosts", "group_label", "attribution", "county_boundary"}
@@ -2086,8 +2094,8 @@ def load_content(root, today=None):
         ids.add(finding["id"])
         finding_files[finding["id"]] = "findings/" + path.name
         findings.append(finding)
-    from .finding_law import check_findings  # local: finding_law imports this module
-    law_problems = check_findings(root, findings)
+    from .finding_law import check as check_law  # local: finding_law imports this module
+    law_problems, local_rules = check_law(root, findings)
     if law_problems:
         raise ContentError(law_problems[0])
     findings.sort(key=lambda f: (f["published_at"], f["slug"]), reverse=True)
@@ -2112,11 +2120,7 @@ def load_content(root, today=None):
     if page_problems:
         raise ContentError(page_problems[0])
 
-    agencies_path = content_dir / "agencies.json"
-    if agencies_path.is_file():
-        agencies = load_agencies(_read_json(agencies_path), "content/agencies.json", today)
-    else:
-        agencies = default_agencies(root)
+    agencies = load_campaign_agencies(root, today)
     known_agencies = {agency["agency_id"] for agency in agencies}
     for finding in findings:  # DF1952-07: extra agencies of a multi-agency finding must be known agencies
         check_finding_agencies(finding, known_agencies, finding_files[finding["id"]])
@@ -2177,6 +2181,7 @@ def load_content(root, today=None):
         "assets_dir": assets_dir,
         "labels": labels,
         "officials": officials,
+        "local_rules": local_rules,  # DF1952-01: every validated version of law/local-rules.json, [] without one
     }
     glossary = read_glossary(root)  # DF1952-04: optional; None without the file
     if glossary is not None:
