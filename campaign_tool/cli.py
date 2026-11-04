@@ -1206,6 +1206,14 @@ def main():
     strip_p.add_argument("file")
     strip_p.add_argument("--out", default=None, help="Default <stem>.clean<suffix> beside FILE; never overwritten")
     strip_p.set_defaults(directory=".")
+    sharing_p = content_cmds.add_parser("agency-sharing", help="Record the agencies the vendor transparency portal names as receiving data, "
+                                        "as the organizer transcribed them (CSV header name,state,kind; 1-2000 rows, all or none; never fetched)")
+    sharing_p.add_argument("--directory", required=True)
+    sharing_p.add_argument("--agency", required=True, help="agency_id in content/agencies.json")
+    sharing_p.add_argument("--csv", required=True, help="Header name,state,kind; state is a two-letter code or US for federal")
+    sharing_p.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD", help="Day the organizer read the portal")
+    sharing_p.add_argument("--source-url", required=True, help="https URL of the portal page (transparency.flocksafety.com)")
+    sharing_p.add_argument("--replace", action="store_true", help="Overwrite an existing sharing list")
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
     review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
@@ -1711,6 +1719,11 @@ def main():
         elif args.command == "content" and args.content_command == "strip-metadata":
             from .image_meta import strip_file
             print(json.dumps(strip_file(args.file, args.out), indent=2))
+        elif args.command == "content" and args.content_command == "agency-sharing":
+            from .content_sharing import import_sharing
+            print(json.dumps(import_sharing(root, args.agency, Path(args.csv).expanduser(), args.checked_on, args.source_url,
+                                            replace=args.replace), indent=2))
+            print("Recorded only. Nothing was fetched or published.")
         elif args.command == "content":
             from .content_init import init_content
             print(json.dumps(init_content(root, args.source_campaign), indent=2))
