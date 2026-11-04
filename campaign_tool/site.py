@@ -1872,6 +1872,27 @@ class Site:
         return self.page("sources", self.labels["title.sources"], self.labels["title.sources_description"], "/sources.html", main,
                          ["/site-data.js", "/sources/filter.js"] if form else [])
 
+    def body_schedule_html(self):
+        """DF0022-10: each body's organizer-verified regular meeting rule, once, sorted by body; "" without schedules.
+        Only a rule and its source: never a date, a scheduled meeting or an agenda-posting deadline."""
+        items = []
+        for schedule in self.model.get("body_schedules") or ():
+            words = [self.t(f"schedule.ordinal_{ordinal}") for ordinal in schedule["ordinals"]]
+            if len(words) == 1:
+                ordinals = words[0]
+            elif len(words) == 2:
+                ordinals = self.t("schedule.join_two", first=words[0], last=words[1])
+            else:
+                ordinals = self.t("schedule.join_many", prefix=", ".join(words[:-1]), last=words[-1])
+            rule = self.t("schedule.rule", ordinals=ordinals, weekday=self.t("schedule.weekday_" + schedule["weekday"]),
+                          time=e(schedule["local_start_time"]), zone=e(schedule["time_zone"]))
+            link = f'<a href="{e(schedule["source_url"])}" rel="noopener noreferrer">{e(schedule["source_url"])}</a>'
+            usually = self.t("schedule.usually", rule=rule, source=link, date=e(schedule["checked_on"]))
+            old = (f'<p>{self.t("schedule.stale")}</p>'
+                   if (self.today - date.fromisoformat(schedule["checked_on"])).days > 365 else "")
+            items.append(f'<article><h3>{e(schedule["body"])}</h3><p>{usually}</p>{old}</article>')
+        return f'    <section class="section" id="regular-meetings">{"".join(items)}</section>\n' if items else ""
+
     def meetings_html(self):
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p>'
                 f'<h2>{self.t("heading.meetings")}</h2></div><p>{self.t("intro.meetings")} '
@@ -1880,7 +1901,7 @@ class Site:
                 + (f' <a href="/meetings.xml" type="application/atom+xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else "")
                 + f' <a href="/meetings.ics">{self.t("intro.meetings_calendar")}</a></p></div>'
                 '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
-                + '</div></section>\n')
+                + '</div></section>\n') + self.body_schedule_html()
         if self.past:
             main += (f'    <section class="section" id="past-meetings"><h2>{self.t("heading.past_meetings")}</h2><div class="meeting-list">'
                      + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')

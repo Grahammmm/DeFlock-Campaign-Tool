@@ -240,6 +240,7 @@ class LabelsTest(unittest.TestCase):
         # map.check_*: the fixture has no map/point-checks.json (tests/test_map_point_checks.py covers those labels).
         # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
         # agency.mapped_reported_*: the fixture has no transparency snapshot (tests/test_agency_mapped_reported.py covers those).
+        # schedule.*: the fixture has no body-schedules.json (tests/test_body_schedules.py covers those labels).
         # meeting.comments_*: the fixture records no public-comment counts (tests/test_meeting_comment_counts.py covers them).
         # meeting.votes*, vote.*: the fixture records no votes (tests/test_meeting_votes.py covers those labels).
         # handout.*: only the private meeting-pack handout writes these (tests/test_meeting_pack.py covers them).
@@ -278,6 +279,11 @@ class LabelsTest(unittest.TestCase):
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
                   "officials.heading", "officials.listed", "officials.source", "press.download_logo", "press.logo",
                   "privacy.signup_policy",
+                  "schedule.join_many", "schedule.join_two", "schedule.ordinal_1", "schedule.ordinal_2",
+                  "schedule.ordinal_3", "schedule.ordinal_4", "schedule.ordinal_last", "schedule.rule",
+                  "schedule.stale", "schedule.usually", "schedule.weekday_friday", "schedule.weekday_monday",
+                  "schedule.weekday_saturday", "schedule.weekday_sunday", "schedule.weekday_thursday",
+                  "schedule.weekday_tuesday", "schedule.weekday_wednesday",
                   "supporters.description", "supporters.joined", "supporters.kind.business",
                   "supporters.kind.civil_liberties", "supporters.kind.community", "supporters.kind.faith",
                   "supporters.kind.labor", "supporters.kind.neighborhood", "supporters.kind.other", "supporters.title",
