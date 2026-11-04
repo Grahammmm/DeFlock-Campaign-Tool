@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _asked, _bounds, _read_json,
+from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _alpr_policy, _asked, _bounds, _policy_check, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, continuation_problems,
                       default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
@@ -248,6 +248,13 @@ def content_problems(root, limit=LIMIT):
             for index, entry in enumerate(document):
                 if isinstance(entry, dict) and entry.get("selected", True) is True:
                     _asked(entry, f"content/agencies.json[{index}].asked", problems=problems)
+                    profile = entry.get("profile", {})
+                    if isinstance(profile, dict) and profile.get("policy_check") is not None:
+                        label = f"content/agencies.json[{index}].profile"
+                        alpr = _attempt(problems, label + ".alpr_policy",
+                                        lambda: _alpr_policy(profile.get("alpr_policy"), label + ".alpr_policy"))
+                        _attempt(problems, label + ".policy_check",
+                                 lambda: _policy_check(profile["policy_check"], label + ".policy_check", alpr))
             _asked_links(problems, root, document)
         agencies = _attempt(problems, "content/agencies.json",
                             lambda: load_agencies(_read_json(agencies_path), "content/agencies.json"))

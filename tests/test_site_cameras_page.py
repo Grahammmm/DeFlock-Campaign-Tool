@@ -131,7 +131,8 @@ class CamerasPageTests(unittest.TestCase):
                                                    "/meetings.html", "/about.html", "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html",  # DF2037-14
                                                    "/agencies/cedar.html",  # DF2237-08 agency page
                                                    "/findings/cedar-policy-posted.html",
-                                                   "/meetings/cedar-council-2026-10.html")])
+                                                   "/meetings/cedar-council-2026-10.html",
+                                                   "/sources/cafecafecafe.html", "/sources/beefbeefbeef.html")])  # DF1103-11, last
 
     def test_with_map_linked_from_fallback_footer_and_sitemap(self):
         self.base_url(BASE)

@@ -170,6 +170,17 @@ class NewsletterAndSiteSurfaceTest(unittest.TestCase):
             path.write_text(json.dumps(doc), encoding="utf-8")
             self.assertEqual(cli._site_claim_notes(root), ["review-required: findings/%s: legal-claim wording (non-compliant)" % doc["slug"]])
 
+    def test_site_build_scan_flags_configured_comment_asks_by_position(self):  # DF2207-07
+        from campaign_tool import cli
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "campaign"
+            shutil.copytree(ROOT / "examples" / "fictional-campaign", root, ignore=shutil.ignore_patterns("public"))
+            path = root / "content" / "site.json"
+            site = json.loads(path.read_text(encoding="utf-8"))
+            site["comment_asks"] = ["Publish the policy before any renewal.", "The department is out of compliance with SB 34."]
+            path.write_text(json.dumps(site), encoding="utf-8")
+            self.assertEqual(cli._site_claim_notes(root), ["review-required: site.json.comment_asks[2]: legal-claim wording (non-compliant)"])
+
 
 def _fictional_with(field, text):
     tmp = tempfile.TemporaryDirectory()
