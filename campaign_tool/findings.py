@@ -39,6 +39,10 @@ ROSTER_KEYS, REVIEWER_KEYS = frozenset(("schema_version", "reviewers")), frozens
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 SIGN_NAMESPACE, MAX_KEY_BYTES, MAX_SIGNATURE_BYTES = "deflock-finding-review", 1024, 8192
 _KEY, _PRINCIPAL = re.compile(r"(ssh-ed25519|ecdsa-sha2-nistp256) [A-Za-z0-9+/]+={0,3}"), re.compile(r"[A-Za-z0-9._-]+")
+# Receipt binding (DF-APPROVAL-BIND): each campaign holds a random id in private/campaign-id.json; every new
+# receipt and signing payload carries it, and only receipts carrying this campaign's id approve here.
+CAMPAIGN_ID_KEYS, _CAMPAIGN_ID, MAX_CAMPAIGN_ID_BYTES = (frozenset(("schema_version", "campaign_id", "created_at")),
+                                                         re.compile(r"cmp_[0-9a-f]{32}"), 4096)
 
 
 def reviewed_view(draft):
@@ -153,11 +157,60 @@ def _text(name, value, limit):
     return value.strip()
 
 
-def receipt_payload(id_, content_sha256, role, decision, reviewer, rationale):
-    """The exact bytes a reviewer signs: canonical JSON, no timestamp (signable before reviewed_at exists)."""
+def receipt_payload(id_, content_sha256, role, decision, reviewer, rationale, campaign_id=None):
+    """The exact bytes a reviewer signs: canonical JSON, no timestamp (signable before reviewed_at exists).
+    ``campaign_id`` is always given for new receipts; None rebuilds the pre-binding payload of a receipt that
+    `finding bind-receipts` stamped, whose signature (if any) was made before binding existed."""
+    bound = {} if campaign_id is None else {"campaign_id": campaign_id}
     return json.dumps({"id": id_, "content_sha256": content_sha256, "role": role, "decision": decision,
-                       "reviewer": reviewer, "rationale": rationale, "namespace": SIGN_NAMESPACE},
+                       "reviewer": reviewer, "rationale": rationale, "namespace": SIGN_NAMESPACE, **bound},
                       sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+def campaign_id(root):
+    """This campaign's receipt-binding id (read-only), or None before private/campaign-id.json exists."""
+    _real_dir(root / "private")
+    path = root / "private" / "campaign-id.json"
+    if not os.path.lexists(path):
+        return None
+    document = _read_json(path, MAX_CAMPAIGN_ID_BYTES, "campaign id file")
+    if (not isinstance(document, dict) or set(document) != CAMPAIGN_ID_KEYS or type(document["schema_version"]) is not int
+            or document["schema_version"] != 1 or not isinstance(document["campaign_id"], str)
+            or not _CAMPAIGN_ID.fullmatch(document["campaign_id"]) or not isinstance(document["created_at"], str)):
+        raise _PathError(f"{path}: campaign id file must hold schema_version 1, campaign_id cmp_<32 hex> and created_at")
+    return document["campaign_id"]
+
+
+def _ensure_campaign_id(root, now=None):
+    """Create private/campaign-id.json once (0600, O_EXCL, never replaced) and return the id."""
+    existing = campaign_id(root)
+    if existing:
+        return existing
+    private = root / "private"
+    if not os.path.lexists(private):
+        private.mkdir(mode=0o700)
+        os.chmod(private, 0o700)
+    when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    document = {"schema_version": 1, "campaign_id": "cmp_" + secrets.token_hex(16), "created_at": when}
+    fd, temporary = tempfile.mkstemp(dir=private, prefix=".campaign-id-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(json.dumps(document, indent=2) + "\n")
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(temporary, 0o600)
+        try:  # link, not replace: an id, once written, is never overwritten
+            os.link(temporary, private / "campaign-id.json")
+        except FileExistsError:  # a concurrent writer won: use its id
+            return campaign_id(root)
+    finally:
+        os.unlink(temporary)
+    return document["campaign_id"]
+
+
+def _bound_blockers(root, draft, receipts):
+    """review_blockers with this campaign's binding: approvals from no or another campaign never count."""
+    return review_blockers(reviewed_view(draft), receipts, campaign_id(root) or "")
 
 
 def _checked(root, draft, role, decision, reviewer, rationale):
@@ -179,32 +232,42 @@ def _checked(root, draft, role, decision, reviewer, rationale):
 
 def review_payload(root, draft, role, decision, reviewer, rationale):
     reviewer, rationale, _ = _checked(root, draft, role, decision, reviewer, rationale)  # read-only
-    return receipt_payload(draft["id"], reviewed_hash(draft), role, decision, reviewer, rationale)
+    bound = campaign_id(root)
+    if bound is None:  # nothing to bind a signature to; review-payload never writes
+        raise ValueError(f"{root / 'private' / 'campaign-id.json'}: this campaign has no receipt-binding id yet; "
+                         "add the reviewer (finding reviewers add) or run `finding bind-receipts --confirm` first")
+    return receipt_payload(draft["id"], reviewed_hash(draft), role, decision, reviewer, rationale, bound)
 
 
 def add_receipt(root, draft, role, decision, reviewer, rationale, now=None, signature=None):
     reviewer, rationale, entry = _checked(root, draft, role, decision, reviewer, rationale)
-    digest, signed = reviewed_hash(draft), {}
+    digest, signed, bound = reviewed_hash(draft), {}, None
     if signature is not None:  # verified before any directory or file is written
         if not entry or "ssh_public_key" not in entry:
             raise ValueError(f"{reviewer} has no ssh_public_key on the roster (finding reviewers add --ssh-key)")
+        bound = campaign_id(root)  # a signature can only be over an existing id (review-payload refuses without one)
         signed = {"signature": _read_json(signature, MAX_SIGNATURE_BYTES, "signature", raw=True),
                   "signed_by": principal(entry["name"])}
-        if not _verifies(root, signed["signed_by"], signed["signature"],
-                         receipt_payload(draft["id"], digest, role, decision, reviewer, rationale)):
-            raise ValueError(f"{signature}: bad signature for {signed['signed_by']} over this receipt; nothing written")
-    path = _receipts_path(root, draft)
+        if bound is None or not _verifies(root, signed["signed_by"], signed["signature"],
+                                          receipt_payload(draft["id"], digest, role, decision, reviewer, rationale,
+                                                          bound)):
+            raise ValueError(f"{signature}: bad signature for {signed['signed_by']} over this receipt in this "
+                             "campaign; nothing written")
+    path = _receipts_path(root, draft)  # refuses a symlinked private/ or private/reviews before any write
+    if signature is None:
+        bound = _ensure_campaign_id(root, now)
     for folder in (root / "private", path.parent):
         folder.mkdir(mode=0o700, exist_ok=True)
         os.chmod(folder, 0o700)
     with _locked(path.parent):
         receipts = _load_receipts(path)
         if any(isinstance(r, dict) and r.get("content_sha256") == digest and r.get("role") == role
-               and r.get("decision") == decision and _who(r.get("reviewer")) == _who(reviewer) for r in receipts):
+               and r.get("decision") == decision and _who(r.get("reviewer")) == _who(reviewer)
+               and r.get("campaign_id") == bound for r in receipts):
             raise ValueError(f"{path}: this receipt is already recorded for the current content")
         when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         receipt = {"content_sha256": digest, "role": role, "decision": decision, "reviewer": reviewer,
-                   "rationale": rationale, "reviewed_at": when, **signed}
+                   "rationale": rationale, "reviewed_at": when, "campaign_id": bound, **signed}
         _write_private(path, receipts + [receipt], ".review-")
     return dict(receipt, id=draft["id"], written=str(path))
 
@@ -236,15 +299,19 @@ def _verifies(root, who, signature, payload):
 
 
 def receipt_trust(root, draft, receipts):
-    """Current-hash receipts: signed only when the signature re-verifies now; all others count as self-asserted."""
+    """This campaign's current-hash receipts: signed only when the signature re-verifies now; others self-asserted.
+    A receipt stamped by bind-receipts is verified against its pre-binding payload (the bytes it was signed over)."""
     digest, roster, _ = reviewed_hash(draft), _load_roster(root), _signers_path(root)  # a symlink refuses
+    bound = campaign_id(root) or ""
     trust = {"signed": 0, "self_asserted": 0, "bad_signatures": []}
-    for r in (r for r in receipts if isinstance(r, dict) and r.get("content_sha256") == digest):
+    for r in (r for r in receipts if isinstance(r, dict) and r.get("content_sha256") == digest
+              and bound and r.get("campaign_id") == bound):
         good, entry = False, roster and _rostered(roster, r.get("reviewer"))
         with contextlib.suppress(ValueError):  # no usable principal or no ssh-keygen: cannot verify
             good = ("signed_by" in r and bool(entry) and r["signed_by"] == principal(entry["name"])
                     and _verifies(root, r["signed_by"], r.get("signature"), receipt_payload(
-                        draft["id"], digest, r.get("role"), r.get("decision"), r.get("reviewer"), r.get("rationale"))))
+                        draft["id"], digest, r.get("role"), r.get("decision"), r.get("reviewer"), r.get("rationale"),
+                        None if "campaign_bound" in r else bound)))
         if not good and ("signature" in r or "signed_by" in r):
             trust["bad_signatures"].append({k: r.get(k) for k in ("reviewer", "role", "decision", "reviewed_at")})
         trust["signed" if good else "self_asserted"] += 1
@@ -279,15 +346,73 @@ def _write_private(path, document, prefix, text=None):
 
 
 def review_status(root, draft):
-    """Read-only: current-content receipts, stale ones, and the review_blockers list."""
+    """Read-only: current-content receipts, stale ones, binding counts and the review_blockers list."""
     digest = reviewed_hash(draft)
     roster = _load_roster(root)
     receipts = _load_receipts(_receipts_path(root, draft))
+    bound = campaign_id(root)
     current = sum(isinstance(r, dict) and r.get("content_sha256") == digest for r in receipts)
+    unbound = sum(isinstance(r, dict) and "campaign_id" not in r for r in receipts)
+    foreign = sum(isinstance(r, dict) and "campaign_id" in r and r["campaign_id"] != bound for r in receipts)
     return {"id": draft["id"], "content_sha256": digest, "receipts_for_this_content": current,
-            "stale_receipts": len(receipts) - current, **receipt_trust(root, draft, receipts),
-            "review_blockers": review_blockers(reviewed_view(draft), receipts),
+            "stale_receipts": len(receipts) - current, "campaign_id": bound, "unbound_receipts": unbound,
+            "foreign_campaign_receipts": foreign, **receipt_trust(root, draft, receipts),
+            "review_blockers": _bound_blockers(root, draft, receipts),
             **({} if roster is None else {"unrostered_receipts": _unrostered(roster, receipts)})}
+
+
+def bind_receipts(root, confirm=False, now=None):
+    """Legacy policy for receipts written before campaign binding (no campaign_id): they approve nothing until the
+    organizer binds them here, and every status names them (unbound_legacy_receipt) meanwhile. The dry run (default)
+    reads only and lists, per finding, how many receipts are unbound or bound to another campaign. ``confirm``
+    stamps every unbound receipt in this campaign's private/reviews/*.json with this campaign's id and a
+    campaign_bound marker (all other fields kept), never touches a receipt bound to another campaign, and appends
+    one private/reviews/binding-log.jsonl line per file with the sha256 of each receipt as it was before stamping.
+    Binding attests that these receipts were granted in this campaign: check the dry run before confirming."""
+    folder = root / "private" / "reviews"
+    _real_dir(root / "private")
+    present = _real_dir(folder)
+    bound = _ensure_campaign_id(root, now) if confirm else campaign_id(root)
+    when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows, total = [], 0
+
+    def survey():
+        for path in sorted(folder.glob("*.json")) if present else []:
+            receipts = _load_receipts(path)
+            unbound = [r for r in receipts if isinstance(r, dict) and "campaign_id" not in r]
+            foreign = sum(isinstance(r, dict) and "campaign_id" in r and r["campaign_id"] != bound for r in receipts)
+            if unbound or foreign:
+                rows.append({"id": path.stem, "unbound": len(unbound), "foreign": foreign})
+            yield path, receipts, unbound
+
+    if not confirm:
+        for _ in survey():
+            pass
+        return {"confirmed": False, "campaign_id": bound, "findings": rows,
+                "unbound": sum(row["unbound"] for row in rows)}
+    if present:
+        with _locked(folder):
+            log = folder / "binding-log.jsonl"
+            try:  # opened before any receipt is rewritten, so a bad log refuses with nothing changed
+                log_fd = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            except OSError as exc:
+                raise ValueError(f"{log}: cannot open binding log ({exc.strerror})") from None
+            try:
+                if not stat.S_ISREG(os.fstat(log_fd).st_mode):
+                    raise ValueError(f"{log}: binding log is not a regular file")
+                for path, receipts, unbound in list(survey()):
+                    if not unbound:
+                        continue
+                    before = [content_hash(r) for r in unbound]
+                    for receipt in unbound:
+                        receipt.update(campaign_id=bound, campaign_bound={"by": "bind-receipts", "at": when})
+                    _write_private(path, receipts, ".review-")
+                    _append(log_fd, {"at": when, "action": "bind", "campaign_id": bound, "id": path.stem,
+                                     "bound": len(unbound), "receipt_sha256": before})
+                    total += len(unbound)
+            finally:
+                os.close(log_fd)
+    return {"confirmed": True, "campaign_id": bound, "bound": total, "findings": rows}
 
 
 def _roster_path(root):
@@ -385,6 +510,7 @@ def add_reviewer(root, name, roles, today=None, ssh_key=None):
         _write_private(signers, None, ".signers-", "".join(
             f'{principal(e["name"])} namespaces="{SIGN_NAMESPACE}" {e["ssh_public_key"]}\n'
             for e in roster["reviewers"] if "ssh_public_key" in e))
+        _ensure_campaign_id(root)  # after the roster write, so a refusal writes nothing; review-payload needs it
     return dict(entry, written=str(path))
 
 
@@ -517,7 +643,7 @@ def publish(root, draft_path, approved_by, now=None):
     """Write content/findings/<slug>.json as published and log it privately; never builds or deploys."""
     draft = load_draft(draft_path)
     receipts = _load_receipts(_receipts_path(root, draft))
-    blockers = review_blockers(reviewed_view(draft), receipts)
+    blockers = _bound_blockers(root, draft, receipts)
     if blockers:
         raise ValueError(f"review blockers: {blockers}")
     trust = receipt_trust(root, draft, receipts)
@@ -578,7 +704,7 @@ def _status_row(root, document, state=None):
     receipts = _load_receipts(_receipts_path(root, document))
     digest = reviewed_hash(document)
     current = sum(isinstance(r, dict) and r.get("content_sha256") == digest for r in receipts)
-    blockers = [] if state else review_blockers(reviewed_view(document), receipts)
+    blockers = [] if state else _bound_blockers(root, document, receipts)
     if state is None:  # docs/PUBLICATION.md "States" applied to the offline files
         structural = set(blockers) - content.RECEIPT_BLOCKERS - {"unresolved_challenge"}
         state = ("ready" if not blockers else "blocked" if "unresolved_challenge" in blockers
@@ -718,17 +844,18 @@ def _check_date(date, moment, published_at, corrections):
     return date
 
 
-def correct(root, finding_id, date, note, from_draft=None, now=None):
+def correct(root, finding_id, date, note, from_draft=None, now=None, approved_by=None):
     """Append one dated correction to the published finding with ``finding_id``; with ``from_draft``
     its reviewed fields are replaced by the draft's, which must clear the same gate as publish.
-    id, slug and published_at never change; each correction is logged. Never builds or deploys."""
+    id, slug and published_at never change; each correction is logged. Never builds or deploys.
+    ``approved_by`` is the named person who approves this correction; without one the publication gate refuses."""
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     note = _text("note", note, 1000)
     for folder in (root / "content", root / "private"):
         if not _real_dir(folder):
             raise ValueError(f"{folder}: no {folder.name}/ directory in this campaign")
     with _locked(root / "private", ".publish.lock"):
-        return _correct_locked(root, finding_id, date, note, from_draft, moment)
+        return _correct_locked(root, finding_id, date, note, from_draft, moment, approved_by)
 
 
 def _one_published(folder, finding_id):
@@ -743,7 +870,7 @@ def _one_published(folder, finding_id):
     return matches[0]
 
 
-def _correct_locked(root, finding_id, date, note, from_draft, moment):
+def _correct_locked(root, finding_id, date, note, from_draft, moment, approved_by=None):
     folder = root / "content" / "findings"
     target, existing = _one_published(folder, finding_id)
     current = content.load_finding(existing, f"content/findings/{target.name}")
@@ -751,13 +878,14 @@ def _correct_locked(root, finding_id, date, note, from_draft, moment):
     when = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
     kept = {"state": existing["state"], "published_at": existing["published_at"], "updated_at": when,
             "corrections": list(existing["corrections"]) + [{"date": date, "note": note}]}
+    draft = existing  # the content the approver saw: the published finding, or the reviewed draft below
     if from_draft is None:
         document = dict(reviewed_view(existing), **kept)
     else:
         draft = load_draft(from_draft)
         if draft["id"] != finding_id or draft.get("slug") != current["slug"]:
             raise ValueError(f"{from_draft}: draft id and slug must be {finding_id!r} and {current['slug']!r}")
-        blockers = review_blockers(reviewed_view(draft), _load_receipts(_receipts_path(root, draft)))
+        blockers = _bound_blockers(root, draft, _load_receipts(_receipts_path(root, draft)))
         if blockers:
             raise ValueError(f"review blockers: {blockers}")
         document = dict(reviewed_view(draft), **kept)
@@ -766,6 +894,10 @@ def _correct_locked(root, finding_id, date, note, from_draft, moment):
         problems = cited_problems(root, finding)
         if problems:
             raise ValueError(f"cited records not registered and stored: {problems}")
+    seal = lambda doc: publication_gate.content_digest({"date": date, "note": note, "reviewed": reviewed_hash(doc)})  # noqa: E731
+    publication_gate.assert_publishable(finding_id, seal(document if from_draft is None else load_draft(from_draft)), [
+        {"artefact_id": finding_id, "content_hash": seal(draft), "approved_by": approved_by,
+         "approved_on": when[:10], "status": "approved"}])  # the person at the CLI approves this exact correction; a re-read draft edit refuses
     entry = {"at": when, "action": "correct", "id": finding_id, "slug": current["slug"], "date": date,
              "content_sha256": reviewed_hash(document),
              "text_changed": reviewed_hash(document) != reviewed_hash(existing)}

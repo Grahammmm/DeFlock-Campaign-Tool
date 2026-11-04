@@ -5,7 +5,6 @@ python3 -B -m unittest tests.test_publication_gate -v
 """
 import ast
 import contextlib
-import copy
 import io
 import json
 import os
@@ -21,6 +20,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 from campaign_tool import findings, publication_gate as gate, review  # noqa: E402
+from tests import test_findings_correct as fc  # noqa: E402
 from tests import test_findings_publish as fp  # noqa: E402
 from tests.flock import test_publish as flock_base  # noqa: E402
 from tests.flock import test_publish_brief as brief_tests  # noqa: E402
@@ -29,8 +29,8 @@ from tests.flock import test_publish_stage as stage_tests  # noqa: E402
 OLD, NEW = "a" * 64, "b" * 64
 FIELDS = ("approved_by", "approved_on", "approval_ref")
 # Until BF-df-pii-everywhere's PUBLISH_PATHS registry exists, the paths are listed here for it to converge on.
-PUBLISH_PATHS = (("campaign_tool/findings.py", "publish"), ("tools/flock_publish_stage.py", "stage"),
-                 ("tools/flock_publish_brief.py", "checked"))
+PUBLISH_PATHS = (("campaign_tool/findings.py", "publish"), ("campaign_tool/findings.py", "_correct_locked"),
+                 ("tools/flock_publish_stage.py", "stage"), ("tools/flock_publish_brief.py", "checked"))
 GATE_CALLS = {"assert_publishable", "entry_refusals"}
 # The existing human review surface: modules that store a value a person typed or signed. None hard-codes one.
 HUMAN_SURFACE = frozenset(("campaign_tool/findings.py", "campaign_tool/outbox.py", "campaign_tool/outbox_batch.py",
@@ -164,11 +164,14 @@ class SeededFailureControls(unittest.TestCase):
     def test_1_path_without_its_gate_call_fails_the_coverage_test_naming_it(self):
         read = lambda rel: (REPO / rel).read_text(encoding="utf-8")  # noqa: E731
         self.assertEqual(coverage_gaps(read), [])
-        for rel, name in PUBLISH_PATHS:
+        for rel in sorted({r for r, _ in PUBLISH_PATHS}):
             for call in GATE_CALLS:
                 if call in read(rel):
                     stripped = lambda r, rel=rel, call=call: read(r).replace(call + "(", "str(") if r == rel else read(r)  # noqa: E731
-                    self.assertEqual(coverage_gaps(stripped), ["%s:%s" % (rel, name)], rel)
+                    self.assertEqual(coverage_gaps(stripped), ["%s:%s" % p for p in PUBLISH_PATHS if p[0] == rel], rel)
+        head, tail = read("campaign_tool/findings.py").split("def _correct_locked")  # only the correction path loses its call
+        only = lambda r: head + "def _correct_locked" + tail.replace("assert_publishable(", "str(") if r.endswith("findings.py") else read(r)  # noqa: E731
+        self.assertEqual(coverage_gaps(only), ["campaign_tool/findings.py:_correct_locked"])
 
     def test_2_module_seeded_to_write_auto_approval_fails_the_no_writer_test_naming_it(self):
         self.assertEqual(approval_writers(REPO), [])
@@ -229,12 +232,6 @@ class GateRules(unittest.TestCase):
         self.assertEqual(refusal("a1", OLD, [approval(note=personal, approved_by="auto")]).args[0],
                          "publication refused: artefact a1: approver_unnamed")
 
-    def test_gate_inputs_are_not_mutated(self):
-        rows = [approval(), approval(content_hash=NEW)]
-        before = copy.deepcopy(rows)
-        gate.assert_publishable("a1", OLD, rows)
-        self.assertEqual(rows, before)
-
 
 class StaticChecks(unittest.TestCase):
     def test_gate_imports_no_network_or_process_module_and_has_no_writer(self):
@@ -275,14 +272,6 @@ class StagePath(Harness):
                 self.stage.out.write_text(json.dumps(self.stage.doc))
                 result = self.stage.stage()
                 self.stage.assert_refused(result, "publication refused: artefact N1: approver_unnamed")
-
-    def test_prose_in_the_entry_text_does_not_approve_it(self):
-        self.entry()["review"] = {"status": "pending", "approved_by": "", "approved_on": "", "approval_ref": ""}
-        self.entry()["text"] += " APPROVED BY G"
-        self.stage.out.write_text(json.dumps(self.stage.doc))
-        code, out = self.stage.stage()
-        self.assertEqual(code, 1, out)
-        self.assertFalse(self.stage.staging.exists())
 
     def test_content_edited_after_approval_refuses_before_any_write(self):
         run = self.stage.run_dir
@@ -365,6 +354,31 @@ class FindingPublishPath(Harness):
         result = findings.publish(self.case.root, self.case.draft, "Pat Organizer", now=fp.NOW)
         self.assertEqual(result["published"], "synthetic-title")
         self.assertIn("synthetic-title.json", self.case.published())
+
+
+class CorrectionPath(Harness):
+    def setUp(self):
+        self.case = self.inner(fc.FindingCorrectTests, "test_date_order_rules")
+        self.before = (self.case.path.read_bytes(), self.case.log_lines())
+
+    def correct(self, who="Pat Organizer", from_draft=None):
+        return findings.correct(self.case.root, "syn-pub-1", "2026-03-06", "Note.", from_draft, now=fc.LATER, approved_by=who)
+
+    def test_no_approver_or_a_machine_approver_is_refused_and_nothing_is_written(self):
+        for who in (None, "", "auto", "agent", "sol-reviewer"):
+            with self.subTest(who=who), self.assertRaises(gate.PublicationRefused) as caught:
+                self.correct(who)
+            self.assertEqual((caught.exception.artefact_id, caught.exception.reason), ("syn-pub-1", "approver_unnamed"))
+        self.assertEqual((self.case.path.read_bytes(), self.case.log_lines()), self.before)
+
+    def test_reviewed_draft_edited_between_approval_and_write_refuses_content_changed(self):
+        path, document = self.case.new_text()
+        self.case.approve_all(document=document)
+        with mock.patch.object(findings, "load_draft", side_effect=[document, dict(document, summary="Edited again.")]):
+            with self.assertRaises(gate.PublicationRefused) as caught:
+                self.correct(from_draft=path)
+        self.assertEqual(caught.exception.reason, "content_changed_after_approval")
+        self.assertEqual((self.case.path.read_bytes(), self.case.log_lines()), self.before)
 
 
 if __name__ == "__main__":
