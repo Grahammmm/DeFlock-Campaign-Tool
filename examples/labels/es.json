@@ -106,6 +106,8 @@
     "intro.open_data_about": "Los hallazgos publicados también están disponibles como datos abiertos:",
     "intro.meetings_open_data": "Reuniones y resultados como datos abiertos (JSON)",
     "intro.meetings_open_data_about": "Reuniones con sus resultados registrados, votos y fuentes oficiales:",
+    "intro.agencies_open_data": "Agencias como datos abiertos (JSON)",
+    "intro.agencies_open_data_about": "Agencias con sus solicitudes, política publicada, fin de contrato y cifras del portal, según cada fuente:",
     "notice.no_findings": "Todavía no se ha publicado ningún hallazgo.",
     "notice.no_upcoming": "No hay reuniones próximas en la lista.",
     "notice.past_meetings_link": "Reuniones pasadas y sus kits de comentarios",
