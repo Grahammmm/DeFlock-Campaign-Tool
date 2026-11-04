@@ -13,6 +13,7 @@ RESOURCES = (
     "jurisdictions/us-ca/package.json",
     "jurisdictions/us-ca/policy-checklist.json",
     "templates/records-request.md",
+    "checklists/contract-checklist.json",
 )
 
 
@@ -104,7 +105,7 @@ def states(root):
 
 def main(argv=None, root=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--write", action="store_true", help="Copy the six public canonical resources; default is read-only")
+    parser.add_argument("--write", action="store_true", help="Copy the public canonical resources; default is read-only")
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1] if root is None else Path(root)
     try:

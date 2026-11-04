@@ -1210,6 +1210,202 @@ def _policy_check(value, label, alpr_policy, today=None):
     return {"checked_on": value["checked_on"], "policy_url": value["policy_url"], "elements": elements}
 
 
+PRE_MEETING_KEYS = ("status", "checked_on", "meeting_on", "body", "source_url", "note")
+PRE_MEETING_STATUSES = ("found", "not_found_yet")
+PRE_MEETING_RULE_ID = "ca-civ-1798.90.55-public-comment-before-implementation"  # the law-package rule the section cites by id
+
+
+def _pre_meeting(value, label, today=None, problems=None):
+    """DF1207-07: the public meeting an organizer found before an ALPR program started (``profile.pre_implementation_meeting``).
+
+    ``found`` needs ``meeting_on``, ``body`` and an https ``source_url``; ``not_found_yet`` allows none of them.
+    Organizer-verified and never fetched. Every problem is named by field: with ``problems`` a list they are all
+    appended (content-check), else the first is raised (build). Returns the clean dict, or None when absent."""
+    if value is None:
+        return None
+    issues, today = [], today or date.today()
+    if not isinstance(value, dict):
+        issues, value = [f"{label}: must be an object"], {}
+    issues += [f"{label}: unknown field {str(key)[:40]!r}" for key in sorted(set(value) - set(PRE_MEETING_KEYS), key=str)]
+    status = value.get("status")
+    if status not in PRE_MEETING_STATUSES:
+        issues.append(f"{label}.status: choose one of {list(PRE_MEETING_STATUSES)}")
+    found = status == "found"
+    for key in ("meeting_on", "body", "source_url"):
+        if key in value and status == "not_found_yet":
+            issues.append(f"{label}.{key}: not allowed when status is not_found_yet")
+        elif key not in value and found:
+            issues.append(f"{label}.{key}: required when status is found")
+    days = {}
+    for key in ("meeting_on", "checked_on"):
+        if key not in value:
+            if key == "checked_on":
+                issues.append(f"{label}.checked_on: required")
+        elif key == "checked_on" or found:
+            try:
+                days[key] = _calendar_day(value[key], f"{label}.{key}")
+                if days[key] > today:
+                    issues.append(f"{label}.{key}: must not be after the build date")
+            except ContentError as exc:
+                issues.append(str(exc))
+    if "meeting_on" in days and "checked_on" in days and days["checked_on"] < days["meeting_on"]:
+        issues.append(f"{label}.checked_on: must not be before meeting_on")
+    if found and "body" in value:
+        body = value["body"]  # the page escapes it, so angle brackets are fine here
+        if not (isinstance(body, str) and body.strip() and len(body) <= 120 and all(map(visible, body))):
+            issues.append(f"{label}.body: 1-120 characters of visible text")
+    if found and "source_url" in value:
+        try:
+            _https(value["source_url"], f"{label}.source_url")
+        except ContentError as exc:
+            issues.append(str(exc))
+    if "note" in value:
+        try:
+            if len(str(_text(value, "note", label))) > 200:
+                raise ContentError(f"{label}.note: at most 200 characters")
+        except ContentError as exc:
+            issues.append(str(exc))
+    if problems is not None:
+        problems.extend(issues)
+    elif issues:
+        raise ContentError(issues[0])
+    if issues:
+        return None
+    clean = {key: value[key] for key in PRE_MEETING_KEYS if key in value}
+    if not clean.get("note"):
+        clean.pop("note", None)
+    return clean
+
+
+CONTRACT_CHECKLIST_PATH = Path(__file__).resolve().parent / "_resources" / "checklists" / "contract-checklist.json"
+CONTRACT_CHECKLIST_NAME, MAX_CONTRACT_CHECKLIST_BYTES = "checklists/contract-checklist.json", 64 * 1024
+CONTRACT_CHECK_IDS = ("term_renewal", "price_changes", "data_ownership", "retention", "sharing_network",
+                      "vendor_data_use", "audit_search_logs", "termination_data_exit")
+CONTRACT_CHECK_KEYS = {"checked_on", "contract_url", "elements"}
+CONTRACT_STATUSES = ("addressed", "not_found", "unclear")
+
+
+def load_contract_checklist():
+    """DF2207-03: the draft list of terms an ALPR vendor agreement may set, read from the packaged resource only.
+
+    Tool-wide, not part of any law package. Every failure is a ContentError naming the resource, never a path."""
+    path, name = CONTRACT_CHECKLIST_PATH, CONTRACT_CHECKLIST_NAME
+
+    def refuse(reason):
+        return ContentError(f"contract checklist {name}: {reason}")
+    try:
+        for part in (path, path.parent, path.parents[1]):  # the file, its folder and the _resources folder
+            if part.is_symlink():
+                raise refuse("a symbolic link is not read")
+        if not path.is_file():
+            raise refuse("missing or not a file")
+        if path.stat().st_size > MAX_CONTRACT_CHECKLIST_BYTES:
+            raise refuse("larger than 64 KiB")
+        data = path.read_bytes()
+    except OSError as exc:
+        raise refuse(f"unreadable ({exc.strerror or type(exc).__name__})") from None
+    if len(data) > MAX_CONTRACT_CHECKLIST_BYTES:
+        raise refuse("larger than 64 KiB")
+    try:
+        document = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise refuse("not valid UTF-8 JSON") from None
+    if not isinstance(document, dict) or set(document) != {"schema_version", "status", "elements"}:
+        raise refuse("must be an object with exactly schema_version, status and elements")
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        raise refuse("schema_version must be the integer 1")
+    if document["status"] != "draft":
+        raise refuse("status must be draft")
+    elements = document["elements"]
+    if not isinstance(elements, list) or not all(isinstance(item, dict) and set(item) == {"id", "label"} for item in elements):
+        raise refuse("elements must be a list of {id, label} objects")
+    ids = [item["id"] for item in elements]
+    if len(set(map(str, ids))) != len(ids):
+        raise refuse("an element id is listed twice")
+    if ids != list(CONTRACT_CHECK_IDS):
+        raise refuse("element ids must be exactly " + ", ".join(CONTRACT_CHECK_IDS) + " in that order")
+    for item in elements:
+        label = item["label"]
+        if (not isinstance(label, str) or not label.strip() or len(label) > 120 or not plain_text(label)
+                or any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in label)):
+            raise refuse(f"label of {item['id']} must be plain text of 1 to 120 characters")
+    return {"status": "draft", "elements": [{"id": item["id"], "label": item["label"]} for item in elements]}
+
+
+def _contract_check(value, contract, label, today=None, problems=None):
+    """DF2207-03: an organizer's reading of the linked contract (``profile.contract_check``); never fetched or judged.
+
+    ``contract`` is the agency's already validated ``profile.contract`` (or None). Every problem names its field; they
+    go to ``problems`` (content-check), else the first is raised. Returns ``{"checked_on", "contract_url", "elements":
+    [{"id", "label", "status", "page"?, "note"?}]}`` in checklist order, or None when absent or refused."""
+    if value is None:
+        return None
+    issues, elements, shaped = [], [], isinstance(value, dict)
+    if not shaped:
+        issues.append(f"{label}: must be an object")
+        value = {}
+    issues += [f"{label}: unknown field {str(key)[:40]!r}" for key in sorted(set(value) - CONTRACT_CHECK_KEYS, key=str)]
+    issues += [f"{label}.{key}: required" for key in ("checked_on", "contract_url", "elements") if shaped and key not in value]
+    if "contract_url" in value:
+        try:
+            _https(value["contract_url"], f"{label}.contract_url")
+            if contract is None:
+                issues.append(f"{label}.contract_url: needs a valid profile.contract for the same agency")
+            elif value["contract_url"] != contract["source_url"]:
+                issues.append(f"{label}.contract_url: must equal profile.contract.source_url")
+        except ContentError as exc:
+            issues.append(str(exc))
+    if "checked_on" in value:
+        try:
+            checked, read = _calendar_day(value["checked_on"], f"{label}.checked_on"), None
+            if contract is not None:
+                read = _calendar_day(contract["checked_on"], "contract.checked_on")
+            if checked > (today or date.today()):
+                issues.append(f"{label}.checked_on: must not be after the build date")
+            elif read and checked < read:
+                issues.append(f"{label}.checked_on: must not be before profile.contract.checked_on")
+        except ContentError as exc:
+            issues.append(str(exc))
+    if "elements" in value:
+        try:
+            checklist = load_contract_checklist()["elements"]
+        except ContentError as exc:
+            checklist = []
+            issues.append(f"{label}.elements: the contract checklist could not be loaded ({exc})")
+        given = value["elements"]
+        if not isinstance(given, dict) or not given:
+            issues.append(f"{label}.elements: must be a non-empty object keyed by element id")
+            given = {}
+        known = {element["id"] for element in checklist}
+        issues += [f"{label}.elements.{str(key)[:40]}: unknown element" for key in sorted(set(given) - known, key=str)]
+        for element in checklist if given else []:
+            where, entry = f"{label}.elements.{element['id']}", given.get(element["id"])
+            if element["id"] not in given:
+                issues.append(f"{where}: missing")
+                continue
+            if not isinstance(entry, dict):
+                issues.append(f"{where}: must be an object with status, optional page and optional note")
+                continue
+            issues += [f"{where}: unknown field {str(key)[:40]!r}" for key in sorted(set(entry) - {"status", "page", "note"}, key=str)]
+            status, bad = entry.get("status"), len(issues)
+            if not isinstance(status, str) or status not in CONTRACT_STATUSES:
+                issues.append(f"{where}.status: choose one of {list(CONTRACT_STATUSES)}")
+            page, note = entry.get("page"), entry.get("note")
+            if "page" in entry and (type(page) is not int or not 1 <= page <= 9999):
+                issues.append(f"{where}.page: must be a whole number from 1 to 9999")
+            if "note" in entry and (not isinstance(note, str) or not note.strip() or len(note) > 200 or not plain_text(note)
+                                    or any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in note)):
+                issues.append(f"{where}.note: plain text of 1 to 200 characters (no angle brackets or control characters)")
+            if len(issues) == bad:
+                elements.append({"id": element["id"], "label": element["label"], "status": status,
+                                 **({"page": page} if "page" in entry else {}), **({"note": note} if "note" in entry else {})})
+    if problems is not None:
+        problems.extend(issues)
+    elif issues:
+        raise ContentError(issues[0])
+    return None if issues else {"checked_on": value["checked_on"], "contract_url": value["contract_url"], "elements": elements}
+
+
 TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts", "shared_with_agencies")
 
 
@@ -1322,7 +1518,7 @@ def load_agencies(document, label, today=None):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy", "policy_check", "transparency", "funding"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding", "pre_implementation_meeting"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -1342,9 +1538,12 @@ def load_agencies(document, label, today=None):
             "verification": _verification(entry, item),
             "asked": _asked(entry, f"{item}.asked", today) if label == "content/agencies.json" else [],
             "flock_transparency_url": _flock_url(entry, item),
-            "contract": _contract(profile.get("contract"), f"{item}.profile.contract"),  # kept out of card JS
+            "contract": (contract := _contract(profile.get("contract"), f"{item}.profile.contract")),  # kept out of card JS
+            "contract_check": _contract_check(profile.get("contract_check"), contract, f"{item}.profile.contract_check", today),  # likewise
             "alpr_policy": (alpr_policy := _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy")),  # likewise
             "policy_check": _policy_check(profile.get("policy_check"), f"{item}.profile.policy_check", alpr_policy, today),  # likewise
+            "pre_implementation_meeting": _pre_meeting(profile.get("pre_implementation_meeting"),  # likewise
+                                                       f"{item}.profile.pre_implementation_meeting", today),
             "transparency": _transparency(profile.get("transparency"), f"{item}.profile.transparency",  # likewise
                                           entry.get("flock_transparency_slug") if _flock_url(entry, item) else None, today),
             "profile": {
