@@ -41,6 +41,7 @@ export function outboxUrlProblem(raw: string): string | null {
 /** Signing secret: base64url (no padding) decoding to at least 32 bytes, i.e. 43+ characters. */
 export function signingKeyProblem(key: string): string | null {
   if (!/^[A-Za-z0-9_-]+$/.test(key)) return "outbox_sender: signing secret must be base64url (A-Z a-z 0-9 - _)";
+  if (key.length % 4 === 1) return "outbox_sender: signing secret is not a valid base64url encoding (impossible length)";
   if (Math.floor((key.length * 6) / 8) < 32) return "outbox_sender: signing secret must be at least 32 bytes of base64url";
   return null;
 }

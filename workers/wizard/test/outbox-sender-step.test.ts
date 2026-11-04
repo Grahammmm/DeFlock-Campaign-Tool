@@ -73,6 +73,8 @@ describe("parseOutboxSender", () => {
     ["not base64url", "t".repeat(43) + "+", "base64url"],
     ["padding", "t".repeat(43) + "=", "base64url"],
     ["space inside", "t".repeat(20) + " " + "t".repeat(30), "base64url"],
+    ["impossible encoded length (45 chars)", "A".repeat(45), "not a valid base64url encoding"],
+    ["impossible encoded length (49 chars)", "t".repeat(49), "not a valid base64url encoding"],
   ])("refuses a bad secret (%s) without echoing it", (_name, key, why) => {
     const r = parseOutboxSender(URL_OK, key);
     expect(r.status).toBe("refused");
