@@ -16,6 +16,7 @@ import json
 import re
 import unicodedata
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -772,7 +773,9 @@ AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", 
                "flock_transparency_slug", "muckrock_agency_id", "notes", "verification", "asked"}
 ASKED_STATES = ("awaiting_response", "acknowledged", "partly_answered", "answered", "declined_in_writing", "withdrawn")
 ASKED_KEYS, ASKED_TEXT = ("topic", "asked_on", "state", "updated_on", "note"), {"topic": 120, "note": 200}
-CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on"}
+CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on", "cost"}
+COST_KEYS, COST_PERIODS = ("amount_usd", "period", "as_stated_in"), ("annual", "total", "one_time")
+COST_AMOUNT, COST_URL = re.compile(r"(0|[1-9][0-9]*)([.][0-9]{1,2})?"), re.compile(r"(?i)[a-z][a-z0-9+.-]*://|www[.]")
 FLOCK_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){0,7}")
 VERIFIED_FIELDS = ("records_email", "records_url", "portal")
 KIT_POSTAL_KEYS = {"mailing_address", "mailing_verification"}  # private kit/agencies.json only; never published
@@ -819,13 +822,28 @@ def _calendar_day(value, label):
     return day
 
 
+def _contract_cost(value, label):
+    """``profile.contract.cost``: an organizer-transcribed amount exactly as a document states it; never computed."""
+    if not isinstance(value, dict) or set(value) != set(COST_KEYS):
+        raise ContentError(f"{label}: needs only amount_usd, period and as_stated_in")
+    amount, period, title = value["amount_usd"], value["period"], value["as_stated_in"]
+    if not (isinstance(amount, str) and COST_AMOUNT.fullmatch(amount) and Decimal(amount) <= 100000000):
+        raise ContentError(f"{label}.amount_usd: decimal string from 0 to 100000000 with at most 2 decimals")
+    if not (isinstance(period, str) and period in COST_PERIODS):
+        raise ContentError(f"{label}.period: choose annual, total or one_time")
+    if not (isinstance(title, str) and 1 <= len(title) <= 120 and title == title.strip() and plain_text(title)
+            and not COST_URL.match(title) and not any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in title)):
+        raise ContentError(f"{label}.as_stated_in: plain document title of 1 to 120 characters")
+    return {"amount_usd": amount, "period": period, "as_stated_in": title}
+
+
 def _contract(value, label):
     """An organizer-checked contract term (``profile.contract``) from its official source; never fetched."""
     if value is None:
         return None
     if isinstance(value, dict) and not {"source_url", "checked_on"} <= set(value):
         raise ContentError(f"{label}: needs source_url and checked_on")
-    _require_keys(value, CONTRACT_KEYS, CONTRACT_KEYS - {"renewal_note"}, label)
+    _require_keys(value, CONTRACT_KEYS, CONTRACT_KEYS - {"renewal_note", "cost"}, label)
     vendor, note = _text(value, "vendor", label, allow_empty=False), _text(value, "renewal_note", label)
     for key, text, limit in (("vendor", vendor, 80), ("renewal_note", note, 200)):
         if len(text) > limit:
@@ -835,8 +853,11 @@ def _contract(value, label):
         raise ContentError(f"{label}.end: must not be before start")
     if _calendar_day(value["checked_on"], f"{label}.checked_on") > date.today():
         raise ContentError(f"{label}.checked_on: must not be after the build date")
-    return {"vendor": vendor, "start": value["start"], "end": value["end"], "renewal_note": note,
-            "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
+    contract = {"vendor": vendor, "start": value["start"], "end": value["end"], "renewal_note": note,
+                "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
+    if "cost" in value:
+        contract["cost"] = _contract_cost(value["cost"], f"{label}.cost")
+    return contract
 
 
 ALPR_POLICY_KEYS = {"url", "source_url", "checked_on"}
