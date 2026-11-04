@@ -103,5 +103,7 @@ Only items with no implementation in this repository.
 | Monitored scheduling and cost controls for the hosted path | The schedule is authored in code but undeployed; budget and spend controls remain a gap. See [hosted path](#hosted-path-deploy-scheduled-nothing-provisioned-g-2026-11-01). |
 | Any production deployment of the Workers or the runner | Scheduled, not provisioned; see [hosted path](#hosted-path-deploy-scheduled-nothing-provisioned-g-2026-11-01). |
 
+Publishing paths: `campaign_tool/publish_paths.py` registers every output path and `tests/test_publish_path_coverage.py` proves each runs the shared privacy lint; see [PUBLICATION.md](PUBLICATION.md#publishing-paths-and-the-shared-privacy-lint-bf-df-pii-everywhere). A clean lint is not a clearance.
+
 See [LAUNCH.md](../LAUNCH.md) for the launch gates and [ROADMAP.md](ROADMAP.md)
 for the longer plan.

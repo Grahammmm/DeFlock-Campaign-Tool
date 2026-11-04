@@ -506,3 +506,26 @@ call: a second card is `already_posted`. A timeout, 5xx or reply without a post 
 `post_uncertain`, raises one incident and is never retried; check the platform by hand. The receipt
 holds ids, hashes, counts and enums only, never post text, handle or personal data. There is no
 batch, schedule, edit, delete or recall path.
+
+## Publishing paths and the shared privacy lint (BF-df-pii-everywhere)
+
+`campaign_tool/publish_paths.py` (`PUBLISH_PATHS`) names every path that emits, or feeds, something a member of the public could read:
+the site pages, Atom feed, agency feeds, Open Graph meta, agency cards and data exports (one gate, `_privacy_gate`, on the content model
+before anything renders), the newsletter draft, `kit/social/` drafts, the Worker's `post_social`, and the Flock report, page, publish,
+brief, stage and email tools. The email, phone and plate patterns have one home, `campaign_tool/privacy_patterns.py`
+(`tools/flock_privacy.py` re-exports it); a lint refusal names the category and the place, never the matched text.
+The site gate scans the content parts, the source library's public fields (never `note`, `fragment` or the full hash), the agencies
+without their private contact and notes, `site.json` and the campaign name; the organizer's own contact and privacy-contact addresses
+and a meeting's `how` text are not scanned because they are contacts on purpose.
+`tests/test_publish_path_coverage.py` holds three assertions that fail on their own: (a) every registered path is driven with a
+synthetic email, phone and plate and refuses each (the Worker's post lint is checked through the patterns it ships and its call
+order, and its own vitest drives it for real; a path that only sends already-linted text, such as the Worker mail and upload code,
+names the path that lints it); (b) no module, no Python function that writes a file and no Worker file that sends, uploads or serves
+exists without a registry binding (`EMISSION_SITES`, `WORKER_EMISSIONS`), so a second output added to a registered module fails too;
+(c) no other module defines an email, phone or plate pattern. The stricter patterns (the newsletter phone gate, the digest redaction
+patterns, the kit and email address validators, the Worker mirror) are the named `PATTERN_EXCEPTIONS`, pinned by that test.
+
+What this does not prove: the patterns have blind spots (bare 10-digit runs and plain-word emails are not matched), so a path that passes
+can still carry personal data. A clean lint is not a substitute for the human publish gate or for redaction sign-off; the legal-claim guard
+stays alert-only and never refuses.
+
