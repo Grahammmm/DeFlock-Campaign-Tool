@@ -981,17 +981,18 @@ class Site:
 
     def cite_html(self, finding):
         """The citation as page text; the copy button stays hidden until findings/cite.js unhides it. A draft preview
-        shows the same markup but never writes cite.js, so its button stays hidden."""
+        shows the same markup but never loads or writes cite.js, so its button stays hidden."""
         button = (f'<button type="button" class="cite-copy" hidden data-copied="{html_text(self.labels["finding.cite_copied"])}" '
                   f'data-fallback="{html_text(self.labels["finding.cite_select"])}">{self.t("finding.cite_copy")}</button>')
         return (f'<section class="cite" id="cite"><h3>{self.t("finding.cite")}</h3>'
                 f'<p class="cite-text">{e(citation(finding, self.cfg["name"], self.base))}</p>{button}</section>')
 
     def finding_preview_html(self, finding):
-        """``finding_html`` for a private draft preview (DF1822-02) plus exactly two lines: a robots noindex meta
+        """``finding_html`` without the published-only citation script, plus a robots noindex meta
         and a "Draft - not published" banner at the top of ``<main>``. Never part of build output."""
         page = self.finding_html(finding)
         html, title, main = page["html"], "  <title>", '  <main id="top">\n'
+        html = html.replace('  <script defer src="/findings/cite.js"></script>\n', '')
         if html.count(title) != 1 or html.count(main) != 1:
             raise ValueError("finding preview: the page shell changed; refusing to place the draft banner")
         html = html.replace(title, '  <meta name="robots" content="noindex">\n' + title)
