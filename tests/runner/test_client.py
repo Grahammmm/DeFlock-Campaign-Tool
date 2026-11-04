@@ -159,7 +159,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(len(opener.requests), 2)
 
     def test_safe_site_path_mirrors_worker_rules(self):
-        for ok in ("index.html", "findings/example.html", "map/cameras.geojson", "vendor/maplibre-gl.js", "_headers", "assets/Logo.PNG", "feed.xml", "robots.txt"):
+        for ok in ("index.html", "findings/example.html", "map/cameras.geojson", "vendor/maplibre-gl.js", "_headers", "assets/Logo.PNG", "feed.xml", "robots.txt", "data/findings.csv", "data/sources.csv"):
             self.assertEqual(safe_site_path(ok), ok)
         for bad in ("", "/index.html", "a//b.html", "../index.html", "./index.html", ".hidden", "index.html/", "run.sh", "setup.exe",
                     "notes", "dir/noext", "x.htm.bak", "x.sqlite", "secrets.key", "a" * 130 + ".html", "/".join(["d"] * 17) + "/x.html", None, 3):

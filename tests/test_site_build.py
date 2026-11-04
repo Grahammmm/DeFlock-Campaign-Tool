@@ -22,11 +22,11 @@ EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 PAGES = ["index.html", "agencies.html", "findings/index.html", "findings/packet-all.html", "findings/cedar-policy-posted.html",
          "sources.html", "meetings.html", "about.html", "corrections.html", "timeline.html", "meetings/cedar-council-2026-10.html",
          "agencies/cedar.html"]  # DF2237-08: Cedar Police has a finding and sources
-FILES = PAGES + ["404.html", "cameras.html", "methods.html", "privacy.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+FILES = PAGES + ["404.html", "cameras.html", "methods.html", "privacy.html", "search.html", "search.js", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                  "site-data.js", "agency-cards.js", "app.js", "data/cameras.geojson",
                  "data/city-boundaries.geojson", "findings/agency/cedar.xml", "data/findings.json", "data/findings.csv",
                  "data/sources.json", "data/sources.csv",
-                 "data/meetings.json", "findings/cite.js"]
+                 "data/meetings.json", "data/agencies.json", "findings/cite.js"]
 EXPECTED_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; "
                 "img-src 'self' data: blob: https://tiles.example.invalid; "
                 "connect-src 'self' https://tiles.example.invalid; font-src 'self'; worker-src blob:; "

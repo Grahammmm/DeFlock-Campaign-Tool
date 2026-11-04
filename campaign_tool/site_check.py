@@ -5,8 +5,11 @@ regular file under ``public/`` and every ``#fragment`` on an HTML target must
 match an ``id`` (or ``a[name]``) on that page. URLs with a scheme or a ``//``
 prefix are external and are never fetched. Stdlib only.
 """
+import json
+import os
 import posixpath
 import re
+import stat
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote
@@ -263,3 +266,85 @@ def page_weights(public: Path) -> list:
         rows.append({"page": page, "html_bytes": html_bytes, "assets": sorted(assets.items()),
                      "total": html_bytes + sum(assets.values())})
     return sorted(rows, key=lambda row: row["page"])
+
+
+WEIGHTS_SCHEMA = "page-weights-v1"
+WEIGHTS_MAX_BYTES = 2 * 1024 * 1024
+
+
+def weights_record(rows, budget):
+    """The private ``page-weights-v1`` record of ``page_weights`` rows; no timestamp, so equal builds match."""
+    return {"schema": WEIGHTS_SCHEMA, "budget_kb": budget,
+            "pages": [{"page": r["page"], "html_bytes": r["html_bytes"], "total": r["total"],
+                       "assets": [[p, n] for p, n in r["assets"]]} for r in rows]}
+
+
+def read_weights(path):
+    """A ``page-weights-v1`` baseline as a dict; anything else raises ``ValueError`` naming the file."""
+    label = f"--weights-baseline {path}"
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        raise ValueError(f"{label}: cannot be read as a regular file, not a symlink ({exc.strerror})") from None
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > WEIGHTS_MAX_BYTES:
+            raise ValueError(f"{label}: must be a regular file of at most {WEIGHTS_MAX_BYTES} bytes")
+        raw = handle.read(WEIGHTS_MAX_BYTES + 1)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError:  # includes UnicodeDecodeError
+        raise ValueError(f"{label}: not valid JSON") from None
+    pages = data.get("pages") if isinstance(data, dict) else None
+    if not isinstance(data, dict) or data.get("schema") != WEIGHTS_SCHEMA or not isinstance(pages, list):
+        raise ValueError(f"{label}: not a {WEIGHTS_SCHEMA} record")
+    seen = set()
+    for item in pages:
+        page, total = item.get("page") if isinstance(item, dict) else None, item.get("total") if isinstance(item, dict) else None
+        if (not isinstance(page, str) or not page or not page.isprintable() or page in seen
+                or type(total) is not int or total < 0):
+            raise ValueError(f"{label}: malformed or duplicate page entry")
+        seen.add(page)
+    return data
+
+
+def weight_changes(rows, base):
+    """Output lines comparing ``page_weights`` rows with a ``read_weights`` baseline (rows first, then removals)."""
+    before = {item["page"]: item["total"] for item in base["pages"]}
+    lines = []
+    for row in rows:
+        old = before.get(row["page"])
+        change = "new page" if old is None else ("±0" if row["total"] == old else f"{row['total'] - old:+d}") + " since baseline"
+        lines.append(f"  {row['page']} {row['total']} bytes ({change})")
+    now = {row["page"] for row in rows}
+    return lines + [f"removed since baseline: {page}" for page in before if page not in now]
+
+
+def write_weights(root, out, record):
+    """Write the record to a new private file (0600, ``O_EXCL``); refused inside ``public/`` or ``content/``."""
+    out = Path(out)
+    parent = out.parent.resolve()
+    if not parent.is_dir():
+        raise ValueError(f"--weights-out {out}: folder {out.parent} does not exist")
+    target = parent / out.name
+    root = Path(root)
+    for folder in ("public", "content"):
+        for base in {(root / folder).resolve(), root.resolve() / folder}:
+            if target == base or target.is_relative_to(base):
+                raise ValueError(f"--weights-out {out}: must not be inside the campaign's {folder}/ folder; "
+                                 "this file is private")
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        raise ValueError(f"--weights-out {out}: exists; choose a new file name") from None
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = None
+            handle.write(json.dumps(record, indent=2) + "\n")
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        os.unlink(target)  # the file this call created with O_EXCL
+        raise
+    return target

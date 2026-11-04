@@ -188,6 +188,16 @@ Cancelled, past and stale kits stop: re-stage corrections with `meetings-stage -
 Use `--allow-past` for an archive, or `--replace` to regenerate an existing private pack.
 Nothing is sent or published. Review the print preview before handing it over.
 
+The handout follows the campaign's language: `<html lang>` is `site.json.language`, and its fixed headings and notes
+(title, "What we found", the empty-state sentence, the source line, "corrected", the agenda link, "N more on the
+site", the record-number explainer, and the classification and confidence wording) come from `content/labels.json`
+(`handout.*`, `classification.*`, `confidence.*`; see `docs/SITE-CONTENT.md`, Labels). The tool translates nothing:
+with no labels file the handout is the English it always was, byte for byte, and a Spanish `language` without
+translated labels gets `lang="es"` over English text. A labels file the site would refuse (unknown key, foreign
+placeholder, symlink) stops the pack with the same message and writes nothing. `comment.md` (the staged text
+verbatim), the `not_legal_advice` text (`site.json`) and `sources.csv` (English column headers, machine-readable) never
+change with the labels. `--upcoming` applies the same labels to every pack it builds.
+
 `meeting-pack --directory D --upcoming [--within-days N] [--replace]` builds the pack for every staged
 meeting that starts from now up to (not including) N days ahead (default 14, `1..90`), earliest first,
 through the same checks as `--id`. It prints `{window, built, skipped}`; each skipped meeting has the

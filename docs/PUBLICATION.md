@@ -149,6 +149,22 @@ If the content file cannot be removed both copies remain and the leftover is nam
 id wins (a leftover content file is named); an unreadable file is an `unreadable` row with its path and a fixed reason
 (not JSON, a symlink, too large, ...). A reason that can quote the file, such as an unknown key, is withheld. Exit 0.
 
+### Drafting a gap finding from a request
+
+When an agency denied a request or closed it without producing records, start the draft from the request
+itself: `python3 -m campaign_tool finding new --directory D --gap AGENCY [--request NAME] [--title T] [--author NAME]`
+(`--request` defaults to `main`; `--gap` cannot be combined with `--agency` or `--source`). It reads
+`kit/sent.json` and writes the same private 0600 draft, with `classification` `information_gap`, `event_date`
+the date of the denial or closure, and a facts block at the start of `body_md`: when and how the request was
+sent, the agency's answer and date, and each stated withheld basis as the agency wrote it (angle brackets and
+line breaks flattened so it stays plain text). The request's correspondence records that are in
+`content/sources.json` become the sources; any that are not are printed as `blocker: <12 hex> is not in the
+source library` and listed in an `[EDIT ME: add these sources before review: ...]` limitations line, so run
+`sources add-batch --from-request` or `sources add` first. Everything interpretive (summary, confidence,
+limitations, counterevidence, the finding text, source locators) stays an `[EDIT ME: ...]` marker. A request
+that is still open (no answer, or only an acknowledgement, extension or partial answer) or that produced
+records is refused; write a regular finding for those. Nothing is published.
+
 ## Propose, approve, execute
 
 1. `POST /findings/:id/propose` (ready findings only, confidence not
@@ -226,6 +242,20 @@ characters (only the title is shortened) plus `Corrected <latest date>.` when co
 edited draft is kept and the fresh one goes to `kit/social.suggested/`; drafts for slugs no
 longer published are listed as `stale`, never deleted. Nothing is posted and nothing goes
 under `public/`; posting stays an organizer decision outside this tool.
+
+## Campaign flyer (never printed or posted)
+
+`python3 -m campaign_tool flyer --directory D [--max-findings N] [--replace]` writes a private one-page
+flyer to `kit/flyer/flyer.html` and a plain `flyer.txt` twin (folder 0700, files 0600): the `site.json`
+logo (copied beside it as `logo.<ext>`), campaign name, tagline, county and state, up to N (1-6, default 3)
+published findings newest `published_at` first with their classification and confidence labels and public
+URL from `base_url`, "N more on the site" when cut, a "Get involved" link to `base_url`, and the
+not-legal-advice line. With no published finding it says records are requested and nothing is published
+yet; without `base_url` it prints no links. Draft, withdrawn and challenged findings never appear. The
+HTML has one inline `<style>`, no script and no external load; its only links are the campaign's own
+`base_url`. An existing flyer is refused without `--replace`; a symlinked folder or file, or a logo
+named in `site.json` but missing, is refused. Nothing is printed, sent or published and nothing is
+written under `public/` or `content/`; printing and handing it out stay an organizer decision.
 
 ## Reviewer roster (role assignment, not authentication)
 

@@ -634,6 +634,20 @@ ASKED_KEYS, ASKED_TEXT = ("topic", "asked_on", "state", "updated_on", "note"), {
 CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on"}
 FLOCK_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){0,7}")
 VERIFIED_FIELDS = ("records_email", "records_url", "portal")
+KIT_POSTAL_KEYS = {"mailing_address", "mailing_verification"}  # private kit/agencies.json only; never published
+
+
+def _private_postal(entry, item, today=None):
+    """Validate the kit-only postal proof (both keys or neither); the public model never carries it."""
+    from . import kit
+    if ("mailing_address" in entry) != ("mailing_verification" in entry):
+        raise ContentError(f"{item}: mailing_address and mailing_verification go together")
+    if "mailing_address" not in entry:
+        return
+    try:
+        kit.postal_proof({**entry, "verified": True}, today)
+    except ValueError as exc:
+        raise ContentError(f"{item}: {exc}") from None
 
 
 def _verification(entry, item):
@@ -794,7 +808,10 @@ def load_agencies(document, label, today=None):
     agencies, ids, slugs = [], set(), set()
     for index, entry in enumerate(document):
         item = f"{label}[{index}]"
-        _require_keys(entry, AGENCY_KEYS, {"agency_id", "name"}, item)
+        private = label == "kit/agencies.json"
+        _require_keys(entry, AGENCY_KEYS | KIT_POSTAL_KEYS if private else AGENCY_KEYS, {"agency_id", "name"}, item)
+        if private:
+            _private_postal(entry, item, today)
         if not isinstance(entry["agency_id"], str) or not AGENCY_ID.fullmatch(entry["agency_id"]):
             raise ContentError(f"{item}.agency_id: invalid agency identifier")
         if entry.get("selected", True) is not True:
@@ -1187,7 +1204,7 @@ def load_map(content_dir, sources=None, today=None):
 # --- explainer pages (DF2237-07): content/pages/<slug>.json -> /<slug>.html ----
 PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
 RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
-                                       "agency-cards", "app", "data", "vendor", "meetings", "methods", "privacy"}  # generated top-level names
+                                       "agency-cards", "app", "data", "vendor", "meetings", "methods", "privacy", "search"}  # generated top-level names
 
 
 def _page_string(document, key, label, limit, required):
@@ -1225,6 +1242,84 @@ def load_pages(content_dir, finding_slugs):
     if sum(page["nav"] for page in pages) > MAX_NAV_PAGES:
         raise ContentError(f"pages: at most {MAX_NAV_PAGES} pages may set nav: true")
     return pages
+
+
+# --- topic pages (DF1952-06): content/topics/<slug>.json -> /topics/<slug>.html -------------------
+TOPIC_KEYS, MAX_TOPICS, MAX_TOPIC_FINDINGS = {"title", "intro_md", "finding_ids"}, 30, 100
+TOPIC_RESERVED = {"index", "topics", "timeline", "cameras"}  # generated names the page list does not reserve
+
+
+def topic_paths(content_dir):
+    """The ``content/topics/*.json`` paths in filename order; ``[]`` without the folder or without ``.json`` names."""
+    folder = Path(content_dir) / "topics"
+    if folder.is_symlink():
+        raise ContentError("topics/: the folder must not be a symlink")
+    if not folder.exists():
+        return []
+    if not folder.is_dir():
+        raise ContentError("topics/: must be a folder, not a file")
+    paths = sorted(path for path in folder.iterdir() if path.name.endswith(".json"))
+    if len(paths) > MAX_TOPICS:
+        raise ContentError(f"topics/: at most {MAX_TOPICS} topic files")
+    return paths
+
+
+def topics_namespace_problem(page_slugs, finding_slugs):
+    """A loaded page or finding slug ``topics`` would share a name with the generated folder; only checked with topics."""
+    for kind, slugs in (("explainer page", page_slugs), ("published finding", finding_slugs)):
+        if "topics" in slugs:
+            return f"topics/: the {kind} slug 'topics' clashes with the generated topics folder"
+    return None
+
+
+def load_topic(path, findings, pages):
+    """One validated ``topics/<slug>.json``. ``findings`` None skips the finding-id check (the checker passes it when
+    a finding file is itself refused, so every id would only add false lines)."""
+    label, slug = "topics/" + path.name, path.stem
+    if path.is_symlink() or not path.is_file():
+        raise ContentError(f"{label}: must be a regular file, not a symlink or folder")
+    _slug(slug, f"{label} filename")
+    page_slugs = {page["slug"] for page in pages}
+    finding_slugs = {finding["slug"]: finding["id"] for finding in findings or ()}
+    if slug in RESERVED_PAGE_SLUGS or slug in TOPIC_RESERVED:
+        raise ContentError(f"{label}: slug {slug} is a reserved page name")
+    if slug in page_slugs:
+        raise ContentError(f"{label}: slug {slug} clashes with the explainer page pages/{slug}.json")
+    if slug in finding_slugs:
+        raise ContentError(f"{label}: slug {slug} clashes with the published finding {finding_slugs[slug]}")
+    try:
+        document = _read_json(path)
+    except ContentError as exc:
+        raise ContentError("topics/" + str(exc)) from None
+    _require_keys(document, TOPIC_KEYS, TOPIC_KEYS, label)
+    title = _page_string(document, "title", label, 120, True)
+    intro = _page_string(document, "intro_md", label, 200 * 1024, False)
+    ids = document["finding_ids"]
+    if not isinstance(ids, list) or not 1 <= len(ids) <= MAX_TOPIC_FINDINGS:
+        raise ContentError(f"{label}.finding_ids: must list 1 to {MAX_TOPIC_FINDINGS} finding ids")
+    known = {finding["id"] for finding in findings} if findings is not None else None
+    by_slug = {finding["slug"] for finding in findings or ()}
+    for number, finding_id in enumerate(ids):
+        item = f"{label}.finding_ids[{number}]"
+        if not isinstance(finding_id, str):
+            raise ContentError(f"{item}: must be a finding id string")
+        if finding_id in ids[:number]:
+            raise ContentError(f"{item}: duplicate id {finding_id[:80]!r}")
+        if known is not None and finding_id not in known:
+            hint = " (use the finding id, not its slug)" if finding_id in by_slug else ""
+            raise ContentError(f"{item}: {finding_id[:80]!r} is not a published finding id{hint}")
+    return {"slug": slug, "title": title, "intro_md": intro, "finding_ids": list(ids)}
+
+
+def load_topics(content_dir, findings, pages):
+    """Topics sorted by slug (``[]`` without the folder or any file). Only the validated published ``findings`` can be
+    listed: an unknown, draft or withdrawn id refuses by file, field and id. Pure read of ``content/topics``."""
+    topics = sorted((load_topic(path, findings, pages) for path in topic_paths(content_dir)), key=lambda t: t["slug"])
+    if topics:
+        problem = topics_namespace_problem({p["slug"] for p in pages}, {f["slug"] for f in findings})
+        if problem:
+            raise ContentError(problem)
+    return topics
 
 
 OFFICIALS_KEYS = {"schema_version", "bodies"}
@@ -1362,10 +1457,13 @@ def load_content(root, today=None):
                 raise ContentError(f"meetings/{meeting_ids[meeting['id']]}.outcome.votes[{index}].name: "
                                    f"not in officials.json for {meeting['agency_id']}")
 
+    pages = load_pages(content_dir, slugs)
+    topics = load_topics(content_dir, findings, pages)
     model = {
         "site": site,
         "findings": findings,
-        "pages": load_pages(content_dir, slugs),
+        "pages": pages,
+        "topics": topics,
         "meetings": meetings,
         "sources": sources,
         "agencies": agencies,

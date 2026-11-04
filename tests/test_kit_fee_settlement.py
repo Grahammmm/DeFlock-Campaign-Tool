@@ -176,11 +176,12 @@ class FeeSettlementTests(unittest.TestCase):
         before = self.sent.read_bytes()
         row, err = self.status()
         self.assertEqual((row.pop("fee_state"), row.pop("fee_paid")), ("unpaid", None))
+        self.assertEqual(row.pop("withheld_basis"), [])
         self.assertEqual({k: v for k, v in row.items() if k not in ("agency_id", "name")}, GOLDEN_ROW)
         self.assertEqual(err, f"{self.agency}: fee estimate $245.50 is unpaid\n")
         cells, values = self.csv_row("legacy")
         self.assertEqual(values[2:13], GOLDEN_CSV)
-        self.assertEqual(values[13:], ["$245.50", "unpaid", ""])
+        self.assertEqual(values[13:], ["$245.50", "unpaid", "", ""])
         cover, totals = self.coverage()
         self.assertEqual((cover["fee_state"], totals["fee_unpaid"]), ("unpaid", 1))
         table = kit_track.format_coverage(kit_track.coverage(self.root))
@@ -208,7 +209,7 @@ class FeeSettlementTests(unittest.TestCase):
         self.ok("2026-03-06", "fee_paid", "--amount", "5")
         cells, values = self.csv_row("guard")
         self.assertEqual(cells["name"], "'=HYPERLINK(\"x\")")
-        self.assertEqual(values[13:], ["$5.00", "paid", "$5.00"])
+        self.assertEqual(values[13:], ["$5.00", "paid", "$5.00", ""])
 
 
 if __name__ == "__main__":

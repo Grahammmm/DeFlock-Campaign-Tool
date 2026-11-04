@@ -5,6 +5,7 @@ import json
 import os
 import re
 import unicodedata
+import urllib.parse
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -14,6 +15,7 @@ from . import kit, kit_check, law
 CHANNELS = ("email", "portal", "mail", "muckrock")
 MUCKROCK_URL = re.compile(r"https://www\.muckrock\.com/foi/(?:[a-z0-9-]+/){0,2}[a-z0-9-]*-[0-9]+/?")  # recorded, never fetched
 MUCKROCK_ID = re.compile(r"-([0-9]+)/?\Z")
+URL_MAX = 300  # a request_url, either channel
 KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed", "fee_estimate",
          "clarification_requested", "clarified", "fee_paid", "fee_waived")
 SETTLED = {"fee_paid": "paid", "fee_waived": "waived"}  # a payment or waiver of the latest estimate before it
@@ -126,6 +128,53 @@ def _request_url(value):  # a valid MuckRock request URL (<= 300 chars, no query
     return isinstance(value, str) and len(value) <= 300 and bool(MUCKROCK_URL.fullmatch(value))
 
 
+def _portal_host(url):  # the host of a portal-filed request URL, or ValueError naming the first rule it breaks
+    if not isinstance(url, str) or len(url) > URL_MAX:
+        raise ValueError("--request-url must be at most 300 characters")
+    if any(ord(c) < 33 or ord(c) == 127 for c in url):
+        raise ValueError("--request-url must not contain spaces or control characters")
+    parts = urllib.parse.urlsplit(url)  # never fetched
+    if parts.scheme != "https" or not parts.hostname:
+        raise ValueError("--request-url must start with https:// and name a host")
+    if "@" in parts.netloc:
+        raise ValueError("--request-url must not include a login (user@)")
+    if ":" in parts.netloc:
+        raise ValueError("--request-url must not include a port")
+    if "?" in url:
+        raise ValueError("--request-url must not include a query (?...)")
+    if "#" in url:
+        raise ValueError("--request-url must not include a fragment (#...)")
+    return parts.hostname  # lower-cased by urllib.parse
+
+
+def _portal_url_ok(url):  # a stored portal request_url: the same shape rules, host checked only when it was recorded
+    try:
+        return bool(_portal_host(url))
+    except ValueError:
+        return False
+
+
+def _portal_request_url(agency, url):  # the verified portal's host must equal the URL's host; nothing is fetched
+    portal = agency.get("portal")
+    portal_url = portal.get("url") if isinstance(portal, dict) else None
+    verified = agency.get("verified", True) is True
+    portal_host = urllib.parse.urlsplit(portal_url).hostname if isinstance(portal_url, str) and verified else None
+    if not portal_host:
+        raise ValueError("record the agency's portal first (kit-verify-agency --portal)")
+    host = _portal_host(url)
+    if host != portal_host:
+        raise ValueError(f"--request-url host {host} is not the agency's verified portal host {portal_host}")
+
+
+def portal_line(entry):  # the one draft line quoting a portal-filed request's link beside the reference; "" when none
+    return f"Portal request: {entry['request_url']}" if entry.get("channel") == "portal" and entry.get("request_url") else ""
+
+
+def draft_lines(entry):  # reference_lines, with the portal request line after the reference line (follow-up, denial reply)
+    subject, first = reference_lines(entry)
+    return subject, "\n\n".join(filter(None, (first, portal_line(entry))))
+
+
 def muckrock_id(entry):  # the request id (digits) at the end of a muckrock entry's request_url, else None
     url = entry.get("request_url")
     found = MUCKROCK_ID.search(url) if entry.get("channel") == "muckrock" and _request_url(url) else None
@@ -141,7 +190,8 @@ def _entry_ok(key, entry):
             and ("reference" not in entry or isinstance(entry["reference"], str)
                  and REFERENCE.fullmatch(entry["reference"]))
             and ("correspondence" not in entry or _corr_ok(entry["correspondence"]))
-            and ("request_url" not in entry or entry["channel"] == "muckrock" and _request_url(entry["request_url"])))
+            and ("request_url" not in entry or entry["channel"] == "muckrock" and _request_url(entry["request_url"])
+                 or entry["channel"] == "portal" and _portal_url_ok(entry["request_url"])))
 
 
 def read_sent(root):
@@ -190,9 +240,11 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
     """Record one hand-sent request in kit/sent.json and return its entry."""
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
-    if (request_url is None) == (channel == "muckrock"):  # required with muckrock, refused with any other channel
-        raise ValueError("--request-url is required with --channel muckrock and only allowed there")
-    if request_url is not None and not _request_url(request_url):
+    if request_url is not None and channel not in ("portal", "muckrock"):
+        raise ValueError("--request-url is only for portal or muckrock requests")
+    if channel == "muckrock" and request_url is None:
+        raise ValueError("--request-url is required with --channel muckrock")
+    if channel == "muckrock" and not _request_url(request_url):
         raise ValueError("--request-url must be https://www.muckrock.com/foi/.../<name>-<id> (no query, port or login)")
     path = root / "kit" / "agencies.json"
     if not path.is_file() or path.is_symlink():
@@ -201,6 +253,8 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
     agency = next((entry for entry in agencies if entry["agency_id"] == agency_id), None)
     if agency is None:
         raise ValueError(f"agency_id {agency_id!r} is not in kit/agencies.json")
+    if channel == "portal" and request_url is not None:
+        _portal_request_url(agency, request_url)  # the verified portal's host; nothing is fetched
     draft, stem = _draft_path(agency_id, request), _stem(agency_id, request)
     if request != "main" and any(entry["agency_id"] == stem for entry in agencies):
         raise ValueError(f"kit/requests/{stem}.md is another agency's draft; choose another --request name")
@@ -230,6 +284,8 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
              "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "steps": []}
     if request_url:
         entry["request_url"] = request_url
+    elif previous and previous.get("channel") == channel == "portal" and "request_url" in previous:
+        entry["request_url"] = previous["request_url"]  # a --replace correction keeps the stored link (as the reference)
     if previous and "reference" in previous:  # a --replace correction keeps the stored reference
         entry["reference"] = previous["reference"]
     _set_reference(entry, reference, replace_reference)
@@ -316,6 +372,51 @@ def _amount_ok(step):  # amount_cents: always on fee_estimate, optional on fee_p
     return type(value) is int and 0 <= value <= AMOUNT_MAX_CENTS
 
 
+BASIS_MAX, BASIS_CHARS, BASIS_KINDS = 5, 200, ("denied", "produced")  # the agency's own stated reasons per step
+SECTION = re.compile(r"(?:Gov(?:ernment)?\.?\s*Code|GC)\s*(?:§|sec(?:tion)?\.?)?\s*(\d{4}(?:\.\d+)?)", re.IGNORECASE)
+NO_SECTION = "no section number stated"
+WITHHELD_NOTE = "Read-only. These are the agencies' own words; no legal reading is added."
+
+
+def _basis_text(value):  # stored form: a stripped 1-200 character string with no control character
+    return (isinstance(value, str) and 1 <= len(value) <= BASIS_CHARS and value == value.strip()
+            and not any(unicodedata.category(c).startswith("C") for c in value))
+
+
+def _basis_ok(step):  # withheld_basis: absent, or 1-5 distinct valid strings on a denied or produced step
+    if "withheld_basis" not in step:
+        return True
+    value = step["withheld_basis"]
+    return (step.get("kind") in BASIS_KINDS and isinstance(value, list) and 1 <= len(value) <= BASIS_MAX
+            and all(map(_basis_text, value)) and len(set(value)) == len(value))
+
+
+def _clean_basis(kind, bases):  # refused before anything is read; each value stripped, in the order given
+    bases = list(bases or ())
+    if not bases:
+        return []
+    if kind not in BASIS_KINDS:
+        raise ValueError("--withheld-basis is only for denied or produced steps")
+    if len(bases) > BASIS_MAX:
+        raise ValueError(f"--withheld-basis: at most {BASIS_MAX} per step")
+    cleaned = []
+    for number, text in enumerate(bases, 1):
+        if not isinstance(text, str) or any(unicodedata.category(c).startswith("C") for c in text):
+            raise ValueError(f"--withheld-basis #{number} must be plain text without control characters")
+        text = text.strip()
+        if not text or len(text) > BASIS_CHARS:
+            raise ValueError(f"--withheld-basis #{number} must be 1-{BASIS_CHARS} characters after stripping")
+        if text in cleaned:
+            raise ValueError(f"--withheld-basis #{number}: the same text is given twice")
+        cleaned.append(text)
+    return cleaned
+
+
+def _bases(steps):  # [{"on", "kind", "basis"}] for every recorded basis, in step order
+    return [{"on": s.get("on"), "kind": s["kind"], "basis": text}
+            for s in steps if s.get("kind") in BASIS_KINDS for text in s.get("withheld_basis", [])]
+
+
 def _fee(steps):  # (latest fee_estimate index by date then recorded order, else None; a settlement step after it)
     dated = [(s.get("on") if isinstance(s.get("on"), str) else "", i) for i, s in enumerate(steps)
              if s.get("kind") == "fee_estimate"]
@@ -366,7 +467,7 @@ def _next_installment(steps):  # the latest expected_on on or after the latest p
 
 def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None,
                 expected_on=None, reference=None, replace_reference=False, partial=False, correspondence=(),
-                dry_run=False):
+                dry_run=False, withheld_basis=()):
     """Append one dated agency response step (``dry_run``: check and return it, write nothing)."""
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
@@ -381,6 +482,7 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     if len(records) > RECORDS_MAX:
         raise ValueError(f"--record: at most {RECORDS_MAX} records per step")
     note = _clean_note(note)
+    stated_bases = _clean_basis(kind, withheld_basis)
     requests = read_sent(root)
     entry = requests.get(_key(agency_id, request)) if "#" not in agency_id else None
     if entry is None and request != "main":
@@ -390,7 +492,8 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     label = _label(agency_id, request)
     steps = entry["steps"]
     if not all(isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) and _amount_ok(s)
-               and _step_records(s) == s.get("records", []) and _steps_corr_ok(s) for s in steps) or not _expected_ok(steps):
+               and _step_records(s) == s.get("records", []) and _steps_corr_ok(s) and _basis_ok(s)
+               for s in steps) or not _expected_ok(steps):
         raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
     day = _day(on)
     if day is None:
@@ -452,7 +555,8 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
             **({"expected_on": expected_on} if expected_on is not None else {}),
             **({"amount_cents": cents} if cents is not None else {}),
             **({"note": note} if note else {}), **({"records": hashes} if hashes else {}),
-            **({"correspondence": corr} if corr else {}), "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+            **({"correspondence": corr} if corr else {}), **({"withheld_basis": stated_bases} if stated_bases else {}),
+            "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     entry["steps"] = [*steps, step]
     if not dry_run:
         kit._write_json(root / "kit" / "sent.json",
@@ -483,7 +587,8 @@ def status(root, today=None, law_base=None, *, request=None):
         kinds = [s.get("kind") for s in steps]
         fees = [(s.get("on"), i, s) for i, s in enumerate(steps) if "amount_cents" in s or kinds[i] == "fee_estimate"]
         if not all(_amount_ok(s) and _day(on) for on, _, s in fees) or not _expected_ok(steps) \
-                or not all(map(_steps_corr_ok, steps)):
+                or not all(map(_steps_corr_ok, steps)) \
+                or not all(map(_basis_ok, steps)):
             raise ValueError(f"kit/sent.json unreadable: malformed steps for {_label(agency_id, name)!r}")
         last, settled = _fee(steps)  # the latest estimate: latest date, then the later recorded step
         estimate = None if last is None else steps[last]["amount_cents"]
@@ -512,7 +617,9 @@ def status(root, today=None, law_base=None, *, request=None):
                      "over_fee_cap": None if estimate is None or cap is None else estimate > cap,
                      "stated_production_date": stated, "waiting_on_you_since": _waiting_since(steps),
                      "producing": producing, "next_installment": _next_installment(steps) if producing else None,
-                     "reference": entry.get("reference"), "fee_state": _fee_state(steps), "fee_paid": fee_paid})
+                     "reference": entry.get("reference"), "fee_state": _fee_state(steps), "fee_paid": fee_paid,
+                     "withheld_basis": _bases(steps),
+                     **({"request_url": entry["request_url"]} if "request_url" in entry else {})})
     waiting = any(row["waiting_on_you_since"] for row in rows)
     return {"requests": rows, "law_package_status": package_status, "note": NOTE + (WAIT_NOTE if waiting else "")}
 
@@ -608,7 +715,8 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None):
         if row["closed"]:
             continue
         base = {"agency_id": row["agency_id"], "request": row["request"], "name": row["name"],
-                "sent_on": row["sent_on"], "reference": row["reference"]}
+                "sent_on": row["sent_on"], "reference": row["reference"],
+                **({"request_url": row["request_url"]} if "request_url" in row else {})}
         steps = entries.get((row["agency_id"], row["request"]), [])
         if row["waiting_on_you_since"]:  # no claim that this pauses any legal clock; the provisional date stays shown
             since, due_on = row["waiting_on_you_since"], row["determination_due"]
@@ -694,7 +802,7 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
     target = _followup_target(root, f"{agency_id}-{day.isoformat()}.md", replace)
     statute, name = package["records_law"], row["name"] or agency_id
     extended = " (extended, as the agency noted)" if any(s.get("kind") == "extension" for s in steps) else ""
-    subject, first = reference_lines(entry)
+    subject, first = draft_lines(entry)
     told = (f"Its provisional determination date{extended} was {row['due']}; the period runs from the agency's "
             f"receipt of the request. As of {day.isoformat()} we have no record of a determination, records produced "
             "or a denial.") if row["state"] == "past_due" else (
@@ -720,8 +828,8 @@ To: {name}, records custodian
 {first}On {sent_on} we sent a records request by {channel} to {name}. On {denied_on} we recorded the agency's response
 as a denial. We asked for: [EDIT ME: what you asked for]
 
-Please:
-1. Tell us which exemption or other legal basis the agency relied on for each record or category withheld.
+{stated}Please:
+1. {first_ask}
 2. Send the parts of the requested records that are not exempt, with only the exempt portions redacted.
 3. Explain the denial in writing.
 {citations}
@@ -733,6 +841,11 @@ Thank you,
 Draft only. Not legal advice.
 law package: {status}
 """
+
+
+ASK_ALL = "Tell us which exemption or other legal basis the agency relied on for each record or category withheld."
+ASK_REST = ("For each record or category withheld that the reasons above do not cover, tell us which exemption or "
+            "other legal basis the agency relied on.")
 
 
 def denial_reply(root, agency_id, rules=(), *, replace=False, law_base=None):
@@ -761,15 +874,55 @@ def denial_reply(root, agency_id, rules=(), *, replace=False, law_base=None):
         if rule_id not in in_force:
             raise ValueError(f"--rule {rule_id} is not in force on the denial date {denied_on}")
     status = package["status"] if package else "missing"
+    steps = [s for s in entry["steps"] if isinstance(s, dict)]
+    if not all(map(_basis_ok, steps)):
+        raise ValueError(f"kit/sent.json unreadable: malformed steps for {agency_id!r}")
+    stated = [s for s in steps if s.get("kind") == "produced" or s in denied and s["on"] == denied_on]
+    quoted = [f'- "{b["basis"]}" ({b["kind"]} on {b["on"]})' for b in _bases(stated)]
     citations = "".join(f"- {r} (law package status: {status}): {in_force[r]['citation']}\n" for r in rules)
     path = root / "kit" / "agencies.json"
     names = {e["agency_id"]: e["name"] for e in kit._load_existing(path)} \
         if path.is_file() and not path.is_symlink() else {}
     name = names.get(agency_id) or agency_id
     target = _followup_target(root, f"{agency_id}-denial-{denied_on}.md", replace)
-    subject, first = reference_lines(entry)
+    subject, first = draft_lines(entry)
     kit._write_text(target, DENIAL_TEMPLATE.format(
         name=name, subject=subject, first=first and first + "\n\n", sent_on=entry["sent_on"],
         channel=entry["channel"], denied_on=denied_on, status=status,
+        stated="The agency stated these reasons, as written:\n" + "\n".join(quoted) + "\n\n" if quoted else "",
+        first_ask=ASK_REST if quoted else ASK_ALL,
         citations=f"\nRules we noted for this reply:\n{citations}" if rules else ""))
     return {"written": f"kit/followups/{target.name}", "rules": rules, "law_package_status": status}
+
+
+def withheld(root):
+    """Every recorded withheld basis, grouped by the Gov. Code section numbers found in its own text (read-only)."""
+    rows = []
+    for key, entry in read_sent(root).items():
+        agency_id, request = _split(key)
+        steps = [s for s in entry["steps"] if isinstance(s, dict)]
+        if not all(map(_basis_ok, steps)):
+            raise ValueError(f"kit/sent.json unreadable: malformed steps for {_label(agency_id, request)!r}")
+        rows += [{"agency_id": agency_id, "request": request, **b} for b in _bases(steps)]
+    groups = {}
+    for row in rows:
+        for section in sorted(set(SECTION.findall(row["basis"]))) or [NO_SECTION]:
+            groups.setdefault(section, []).append(row)
+
+    def order(section):  # numeric by section number, the unnumbered group last
+        whole, _, part = section.partition(".")
+        return (0, int(whole), int(part) if part else -1, section) if section != NO_SECTION else (1, 0, 0, section)
+    return {"groups": [{"section": section, "count": len(found),
+                        "rows": sorted(found, key=lambda r: (r["agency_id"], r["request"], r["on"] or "", r["basis"]))}
+                       for section, found in sorted(groups.items(), key=lambda item: order(item[0]))],
+            "total": len(rows), "note": WITHHELD_NOTE}
+
+
+def format_withheld(report):
+    """The withheld report as plain text, one block per section number."""
+    lines = []
+    for group in report["groups"]:
+        lines.append(group["section"] if group["section"] == NO_SECTION else f"Gov. Code {group['section']}")
+        lines += [f'  {_label(r["agency_id"], r["request"])}  {r["kind"]} on {r["on"]}  "{r["basis"]}"'
+                  for r in group["rows"]]
+    return "\n".join(lines + [f"total: {report['total']} recorded basis(es)"]) + "\n"

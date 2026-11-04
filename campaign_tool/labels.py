@@ -18,9 +18,14 @@ KIND_LABELS = {"sheriff": "County sheriff", "police": "City police", "chp": "Sta
 DEFAULTS = {
     "nav.label": "Site", "nav.home": "Home", "nav.agencies": "Agencies", "nav.findings": "Findings",
     "nav.sources": "Sources", "nav.meetings": "Meetings", "nav.about": "About", "nav.corrections": "Corrections",
-    "nav.home_page": "Home page", "header.skip": "Skip to content", "header.attend": "Attend a meeting",
+    "nav.home_page": "Home page", "nav.topics": "Topics", "header.skip": "Skip to content", "header.attend": "Attend a meeting",
     "footer.credit": "{name} is an independent local initiative. Built with DeFlock Campaign Tool.",
-    "footer.contact": "Contact:", "footer.feed": "Findings feed", "footer.sitemap": "Sitemap",
+    "footer.contact": "Contact:", "footer.feed": "Findings feed", "footer.sitemap": "Sitemap", "footer.search": "Search",
+    "search.title": "Search", "search.description": "Search the published findings and the source library",
+    "search.label": "Search findings and sources",
+    "search.intro": ("Looks through the titles, summaries and agency names of published findings and the titles of the "
+                     "sources they cite. Everything is matched in your browser; what you type is not sent anywhere."),
+    "search.fallback": "Search needs JavaScript. Without it, browse the {findings} or the {sources}.",
     "footer.privacy": "Privacy", "privacy.title": "Privacy", "privacy.signup_policy": "Read the provider's privacy policy",
     "privacy.lead": "What this site loads, whether it stores anything on your device, and where a signup goes.",
     "privacy.scripts": "Scripts, stylesheets and fonts are served from this site only. This site loads no third-party scripts.",
@@ -37,7 +42,8 @@ DEFAULTS = {
     "title.sources": "Sources", "title.sources_description": "Hashed source records behind published findings",
     "title.meetings": "Meetings", "title.meetings_description": "Public meetings and comment kits",
     "title.meeting_description": "Public meeting and comment kit", "title.about": "About",
-    "title.about_description": "About the campaign",
+    "title.about_description": "About the campaign", "title.topics": "Topics",
+    "title.topics_description": "Published findings grouped into topics, each with its classification, date and corrections",
     "eyebrow.agencies": "Agencies", "eyebrow.contracts": "Contracts", "eyebrow.meetings": "Meetings",
     "eyebrow.mission": "Evidence before conclusions", "eyebrow.latest_findings": "Latest findings",
     "eyebrow.findings": "Findings", "eyebrow.sources": "Source library", "eyebrow.meeting": "Meeting",
@@ -46,6 +52,7 @@ DEFAULTS = {
     "heading.meetings_home": "Show up informed.", "heading.findings_home": "Published with sources.",
     "heading.participate": "Participate with evidence.", "heading.agencies": "Public bodies in {county}.",
     "heading.findings": "Everything we publish cites a record.", "heading.corrections": "Corrections",
+    "heading.topics": "Findings grouped by topic",
     "heading.not_found": "Page not found", "heading.sources": "Every document we cite, and where it came from.",
     "heading.meetings": "Official channels for informed questions.", "heading.past_meetings": "Past meetings",
     "intro.step1_title": "Request", "intro.step2_title": "Understand", "intro.step3_title": "Participate",
@@ -68,6 +75,8 @@ DEFAULTS = {
     "intro.open_data_about": "Published findings are also available as open data:",
     "intro.meetings_open_data": "Meetings and outcomes as open data (JSON)",
     "intro.meetings_open_data_about": "Meetings with their recorded outcomes, votes and official sources:",
+    "intro.agencies_open_data": "Agencies as open data (JSON)",
+    "intro.agencies_open_data_about": "Agencies with their asked items, posted policy, contract end and portal numbers, as each source reported them:",
     "notice.no_findings": "No findings have been published yet.", "notice.no_upcoming": "No upcoming meetings are listed.",
     "notice.past_meetings_link": "Past meetings and their comment kits", "notice.no_meetings": "No meetings are listed yet.",
     "notice.no_agencies": "No agencies are configured yet.", "notice.no_filter_match": "No published finding matches these filters.",
@@ -82,7 +91,7 @@ DEFAULTS = {
     "finding.all_corrections": "All corrections", "finding.ask_correction": "Ask for a correction",
     "finding.cite": "Cite this finding", "finding.cite_copy": "Copy", "finding.cite_copied": "Copied",
     "finding.cite_select": "Select and copy",
-    "finding.related": "Related findings", "finding.same_agency": "Same agency",
+    "finding.part_of": "Part of: {topic}", "finding.related": "Related findings", "finding.same_agency": "Same agency",
     "finding.shares_one": "Shares {count} source record", "finding.shares_many": "Shares {count} source records",
     "finding.filter_label": "Filter findings", "finding.filter_agency": "Agency",
     "finding.filter_all_agency": "All agencies", "finding.filter_no_agency": "No agency named",
@@ -163,12 +172,27 @@ JS_DEFAULTS = {
     "js.agency_findings_zero": "no published findings yet",
     "js.agency_findings_one": "{count} published finding",
     "js.agency_findings_many": "{count} published findings",
+    "js.search_hint": "Type 2 to 100 characters to search.", "js.search_none": "No published finding or source matches.",
+    "js.search_count_one": "{count} result", "js.search_count_many": "{count} results",
+    "js.search_unavailable": "Search is unavailable.", "js.search_finding": "Finding", "js.search_source": "Source",
     "js.group_vendor": "Not applicable", "js.group_status": "Ownership unconfirmed",
     "js.group_summary": "{name}. Points outside city boundaries without an operator tag are research leads, not evidence of agency ownership.",
     "js.group_fact": "Community-mapped points; verify with records requests.",
     "js.group_open": "Which agency, if any, operates these points is unconfirmed.", "js.group_flag": "Unconfirmed",
 }
+# DF0137-17: the fixed text of the private meeting-pack handout (meeting_pack.py), today's exact English.
+HANDOUT_DEFAULTS = {
+    "handout.title": "Meeting handout", "handout.what_we_found": "What we found", "handout.agenda": "Agenda",
+    "handout.nothing_published": "Records are requested; nothing is published yet.",
+    "handout.source_line": "Source: {title}, received {date}, record {record}",
+    "handout.not_recorded": "not recorded", "handout.corrected": "corrected {date}",
+    "handout.more_on_site": "{count} more on the site",
+    "handout.record_explainer": "What the record number means: the first 12 characters of a SHA-256 fingerprint of the "
+                                "file exactly as received. It shows the file has not changed since; it does not by "
+                                "itself prove who wrote it.",
+}
 DEFAULTS.update(JS_DEFAULTS)
+DEFAULTS.update(HANDOUT_DEFAULTS)
 for _family, _labels in (("classification", CLASSIFICATION_LABELS), ("confidence", CONFIDENCE_LABELS), ("kind", KIND_LABELS)):
     DEFAULTS.update({f"{_family}.{code}": text for code, text in _labels.items()})
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")

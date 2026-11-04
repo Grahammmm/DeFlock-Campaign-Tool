@@ -25,6 +25,7 @@ import os
 import re
 import stat
 import tempfile
+import unicodedata
 import urllib.parse
 from datetime import date
 from pathlib import Path
@@ -496,8 +497,57 @@ def _https_url(value, field):
         raise ValueError(f"{field} must be an https:// URL with a host")
 
 
+POSTAL_LINES, POSTAL_WIDTH = (2, 5), 80
+POSTAL_KEYS = ("mailing_address", "mailing_verification")
+
+
+def _postal_chars(text):
+    """True when ``text`` has none of: angle brackets, control, format or surrogate characters, line separators."""
+    return not any(c in "<>" or unicodedata.category(c) in ("Cc", "Cf", "Cs", "Zl", "Zp") for c in text)
+
+
+def parse_mailing_address(value):
+    """The lines of ``LINE|LINE`` (2-5 trimmed lines of 1-80 characters), or ValueError naming the rule, not the text."""
+    if not isinstance(value, str) or not _postal_chars(value.replace("|", "")):
+        raise ValueError("mailing_address must be plain text lines without angle brackets or control characters")
+    lines = [part.strip() for part in value.split("|")]
+    if not POSTAL_LINES[0] <= len(lines) <= POSTAL_LINES[1] or any(not 1 <= len(line) <= POSTAL_WIDTH for line in lines):
+        raise ValueError("mailing_address must be 2-5 lines separated by |, each 1-80 characters")
+    return lines
+
+
+def _real_day(value, today=None):
+    try:
+        day = date.fromisoformat(value) if isinstance(value, str) and DATE.fullmatch(value) else None
+    except ValueError:
+        day = None
+    return day is not None and day <= (today or date.today())
+
+
+def postal_proof(entry, today=None):
+    """The verified ``mailing_address`` lines of one kit/agencies.json entry, or ValueError (never echoes the address)."""
+    lines, proof = entry.get("mailing_address"), entry.get("mailing_verification")
+    if entry.get("verified") is not True or lines is None or proof is None:
+        raise ValueError("no verified mailing_address for this agency; run kit-verify-agency --mailing-address first")
+    try:
+        plain = (isinstance(lines, list) and all(isinstance(line, str) and "|" not in line for line in lines)
+                 and parse_mailing_address("|".join(lines)) == lines)
+    except ValueError:
+        plain = False
+    if not plain:
+        raise ValueError("mailing_address in kit/agencies.json is not 2-5 plain lines of 1-80 characters")
+    if (not isinstance(proof, dict) or set(proof) != {"source_url", "checked_on"}
+            or not _real_day(proof["checked_on"], today)):
+        raise ValueError("mailing_verification in kit/agencies.json needs a source_url and a real checked_on date")
+    try:
+        _https_url(proof["source_url"], "source_url")
+    except ValueError:
+        raise ValueError("mailing_verification in kit/agencies.json needs an https:// source_url") from None
+    return list(lines)
+
+
 def _check_verification(agencies, agency_id, *, source_url, checked_on, records_email=None, records_url=None,
-                        portal=None, today=None, portal_vendor=None):
+                        portal=None, today=None, portal_vendor=None, mailing_address=None):
     """Every kit-verify-agency rule for one agency in ``agencies``: (entry, given, verification), or ValueError.
 
     Changes nothing; ``portal_vendor`` (import only) needs ``portal`` and must be a known vendor."""
@@ -512,8 +562,10 @@ def _check_verification(agencies, agency_id, *, source_url, checked_on, records_
             raise ValueError(f"portal_vendor must be one of {', '.join(PORTAL_VENDORS)}")
         if portal is None:
             raise ValueError("portal_vendor needs a portal_url")
-    if not given:
+    if not given and mailing_address is None:
         raise ValueError("give at least one of records_email, records_url, portal")
+    if mailing_address is not None:
+        parse_mailing_address(mailing_address)
     _https_url(source_url, "source_url")
     for field in ("records_url", "portal"):
         if field in given:
@@ -550,15 +602,23 @@ def _agencies_for_verify(root):
 
 
 def verify_agency(root, agency_id, *, source_url, checked_on, records_email=None, records_url=None,
-                  portal=None, today=None):
-    """Record an organizer-checked contact, its official source and date; never fetches source_url."""
+                  portal=None, today=None, mailing_address=None):
+    """Record an organizer-checked contact and/or postal address, its official source and date; never fetches it.
+
+    ``mailing_address`` (``LINE|LINE``) is stored with its own ``mailing_verification`` (this call's source and
+    date) in the same write; ``verification.fields`` stays electronic-only and later electronic checks keep it."""
     path, agencies = _agencies_for_verify(root)
     entry, given, verification = _check_verification(
         agencies, agency_id, source_url=source_url, checked_on=checked_on, records_email=records_email,
-        records_url=records_url, portal=portal, today=today)
+        records_url=records_url, portal=portal, today=today, mailing_address=mailing_address)
     _apply_verification(entry, given, verification)
+    result = {"agency_id": agency_id, "fields": sorted(given), "checked_on": checked_on, "verified": True}
+    if mailing_address is not None:
+        entry["mailing_address"] = parse_mailing_address(mailing_address)
+        entry["mailing_verification"] = {"source_url": source_url, "checked_on": checked_on}
+        result["mailing_address"] = "recorded"
     _write_json(path, agencies)
-    return {"agency_id": agency_id, "fields": sorted(given), "checked_on": checked_on, "verified": True}
+    return result
 
 
 class VerifyImportError(ValueError):
