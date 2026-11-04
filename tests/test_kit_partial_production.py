@@ -16,7 +16,8 @@ from tests.test_kit_response import SENT_ON, run  # noqa: E402
 STAMP = "2026-03-25T12:00:00+00:00"
 LEGACY_STEPS = [{"on": "2026-03-05", "kind": "determination", "expected_on": "2026-03-20", "recorded_at": STAMP},
                 {"on": "2026-03-25", "kind": "produced", "note": "partial set", "recorded_at": STAMP}]
-NEW_ROW_KEYS = {"producing": False, "next_installment": None, "fee_state": None, "fee_paid": None}
+NEW_ROW_KEYS = {"producing": False, "next_installment": None, "fee_state": None, "fee_paid": None,
+                "withheld_basis": []}
 MALFORMED = "kit/sent.json unreadable: malformed steps"
 
 
