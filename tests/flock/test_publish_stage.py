@@ -2,7 +2,7 @@
 import contextlib, csv, hashlib, importlib.util, io, json, os, re, subprocess, sys, unittest
 from pathlib import Path
 from unittest import mock
-from campaign_tool import content
+from campaign_tool import content, publication_gate as gate
 from tests.flock import test_publish as base
 
 APPROVED = {"status": "approved", "approved_by": "G", "approved_on": "2026-10-30", "approval_ref": "G-1"}
@@ -37,10 +37,10 @@ class PublishStageTest(base.FlockPublishTest):  # setUp: verified run; here N1 b
         self.approve("N1")
         self.write_copy({"N1": block("search-purpose", classification="documented_fact")})
 
-    def approve(self, *ids):
+    def approve(self, *ids):  # DF-APPROVAL-TIME-BIND: the approval records the entry's hash as it stands when approved
         for f in self.doc["findings"]:
             if f["finding_id"] in ids:
-                f["review"] = dict(APPROVED)
+                f["review"] = dict(APPROVED, content_hash=gate.content_digest({k: v for k, v in f.items() if k != "review"}))
         self.out.write_text(json.dumps(self.doc))
 
     def write_copy(self, blocks):

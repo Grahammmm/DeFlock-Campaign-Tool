@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "store-inventory-v1",
+  "title": "Private store inventory, review required",
+  "type": "object",
+  "required": ["schema", "review_required", "as_of", "areas", "enforced_by_code", "source_errors"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "store-inventory-v1"},
+    "review_required": {"const": true},
+    "as_of": {"type": "string", "format": "date-time"},
+    "areas": {"type": "array", "items": {"$ref": "#/$defs/area"}},
+    "enforced_by_code": {"type": "array", "items": {"type": "object", "required": ["file", "symbol", "protection"], "properties": {"file": {"type": "string"}, "symbol": {"type": "string"}, "protection": {"type": "string"}}, "additionalProperties": false}},
+    "source_errors": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "histogram": {"type": "object", "additionalProperties": {"$ref": "#/$defs/count"}},
+    "area": {
+      "type": "object", "additionalProperties": false,
+      "required": ["area", "files", "directories", "bytes", "oldest_mtime", "newest_mtime", "modes", "owners", "group_or_world_readable", "outside_symlink", "extensions", "category_counts", "scan_skipped", "hidden_directories_not_scanned"],
+      "properties": {
+        "area": {"type": "string"}, "files": {"$ref": "#/$defs/count"},
+        "directories": {"$ref": "#/$defs/count"}, "bytes": {"$ref": "#/$defs/count"},
+        "oldest_mtime": {"type": ["string", "null"]}, "newest_mtime": {"type": ["string", "null"]},
+        "modes": {"$ref": "#/$defs/histogram"}, "extensions": {"$ref": "#/$defs/histogram"},
+        "owners": {"type": "array", "items": {"type": "object", "required": ["uid", "gid"], "properties": {"uid": {"$ref": "#/$defs/count"}, "gid": {"$ref": "#/$defs/count"}}, "additionalProperties": false}},
+        "group_or_world_readable": {"type": "boolean"}, "outside_symlink": {"type": "boolean"},
+        "category_counts": {"type": "object", "required": ["email", "phone", "plate"], "properties": {"email": {"$ref": "#/$defs/count"}, "phone": {"$ref": "#/$defs/count"}, "plate": {"$ref": "#/$defs/count"}}, "additionalProperties": false},
+        "scan_skipped": {"$ref": "#/$defs/count"}, "hidden_directories_not_scanned": {"$ref": "#/$defs/count"}
+      }
+    }
+  }
+}
