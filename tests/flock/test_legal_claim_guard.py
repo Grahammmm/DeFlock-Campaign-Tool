@@ -181,6 +181,24 @@ class NewsletterAndSiteSurfaceTest(unittest.TestCase):
             path.write_text(json.dumps(site), encoding="utf-8")
             self.assertEqual(cli._site_claim_notes(root), ["review-required: site.json.comment_asks[2]: legal-claim wording (non-compliant)"])
 
+    def test_site_build_scan_flags_stored_meeting_directions_by_raw_text(self):  # DF0022-08
+        from campaign_tool import cli
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "campaign"
+            shutil.copytree(ROOT / "examples" / "fictional-campaign", root, ignore=shutil.ignore_patterns("public"))
+            path = next((root / "content" / "meetings").glob("*.json"))
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            doc["outcome"] = {"result": "approved", "on": "2026-10-14", "source_url": "https://example.invalid/minutes",
+                              "verified_by": "Synthetic Organizer", "verified_at": "2026-10-14",
+                              "direction": "Return with a draft usage policy", "return_by": "2026-11-01",
+                              "direction_source": "https://example.invalid/minutes"}
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(cli._site_claim_notes(root), [])  # neutral wording is silent
+            doc["outcome"]["direction"] = "Staff violated SB 34 and must report"
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(cli._site_claim_notes(root), [
+                "review-required: meetings/%s.outcome.direction: legal-claim wording (violation-verb)" % doc["id"]])
+
 
 def _fictional_with(field, text):
     tmp = tempfile.TemporaryDirectory()

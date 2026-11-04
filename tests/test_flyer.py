@@ -236,6 +236,84 @@ class FlyerTests(unittest.TestCase):
         build(self.root)
         self.assertEqual(before, self.snapshot())
 
+    def tree_state(self):
+        """Every path under the campaign with bytes, mtime and mode (dirs: mode only), so a refusal can prove no write."""
+        return {str(p.relative_to(self.root)): (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode) if p.is_file()
+                else (None, None, p.stat().st_mode) for p in sorted(self.root.rglob('*'))}
+
+    def svg_logo(self, name, body, attrs=''):
+        assets = self.content / 'public-assets'
+        assets.mkdir(exist_ok=True)
+        data = (f"<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' "
+                f"width='240' height='80'{attrs}>{body}</svg>").encode()
+        (assets / name).write_bytes(data)
+        return data
+
+    # RF0220-2: an XML Base logo is refused on the first run and on --replace; the earlier flyer survives untouched
+    def test_svg_xml_base_refusal_preserves_existing_flyer(self):
+        self.finding(1)
+        url = 'https://synthetic.invalid/private-base/sprite.svg'
+        self.svg_logo('based.svg', "<use href='#a'/>", f" xml:base='{url}'")
+        self.svg_logo('nested.svg', f"<g xml:base='{url}'><use href='#a'/></g>")
+        self.svg_logo('empty.svg', "<rect width='4' height='4'/>", " xml:base=''")
+        message = 'site.json.brand.logo: SVG (external reference)'
+        for name in ('based.svg', 'nested.svg', 'empty.svg'):
+            self.site({'brand': {'logo': name, 'logo_alt': 'Mark'}})
+            with self.subTest(name=name, first_run=True):
+                before = self.tree_state()
+                result = self.cli()
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(result.stdout, '')  # no success JSON, no private notice
+                self.assertNotIn('synthetic.invalid', result.stdout + result.stderr)
+                self.assertFalse((self.root / 'kit').exists())
+                self.assertEqual(self.tree_state(), before)
+        for prior in ('png', 'svg'):  # a previous flyer with a safe PNG or SVG logo
+            shutil.rmtree(self.root / 'kit', ignore_errors=True)
+            if prior == 'png':
+                (self.content / 'public-assets' / 'safe.png').write_bytes(png(120, 40))
+                self.site({'brand': {'logo': 'safe.png', 'logo_alt': 'Safe'}})
+            else:
+                self.svg_logo('safe.svg', "<defs><linearGradient id='g'/></defs><rect fill='url(#g)'/><use href='#g'/>")
+                self.site({'brand': {'logo': 'safe.svg', 'logo_alt': 'Safe'}})
+            self.assertEqual(self.cli().returncode, 0)
+            for name in ('based.svg', 'nested.svg', 'empty.svg'):
+                self.site({'brand': {'logo': name, 'logo_alt': 'Mark'}})
+                with self.subTest(prior=prior, name=name, first_run=False):
+                    # site.json changed above, so snapshot after it; kit/ is what a refusal must preserve
+                    before = self.tree_state()
+                    result = self.cli('--replace')
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual(result.stdout, '')
+                    self.assertNotIn('synthetic.invalid', result.stdout + result.stderr)
+                    self.assertEqual(self.tree_state(), before)
+                    self.assertTrue((self.folder / f'logo.{prior}').is_file())
+                    self.assertEqual(stat.S_IMODE((self.folder / f'logo.{prior}').stat().st_mode), 0o600)
+                    self.assertEqual(stat.S_IMODE(self.folder.stat().st_mode), 0o700)
+
+    # RF0220-2: a self-contained gradient/use logo still builds privately and byte for byte
+    def test_clean_svg_fragment_logo_is_private_and_byte_identical(self):
+        self.finding(1)
+        data = self.svg_logo('mark.svg', "<defs><linearGradient id='g'/></defs><rect fill='url(#g)' width='4' height='4'/>"
+                                         "<use href='#g'/><use xlink:href='#g'/><style>rect{fill:url(#g)}</style>")
+        self.site({'brand': {'logo': 'mark.svg', 'logo_alt': 'Mark'}})
+        result = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout.splitlines()[0])['written'],
+                         ['kit/flyer/flyer.html', 'kit/flyer/flyer.txt', 'kit/flyer/logo.svg'])
+        self.assertEqual((self.folder / 'logo.svg').read_bytes(), data)
+        self.assertIn('<img src="logo.svg" alt="Mark" width="240" height="80">', self.html())
+        self.assertNotIn('src="http', self.html())
+        self.assertEqual(stat.S_IMODE(self.folder.stat().st_mode), 0o700)
+        for name in ('flyer.html', 'flyer.txt', 'logo.svg'):
+            self.assertEqual(stat.S_IMODE((self.folder / name).stat().st_mode), 0o600, name)
+        # an ordinary "base" attribute is not XML Base; replacement with it still works
+        data = self.svg_logo('plain.svg', "<use href='#a'/>", " base='https://synthetic.invalid/'")
+        self.site({'brand': {'logo': 'plain.svg', 'logo_alt': 'Mark'}})
+        self.assertEqual(self.cli('--replace').returncode, 0)
+        self.assertEqual((self.folder / 'logo.svg').read_bytes(), data)
+
     def test_cli_prints_paths_and_private_notice(self):
         self.finding(1)
         result = self.cli('--max-findings', '2')

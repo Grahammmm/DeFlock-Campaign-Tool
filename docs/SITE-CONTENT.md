@@ -43,7 +43,7 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 
 | Path | Required | Purpose |
 | --- | --- | --- |
-| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
+| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), `license` (below), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
 | `content/findings/*.json` | no | one published finding per file (schema below) |
 | `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id`, optional `cited_findings` (1 to 3 unique finding ids, written by `meetings-stage`) |
 | `content/sources.json` | no | source-library entries: `sha256`, `title`, `agency_id`, `received_at`, `public_url` or null, `fragment`, `pages`, `note` |
@@ -154,6 +154,26 @@ A refused rebuild leaves the previous public tree intact: it does not retract an
 Removing a finding and successfully rebuilding removes its generated page; slug changes provide no
 redirect or link-durability promise. External approval expiry/revocation and crawler caches remain
 the publication owner's responsibility; rendering neither verifies nor refreshes approval receipts.
+
+### Open-data licence (`site.json.license`)
+
+`site.json.license` = `{"id": "CC-BY-4.0" | "CC-BY-SA-4.0" | "CC0-1.0", "attribution": "<optional, plain text, one line, at most 200 characters>"}`.
+The organizer picks the licence; the tool chooses none and gives no legal advice. Any other id (including a different
+case, such as `cc-by-4.0`), an extra key, a non-string `attribution`, one with markup (`<`, `>`), an email address or a
+phone-like number, or one over 200 characters is refused as `site.json.license.id`, `site.json.license` or
+`site.json.license.attribution`. The id maps to a fixed name and creativecommons.org deed URL in `content.py`.
+
+With the key set: the footer gains one paragraph ("Data and text: <licence>, <attribution>", `rel="license"`, label
+`footer.license`); the about page names the licence in one sentence and, when the site has a map, adds a separate line
+"Camera points: © OpenStreetMap contributors, ODbL" with links; each CSV link's text ends " (license: <name>)" (the CSV
+bytes do not change); and `data/findings.json`, `data/sources.json`, `data/meetings.json` and `data/agencies.json` gain
+top-level `license` (the id) and `license_url`. Without the key none of these change.
+
+**ODbL rule.** Mapped camera points come from OpenStreetMap, so `data/cameras.geojson` always carries the top-level
+GeoJSON foreign members `license` = `ODbL-1.0`, `license_url` (the opendatacommons.org ODbL 1.0 text), `attribution` =
+`© OpenStreetMap contributors` and `attribution_url`, whatever `site.json.license` says and even when it is absent. The
+points are not changed. This is the one file a build without `license` still changes. Boundary files are not derived
+from the camera data and are copied as before.
 
 ### Agencies, cards and the picker
 
@@ -581,7 +601,8 @@ held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `
 `votes` as `{name, vote}` in stored order, each only when recorded), plus the pair `minutes_url` and
 `minutes_approved_on` (the body's approved official minutes, both or neither; no derived confirmation flag), plus
 the optional `continued_to` (a staged meeting id) or `continued_to_date` (a stated date) of a `continued` result (one
-of the two, never both; no derived back-reference). It never
+of the two, never both; no derived back-reference), plus the optional trio `direction`, `return_by` and
+`direction_source` (a staff direction as the official source states it; all or none; no reminder or fulfillment flag). It never
 includes the comment kit, `participation`,
 contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
 `data/meetings.json: non-public key ...` and writes nothing.
