@@ -371,6 +371,15 @@ day, a later meeting with no outcome and a malformed file never suppress it. Thi
 outcome does not prove staff did what was asked, its absence does not mean they did not, and no fulfillment status is
 stored. `data/meetings.json` carries `direction`, `return_by` and `direction_source` on the outcome, all or none.
 
+## Regular meeting schedules
+
+`content/body-schedules.json` (optional, organizer-verified, never fetched) records when a body usually meets so that
+`today` can suggest agenda-watch dates and `meetings.html` can say `Usually meets: ...`. The exact schema, exact body
+naming (as staged meetings name the body), time-zone interpretation, the 365-day stale threshold and how to re-check
+and update it are in [SITE-CONTENT.md](SITE-CONTENT.md#regular-meeting-schedules-contentbody-schedulesjson-optional).
+An `Expected BODY meeting D: watch for the agenda` line is a prompt to look at the official agenda, not a scheduled
+meeting: stage a meeting only from the official record.
+
 ## Meetings feed (`meetings.xml`)
 
 When `content/meetings/` stages at least one meeting, `build` writes `public/meetings.xml`, one Atom document

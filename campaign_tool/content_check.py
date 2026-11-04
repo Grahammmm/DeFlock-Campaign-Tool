@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 
+from .body_schedules import read_body_schedules
 from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _alpr_policy, _asked, _bounds, _contract, _contract_check, _policy_check, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, continuation_problems,
                       default_agencies,
@@ -239,6 +240,7 @@ def content_problems(root, limit=LIMIT):
         _attempt(problems, "labels.json", lambda: load_labels(_read_json(labels_path, MAX_LABELS_BYTES)))
 
     read_glossary(root, problems)  # DF1952-04: the build's own reader; it names every independent problem itself
+    _attempt(problems, "body-schedules.json", lambda: read_body_schedules(root))  # DF0022-10: the build's own reader
 
     agencies_path = content_dir / "agencies.json"
     if agencies_path.is_file():
@@ -296,7 +298,7 @@ def content_problems(root, limit=LIMIT):
 
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
 FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "topics/", "kit/", "law/", "newsletters/",
-                 "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json")
+                 "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json", "body-schedules.json")
 
 
 def problem_record(line):
