@@ -275,6 +275,28 @@ The site says nothing about a donor beyond the name in the document. Labels: `ag
 `agency.funding_kind_asset_forfeiture`, `agency.funding_kind_donation`, `agency.funding_kind_other`. A profile without
 `funding` reads and renders exactly as before.
 
+### Local rules on record (agency page, from `law/local-rules.json`)
+
+An existing agency page (`agencies/<slug>.html`) shows a `Local rules on record` section, after the facts,
+transparency, officials and votes blocks and before `Published findings`, with one entry per organizer-transcribed local
+rule whose `agency_ids` names that agency's exact `agency_id` (every dated version of a rule is its own entry; no prefix,
+agency-name, city or county matching). The rules are the validated overlay the build already loaded (see LAW-PACKAGES.md);
+the section reads nothing else, fetches nothing and adds no field to `data/agencies.json`, `data/findings.json` or
+`data/sources.json`. Each entry has its own heading with the citation, the `rule_id`, `Duty as written` (the transcribed text,
+escaped, never Markdown or HTML and never restated as an obligation of the agency), `Effective from` and `to` (`open` when
+there is no end), a link `Official source (organizer-recorded)` and the day it was `checked`, and always the exact label
+`local rule, organizer-transcribed, not legally reviewed`, even when the state package is reviewed: the checked day is the
+organizer's, not a legal review date. Entries are ordered by `rule_id` then `effective_from`.
+
+The build date (the day the build runs; `build_site(today=...)` in tests) classifies each entry with inclusive bounds:
+`Past — not in force on build date` when `effective_to` is before it, `Not yet in force on build date` when `effective_from`
+is after it (a scheduled rule is not described as already law), otherwise `In force on build date`. An agency with no scoped
+rule gets no heading, list or whitespace: its page is byte-identical to one built without the overlay, and a local rule
+alone never creates a page or an `agencies.html` entry (a page still needs a published finding or a source record).
+The section states that these are organizer transcriptions, not a determination about the agency's conduct. It is not legal
+advice and never says an agency complied or did not comply. The organizer and a human reviewer remain responsible for whether the source is
+authentic and whether the ordinance applies; nothing is checked automatically.
+
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
 also the `id` of the matching section in `sources.html`. Agencies without

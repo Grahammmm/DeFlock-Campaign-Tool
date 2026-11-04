@@ -27,9 +27,10 @@ RULE = "ca-civ-1798.90.5-definitions"
 RULE_URL = "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."
 NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network access attempted"))
 
-# Fixed-day (2026-10-01) baseline independently rendered from main ff113125 and
-# feed head ceb70773: main plus exact feed footer, alternate and intro links;
-# meetings.xml matches the immutable feed head. Whole-tree byte checks remain exact.
+# Fixed-day (2026-10-01) baseline independently rendered from main 9c50543d
+# and calendar head 499af297: main plus the exact calendar intro link from
+# that immutable PR; meetings.ics matches the immutable PR bytes.
+# Every merged file was compared byte-for-byte against these independent inputs.
 BASELINE = {
     "404.html": "b2991c912cf60b9f6da98217067eb5de2346263569dccb68e458107bdb4c2819",  # pragma: allowlist secret -- public rendered-file SHA-256
     "_headers": "d8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e",  # pragma: allowlist secret -- public rendered-file SHA-256
@@ -57,7 +58,8 @@ BASELINE = {
     "findings/index.html": "05999d5f47c3c227b347ccb52169a21bb113020c5a84a991075f8271d95b9274",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/packet-all.html": "eb5bded12f202b5cd07cdc05c7bdb1da2bb6eea90d19ae467a4ce5607e592425",  # pragma: allowlist secret -- public rendered-file SHA-256
     "index.html": "08a7c582920d9da0bac01a4f219d1df3510280e93b96163dab10bfaab6b15b6e",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "meetings.html": "97b7c12c09d6c8854d39f1cc25f0dc787c5c65de6e1f81d024c7b557d18b902f",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "meetings.html": "c8f6ae859113114dbe0721d8037959c6b995c9061f8df14f0134da64e31d5152",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "meetings.ics": "dd19281997628992288aaccd1a377c0b0b41c72d2110b15a641cd7a813191ae5",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.xml": "2af1fa8b795edc83edc9c854e689411875b401b940c3cc99569311f182b41e5e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings/cedar-council-2026-10.html": "83f216c765c4715208ee7f29bffc99e51f19ecb0abdbed82b8113cbd1c301186",  # pragma: allowlist secret -- public rendered-file SHA-256
     "methods.html": "758c47e4ddedadd0561a44ba8986b67972edbe0307f6932f777b7a2b0860f990",  # pragma: allowlist secret -- public rendered-file SHA-256
