@@ -353,7 +353,7 @@ class MeetingsFeedTests(unittest.TestCase):
 
     def test_existing_upload_extension_contract(self):
         self.assertEqual(safe_site_path("meetings.xml"), "meetings.xml")
-        self.assertIsNone(safe_site_path("meetings.ics"))
+        self.assertEqual(safe_site_path("meetings.ics"), "meetings.ics")
         self.assertIn("meetings.xml", self.build())
 
 

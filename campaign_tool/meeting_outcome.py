@@ -8,12 +8,14 @@ import csv
 import json
 import os
 import stat
+import sys
 import unicodedata
 from datetime import date
 
-from .content import (VOTE_VALUES, _read_json, continuation_issues, default_agencies, load_agencies, load_meeting,
+from .content import (DIRECTION_KEYS, VOTE_VALUES, _read_json, continuation_issues, default_agencies, load_agencies, load_meeting,
                       load_officials)
 from .kit import _write_json
+from .legal_claims import legal_notes
 
 
 class MeetingOutcomeError(ValueError):
@@ -90,8 +92,10 @@ def _find(folder, meeting_id):
 
 
 def record_outcome(root, meeting_id, result, on, source_url, verified_by, vote=None, replace=False, today=None,
-                   votes_file=None, recording_url=None, recording_start=None, continued_to=None, continued_to_date=None):
+                   votes_file=None, recording_url=None, recording_start=None, continued_to=None, continued_to_date=None, direction=None, return_by=None,
+                   direction_source=None):
     today = today or date.today()
+    _check_direction_pair(direction, return_by, direction_source)  # DF0022-08
     if recording_start is not None and recording_url is None:  # DF1422-10: a start time is part of a recording
         raise MeetingOutcomeError("recording_start needs recording_url")
     if continued_to is not None and continued_to_date is not None:  # DF0022-07: one stated destination, not two
@@ -116,7 +120,9 @@ def record_outcome(root, meeting_id, result, on, source_url, verified_by, vote=N
                **({"recording_url": recording_url} if recording_url is not None else {}),
                **({"recording_start": recording_start} if recording_start is not None else {}),
                **({"continued_to": continued_to} if continued_to is not None else {}),
-               **({"continued_to_date": continued_to_date} if continued_to_date is not None else {})}
+               **({"continued_to_date": continued_to_date} if continued_to_date is not None else {}),
+               **({"direction": direction, "return_by": return_by, "direction_source": source_url if direction_source is None else direction_source}
+                  if direction is not None else {})}
     updated = {**document, "outcome": outcome}
     prospective = load_meeting(updated, label, today=today)
     if continued_to is not None:  # DF0022-07: the staged meetings with only this outcome replaced
@@ -125,6 +131,17 @@ def record_outcome(root, meeting_id, result, on, source_url, verified_by, vote=N
         raise MeetingOutcomeError(f"content/meetings/{path.name} must not be a symlink")
     _write_json(path, updated)
     return outcome
+
+
+def _check_direction_pair(direction, return_by, direction_source):
+    """DF0022-08: a direction and its return-by date are given together; a source alone selects nothing."""
+    if direction is None and return_by is None:
+        if direction_source is not None:
+            raise MeetingOutcomeError("direction_source: needs direction and return_by")
+    elif direction is None:
+        raise MeetingOutcomeError("direction: needed together with return_by")
+    elif return_by is None:
+        raise MeetingOutcomeError("return_by: needed together with direction")
 
 
 def _check_continuation(root, path, meeting, today):
@@ -183,6 +200,39 @@ def record_minutes(root, meeting_id, minutes_url, minutes_approved_on, *, replac
     return updated["outcome"]
 
 
+def record_direction(root, meeting_id, direction, return_by, *, direction_source=None, replace=False, today=None):
+    """Attach the staff direction an official source states to an already recorded outcome (DF0022-08).
+
+    Only ``direction``, ``return_by`` and ``direction_source`` are merged into the stored outcome (the source defaults
+    to the outcome's own ``source_url``); every other outcome and meeting key stays exactly as stored. Nothing is
+    fetched; the whole prospective meeting and its continuation references are validated before the write."""
+    today = today or date.today()
+    _check_direction_pair(direction, return_by, direction_source)
+    if direction is None:
+        raise MeetingOutcomeError("direction: required")
+    path, document = _find(root / "content" / "meetings", meeting_id)
+    label = f"meetings/{path.name}"
+    meeting = load_meeting(document, label, today=today)
+    if meeting["status"] == "cancelled":
+        raise MeetingOutcomeError(f"direction: meeting {meeting_id} is cancelled; it has no outcome")
+    if meeting["starts_at"][:10] > today.isoformat():
+        raise MeetingOutcomeError(f"direction: meeting {meeting_id} has not happened yet ({meeting['starts_at'][:10]})")
+    if meeting["outcome"] is None:
+        raise MeetingOutcomeError(f"direction: needs a recorded outcome (meeting {meeting_id} has none)")
+    if "direction" in meeting["outcome"] and not replace:
+        raise MeetingOutcomeError(f"direction already recorded; pass --replace to overwrite it (meeting {meeting_id})")
+    stored = {key: value for key, value in document["outcome"].items() if key not in DIRECTION_KEYS}
+    updated = {**document, "outcome": {**stored, "direction": direction, "return_by": return_by,
+                                       "direction_source": meeting["outcome"]["source_url"] if direction_source is None else direction_source}}
+    prospective = load_meeting(updated, label, today=today)
+    if "continued_to" in prospective["outcome"]:  # the staged meetings with only this outcome replaced
+        _check_continuation(root, path, prospective, today)
+    if os.path.islink(path):  # checked again right before the write
+        raise MeetingOutcomeError(f"content/meetings/{path.name} must not be a symlink")
+    _write_json(path, updated)
+    return updated["outcome"]
+
+
 MINUTES_KEYS = ("minutes_url", "minutes_approved_on")
 CREATION_FLAGS = (("result", "--result"), ("on", "--on"), ("source", "--source"), ("verified_by", "--verified-by"))
 MINUTES_ONLY_REFUSES = (("vote", "--vote"), ("votes", "--votes"), ("recording_url", "--recording-url"),
@@ -190,9 +240,39 @@ MINUTES_ONLY_REFUSES = (("vote", "--vote"), ("votes", "--votes"), ("recording_ur
                         ("continued_to_date", "--continued-to-date"))
 
 
+DIRECTION_ONLY_REFUSES = (("vote", "--vote"), ("votes", "--votes"), ("recording_url", "--recording-url"),
+                          ("recording_start", "--recording-start"), ("continued_to", "--continued-to"),
+                          ("continued_to_date", "--continued-to-date"))
+
+
+def _direction_notes(meeting_id, outcome):
+    """DF0022-08: the alert-only legal-claim guard over the raw direction text; notes go to stderr, never change the result."""
+    if outcome.get("direction") is not None:
+        for note in legal_notes([(f"meetings/{meeting_id}.outcome.direction", outcome["direction"])]):
+            print(note, file=sys.stderr)
+
+
 def run_outcome_command(root, args):
-    """The ``meetings-outcome`` command: creation mode (four flags) or minutes-only mode; returns the lines to print."""
+    """The ``meetings-outcome`` command: creation, minutes-only or direction-only mode; returns the lines to print."""
+    lines = _run_outcome_mode(root, args)
+    _direction_notes(args.id, json.loads(lines[0]))
+    return lines
+
+
+def _run_outcome_mode(root, args):
     minutes_url, minutes_on = args.minutes_url, args.minutes_approved_on
+    direction, return_by, source = args.direction, args.return_by, args.direction_source
+    wants_direction = any(value is not None for value in (direction, return_by, source))
+    if wants_direction and (minutes_url is not None or minutes_on is not None):
+        raise MeetingOutcomeError("minutes mode cannot be combined with direction flags")
+    if (wants_direction and all(getattr(args, name) is None for name, _ in CREATION_FLAGS)
+            and minutes_url is None and minutes_on is None):  # direction-only mode
+        _check_direction_pair(direction, return_by, source)
+        mixed = [flag for name, flag in DIRECTION_ONLY_REFUSES if getattr(args, name) is not None]
+        if mixed:
+            raise MeetingOutcomeError(f"direction-only mode cannot be combined with {', '.join(mixed)}")
+        outcome = record_direction(root, args.id, direction, return_by, direction_source=source, replace=args.replace)
+        return [json.dumps(outcome, indent=2), "Recorded only. Nothing was published."]
     if minutes_url is None and minutes_on is None:
         missing = [flag for name, flag in CREATION_FLAGS if getattr(args, name) is None]
         if missing:
@@ -201,7 +281,8 @@ def run_outcome_command(root, args):
         outcome = record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by, args.vote,
                                  args.replace, votes_file=args.votes, recording_url=args.recording_url,
                                  recording_start=args.recording_start, continued_to=args.continued_to,
-                                 continued_to_date=args.continued_to_date)
+                                 continued_to_date=args.continued_to_date, direction=direction, return_by=return_by,
+                                 direction_source=source)
         return [json.dumps(outcome, indent=2)] + (["votes: none"] if args.replace and args.votes is None else []) \
             + ["Recorded only. Nothing was published."]
     for name, flag in (("minutes_url", "--minutes-url"), ("minutes_approved_on", "--minutes-approved-on")):

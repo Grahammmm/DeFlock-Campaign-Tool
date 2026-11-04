@@ -15,10 +15,10 @@ from .content import CONTINUATION_KEYS, _read_json, continuation_issues, continu
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
          "request_installment_due", "request_download_pending", "request_download_expired", "finding_ready",
          "finding_blocked",
-         "contract_ending", "minutes_pending", "continued_pending", "stale_comment_kit", "stale_contact", "review_waiting",
+         "contract_ending", "minutes_pending", "continued_pending", "direction_pending", "stale_comment_kit", "stale_contact", "review_waiting",
          "unreadable")
 WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS, REVIEW_DAYS = 7, 180, 120, 7
-CONTRACT_DAYS, CONTRACT_ENDED_DAYS, MINUTES_DAYS = 90, 30, 45
+CONTRACT_DAYS, CONTRACT_ENDED_DAYS, MINUTES_DAYS, DIRECTION_DAYS = 90, 30, 45, 14
 
 
 def contract_days(text):
@@ -70,6 +70,8 @@ def _meetings(root, as_of, directory):
             items.append(pending)
         if label not in unreliable and (later := _continued_item(meeting, staged, as_of, directory)) is not None:
             items.append(later)
+        if (report := _direction_item(meeting, staged, as_of, directory)) is not None:
+            items.append(report)
         if meeting["status"] != "scheduled" or day is None or not as_of <= day <= as_of + timedelta(WINDOW_DAYS):
             continue
         if ident in submitted:
@@ -109,6 +111,24 @@ def _continued_item(meeting, meetings, as_of, directory):
                  "passed with no matching meeting staged; check the official agenda",
                  f"open {shlex.quote(outcome['source_url'])} and stage the verified follow-up meeting with "
                  f"meetings-stage --directory {directory} --id MEETING_ID", stated, meeting["id"])
+
+
+def _direction_item(meeting, meetings, as_of, directory):
+    """DF0022-08: a staff direction whose source-stated return-by date is within DIRECTION_DAYS days (or already past)
+    and that no later outcome of the same body follows. A workflow cue only: a later outcome is not proof the direction
+    was met, and a missing one is not a claim that staff failed to report."""
+    outcome = meeting["outcome"] or {}
+    if "direction" not in outcome or (date.fromisoformat(outcome["return_by"]) - as_of).days > DIRECTION_DAYS:
+        return None
+    day = meeting["starts_at"][:10]
+    if any(other["body"] == meeting["body"] and other["status"] != "cancelled" and other["starts_at"][:10] > day
+           and other["outcome"] is not None and other["outcome"]["on"] <= as_of.isoformat() for other in meetings):
+        return None
+    return _item("direction_pending", f"Staff direction for {meeting['body']} ({meeting['id']}), return-by "
+                 f"{outcome['return_by']}: check the official record for a report back",
+                 f"open {shlex.quote(outcome['direction_source'])} and check for a report back; record a verified later "
+                 f"outcome with meetings-outcome --directory {directory} --id MEETING_ID --result RESULT "
+                 "--on YYYY-MM-DD --source OFFICIAL_URL --verified-by NAME", outcome["return_by"], meeting["id"])
 
 
 def _minutes_item(meeting, ident, as_of, directory):

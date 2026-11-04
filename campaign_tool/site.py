@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
+from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
 from .corrections_policy import policy_html
@@ -44,7 +44,7 @@ ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
-                       "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+                       "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
                        "_redirects", "methods.html", "privacy.html", "glossary.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
@@ -215,7 +215,8 @@ PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "bas
 PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0137-09: meetings open data
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
 PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes", "minutes_url", "minutes_approved_on",
-                         "continued_to", "continued_to_date")  # never verified_by / verified_at
+                         "continued_to", "continued_to_date", "direction", "return_by",
+                         "direction_source")  # never verified_by / verified_at
 PUBLIC_VOTE_FIELDS = ("name", "vote")
 # DF1207-14: data/findings.csv and data/sources.csv are flattened from the built public JSON documents, so no CSV column
 # can exist that the JSON does not carry; "sources", "corrections" and "public_copy" are the only nested values.
@@ -472,6 +473,26 @@ def point_check_renderer(labels):
             + js_json(names) + "," + js_json(labels["map.check_heading"]) + ")")
 
 
+def ics_text(value):
+    """RFC 5545 TEXT value: control characters (CR included) dropped, then \\ ; , and newline escaped."""
+    value = re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", "", str(value))
+    return value.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def ics_fold(line):
+    """Fold to at most 75 octets per line (CRLF + one space), never inside a UTF-8 sequence."""
+    parts, chunk, size, limit = [], "", 0, 75
+    for char in line:
+        width = len(char.encode("utf-8"))
+        if size + width > limit:
+            parts.append(chunk)
+            chunk, size, limit = "", 0, 74  # the leading space of a continuation line is one octet
+        chunk += char
+        size += width
+    parts.append(chunk)
+    return "\r\n ".join(parts)
+
+
 class Site:
     def __init__(self, root, cfg, model, today=None):
         self.root = Path(root)
@@ -484,6 +505,7 @@ class Site:
         self.upcoming = [m for m in model["meetings"] if m["starts_at"][:10] >= cutoff and m["status"] != "cancelled"]
         self.past = [m for m in model["meetings"] if m["starts_at"][:10] < cutoff or m["status"] == "cancelled"][::-1]
         self.site = model["site"]
+        self.license = self.site.get("license")  # DF1422-13: None without site.json.license; nothing is rendered then
         self.name = e(cfg["name"])
         self.county = e(cfg["county"])
         self.state = e(cfg["state"])
@@ -629,6 +651,42 @@ class Site:
         """Label ``key`` escaped once; ``values`` are HTML the page already escaped (a name, a <time> tag, a count)."""
         return html_text(self.labels[key]).format(**values)
 
+    def csv_link(self, path):
+        """A CSV link; with ``site.json.license`` its text also names the licence (the CSV bytes are unchanged)."""
+        note = f' {self.t("license.csv_note", name=e(self.license["name"]))}' if self.license else ""
+        return f'<a href="{path}" type="text/csv">{self.t("intro.open_data_csv")}{note}</a>'
+
+    def license_about(self):
+        """The about page's licence paragraphs: the chosen licence and, with a map, the fixed ODbL camera-points line.
+        Empty (so the page is unchanged) without ``site.json.license``."""
+        if not self.license:
+            return ""
+        chosen = f'<a href="{e(self.license["url"])}" rel="license">{e(self.license["name"])}</a>'
+        if "attribution" in self.license:
+            chosen += f', {e(self.license["attribution"])}'
+        out = f'<p class="license">{self.t("license.about", license=chosen)}</p>'
+        if self.map:
+            osm = f'<a href="{e(ODBL["attribution_url"])}" rel="noopener noreferrer">OpenStreetMap contributors</a>'
+            odbl = f'<a href="{e(ODBL["url"])}" rel="license">ODbL</a>'
+            out += f'<p class="license">{self.t("license.about_camera", osm=osm, odbl=odbl)}</p>'
+        return out
+
+    def license_top(self):
+        """Top-level keys the open-data JSON files may carry beyond their own allowlist (none without a licence)."""
+        return ("license", "license_url") if self.license else ()
+
+    def stamp_license(self, doc):
+        """``doc`` plus top-level ``license`` (the id) and ``license_url`` when ``site.json.license`` is set."""
+        return {**doc, "license": self.license["id"], "license_url": self.license["url"]} if self.license else doc
+
+    def cameras_geojson(self):
+        """``data/cameras.geojson`` (DF1422-13): the reviewed points plus ODbL and the OpenStreetMap attribution as GeoJSON
+        foreign members, always, whatever the site licence is; the points are untouched."""
+        self.mapped_counts()  # the copy's size and symlink checks, then the parsed document (self._map_docs[0])
+        doc = {**self._map_docs[0], "license": ODBL["id"], "license_url": ODBL["url"],
+               "attribution": ODBL["attribution"], "attribution_url": ODBL["attribution_url"]}
+        return json.dumps(doc, ensure_ascii=False, separators=(",", ":")) + "\n"
+
     def md(self, text):
         """``markdown_lite`` with this site's public-asset image sizes (own-line ``![alt](/path)`` images render)."""
         return markdown(text, images=self.image_sizes) if self.image_sizes else markdown(text)
@@ -679,6 +737,9 @@ class Site:
             parts.append(f'<p>{links}</p>')
         if self.map:
             parts.append(f'<p>{e(self.map["attribution"])} · <a href="/cameras.html">Mapped points</a></p>')
+        if self.license:  # DF1422-13: one paragraph, only when site.json.license is set
+            attribution = f', {e(self.license["attribution"])}' if "attribution" in self.license else ""
+            parts.append(f'<p>{self.t("footer.license")} <a href="{e(self.license["url"])}" rel="license">{e(self.license["name"])}</a>{attribution}</p>')
         parts.append(f'<p>{e(self.site["not_legal_advice"])}</p>')
         if self.topics:  # DF1952-06
             parts.append(f'<p><a href="/topics/">{self.t("nav.topics")}</a></p>')
@@ -1106,7 +1167,7 @@ class Site:
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
                 f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")} '
                 f'<a href="/data/agencies.json" type="application/json">{self.t("intro.agencies_open_data")}</a> · '
-                f'<a href="/data/agencies.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p></div>'
+                f'{self.csv_link("/data/agencies.csv")}.</p></div>'
                 + ('<div class="agency-list">' + self.glance_section() + "".join(articles) + '</div>' if articles
                    else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
@@ -1154,6 +1215,40 @@ class Site:
                 + self.t("officials.listed", source=source, date=f'<time>{e(newest["checked_on"])}</time>')
                 + '</p></section>')
 
+    def local_rules_section(self, agency):
+        """DF1952-02: the validated organizer-transcribed local rules whose ``agency_ids`` name ``agency`` (exact id, every
+        dated version), each under its own heading and classified against the build date; "" when none.
+
+        Reads only ``self.local_rules`` (the dependency-validated model snapshot). A transcription is not a finding
+        about the agency and says nothing about its conduct; the duty is shown as written, escaped, never restated."""
+        aid = agency["agency_id"]
+        scoped = sorted((rule for rule in self.local_rules if aid in rule["agency_ids"]),
+                        key=lambda rule: (rule["rule_id"], rule["effective_from"]))
+        if not scoped:
+            return ""
+        today = self.today.isoformat()
+        items = []
+        for rule in scoped:
+            end = rule["effective_to"]
+            if end is not None and end < today:
+                state = "Past — not in force on build date"
+            elif rule["effective_from"] > today:
+                state = "Not yet in force on build date"
+            else:
+                state = "In force on build date"
+            items.append(
+                f'<article class="local-rule"><h4>{e(rule["citation"])}</h4>'
+                f'<p><span class="status-pill">{e(state)}</span> <span class="status-pill">{e(law.LOCAL_RULE_LABEL)}</span></p>'
+                f'<p>Rule: <code>{e(rule["rule_id"])}</code></p>'
+                f'<p>Duty as written: {e(rule["duty"])}</p>'
+                f'<p>Effective from {time_tag(rule["effective_from"])} to '
+                f'{time_tag(end) if end is not None else "open"}</p>'
+                f'<p><a href="{e(rule["source_url"])}" rel="noopener noreferrer">Official source (organizer-recorded)</a>'
+                f' · checked {time_tag(rule["checked_on"])}</p></article>')
+        return ('<section class="local-rules"><h3>Local rules on record</h3>'
+                "<p>These are organizer transcriptions of local ordinances, not a determination about the agency's "
+                "conduct.</p>" + "".join(items) + "</section>")
+
     def agency_html(self, agency):
         """``agencies/<slug>.html`` (DF2237-08): one agency's card facts, findings, source records and upcoming meetings."""
         aid, profile = agency["agency_id"], agency["profile"]
@@ -1177,6 +1272,7 @@ class Site:
                 + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency)
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
                 + self.funding_block(agency) + self.transparency_block(agency, "h3") + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
+                + self.local_rules_section(agency)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
@@ -1197,7 +1293,7 @@ class Site:
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.findings")}</p>'
                 f'<h2>{self.t("heading.findings")}</h2></div><p>{self.t("intro.findings")} <a href="/feed.xml">{self.t("intro.atom_feed")}</a> · '
                 f'<a href="/data/findings.json" type="application/json">{self.t("intro.open_data")}</a> · '
-                f'<a href="/data/findings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a> · <a href="/findings/packet-all.html">Printable packet</a>.</p>'
+                f'{self.csv_link("/data/findings.csv")} · <a href="/findings/packet-all.html">Printable packet</a>.</p>'
                 '<p><a href="/methods.html">How to read our findings</a> defines each classification and confidence label.</p></div>'
                 f'{form}{self.findings_list(self.model["findings"], filter_attrs=True)}{empty}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
@@ -1549,7 +1645,7 @@ class Site:
         main = (f'    <section class="section" id="content"><div class="section-heading" id="library"><div><p class="eyebrow">{self.t("eyebrow.sources")}</p>'
                 f'<h2>{self.t("heading.sources")}</h2></div><p class="provenance-note">{e(EXPLAINER)} {self.t("intro.sources")} '
                 f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a> · '
-                f'<a href="/data/sources.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p>{howto}</div>'
+                f'{self.csv_link("/data/sources.csv")}.</p>{howto}</div>'
                 + ("".join(sections) or f'<p>{self.t("notice.no_sources")}</p>') + '</section>\n')
         return self.page("sources", self.labels["title.sources"], self.labels["title.sources_description"], "/sources.html", main)
 
@@ -1557,9 +1653,9 @@ class Site:
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p>'
                 f'<h2>{self.t("heading.meetings")}</h2></div><p>{self.t("intro.meetings")} '
                 f'<a href="/data/meetings.json" type="application/json">{self.t("intro.meetings_open_data")}</a> · '
-                f'<a href="/data/meetings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.'
+                f'{self.csv_link("/data/meetings.csv")}.'
                 + (f' <a href="/meetings.xml" type="application/atom+xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else "")
-                + '</p></div>'
+                + f' <a href="/meetings.ics">{self.t("intro.meetings_calendar")}</a></p></div>'
                 '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
                 + '</div></section>\n')
         if self.past:
@@ -1607,6 +1703,18 @@ class Site:
                   for source in self._continuation_back.get(meeting["id"], []) if held(source)]
         return "".join(lines)
 
+    def meeting_direction_html(self, meeting):
+        """DF0022-08: ``Staff were directed to: T (by D, as stated in SOURCE)`` for a held meeting whose outcome carries a
+        direction; "" otherwise. The words are the official source's, attributed to it; the source is a plain link, never
+        fetched or embedded, and the line states nothing about whether staff reported back."""
+        outcome = meeting.get("outcome") or {}
+        if "direction" not in outcome or meeting["status"] == "cancelled" or meeting["starts_at"][:10] >= self.today.isoformat():
+            return ""
+        source = e(outcome["direction_source"])
+        link = f'<a href="{source}" rel="noopener noreferrer">{source}</a>'
+        return (f'<p class="meeting-direction">'
+                f'{self.t("meeting.staff_direction", direction=e(outcome["direction"]), date=e(outcome["return_by"]), source=link)}</p>')
+
     def meeting_html(self, meeting):
         """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
         cancelled = meeting.get("status") == "cancelled"
@@ -1623,6 +1731,7 @@ class Site:
                 + (meeting_outcome_html(meeting, self.t) + self.recorded_votes(meeting)
                    if meeting["starts_at"][:10] < self.today.isoformat() else "")
                 + self.meeting_continuation_html(meeting)
+                + self.meeting_direction_html(meeting)
                 + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
@@ -1637,15 +1746,15 @@ class Site:
                 f'<h2>{self.name}</h2>{self.md(self.site["about_md"])}{contact}'
                 f'<p>{self.t("intro.open_data_about")} '
                 '<a href="/data/findings.json" type="application/json">data/findings.json</a> · '
-                f'<a href="/data/findings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a> and '
+                f'{self.csv_link("/data/findings.csv")} and '
                 '<a href="/data/sources.json" type="application/json">data/sources.json</a> · '
-                f'<a href="/data/sources.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>. '
+                f'{self.csv_link("/data/sources.csv")}. '
                 f'{self.t("intro.meetings_open_data_about")} <a href="/data/meetings.json" type="application/json">data/meetings.json</a> · '
-                f'<a href="/data/meetings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.'
+                f'{self.csv_link("/data/meetings.csv")}.'
                 + (f' {self.t("notice.no_meetings")}' if not self.model["meetings"] else "")
                 + f' {self.t("intro.agencies_open_data_about")} <a href="/data/agencies.json" type="application/json">data/agencies.json</a> · '
-                + f'<a href="/data/agencies.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p>'
-                + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
+                + f'{self.csv_link("/data/agencies.csv")}.</p>'
+                + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") + self.license_about() +
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", self.labels["title.about"], self.labels["title.about_description"], "/about.html", main)
 
@@ -2036,6 +2145,26 @@ class Site:
             ET.SubElement(entry, f"{{{ns}}}category", term=finding["classification"])
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(feed, encoding="unicode") + "\n"
 
+    def meetings_ics(self):
+        """Upcoming (not cancelled) meetings as an RFC 5545 calendar; deterministic for one build day."""
+        host = urlsplit(self.base).hostname if self.base else "deflock-campaign.invalid"
+        stamp = self.today.strftime("%Y%m%d") + "T000000Z"
+        lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DeFlock Campaign Tool//meetings//EN", "CALSCALE:GREGORIAN",
+                 "X-WR-CALNAME:" + ics_text(self.cfg["name"] + " meetings")]
+        for meeting in self.upcoming:
+            start = datetime.fromisoformat(meeting["starts_at"].replace("Z", "+00:00")).astimezone(timezone.utc)
+            lines += ["BEGIN:VEVENT", f'UID:meeting-{meeting["id"]}@{host}', "DTSTAMP:" + stamp,
+                      "DTSTART:" + start.strftime("%Y%m%dT%H%M%SZ"), "SUMMARY:" + ics_text(meeting["body"])]
+            if meeting["location"]:
+                lines.append("LOCATION:" + ics_text(meeting["location"]))
+            if meeting["agenda_url"]:
+                lines.append("URL:" + meeting["agenda_url"])
+            link = f'{self.base}/meetings.html#meeting-{meeting["id"]}'
+            lines += ["DESCRIPTION:" + ics_text((meeting["agenda_item"] + "\n" if meeting["agenda_item"] else "") + link),
+                      "END:VEVENT"]
+        lines.append("END:VCALENDAR")
+        return "".join(ics_fold(line) + "\r\n" for line in lines)
+
     def meetings_feed_entries(self):
         """DF1103-10: the staged meetings the feed lists, newest ``updated`` first, one per id, as plain dicts.
 
@@ -2131,8 +2260,8 @@ class Site:
                "findings": [self._public_finding(f) for f in self.model["findings"]]}
         finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {}),
                                            "agency_response": (PUBLIC_RESPONSE_FIELDS, {})})
-        _assert_public(doc, "data/findings.json", PUBLIC_TOP_LEVEL_FIELDS, {"findings": finding})
-        return doc
+        _assert_public(doc, "data/findings.json", PUBLIC_TOP_LEVEL_FIELDS + self.license_top(), {"findings": finding})
+        return self.stamp_license(doc)
 
     def _public_library_entry(self, source):
         """One library entry, copied key by key (never ``note``, ``fragment`` or the full sha256)."""
@@ -2155,9 +2284,9 @@ class Site:
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/sources.json",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "sources": [self._public_library_entry(s) for s in self.model["sources"]]}
-        _assert_public(doc, "data/sources.json", PUBLIC_LIBRARY_TOP_LEVEL,
+        _assert_public(doc, "data/sources.json", PUBLIC_LIBRARY_TOP_LEVEL + self.license_top(),
                        {"sources": (PUBLIC_LIBRARY_FIELDS, {"public_copy": (PUBLIC_COPY_FIELDS, {})})})
-        return doc
+        return self.stamp_license(doc)
 
     def _public_meeting(self, meeting):
         """One staged meeting, copied key by key: what its page shows, never the kit, participation or verifier."""
@@ -2168,7 +2297,8 @@ class Site:
         if outcome and meeting["status"] != "cancelled" and meeting["starts_at"][:10] < self.today.isoformat():
             value["outcome"] = {key: outcome[key] for key in ("result", "on", "source_url", "vote", "minutes_url",
                                                               "minutes_approved_on", "continued_to",
-                                                              "continued_to_date") if key in outcome}
+                                                              "continued_to_date", "direction", "return_by",
+                                                              "direction_source") if key in outcome}
             if "votes" in outcome:  # DF0137-07 per-member votes, in stored order
                 value["outcome"]["votes"] = [{"name": v["name"], "vote": v["vote"]} for v in outcome["votes"]]
         return value
@@ -2179,9 +2309,9 @@ class Site:
         doc = {"schema_version": 1, "generated_at": f"{self.today.isoformat()}T00:00:00Z",
                "meetings": [self._public_meeting(m) for m in ordered]}
         vote = (PUBLIC_VOTE_FIELDS, {})
-        _assert_public(doc, "data/meetings.json", PUBLIC_MEETING_TOP_LEVEL,
+        _assert_public(doc, "data/meetings.json", PUBLIC_MEETING_TOP_LEVEL | set(self.license_top()),
                        {"meetings": (PUBLIC_MEETING_FIELDS, {"outcome": (PUBLIC_OUTCOME_FIELDS, {"votes": vote})})})
-        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
     def _public_agency(self, agency, cities):
@@ -2210,14 +2340,14 @@ class Site:
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/agencies.json",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "agencies": [self._public_agency(a, cities) for a in listed]}
-        _assert_public(doc, "data/agencies.json", PUBLIC_AGENCY_TOP_LEVEL,
+        _assert_public(doc, "data/agencies.json", PUBLIC_AGENCY_TOP_LEVEL | set(self.license_top()),
                        {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL,
                                      {"asked": (PUBLIC_ASKED_FIELDS, {}),
                                                             "alpr_policy": (PUBLIC_POLICY_FIELDS, {}),
                                                             "contract": (PUBLIC_CONTRACT_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
                                                             "funding": (PUBLIC_FUNDING_FIELDS, {}),
                                                             "transparency": (PUBLIC_TRANSPARENCY_FIELDS, {})})})
-        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
 def _text(value):
@@ -2457,7 +2587,7 @@ def _plan_site(root, today=None, notes=None):
     files.update({
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
         **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
-        "site-data.js": site.site_data_js(), "search.js": search_js(),
+        "meetings.ics": site.meetings_ics(), "site-data.js": site.site_data_js(), "search.js": search_js(),
         "agency-cards.js": agency_cards.render(site.cards_config(), relabel=bool(site.js_labels)),
         "app.js": site.app_js(), "data/findings.json": site.findings_json(), "data/findings.csv": site.findings_csv(),
         "data/sources.json": site.sources_json(), "data/sources.csv": site.sources_csv(), "data/meetings.json": meetings_text,
@@ -2475,8 +2605,9 @@ def _plan_site(root, today=None, notes=None):
     plan = []
     if model["map"]:
         found = model["map"]
+        files["data/cameras.geojson"] = site.cameras_geojson()  # DF1422-13: ODbL + OSM attribution members, always
         plan = [(found[key], relative, 8 * 1024 * 1024) for key, relative in (
-            ("cameras_path", "data/cameras.geojson"), ("boundary_path", found["controller"]["city_boundaries_url"]),
+            ("boundary_path", found["controller"]["city_boundaries_url"]),
             ("county_boundary_path", "data/county.geojson")) if found[key]]
         plan += [(path, f"vendor/{name}", VENDOR_MAX_BYTES) for name, path in model["vendor"].items()]
     plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]

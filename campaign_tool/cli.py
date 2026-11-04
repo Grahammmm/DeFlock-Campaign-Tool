@@ -472,9 +472,16 @@ def kit(args, root):
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
-def social_cmd(root, platforms=None, meetings=False, within_days=14, outcomes=False):
+def social_cmd(root, platforms=None, meetings=False, within_days=14, outcomes=False, thread_finding=None):
     from .social import (build_meeting_social, build_outcome_social, build_social, meeting_review_notes,
                          outcome_review_notes, review_notes)
+    if thread_finding is not None:  # DF2207-08: one private numbered thread for one published finding; nothing is posted
+        from .social_threads import build_thread_social, thread_notes
+        print(json.dumps(build_thread_social(root, thread_finding, platforms), indent=2, ensure_ascii=False))
+        for note in thread_notes(root, thread_finding):
+            print(note, file=sys.stderr)
+        print("Drafts written to kit/social/threads. Nothing was posted.")
+        return
     if outcomes:  # DF1952-14: private drafts quoting recorded meeting outcomes; nothing is posted
         print(json.dumps(build_outcome_social(root, platforms, within_days), indent=2, ensure_ascii=False))
         for note in outcome_review_notes(root, within_days):
@@ -844,6 +851,10 @@ def main():
                           help="Draft one private post per scheduled upcoming meeting with verified participation into kit/social/meetings")
     social_p.add_argument("--outcomes", action="store_true",
                           help="Draft one private post per meeting with a recorded outcome dated in the last N days into kit/social/outcomes")
+    social_p.add_argument("--thread", action="store_true",
+                          help="With --finding: draft one private numbered thread for that published finding into kit/social/threads")
+    social_p.add_argument("--finding", action="append", metavar="ID",
+                          help="With --thread: the exact id of one published finding")
     social_p.add_argument("--within-days", type=int, default=None, metavar="N",
                           help="With --meetings: meetings starting within N days; with --outcomes: outcomes recorded in the last N "
                                "calendar days, today included; 1 to 60 (default 14)")
@@ -940,6 +951,9 @@ def main():
     outcome_p.add_argument("--recording-start", metavar="H:MM:SS", help="Where the discussion starts in the recording, at most 12:00:00")
     outcome_p.add_argument("--continued-to", metavar="MEETING_ID", help="With --result continued: the staged later meeting of the same body the official source says the item moved to")
     outcome_p.add_argument("--continued-to-date", metavar="YYYY-MM-DD", help="With --result continued: the later date the official source states (not with --continued-to)")
+    outcome_p.add_argument("--direction", metavar="TEXT", help="A direction the body gave its staff, as the official source states it (1-200 plain-text characters; needs --return-by; alone it updates a recorded outcome)")
+    outcome_p.add_argument("--return-by", metavar="YYYY-MM-DD", help="The date the official source says staff should report back (on or after the meeting)")
+    outcome_p.add_argument("--direction-source", metavar="URL", help="https URL where the direction is stated (default: the outcome's --source)")
     sent_p = commands.add_parser("meetings-comment-sent", help="Record a comment you submitted by hand on a staged "
                                  "meeting in kit/comments-sent.json; sends nothing")
     for flag in ("--directory", "--id", "--on"):
@@ -1093,6 +1107,19 @@ def main():
         followup_p.add_argument(flag, required=True)
     followup_p.add_argument("--as-of", help="YYYY-MM-DD, not after today (default today)")
     followup_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
+    followup_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    followup_p.add_argument("--cite-contact", action="store_true", help="Add one line naming your latest recorded contact "
+                            "(kit-contact) on or before --as-of: channel and job title only, never its note")
+    from .kit_track import CONTACT_CHANNELS as contact_channels
+    contact_p = commands.add_parser("kit-contact", help="Record your own call, voicemail, counter visit or email to the "
+                                    "records office on a sent request, privately; sends nothing")
+    for flag in ("--directory", "--agency", "--on"):
+        contact_p.add_argument(flag, required=True)
+    contact_p.add_argument("--channel", required=True, choices=contact_channels)
+    contact_p.add_argument("--with", dest="role", required=True, metavar="ROLE", help="Job title of who you spoke or "
+                           "wrote to (1-60 characters), not a person's name; no email address or phone number")
+    contact_p.add_argument("--note", required=True, help="1-500 characters of plain text; no personal details")
+    contact_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     denial_p = commands.add_parser("kit-denial-reply", help="Private reply draft after a recorded denied step; never sent")
     for flag in ("--directory", "--agency"):
         denial_p.add_argument(flag, required=True)
@@ -1344,6 +1371,13 @@ def main():
         parser.error("--check reads finding drafts only; it cannot be combined with --meetings")
     if args.command == "social" and args.outcomes and (args.meetings or args.check):
         parser.error("--outcomes cannot be combined with " + ("--meetings" if args.meetings else "--check (--check reads finding drafts only)"))
+    if args.command == "social" and args.finding is not None and not args.thread:
+        parser.error("--finding needs --thread")
+    if args.command == "social" and args.thread:
+        if args.check or args.meetings or args.outcomes or args.within_days is not None:
+            parser.error("--thread cannot be combined with --check, --meetings, --outcomes or --within-days")
+        if args.finding is None or len(args.finding) != 1:
+            parser.error("--thread needs exactly one --finding ID")
     if args.command == "social" and args.within_days is not None and not (args.meetings or args.outcomes):
         parser.error("--within-days needs --meetings or --outcomes")
     if args.command == "social" and args.within_days is not None and not 1 <= args.within_days <= 60:
@@ -1400,7 +1434,8 @@ def main():
             print(json.dumps(report, indent=2, ensure_ascii=False))
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
-            social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days, args.outcomes)
+            social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days, args.outcomes,
+                       args.finding[0] if args.thread else None)
         elif args.command == "press":
             if args.press_command == "letter":
                 from .press import build_letter
@@ -1787,8 +1822,14 @@ def main():
             print(json.dumps(list_cli(args, root), indent=2))
         elif args.command == "kit-followup":
             from .kit_track import followup
-            print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace), indent=2))
+            print(json.dumps(followup(root, args.agency, args.as_of, replace=args.replace, request=args.request,
+                                      cite_contact=args.cite_contact), indent=2))
             print("Draft only. Nothing was sent.")
+        elif args.command == "kit-contact":
+            from .kit_track import record_contact
+            print(json.dumps(record_contact(root, args.agency, args.on, args.channel, args.role, args.note,
+                                            request=args.request), indent=2))
+            print("Recorded only. Nothing was sent.")
         elif args.command == "kit-denial-reply":
             from .kit_track import denial_reply
             print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
