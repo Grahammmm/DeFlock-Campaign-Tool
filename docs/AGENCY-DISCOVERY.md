@@ -270,6 +270,7 @@ keeps the date, channel and SHA-256 of `requests/<agency_id>.md`. A second recor
 one with no steps. `kit-status --directory D` lists each request with `determination_due` and `with_extension` from
 the law package (`null` when it is missing) and flags drafts edited since sending. Dates are provisional reminders:
 the period runs from the agency's receipt and holidays are not modelled. `kit` re-runs never touch `sent.json`.
+The JSON it prints is described by `schemas/kit-status.schema.json`; `tests/test_kit_json_contracts.py` fails when the keys drift.
 
 ### Several requests to one agency
 
@@ -303,6 +304,7 @@ sorted by provisional `due` date (extended when recorded), with `days` left (neg
 `past_due`, `due_today` or `upcoming`. Requests with a `determination`, `produced` or `denied` step appear under
 `answered`; closed requests are left out. Without a law package `state` is `no_law_package`. It exits 3 when any
 request is past due, else 0. These are reminders, not lateness conclusions.
+The JSON it prints is described by `schemas/kit-due.schema.json`; `tests/test_kit_json_contracts.py` fails when the keys or `state` values drift.
 
 `kit-followup --directory D --agency ID [--as-of YYYY-MM-DD] [--replace]` (as-of not after today) writes a private
 draft `kit/followups/<agency_id>-<as_of>.md` (0600, folder 0700) for a request that `kit-due` lists as `past_due`. It
