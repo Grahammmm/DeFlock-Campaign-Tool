@@ -14,7 +14,7 @@ from .body_schedules import read_body_schedules
 from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _alpr_policy, _asked, _bounds, _contract, _contract_check, _policy_check, _pre_meeting, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, continuation_problems,
                       default_agencies,
-                      history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
+                      history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_pages, load_site,
                       load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_faq, read_glossary,
                       topics_namespace_problem)
 from .finding_law import check as check_law, jurisdiction, package_line
@@ -239,6 +239,7 @@ def content_problems(root, limit=LIMIT, faq_out=None):
         problems.extend(check_source_pages(findings, library))
 
     _topics(problems, content_dir, findings if findings_intact else None, slugs)
+    _attempt(problems, "pages/", lambda: load_pages(content_dir, slugs))  # DF2207-10: the build's own page check (reserved slugs)
 
     labels_path = content_dir / "labels.json"  # optional, read exactly as load_content: a symlink is named, not read
     if labels_path.is_file() or labels_path.is_symlink():
@@ -310,7 +311,7 @@ def content_problems(root, limit=LIMIT, faq_out=None):
 
 
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
-FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "topics/", "kit/", "law/", "newsletters/",
+FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "pages/", "topics/", "kit/", "law/", "newsletters/",
                  "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json",
                  "faq.json", "body-schedules.json")
 

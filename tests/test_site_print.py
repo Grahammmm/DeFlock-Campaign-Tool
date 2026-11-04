@@ -139,6 +139,19 @@ class SitePrintTests(unittest.TestCase):
             pattern = r'class="(?:[^"]* )?' + re.escape(selector[1:]) + r'(?: [^"]*)?"'
             self.assertTrue(re.search(pattern, rendered), f"{selector} not rendered on any built page")
 
+    def test_source_controls_hidden_and_filtered_rows_and_groups_restored(self):
+        hidden = self.hidden()  # DF1103-12: the library prints complete whatever the filter hid on screen
+        for selector in (".sources-filter", ".sources-filter-empty"):
+            self.assertIn(selector, hidden)
+        decls = {sel: decl.replace(" ", "") for sels, decl in rules(self.body) for sel in sels}
+        self.assertEqual(decls[".source-table li.source-entry[hidden]"], "display:list-item")
+        self.assertEqual(decls[".agency-document-group[hidden]"], "display:block")
+        self.assertEqual(self.css.count(".agency-document-group[hidden]"), 1)  # print block only, never a screen rule
+        self.assertEqual(decls[".finding-list li[hidden]"], "display:list-item")  # the finding rule is kept
+        for selector in ("sources-filter", "sources-filter-empty"):
+            self.assertRegex(self.pages["sources.html"], r'class="' + selector + r'"')
+        self.assertNotIn("sources-filter", self.pages["index.html"])
+
     def test_kept_content_never_hidden(self):
         for selector in self.hidden():
             for kept in KEEP:

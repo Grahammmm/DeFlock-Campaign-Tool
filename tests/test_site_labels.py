@@ -34,6 +34,7 @@ def enrich(root, maplibre=False):
     content = root / "content"
     site = json.loads((content / "site.json").read_text(encoding="utf-8"))
     site.update(mission_md="", contact_email="zq-team@example.invalid",
+                press={"contact_role": "Zq press lead"},  # DF2207-10: inherits the address; reaches every press label but the logo ones
                 signup={"mode": "brevo_hosted", "form_html_allowlisted_url": "https://zq.sibforms.com/serve/zq",
                         "label": "Zq join", "note": "Zq note."})
     _write(content / "site.json", site)
@@ -235,10 +236,12 @@ class LabelsTest(unittest.TestCase):
         # Codes the fixture has no finding or agency for; they render through the same t("<family>." + code) call.
         # officials.*: the fixture has no officials.json (tests/test_site_officials.py covers those labels).
         # map.history_*: the fixture has no map/history.json (tests/test_site_cameras_page.py covers those labels).
+        # press.logo, press.download_logo: the fixture has no brand logo (tests/test_site_press_page.py covers those labels).
         # map.check_*: the fixture has no map/point-checks.json (tests/test_map_point_checks.py covers those labels).
         # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
         # agency.mapped_reported_*: the fixture has no transparency snapshot (tests/test_agency_mapped_reported.py covers those).
         # schedule.*: the fixture has no body-schedules.json (tests/test_body_schedules.py covers those labels).
+        # meeting.comments_*: the fixture records no public-comment counts (tests/test_meeting_comment_counts.py covers them).
         # meeting.votes*, vote.*: the fixture records no votes (tests/test_meeting_votes.py covers those labels).
         # handout.*: only the private meeting-pack handout writes these (tests/test_meeting_pack.py covers them).
         # agency.votes_*: the fixture records no votes (tests/test_site_member_votes.py covers those labels).
@@ -265,11 +268,13 @@ class LabelsTest(unittest.TestCase):
                   "map.check_in_agency_record", "map.check_not_found_on_site", "map.check_seen_in_person",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
+                  "meeting.comments_both", "meeting.comments_spoke", "meeting.comments_written",
                   "meeting.continued_from", "meeting.continued_to", "meeting.cosigned_many", "meeting.cosigned_one",
                   "meeting.minutes_confirmed", "meeting.minutes_pending", "meeting.recording", "meeting.recording_from",
                   "meeting.staff_direction",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
-                  "officials.heading", "officials.listed", "officials.source", "privacy.signup_policy",
+                  "officials.heading", "officials.listed", "officials.source", "press.download_logo", "press.logo",
+                  "privacy.signup_policy",
                   "schedule.join_many", "schedule.join_two", "schedule.ordinal_1", "schedule.ordinal_2",
                   "schedule.ordinal_3", "schedule.ordinal_4", "schedule.ordinal_last", "schedule.rule",
                   "schedule.stale", "schedule.usually", "schedule.weekday_friday", "schedule.weekday_monday",
@@ -313,7 +318,10 @@ class LabelsTest(unittest.TestCase):
 
 SPANISH = {"js.filter_count": "Mostrando {shown} de {total}", "js.mapped_point": "{count} punto mapeado",
            "js.mapped_points": "{count} puntos mapeados", "js.city_no_findings": "Sin hallazgos publicados."}
-SCRIPTS = ("site-data.js", "agency-cards.js", "app.js", "findings/filter.js")
+SCRIPTS = ("site-data.js", "agency-cards.js", "app.js", "findings/filter.js", "sources/filter.js")
+# DF1103-12: a nonempty source library always transports the count label, so site-data.js carries exactly this line
+# when no js.* label differs; sources/filter.js reads LABELS by design and is not one of the unchanged-English scripts.
+SOURCES_TRANSPORT = b'var LABELS={"js.filter_count":"Showing {shown} of {total}"};\n'
 
 
 class ScriptLabelsTest(unittest.TestCase):
@@ -329,7 +337,9 @@ class ScriptLabelsTest(unittest.TestCase):
         for name, _, _ in SCENARIOS:
             with self.subTest(name):
                 files = self.build(name)
-                self.assertNotIn(b"LABELS", b"".join(files[p] for p in SCRIPTS if p in files))
+                self.assertEqual(files["site-data.js"].count(SOURCES_TRANSPORT), 1 if "sources/filter.js" in files else 0)
+                legacy = [p for p in SCRIPTS if p in files and p != "sources/filter.js"]
+                self.assertNotIn(b"LABELS", b"".join(files[p] for p in legacy).replace(SOURCES_TRANSPORT, b""))
                 if "findings/filter.js" in files:
                     self.assertEqual(files["findings/filter.js"].decode(), FILTER_JS)
                     self.assertNotIn("/site-data.js", files["findings/index.html"].decode())
@@ -349,7 +359,7 @@ class ScriptLabelsTest(unittest.TestCase):
         self.assertNotIn("innerHTML", app)
         self.assertEqual(files["_headers"], plain["_headers"])  # CSP unchanged: no inline script, same origins
         changed = sorted(p for p in plain if plain[p] != files[p])
-        self.assertEqual(changed, ["agency-cards.js", "app.js", "findings/filter.js", "findings/index.html", "search.html", "site-data.js"])
+        self.assertEqual(changed, ["agency-cards.js", "app.js", "findings/filter.js", "findings/index.html", "search.html", "site-data.js", "sources.html"])
         cards = files["agency-cards.js"].decode()
         for english in ('"no published findings yet"', '" published finding"'):
             self.assertNotIn(english, cards)
