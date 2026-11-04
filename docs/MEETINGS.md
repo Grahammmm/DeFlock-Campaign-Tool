@@ -60,9 +60,24 @@ site never lists a cancelled meeting as upcoming: it stays under past meetings m
 The CLI does not write to the hosted workspace. Organizers add the meetings they verified
 on the Meetings screen, or stage one verified entry for the offline site build
 ([SITE-CONTENT.md](SITE-CONTENT.md)) with
-`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--finding ID ...] [--location TEXT] [--participation FILE] [--replace]`,
+`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--finding ID ...] [--location TEXT] [--participation FILE] [--ask T ...] [--replace]`,
 which writes `content/meetings/<id>.json` with a comment kit that cites published findings only;
 nothing is fetched, and `--replace` regenerates an existing file.
+
+**The campaign's own asks (DF2207-07).** By default the kit's `## Three asks` are the fixed relevance-based
+ones, and campaigns that set nothing keep byte-identical kits. To use your own, set `site.json.comment_asks`
+(1 to 3 plain-text strings of 1 to 200 characters) for every kit, or give `meetings-stage --ask T` (repeatable,
+1 to 3) for that meeting only. `--ask` replaces `comment_asks` as a whole, and `comment_asks` replaces the
+defaults; lists are never merged. The asks section is headed `## One ask`, `## Two asks` or `## Three asks` to
+match the count, the written letter numbers the same asks in the same order, and with a verified `speaker_minutes`
+the spoken version ends with `I ask you to:` and the numbered asks (finding bullets are dropped to fit, never an
+ask; if greeting, closing and asks alone exceed the limit the spoken section says so and points to the asks
+section). A letter over 400 words says `hand from the ask above.`, `the two asks above.` or `the three asks above.`
+An empty, over-long, multi-line or control-character ask, a fourth ask or an empty list is refused, naming the
+position (`--ask[2]`, `site.json.comment_asks[2]`), before anything is written. The override is not stored
+anywhere but the staged kit: `--replace` without `--ask` returns to `comment_asks` or the defaults. Legal-claim
+wording in your asks is flagged as an advisory `review_flags` note (printed on stderr, positions and rule names
+only); the kit is still written ([LEGAL-CLAIM-GUARD.md](LEGAL-CLAIM-GUARD.md)).
 
 The organizer picks the cited findings with `--finding ID` (repeatable, 1 to 3 ids): the kit cites
 exactly those, in the order given, in both the two-minute comment and `## Sources`. An id that is not a
@@ -122,7 +137,7 @@ When `written_comment` is set (it is only ever stored verified, with the fields 
 stated by the source` when it is `null`), `How: <how>`, then a short letter `To the <body>,` with `Re: <agenda
 item>` when there is one, a fixed paragraph, one bullet per cited finding (`- <title>: <summary> (<finding
 URL, absolute when base_url is set>; sources <12-character hash prefixes>)` plus `(corrected <date>)` when
-corrected), the three asks numbered, and `Sincerely,` `[name]` `[city]`. The letter is at most 400 words;
+corrected), the asks numbered (the three defaults, or your own), and `Sincerely,` `[name]` `[city]`. The letter is at most 400 words;
 whole finding bullets are dropped from the end, never cut. If the body, agenda item or campaign name alone
 would push it over 400 words, the section keeps `Send by:` and `How:` and says to write a short letter by
 hand instead. The tool never adds a recipient, email or postal
@@ -177,7 +192,7 @@ campaign_name, base_url)` produces the same structure for the offline kit:
 - a header with body and date,
 - a two-minute comment with `[name]` and `[city]` placeholders and up to three findings
   (summary, classification, confidence),
-- three asks, the first chosen by `relevance`,
+- three asks, the first chosen by `relevance` (or your own 1 to 3 asks, see above),
 - a source list linking each finding and its records by locator and hash prefix,
 - the standing note that findings describe records as of the event date and are not legal
   advice.

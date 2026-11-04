@@ -7,6 +7,7 @@ python3 -B -m unittest tests.test_ingest_mbox -v
 """
 
 from email.message import EmailMessage
+import base64
 import hashlib
 import json
 import os
@@ -55,6 +56,19 @@ def three():
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+VALID_FIRST = b"first valid attachment bytes"
+
+
+def bad_message():
+    """A valid base64 attachment followed by one with a missing pad."""
+    part = ("--B\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n"
+            'Content-Disposition: attachment; filename="{}.bin"\r\n\r\n{}\r\n')
+    head = (f"Subject: {HEADER_VALUES[0]}\r\nFrom: {HEADER_VALUES[1]}\r\nTo: {HEADER_VALUES[2]}\r\nMIME-Version: 1.0\r\n"
+            'Content-Type: multipart/mixed; boundary="B"\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n')
+    first = base64.b64encode(VALID_FIRST).decode()
+    return (head + part.format("ok", first) + part.format("bad", "AP8BAgM") + "--B--\r\n").encode()
 
 
 class IngestMboxTests(unittest.TestCase):
@@ -235,6 +249,49 @@ class IngestMboxTests(unittest.TestCase):
         for value in HEADER_VALUES + (CANARY,):
             self.assertNotIn(value, names)
         self.assertNotIn(CANARY, " ".join(r[0] for r in self.rows("SELECT member_path FROM contains")))
+
+    # RF0200-1: a malformed attachment transfer encoding skips only its own message
+    def counts(self):
+        return self.rows("SELECT (SELECT count(*) FROM objects), (SELECT count(*) FROM receipts), "
+                         "(SELECT count(*) FROM contains)")
+
+    def test_mbox_bad_encoding_skips_only_its_message(self):
+        m1, m3 = message((PDF, "application", "pdf", "a.pdf")), message((CSV, "text", "csv", "b.csv"))
+        data = mbox(m1, bad_message(), m3)
+        path = self.write(data)
+        report = self.ingest(path)
+        self.assertEqual(report["skipped"], [{"number": 2, "code": "malformed"}])
+        self.assertEqual([(m["number"], m["sha256"], m["outcome"]) for m in report["messages"]],
+                         [(1, sha(m1), "stored"), (3, sha(m3), "stored")])
+        self.assertEqual(report["count"], 3)
+        self.assertEqual((self.root / "private" / "objects" / report["mailbox"]["sha256"]).read_bytes(), data)
+        self.assertNotIn(sha(VALID_FIRST), set(os.listdir(self.root / "private" / "objects")))
+        # mailbox + 2 messages + 2 attachments; 2 message rows + 2 attachment rows
+        self.assertEqual(self.counts(), [(5, 5, 4)])
+        self.assertEqual(sorted(r[0] for r in self.rows("SELECT original_name FROM receipts")),
+                         sorted(["replies.mbox", "replies.mbox/message-1.eml", "replies.mbox/message-1.eml/a.pdf",
+                                 "replies.mbox/message-3.eml", "replies.mbox/message-3.eml/b.csv"]))
+        every = self.write(mbox(bad_message(), bad_message()), "every.mbox")
+        report = self.ingest(every)
+        self.assertEqual((report["skipped"], report["messages"], report["count"]),
+                         ([{"number": 1, "code": "malformed"}, {"number": 2, "code": "malformed"}], [], 2))
+        self.assertEqual((self.root / "private" / "objects" / report["mailbox"]["sha256"]).read_bytes(), every.read_bytes())
+
+    def test_mbox_bad_encoding_dry_run_and_reingest_match(self):
+        path = self.write(mbox(message((PDF, "application", "pdf", "a.pdf")), bad_message(), bad_message(),
+                               message((CSV, "text", "csv", "b.csv"))))
+        before = self.files()
+        preview = self.ingest(path, dry=True)
+        self.assertEqual(self.files(), before)
+        real = self.ingest(path)
+        shape = lambda r: (r["skipped"], [(m["number"], m["sha256"]) for m in r["messages"]], r["count"])
+        self.assertEqual(shape(preview), shape(real))
+        self.assertEqual(real["skipped"], [{"number": 2, "code": "malformed"}, {"number": 3, "code": "malformed"}])
+        stored = self.counts()
+        again = self.ingest(path)
+        self.assertEqual(shape(again), shape(real))
+        self.assertEqual(set(self.outcomes(again)), {"present"})
+        self.assertEqual(self.counts(), stored)
 
 
 if __name__ == "__main__":
