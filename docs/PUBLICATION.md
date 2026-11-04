@@ -71,6 +71,12 @@ finding that still carries one. Nothing is published.
 A volunteer reviewer's role-by-role walkthrough (what to read and check, how to choose a decision, a synthetic example)
 is in [REVIEW-GUIDE.md](REVIEW-GUIDE.md); this section stays the reference.
 
+A source's optional `quote` (see `docs/SITE-CONTENT.md`) is part of the reviewed content: adding, editing (even one
+space) or removing it changes the reviewed hash, so earlier receipts stop covering the text and `finding publish` or
+`finding correct --from` needs fresh approvals. `finding diff` names a changed `quote` on a source without printing it.
+Reviewers check the quote against the record by eye; the tool never does, and the page says the campaign transcribed it.
+`data/findings.json` publishes the quote, so do not quote personal details that the record's public copy would not show.
+
 `finding review` appends one receipt to `D/private/reviews/<finding id>.json` (directory 0700,
 file 0600, atomic write) under an exclusive lock on `D/private/reviews/.lock` (0600), so
 concurrent reviews never drop each other's receipts, and writes nothing else. Reviewer names
@@ -475,6 +481,44 @@ an unreadable meeting file is counted and named, never fatal. Participation is n
 you edited is kept (the fresh text goes to the suggestions folder); a corrected outcome updates only
 untouched drafts; drafts that left the window are listed as `stale`, never removed. `--outcomes` cannot
 be combined with `--meetings` or `--check`. Nothing is posted.
+
+### Social threads for findings (never posted)
+
+`social --directory D --thread --finding ID [--platform P ...]` writes one private numbered thread draft
+for one already published finding to `kit/social/threads/<slug>.md` (or `kit/social/threads/<P>/<slug>.md`
+counted by that platform's rule; kept edits go to `kit/social/threads.suggested/` or
+`kit/social/threads/<P>.suggested/`, and each output folder keeps its own `.written.json`). `ID` is the
+exact published finding id (not a slug or prefix), given once; `--finding` needs `--thread`, and `--thread`
+cannot be combined with `--check`, `--meetings`, `--outcomes` or `--within-days`. An unknown, unpublished
+or withdrawn id is refused and nothing is written.
+
+The posts, in this order, each starting `(n/N) ` where N is the final post count:
+
+1. the finding's title, summary and `<base_url>/findings/<slug>.html`, exactly as published;
+2. one post per **public source**, in the finding's order: a cited record that is in the sources library
+   with a public copy. It reads `Source: <title>`, `Page: <page>` (or `Locator: <locator>` when the citation
+   has no page) and the record page link `<base_url>/sources/<12-hex>.html`. Different pages of one record
+   are different posts. A citation that is not in the library, or has no public copy, gets no post and
+   none of its title, locator or hash appears anywhere;
+3. `Limitations:` with each item on its own `- ` line (`Limitations: None stated.` when the list is empty,
+   which is not a claim that there are none);
+4. when the finding has corrections, `Correction <date>: <note>` for the latest one (the last stored one
+   when dates tie), whole; older corrections are not included.
+
+Nothing is shortened, summarized, dropped or split. The whole numbered text of every post must fit the
+platform's rule (X 280 weighted, Bluesky 300 code points with the full link, Mastodon 500 with 23-character
+links; without `--platform`, `len()` within 280), and a thread may have at most ten posts. If a post does
+not fit, or an eleventh would be needed, the run stops before anything is written and names the finding,
+`post n/N`, the limit and the platform; shorten the published text or sources instead. Every chosen
+platform is checked before any file is written, and links, non-folders or non-regular record and
+suggestion targets in the output path are refused first. New folders are `0700` and files `0600`.
+
+A draft you edited is kept and the fresh text goes to the suggestions folder; drafts of other published
+findings in the same folder are left alone and are not reported as stale, while a draft whose finding is
+no longer published is listed as `stale`, never deleted. The command prints the report
+(`finding`, `posts`, `threads`, `posted: false`) and `Drafts written to kit/social/threads. Nothing was
+posted.`; wording the legal-claim guard flags is noted on stderr only, per post, and is never an approval.
+Finding drafts, meeting drafts and `--check` are unchanged. Nothing goes to `content/` or `public/`.
 
 ## Posting one approved social draft (Worker `post_social`)
 

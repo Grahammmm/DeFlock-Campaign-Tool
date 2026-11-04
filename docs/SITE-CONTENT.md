@@ -43,7 +43,7 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 
 | Path | Required | Purpose |
 | --- | --- | --- |
-| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
+| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), `license` (below), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
 | `content/findings/*.json` | no | one published finding per file (schema below) |
 | `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id`, optional `cited_findings` (1 to 3 unique finding ids, written by `meetings-stage`) |
 | `content/sources.json` | no | source-library entries: `sha256`, `title`, `agency_id`, `received_at`, `public_url` or null, `fragment`, `pages`, `note` |
@@ -113,6 +113,15 @@ the bare URL, "Open the public copy (page N)"). `build` stops and `content-check
 in `sources.json`, has no `public_url`, or is above the entry's `pages` (when that is above 0). `data/findings.json`
 carries `page` only when it is set.
 
+Optional `sources[].quote` (DF1952-08) is a short passage you copied by hand from the cited record: 1 to 400
+characters, at least one that is not a space, plain text with no control or line-break characters (tabs, newlines, DEL,
+bidi marks), kept exactly as written (no trimming, no Markdown; angle brackets are ordinary text and are escaped). It
+needs the same `locator` as every source. The finding page and the packet show it as a blockquote under the source
+line with "Transcribed by the campaign; not checked against the record text." and, when `page` is set, "Page N".
+Nothing compares the quote with the record: the campaign checks the transcription by hand. `data/findings.json`
+carries `quote` only when it is set; a quote holding a 40-character hex run stops the build (it is never redacted or
+cut). The labels `finding.quote_transcribed` and `finding.quote_page` can be overridden in `labels.json`.
+
 Every finding page shows the classification, a confidence label, the event
 date, each source with the first 12 characters of its SHA-256 and its locator,
 limitations, counterevidence, a Corrections section and the
@@ -154,6 +163,26 @@ A refused rebuild leaves the previous public tree intact: it does not retract an
 Removing a finding and successfully rebuilding removes its generated page; slug changes provide no
 redirect or link-durability promise. External approval expiry/revocation and crawler caches remain
 the publication owner's responsibility; rendering neither verifies nor refreshes approval receipts.
+
+### Open-data licence (`site.json.license`)
+
+`site.json.license` = `{"id": "CC-BY-4.0" | "CC-BY-SA-4.0" | "CC0-1.0", "attribution": "<optional, plain text, one line, at most 200 characters>"}`.
+The organizer picks the licence; the tool chooses none and gives no legal advice. Any other id (including a different
+case, such as `cc-by-4.0`), an extra key, a non-string `attribution`, one with markup (`<`, `>`), an email address or a
+phone-like number, or one over 200 characters is refused as `site.json.license.id`, `site.json.license` or
+`site.json.license.attribution`. The id maps to a fixed name and creativecommons.org deed URL in `content.py`.
+
+With the key set: the footer gains one paragraph ("Data and text: <licence>, <attribution>", `rel="license"`, label
+`footer.license`); the about page names the licence in one sentence and, when the site has a map, adds a separate line
+"Camera points: © OpenStreetMap contributors, ODbL" with links; each CSV link's text ends " (license: <name>)" (the CSV
+bytes do not change); and `data/findings.json`, `data/sources.json`, `data/meetings.json` and `data/agencies.json` gain
+top-level `license` (the id) and `license_url`. Without the key none of these change.
+
+**ODbL rule.** Mapped camera points come from OpenStreetMap, so `data/cameras.geojson` always carries the top-level
+GeoJSON foreign members `license` = `ODbL-1.0`, `license_url` (the opendatacommons.org ODbL 1.0 text), `attribution` =
+`© OpenStreetMap contributors` and `attribution_url`, whatever `site.json.license` says and even when it is absent. The
+points are not changed. This is the one file a build without `license` still changes. Boundary files are not derived
+from the camera data and are copied as before.
 
 ### Agencies, cards and the picker
 
@@ -199,6 +228,39 @@ every field as `<file>[n].profile.policy_check.<field>` on one line. The agency 
 ("addressed (page N)", "not found in the posted policy" or "unclear"), the check date, a link to the posted policy and the
 law package status label. It is an organizer's reading of what the document says, not a finding about compliance, and
 `not found` is never read as more than that. Nothing is fetched; the section is not in card JS, open data or feeds.
+
+An agency's optional `profile.pre_implementation_meeting` records the public meeting an organizer found before the
+agency's ALPR program started, for the public-comment rule in Civ. Code § 1798.90.55(a):
+`{"status": "found"|"not_found_yet", "checked_on", "meeting_on"?, "body"?, "source_url"?, "note"?}`. `found` needs
+`meeting_on` (a real YYYY-MM-DD date not after the build date), `body` (1-120 characters) and an `https://` `source_url`
+(the official record); `not_found_yet` refuses all three. `checked_on` is a real date not after the build date and not
+before `meeting_on`; `note` is up to 200 plain-text characters. Unknown fields are refused. Each problem is named
+`<file>[n].profile.pre_implementation_meeting.<field>`; the build stops at the first and `content-check` lists them all.
+The agency page and the agencies-list card show "Public meeting before the camera program": "`{body}` discussed it on
+`{meeting_on}` (official record). Checked `{checked_on}`." or "We have not found a record of one yet (checked
+`{checked_on}`).", then "Rule: `{citation}`. Law package: `{status}`." and the note. The citation and status come from the
+shipped law package by rule id `ca-civ-1798.90.55-public-comment-before-implementation`; if the package lacks the rule
+the Rule line is left out and the build is not refused. It is an organizer-verified record and never fetched: "not found
+yet" is not a statement that no meeting was held, and the section makes no finding that one was required, missed or
+adequate. It is not in card JS, open data or feeds.
+
+An agency's optional `profile.contract_check` (DF2207-03) records an organizer's reading of the linked ALPR vendor
+agreement against the draft, tool-wide checklist `checklists/contract-checklist.json` (not part of any law package;
+status `draft`, packaged byte-identical and checked by `tools/sync_campaign_resources.py`): `{"checked_on": "YYYY-MM-DD",
+"contract_url": "https://…", "elements": {"<id>": {"status": "addressed"|"not_found"|"unclear", "page"?: 1–9999,
+"note"?: 1–200 characters}}}`. `contract_url` must equal `profile.contract.source_url` exactly (so a valid
+`profile.contract` must be present); "verified" here means the organizer checked that source on that date, not the
+agency contact flag. Every checklist id (`term_renewal`, `price_changes`, `data_ownership`, `retention`,
+`sharing_network`, `vendor_data_use`, `audit_search_logs`, `termination_data_exit`) must be present once and no other;
+`page` is allowed with any status; `note` is plain text (no angle brackets or control characters) kept as written;
+`checked_on` is a real date not before `contract.checked_on` and not after the build date. A bad entry stops the build
+with the first problem and `content-check` lists every problem, each named `<file>[n].profile.contract_check.<field>`.
+The agency page and the agencies-list card show "What the contract says (organizer reading, not a legal review)":
+one line per element in checklist order ("addressed", "not found in the linked contract" or "unclear", then "(page N)"
+and the note), the check date, a link to the contract and "Checklist: draft". "Not found" describes the reading only,
+not whether a term exists elsewhere; there is no score, verdict or inferred duty. The `legal_claims` guard stays
+alert-only and can still flag an accusation typed into a note. Nothing is fetched; the section is not in card JS, open
+data or feeds, and an agency without `contract_check` shows no section.
 
 An agency's optional `asked` (≤ 20 items) lists what the organizer asked it: `{"topic", "asked_on", "state",
 "updated_on"?, "note"?}`. `topic` ≤ 120 and `note` ≤ 200 plain-text characters; `asked_on`/`updated_on` are real
@@ -274,6 +336,28 @@ The site says nothing about a donor beyond the name in the document. Labels: `ag
 `agency.funding_fiscal_year`, `agency.funding_kind_grant`, `agency.funding_kind_general_fund`,
 `agency.funding_kind_asset_forfeiture`, `agency.funding_kind_donation`, `agency.funding_kind_other`. A profile without
 `funding` reads and renders exactly as before.
+
+### Local rules on record (agency page, from `law/local-rules.json`)
+
+An existing agency page (`agencies/<slug>.html`) shows a `Local rules on record` section, after the facts,
+transparency, officials and votes blocks and before `Published findings`, with one entry per organizer-transcribed local
+rule whose `agency_ids` names that agency's exact `agency_id` (every dated version of a rule is its own entry; no prefix,
+agency-name, city or county matching). The rules are the validated overlay the build already loaded (see LAW-PACKAGES.md);
+the section reads nothing else, fetches nothing and adds no field to `data/agencies.json`, `data/findings.json` or
+`data/sources.json`. Each entry has its own heading with the citation, the `rule_id`, `Duty as written` (the transcribed text,
+escaped, never Markdown or HTML and never restated as an obligation of the agency), `Effective from` and `to` (`open` when
+there is no end), a link `Official source (organizer-recorded)` and the day it was `checked`, and always the exact label
+`local rule, organizer-transcribed, not legally reviewed`, even when the state package is reviewed: the checked day is the
+organizer's, not a legal review date. Entries are ordered by `rule_id` then `effective_from`.
+
+The build date (the day the build runs; `build_site(today=...)` in tests) classifies each entry with inclusive bounds:
+`Past — not in force on build date` when `effective_to` is before it, `Not yet in force on build date` when `effective_from`
+is after it (a scheduled rule is not described as already law), otherwise `In force on build date`. An agency with no scoped
+rule gets no heading, list or whitespace: its page is byte-identical to one built without the overlay, and a local rule
+alone never creates a page or an `agencies.html` entry (a page still needs a published finding or a source record).
+The section states that these are organizer transcriptions, not a determination about the agency's conduct. It is not legal
+advice and never says an agency complied or did not comply. The organizer and a human reviewer remain responsible for whether the source is
+authentic and whether the ordinance applies; nothing is checked automatically.
 
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
@@ -505,6 +589,14 @@ is not a legal endorsement and does not let anyone speak for them. `supporters` 
 without a file. Labels: `supporters.title`, `supporters.description`, `supporters.joined` (`{date}`) and
 `supporters.kind.<kind>`; `examples/labels/es.json` carries Spanish drafts (still unreviewed).
 
+**Co-sign grant (DF2207-14).** A private record may also carry `cosign` (`"any"` or 1 to 100 meeting ids) with
+`cosign_confirmed_on`, `cosign_how` and `cosign_correspondence`: all four or none. Set it with
+`supporters consent --directory DIR --id ID --cosign any|MEETING_ID ... --confirmed-on D --how HOW [--correspondence PREFIX]`
+or remove it with `--clear-cosign` (see [MEETINGS.md](MEETINGS.md)). It is read only by `meetings-stage --cosign`,
+`load_content` and `content-check`; it never reaches the public file or the site. A listing alone never allows co-signing.
+Staged meetings store `cosigners` (1 to 30 supporter ids), shown on the meeting page as `Co-signed by N organizations`
+(labels `meeting.cosigned_one` and `meeting.cosigned_many`, both with `{count}`; Spanish drafts in `examples/labels/es.json`).
+
 Limits: the lint refuses `@`, phone-number-like digit runs and contact labels (`email:`, `phone:`, `contact:`, `mailto:`)
 in names and URLs, but it does not recognise a person's name. The organization attestation and the organizer's own
 review before every `add` remain mandatory; no program can prove that free text names an organization rather than a
@@ -579,7 +671,8 @@ held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `
 `votes` as `{name, vote}` in stored order, each only when recorded), plus the pair `minutes_url` and
 `minutes_approved_on` (the body's approved official minutes, both or neither; no derived confirmation flag), plus
 the optional `continued_to` (a staged meeting id) or `continued_to_date` (a stated date) of a `continued` result (one
-of the two, never both; no derived back-reference). It never
+of the two, never both; no derived back-reference), plus the optional trio `direction`, `return_by` and
+`direction_source` (a staff direction as the official source states it; all or none; no reminder or fulfillment flag). It never
 includes the comment kit, `participation`,
 contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
 `data/meetings.json: non-public key ...` and writes nothing.

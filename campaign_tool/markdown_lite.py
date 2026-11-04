@@ -1,7 +1,7 @@
 """Tiny, dependency-free renderer for a safe Markdown subset.
 
 Supported: paragraphs, ``## `` headings (rendered as ``<h3>``), ``**bold**``,
-``[text](https://...)`` links, unordered ``- `` lists, ordered ``1. `` lists
+``[text](https://...)`` links, backslash-escaped punctuation, unordered ``- `` lists, ordered ``1. `` lists
 (``<ol start="N">`` when the first number is not 1) and simple pipe tables (a
 ``|...|`` header, a ``|---|:---:|`` separator with the same 1-12 cells, then
 same-width rows; ``\\|`` is a literal pipe; colons add an ``align-*`` class).
@@ -33,6 +33,7 @@ from html import escape, unescape
 MAX_BYTES = 200 * 1024
 _LINK = re.compile(r"\[([^\]\n]{1,300})\]\(([^)\s]{1,2000})\)")
 _IMAGE = re.compile(r"!\[([^\]\n]{1,200})\]\((/[A-Za-z0-9._/-]{1,240})\)")
+_ESCAPED = re.compile(r"\\([\\*_\[\]()`<>#!|~])")
 _BOLD = re.compile(r"\*\*([^*\n]{1,500})\*\*")
 _HTTPS = re.compile(r"https://[A-Za-z0-9][A-Za-z0-9.-]*(?::\d{1,5})?(?:/[A-Za-z0-9._~:/?#@!$&*+,;=%-]*)?")
 _LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
@@ -76,7 +77,10 @@ def _link(match):
 
 def inline(text):
     """Render inline markup for one already-plain-text line."""
-    out = escape(text, quote=True)
+    # Protect escaped punctuation from markup recognition, without adding visible
+    # backslashes. Escape ordinary text first so input entities remain literal.
+    out = "".join(f"&#{ord(part)};" if index % 2 else escape(part, quote=True)
+                  for index, part in enumerate(_ESCAPED.split(text)))
     out = _BOLD.sub(lambda m: "<strong>" + m.group(1) + "</strong>", out)
     return _LINK.sub(_link, out)
 
