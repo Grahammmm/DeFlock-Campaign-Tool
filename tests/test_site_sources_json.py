@@ -195,7 +195,8 @@ class SourcesJsonTests(unittest.TestCase):
         written = {p.relative_to(self.public).as_posix() for p in build_site(self.root)}
         self.assertIn("data/sources.json", written)
         self.assertIn(LINK + "Open data (JSON)</a>", self.read("sources.html"))
-        self.assertIn('<a href="/data/findings.json" type="application/json">data/findings.json</a> and '
+        self.assertIn('<a href="/data/findings.json" type="application/json">data/findings.json</a> · '
+                      '<a href="/data/findings.csv" type="text/csv">Spreadsheet (CSV)</a> and '
                       + LINK + "data/sources.json</a>", self.read("about.html"))
         self.assertNotIn("sources.json", self.read("sitemap.xml"))
 

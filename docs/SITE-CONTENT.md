@@ -196,9 +196,28 @@ never carry it. It is shown only on `agencies.html` (docs/AGENCY-CARDS.md), neve
 the list's own order, never sorted by any number, with no ranking, score or "best/worst" wording. Cells: cameras,
 searches in the last 30 days and retention days from the newest `profile.transparency` snapshot (each linked to its
 `source_url`, checked date shown), the posted `alpr_policy` ("posted", linked to the policy), `contract.end` linked
-to the contract source, and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0").
+to the contract source, `contract.cost` as stated (`$12,345.60 per year`, linked to the contract source with its checked
+date; "not checked" without a cost) and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0").
 A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
 No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
+
+### Contract cost as stated (`profile.contract.cost`)
+
+A contract may carry an optional `cost`, `{amount_usd, period, as_stated_in}` (exactly these three; `null` is invalid),
+transcribed by an organizer from the document the contract's own `source_url` points to. It adds no second source or
+date: the enclosing contract's `source_url` and `checked_on` are mandatory and are the cost's provenance. `amount_usd`
+is a decimal string from 0 to 100000000 with at most two decimals, no sign, exponent, spaces, separators or leading
+zeroes (a JSON number is refused; it is never converted to a float and the accepted string is kept as written).
+`period` is `annual`, `total` or `one_time`. `as_stated_in` is the document's plain title, 1 to 120 characters, with no
+angle brackets, control or invisible characters and not a URL. The card and the agency page then show
+`Contract cost as stated: $12,345.60 per year (Example agreement; source, checked 2026-10-21).` (`total`, `one time`
+for the other periods; `source` links the contract source), and the glance table has a "Contract cost as stated"
+column between "Contract ends" and "Records items asked". A bad cost stops `build` (`Stopped: ...`, exit 1) and is
+listed by `content-check` (exit 3) with the same line, e.g.
+`content/agencies.json[1].profile.contract.cost.period: choose annual, total or one_time`; the supplied value is never
+echoed. The site never adds costs up, ranks by them or divides them by camera counts; agencies keep the list's order.
+Labels: `agency.contract_cost`, `agency.cost_annual`, `agency.cost_total`, `agency.cost_one_time`, `agency.cost_source`,
+`agencies.glance_cost`. A contract without a cost reads and renders exactly as before.
 
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
@@ -261,13 +280,28 @@ an unknown request or agency, or an unknown `--tz` is refused and nothing is wri
 `public_url` stays null.
 
 `sources verify-copy --directory D --sha256 PREFIX --file DOWNLOADED --checked-on YYYY-MM-DD
-[--differs-because redacted|converted|unknown]` hashes a copy you downloaded yourself from an entry's `public_url`
-(a regular local file, no symlink, at most 200 MiB; nothing is fetched, copied or stored) and records
-`public_copy: {"matches", "checked_on", "reason"?}` on every entry of that record that has a `public_url`. A differing
-copy needs `--differs-because`; a matching one refuses it. `checked_on` may not be in the future or before
-`received_at`. Refusals print `Stopped: <reason>`, exit 3 and write nothing. `sources.html`, the citing finding pages
-and `data/sources.json` then show "Public copy checked D: same file as this record number" or "differs (redacted
-copy)", with a short "How to check a copy" note. `sources edit --public-url`/`--clear-public-url` drops the check.
+[--fragment FRAGMENT] [--differs-because redacted|converted|unknown]` hashes a copy you downloaded yourself from an
+entry's `public_url` (a regular local file, no symlink, at most 200 MiB; nothing is fetched, copied or stored) and
+records `public_copy: {"matches", "checked_on", "reason"?}` on every entry of that record whose `public_url` is the
+same string as the one you checked. A record whose entries all share one URL needs no `--fragment`. When the record
+has several different public URLs the command refuses (`record has multiple public URLs; add --fragment to choose
+the copy`) before it reads the file: `--fragment` names a library fragment of that record, and the check covers
+every entry of the record with that entry's exact `public_url`, whatever their fragments. URLs are compared as
+stored, character for character: a different scheme case, trailing slash, query or `#fragment` is a different URL,
+and nothing is normalized, decoded or fetched. `--fragment` is the library grouping name, not a URL fragment. Other
+URLs of the record keep their own check untouched, so a redaction warning on one copy is never overwritten by a
+match on another. A differing copy needs `--differs-because`; a matching one refuses it. `checked_on` may not be in
+the future or before the `received_at` of the entries being checked. Refusals print `Stopped: <reason>`, exit 3 and
+write nothing. `sources.html`, the citing finding pages and `data/sources.json` then show "Public copy checked D:
+same file as this record number" or "differs (redacted copy)" per entry, with a short "How to check a copy" note.
+`sources edit --public-url`/`--clear-public-url` drops the check. Checking bytes proves neither where a file came
+from nor what the remote address serves today. Checks saved by earlier versions covered every URL of a record; they
+are not migrated, so with several URLs re-download and recheck each one. Two synthetic examples, one per copy:
+
+```
+sources verify-copy --directory D --sha256 0123456789ab --fragment agency-original --file ./original.pdf --checked-on 2026-02-01
+sources verify-copy --directory D --sha256 0123456789ab --fragment agency-redacted --file ./redacted.pdf --checked-on 2026-02-01 --differs-because redacted
+```
 
 ### Pages (`content/pages/<slug>.json`, optional)
 
@@ -402,6 +436,19 @@ configured), `received_at`, `public_url` or null, `pages` or null and
 never count). It never includes `note`, `fragment` or the full hash; the build
 refuses with `data/sources.json: ...` and writes nothing on any other key or a
 40+ hex string. The starter build (no `content/`) writes no `data/sources.json`.
+`data/findings.csv` and `data/sources.csv` (DF1207-14) are spreadsheet copies of those two files, linked beside each JSON link
+on `findings/index.html`, `sources.html` and `about.html` (label `intro.open_data_csv`, default "Spreadsheet (CSV)"; not in
+`sitemap.xml`, like the JSON). Each is built from the already-checked JSON document, so a column the JSON does not carry cannot
+exist: one header row, then one row per record in the JSON's order, columns in the order of the JSON's keys; UTF-8 without a
+byte-order mark, CRLF line ends, standard quoting. Flattening: `null` is an empty cell, `true`/`false` stay `true`/`false`, a
+list of strings is joined with `; `, `sources` (findings) is the `; `-joined `sha256_prefix` values, `corrections` the
+`; `-joined `date: note`, `cited_by` the `; `-joined finding ids, and `public_copy` (sources) becomes the three columns
+`public_copy_matches`, `public_copy_checked_on` and `public_copy_reason`. Optional `also_agency_ids` and `agency_response`
+are empty cells when omitted by the public JSON (including a pending response); present `also_agency_ids` are joined with
+`; `, and a present `agency_response` is a JSON object serialized with sorted keys in one cell, using only its public fields.
+A cell that begins with `=`, `+`, `-`, `@`, a tab or a
+carriage return is written with a leading `'` so a spreadsheet does not run it as a formula (the `kit-status --csv` rule; the JSON
+is not changed). A meetings CSV is not built.
 `data/meetings.json` is the staged meetings as open data (`schemas/meetings-open-data.schema.json`), linked from
 `meetings.html` and `about.html`, newest `starts_at` first, cancelled ones included (`"meetings": []` with none):
 top level `schema_version`, `generated_at` (the build date at 00:00 UTC) and `meetings`; per meeting `id`, `body`,
@@ -415,7 +462,8 @@ contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other k
 `agency_id` (`"agencies": []` with none). Top level `schema_version`, `campaign`, `generated_from`, `base_url`, `url_kind`
 and `agencies`; per agency `agency_id`, `name`, `kind`, `url` (the page path, with the base URL when one is set), `asked`
 (`topic`, `state`, `asked_on`, `updated_on` or null, newest `asked_on` first as the card lists them), `alpr_policy`
-(`url`, `checked_on`) or null, `contract` (`vendor`, `start`, `end`, `source_url`, `checked_on`) or null, `transparency`
+(`url`, `checked_on`) or null, `contract` (`vendor`, `start`, `end`, `source_url`, `checked_on` and, only when the contract
+has one, `cost`: `amount_usd`, `period`, `as_stated_in`) or null, `transparency`
 (the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, and `camera_count`
 (the card's camera-count sentence) or null. It never includes `records_email`, `records_url`, `portal`, the asked-item
 `note`, the contract `renewal_note`, kit files, notes or any other key; the build refuses with

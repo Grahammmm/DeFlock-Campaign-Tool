@@ -8,7 +8,9 @@ configured, the MapLibre controller. All generated JavaScript is self-hosted;
 pages contain no inline scripts, and the emitted ``_headers`` file carries a
 Content-Security-Policy that names only the hosts the content model declared.
 """
+import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -16,6 +18,7 @@ import shutil
 import sys
 import tempfile
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from html import escape
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -196,9 +199,11 @@ def search_js():
 # data/findings.json emits only these keys, built field by field (DF2237-09); anything else refuses the build.
 PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
                          "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
-                         "counterevidence", "corrections", "url", "citation", "also_agency_ids")
+                         "counterevidence", "corrections", "url", "citation", "also_agency_ids", "agency_response")
 PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page")
 PUBLIC_CORRECTION_FIELDS = ("date", "note")
+# DF1103-08: only a received, declined or no_response reply is public; pending never is.
+PUBLIC_RESPONSE_FIELDS = ("status", "asked_on", "reply_by", "on", "text", "record_sha256_prefix")
 PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
 # data/sources.json (DF1822-14): the source library as open data; never note, fragment or a full sha256.
 PUBLIC_LIBRARY_FIELDS = ("sha256_prefix", "title", "agency_id", "agency_name", "received_at", "public_url", "pages",
@@ -209,12 +214,18 @@ PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
 PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes")  # never verified_by / verified_at
 PUBLIC_VOTE_FIELDS = ("name", "vote")
+# DF1207-14: data/findings.csv and data/sources.csv are flattened from the built public JSON documents, so no CSV column
+# can exist that the JSON does not carry; "sources", "corrections" and "public_copy" are the only nested values.
+FINDINGS_CSV_COLUMNS = PUBLIC_FINDING_FIELDS
+SOURCES_CSV_COLUMNS = tuple(c for key in PUBLIC_LIBRARY_FIELDS
+                            for c in ((f"public_copy_{k}" for k in PUBLIC_COPY_FIELDS) if key == "public_copy" else (key,)))
 # data/agencies.json (DF1422-12): what each agency card and page already show; never contacts, kit data or notes.
 PUBLIC_AGENCY_TOP_LEVEL = {"schema_version", "campaign", "generated_from", "base_url", "url_kind", "agencies"}
 PUBLIC_AGENCY_FIELDS = ("agency_id", "name", "kind", "url", "asked", "alpr_policy", "contract", "transparency", "camera_count")
 PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
 PUBLIC_POLICY_FIELDS = ("url", "checked_on")
 PUBLIC_CONTRACT_FIELDS = ("vendor", "start", "end", "source_url", "checked_on")  # never renewal_note
+PUBLIC_COST_FIELDS = ("amount_usd", "period", "as_stated_in")  # contract.cost (DF1103-07): exactly these, when present
 PUBLIC_TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts",
                               "shared_with_agencies", "source_url", "checked_on")
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
@@ -799,6 +810,18 @@ class Site:
         return (f'    <section class="section movement-section" id="participate"><h2>{self.t("heading.participate")}</h2>'
                 f'{form}</section>\n')
 
+    def contract_cost_amount(self, cost):
+        """``$12,345.60`` from the transcribed decimal string; exact, never float-converted."""
+        return "$" + format(Decimal(cost["amount_usd"]), ",.2f")
+
+    def contract_cost_line(self, contract):
+        """DF1103-07: the cost exactly as the document states it, with the contract's own source and checked date."""
+        cost = contract["cost"]
+        source = (f'<a href="{e(contract["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>')
+        return ('<p class="contract-cost">' + self.t("agency.contract_cost", amount=e(self.contract_cost_amount(cost)),
+                period=self.t("agency.cost_" + cost["period"]), document=e(cost["as_stated_in"]), source=source,
+                date=date_label(contract["checked_on"])) + "</p>")
+
     def contract_line(self, contract):
         if not contract:
             return ""
@@ -806,7 +829,8 @@ class Site:
                 f'{time_tag(contract["end"])}' + (", " + self.t("agency.contract_ended") if contract["end"] < self.today.isoformat() else "")
                 + (f'. {e(contract["renewal_note"])}' if contract["renewal_note"] else "")
                 + f' ({self.t("agency.checked", date=date_label(contract["checked_on"]))} <a href="{e(contract["source_url"])}" '
-                  f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>')
+                  f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>'
+                + (self.contract_cost_line(contract) if contract.get("cost") else ""))
 
     def transparency_block(self, agency, heading="h4"):
         """Newest organizer-transcribed portal snapshot, as the vendor reported it, with change since the previous one."""
@@ -896,7 +920,7 @@ class Site:
         """DF0137-12: every agency side by side in model order (never sorted by a number); each cell links its source."""
         unchecked, rows = self.t("agencies.glance_not_checked"), []
         heads = [self.t(f"agencies.glance_{key}") for key in ("agency", "cameras", "searches_last_30_days",
-                                                               "retention_days", "policy", "contract", "asked")]
+                                                               "retention_days", "policy", "contract", "cost", "asked")]
 
         def sourced(url, text, checked_on):
             return (f'<a href="{e(url)}" rel="noopener noreferrer">{text}</a> '
@@ -909,6 +933,9 @@ class Site:
                 else unchecked for key in ("cameras", "searches_last_30_days", "retention_days")]
             cells += [sourced(policy["url"], self.t("agencies.glance_posted"), policy["checked_on"]) if policy else unchecked,
                       sourced(contract["source_url"], time_tag(contract["end"]), contract["checked_on"]) if contract else unchecked,
+                      sourced(contract["source_url"], e(self.contract_cost_amount(contract["cost"])) + " "
+                              + self.t("agency.cost_" + contract["cost"]["period"]), contract["checked_on"])
+                      if contract and contract.get("cost") else unchecked,
                       f'<a href="#{e(agency["slug"])}-asked">{asked}</a>' if asked else "0"]
             rows.append('<tr><th scope="row" data-label="' + heads[0] + f'">{cells[0]}</th>'
                         + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
@@ -1011,7 +1038,9 @@ class Site:
                 + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
-                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.transparency_block(agency, "h3") + self.who_decides(aid) + self.votes_section(aid)
+                + (f'<p>{" · ".join(links)}</p>' if links else "")
+                + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
+                + self.transparency_block(agency, "h3") + self.who_decides(aid) + self.votes_section(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
@@ -1030,7 +1059,8 @@ class Site:
                  if form else "")
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.findings")}</p>'
                 f'<h2>{self.t("heading.findings")}</h2></div><p>{self.t("intro.findings")} <a href="/feed.xml">{self.t("intro.atom_feed")}</a> · '
-                f'<a href="/data/findings.json" type="application/json">{self.t("intro.open_data")}</a> · <a href="/findings/packet-all.html">Printable packet</a>.</p>'
+                f'<a href="/data/findings.json" type="application/json">{self.t("intro.open_data")}</a> · '
+                f'<a href="/data/findings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a> · <a href="/findings/packet-all.html">Printable packet</a>.</p>'
                 '<p><a href="/methods.html">How to read our findings</a> defines each classification and confidence label.</p></div>'
                 f'{form}{self.findings_list(self.model["findings"], filter_attrs=True)}{empty}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
@@ -1225,7 +1255,8 @@ class Site:
                 + (self.md(finding["body_md"]) if finding["body_md"] else "")
                 + f'<h3>{self.t("finding.sources")}</h3><ul class="source-table">{"".join(sources)}</ul>'
                 + f'<p class="provenance-note">{e(EXPLAINER)}</p>' + self.legal_basis(finding)
-                + f'<h3>{self.t("finding.limitations")}</h3><ul>{limits}</ul><h3>{self.t("finding.counterevidence")}</h3><ul>{counter}</ul>' + related
+                + f'<h3>{self.t("finding.limitations")}</h3><ul>{limits}</ul><h3>{self.t("finding.counterevidence")}</h3><ul>{counter}</ul>'
+                + self.agency_response_html(finding) + related
                 + f'<h3 id="corrections">{self.t("finding.corrections")}</h3><ul>{corrections}</ul>'
                 + f'<p><a href="/corrections.html">{self.t("finding.all_corrections")}</a></p>'
                 + f'<p><a href="/corrections.html#request">{self.t("finding.ask_correction")}</a></p>'
@@ -1234,6 +1265,27 @@ class Site:
         return self.page("findings", finding["title"], finding["summary"], finding_path(finding), main,
                          scripts=["/findings/cite.js"],
                          kind="article", published=finding["published_at"], modified=finding["updated_at"])
+
+    def agency_response_html(self, finding):
+        """The agency's reply (or silence) under "Agency response" as escaped plain text, never Markdown; "" when
+        the finding has no reply or only a prepared (pending) request. The record shows as its 12-character prefix."""
+        reply = finding.get("agency_response")
+        if not reply or reply["status"] == "pending":
+            return ""
+        if reply["status"] == "no_response":
+            line = self.t("finding.reply_no_response", asked_on=e(reply["asked_on"]), reply_by=e(reply["reply_by"]))
+            return f'<section class="agency-response" id="agency-response"><h3>{self.t("finding.agency_response")}</h3><p>{line}</p></section>'
+        line = self.t(f'finding.reply_{reply["status"]}', on=e(reply["on"]), asked_on=e(reply["asked_on"]))
+        text = f'<p class="reply-text">{e(reply["text"]).replace(chr(10), "<br>")}</p>' if "text" in reply else ""
+        record = ""
+        if "record_sha256" in reply:
+            fragment = self.fragment_for_sha.get(reply["record_sha256"])
+            number = f'{self.t("sources.record_no")} <code>{e(short_hash(reply["record_sha256"]))}</code>'
+            if fragment:
+                number = f'<a href="/sources.html#{e(fragment)}">{number}</a>'
+            record = f'<p class="record-no">{number}</p>'
+        return (f'<section class="agency-response" id="agency-response"><h3>{self.t("finding.agency_response")}</h3>'
+                f'<p>{line}</p>{text}{record}</section>')
 
     def cite_html(self, finding):
         """The citation as page text; the copy button stays hidden until findings/cite.js unhides it. A draft preview
@@ -1303,7 +1355,8 @@ class Site:
         howto = COPY_HOWTO if any(copy_status(s) for s in self.model["sources"]) else ""  # unchanged page without checks
         main = (f'    <section class="section" id="content"><div class="section-heading" id="library"><div><p class="eyebrow">{self.t("eyebrow.sources")}</p>'
                 f'<h2>{self.t("heading.sources")}</h2></div><p class="provenance-note">{e(EXPLAINER)} {self.t("intro.sources")} '
-                f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a>.</p>{howto}</div>'
+                f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a> · '
+                f'<a href="/data/sources.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p>{howto}</div>'
                 + ("".join(sections) or f'<p>{self.t("notice.no_sources")}</p>') + '</section>\n')
         return self.page("sources", self.labels["title.sources"], self.labels["title.sources_description"], "/sources.html", main)
 
@@ -1358,8 +1411,10 @@ class Site:
         main = (f'    <section class="section finding-body" id="content"><p class="eyebrow">{self.t("eyebrow.about")}</p>'
                 f'<h2>{self.name}</h2>{self.md(self.site["about_md"])}{contact}'
                 f'<p>{self.t("intro.open_data_about")} '
-                '<a href="/data/findings.json" type="application/json">data/findings.json</a> and '
-                '<a href="/data/sources.json" type="application/json">data/sources.json</a>. '
+                '<a href="/data/findings.json" type="application/json">data/findings.json</a> · '
+                f'<a href="/data/findings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a> and '
+                '<a href="/data/sources.json" type="application/json">data/sources.json</a> · '
+                f'<a href="/data/sources.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>. '
                 f'{self.t("intro.meetings_open_data_about")} <a href="/data/meetings.json" type="application/json">data/meetings.json</a>.'
                 + (f' {self.t("notice.no_meetings")}' if not self.model["meetings"] else "")
                 + f' {self.t("intro.agencies_open_data_about")} <a href="/data/agencies.json" type="application/json">data/agencies.json</a>.</p>'
@@ -1755,7 +1810,7 @@ class Site:
     def _public_finding(self, finding):
         """One published finding, copied key by key from the allowlists (never a dict copy)."""
         value = {key: finding[key] for key in PUBLIC_FINDING_FIELDS
-                 if key not in ("sources", "corrections", "url", "citation", "also_agency_ids")}
+                 if key not in ("sources", "corrections", "url", "citation", "also_agency_ids", "agency_response")}
         if finding.get("also_agency_ids") is not None:  # DF1952-07: optional; omitted entirely when absent
             value["also_agency_ids"] = list(finding["also_agency_ids"])
         value["limitations"], value["counterevidence"] = list(finding["limitations"]), list(finding["counterevidence"])
@@ -1765,16 +1820,30 @@ class Site:
         value["corrections"] = [{"date": c["date"], "note": c["note"]} for c in finding["corrections"]]
         value["url"] = f'{self.base}/findings/{finding["slug"]}.html'
         value["citation"] = citation(finding, self.cfg["name"], self.base)
+        reply = finding.get("agency_response")
+        if reply and reply["status"] != "pending":  # absent or pending: no key at all, so legacy rows are unchanged
+            value["agency_response"] = {
+                **{key: reply[key] for key in ("status", "asked_on", "reply_by", "on")},
+                **({"text": reply["text"]} if "text" in reply else {}),
+                **({"record_sha256_prefix": short_hash(reply["record_sha256"])} if "record_sha256" in reply else {})}
         return value
 
     def findings_json(self):
         """``data/findings.json``: published findings as open data; refuses any non-public key or full hash."""
+        return json.dumps(self._findings_doc(), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+    def findings_csv(self):
+        """``data/findings.csv`` (DF1207-14): the rows of the built findings document, one column per public key."""
+        return _csv_text(FINDINGS_CSV_COLUMNS, [_flat_finding(f) for f in self._findings_doc()["findings"]])
+
+    def _findings_doc(self):
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/findings",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "findings": [self._public_finding(f) for f in self.model["findings"]]}
-        finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {})})
+        finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {}),
+                                           "agency_response": (PUBLIC_RESPONSE_FIELDS, {})})
         _assert_public(doc, "data/findings.json", PUBLIC_TOP_LEVEL_FIELDS, {"findings": finding})
-        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        return doc
 
     def _public_library_entry(self, source):
         """One library entry, copied key by key (never ``note``, ``fragment`` or the full sha256)."""
@@ -1787,12 +1856,19 @@ class Site:
 
     def sources_json(self):
         """``data/sources.json``: the source library as open data; refuses any non-public key or full hash."""
+        return json.dumps(self._sources_doc(), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+    def sources_csv(self):
+        """``data/sources.csv`` (DF1207-14): the rows of the built source-library document."""
+        return _csv_text(SOURCES_CSV_COLUMNS, [_flat_source(s) for s in self._sources_doc()["sources"]])
+
+    def _sources_doc(self):
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/sources.json",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "sources": [self._public_library_entry(s) for s in self.model["sources"]]}
         _assert_public(doc, "data/sources.json", PUBLIC_LIBRARY_TOP_LEVEL,
                        {"sources": (PUBLIC_LIBRARY_FIELDS, {"public_copy": (PUBLIC_COPY_FIELDS, {})})})
-        return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        return doc
 
     def _public_meeting(self, meeting):
         """One staged meeting, copied key by key: what its page shows, never the kit, participation or verifier."""
@@ -1826,7 +1902,9 @@ class Site:
                 "asked": [{"topic": a["topic"], "state": a["state"], "asked_on": a["asked_on"],
                            "updated_on": a.get("updated_on")} for a in asked],
                 "alpr_policy": {k: policy[k] for k in PUBLIC_POLICY_FIELDS} if policy else None,
-                "contract": {k: contract[k] for k in PUBLIC_CONTRACT_FIELDS} if contract else None,
+                "contract": ({**{k: contract[k] for k in PUBLIC_CONTRACT_FIELDS},
+                              **({"cost": {k: contract["cost"][k] for k in PUBLIC_COST_FIELDS}} if contract.get("cost") else {})}
+                             if contract else None),
                 "transparency": ({k: newest[k] for k in PUBLIC_TRANSPARENCY_FIELDS if newest.get(k) is not None}
                                  if newest else None),
                 "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
@@ -1842,9 +1920,52 @@ class Site:
         _assert_public(doc, "data/agencies.json", PUBLIC_AGENCY_TOP_LEVEL,
                        {"agencies": (PUBLIC_AGENCY_FIELDS, {"asked": (PUBLIC_ASKED_FIELDS, {}),
                                                             "alpr_policy": (PUBLIC_POLICY_FIELDS, {}),
-                                                            "contract": (PUBLIC_CONTRACT_FIELDS, {}),
+                                                            "contract": (PUBLIC_CONTRACT_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
                                                             "transparency": (PUBLIC_TRANSPARENCY_FIELDS, {})})})
         return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def _text(value):
+    """``None`` is empty, a list is ``; ``-joined, a bool is true/false, anything else its string."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "; ".join(_text(item) for item in value)
+    return ("true" if value else "false") if isinstance(value, bool) else str(value)
+
+
+def _cell(value):
+    """One CSV cell: the flattened text, with the formula guard the kit CSV uses applied once to the whole cell."""
+    from .kit_export import formula_safe  # local, as the other optional site steps
+    return formula_safe(_text(value))
+
+
+def _flat_finding(finding):
+    """One findings.json record as a ``{column: cell}`` row (sources by prefix, corrections as ``date: note``)."""
+    row = {key: finding.get(key) if key in ("also_agency_ids", "agency_response") else finding[key]
+           for key in FINDINGS_CSV_COLUMNS}
+    if row["agency_response"] is not None:
+        row["agency_response"] = json.dumps(row["agency_response"], ensure_ascii=False, sort_keys=True)
+    row["sources"] = [source["sha256_prefix"] for source in finding["sources"]]
+    row["corrections"] = [f'{c["date"]}: {c["note"]}' for c in finding["corrections"]]
+    return {key: _cell(value) for key, value in row.items()}
+
+
+def _flat_source(entry):
+    """One sources.json record as a ``{column: cell}`` row (``public_copy`` spread over three columns)."""
+    copy = entry["public_copy"] or {}
+    row = {key: entry[key] for key in PUBLIC_LIBRARY_FIELDS if key != "public_copy"}
+    row.update({f"public_copy_{key}": copy.get(key) for key in PUBLIC_COPY_FIELDS})
+    return {key: _cell(row[key]) for key in SOURCES_CSV_COLUMNS}
+
+
+def _csv_text(columns, rows):
+    """RFC 4180 text (CRLF, header first); the file is written as UTF-8 without a byte-order mark."""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\r\n")
+    writer.writerow(columns)
+    writer.writerows([row[column] for column in columns] for row in rows)
+    return out.getvalue()
 
 
 def _assert_public(doc, name, top, nested):
@@ -1963,8 +2084,8 @@ def _plan_site(root, today=None, notes=None):
         **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
         "site-data.js": site.site_data_js(), "search.js": search_js(),
         "agency-cards.js": agency_cards.render(site.cards_config(), relabel=bool(site.js_labels)),
-        "app.js": site.app_js(), "data/findings.json": site.findings_json(),
-        "data/sources.json": site.sources_json(), "data/meetings.json": site.meetings_json(),
+        "app.js": site.app_js(), "data/findings.json": site.findings_json(), "data/findings.csv": site.findings_csv(),
+        "data/sources.json": site.sources_json(), "data/sources.csv": site.sources_csv(), "data/meetings.json": site.meetings_json(),
         "data/agencies.json": site.agencies_json(),
     })
     if site.finding_filter():  # written only when the findings index loads it

@@ -165,7 +165,8 @@ class MeetingsOpenDataTests(unittest.TestCase):
         self.assertEqual(doc["meetings"][1]["outcome"]["source_url"], RECORD)
         about = self.read("about.html")
         self.assertIn(LINK + "data/meetings.json</a>", about)
-        self.assertIn('<a href="/data/findings.json" type="application/json">data/findings.json</a> and '
+        self.assertIn('<a href="/data/findings.json" type="application/json">data/findings.json</a> · '
+                      '<a href="/data/findings.csv" type="text/csv">Spreadsheet (CSV)</a> and '
                       '<a href="/data/sources.json" type="application/json">data/sources.json</a>', about)
         self.assertIn(LINK + "Meetings and outcomes as open data (JSON)</a>", self.read("meetings.html"))
 

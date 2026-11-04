@@ -1116,6 +1116,8 @@ def main():
     for flag in ("--directory", "--sha256", "--file", "--checked-on"):
         verify.add_argument(flag, required=True)
     verify.add_argument("--differs-because", choices=("redacted", "converted", "unknown"), default=None)
+    verify.add_argument("--fragment", default=None, help="Library fragment whose public_url identifies the copy; "
+                        "needed when the record has several public URLs")
     content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
         dest="content_command", required=True)
     content_init = content_cmds.add_parser(
@@ -1148,6 +1150,19 @@ def main():
     publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
     for flag in ("--directory", "--approved-by"):
         publish_p.add_argument(flag, required=True)
+    reply_req_p = finding_cmds.add_parser("reply-request", help="Write a private, never-sent request for comment to the "
+                                          "draft's agency (kit/replies/<id>.md); preparing it is not asking")
+    reply_req_p.add_argument("--directory", required=True)
+    reply_req_p.add_argument("--by", required=True, metavar="YYYY-MM-DD", help="Reply deadline, today or later")
+    reply_p = finding_cmds.add_parser("reply", help="Record the agency's reply or silence on the draft (nothing is sent; "
+                                      "any change needs fresh review)")
+    reply_p.add_argument("--directory", required=True)
+    reply_p.add_argument("--status", required=True, choices=("received", "declined", "no_response"))
+    reply_p.add_argument("--on", required=True, metavar="YYYY-MM-DD", help="Date of the reply, or of the check for no_response")
+    reply_p.add_argument("--asked-on", required=True, metavar="YYYY-MM-DD", help="Date YOU actually asked the agency, by hand; "
+                         "an unsent prepared request is not evidence of asking")
+    reply_p.add_argument("--text", help="The reply as written, 1-2000 characters (received needs it)")
+    reply_p.add_argument("--record", metavar="PREFIX", help="With received: 12-64 hex of the library record holding the reply")
     preview_p = finding_cmds.add_parser("preview", help="Render one draft's finding page privately to --out "
                                         "(banner, noindex; never public/, feed or sitemap)")
     for flag in ("--directory", "--out"):
@@ -1448,7 +1463,8 @@ def main():
         elif args.command == "sources" and args.sources_command == "verify-copy":
             from .sources_cmd import verify_copy
             try:
-                print(json.dumps(verify_copy(root, args.sha256, args.file, args.checked_on, args.differs_because)))
+                print(json.dumps(verify_copy(root, args.sha256, args.file, args.checked_on, args.differs_because,
+                                              fragment=args.fragment)))
             except ValueError as exc:
                 print(f"Stopped: {exc}", file=sys.stderr)
                 sys.exit(3)
@@ -1521,6 +1537,16 @@ def main():
                 print(json.dumps({k: v for k, v in result.items() if k != "receipt_trust"}))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 print(findings.trust_line(result["receipt_trust"]))
+                return
+            if args.finding_command == "reply-request":
+                print(json.dumps(findings.reply_request(root, args.draft, args.by)))
+                print("Recorded only. Nothing was sent. Asking the agency is your manual step; "
+                      "record it with finding reply --asked-on.")
+                return
+            if args.finding_command == "reply":
+                print(json.dumps(findings.record_reply(root, args.draft, args.status, args.on, args.asked_on,
+                                                       text=args.text, record=args.record)))
+                print("Recorded only. Nothing was sent. The reply changes the reviewed text: review it again.")
                 return
             draft = findings.load_draft(args.draft)
             if args.finding_command == "review-payload":
