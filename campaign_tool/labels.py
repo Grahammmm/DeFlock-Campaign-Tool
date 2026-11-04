@@ -210,6 +210,14 @@ DEFAULTS = {
     "press.description": "Campaign background, press contact, recent findings with citation text, logo and open data for reporters.",
     "press.contact": "Press contact", "press.findings": "Recent findings", "press.logo": "Logo",
     "press.data": "Open data", "press.download_logo": "Download the logo", "press.license_unspecified": "License not specified",
+    # DF0022-03: /news.html, the finding "Reported in" line and the press-page link (optional content/coverage.json)
+    "news.title": "In the news",
+    "news.description": "Press coverage of this campaign's findings, recorded by the organizers. A story listed here is not "
+                        "verified by us and does not mean the outlet endorses the campaign.",
+    "news.empty": "No press coverage has been recorded yet.", "news.findings": "Related findings",
+    "news.kind.news": "News", "news.kind.opinion": "Opinion", "news.kind.broadcast": "Broadcast", "news.kind.other": "Other",
+    "finding.reported_in": "Reported in: {outlet} ({date})", "footer.news": "In the news",
+    "press.news": "Press coverage of the campaign",
 }
 # DF0137-14: fixed strings the generated scripts write into the page. Defaults are today's exact English; site.py
 # switches the scripts to LABELS lookups (site-data.js) only when a js.* key differs from its default.

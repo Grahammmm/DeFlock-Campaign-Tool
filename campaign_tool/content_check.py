@@ -14,7 +14,7 @@ from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES,
                       _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, continuation_problems,
                       default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_pages, load_site,
-                      load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_faq, read_glossary,
+                      load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_coverage, read_faq, read_glossary,
                       topics_namespace_problem)
 from .finding_law import check as check_law, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
@@ -249,6 +249,8 @@ def content_problems(root, limit=LIMIT, faq_out=None):
     faq = read_faq(root, findings if findings_intact else None, problems)
     if faq_out is not None and faq is not None:
         faq_out.extend(faq)
+    # DF0022-03: the build's own reader and refusal text; with a refused finding file ids are not matched (already named)
+    _attempt(problems, "coverage.json", lambda: read_coverage(root, findings if findings_intact else None))
 
     agencies_path = content_dir / "agencies.json"
     if agencies_path.is_file():
@@ -311,7 +313,7 @@ def content_problems(root, limit=LIMIT, faq_out=None):
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
 FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "pages/", "topics/", "kit/", "law/", "newsletters/",
                  "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json",
-                 "faq.json")
+                 "faq.json", "coverage.json")
 
 
 def problem_record(line):

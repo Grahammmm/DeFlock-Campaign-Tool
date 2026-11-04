@@ -48,7 +48,7 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "press.html"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "press.html", "news.html"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
@@ -608,6 +608,7 @@ class Site:
         # DF1952-04: content/glossary.json; an absent file or an empty terms list switches every glossary output off.
         self.glossary = model.get("glossary") if (model.get("glossary") or {}).get("terms") else None
         self.faq = model.get("faq") or None  # DF0022-01: content/faq.json entries; an absent file switches every FAQ output off
+        self.coverage = model.get("coverage")  # DF0022-03: None without content/coverage.json; [] (present, empty) keeps the page
         # DF1952-06: curated topics (slug order); each finding id -> the topics listing it. No topics key = none.
         self.topics = model.get("topics", [])
         self.supporters = model.get("supporters") or []  # DF2207-13: validated public rows; [] = no page, no link
@@ -784,6 +785,8 @@ class Site:
                      ' · <a href="/methods.html">How to read our findings</a></p>')
         if self.faq:  # DF0022-01: appended last, so every earlier footer paragraph is unchanged
             parts.append(f'<p><a href="/faq.html">{self.t("footer.faq")}</a></p>')
+        if self.coverage is not None:  # DF0022-03: appended after every other footer paragraph; no top-nav entry
+            parts.append(f'<p><a href="/news.html">{self.t("footer.news")}</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def share(self, title, description, path, kind, published, modified):
@@ -1488,7 +1491,8 @@ class Site:
         data = "".join(f'<li><a href="/{e(path)}">{e(path)}</a> · {self.press_license(path)}</li>' for path in data_paths)
         main = (f'    <section class="section finding-body" id="content"><h2>{self.t("press.title")}</h2>{about}{contact}'
                 f'<h3>{self.t("press.findings")}</h3>{recent}{logo}<h3>{self.t("press.data")}</h3><ul>{data}</ul>'
-                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+                + (f'<p><a href="/news.html">{self.t("press.news")}</a></p>' if self.coverage is not None else "")  # DF0022-03
+                + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("press", self.labels["press.title"], self.labels["press.description"], "/press.html", main)
 
     def supporters_html(self):
@@ -1656,12 +1660,44 @@ class Site:
                 + f'<p><a href="/corrections.html">{self.t("finding.all_corrections")}</a></p>'
                 + f'<p><a href="/corrections.html#request">{self.t("finding.ask_correction")}</a></p>'
                 + self.terms_used_html(finding)
+                + self.reported_in_html(finding)
 
                 + self.finding_meetings_html(finding)
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         return self.page("findings", finding["title"], finding["summary"], finding_path(finding), main,
                          scripts=["/findings/cite.js"],
                          kind="article", published=finding["published_at"], modified=finding["updated_at"])
+
+    def sorted_coverage(self):
+        """The recorded coverage newest first, equal dates by URL ascending (the stored list and its order are untouched)."""
+        return sorted(sorted(self.coverage or [], key=lambda entry: entry["url"]), key=lambda entry: entry["published_on"], reverse=True)
+
+    def coverage_for_finding(self, finding):
+        """DF0022-03: the coverage entries that name this finding's exact id, newest first; [] without coverage."""
+        return [entry for entry in self.sorted_coverage() if finding["id"] in entry["findings"]]
+
+    def reported_in_html(self, finding):
+        """One ``Reported in: OUTLET (DATE)`` paragraph per entry, the outlet linking the article. Kept out of the factual
+        body, the citation and the corrections; "" (no markup) for a finding no entry names."""
+        return "".join(
+            '<p class="reported-in">' + self.t("finding.reported_in", outlet=f'<a href="{e(entry["url"])}" rel="noopener noreferrer">'
+                                              f'{e(entry["outlet"])}</a>', date=time_tag(entry["published_on"])) + "</p>"
+            for entry in self.coverage_for_finding(finding))
+
+    def news_html(self):
+        """``/news.html`` (DF0022-03): what the organizers recorded, newest first - the outlet, the headline as published
+        linking the article, the date, the kind and the findings it names. Nothing is quoted, summarized, fetched or embedded."""
+        items = []
+        for entry in self.sorted_coverage():
+            cited = "".join(f'<li><a href="{e(finding_path(self.finding_by_id[finding_id]))}">'
+                            f'{e(self.finding_by_id[finding_id]["title"])}</a></li>' for finding_id in entry["findings"])
+            items.append(f'<li class="news-item"><span class="news-outlet">{e(entry["outlet"])}</span> · '
+                         f'<a href="{e(entry["url"])}" rel="noopener noreferrer">{e(entry["headline"])}</a> · '
+                         f'{time_tag(entry["published_on"])} · <span class="news-kind">{self.t("news.kind." + entry["kind"])}</span>'
+                         + (f'<div><span>{self.t("news.findings")}</span><ul>{cited}</ul></div>' if cited else "") + "</li>")
+        body = f'<ul class="news-list">{"".join(items)}</ul>' if items else f'<p class="notice">{self.t("news.empty")}</p>'
+        main = f'    <section class="section finding-body" id="content"><h2>{self.t("news.title")}</h2>{body}</section>\n'
+        return self.page("news", self.labels["news.title"], self.labels["news.description"], "/news.html", main)
 
     def terms_used_html(self, finding):
         """DF1952-04: ``Terms used on this page`` links to the glossary entries the finding's title, summary or body use;
@@ -2309,6 +2345,7 @@ class Site:
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
         paths += ["/supporters.html"] if self.supporters else []  # DF2207-13
         paths += ["/press.html"] if self.site.get("press") else []  # DF2207-10
+        paths += ["/news.html"] if self.coverage is not None else []  # DF0022-03
         if self.model.get("newsletters"):  # DF1952-09: only with public issues
             paths += ["/newsletters.html"] + [f'/newsletters/{i["sent_on"]}.html' for i in reversed(self.model["newsletters"])]
         paths += list(self.agency_pages().values())
@@ -2784,6 +2821,8 @@ def _plan_site(root, today=None, notes=None):
         pages["glossary.html"] = site.glossary_html()
     if site.faq:  # DF0022-01: the slug is reserved, so no content page can already hold this name
         pages["faq.html"] = site.faq_html()
+    if site.coverage is not None:  # DF0022-03: the slug is reserved; a present empty file keeps the page with its empty notice
+        pages["news.html"] = site.news_html()
 
     if model["newsletters"]:  # DF1952-09: newest first; the slug is reserved, so nothing else can own these paths
         pages["newsletters.html"] = site.newsletters_html()
