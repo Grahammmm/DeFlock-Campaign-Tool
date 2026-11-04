@@ -218,6 +218,7 @@ describe("runner API: followups, classification patch, site staging", () => {
     expect(safeSitePath("assets/Logo.PNG")).toBe("assets/Logo.PNG");
     expect(safeSitePath("data/findings.csv")).toBe("data/findings.csv");
     expect(safeSitePath("data/sources.csv")).toBe("data/sources.csv");
+    expect(safeSitePath("meetings.ics")).toBe("meetings.ics");
     for (const bad of ["", "/index.html", "a//b.html", "../index.html", "findings/../index.html", "./index.html", ".hidden", ".env",
       "index.html/", "run.sh", "setup.exe", "notes", "dir/noext", "a\\b.html", "x.html\0", "x.php", "x.htm.bak", "x.sqlite", "secrets.key",
       "a".repeat(130) + ".html", Array(17).fill("d").join("/") + "/x.html"]) {

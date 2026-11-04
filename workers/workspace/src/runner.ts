@@ -157,7 +157,7 @@ const SITE_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,120}$/;
 export const SITE_FILE_MAX_BYTES = 16 * 1024 * 1024;
 export const SITE_EXTENSIONS: ReadonlySet<string> = new Set([
   "html", "css", "js", "mjs", "map", "json", "geojson", "xml", "txt", "webmanifest",
-  "svg", "png", "jpg", "jpeg", "webp", "gif", "ico", "woff", "woff2", "pdf", "csv",
+  "svg", "png", "jpg", "jpeg", "webp", "gif", "ico", "woff", "woff2", "pdf", "csv", "ics",
 ]);
 export const SITE_CONTROL_FILES: ReadonlySet<string> = new Set(["_headers", "_redirects"]);
 

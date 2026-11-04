@@ -21,6 +21,9 @@ DEFAULTS = {
     "nav.home_page": "Home page", "nav.topics": "Topics", "header.skip": "Skip to content", "header.attend": "Attend a meeting",
     "footer.credit": "{name} is an independent local initiative. Built with DeFlock Campaign Tool.",
     "footer.contact": "Contact:", "footer.feed": "Findings feed", "footer.sitemap": "Sitemap", "footer.search": "Search",
+    "footer.license": "Data and text:", "license.csv_note": "(license: {name})",
+    "license.about": "Text and data on this site are published under {license}.",
+    "license.about_camera": "Camera points: \u00a9 {osm}, {odbl}.",
     "search.title": "Search", "search.description": "Search the published findings and the source library",
     "search.label": "Search findings and sources",
     "search.intro": ("Looks through the titles, summaries and agency names of published findings and the titles of the "
@@ -75,6 +78,7 @@ DEFAULTS = {
     "intro.meetings": "Comment kits summarize reviewed findings; they are not legal advice and do not ask anyone to flood a meeting.",
     "intro.open_data_about": "Published findings are also available as open data:",
     "intro.meetings_open_data": "Meetings and outcomes as open data (JSON)",
+    "intro.meetings_calendar": "Subscribe to the meetings calendar (.ics)",
     "intro.meetings_open_data_about": "Meetings with their recorded outcomes, votes and official sources:",
     "intro.agencies_open_data": "Agencies as open data (JSON)",
     "intro.agencies_open_data_about": "Agencies with their asked items, posted policy, contract end and portal numbers, as each source reported them:",
