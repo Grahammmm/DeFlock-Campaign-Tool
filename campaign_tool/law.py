@@ -17,6 +17,7 @@ extension prerequisites are not established by this arithmetic. The CLI's
 import argparse
 import copy
 import csv
+import hashlib
 import io
 import json
 import os
@@ -647,15 +648,24 @@ def _command_output(args, package):
 
 
 SHEET_COLUMNS = tuple("rule_id citation actor activity duty exceptions remedy effective_from effective_to "
-                      "current_review source_titles source_urls oldest_access source_age_days "
+                      "current_review source_titles source_urls oldest_access source_age_days package_sha256 "
                       "reviewer_conclusion reviewer_notes reviewer_name reviewed_on".split())
+LEGACY_SHEET_COLUMNS = tuple(column for column in SHEET_COLUMNS if column != "package_sha256")
 REVIEW_LABELS = ("verified", "likely", "needs_attorney_review")
 SHEET_MAX_BYTES = 2 * 1024 * 1024
+REGENERATE = "regenerate review-sheet or review-packet, nothing written"
+
+
+def package_sha256(package):
+    """SHA-256 of the whole validated package as canonical JSON: revision binding, not authentication."""
+    text = json.dumps(package, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def review_sheet(package, as_of, stale_days=180):
     """records_law row, then rules in order (reviewer columns blank), and sources older than stale_days."""
     law = package["records_law"]
+    digest = package_sha256(package)
     rows, stale = [], []
     for rule in [{"rule_id": "records_law", "citation": law["citation"], "duty": law["name"],
                   "sources": law["sources"]}] + package["rules"]:
@@ -666,7 +676,8 @@ def review_sheet(package, as_of, stale_days=180):
                      "exceptions": " | ".join(rule.get("exceptions", [])), "current_review": rule.get("review", ""),
                      "source_titles": " | ".join(s["title"] for s in sources),
                      "source_urls": " | ".join(s["url"] for s in sources),
-                     "oldest_access": sources[oldest]["accessed"], "source_age_days": str(ages[oldest])})
+                     "oldest_access": sources[oldest]["accessed"], "source_age_days": str(ages[oldest]),
+                     "package_sha256": digest})
         for source, age in zip(sources, ages):
             if age > stale_days:
                 stale.append({"rule_id": rule["rule_id"], **{k: source[k] for k in ("title", "url", "accessed")},
@@ -719,6 +730,8 @@ def read_sheet(path, package):
         raise ValueError(f"--sheet is not UTF-8 text: {path}") from None
     except csv.Error as exc:
         raise ValueError(f"--sheet is not a readable CSV: {exc}") from None
+    if header == LEGACY_SHEET_COLUMNS:
+        raise ValueError(f"--sheet has no package binding; {REGENERATE}")
     if header != SHEET_COLUMNS:
         raise ValueError(f"--sheet header must equal the review-sheet columns in order; missing "
                          f"{[c for c in SHEET_COLUMNS if c not in header]}, unexpected "
@@ -731,12 +744,28 @@ def read_sheet(path, package):
         if rule_id in seen or rule_id not in known:
             raise ValueError(f"row {number}: {'duplicate' if rule_id in seen else 'unknown'} rule_id {rule_id!r}")
         seen.add(rule_id)
+    _check_sheet_binding(package, rows)
     return rows
+
+
+def _check_sheet_binding(package, rows):
+    """Every row must carry the digest of exactly this package; the first offending row is named."""
+    expected = None
+    for number, row in enumerate(rows, 1):
+        cell = row.get("package_sha256")
+        label = f"row {number} ({str(row.get('rule_id', '')).strip()})"
+        if not (isinstance(cell, str) and re.fullmatch(r"[0-9a-f]{64}", cell)):
+            raise ValueError(f"{label}: invalid package_sha256; {REGENERATE}")
+        expected = expected or package_sha256(package)
+        if cell != expected:
+            raise ValueError(f"{label}: worksheet belongs to a different law package; {REGENERATE}")
 
 
 def apply_sheet(package, rows, today=None):
     """Transcription, not a review: a deep copy with only rules[].review set; edited text is listed, not applied."""
     today = today or date.today()
+    rows = list(rows)
+    _check_sheet_binding(package, rows)
     proposed = copy.deepcopy(package)
     rules = {rule["rule_id"]: rule for rule in proposed["rules"]}
     written = {row["rule_id"]: row for row in review_sheet(package, today)[0]}

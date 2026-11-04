@@ -16,6 +16,8 @@
     "footer.credit": "{name} es una iniciativa local independiente. Creado con DeFlock Campaign Tool.",
     "footer.contact": "Contacto:",
     "footer.feed": "Canal de hallazgos",
+    "meeting.feed": "Canal de reuniones",
+    "title.meetings_feed": "Canal Atom de reuniones",
     "footer.sitemap": "Mapa del sitio",
     "footer.search": "Buscar",
     "search.title": "Buscar",

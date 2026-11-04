@@ -278,10 +278,16 @@ class FindingMeetingTests(unittest.TestCase):
         self.assertTrue(all("Discussed at public meetings" not in page for page in baseline.values()))
         self.write_meeting(1, None)  # legacy meeting
         self.write_meeting(2, [fid(2)], starts_at="2026-11-02T18:00:00-08:00")  # unrelated to findings 1 and 3
-        self.assertEqual(self.page(1), baseline[1])
-        self.assertEqual(self.page(3), baseline[3])
-        associated = self.page(2)
-        self.assertEqual(SECTION.sub("", associated), baseline[2])  # additive only
+        feed_link = ' · <a href="/meetings.xml">Meetings feed</a>'
+        staged = {n: self.page(n) for n in (1, 2, 3)}
+        for n in (1, 2, 3):
+            self.assertNotIn(feed_link, baseline[n])
+            self.assertEqual(staged[n].count(feed_link), 1)
+        # Only the shared footer changes for findings with no meeting association.
+        self.assertEqual(staged[1].replace(feed_link, "", 1), baseline[1])
+        self.assertEqual(staged[3].replace(feed_link, "", 1), baseline[3])
+        associated = staged[2]
+        self.assertEqual(SECTION.sub("", associated).replace(feed_link, "", 1), baseline[2])  # additive only
         self.assertEqual(associated.count("Discussed at public meetings"), 1)
         notice_at = associated.index('<p class="notice">')
         self.assertLess(associated.index('id="discussed-at-public-meetings"'), notice_at)
