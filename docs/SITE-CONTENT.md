@@ -498,6 +498,52 @@ each finding that uses them. The file is `{"schema_version": 1, "terms": [...], 
 - Labels: `footer.glossary`, `title.glossary`, `title.glossary_description`, `heading.glossary`, `finding.terms` and
   `glossary.also`, `glossary.citation`, `glossary.source`, `glossary.status` (see Labels).
 
+### FAQ (`content/faq.json`, optional)
+
+Questions an organizer has checked, in the order written, become `/faq.html`. The file is
+`{"schema_version": 1, "entries": [...]}`; nothing else.
+```json
+{"schema_version": 1, "entries": [{"question": "What is a retention period?",
+  "answer_md": "How long a record is kept. See the finding below.",
+  "finding_ids": ["fnd_0000000000000001"], "rule_id": "ca-civ-1798.90.5-definitions"}]}
+```
+- `entries`: 1 to 40 entries (an empty list is refused; to switch the page off, remove the file). Each entry has
+  `question` and `answer_md` and may have `finding_ids` and `rule_id`; unknown keys, `null`, a boolean, a
+  `schema_version` other than the integer 1 and wrong types are refused rather than coerced.
+- `question`: 1-160 characters of trimmed plain single-line text (no `<`, `>`, line break, tab or other control or
+  invisible format character). Questions are compared after Unicode NFC, casefolding and collapsing whitespace; a
+  second one that repeats an earlier one is refused as `faq.json.entries[N].question: duplicates entries[M].question`
+  (zero-based positions).
+- `answer_md`: non-blank, at most 1500 characters, rendered by `markdown_lite` (raw HTML shows as text, images are not
+  resolved; `<` and `>` are refused). Each question is an `h2` with the anchor `#q-1`, `#q-2`, ... in file order, so
+  adding a question at the end never moves an earlier anchor.
+- `finding_ids` (optional, 0 to 3, no repeats): exact ids of findings that are published in this campaign's
+  `content/findings/`, not slugs. The page links each one under the answer, in the order given, as
+  `/findings/<slug>.html`. An id that is not a published finding is refused as
+  `faq.json.entries[N].finding_ids[J]: not a published finding id`, a repeated one as `... duplicate finding id`; a
+  finding that is later withdrawn blocks the rebuild until the entry is edited.
+- `rule_id` (optional): an exact rule id (at most 120 characters, no prefix matching) of the campaign's shipped law
+  package (`campaign.json`'s jurisdiction). It needs a usable package even when no finding cites a rule
+  (`... rule_id: no usable campaign law package`; an unknown id is `... rule_id: unknown law-package rule id`).
+  The page shows the package's citation, the rule id and the package's own status ("draft, not legally reviewed"
+  unless the package says reviewed). It is not an event-date check, a computed deadline or a claim that the FAQ was
+  legally reviewed. The package is read only when an entry has a `rule_id`.
+- Glossary terms are linked as on finding pages: when `content/glossary.json` has terms, "Terms used in this answer"
+  lists those whose name or alias is in the question or in the answer, each searched on its own.
+- The legal-claim guard is advisory: `build` and `content-check` print `review-required: faq.json.entries[N].answer_md:
+  legal-claim wording (...)` for every answer that asserts a legal violation (to stderr in `content-check`, which never
+  changes its JSON stdout, count or exit code). Notes name the place and the rule, never the text; a rule citation
+  does not silence them, and a note never fails a build.
+- `faq.html` joins the footer (last paragraph) and, with `base_url`, `sitemap.xml`. `faq` is a reserved page and finding
+  slug with or without the file, and `faq.html` cannot be a `public-assets` name. Without the file there is no page,
+  no link, and every other output is byte-identical; removing the file and rebuilding removes the page and its links.
+  A refused FAQ leaves the existing `public/` untouched, and the input JSON is never copied into `public/`.
+- `content-check` runs the build's own reader and lists every independent problem with `faq.json` in its path; a
+  symlink (even dangling), folder or other non-regular `faq.json`, an oversize file (2 MiB), invalid UTF-8 or JSON
+  or an unreadable file is refused, not skipped.
+- Labels: `faq.title`, `footer.faq`, `faq.findings`, `faq.terms`, `faq.rule` and `faq.law_status` (see Labels). The
+  Spanish values in `examples/labels/es.json` are a machine-made draft like the rest of that file.
+
 ### Newsletter archive (`content/newsletters/<YYYY-MM-DD>.json`, optional)
 
 Written by `newsletter archive --date D --publish` (see NEWSLETTER.md); exactly `{"schema_version": 1, "sent_on", "title",
@@ -607,6 +653,7 @@ per picker city by name, each point in the first city boundary holding it by the
 `group_label` section; manufacturer/operator or "not tagged", an OSM node link or "no OSM link"; over 2 000 points each
 section lists 500 rows, then "and N more on the map"; linked from the map fallback and footer, in `sitemap.xml`),
 `glossary.html` (only with a non-empty `content/glossary.json`: see Glossary),
+`faq.html` (only with a `content/faq.json`: see FAQ),
 `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or
