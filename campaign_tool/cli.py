@@ -1014,6 +1014,11 @@ def main():
             agency_p.add_argument("--kind", required=True, help="sheriff, police, chp, county_board, city_council, "
                                   "district_attorney or other")
             agency_p.add_argument("--note", default=None, help="Up to 300 characters")
+    atlas_text = "Cross-check a local Atlas CSV (private, read-only). An Atlas listing is a lead, not evidence."
+    atlas_p = agency_cmds.add_parser("atlas", help=atlas_text, description=atlas_text, allow_abbrev=False)
+    atlas_p.add_argument("--csv", required=True, help="A saved Atlas of Surveillance export (UTF-8, at most 10 MiB)")
+    atlas_p.add_argument("--directory", required=True)
+    atlas_p.add_argument("--json", action="store_true", dest="as_json", help="Print the report as JSON")
     from .kit_track import CHANNELS as kit_track_channels
     sent_p = commands.add_parser("kit-sent", help="Record a request the organizer sent by hand in kit/sent.json; sends nothing")
     for flag in ("--directory", "--agency", "--date"):
@@ -1710,6 +1715,10 @@ def main():
             from .content_init import init_content
             print(json.dumps(init_content(root, args.source_campaign), indent=2))
             print(f"content/ written from {Path(args.source_campaign).name}. Review every copied page and replace anything specific to the other locality; nothing was built or deployed." if args.source_campaign is not None else 'content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
+        elif args.command == "kit-agency" and args.agency_command == "atlas":
+            from . import kit_atlas
+            report = kit_atlas.compare_atlas(root, Path(args.csv).expanduser())
+            print(json.dumps(report, indent=2, ensure_ascii=False) if args.as_json else kit_atlas.render_atlas(report))
         elif args.command == "kit-agency":
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
