@@ -26,7 +26,7 @@ SITE_FILE_MAX_BYTES = 16 * 1024 * 1024
 JOB_KINDS = ("intake", "extract", "digest", "classify_mail", "send_request", "draft_followup", "build_site", "newsletter_draft", "backup")
 # Mirrors SITE_EXTENSIONS / SITE_CONTROL_FILES in workers/workspace/src/runner.ts.
 SITE_EXTENSIONS = frozenset({"html", "css", "js", "mjs", "map", "json", "geojson", "xml", "txt", "webmanifest",
-                             "svg", "png", "jpg", "jpeg", "webp", "gif", "ico", "woff", "woff2", "pdf", "csv"})
+                             "svg", "png", "jpg", "jpeg", "webp", "gif", "ico", "woff", "woff2", "pdf", "csv", "ics"})
 SITE_CONTROL_FILES = frozenset({"_headers", "_redirects"})
 
 

@@ -106,6 +106,7 @@
     "intro.meetings": "Los kits de comentarios resumen hallazgos revisados; no son asesoramiento legal y no piden a nadie que inunde una reunión.",
     "intro.open_data_about": "Los hallazgos publicados también están disponibles como datos abiertos:",
     "intro.meetings_open_data": "Reuniones y resultados como datos abiertos (JSON)",
+    "intro.meetings_calendar": "Suscribirse al calendario de reuniones (.ics)",
     "intro.meetings_open_data_about": "Reuniones con sus resultados registrados, votos y fuentes oficiales:",
     "intro.agencies_open_data": "Agencias como datos abiertos (JSON)",
     "intro.agencies_open_data_about": "Agencias con sus solicitudes, política publicada, fin de contrato y cifras del portal, según cada fuente:",

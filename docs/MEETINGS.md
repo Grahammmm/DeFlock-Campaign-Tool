@@ -326,5 +326,12 @@ before this can be considered a supported live poll. No detail requests or new s
 ## Not done
 
 No RSVP collection (the `rsvp_count` column is
-reserved), no other agenda platforms (Granicus, PrimeGov, CivicClerk), and no calendar
-feed. Each of those should keep the same keyword-lead, human-verify rule.
+reserved), and no other agenda platforms (Granicus, PrimeGov, CivicClerk). Each of those should keep the same keyword-lead, human-verify rule.
+
+## Calendar feed
+
+A built site publishes `/meetings.ics` (RFC 5545), linked from the meetings page, so supporters can subscribe. It lists the
+upcoming, not cancelled meetings only (same split as the page: the build day counts as upcoming); past and cancelled ones are
+omitted. Each event has `UID:meeting-<id>@<host of base_url>`, a UTC `DTSTART` converted from the meeting's offset, the
+agenda URL, location and agenda item when set, and a link back to the meeting on the page. The feed has no `DTEND`, and for
+one build day it is byte-identical. The `.ics` extension is on the runner's upload allowlist (`text/calendar`).
