@@ -1277,6 +1277,74 @@ def _pre_meeting(value, label, today=None, problems=None):
     return clean
 
 
+SHARING_KEYS = ("checked_on", "source_url", "recipients")
+SHARING_KINDS = ("local", "state", "federal", "private", "unknown")
+SHARING_STATES = frozenset("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR "
+                           "PA RI SC SD TN TX UT VT VA WA WV WI WY DC AS GU MP PR VI".split()) | {"US"}  # US = federal
+SHARING_HEADER = ["name", "state", "kind"]  # the import CSV's exact header
+SHARING_MAX_ROWS = 2000
+SHARING_HOST = "transparency.flocksafety.com"
+SHARING_RULE_ID = "ca-civ-1798.90.55-sharing-limits"  # the law-package rules the agency page cites by id (DF1207-08)
+SHARING_BULLETIN_ID = "ca-oag-2023-dle-06-out-of-state-sharing-guidance"
+
+
+def sharing_row_problems(name, state, kind):
+    """DF1207-08: ``[(field, message)]`` for one recipient the organizer transcribed from the vendor portal; [] when fine."""
+    found = []
+    if not (isinstance(name, str) and name.strip() and name == name.strip()):
+        found.append(("name", "required, without leading or trailing spaces"))
+    elif len(name) > 160 or any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in name):
+        found.append(("name", "at most 160 characters, no control characters"))
+    if not (isinstance(state, str) and state in SHARING_STATES):
+        found.append(("state", "a two-letter USPS state or territory code, or US for a federal agency"))
+    if not (isinstance(kind, str) and kind in SHARING_KINDS):
+        found.append(("kind", f"choose one of {list(SHARING_KINDS)}"))
+    elif state == "US" and kind != "federal":
+        found.append(("state", "US is only for kind federal"))
+    return found
+
+
+def sharing_source_problem(value):
+    """DF1207-08: why ``value`` is not an https URL on the vendor transparency portal host, else None."""
+    try:
+        _https(value, "source_url")
+        parsed = urlsplit(value)
+        if parsed.hostname != SHARING_HOST or parsed.port is not None:
+            raise ValueError
+    except ValueError:  # ContentError is one
+        return f"must be an https:// URL on {SHARING_HOST}"
+    return None
+
+
+def _sharing(value, label, today=None):
+    """DF1207-08: the organizer-transcribed list of agencies the vendor transparency portal names as receiving data
+    (``profile.sharing``), as the portal shows it; never fetched and never read as a finding. Recipients are returned
+    sorted by state then name; a duplicate (name casefolded, state) is refused."""
+    if value is None:
+        return None
+    _require_keys(value, SHARING_KEYS, SHARING_KEYS, label)
+    if _calendar_day(value["checked_on"], f"{label}.checked_on") > (today or date.today()):
+        raise ContentError(f"{label}.checked_on: must not be after the build date")
+    if (problem := sharing_source_problem(value["source_url"])) is not None:
+        raise ContentError(f"{label}.source_url: {problem}")
+    rows = value["recipients"]
+    if not isinstance(rows, list) or not 1 <= len(rows) <= SHARING_MAX_ROWS:
+        raise ContentError(f"{label}.recipients: must list 1 to {SHARING_MAX_ROWS} agencies")
+    clean, seen = [], {}
+    for index, row in enumerate(rows):
+        item = f"{label}.recipients[{index}]"
+        _require_keys(row, ("name", "state", "kind"), ("name", "state", "kind"), item)
+        for field, message in sharing_row_problems(row["name"], row["state"], row["kind"]):
+            raise ContentError(f"{item}.{field}: {message}")
+        key = (row["name"].casefold(), row["state"])
+        if key in seen:
+            raise ContentError(f"{item}: duplicate of recipients[{seen[key]}] (same name and state)")
+        seen[key] = index
+        clean.append({"name": row["name"], "state": row["state"], "kind": row["kind"]})
+    clean.sort(key=lambda r: (r["state"], r["name"].casefold(), r["name"]))
+    return {"checked_on": value["checked_on"], "source_url": value["source_url"], "recipients": clean}
+
+
 CONTRACT_CHECKLIST_PATH = Path(__file__).resolve().parent / "_resources" / "checklists" / "contract-checklist.json"
 CONTRACT_CHECKLIST_NAME, MAX_CONTRACT_CHECKLIST_BYTES = "checklists/contract-checklist.json", 64 * 1024
 CONTRACT_CHECK_IDS = ("term_renewal", "price_changes", "data_ownership", "retention", "sharing_network",
@@ -1518,7 +1586,7 @@ def load_agencies(document, label, today=None):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding", "pre_implementation_meeting"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding", "pre_implementation_meeting", "sharing"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -1558,6 +1626,8 @@ def load_agencies(document, label, today=None):
         })
         if "funding" in profile:  # DF2207-02: only when the organizer recorded it, so other profiles keep their shape
             agencies[-1]["funding"] = _funding(profile["funding"], f"{item}.profile.funding", today)
+        if profile.get("sharing") is not None:  # DF1207-08: likewise only when recorded, so other agencies keep their shape
+            agencies[-1]["sharing"] = _sharing(profile["sharing"], f"{item}.profile.sharing", today)
     return agencies
 
 
