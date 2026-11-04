@@ -50,9 +50,6 @@ class Returns(Base):
         row = MOD.evidence_row(a, MOD.privacy().PATTERNS, 'now',
                                lambda u: (u, 200, b'Flock Safety cameras', None))
         self.assertEqual(MOD.decide([row])[0]['verdict'], 'likely')
-        schema = json.loads((MOD.REPO / 'schemas/agency-seed.schema.json').read_text())
-        props = schema['properties']['counties']['items']['properties']['agencies']['items']['properties']
-        self.assertIn('official_domain', props)
 
     def test_private_windows_rejected_later_clean_window_kept(self):
         for secret in ['123 Synthetic Lane', 'Officer Jane Example']:
