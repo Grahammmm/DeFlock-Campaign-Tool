@@ -94,6 +94,17 @@ then "and N more on the site."; the heading is omitted when no item is kept and 
 present only when the section is. Worker manifests carry no `requests` key and render exactly as
 before; a `requests` that is not a list is refused (`DraftError`).
 
+`--from-content` also lists, under **New in the records library** (after Records requests, before
+Decisions), each `content/sources.json` entry whose `received_at` day is on or after the `--since` day (all
+of them without `--since`) and not after the day the draft is built. Each line is `**TITLE** (AGENCY), received
+YYYY-MM-DD, record PREFIX`, with a "Public copy" link when the entry has a `public_url` and a "Sources page"
+link (`/sources.html#<fragment>`) only when `campaign.base_url` is set. AGENCY is the agency name, else the
+agency id the sources page shows. Only the 12-character record number is shown, never the full hash, `note`,
+`pages` or the public-copy check. Newest first; at most 12 lines, then "and N more on the sources page.";
+the heading is omitted when no entry is kept and `counts.records` is present only when the section is.
+Worker manifests carry no `records` key and render exactly as before; a `records` that is not a list, or a
+prefix that is not 12 lowercase hex characters, is refused (`DraftError`).
+
 Under each upcoming meeting `--from-content` adds one indented line. With participation facts an
 organizer verified (see MEETINGS.md) it reads `How to take part: In person: yes|no; Remote: HOW;
 Written comments: HOW, by DEADLINE; Speaker limit: N minutes (checked DAY) [Official details](URL)`,

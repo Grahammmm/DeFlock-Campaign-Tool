@@ -434,6 +434,36 @@ def doctor_report(root, contact_max_age_days=None, stale_days=None):
     return report
 
 
+def readiness(root, campaign_id=None, out=None, contact_max_age_days=None, stale_days=None):
+    from datetime import datetime, timezone
+    from tools.flock_privacy import categories
+    campaign_id = campaign_id if campaign_id is not None else read_config(root).get("campaign_id")
+    if not isinstance(campaign_id, str) or not campaign_id.strip():
+        raise ValueError("readiness_campaign_id_absent: supply --campaign-id or config campaign_id")
+    report = doctor_report(root, contact_max_age_days, stale_days)
+    actions = report["next_actions"]
+    for index, sentence in enumerate(actions):
+        if found := categories(sentence):
+            raise ValueError(f"readiness_unsafe_next_action: index {index}, category {found[0]}")
+        if len(sentence) > 240:
+            raise ValueError(f"readiness_next_action_length: index {index}")
+    if len(actions) > 40:
+        raise ValueError("readiness_next_actions_count: maximum 40")
+    counts = {key: len(report.get(key, [])) + report.get(key + "_more", 0)
+              for key in ("stale_contacts", "stale_inputs", "stale_comment_kits", "contracts_ending")}
+    counts["correction_requests_open_over_14_days"] = report.get("correction_requests_open_over_14_days", 0)
+    snapshot = {"schema_version": 1, "generated_at": datetime.now(timezone.utc).isoformat(),
+                "campaign_id": campaign_id, "law_package_status": report["law_package_status"],
+                "production_ready": report["production_ready"],
+                "safe_to_send_automatically": report["safe_to_send_automatically"],
+                "next_actions": actions, "counts": counts}
+    encoded = json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n"
+    if out is None:
+        print(encoded, end="")
+    else:
+        Path(out).write_text(encoded, encoding="utf-8")
+
+
 def kit(args, root):
     from .kit import build_kit
     summary = build_kit(root, online=args.online, include=args.include, scopes=args.scope)
@@ -773,6 +803,12 @@ def main():
             cmd.add_argument("--stale-days", type=int, metavar="N", help="Name inputs dated over N days ago (1-3650)")
             cmd.add_argument("--checklist", action="store_true", help="Print each check as ok/todo with its next step and owner")
             cmd.add_argument("--json", action="store_true", help="With --checklist: print the checklist rows as JSON")
+    readiness_p = commands.add_parser("readiness", help="Project doctor as a private snapshot; no network")
+    readiness_p.add_argument("--directory", required=True)
+    readiness_p.add_argument("--campaign-id", help="Otherwise use config campaign_id; absence refuses")
+    readiness_p.add_argument("--out", help="Write only after all checks pass; otherwise print JSON")
+    readiness_p.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified contacts checked over N days ago (at least 1)")
+    readiness_p.add_argument("--stale-days", type=int, metavar="N", help="Name inputs dated over N days ago (1-3650)")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -1027,8 +1063,15 @@ def main():
         review_p.add_argument(flag, required=True)
         payload_p.add_argument(flag, required=True)
     review_p.add_argument("--signature", metavar="SIG", help="SSH signature over the review-payload bytes")
-    finding_cmds.add_parser("review-status", help="Print review_blockers for a draft (read-only)"
-                            ).add_argument("--directory", required=True)
+    finding_cmds.add_parser("review-status", help="Print review_blockers for a draft and who was asked to review "
+                            "each role (read-only)").add_argument("--directory", required=True)
+    assign_p = finding_cmds.add_parser("assign", help="Record who was asked to review one role of a draft "
+                                       "(private note; sends nothing and is not a review)")
+    assign_p.add_argument("--directory", required=True)
+    assign_p.add_argument("--role", required=True, help="factual, legal or privacy")
+    assign_p.add_argument("--reviewer", required=True)
+    assign_p.add_argument("--on", required=True, metavar="YYYY-MM-DD", help="Date asked, not after today")
+    assign_p.add_argument("--replace", action="store_true", help="Replace a different reviewer already assigned")
     publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
     for flag in ("--directory", "--approved-by"):
         publish_p.add_argument(flag, required=True)
@@ -1095,9 +1138,11 @@ def main():
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
     today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
-    from .today import CONTRACT_DAYS, contract_days
+    from .today import CONTRACT_DAYS, REVIEW_DAYS, contract_days, review_days
     today_p.add_argument("--contract-days", type=contract_days, default=CONTRACT_DAYS, metavar="N", help="Contracts "
                          "ending within N days, default 90; ended in the last 30 days are always listed")
+    today_p.add_argument("--review-days", type=review_days, default=REVIEW_DAYS, metavar="N", help="Assigned finding "
+                         "reviews with no receipt after N days, default 7")
     law_packet = commands.add_parser("law", help="Law package tools; nothing here marks a package reviewed"
                                      ).add_subparsers(dest="law_command", required=True).add_parser(
         "review-packet", help="Private packet for a human law reviewer in a new --out folder; reviews nothing")
@@ -1351,8 +1396,15 @@ def main():
             if args.finding_command == "review-payload":
                 sys.stdout.buffer.write(findings.review_payload(root, draft, args.role, args.decision, args.reviewer, args.rationale))
                 return
+            if args.finding_command == "assign":
+                print(json.dumps(findings.assign(root, draft, args.role, args.reviewer, args.on, replace=args.replace),
+                                 indent=2, ensure_ascii=False))
+                print("Recorded only. Nothing was sent. An assignment is not a review.")
+                return
             print(json.dumps(findings.add_receipt(root, draft, args.role, args.decision, args.reviewer, args.rationale, signature=args.signature)
-                             if args.finding_command == "review" else findings.review_status(root, draft), indent=2))
+                             if args.finding_command == "review" else
+                             {**findings.review_status(root, draft), "assignments": findings.assignment_states(root, draft)},
+                             indent=2))
         elif args.command == "correction-request":
             from . import correction_requests as cr
             read_config(root)
@@ -1450,7 +1502,7 @@ def main():
         elif args.command == "today":
             from .today import run_cli as today_cli
             read_config(root)  # not a campaign folder: Stopped, before any source is read
-            print(today_cli(root, args.as_of, args.as_json, args.contract_days))
+            print(today_cli(root, args.as_of, args.as_json, args.contract_days, args.review_days))
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
@@ -1484,6 +1536,8 @@ def main():
             from .kit_track import denial_reply
             print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
             print("Draft only. Nothing was sent.")
+        elif args.command == "readiness":
+            readiness(root, args.campaign_id, args.out, args.contact_max_age_days, args.stale_days)
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
             print(render(doctor_report(root, args.contact_max_age_days, args.stale_days), args.directory, as_json=args.json,

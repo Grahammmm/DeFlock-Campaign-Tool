@@ -23,6 +23,7 @@ mail or publishes anything.
 
 | Part | What it does | Evidence |
 | --- | --- | --- |
+| Readiness snapshot | Offline doctor projection, fail-closed privacy/identity checks; runner-authenticated setting transport and 36-hour age-aware readback; not deployed or scheduled. | `schemas/readiness-snapshot-v1.json`, `workers/workspace/src/readiness.ts`, [WORKERS.md](WORKERS.md) |
 | Threat model | Categories, existing safeguards, gaps and an advisory trust ranking. | [THREAT-MODEL.md](THREAT-MODEL.md) |
 | Flock facts, law-policy, compare | Cited facts, law and policy text, and policy comparison for one agency. | `tools/flock_facts.py`, `tools/flock_law_policy.py`, `tools/flock_compare.py`, `skills/flock-facts/`, `skills/flock-law-policy/`, `skills/flock-compare/` |
 | Flock verify | Independent check of a run's findings against their citations. | `tools/flock_verify.py`, `skills/flock-verify/` |
@@ -37,6 +38,7 @@ mail or publishes anything.
 | Flock monitor, sweep, region | Index-page monitoring (links recorded, never fetched), watch-list sweep status and plans, a ranked read-only daily to-do list, county region scaffolds. | `tools/flock_monitor.py`, `tools/flock_sweep.py`, `tools/flock_today.py`, `tools/flock_region.py`, `skills/flock-monitor/`, `skills/flock-sweep/`, `skills/flock-region/` |
 | Flock review, report, page | The staged review run, its verify sample, golden check and batch runner, its report draft and a page draft. | `tools/flock_review.py`, `tools/flock_review_verify.py`, `tools/flock_review_golden.py`, `tools/flock_review_batch.py`, `tools/flock_report.py`, `tools/flock_page.py`, `tools/flock_privacy.py` (email/phone/plate patterns shared by the report, page and publish lints), `tools/flock_privacy_scan.py` (same patterns over a private draft folder; path:line: category only), `skills/flock-review/`, `skills/flock-page/` |
 | Flock publish exporter | Writes `PUBLISH.json` with every entry pending human review; publication needs G. `brief` writes a private 0600 partner/press brief draft from approved entries; never sent or built. | `tools/flock_publish.py`, `tools/flock_publish_stage.py`, `tools/flock_publish_brief.py`, `skills/flock-publish/` |
+| Flock redaction records | Read-only proposal, trusted sign-off and derivative eligibility; exporter refuses missing originals and required-but-ineligible redactions. Eligibility never approves publication. | `tools/flock_redaction_record.py`, [REDACTION.md](REDACTION.md) |
 | Flock review queue | Private challenge and receipt report for human review; never approves or publishes. | `tools/flock_review_queue.py` |
 | Custody report | One private page per published finding: the source hashes and re-hash result, when and from which agency each source was received, its preservation receipt, the review receipts bound to the current content, and every missing link named. Read-only and never published. A hash establishes byte identity, not authenticity. | `tools/custody_report.py`, `schemas/custody-report-v1.json`, [RECONCILIATION.md](RECONCILIATION.md) |
 | Publication gate | One check every publishing path (`finding publish`, flock stage, flock brief) calls before it emits: a named, content-matched approval or a refusal with a reason; no code writes an approval. | `campaign_tool/publication_gate.py`, `tests/test_publication_gate.py`, [PUBLICATION.md](PUBLICATION.md) |
@@ -72,7 +74,7 @@ Before serving anyone, the hosted path still needs:
 - A registered outbox sender in the workspace (`df-bind-sender`).
 - Account configuration and verification for the social posting adapter (`df-social-posting`), now implemented offline.
 - Provider configuration and verification for the Brevo webhook and list count (`df-subscribe`); the code is tested offline.
-- Legistar polling (`df-legistar-poll`).
+- Feed configuration and deployment for the Legistar poll (`df-legistar-poll`). The poll is implemented offline.
 - Deployment and integration verification for the two runner handlers (`df-runner-handlers`), now implemented offline.
 - A job budget / spend cap: **GAP**, no sheet item covers this.
 
@@ -92,7 +94,7 @@ Only items with no implementation in this repository.
 | Registered sender for the Worker `send_request`/`send_followup` executors | Outbox code is bound; an unconfigured sender refuses with `sender_not_configured`: `workers/workspace/src/executors/types.ts`. A deployed workspace still needs a registered sender. |
 | Live social posting | `post_social` has one Mastodon adapter behind per-post approval, but no account is configured: `workers/workspace/src/executors/post_social.ts` |
 | Independently reviewed state-law packages | California ships `status: draft`: `jurisdictions/us-ca/package.json` |
-| Automatic Legistar polling from the Worker | The CLI import exists; the Worker only lists imported meetings: [MEETINGS.md](MEETINGS.md) |
+| Live Legistar polling from the Worker | `pollLegistar` runs inline on the cron slots and is tested offline. It is not deployed and `LEGISTAR_FEEDS` is not configured: [MEETINGS.md](MEETINGS.md) |
 | Backup encryption, scheduling and hosted restore | `campaign_tool/backup.py` writes a plain tar by hand; encryption and storage are left to the operator |
 | Monitored scheduling and cost controls for the hosted path | The schedule is authored in code but undeployed; budget and spend controls remain a gap. See [hosted path](#hosted-path-deploy-scheduled-nothing-provisioned-g-2026-11-01). |
 | Any production deployment of the Workers or the runner | Scheduled, not provisioned; see [hosted path](#hosted-path-deploy-scheduled-nothing-provisioned-g-2026-11-01). |

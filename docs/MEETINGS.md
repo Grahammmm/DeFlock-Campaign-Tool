@@ -255,8 +255,39 @@ and `content-check` and `build` refuse the same mistakes in a hand-edited file. 
 list and the meeting page then end the outcome line with `Watch the discussion (from H:MM:SS)`; the wording
 comes from the `meeting.recording` and `meeting.recording_from` labels. Outcomes without a recording render as before.
 
+## Worker Legistar poll (inline, authored, undeployed)
+
+`runScheduled` (`workers/workspace/src/cron.ts`) polls Legistar inline on the existing cron slots
+through `pollLegistar` (`workers/workspace/src/legistar_poll.ts`). There is no second scheduler and no
+job row, so the runner is not involved. The optional `LEGISTAR_FEEDS` setting accepts https
+events feed URLs separated by spaces or commas, but a supported expanded collection source has
+**not been established**. If the setting is absent, nothing is
+fetched, the run summary records `not_configured`, and the dashboard shows
+`legistar_poll: not configured`.
+- Each feed gets one GET with no redirect followed, no credential and no cookie. Limits match the CLI:
+  20 s, 4 MiB and at most 60 events. A feed that breaks a limit, is not https, has credentials in its
+  URL, redirects, returns bad status/JSON, or has missing/null/non-array `EventItems` files nothing. It raises one deduplicated
+  incident naming the feed by host and path, with no response body, and the slot's outcome becomes
+  `partial`. The other feeds still run.
+- An expanded event is kept only when an agenda item matches `matchesMeetingKeywords`, the generated
+  copy of `data/meeting-keywords.json`. Only evaluated non-matches are counted as `discarded`.
+- A kept event is filed through `fileMeeting`, using the source URL `<feed path>/<EventId>` and the
+  item id `EventId`. A re-poll files nothing. Changed bytes file one revision, and the previous row is
+  left unchanged. Only the body name, date, ids, URL and hash are stored. Item text, comments and
+  attendee fields are not.
+- An event with no usable date or time is filed `date_state: unknown` with `starts_at` NULL and is never
+  guessed. A meeting already in the past is filed with its real date and counted `past`.
+
+**Source-contract hold:** Legistar documents `EventItems=1` on the
+[single-event endpoint](https://webapi.legistar.com/Help/Api/GET-v1-Client-Events-EventId_EventItems_AgendaNote_MinutesNote_EventItemAttachments),
+not the [events collection](https://webapi.legistar.com/Help/Api/GET-v1-Client-Events).
+The frozen one-request-per-feed design cannot discover events and then fetch their items.
+The spec owner must authorize bounded detail requests or establish an expanded collection source
+before this can be considered a supported live poll. No detail requests or new source are authorized here.
+
+
 ## Not done
 
-No automatic Legistar polling from the Worker, no RSVP collection (the `rsvp_count` column is
+No RSVP collection (the `rsvp_count` column is
 reserved), no other agenda platforms (Granicus, PrimeGov, CivicClerk), and no calendar
 feed. Each of those should keep the same keyword-lead, human-verify rule.

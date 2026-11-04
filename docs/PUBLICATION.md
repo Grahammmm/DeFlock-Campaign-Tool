@@ -274,7 +274,12 @@ sign-off, the privacy lint and the legal-claim notes are separate conditions.
 
 No reviewer signatures or identity check (roster names are self-asserted); the workspace Worker has
 no reviewer directory or role assignment beyond the Access policy; no automatic notification to
-reviewers. `finding diff ID --directory D --from DRAFT` (or `OLD NEW`) prints a read-only field-level
+reviewers. `finding assign DRAFT --directory D --role R --reviewer NAME --on D [--replace]` only records, privately in
+`private/review-assignments/`, who was asked to review which role since which date (refused for the draft's author, and
+with a roster for an unlisted name or a role they do not hold); nothing is sent, an assignment is never a review and no
+blocker, receipt count or publication check reads it. `finding review-status` shows each role as assigned since D,
+receipt_recorded or unassigned, and `today --review-days N` (default 7) lists assignments with no receipt after N days.
+`finding diff ID --directory D --from DRAFT` (or `OLD NEW`) prints a read-only field-level
 diff of the public fields before a correction; exit 3 when they differ. The runner that executes
 `build_site` is a separate component (see [ROADMAP.md](ROADMAP.md)).
 
