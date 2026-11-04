@@ -26,7 +26,7 @@ except ImportError:  # Windows
 from . import content, publication_gate
 from .content import FINDING_KEYS
 from .evidence import PREFIX, _ledger_hashes, _object_present
-from .review import CLASSIFICATIONS, EDIT_MARKER, ROLES, _who, content_hash, review_blockers
+from .review import CLASSIFICATIONS, EDIT_MARKER, ROLES, _who, content_hash, declared_interest_agencies, review_blockers
 from .sources_cmd import PREFIX as HEX_PREFIX, _known_agencies, _library
 
 PUBLICATION_FIELDS = ("state", "published_at", "updated_at", "corrections")
@@ -37,6 +37,7 @@ _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 MAX_ROSTER_BYTES, MAX_REVIEWERS = 256 * 1024, 200
 ROSTER_KEYS, REVIEWER_KEYS = frozenset(("schema_version", "reviewers")), frozenset(("name", "roles", "added_on"))
+MAX_INTERESTS, MAX_INTEREST_NOTE = 20, 200  # DF0022-05: private declared agency interests of a rostered reviewer
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 SIGN_NAMESPACE, MAX_KEY_BYTES, MAX_SIGNATURE_BYTES = "deflock-finding-review", 1024, 8192
 _KEY, _PRINCIPAL = re.compile(r"(ssh-ed25519|ecdsa-sha2-nistp256) [A-Za-z0-9+/]+={0,3}"), re.compile(r"[A-Za-z0-9._-]+")
@@ -211,7 +212,7 @@ def _ensure_campaign_id(root, now=None):
 
 def _bound_blockers(root, draft, receipts):
     """review_blockers with this campaign's binding: approvals from no or another campaign never count."""
-    return review_blockers(reviewed_view(draft), receipts, campaign_id(root) or "")
+    return review_blockers(reviewed_view(draft), receipts, campaign_id(root) or "", _load_roster(root))
 
 
 def _checked(root, draft, role, decision, reviewer, rationale):
@@ -223,7 +224,10 @@ def _checked(root, draft, role, decision, reviewer, rationale):
     rationale = _text("rationale", rationale, 2000)
     if _who(reviewer) == _who(draft.get("author")):
         raise ValueError("the author cannot review their own finding")
-    return reviewer, rationale, _roster_entry(root, role, reviewer)
+    entry = _roster_entry(root, role, reviewer)
+    for agency in declared_interest_agencies(draft, entry):  # DF0022-05: before any id, signature or receipt write
+        raise ValueError(f"{reviewer} has declared interest in agency {agency}; receipt refused")
+    return reviewer, rationale, entry
 
 
 def _roster_entry(root, role, reviewer):
@@ -364,7 +368,20 @@ def review_status(root, draft):
             "stale_receipts": len(receipts) - current, "campaign_id": bound, "unbound_receipts": unbound,
             "foreign_campaign_receipts": foreign, **receipt_trust(root, draft, receipts),
             "review_blockers": _bound_blockers(root, draft, receipts),
-            **({} if roster is None else {"unrostered_receipts": _unrostered(roster, receipts)})}
+            **({} if roster is None else {"unrostered_receipts": _unrostered(roster, receipts)}),
+            **({"declared_interest": interest} if (interest := _declared_interest(roster, draft, receipts)) else {})}
+
+
+def _declared_interest(roster, draft, receipts):
+    """Every stored receipt (current, stale or foreign) whose rostered reviewer now declares an interest in an agency
+    the finding is about; reviewer, role, decision, time and agency ids only, never the note or the rationale."""
+    rows = []
+    for r in receipts if roster is not None else ():
+        agencies = isinstance(r, dict) and declared_interest_agencies(draft, _rostered(roster, r.get("reviewer")))
+        if agencies:
+            rows.append({**{k: r.get(k) for k in ("reviewer", "role", "decision", "reviewed_at")},
+                         "agency_ids": agencies})
+    return rows
 
 
 def _assignments_path(root, draft):
@@ -544,7 +561,7 @@ def _load_roster(root):
     seen, principals = set(), set()
     for index, entry in enumerate(roster["reviewers"]):
         where = f"{path}: reviewers[{index}]"
-        _object(where, entry, REVIEWER_KEYS, frozenset(("ssh_public_key",)))
+        _object(where, entry, REVIEWER_KEYS, frozenset(("ssh_public_key", "interest_agencies", "interest_note")))
         who, roles, added = _who(entry["name"]), entry["roles"], entry["added_on"]
         if who is None or who in seen:
             raise ValueError(f"{where}.name is empty or duplicates an earlier reviewer")
@@ -554,6 +571,10 @@ def _load_roster(root):
                     or principal(entry["name"]) in principals:
                 raise ValueError(f"{where}.ssh_public_key must be a bare key line under a unique principal")
             principals.add(principal(entry["name"]))
+        if "interest_agencies" in entry:  # format, duplicates and bounds only: a retired agency keeps its conflict
+            _interest_agencies(entry["interest_agencies"], f"{where}.interest_agencies", None, minimum=0)
+        if "interest_note" in entry:
+            _interest_note(entry["interest_note"], f"{where}.interest_note")
         if not isinstance(roles, list) or not roles or not all(isinstance(r, str) and r in ROLES for r in roles):
             raise ValueError(f"{where}.roles must be a non-empty list of {sorted(ROLES)}")
         try:
@@ -563,14 +584,58 @@ def _load_roster(root):
     return roster
 
 
-def add_reviewer(root, name, roles, today=None, ssh_key=None):
-    """Add a reviewer or merge roles into an existing one (roles are never removed; added_on is kept)."""
+def _interest_agencies(value, where, known, minimum=1):
+    """0/1-20 distinct canonical agency ids (no coercion, no deduplication); ``known`` (a set) also requires each to exist."""
+    if not isinstance(value, list) or not minimum <= len(value) <= MAX_INTERESTS:
+        raise ValueError(f"{where} must be a list of {minimum} to {MAX_INTERESTS} agency ids")
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not content.AGENCY_ID.fullmatch(item):
+            raise ValueError(f"{where}[{index}] is not a valid agency id")
+        if item in value[:index]:
+            raise ValueError(f"{where}[{index}] repeats an earlier agency id")
+        if known is not None and item not in known:
+            raise ValueError(f"{where}[{index}]: unknown agency {item!r}")
+    return list(value)
+
+
+def _interest_note(value, where):
+    """1-200 characters, not blank, no control or format characters; kept verbatim (never normalized)."""
+    if (not isinstance(value, str) or not value.strip() or len(value) > MAX_INTEREST_NOTE
+            or any(unicodedata.category(ch) in ("Cc", "Cf") for ch in value)):
+        raise ValueError(f"{where} must be 1 to {MAX_INTEREST_NOTE} characters, not blank, without control characters")
+    return value
+
+
+def _interest_change(entry, agencies, note, clear, known):
+    """The prospective interest keys for a reviewer row: {} to leave them, else {key: value or None to drop}.
+    Raises before anything is written; ``entry`` is the current row (None for a new reviewer)."""
+    if clear and (agencies is not None or note is not None):
+        raise ValueError("--clear-interests cannot be combined with --interest-agency or --interest-note")
+    if clear:
+        return {"interest_agencies": None, "interest_note": None}
+    change = {}
+    if agencies is not None:
+        change["interest_agencies"] = _interest_agencies(list(agencies), "--interest-agency", known)
+    if note is not None:
+        change["interest_note"] = _interest_note(note, "--interest-note")
+        if not (change.get("interest_agencies") or (entry or {}).get("interest_agencies")):
+            raise ValueError("--interest-note needs at least one --interest-agency (or an existing declaration)")
+    return change
+
+
+def add_reviewer(root, name, roles, today=None, ssh_key=None, *, interest_agencies=None, interest_note=None,
+                 clear_interests=False):
+    """Add a reviewer or merge roles into an existing one (roles are never removed; added_on is kept).
+    DF0022-05: ``interest_agencies`` replaces the reviewer's declared agencies, ``clear_interests`` drops the
+    declaration and its note; neither supplied keeps what is declared. Declarations are private."""
     name = _text("name", name, 120)
     if not roles or any(role not in ROLES for role in roles):
         raise ValueError(f"--role must be one of {sorted(ROLES)}")
     key = None if ssh_key is None else _public_key(_read_json(ssh_key, MAX_KEY_BYTES, "SSH key", raw=True), ssh_key)
     path, signers = _roster_path(root), _signers_path(root)
-    _load_roster(root)  # refuse a bad roster before any write
+    known = None if interest_agencies is None or clear_interests else {a["agency_id"] for a in _known_agencies(root)}
+    _interest_change(_rostered(_load_roster(root) or {"reviewers": []}, name), interest_agencies, interest_note,
+                     clear_interests, known)  # refuse a bad roster or declaration before any write
     path.parent.mkdir(mode=0o700, exist_ok=True)
     os.chmod(path.parent, 0o700)
     with _locked(path.parent):
@@ -582,6 +647,11 @@ def add_reviewer(root, name, roles, today=None, ssh_key=None):
             entry = {"name": name, "roles": [], "added_on": str(today or date.today())}
             roster["reviewers"].append(entry)
         entry["roles"] = sorted(set(entry["roles"]) | set(roles))
+        for field, value in _interest_change(entry, interest_agencies, interest_note, clear_interests, known).items():
+            if value is None:
+                entry.pop(field, None)
+            else:
+                entry[field] = value
         if key is not None:
             who = principal(entry["name"])  # before any write
             if any(e is not entry and "ssh_public_key" in e and principal(e["name"]) == who for e in roster["reviewers"]):
@@ -592,12 +662,17 @@ def add_reviewer(root, name, roles, today=None, ssh_key=None):
             f'{principal(e["name"])} namespaces="{SIGN_NAMESPACE}" {e["ssh_public_key"]}\n'
             for e in roster["reviewers"] if "ssh_public_key" in e))
         _ensure_campaign_id(root)  # after the roster write, so a refusal writes nothing; review-payload needs it
-    return dict(entry, written=str(path))
+    return dict(_without_note(entry), written=str(path))
+
+
+def _without_note(entry):
+    return {k: v for k, v in entry.items() if k != "interest_note"}  # the note stays in the roster file only
 
 
 def list_reviewers(root):
     roster = _load_roster(root)  # read-only
-    return {"roster": "absent" if roster is None else "present", "reviewers": roster["reviewers"] if roster else []}
+    return {"roster": "absent" if roster is None else "present",
+            "reviewers": [_without_note(e) for e in roster["reviewers"]] if roster else []}
 
 
 def _real_dir(path):

@@ -6,9 +6,10 @@ metadata (build's ``image_meta.check_asset``). Cross-file rules use loaded files
 """
 from datetime import date
 import json
+import os
 from pathlib import Path
 
-from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _asked, _bounds, _read_json,
+from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _asked, _bounds, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
                       load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_glossary,
@@ -158,6 +159,32 @@ def _cap(problems, limit):
     return problems[:limit] + [f"\u2026 and {len(problems) - limit} more"]
 
 
+def _asked_links(problems, root, document):
+    """DF1207-03: an asked item linked to a kit/sent.json request is named when the request moved on after it
+    (its latest step is dated after the item's updated_on, else asked_on) or the request is not there. Read-only."""
+    from . import kit_asked, kit_track  # local import: only content-check reads the private tracker
+    rows = [(index, number, agency["agency_id"], item) for index, agency in enumerate(document)
+            if isinstance(agency, dict) and agency.get("selected", True) is True and isinstance(agency.get("agency_id"), str)
+            for number, item in enumerate(agency["asked"] if isinstance(agency.get("asked"), list) else [])
+            if isinstance(item, dict) and isinstance(item.get("request"), str) and ASKED_REQUEST.fullmatch(item["request"])]
+    if not rows or not os.path.lexists(root / "kit" / "sent.json"):
+        return
+    try:
+        sent = kit_track.read_sent(root)
+    except ValueError as exc:
+        problems.append(str(exc))
+        return
+    for index, number, agency_id, item in rows:
+        label, request = f"content/agencies.json[{index}].asked[{number}]", item["request"]
+        entry = sent.get(kit_track._key(agency_id, request))
+        if entry is None:
+            problems.append(f"{label}: links request {request} not in kit/sent.json")
+            continue
+        latest, shown = kit_asked.latest_step(entry["steps"]), item.get("updated_on") or item.get("asked_on")
+        if latest and kit_track._day(shown) and latest[1] > shown:
+            problems.append(f"{label}: older than its request's latest step ({latest[0]} on {latest[1]}); run kit-asked")
+
+
 def content_problems(root, limit=LIMIT):
     """Sorted, de-duplicated problem lines for ``root/content``; None when there is no content/."""
     root = Path(root)
@@ -217,6 +244,7 @@ def content_problems(root, limit=LIMIT):
             for index, entry in enumerate(document):
                 if isinstance(entry, dict) and entry.get("selected", True) is True:
                     _asked(entry, f"content/agencies.json[{index}].asked", problems=problems)
+            _asked_links(problems, root, document)
         agencies = _attempt(problems, "content/agencies.json",
                             lambda: load_agencies(_read_json(agencies_path), "content/agencies.json"))
     else:

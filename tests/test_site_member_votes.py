@@ -96,7 +96,11 @@ class MemberVotesTests(unittest.TestCase):
         before = self.page()
         self.meeting("synthetic-plain", "2026-09-10", outcome=False)
         self.meeting("synthetic-result-only", "2026-09-20")  # an outcome without votes
-        self.assertEqual(self.page(), before)
+        page = self.page()
+        # DF2207-05: the body's own past meetings are now listed after the upcoming ones; everything above them is unchanged
+        self.assertEqual(page.split("<h3>Past meetings</h3>")[0], before.split("<h3>Past meetings</h3>")[0])
+        self.assertIn('id="meeting-synthetic-plain"', page.split("<h3>Past meetings</h3>")[1])
+        self.assertIn('id="meeting-synthetic-result-only"', page.split("<h3>Past meetings</h3>")[1])
         self.assertNotIn("member-votes", before)
         self.assertNotIn("How members voted", before)
         self.meeting("synthetic-a", "2026-09-10", [(ASH, "yes")])

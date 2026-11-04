@@ -226,6 +226,33 @@ of what the agency said, never a legal finding, and is independent of `--withhel
 `{scope_id, answer, on}` with the latest disposition and its step date, `answer: null` for no answer yet. `kit-coverage`
 (table and `--csv`) gains a last `scopes` column: `not recorded` or `k/n answered`.
 
+## Public asked items from the tracker (kit-asked)
+
+`kit-asked --directory D [--apply]` proposes the public "What we asked" list in `content/agencies.json` from the private
+`kit/sent.json`, for each request whose agency is in that file. A dry run (the default) prints one line per field
+change, `content/agencies.json <agency>.asked[<i>].<field>: <old> -> <new>` or `+ new item ...`, exit 0, and writes
+nothing. `--apply` builds the whole new document, validates it with the content loader (a refusal, or more than 20 items
+for an agency, prints `Stopped:`, exits 3 and writes nothing) and then writes it once, atomically. Nothing is sent or
+published; build as usual after reviewing it.
+
+Each proposed item is `topic` (the request's recorded scope titles joined with `; `, cut at a title boundary within 120
+characters; `Records request` when no scopes were recorded), `asked_on` (the sent date), `state` and `updated_on` (the
+latest step date, left out when there are no steps), linked to its request by the new optional `request` key (the
+request name, `main` for the original; 1-40 characters a-z, 0-9 or `-`). The key is never rendered on the site, in
+`data/*.json`, feeds or newsletters, and older content without it reads unchanged. State comes from the latest step and
+the per-scope answers: no steps `awaiting_response`; `acknowledged`, `extension`, `determination`, `fee_estimate`,
+`clarification_requested`, `clarified`, `fee_paid` or `fee_waived` as the latest step with no `produced` step
+`acknowledged`; `denied` with no `produced` step `declined_in_writing`; any `produced` step `answered` only when the
+request recorded scopes, every scope's latest answer is `produced` or `no_records_stated` and the latest production is
+not a rolling (`--partial`) one, otherwise `partly_answered`. A request `closed` without production is not proposed: the
+dry run says `organizer to choose` and any existing item is left as it is; `withdrawn` is never proposed.
+
+An existing item with the same `request` is updated field by field and keeps its own `note`; an item with no `request`
+(typed by you) and its note are never touched. Notes, withheld bases, references and linked records of the tracker never
+reach content. `content-check` names a linked item whose date (`updated_on`, else `asked_on`) is before its request's
+latest step (`... older than its request's latest step (<kind> on <date>); run kit-asked`) and a link to a request that
+`kit/sent.json` does not have; with no `kit/sent.json` it adds nothing.
+
 ## Private calendar (kit-calendar)
 
 `kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import
@@ -271,3 +298,45 @@ named as `line <L>: <the kit-response message>` (the header is line 1; up to 20 
 command exits 2 and nothing is written. A row equal to a step already recorded on that request is reported
 `already recorded, skipped`; the same row twice in the file is refused on its second line. Without `--apply` the command
 only checks; with `--apply` every new step is recorded in file order in one atomic write. Nothing is fetched or sent.
+
+## Response times (kit-timing)
+
+`kit-timing --directory D [--as-of YYYY-MM-DD] [--csv FILE]` is a private, read-only report of how many **calendar days**
+each recorded request took between its steps. Every figure is labelled `calendar days; provisional; not a legal
+deadline`: it describes what the organizer recorded and judges nothing. It reads `kit/sent.json` (and the names in
+`kit/agencies.json` when that file is a regular file; otherwise the agency id is shown), never repairs either file, and
+sends and fetches nothing. A malformed step (unknown kind, bad or out-of-order date, a step after today, a partial that
+is not a produced step, a clarification answered twice or never asked, a second extension, a step after closed) refuses
+the whole report with `kit/sent.json unreadable: malformed timing steps`, even when the bad step is past `--as-of`.
+
+Per request, counted from the date it was sent (the same day is 0; a missing endpoint is `-`, never 0):
+
+- `first_step_days`: the first recorded step except `clarified` and `fee_paid`, which are the organizer's own actions
+  (`fee_waived` and `clarification_requested` are the agency's). The agency's first response, not the first answer.
+- `determination_days`: the first `determination` step only; a denial is not substituted for it.
+- `first_production_days`: the first `produced` step, partial or final. `final_production_days`: the first `produced`
+  step that is not partial; a later production does not move it.
+- `open_age_days`: the as-of date minus the sent date, only while no final production, `denied` or `closed` step is
+  recorded by the cutoff. A determination or a partial production alone leaves the request open.
+- A final production that is only a link counts as production even while `kit-status` lists its download as pending.
+  Fetching that download is a separate reminder, not the response time.
+
+Waits are their own spans and are **never subtracted** from any number above. `extension_spans` run from each extension
+to the first following determination, production, denial or closing step; `clarification_spans` run from each
+`clarification_requested` to the next `clarified` or `closed`. Each span is `{start_on, end_on, days, open}`; a span
+with no ending step runs to the as-of date and is `open`, a censored observation rather than a completed turnaround.
+A stated production date or a download expiry ends no wait.
+
+`--as-of` (default today, not in the future) is a date cutoff: requests sent after it, and steps dated after it, are
+left out after every stored step has been checked. It is a projection of the history recorded today, not a
+reconstruction of what was known on that date. Per agency the report gives the `count` and `median` of each of the five
+figures and of `extension_days` and `clarification_days` (one observation per wait; open waits are counted and flagged
+`open`). Nulls are left out, zeros are kept, an even number of observations can give a `.5` median, and no observations
+give a null median. There is no pooled median, ranking or score.
+
+`--csv FILE` writes the same report to a new private `.csv` (mode 0600, never overwritten, refused inside the
+campaign's `public/` or `content/`; spreadsheet formula prefixes are neutralised). Header:
+`row_type,agency_id,request,name,metric,start_on,end_on,days,open,count,median,note`; `request_metric` rows carry the
+five figures, `request_span` rows each wait (`open` is `yes` or `no`), `agency_metric` rows the counts and medians (the
+wait metrics put their number of open waits in `open`). The label is repeated on every row. Notes, references, hashes,
+amounts and contact details are never exported. The table still prints, followed by the new file's summary.
