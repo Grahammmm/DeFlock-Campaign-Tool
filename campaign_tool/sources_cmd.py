@@ -1,7 +1,9 @@
 """`sources add | add-batch | list | edit | remove | verify-copy`: look after content/sources.json, the source library.
 
 `verify-copy` hashes a local copy the organizer downloaded from an entry's public_url (nothing is fetched) and
-records `public_copy` {matches, checked_on, reason?}; `edit` drops that check when public_url changes.
+records `public_copy` {matches, checked_on, reason?} on the entries of that record sharing that exact public_url
+string (`--fragment` picks the URL when a record has several; no URL is normalized); `edit` drops that check when
+public_url changes.
 
 `add` resolves the hash against the private ledger (read-only); `add-batch` appends every not-yet-listed record
 of one ingest source_id (read via `status --list`'s in-memory ledger copy); `add-batch --from-request AGENCY` instead takes the
@@ -401,8 +403,32 @@ def _hash_copy(file):
     return digest.hexdigest()
 
 
-def verify_copy(root, prefix, file, checked_on, differs_because=None, today=None):
-    """Hash a copy the organizer downloaded from an entry's public_url; record public_copy on that record's entries."""
+def _copy_targets(document, sha, fragment=None):
+    """Indices of the entries one verification covers: entries of ``sha`` sharing one exact public_url string.
+
+    Without ``fragment`` the record must have a single distinct URL; with it, that library fragment's URL chooses the group.
+    """
+    entries = [(index, entry) for index, entry in enumerate(document) if entry["sha256"] == sha]
+    if fragment is None:
+        urls = {entry["public_url"] for _, entry in entries if entry["public_url"]}
+        if not urls:
+            raise ValueError("entry has no public_url; nothing to compare")
+        if len(urls) > 1:
+            raise ValueError("record has multiple public URLs; add --fragment to choose the copy")
+        return [index for index, entry in entries if entry["public_url"]]
+    if not isinstance(fragment, str) or not fragment:
+        raise ValueError("--fragment: give a non-empty library fragment")
+    chosen = [entry for _, entry in entries if entry["fragment"] == fragment]
+    if not chosen:
+        raise ValueError("no library entry for this record in the selected fragment")
+    url = chosen[0]["public_url"]
+    if not url:
+        raise ValueError("selected entry has no public_url; nothing to compare")
+    return [index for index, entry in entries if entry["public_url"] == url]
+
+
+def verify_copy(root, prefix, file, checked_on, differs_because=None, today=None, *, fragment=None):
+    """Hash a copy the organizer downloaded from a public_url; record public_copy on the entries sharing that URL."""
     path, document = _library(root)
     if not isinstance(prefix, str) or not PREFIX.fullmatch(prefix):
         raise ValueError("--sha256: give 12 to 64 lowercase hex characters of a library entry's hash")
@@ -412,9 +438,7 @@ def verify_copy(root, prefix, file, checked_on, differs_because=None, today=None
     if len(records) > 1:
         raise ValueError(f"prefix matches {len(records)} entries; give more characters")
     sha = records.pop()
-    targets = [index for index, entry in enumerate(document) if entry["sha256"] == sha and entry["public_url"]]
-    if not targets:
-        raise ValueError("entry has no public_url; nothing to compare")
+    targets = _copy_targets(document, sha, fragment)
     if differs_because is not None and differs_because not in COPY_REASONS:
         raise ValueError("--differs-because: one of " + ", ".join(COPY_REASONS))
     try:

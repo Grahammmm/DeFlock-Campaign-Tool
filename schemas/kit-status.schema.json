@@ -57,6 +57,20 @@
           "reference": {"type": ["string", "null"]},
           "fee_state": {"enum": [null, "unpaid", "paid", "waived"]},
           "fee_paid": {"$ref": "#/$defs/dollars_or_null"},
+          "downloads_pending": {
+            "type": "array", "minItems": 1,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["produced_on", "expires_on", "days_left", "state", "line"],
+              "properties": {
+                "produced_on": {"$ref": "#/$defs/date"},
+                "expires_on": {"$ref": "#/$defs/date"},
+                "days_left": {"type": "integer"},
+                "state": {"enum": ["pending", "expired"]},
+                "line": {"type": "string", "minLength": 1}
+              }
+            }
+          },
           "scopes": {
             "type": ["array", "null"],
             "items": {
