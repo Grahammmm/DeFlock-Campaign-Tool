@@ -117,3 +117,28 @@ Combined tree: 1381 tests, 1 error, 25 skipped. The error is `tests/records/test
 - **Per-WP composition workflows** (`records-wp5.yml`, `records-recovery.yml`, etc.) check out pinned sibling commits and verify module origins. Everything is now in-tree; `records-pipeline-connection.yml`, `tools/run_wp2_pipeline_ci.py` and the prepared `PipelineConnection` were removed in favour of `tests/records/test_run_slice.py`, `test_run_faults.py` and `test_run_tamper.py`, which exercise the real `records run` path with no environment gating. The remaining pinned workflows are candidates for the same collapse.
 - **WP0 provenance.** `setup.py` requires a clean tree and an exact package inventory, so every Stack A `campaign_tool/*` addition changes the release manifest. `runner/` is not packaged.
 - **Pending review.** #22, #23, #25, #26 and #28 are still drafts awaiting independent review. Merging them is an owner decision.
+
+## Custody report
+
+When a published finding is challenged, `python3 tools/custody_report.py build --store STORE --finding ID --out NEWDIR`
+writes one private page, `CUSTODY.md`, and the same data as `custody.json` (`schemas/custody-report-v1.json`). STORE is a
+campaign folder. The tool reads it and writes nothing into it. It always draws five sections, so a missing link shows as
+missing and never as satisfied:
+
+1. **The finding**: id, classification, publication state, the review content hash, and `drifted` (yes/no/unknown, from the
+   last publish or correct entry in `private/publication-log.jsonl`).
+2. **Its sources**: SHA-256, page and the re-hash result from `status --check`'s own `check_store`: `matches`, `differs`,
+   `not-in-ledger` or `not-checked`.
+3. **Receipt chain**: when and from which agency the document was received (`content/sources.json`), the ledger preservation
+   receipt and the request or source id it answers. A step with no receipt reads `no-receipt`. The store has no contact-role
+   field, so the contact role reads `not-recorded`.
+4. **Review**: each receipt in `private/reviews/<id>.json` with the reviewer as recorded, the date, role, decision and
+   signature presence. A receipt bound to another content hash reads `stale review (content changed after review)` and is
+   never counted. What is still owed comes from `review_blockers`.
+5. **What this does and does not establish**: fixed wording. A hash establishes byte identity, not authenticity.
+
+The verdict is `chain complete` only when the finding is not drifted, every source re-hashes `matches`, every step has a
+receipt and a current approving review leaves nothing owed. Otherwise it reads `chain incomplete — <first missing link>`, with
+every missing link listed. `status --store STORE` prints one verdict line per published finding. Exit codes: 0 complete,
+1 incomplete, 2 refused. The page carries no record text, and nothing from it is published or built into the site. The
+public-tree scan rejects any file named `CUSTODY.md` or `custody.json`.

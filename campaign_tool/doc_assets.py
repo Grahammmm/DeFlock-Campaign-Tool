@@ -356,6 +356,32 @@ def svg_kinds(data):
     return sorted(kinds)
 
 
+SVG_LENGTH = re.compile(r"\s*(\d+(?:\.\d*)?|\.\d+)\s*(?:px)?\s*", re.IGNORECASE)
+SVG_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+
+
+def svg_size(data):
+    """(width, height) in whole pixels from the root's numeric ``width``/``height`` (unitless or px), else its
+    ``viewBox``; None when neither is readable (percent, em, other units, a bad viewBox). Run after ``svg_kinds``."""
+    try:
+        root = ElementTree.fromstring(data)
+    except (ElementTree.ParseError, ValueError, LookupError):
+        return None
+    if _local(root.tag).lower() != "svg":
+        return None
+    sides = [SVG_LENGTH.fullmatch(root.attrib.get(name, "")) for name in ("width", "height")]
+    if all(sides):
+        values = [float(side[1]) for side in sides]
+    else:
+        parts = re.split(r"[\s,]+", root.attrib.get("viewBox", "").strip())
+        if len(parts) != 4 or not all(SVG_NUMBER.fullmatch(part) for part in parts):
+            return None
+        values = [float(part) for part in parts[2:]]
+    if not all(0 < value < float("inf") for value in values):
+        return None
+    return round(values[0]), round(values[1])
+
+
 def check_asset(path, relative, limit=MAX_BYTES):
     """Refuse a public PDF/SVG naming its kinds; symlinks and oversized files are left to the copy check."""
     suffix = path.suffix.lower()
