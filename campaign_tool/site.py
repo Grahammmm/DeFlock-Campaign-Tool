@@ -25,7 +25,8 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, PRE_MEETING_RULE_ID, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
+from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, PRE_MEETING_RULE_ID, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, SHARING_BULLETIN_ID, SHARING_KINDS,
+                      SHARING_RULE_ID, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
 from .corrections_policy import policy_html
@@ -580,6 +581,17 @@ class Site:
                 self.pre_meeting_rule = (rule["citation"], law_status(package)) if rule else None
             except (OSError, ValueError):
                 pass
+        # DF1207-08: the two rules a recipient list is read beside, by rule id from the checklist's package; one missing -> its line is left out.
+        self.home_state, self.sharing_rules = str(cfg["state"]).upper(), None
+        if any(a.get("sharing") for a in model["agencies"]):
+            try:
+                package = law.load_package(CHECKLIST_JURISDICTION)
+                cited = {r["rule_id"]: r["citation"] for r in package["rules"]}
+                self.sharing_rules = ([("Sharing rule", cited[i]) for i in (SHARING_RULE_ID,) if i in cited]
+                                      + [("Attorney General bulletin", cited[i]) for i in (SHARING_BULLETIN_ID,) if i in cited],
+                                      law_status(package))
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
         # DF2237-08: agencies with a published finding or a sources.json entry get /agencies/<slug>.html.
         for finding in model["findings"]:  # DF1952-07: a preview model's extra agencies must be this campaign's agencies
             check_finding_agencies(finding, self.agencies_by_id, f'findings/{finding["slug"]}.json')
@@ -1038,6 +1050,38 @@ class Site:
         note = f'<p>{e(meeting["note"])}</p>' if meeting.get("note") else ""
         return f'<section class="pre-meeting"><h4>Public meeting before the camera program</h4><p>{line}</p>{rule}{note}</section>'
 
+    def sharing_section(self, agency):
+        """DF1207-08: who the vendor transparency portal lists as receiving data, as the organizer transcribed it.
+
+        Counts by state (the campaign's state first) and by kind, then every out-of-state and federal entry by name
+        (at most 100); fixed wording and no conclusion drawn. "" when the agency has no ``sharing``."""
+        sharing = agency.get("sharing")
+        if not sharing:
+            return ""
+        rows, home = sharing["recipients"], self.home_state
+        by_state = {}
+        for row in rows:
+            by_state[row["state"]] = by_state.get(row["state"], 0) + 1
+        states = sorted(by_state, key=lambda code: (code != home, code))
+        by_kind = {kind: sum(1 for row in rows if row["kind"] == kind) for kind in SHARING_KINDS}
+        count = lambda title, pairs: (f'<table><thead><tr><th scope="col">{title}</th><th scope="col">Agencies</th></tr></thead><tbody>'  # noqa: E731
+                                      + "".join(f'<tr><td>{e(label)}</td><td>{n}</td></tr>' for label, n in pairs) + '</tbody></table>')
+        outside = [row for row in rows if row["state"] != home or row["kind"] == "federal"]
+        listed = "".join(f'<li>{e(row["name"])}, {e(row["state"])} ({e(row["kind"])})</li>'
+                         for row in outside[:100])
+        more = f'<p>and {len(outside) - 100} more</p>' if len(outside) > 100 else ""
+        rules = self.sharing_rules[0] if self.sharing_rules else []
+        cited = ("".join(f'<p>{e(label)}: {e(citation)}.</p>' for label, citation in rules)
+                 + (f'<p>Law package: {e(self.sharing_rules[1])}.</p>' if rules else ""))
+        return ('<section class="agency-sharing"><h4>Who the vendor portal lists as receiving data</h4>'
+                f'<p>As listed on <a href="{e(sharing["source_url"])}" rel="noopener noreferrer">the vendor transparency portal</a>, '
+                f'transcribed by the organizer (checked {date_label(sharing["checked_on"])}): '
+                f'{len(rows)} {"agency" if len(rows) == 1 else "agencies"}.</p>'
+                + count("State", [(code, by_state[code]) for code in states])
+                + count("Kind", [(kind, n) for kind, n in by_kind.items() if n])
+                + ('<p>Out of state and federal:</p>' + f'<ul>{listed}</ul>' + more if outside else "")
+                + cited + '</section>')
+
     def contract_check_block(self, agency, heading="h4"):
         """DF2207-03: the organizer's reading of the linked contract; fixed wording, no score and no judgement.
 
@@ -1209,7 +1253,7 @@ class Site:
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
                     + self.policy_check_section(agency)
                     + self.pre_meeting_section(agency)
-                    + self.contract_line(agency["contract"]) + self.contract_check_block(agency) + self.funding_block(agency) + self.transparency_block(agency)
+                    + self.contract_line(agency["contract"]) + self.contract_check_block(agency) + self.funding_block(agency) + self.transparency_block(agency) + self.sharing_section(agency)
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
@@ -1323,7 +1367,7 @@ class Site:
                 + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency) + self.pre_meeting_section(agency)
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
                 + self.contract_check_block(agency, "h3")
-                + self.funding_block(agency) + self.transparency_block(agency, "h3") + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
+                + self.funding_block(agency) + self.transparency_block(agency, "h3") + self.sharing_section(agency) + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
                 + self.local_rules_section(agency)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
