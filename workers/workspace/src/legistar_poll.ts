@@ -131,9 +131,10 @@ async function fetchFeed(url: URL, fetchImpl: ProviderFetch, timeoutMs: number):
   }
 }
 
-/** Agenda-item text of one event, as the CLI import reads it (EventItems=1 on the feed URL). */
+/** Agenda-item text from an expanded event; unavailable items are not a non-match. */
 export function eventItemTexts(event: Record<string, unknown>): string[] {
-  const items = Array.isArray(event.EventItems) ? event.EventItems : [];
+  if (!Array.isArray(event.EventItems)) throw new FeedFailure("agenda_items_unavailable");
+  const items = event.EventItems;
   return items.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const parts = ITEM_KEYS.map((k) => (item as Record<string, unknown>)[k]).filter((v): v is string => typeof v === "string");
@@ -155,7 +156,7 @@ function zoneOffsetMs(utcMs: number, zone: string): number {
   return wall - Math.floor(utcMs / 1000) * 1000;
 }
 
-/** UTC ISO start from Legistar EventDate (+ EventTime, local to `zone`); null when the date is unknown. */
+/** UTC ISO start from EventDate + EventTime, local to `zone`; null if either is unknown. */
 export function eventStartsAt(event: Record<string, unknown>, zone: string): string | null {
   const day = typeof event.EventDate === "string" ? event.EventDate.slice(0, 10) : "";
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
@@ -164,12 +165,9 @@ export function eventStartsAt(event: Record<string, unknown>, zone: string): str
   const check = new Date(Date.UTC(y, mo - 1, d));
   if (check.getUTCFullYear() !== y || check.getUTCMonth() !== mo - 1 || check.getUTCDate() !== d) return null;
   const t = typeof event.EventTime === "string" ? /^(\d{1,2}):(\d{2})\s*([AP])M$/i.exec(event.EventTime.trim()) : null;
-  let hour = 0;
-  let minute = 0;
-  if (t && +t[1]! >= 1 && +t[1]! <= 12 && +t[2]! < 60) {
-    hour = (+t[1]! % 12) + (t[3]!.toUpperCase() === "P" ? 12 : 0);
-    minute = +t[2]!;
-  }
+  if (!t || +t[1]! < 1 || +t[1]! > 12 || +t[2]! >= 60) return null;
+  const hour = (+t[1]! % 12) + (t[3]!.toUpperCase() === "P" ? 12 : 0);
+  const minute = +t[2]!;
   let utc = Date.UTC(y, mo - 1, d, hour, minute);
   try {
     for (let i = 0; i < 2; i++) utc = Date.UTC(y, mo - 1, d, hour, minute) - zoneOffsetMs(utc, zone);

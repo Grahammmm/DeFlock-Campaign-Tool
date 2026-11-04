@@ -139,7 +139,10 @@ describe("legistar poll in runScheduled", () => {
   it("refuses a non-https feed, a feed with credentials and a redirect by name, once each, filing nothing", async () => {
     const repo = await seedCampaign();
     const plain = "http://webapi.example.invalid/v1/gamma/events";
-    const creds = "https://organizer:synthetic-pw@webapi.example.invalid/v1/delta/events";
+    const credentialUrl = new URL("https://webapi.example.invalid/v1/delta/events");
+    credentialUrl.username = "synthetic-organizer";
+    credentialUrl.password = "synthetic-pw";
+    const creds = credentialUrl.toString();
     const moved = "https://webapi.example.invalid/v1/epsilon/events";
     stubFetch({ [moved]: { status: 302, headers: { location: "https://elsewhere.example.invalid/v1/epsilon/events" } } });
     const r = await pollLegistar(withFeeds(`${plain} ${creds} ${moved}`), repo, "slot", "run_x");
@@ -176,6 +179,44 @@ describe("legistar poll in runScheduled", () => {
       expect(inc[0]!.message).toContain(`(${reason})`);
     }
     for (const f of feeds) expect(await meetingRows(f)).toEqual([]);
+  });
+
+  it("keeps missing or invalid same-day times unknown, never midnight or past", async () => {
+    const repo = await seedCampaign();
+    const feed = "https://webapi.example.invalid/v1/u/events";
+    const times = [null, "", "TBD", "13:00 PM", "7:60 PM"];
+    stubFetch({ [feed]: { body: JSON.stringify(times.map((time, i) =>
+      ev(700 + i, "2031-01-14T00:00:00", time, "ALPR renewal"))) } });
+    const result = await pollLegistar(withFeeds(feed), repo, "slot", "run_unknown", {
+      now: () => new Date("2031-01-14T18:00:00Z"),
+    });
+    expect(result).toMatchObject({ outcome: "ok", filed: times.length, past: 0 });
+    const rows = await meetingRows(feed);
+    expect(rows).toHaveLength(times.length);
+    for (const row of rows) expect(row).toMatchObject({ starts_at: null, date_state: "unknown" });
+  });
+
+  it.each([null, undefined, {}])("fails a whole feed with unavailable agenda items (%s), without discarding or partial filing", async (items) => {
+    const repo = await seedCampaign();
+    const label = items === null ? "null" : items === undefined ? "missing" : "invalid";
+    const feed = `https://example.invalid/u-${label}/events`;
+    const healthy = `https://example.invalid/e-${label}/events`;
+    stubFetch({
+      [feed]: { body: JSON.stringify([
+        ev(800, "2031-01-14T00:00:00", "7:00 PM", "ALPR renewal"),
+        ev(801, "2031-01-14T00:00:00", "7:00 PM", "ALPR renewal", { EventItems: items }),
+      ]) },
+      [healthy]: { body: JSON.stringify([ev(802, null, null, "ALPR renewal")]) },
+    });
+    const result = await pollLegistar(withFeeds(`${feed} ${healthy}`), repo, "slot", "run_items");
+    expect(result).toMatchObject({ outcome: "partial", filed: 1, discarded: 0,
+      failed_feeds: [`example.invalid/u-${label}/events`] });
+    expect(calls).toEqual([feed, healthy]);
+    expect(await meetingRows(feed)).toEqual([]);
+    expect(await meetingRows(healthy)).toHaveLength(1);
+    const incidents = await incidentsFor(`example.invalid/u-${label}/events`);
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0]!.message).toContain("agenda_items_unavailable");
   });
 
   it("uses the one generated keyword filter: decisions equal matchesMeetingKeywords on the parity fixture", () => {
