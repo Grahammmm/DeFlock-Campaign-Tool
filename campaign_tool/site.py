@@ -812,6 +812,27 @@ class Site:
                 + f'<p><a href="{e(newest["source_url"])}" rel="noopener noreferrer">'
                 + self.t("agency.transparency_checked", date=time_tag(newest["checked_on"])) + '</a></p></section>')
 
+    def agency_mapped_reported_block(self, agency):
+        """DF0022-13: the newest portal camera count beside the map's count for the same picker city, never compared.
+
+        "" unless the agency is a picker city, its newest snapshot has a camera count (0 counts) and the map counts its
+        boundary (0 counts). Two different populations; no difference, ratio or ranking is ever computed.
+        """
+        snapshots = agency.get("transparency") or []
+        reported = snapshots[0].get("cameras") if snapshots else None
+        if reported is None or not self.map or agency["agency_id"] not in {a["agency_id"] for a in self.picker_cities()}:
+            return ""
+        name = self.map["cities"][agency["slug"]]["name"] or agency["jurisdiction_name"] or agency["name"]
+        mapped = self.mapped_counts()[0].get(name)
+        if mapped is None:
+            return ""
+        unknown = self.t("agency.mapped_reported_unknown")
+        checked, day = snapshots[0].get("checked_on"), self.map.get("snapshot_date")
+        return ('<section class="agency-mapped-reported"><p>'
+                + self.t("agency.mapped_reported_counts", reported=e(str(reported)), mapped=e(str(mapped)),
+                         checked=time_tag(checked) if checked else unknown, map_date=time_tag(day) if day else unknown)
+                + f'</p><p>{self.t("agency.mapped_reported_caveat")}</p></section>')
+
     def contracts_section(self):  # contracts ending in [build date, +180 days], soonest first; "" when none
         first, last = self.today.isoformat(), (self.today + timedelta(days=180)).isoformat()
         soon = sorted((a for a in self.model["agencies"] if a["contract"] and first <= a["contract"]["end"] <= last),
@@ -995,7 +1016,7 @@ class Site:
                 + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
-                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.transparency_block(agency, "h3") + self.who_decides(aid) + self.votes_section(aid)
+                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.transparency_block(agency, "h3") + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
