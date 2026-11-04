@@ -99,7 +99,7 @@ class KitJsonContractTests(unittest.TestCase):
                                              step("2026-03-12", "fee_estimate", amount_cents=5000),
                                              step("2026-03-13", "fee_paid", amount_cents=5000)]),
             (a, "determined"): ("2026-03-02", {}, [step("2026-03-05", "determination", expected_on="2026-03-10")]),
-            (a, "denied"): ("2026-03-02", {}, [step("2026-03-06", "denied", note="synthetic")]),
+            (a, "denied"): ("2026-03-02", {}, [step("2026-03-06", "denied", note="synthetic", withheld_basis=["Synthetic exemption"])]),
             (b, "main"): ("2026-03-05", {"correspondence": hashes(2, 900)},
                           [step("2026-03-06", "acknowledged", correspondence=hashes(1, 950))]),
             (b, "bulk"): ("2026-03-02", {}, [step("2026-03-05", "determination"),
@@ -185,6 +185,9 @@ class KitJsonContractTests(unittest.TestCase):
         self.assertTrue(rows[(self.a, "paid")]["extended"] and rows[(self.c, "closed")]["closed"])
         self.assertEqual(rows[(self.c, "main")]["waiting_on_you_since"], "2026-03-12")
         self.assertTrue(rows[(self.c, "rolling")]["producing"])
+        self.assertEqual(rows[(self.a, "main")]["withheld_basis"], [])
+        self.assertEqual(rows[(self.a, "denied")]["withheld_basis"],
+                         [{"on": "2026-03-06", "kind": "denied", "basis": "Synthetic exemption"}])
         self.assertIn("over your fee cap", stderr)
         union = set().union(*map(set, document["requests"]))
         self.assertEqual(union, set(ROW["properties"]))  # every schema property is emitted by some row

@@ -16,7 +16,7 @@
           "agency_id", "request", "name", "sent_on", "channel", "draft_changed_since_sent",
           "determination_due", "with_extension", "steps", "extended", "closed", "last_step",
           "records", "record_prefixes", "fee_estimate", "over_fee_cap", "stated_production_date",
-          "waiting_on_you_since", "producing", "next_installment", "reference", "fee_state", "fee_paid"
+          "waiting_on_you_since", "producing", "next_installment", "reference", "fee_state", "fee_paid", "withheld_basis"
         ],
         "properties": {
           "agency_id": {"type": "string", "minLength": 1},
@@ -56,7 +56,20 @@
           "next_installment": {"$ref": "#/$defs/date_or_null"},
           "reference": {"type": ["string", "null"]},
           "fee_state": {"enum": [null, "unpaid", "paid", "waived"]},
-          "fee_paid": {"$ref": "#/$defs/dollars_or_null"}
+          "fee_paid": {"$ref": "#/$defs/dollars_or_null"},
+          "withheld_basis": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["on", "kind", "basis"],
+              "properties": {
+                "on": {"$ref": "#/$defs/date_or_null"},
+                "kind": {"enum": ["denied", "produced"]},
+                "basis": {"type": "string", "minLength": 1, "maxLength": 200}
+              }
+            }
+          }
         }
       }
     },
