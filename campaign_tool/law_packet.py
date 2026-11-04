@@ -90,11 +90,13 @@ def render(package, counts):
         "1. Fill only the four reviewer columns of WORKSHEET.csv: `reviewer_conclusion` (`verified`, `likely` or "
         "`needs_attorney_review`), `reviewer_notes`, `reviewer_name` and `reviewed_on` (YYYY-MM-DD, not after the "
         "day you return it). Leave `reviewer_conclusion` blank on the `records_law` row.",
-        "2. Keep the header, the columns and the row order as they are. A correction to `duty`, `exceptions` or "
-        "`remedy` may be made in place or described in `reviewer_notes`; it is listed for the maintainer, "
-        "never applied automatically.",
+        "2. Keep the header, the columns (including `package_sha256`, which ties the worksheet to the exact "
+        "package it was made from; never edit or copy it) and the row order as they are. A correction to `duty`, "
+        "`exceptions` or `remedy` may be made in place or described in `reviewer_notes`; it is listed for the "
+        "maintainer, never applied automatically.",
         "3. Give the filled worksheet to G, the campaign maintainer, who opens the pull request. This packet names "
-        "no address: return it the way you received it.",
+        "no address: return it the way you received it. If the package changes before then, the worksheet is "
+        "refused: the maintainer builds a new packet and you reassess each rule against it.",
         f"4. The maintainer reads it back with `python3 -m campaign_tool.law apply-sheet {j} --sheet FILLED.csv "
         "--out PROPOSED.json`, checks the result with `tools/check_law_review.py`, and records `reviewed_by` and "
         "`reviewed_at` through docs/LAW-PACKAGES.md.", "",
