@@ -79,6 +79,41 @@ anywhere but the staged kit: `--replace` without `--ask` returns to `comment_ask
 wording in your asks is flagged as an advisory `review_flags` note (printed on stderr, positions and rule names
 only); the kit is still written ([LEGAL-CLAIM-GUARD.md](LEGAL-CLAIM-GUARD.md)).
 
+**Co-signed written comments (DF2207-14).** `meetings-stage --cosign SUPPORTER_ID` (repeatable, 1 to 30 unique ids, in
+the order given) adds a bold `Co-signed by` line and one bullet per organization name after `[city]` in the
+`## Written comment` letter, and stores the ids as `cosigners` on the staged meeting. The meeting page then shows
+`Co-signed by N organizations` linking `/supporters.html`. Listing is not permission to co-sign: the organization's
+private consent record needs its own grant (below), covering this exact meeting id, and the organization must still be
+listed. `--cosign` also needs `--participation` with a verified `written_comment` (an agenda link or unverified
+`kit/meetings.json` text is not a substitute), and refuses an unknown or repeated id, an organization without a grant
+that covers this meeting, a cancelled meeting, and a letter that fell back to the over-400-word advisory. Names are
+never added to the spoken comment or the asks. The roster is a separate bounded block, not letter body words: the
+400-word cap counts the letter up to `[city]` only, and a roster never removes a finding bullet. Names are shown
+literally (markup characters are backslash-escaped); the shared Markdown subset renders only `## ` headings, so the
+roster heading is bold text rather than `### `. Without `--cosign` the kit and the report are byte-identical to before.
+
+Grant or revoke from the campaign folder (this edits only the private `kit/supporters-consent.json`, mode 0600, and
+never restages or publishes anything):
+
+```
+supporters consent --directory D --id ID --cosign any --confirmed-on YYYY-MM-DD --how email|letter|meeting|form [--correspondence PREFIX]
+supporters consent --directory D --id ID --cosign MEETING_ID [MEETING_ID ...] --confirmed-on ... --how ...
+supporters consent --directory D --id ID --clear-cosign
+```
+
+`any` must stand alone; a list holds 1 to 100 unique meeting ids, matched exactly (no prefixes). The grant has its own
+`cosign_confirmed_on`, `cosign_how` and `cosign_correspondence`; the listing confirmation is never overwritten.
+No grant, or a null, false, empty or malformed one, means no permission.
+
+**Removal and repair.** `supporters remove` still succeeds when staged meetings list the id, but the next
+`content-check` names every such meeting (`meetings/<id>.json.cosigners: <supporter>: ...`) and `build` refuses until it
+is fixed. So does a narrowed or revoked grant, an edited listing, and a missing, duplicated or hand-edited roster block.
+Repair one meeting with `meetings-stage --id M --replace` and the current `--cosign` flags (or none): the replace skips
+only that meeting's old co-signer cross-check, resolves only the flags you give (yesterday's grant is never inherited)
+and validates the new document fully before writing. Any other stale meeting still refuses, so repair each one, or list
+the organization again and re-grant it. A co-signer count asserts neither attendance, delivery nor any legal
+endorsement; the comment stays a draft you send by hand.
+
 The organizer picks the cited findings with `--finding ID` (repeatable, 1 to 3 ids): the kit cites
 exactly those, in the order given, in both the two-minute comment and `## Sources`. An id that is not a
 published finding in `content/findings/` (unknown, or a private draft), a repeated id or a fourth id is

@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
+from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, PRE_MEETING_RULE_ID, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
 from .corrections_policy import policy_html
@@ -202,7 +202,7 @@ def search_js():
 PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
                          "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
                          "counterevidence", "corrections", "url", "citation", "also_agency_ids", "agency_response")
-PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page")
+PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page", "quote")
 PUBLIC_CORRECTION_FIELDS = ("date", "note")
 # DF1103-08: only a received, declined or no_response reply is public; pending never is.
 PUBLIC_RESPONSE_FIELDS = ("status", "asked_on", "reply_by", "on", "text", "record_sha256_prefix")
@@ -566,6 +566,15 @@ class Site:
         if any(a.get("policy_check") for a in model["agencies"]):
             try:
                 self.checklist_law_status = law_status(law.load_package(CHECKLIST_JURISDICTION))
+            except (OSError, ValueError):
+                pass
+        # DF1207-07: the rule's citation and the package label come from the shipped package by rule id; absent -> no Rule line.
+        self.pre_meeting_rule = None
+        if any(a.get("pre_implementation_meeting") for a in model["agencies"]):
+            try:
+                package = law.load_package(CHECKLIST_JURISDICTION)
+                rule = next((r for r in package["rules"] if r["rule_id"] == PRE_MEETING_RULE_ID), None)
+                self.pre_meeting_rule = (rule["citation"], law_status(package)) if rule else None
             except (OSError, ValueError):
                 pass
         # DF2237-08: agencies with a published finding or a sources.json entry get /agencies/<slug>.html.
@@ -1005,6 +1014,24 @@ class Site:
                 f'rel="noopener noreferrer">the posted policy</a>. Law package: {e(self.checklist_law_status or "status unavailable")}.'
                 '</p></section>')
 
+    def pre_meeting_section(self, agency):
+        """DF1207-07: the public meeting an organizer found before the camera program, or that none has been found yet.
+
+        Fixed wording; a missing record is never turned into a statement that no meeting was held."""
+        meeting = agency.get("pre_implementation_meeting")
+        if not meeting:
+            return ""
+        checked = date_label(meeting["checked_on"])
+        if meeting["status"] == "found":
+            line = (f'{e(meeting["body"])} discussed it on {date_label(meeting["meeting_on"])} '
+                    f'(<a href="{e(meeting["source_url"])}" rel="noopener noreferrer">official record</a>). Checked {checked}.')
+        else:
+            line = f"We have not found a record of one yet (checked {checked})."
+        rule = (f"<p>Rule: {e(self.pre_meeting_rule[0])}. Law package: {e(self.pre_meeting_rule[1])}.</p>"
+                if self.pre_meeting_rule else "")
+        note = f'<p>{e(meeting["note"])}</p>' if meeting.get("note") else ""
+        return f'<section class="pre-meeting"><h4>Public meeting before the camera program</h4><p>{line}</p>{rule}{note}</section>'
+
     def contract_check_block(self, agency, heading="h4"):
         """DF2207-03: the organizer's reading of the linked contract; fixed wording, no score and no judgement.
 
@@ -1175,6 +1202,7 @@ class Site:
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
                     + self.policy_check_section(agency)
+                    + self.pre_meeting_section(agency)
                     + self.contract_line(agency["contract"]) + self.contract_check_block(agency) + self.funding_block(agency) + self.transparency_block(agency)
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
@@ -1286,7 +1314,7 @@ class Site:
                 + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
-                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency)
+                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency) + self.pre_meeting_section(agency)
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
                 + self.contract_check_block(agency, "h3")
                 + self.funding_block(agency) + self.transparency_block(agency, "h3") + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
@@ -1348,7 +1376,7 @@ class Site:
                 if fragment:
                     title = f'<a href="/sources.html#{e(fragment)}">{title}</a>'
                 rule = f' · rule {e(source["rule_id"])}' if source.get("rule_id") else ''
-                sources.append(f'<li>{title} · sha256 {e(short_hash(source["sha256"]))} · {e(source["locator"])}{rule}</li>')
+                sources.append(f'<li>{title} · sha256 {e(short_hash(source["sha256"]))} · {e(source["locator"])}{rule}{self.source_quote(source)}</li>')
             links = self.agency_links(f)
             agency_line = f'<p>Agency: {links}</p>' if links else ''  # DF1952-07: primary first, then each extra agency
             limits = ''.join(f'<li>{e(item)}</li>' for item in f["limitations"]) or '<li>None stated.</li>'
@@ -1476,6 +1504,17 @@ class Site:
         return (f'<h3 id="discussed-at-public-meetings">Discussed at public meetings</h3><ul>{"".join(items)}</ul>'
                 if items else "")
 
+    def source_quote(self, source):
+        """DF1952-08: the transcribed excerpt of a finding source as an escaped blockquote with its attribution (and the
+        page when given); "" without a quote. Plain text only: never Markdown, never matched against the record."""
+        quote = source.get("quote")
+        if not quote:
+            return ""
+        page = source.get("page")
+        shown = f' · {self.t("finding.quote_page", page=page)}' if page is not None else ""
+        return (f'<blockquote class="source-quote"><p>{e(quote)}</p></blockquote>'
+                f'<p class="source-quote-note">{self.t("finding.quote_transcribed")}{shown}</p>')
+
     def finding_html(self, finding):
         sources = []
         for source in finding["sources"]:
@@ -1485,7 +1524,7 @@ class Site:
             sentence, record = source_line(entry, source, owner.get("name"))
             number = f'{self.t("sources.record_no")} <code>{record}</code>'
             number = f'<a href="{e(record_page)}">{number}</a>' if record_page else number
-            sources.append(f'<li><p>{sentence}</p>{page_link(entry, source.get("page"))}'
+            sources.append(f'<li><p>{sentence}</p>{self.source_quote(source)}{page_link(entry, source.get("page"))}'
                            f'<p class="record-no">{number}{copy_status(entry)}</p></li>')
         corrections = ("".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time>: {e(c["note"])}</li>' for c in finding["corrections"])
                        or f'<li>{self.t("notice.no_corrections")}</li>')
@@ -1710,6 +1749,14 @@ class Site:
                   for source in self._continuation_back.get(meeting["id"], []) if held(source)]
         return "".join(lines)
 
+    def _cosigned(self, meeting):
+        """DF2207-14: ``Co-signed by N organizations`` linking supporters.html, only for ids load_content validated."""
+        count = len(meeting.get("cosigners") or ())
+        if not count:
+            return ""
+        label = self.t("meeting.cosigned_one" if count == 1 else "meeting.cosigned_many", count=count)
+        return f'<p class="cosigned"><a href="/supporters.html">{label}</a></p>'
+
     def meeting_direction_html(self, meeting):
         """DF0022-08: ``Staff were directed to: T (by D, as stated in SOURCE)`` for a held meeting whose outcome carries a
         direction; "" otherwise. The words are the official source's, attributed to it; the source is a plain link, never
@@ -1757,6 +1804,7 @@ class Site:
                 + self.meeting_direction_html(meeting)
                 + self.public_comment_counts(meeting)
                 + self._written_deadline(meeting)
+                + self._cosigned(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
                 f'<p><a href="/meetings.html">{self.t("meeting.all")}</a></p></article>\n')
@@ -2256,7 +2304,8 @@ class Site:
             value["also_agency_ids"] = list(finding["also_agency_ids"])
         value["limitations"], value["counterevidence"] = list(finding["limitations"]), list(finding["counterevidence"])
         value["sources"] = [{"sha256_prefix": short_hash(s["sha256"]), "title": s["title"], "locator": s["locator"],
-                             "rule_id": s["rule_id"], **({"page": s["page"]} if s.get("page") is not None else {})}
+                             "rule_id": s["rule_id"], **({"page": s["page"]} if s.get("page") is not None else {}),
+                             **({"quote": s["quote"]} if s.get("quote") else {})}  # DF1952-08: optional, absent stays absent
                             for s in finding["sources"]]
         value["corrections"] = [{"date": c["date"], "note": c["note"]} for c in finding["corrections"]]
         value["url"] = f'{self.base}/findings/{finding["slug"]}.html'

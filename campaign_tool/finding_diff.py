@@ -10,7 +10,7 @@ from .findings import _real_dir, load_draft
 FIELDS = ("title", "summary", "body_md", "sources", "classification", "confidence", "limitations", "counterevidence",
           "agency_id", "also_agency_ids")
 LISTS = ("limitations", "counterevidence", "also_agency_ids")
-SOURCE_FIELDS = ("locator", "title", "rule_id")
+SOURCE_FIELDS = ("locator", "title", "rule_id", "quote")
 
 
 def load(path):
@@ -65,7 +65,8 @@ def _sources(old, new):
     for sha in (sha for sha in before if sha in after):
         a, b = before[sha], after[sha]
         keys = (["count"] if len(a) != len(b) else []) + [
-            k for k in SOURCE_FIELDS if [s.get(k) for s in a] != [s.get(k) for s in b]]
+            k for k in SOURCE_FIELDS if [s.get(k) for s in a] != [s.get(k) for s in b]
+            and (k != "quote" or any(s.get(k) is not None for s in a + b))]  # quote-free sources never report 'quote'
         if keys:
             changed.append({"sha256": sha[:12], "keys": keys})
     return {"field": "sources", "removed": [sha[:12] for sha in before if sha not in after],

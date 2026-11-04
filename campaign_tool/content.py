@@ -86,6 +86,22 @@ def _text(document, key, label, required=True, default="", allow_empty=True):
     return value
 
 
+def _quote(source, label):
+    """DF1952-08: the optional transcribed excerpt of a finding source, returned exactly as written.
+
+    1-400 code points, at least one non-whitespace character, no Unicode control or format characters (Cc/Cf: tabs,
+    newlines, DEL, C1 and bidi controls included). Angle brackets are ordinary text (the site escapes it). Nothing is
+    coerced, stripped or truncated, and the refusal never repeats the excerpt."""
+    value = source["quote"]
+    if not isinstance(value, str):
+        raise ContentError(f"{label}.quote: must be a string")
+    if not 1 <= len(value) <= QUOTE_MAX or not value.strip():
+        raise ContentError(f"{label}.quote: must be 1 to {QUOTE_MAX} characters with at least one that is not a space")
+    if any(unicodedata.category(char) in ("Cc", "Cf") for char in value):
+        raise ContentError(f"{label}.quote: must be plain text without control characters or line breaks")
+    return value
+
+
 def _text_list(document, key, label, limit=100):
     value = document.get(key, [])
     if not isinstance(value, list) or len(value) > limit or any(not plain_text(item) for item in value):
@@ -386,7 +402,8 @@ FINDING_KEYS = {"id", "title", "slug", "summary", "body_md", "classification", "
 FINDING_REQUIRED = {"id", "title", "slug", "summary", "classification", "confidence",
                     "event_date", "sources", "published_at", "corrections", "state",
                     "author", "limitations", "counterevidence"}
-SOURCE_KEYS = {"sha256", "locator", "title", "rule_id", "page"}
+SOURCE_KEYS = {"sha256", "locator", "title", "rule_id", "page", "quote"}
+QUOTE_MAX = 400  # DF1952-08: code points of an optional transcribed excerpt
 CORRECTION_KEYS = {"date", "note"}
 
 # DF1103-08: the agency's right of reply. "pending" means a request for comment was PREPARED, not that anyone was asked.
@@ -540,6 +557,8 @@ def load_finding(document, label, *, known_agency_ids=None, today=None):
             "rule_id": _text(source, "rule_id", f"{label}.sources[{index}]", required=False, default=None),
             "page": page,
         })
+        if "quote" in source:  # absent stays absent: no default or null key, so a quote-free finding keeps its exact shape
+            sources[-1]["quote"] = _quote(source, f"{label}.sources[{index}]")
     published_at = _timestamp(document["published_at"], f"{label}.published_at")
     published_day = datetime.fromisoformat(published_at.replace("Z", "+00:00")).date()
     corrections = []
@@ -613,7 +632,7 @@ def load_finding_preview(document, label, now=None):
 
 FINDING_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # public finding ids; distinct from a slug
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
-                "status", "participation", "outcome", "cited_findings"}
+                "status", "participation", "outcome", "cited_findings", "cosigners"}
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 CONTINUATION_KEYS = ("continued_to", "continued_to_date")  # DF0022-07: where the official source says an item went
@@ -888,6 +907,18 @@ def load_cited_findings(value, label):
     return list(value)
 
 
+def load_cosigners(value, label):
+    """DF2207-14: supporter ids named under a staged written comment: 1 to 30 unique canonical ids, order kept."""
+    if not isinstance(value, list) or not 1 <= len(value) <= 30:
+        raise ContentError(f"{label}: must be a list of 1 to 30 supporter ids")
+    for index, supporter_id in enumerate(value):
+        if not isinstance(supporter_id, str) or not SLUG.fullmatch(supporter_id):
+            raise ContentError(f"{label}[{index}]: not a canonical supporter id")
+        if supporter_id in value[:index]:
+            raise ContentError(f"{label}[{index}]: {supporter_id!r} is listed more than once")
+    return list(value)
+
+
 def load_meeting(document, label, today=None):
     _require_keys(document, MEETING_KEYS, {"body", "starts_at"}, label)
     agency_id = document.get("agency_id")
@@ -915,6 +946,8 @@ def load_meeting(document, label, today=None):
                     if "outcome" in document else None),
         **({"cited_findings": load_cited_findings(document["cited_findings"], f"{label}.cited_findings")}
            if "cited_findings" in document else {}),
+        **({"cosigners": load_cosigners(document["cosigners"], f"{label}.cosigners")}
+           if "cosigners" in document else {}),
     }
 
 
@@ -1235,6 +1268,73 @@ def _policy_check(value, label, alpr_policy, today=None):
     return {"checked_on": value["checked_on"], "policy_url": value["policy_url"], "elements": elements}
 
 
+PRE_MEETING_KEYS = ("status", "checked_on", "meeting_on", "body", "source_url", "note")
+PRE_MEETING_STATUSES = ("found", "not_found_yet")
+PRE_MEETING_RULE_ID = "ca-civ-1798.90.55-public-comment-before-implementation"  # the law-package rule the section cites by id
+
+
+def _pre_meeting(value, label, today=None, problems=None):
+    """DF1207-07: the public meeting an organizer found before an ALPR program started (``profile.pre_implementation_meeting``).
+
+    ``found`` needs ``meeting_on``, ``body`` and an https ``source_url``; ``not_found_yet`` allows none of them.
+    Organizer-verified and never fetched. Every problem is named by field: with ``problems`` a list they are all
+    appended (content-check), else the first is raised (build). Returns the clean dict, or None when absent."""
+    if value is None:
+        return None
+    issues, today = [], today or date.today()
+    if not isinstance(value, dict):
+        issues, value = [f"{label}: must be an object"], {}
+    issues += [f"{label}: unknown field {str(key)[:40]!r}" for key in sorted(set(value) - set(PRE_MEETING_KEYS), key=str)]
+    status = value.get("status")
+    if status not in PRE_MEETING_STATUSES:
+        issues.append(f"{label}.status: choose one of {list(PRE_MEETING_STATUSES)}")
+    found = status == "found"
+    for key in ("meeting_on", "body", "source_url"):
+        if key in value and status == "not_found_yet":
+            issues.append(f"{label}.{key}: not allowed when status is not_found_yet")
+        elif key not in value and found:
+            issues.append(f"{label}.{key}: required when status is found")
+    days = {}
+    for key in ("meeting_on", "checked_on"):
+        if key not in value:
+            if key == "checked_on":
+                issues.append(f"{label}.checked_on: required")
+        elif key == "checked_on" or found:
+            try:
+                days[key] = _calendar_day(value[key], f"{label}.{key}")
+                if days[key] > today:
+                    issues.append(f"{label}.{key}: must not be after the build date")
+            except ContentError as exc:
+                issues.append(str(exc))
+    if "meeting_on" in days and "checked_on" in days and days["checked_on"] < days["meeting_on"]:
+        issues.append(f"{label}.checked_on: must not be before meeting_on")
+    if found and "body" in value:
+        body = value["body"]  # the page escapes it, so angle brackets are fine here
+        if not (isinstance(body, str) and body.strip() and len(body) <= 120 and all(map(visible, body))):
+            issues.append(f"{label}.body: 1-120 characters of visible text")
+    if found and "source_url" in value:
+        try:
+            _https(value["source_url"], f"{label}.source_url")
+        except ContentError as exc:
+            issues.append(str(exc))
+    if "note" in value:
+        try:
+            if len(str(_text(value, "note", label))) > 200:
+                raise ContentError(f"{label}.note: at most 200 characters")
+        except ContentError as exc:
+            issues.append(str(exc))
+    if problems is not None:
+        problems.extend(issues)
+    elif issues:
+        raise ContentError(issues[0])
+    if issues:
+        return None
+    clean = {key: value[key] for key in PRE_MEETING_KEYS if key in value}
+    if not clean.get("note"):
+        clean.pop("note", None)
+    return clean
+
+
 CONTRACT_CHECKLIST_PATH = Path(__file__).resolve().parent / "_resources" / "checklists" / "contract-checklist.json"
 CONTRACT_CHECKLIST_NAME, MAX_CONTRACT_CHECKLIST_BYTES = "checklists/contract-checklist.json", 64 * 1024
 CONTRACT_CHECK_IDS = ("term_renewal", "price_changes", "data_ownership", "retention", "sharing_network",
@@ -1476,7 +1576,7 @@ def load_agencies(document, label, today=None):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding", "pre_implementation_meeting"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -1500,6 +1600,8 @@ def load_agencies(document, label, today=None):
             "contract_check": _contract_check(profile.get("contract_check"), contract, f"{item}.profile.contract_check", today),  # likewise
             "alpr_policy": (alpr_policy := _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy")),  # likewise
             "policy_check": _policy_check(profile.get("policy_check"), f"{item}.profile.policy_check", alpr_policy, today),  # likewise
+            "pre_implementation_meeting": _pre_meeting(profile.get("pre_implementation_meeting"),  # likewise
+                                                       f"{item}.profile.pre_implementation_meeting", today),
             "transparency": _transparency(profile.get("transparency"), f"{item}.profile.transparency",  # likewise
                                           entry.get("flock_transparency_slug") if _flock_url(entry, item) else None, today),
             "profile": {
@@ -2293,8 +2395,11 @@ def glossary_terms_used(finding, glossary):
 
 # --- assembly ---------------------------------------------------------------
 
-def load_content(root, today=None):
-    """Return the validated content model for ``root`` or None when no content/ exists."""
+def load_content(root, today=None, *, _replacing_cosign_id=None):
+    """Return the validated content model for ``root`` or None when no content/ exists.
+
+    ``_replacing_cosign_id`` is private to ``meetings-stage --replace``: it skips only that one staged meeting's
+    co-signer cross-check so a stale grant can be repaired; its structure is still validated."""
     root = Path(root)
     content_dir = root / "content"
     if not content_dir.is_dir():
@@ -2332,6 +2437,11 @@ def load_content(root, today=None):
     continued = continuation_problems(meetings)  # DF0022-07: a continued item names a real, later, same-body meeting
     if continued:
         raise ContentError(continued[0])
+
+    from .supporters import cosign_problems  # local: supporters imports this module
+    cosigned = cosign_problems(root, meetings, today=today, skip_meeting_id=_replacing_cosign_id)  # DF2207-14
+    if cosigned:
+        raise ContentError(cosigned[0])
 
     sources_path = content_dir / "sources.json"
     sources = load_sources(_read_json(sources_path)) if sources_path.is_file() else []

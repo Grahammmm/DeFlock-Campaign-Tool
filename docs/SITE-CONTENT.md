@@ -113,6 +113,15 @@ the bare URL, "Open the public copy (page N)"). `build` stops and `content-check
 in `sources.json`, has no `public_url`, or is above the entry's `pages` (when that is above 0). `data/findings.json`
 carries `page` only when it is set.
 
+Optional `sources[].quote` (DF1952-08) is a short passage you copied by hand from the cited record: 1 to 400
+characters, at least one that is not a space, plain text with no control or line-break characters (tabs, newlines, DEL,
+bidi marks), kept exactly as written (no trimming, no Markdown; angle brackets are ordinary text and are escaped). It
+needs the same `locator` as every source. The finding page and the packet show it as a blockquote under the source
+line with "Transcribed by the campaign; not checked against the record text." and, when `page` is set, "Page N".
+Nothing compares the quote with the record: the campaign checks the transcription by hand. `data/findings.json`
+carries `quote` only when it is set; a quote holding a 40-character hex run stops the build (it is never redacted or
+cut). The labels `finding.quote_transcribed` and `finding.quote_page` can be overridden in `labels.json`.
+
 Every finding page shows the classification, a confidence label, the event
 date, each source with the first 12 characters of its SHA-256 and its locator,
 limitations, counterevidence, a Corrections section and the
@@ -219,6 +228,21 @@ every field as `<file>[n].profile.policy_check.<field>` on one line. The agency 
 ("addressed (page N)", "not found in the posted policy" or "unclear"), the check date, a link to the posted policy and the
 law package status label. It is an organizer's reading of what the document says, not a finding about compliance, and
 `not found` is never read as more than that. Nothing is fetched; the section is not in card JS, open data or feeds.
+
+An agency's optional `profile.pre_implementation_meeting` records the public meeting an organizer found before the
+agency's ALPR program started, for the public-comment rule in Civ. Code § 1798.90.55(a):
+`{"status": "found"|"not_found_yet", "checked_on", "meeting_on"?, "body"?, "source_url"?, "note"?}`. `found` needs
+`meeting_on` (a real YYYY-MM-DD date not after the build date), `body` (1-120 characters) and an `https://` `source_url`
+(the official record); `not_found_yet` refuses all three. `checked_on` is a real date not after the build date and not
+before `meeting_on`; `note` is up to 200 plain-text characters. Unknown fields are refused. Each problem is named
+`<file>[n].profile.pre_implementation_meeting.<field>`; the build stops at the first and `content-check` lists them all.
+The agency page and the agencies-list card show "Public meeting before the camera program": "`{body}` discussed it on
+`{meeting_on}` (official record). Checked `{checked_on}`." or "We have not found a record of one yet (checked
+`{checked_on}`).", then "Rule: `{citation}`. Law package: `{status}`." and the note. The citation and status come from the
+shipped law package by rule id `ca-civ-1798.90.55-public-comment-before-implementation`; if the package lacks the rule
+the Rule line is left out and the build is not refused. It is an organizer-verified record and never fetched: "not found
+yet" is not a statement that no meeting was held, and the section makes no finding that one was required, missed or
+adequate. It is not in card JS, open data or feeds.
 
 An agency's optional `profile.contract_check` (DF2207-03) records an organizer's reading of the linked ALPR vendor
 agreement against the draft, tool-wide checklist `checklists/contract-checklist.json` (not part of any law package;
@@ -544,6 +568,14 @@ or an empty list, the site is byte-identical to before. The page says only that 
 is not a legal endorsement and does not let anyone speak for them. `supporters` is a reserved page and finding slug even
 without a file. Labels: `supporters.title`, `supporters.description`, `supporters.joined` (`{date}`) and
 `supporters.kind.<kind>`; `examples/labels/es.json` carries Spanish drafts (still unreviewed).
+
+**Co-sign grant (DF2207-14).** A private record may also carry `cosign` (`"any"` or 1 to 100 meeting ids) with
+`cosign_confirmed_on`, `cosign_how` and `cosign_correspondence`: all four or none. Set it with
+`supporters consent --directory DIR --id ID --cosign any|MEETING_ID ... --confirmed-on D --how HOW [--correspondence PREFIX]`
+or remove it with `--clear-cosign` (see [MEETINGS.md](MEETINGS.md)). It is read only by `meetings-stage --cosign`,
+`load_content` and `content-check`; it never reaches the public file or the site. A listing alone never allows co-signing.
+Staged meetings store `cosigners` (1 to 30 supporter ids), shown on the meeting page as `Co-signed by N organizations`
+(labels `meeting.cosigned_one` and `meeting.cosigned_many`, both with `{count}`; Spanish drafts in `examples/labels/es.json`).
 
 Limits: the lint refuses `@`, phone-number-like digit runs and contact labels (`email:`, `phone:`, `contact:`, `mailto:`)
 in names and URLs, but it does not recognise a person's name. The organization attestation and the organizer's own
