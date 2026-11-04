@@ -138,7 +138,7 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice", "brand", "share_image"}
+             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image"}
 SHARE_IMAGE_KEYS = {"path", "alt"}
 SHARE_RATIO, SHARE_RATIO_TOLERANCE = 1.905, 0.02  # 1200x630
 BRAND_KEYS = {"logo", "logo_alt", "accent", "ink", "favicon"}
@@ -148,7 +148,7 @@ TEXT_BACKGROUNDS = {"cream": "#fff8ec", "paper": "#f3eee4"}  # styles.css.tmpl -
 BRAND_CONTRAST = (("ink", ("cream", "paper")), ("accent", ("cream",)))  # the text pairs the stylesheet uses
 MIN_CONTRAST, LOGO_MAX_SIDE = 4.5, 2000
 PROFILE_KEYS = {"vendor", "status", "summary", "cameraCount", "facts", "open", "flags"}
-SIGNUP_KEYS = {"mode", "form_html_allowlisted_url", "label", "note"}
+SIGNUP_KEYS = {"mode", "form_html_allowlisted_url", "label", "note", "privacy_url"}
 
 
 def _luminance(colour):
@@ -260,13 +260,15 @@ def load_site(document, assets_dir=None):
     _require_keys(signup, SIGNUP_KEYS, {"mode"}, "site.json.signup")
     if signup["mode"] not in SIGNUP_MODES:
         raise ContentError(f"site.json.signup.mode: choose one of {list(SIGNUP_MODES)}")
-    form_url = None
-    if signup["mode"] == "brevo_hosted":
-        form_url = _https(signup.get("form_html_allowlisted_url"), "site.json.signup.form_html_allowlisted_url")
-        host = urlsplit(form_url).hostname.lower()
-        if not any(host.endswith(suffix) and host != suffix.lstrip(".") for suffix in SIGNUP_HOST_SUFFIXES):
-            raise ContentError("site.json.signup.form_html_allowlisted_url: host is not an allowlisted "
-                               "hosted-form provider (" + ", ".join("*" + s for s in SIGNUP_HOST_SUFFIXES) + ")")
+    urls = {}
+    for field, required in (("form_html_allowlisted_url", signup["mode"] == "brevo_hosted"), ("privacy_url", False)):
+        if required or signup.get(field) is not None:
+            urls[field] = _https(signup.get(field), f"site.json.signup.{field}")
+            host = urlsplit(urls[field]).hostname.lower()
+            if not any(host.endswith(suffix) and host != suffix.lstrip(".") for suffix in SIGNUP_HOST_SUFFIXES):
+                raise ContentError(f"site.json.signup.{field}: host is not an allowlisted "
+                                   "hosted-form provider (" + ", ".join("*" + s for s in SIGNUP_HOST_SUFFIXES) + ")")
+    form_url, privacy_url = urls.get("form_html_allowlisted_url"), urls.get("privacy_url")
     social = document.get("social", [])
     if not isinstance(social, list) or len(social) > 12:
         raise ContentError("site.json.social: must be a list of {label, url}")
@@ -296,7 +298,8 @@ def load_site(document, assets_dir=None):
         "mission_md": _text(document, "mission_md", "site.json", default=""),
         "about_md": _text(document, "about_md", "site.json", allow_empty=False),
         "contact_email": _email(document.get("contact_email"), "site.json.contact_email"),
-        "signup": {"mode": signup["mode"], "url": form_url,
+        "privacy_contact": _email(document.get("privacy_contact"), "site.json.privacy_contact"),
+        "signup": {"mode": signup["mode"], "url": form_url, "privacy_url": privacy_url,
                    "label": _text(signup, "label", "site.json.signup", default="Get campaign updates"),
                    "note": _text(signup, "note", "site.json.signup",
                                  default="Hosted by the newsletter provider; unsubscribe any time.")},
@@ -1049,7 +1052,7 @@ def load_map(content_dir):
 # --- explainer pages (DF2237-07): content/pages/<slug>.json -> /<slug>.html ----
 PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
 RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
-                                       "agency-cards", "app", "data", "vendor", "meetings", "methods"}  # generated top-level names
+                                       "agency-cards", "app", "data", "vendor", "meetings", "methods", "privacy"}  # generated top-level names
 
 
 def _page_string(document, key, label, limit, required):

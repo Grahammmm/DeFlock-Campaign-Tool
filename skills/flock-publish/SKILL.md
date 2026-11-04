@@ -24,7 +24,10 @@ review-required, not a legal conclusion.
 
 ## Approve
 - **NEEDS G**: G approves the exact texts (approve all / a subset / hold).
-- The operator sets `status: approved`, `approved_by`, `approved_on` and `approval_ref` (G-DECISIONS line or card id).
+- The operator sets `status: approved`, `approved_by`, `approved_on` and `approval_ref` (G-DECISIONS line or card id),
+  and `content_hash` to the value the review queue prints beside that exact text. The hash binds the approval to the
+  text as approved: any later change to the entry or the run voids it. An approval without it (recorded before
+  DF-APPROVAL-TIME-BIND) approves nothing until a person re-reads the text and records its hash; never copy hashes in bulk.
 
 ## Check
 - `python3 tools/flock_publish.py --check FILE --run <run folder>` until exit 0, before G sees approvals: any entry whose
