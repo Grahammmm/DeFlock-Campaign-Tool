@@ -217,6 +217,32 @@ roles into `private/reviewers.json`, keeping `added_on`; `finding reviewers list
 roster, `finding review` refuses an unlisted name or unassigned role and `review-status` lists
 `unrostered_receipts`; without one nothing changes. Names stay self-asserted: roles, not identity.
 
+## Publication gate (one check at every publishing path)
+
+`campaign_tool/publication_gate.py` holds one check, `assert_publishable(artefact_id, content_hash, approvals)`,
+and every path that emits publishable content calls it before writing: `finding publish`
+(`campaign_tool/findings.py`), `flock_publish.py stage` and `flock_publish.py brief`. It returns nothing or
+raises `PublicationRefused` (a `ValueError`) naming the artefact id and one reason:
+
+| Reason | Meaning |
+| --- | --- |
+| `no_approval` | no approval record was given |
+| `approval_for_other_content` | approvals exist, none for this artefact id |
+| `content_changed_after_approval` | the artefact's content hash differs from every approval's (one byte is enough) |
+| `status_not_approved` | the matching approval's `status` is not `approved` |
+| `approver_unnamed` | `approved_by` is empty, a placeholder (`-`, `n/a`, `tbd`, `auto`, `system`, `agent`) or a model or lane name |
+| `approval_consumed` | the matching approval carries a truthy `consumed` |
+| `redaction_unsigned` | the approval carries `redaction_signed` and it is not true |
+
+The gate reads those fields, never prose in the artefact or its file name. `redaction_signed` is set by no path
+yet; it is reachable once a redaction sign-off exists. A legal-claim flag is recorded on a refusal and never causes
+one. A refusal prints only the id and reasons, exits non-zero and writes nothing. No code writes an approval: the
+gate has no writer, and `tests/test_publication_gate.py` fails if any other module writes an approval field outside
+the existing human review surface (Python modules by syntax tree, other languages by a literal pattern).
+For `stage` and `brief` the approval is the `PUBLISH.json` review fields, bound to the entry as filed and compared
+with the entry the run re-derives. A clean gate does not prove an artefact is fit to publish: redaction sign-off, the
+privacy lint and the legal-claim notes are separate conditions. `finding correct` is not gated yet.
+
 ## Not done
 
 No reviewer signatures or identity check (roster names are self-asserted); the workspace Worker has
@@ -241,3 +267,28 @@ every chosen platform is made before anything is written, so one that cannot fit
 the platform named. Each folder keeps its own `.written.json`, kept edits go to
 `kit/social/<P>.suggested/` and stale slugs are listed per platform. Without `--platform` the run is
 unchanged (`len()` within 280 into `kit/social/`); `--check` reads that folder only.
+
+## Posting one approved social draft (Worker `post_social`)
+
+A social post is a message to the public and cannot be recalled, so the approval is **per post**.
+The CLI above still never posts. The workspace Worker posts only through a `post_social` approval
+card whose subject is the finding id and whose proposal names `finding_id`, `platform`, the exact
+`text` and its `content_sha256`. At execution the executor refuses by name, posting nothing, unless:
+
+- the card is approved by an Access identity, not yet used, and approved within 7 days
+  (`no_approval`, `approval_consumed`, `approval_expired`);
+- the card names this finding and the one configured platform (`approval_mismatch`);
+- sha256 of the exact text equals the approved hash, so an edited draft needs a new approval
+  (`content_hash_mismatch`);
+- the finding is `published` with a publication record for its current content, by field, never by
+  wording such as "APPROVED" in the draft (`finding_not_published`, `finding_not_approved`);
+- the text matches no email, phone or plate pattern (`privacy_lint`) and fits the platform.
+
+DF-4 legal-claim flags (`review_flags`) show on the card and are counted on the receipt
+(`legal_flag_count`); they never block. One adapter (Mastodon) is configured by `MASTODON_URL`
+and the `MASTODON_TOKEN` secret; without them every card fails `social_not_configured`
+(`social_posting: not configured`). `(finding, platform)` has one receipt slot taken before the
+call: a second card is `already_posted`. A timeout, 5xx or reply without a post id is recorded
+`post_uncertain`, raises one incident and is never retried; check the platform by hand. The receipt
+holds ids, hashes, counts and enums only, never post text, handle or personal data. There is no
+batch, schedule, edit, delete or recall path.

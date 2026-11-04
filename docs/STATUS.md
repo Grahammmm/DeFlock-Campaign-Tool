@@ -23,6 +23,7 @@ mail or publishes anything.
 
 | Part | What it does | Evidence |
 | --- | --- | --- |
+| Threat model | Categories, existing safeguards, gaps and an advisory trust ranking. | [THREAT-MODEL.md](THREAT-MODEL.md) |
 | Flock facts, law-policy, compare | Cited facts, law and policy text, and policy comparison for one agency. | `tools/flock_facts.py`, `tools/flock_law_policy.py`, `tools/flock_compare.py`, `skills/flock-facts/`, `skills/flock-law-policy/`, `skills/flock-compare/` |
 | Flock verify | Independent check of a run's findings against their citations. | `tools/flock_verify.py`, `skills/flock-verify/` |
 | Flock follow-up and email drafts | Follow-up and email drafts and a request reminder list only; they write or print files and nothing sends. Approval is a signed `EMAIL-APPROVAL.json` field (docs/APPROVALS.md). | `tools/flock_email.py`, `tools/flock_approve.py`, `tools/flock_requests.py`, `skills/flock-followup/`, `skills/flock-email/`, `skills/flock-correspondence/` |
@@ -37,6 +38,7 @@ mail or publishes anything.
 | Flock publish exporter | Writes `PUBLISH.json` with every entry pending human review; publication needs G. `brief` writes a private 0600 partner/press brief draft from approved entries; never sent or built. | `tools/flock_publish.py`, `tools/flock_publish_stage.py`, `tools/flock_publish_brief.py`, `skills/flock-publish/` |
 | Flock review queue | Private challenge and receipt report for human review; never approves or publishes. | `tools/flock_review_queue.py` |
 | Custody report | One private page per published finding: the source hashes and re-hash result, when and from which agency each source was received, its preservation receipt, the review receipts bound to the current content, and every missing link named. Read-only and never published. A hash establishes byte identity, not authenticity. | `tools/custody_report.py`, `schemas/custody-report-v1.json`, [RECONCILIATION.md](RECONCILIATION.md) |
+| Publication gate | One check every publishing path (`finding publish`, flock stage, flock brief) calls before it emits: a named, content-matched approval or a refusal with a reason; no code writes an approval. | `campaign_tool/publication_gate.py`, `tests/test_publication_gate.py`, [PUBLICATION.md](PUBLICATION.md) |
 | Flock store backup | Local create, verify and restore of the private flock store (agencies/, regions/, LAW.csv) with a SHA-256 manifest; no upload, encryption or schedule. | `tools/flock_backup.py`, [BACKUP.md](BACKUP.md) |
 | Flock store check | Read-only run of every flock checker over one private store, agency slugs found in one place but not the others, and the newest backup's age. | `tools/flock_store_check.py` |
 | Agency chain rehearsal | Walks one named agency through every records-chain stage (verified, drafted, approved, sent, response, preserved, extracted, OCR, catalogued, detected, reviewed, published) from recorded fields and writes one private 0600 receipt naming each stage's state, the human step owed and the first break; OCR reads `not-wired`; reads only, sends and publishes nothing. | `tools/rehearse_agency.py`, [OFFLINE-LOCALITY-REHEARSAL.md](OFFLINE-LOCALITY-REHEARSAL.md) |
@@ -69,7 +71,7 @@ Only items with no implementation in this repository.
 | Item | Evidence that it is not built |
 | --- | --- |
 | Binding the outbox to the Worker `send_request`/`send_followup` executors | They refuse with `sender_not_configured`: `workers/workspace/src/executors/types.ts` |
-| Social posting | `post_social` is `not_implemented`: `workers/workspace/src/views/screens.ts` |
+| Live social posting | `post_social` has one Mastodon adapter behind per-post approval, but no account is configured: `workers/workspace/src/executors/post_social.ts` |
 | Independently reviewed state-law packages | California ships `status: draft`: `jurisdictions/us-ca/package.json` |
 | Automatic Legistar polling from the Worker | The CLI import exists; the Worker only lists imported meetings: [MEETINGS.md](MEETINGS.md) |
 | Backup encryption, scheduling and hosted restore | `campaign_tool/backup.py` writes a plain tar by hand; encryption and storage are left to the operator |
