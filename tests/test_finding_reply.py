@@ -443,7 +443,7 @@ class PublicTests(unittest.TestCase):
     def test_optional_public_schema_and_privacy(self):
         data, page = self.build()  # legacy: no reply at all
         legacy_row = json.loads(data)["findings"][0]
-        self.assertEqual(set(legacy_row), set(PUBLIC_FINDING_FIELDS) - {"agency_response"})
+        self.assertEqual(set(legacy_row), set(PUBLIC_FINDING_FIELDS) - {"also_agency_ids", "agency_response"})
         self.assertNotIn("Agency response", page)
         law.validate(json.loads(data), SCHEMA)
         # pending is prepared, not asked: the public file and page stay exactly as they were
