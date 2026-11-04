@@ -108,7 +108,12 @@ the binding statute cited alongside so a reader can see which is which.
 [--stale-days N] [--base DIR]` writes a private CSV worksheet (mode 0600, refused
 inside the repository or over an existing file): one `records_law` row, then one row
 per rule in package order, with the rule text, its sources, the oldest access date
-and its age, and four blank reviewer columns. Stdout JSON names every source
+and its age, a `package_sha256` column (just before the reviewer columns), and four
+blank reviewer columns. `package_sha256` is the same lowercase SHA-256 on every row:
+the digest of the whole package as canonical JSON (sorted keys, compact separators,
+UTF-8; every rule, source, label and review field counts, array order included).
+It identifies the exact package revision the worksheet was made from; it is not a
+signature and does not authenticate the reviewer. Stdout JSON names every source
 accessed more than N days (default 180, 1..3650) before `--as-of`. The worksheet is
 not legal advice and not a review: it never changes `status`, `reviewed_by`,
 `reviewed_at` or any `review` label. Only a human reviewer moves a package to
@@ -126,6 +131,20 @@ today; any refused row stops the run and nothing is written. Edited `duty`,
 `status`, `reviewed_by` or `reviewed_at`: check the result with
 `tools/check_law_review.py`, then record the reviewers through the process above.
 
+A worksheet is accepted only against the package revision it was made from. Every row
+must carry a `package_sha256` equal to the current package's digest; a missing,
+malformed or different value, or a worksheet from before this column existed,
+stops the run with `regenerate review-sheet or review-packet, nothing written`,
+before any label is transcribed and before any output file is created. Any change
+to the package (another rule, a request scope, a source, an intervening review label,
+`status` or `reviewed_by`) makes every older worksheet stale, even a blank one. Recover
+by regenerating the worksheet from the current package and having the human reviewer
+reassess and re-enter the conclusions; old conclusions are never copied across. The
+three text cells a reviewer may edit (`duty`, `exceptions`, `remedy`) do not change
+the binding. There is no override and no automatic migration of old worksheets.
+The binding detects a stale or mismatched worksheet; it cannot prevent someone from
+editing the digest and is not a signature.
+
 ## Reviewer packet (not a review)
 
 `python3 -m campaign_tool law review-packet --jurisdiction us-ca --out NEWDIR
@@ -141,9 +160,12 @@ files, and a refusal prints one line and creates nothing:
   (`needs_attorney_review`, then `likely`, then `verified`), with the reading, the
   cited sources, the dates and one question; then the `records_law` row.
 - `WORKSHEET.csv`: byte-identical to `review-sheet` for the same `--as-of` (default
-  today), so `apply-sheet` reads the returned file unchanged.
+  today) and package, including its `package_sha256` column, so `apply-sheet` reads
+  the returned file unchanged while the package is unchanged.
 - `RETURN.md`: the filled worksheet goes back to the maintainer, who opens the PR;
-  the packet names no address.
+  the packet names no address. If the package changes before the worksheet comes
+  back, `apply-sheet` refuses it: build a new packet and have the reviewer
+  reassess; do not copy a digest across.
 
 The packet states no conclusion and changes nothing in the package. While a
 package is `draft`, `doctor` lists the reviewer requirement and this command in
@@ -185,6 +207,42 @@ Exit 0: no finding affected. Exit 3: at least one affected. Exit 2: an input err
 writes no file, never marks a package reviewed and never records a correction. It states no legal conclusion;
 whether a correction is needed, and whether the amended package may be reviewed, stay with the human reviewers.
 
+## Local ordinances: the campaign overlay
+
+A city or county ordinance is not a state rule and never enters a state package. An organizer may transcribe one into
+the campaign's own optional `law/local-rules.json` (runtime input; it is not shipped data and no public file is made
+from it). Exact shape, one object per dated version of a rule:
+
+    {"schema_version": 1, "jurisdiction": "us-ca", "rules": [
+      {"rule_id": "local-us-ca-cedar-retention",
+       "citation": "Cedar Municipal Code 5.1",
+       "duty": "Delete plate reads after 30 days.",
+       "source_url": "https://library.example.org/cedar/municode/5-1",
+       "checked_on": "2026-01-02",
+       "effective_from": "2020-01-01", "effective_to": null,
+       "agency_ids": ["ca-cedar-police"]}]}
+
+- `jurisdiction` must equal the campaign's `country-state`; there is no state fallback. `rule_id` is a lowercase slug
+  starting `local-<jurisdiction>-` (for example `local-us-ca-`) with a name after it, and may not equal a state rule id.
+- `citation` and `duty` are plain text as the organizer read them (no angle brackets). `source_url` is an `https://`
+  address the organizer attests is the official primary text; it is never fetched and its host is not judged official.
+  `checked_on` is a real date not after today. `effective_to` may be `null`; a future `effective_from` is allowed.
+- `agency_ids` lists the campaign agencies the rule applies to; each must be a loaded agency. A rule applies to a
+  finding only when the finding's `agency_id` is listed and its `event_date` is inside the inclusive window.
+- A repeated `rule_id` is a dated version. Windows of one id may not overlap (a shared end/start day overlaps), whatever
+  their agencies. No review or status field is accepted: organizers cannot mark a local rule reviewed.
+
+Check it, read-only, before building (exit 0 valid or absent, exit 1 `Stopped:` plus the field, exit 2 bad usage):
+
+    python3 -m campaign_tool.law check --directory DIR
+
+`build`, `content-check`, `finding preview` and `finding packet` validate the same file, even when no finding cites it,
+and refuse a finding that cites an unknown, out-of-scope or out-of-force `local-` id (in `rule_ids` or `sources[].rule_id`).
+`law.rules_in_force(package, day, local_rules=..., agency_id=...)` appends the matching versions after the state rules;
+without `agency_id` it is state-only. A finding page lists each cited local rule by citation with the label
+"local rule, organizer-transcribed, not legally reviewed"; the state package, its review status and its citations
+are unchanged. Validation proves shape only, never that the text is official, current, applicable or reviewed.
+
 ## Support matrix
 
 [`docs/LAW-SUPPORT.md`](LAW-SUPPORT.md) lists, for every shipped jurisdiction package, each rule's id, citation,
@@ -199,6 +257,7 @@ nothing itself; without `--md` it prints the same data as one JSON document, and
 jurisdictions directory. The matrix restates package data: a rule row's label and the package status stay
 separate, author review labels are not independent legal acceptance, and a listed jurisdiction is not all-state
 support.
+
 
 ## Current state
 
