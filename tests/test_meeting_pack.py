@@ -75,7 +75,8 @@ class MeetingPackTests(unittest.TestCase):
         before = self.snapshot()
         report = self.pack()
         self.assertEqual(report, {'written': [f'kit/meeting-packs/m/{name}' for name in
-                                             ('handout.html', 'comment.md', 'sources.csv')], 'findings': 2, 'truncated': 0})
+                                             ('handout.html', 'comment.md', 'sources.csv')], 'findings': 2, 'truncated': 0,
+                                  'comment_sent': None})
         page = self.html()
         for number in (1, 2):
             self.assertIn(f'Finding {number}', page)
