@@ -16,6 +16,7 @@ import shutil
 import sys
 import tempfile
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from html import escape
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -201,6 +202,7 @@ PUBLIC_AGENCY_FIELDS = ("agency_id", "name", "kind", "url", "asked", "alpr_polic
 PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
 PUBLIC_POLICY_FIELDS = ("url", "checked_on")
 PUBLIC_CONTRACT_FIELDS = ("vendor", "start", "end", "source_url", "checked_on")  # never renewal_note
+PUBLIC_COST_FIELDS = ("amount_usd", "period", "as_stated_in")  # contract.cost (DF1103-07): exactly these, when present
 PUBLIC_TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts",
                               "shared_with_agencies", "source_url", "checked_on")
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
@@ -755,6 +757,18 @@ class Site:
         return (f'    <section class="section movement-section" id="participate"><h2>{self.t("heading.participate")}</h2>'
                 f'{form}</section>\n')
 
+    def contract_cost_amount(self, cost):
+        """``$12,345.60`` from the transcribed decimal string; exact, never float-converted."""
+        return "$" + format(Decimal(cost["amount_usd"]), ",.2f")
+
+    def contract_cost_line(self, contract):
+        """DF1103-07: the cost exactly as the document states it, with the contract's own source and checked date."""
+        cost = contract["cost"]
+        source = (f'<a href="{e(contract["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>')
+        return ('<p class="contract-cost">' + self.t("agency.contract_cost", amount=e(self.contract_cost_amount(cost)),
+                period=self.t("agency.cost_" + cost["period"]), document=e(cost["as_stated_in"]), source=source,
+                date=date_label(contract["checked_on"])) + "</p>")
+
     def contract_line(self, contract):
         if not contract:
             return ""
@@ -762,7 +776,8 @@ class Site:
                 f'{time_tag(contract["end"])}' + (", " + self.t("agency.contract_ended") if contract["end"] < self.today.isoformat() else "")
                 + (f'. {e(contract["renewal_note"])}' if contract["renewal_note"] else "")
                 + f' ({self.t("agency.checked", date=date_label(contract["checked_on"]))} <a href="{e(contract["source_url"])}" '
-                  f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>')
+                  f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>'
+                + (self.contract_cost_line(contract) if contract.get("cost") else ""))
 
     def transparency_block(self, agency, heading="h4"):
         """Newest organizer-transcribed portal snapshot, as the vendor reported it, with change since the previous one."""
@@ -852,7 +867,7 @@ class Site:
         """DF0137-12: every agency side by side in model order (never sorted by a number); each cell links its source."""
         unchecked, rows = self.t("agencies.glance_not_checked"), []
         heads = [self.t(f"agencies.glance_{key}") for key in ("agency", "cameras", "searches_last_30_days",
-                                                               "retention_days", "policy", "contract", "asked")]
+                                                               "retention_days", "policy", "contract", "cost", "asked")]
 
         def sourced(url, text, checked_on):
             return (f'<a href="{e(url)}" rel="noopener noreferrer">{text}</a> '
@@ -865,6 +880,9 @@ class Site:
                 else unchecked for key in ("cameras", "searches_last_30_days", "retention_days")]
             cells += [sourced(policy["url"], self.t("agencies.glance_posted"), policy["checked_on"]) if policy else unchecked,
                       sourced(contract["source_url"], time_tag(contract["end"]), contract["checked_on"]) if contract else unchecked,
+                      sourced(contract["source_url"], e(self.contract_cost_amount(contract["cost"])) + " "
+                              + self.t("agency.cost_" + contract["cost"]["period"]), contract["checked_on"])
+                      if contract and contract.get("cost") else unchecked,
                       f'<a href="#{e(agency["slug"])}-asked">{asked}</a>' if asked else "0"]
             rows.append('<tr><th scope="row" data-label="' + heads[0] + f'">{cells[0]}</th>'
                         + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
@@ -967,7 +985,9 @@ class Site:
                 + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
-                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.transparency_block(agency, "h3") + self.who_decides(aid) + self.votes_section(aid)
+                + (f'<p>{" · ".join(links)}</p>' if links else "")
+                + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
+                + self.transparency_block(agency, "h3") + self.who_decides(aid) + self.votes_section(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
@@ -1720,7 +1740,9 @@ class Site:
                 "asked": [{"topic": a["topic"], "state": a["state"], "asked_on": a["asked_on"],
                            "updated_on": a.get("updated_on")} for a in asked],
                 "alpr_policy": {k: policy[k] for k in PUBLIC_POLICY_FIELDS} if policy else None,
-                "contract": {k: contract[k] for k in PUBLIC_CONTRACT_FIELDS} if contract else None,
+                "contract": ({**{k: contract[k] for k in PUBLIC_CONTRACT_FIELDS},
+                              **({"cost": {k: contract["cost"][k] for k in PUBLIC_COST_FIELDS}} if contract.get("cost") else {})}
+                             if contract else None),
                 "transparency": ({k: newest[k] for k in PUBLIC_TRANSPARENCY_FIELDS if newest.get(k) is not None}
                                  if newest else None),
                 "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
@@ -1736,7 +1758,7 @@ class Site:
         _assert_public(doc, "data/agencies.json", PUBLIC_AGENCY_TOP_LEVEL,
                        {"agencies": (PUBLIC_AGENCY_FIELDS, {"asked": (PUBLIC_ASKED_FIELDS, {}),
                                                             "alpr_policy": (PUBLIC_POLICY_FIELDS, {}),
-                                                            "contract": (PUBLIC_CONTRACT_FIELDS, {}),
+                                                            "contract": (PUBLIC_CONTRACT_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
                                                             "transparency": (PUBLIC_TRANSPARENCY_FIELDS, {})})})
         return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 

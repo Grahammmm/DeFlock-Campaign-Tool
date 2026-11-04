@@ -177,9 +177,28 @@ never carry it. It is shown only on `agencies.html` (docs/AGENCY-CARDS.md), neve
 the list's own order, never sorted by any number, with no ranking, score or "best/worst" wording. Cells: cameras,
 searches in the last 30 days and retention days from the newest `profile.transparency` snapshot (each linked to its
 `source_url`, checked date shown), the posted `alpr_policy` ("posted", linked to the policy), `contract.end` linked
-to the contract source, and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0").
+to the contract source, `contract.cost` as stated (`$12,345.60 per year`, linked to the contract source with its checked
+date; "not checked" without a cost) and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0").
 A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
 No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
+
+### Contract cost as stated (`profile.contract.cost`)
+
+A contract may carry an optional `cost`, `{amount_usd, period, as_stated_in}` (exactly these three; `null` is invalid),
+transcribed by an organizer from the document the contract's own `source_url` points to. It adds no second source or
+date: the enclosing contract's `source_url` and `checked_on` are mandatory and are the cost's provenance. `amount_usd`
+is a decimal string from 0 to 100000000 with at most two decimals, no sign, exponent, spaces, separators or leading
+zeroes (a JSON number is refused; it is never converted to a float and the accepted string is kept as written).
+`period` is `annual`, `total` or `one_time`. `as_stated_in` is the document's plain title, 1 to 120 characters, with no
+angle brackets, control or invisible characters and not a URL. The card and the agency page then show
+`Contract cost as stated: $12,345.60 per year (Example agreement; source, checked 2026-10-21).` (`total`, `one time`
+for the other periods; `source` links the contract source), and the glance table has a "Contract cost as stated"
+column between "Contract ends" and "Records items asked". A bad cost stops `build` (`Stopped: ...`, exit 1) and is
+listed by `content-check` (exit 3) with the same line, e.g.
+`content/agencies.json[1].profile.contract.cost.period: choose annual, total or one_time`; the supplied value is never
+echoed. The site never adds costs up, ranks by them or divides them by camera counts; agencies keep the list's order.
+Labels: `agency.contract_cost`, `agency.cost_annual`, `agency.cost_total`, `agency.cost_one_time`, `agency.cost_source`,
+`agencies.glance_cost`. A contract without a cost reads and renders exactly as before.
 
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
@@ -338,7 +357,8 @@ contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other k
 `agency_id` (`"agencies": []` with none). Top level `schema_version`, `campaign`, `generated_from`, `base_url`, `url_kind`
 and `agencies`; per agency `agency_id`, `name`, `kind`, `url` (the page path, with the base URL when one is set), `asked`
 (`topic`, `state`, `asked_on`, `updated_on` or null, newest `asked_on` first as the card lists them), `alpr_policy`
-(`url`, `checked_on`) or null, `contract` (`vendor`, `start`, `end`, `source_url`, `checked_on`) or null, `transparency`
+(`url`, `checked_on`) or null, `contract` (`vendor`, `start`, `end`, `source_url`, `checked_on` and, only when the contract
+has one, `cost`: `amount_usd`, `period`, `as_stated_in`) or null, `transparency`
 (the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, and `camera_count`
 (the card's camera-count sentence) or null. It never includes `records_email`, `records_url`, `portal`, the asked-item
 `note`, the contract `renewal_note`, kit files, notes or any other key; the build refuses with

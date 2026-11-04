@@ -139,11 +139,11 @@ class AgencyCompareTests(unittest.TestCase):
         self.assertEqual([cell[:2] for cell in rows[0][1:]], [
             (NOT_CHECKED, []), (NOT_CHECKED, []), (NOT_CHECKED, []),
             ("posted checked 2026-10-30", [self.base[0]["profile"]["alpr_policy"]["url"]]),
-            ("2025-12-31 checked 2025-08-01", [CONTRACT["source_url"]]), ("2", [f"#{sheriff}-asked"])])
+            ("2025-12-31 checked 2025-08-01", [CONTRACT["source_url"]]), (NOT_CHECKED, []), ("2", [f"#{sheriff}-asked"])])
         # Newest snapshot only: cameras/retention null there stay "not checked", never the older 4236 / 30.
         self.assertEqual([cell[:2] for cell in rows[1][1:]], [
             (NOT_CHECKED, []), ("9100 checked 2025-09-01", [PORTAL]), (NOT_CHECKED, []),
-            (NOT_CHECKED, []), (NOT_CHECKED, []), ("0", [])])
+            (NOT_CHECKED, []), (NOT_CHECKED, []), (NOT_CHECKED, []), ("0", [])])
         self.assertIn('<a href="' + PORTAL + '" rel="noopener noreferrer">9100</a> <small>checked '
                       '<time datetime="2025-09-01">2025-09-01</time></small>', self.glance(page))
         self.assertIn(f'<section class="agency-block"><h4 id="{sheriff}-asked">What we asked</h4>', page)
@@ -151,10 +151,10 @@ class AgencyCompareTests(unittest.TestCase):
         self.assertEqual(rows[2][0][1], [f"#{council}"])  # otherwise its card on this page
         self.assertEqual(police, "cedar")
 
-    def test_agency_with_nothing_is_not_checked_five_times_and_zero(self):
+    def test_agency_with_nothing_is_not_checked_six_times_and_zero(self):
         self.full()
         rows = self.table(self.build()).rows[1:]
-        self.assertEqual([cell[0] for cell in rows[2][1:]], [NOT_CHECKED] * 5 + ["0"])
+        self.assertEqual([cell[0] for cell in rows[2][1:]], [NOT_CHECKED] * 6 + ["0"])
         self.assertEqual([href for cell in rows[2][1:] for href in cell[1]], [])
 
     def test_no_agencies_no_section_and_one_agency_still_a_table(self):
@@ -193,7 +193,7 @@ class AgencyCompareTests(unittest.TestCase):
         head = parser.rows[0]
         self.assertEqual([cell[0] for cell in head], ["Agency", "Cameras (portal)", "Searches last 30 days (portal)",
                                                       "Retention days (portal)", "ALPR policy", "Contract ends",
-                                                      "Records items asked"])
+                                                      "Contract cost as stated", "Records items asked"])
         self.assertTrue(all(cell[2] == "th" and cell[3] == {"scope": "col"} for cell in head))
         for row in parser.rows[1:]:
             self.assertEqual((row[0][2], row[0][3]["scope"]), ("th", "row"))
@@ -202,7 +202,7 @@ class AgencyCompareTests(unittest.TestCase):
     def test_no_ranking_or_score_wording(self):
         banned = re.compile(r"best|worst|rank|score", re.I)
         keys = [key for key in DEFAULTS if key.startswith("agencies.glance_")]
-        self.assertEqual(len(keys), 13)
+        self.assertEqual(len(keys), 14)
         self.assertEqual([key for key in keys if key != "agencies.glance_note" and banned.search(DEFAULTS[key])], [])
         # The note's only such word is the disclaimer itself.
         self.assertEqual(DEFAULTS["agencies.glance_note"], "Numbers are as each source reported them on the date "
@@ -224,7 +224,7 @@ class AgencyCompareTests(unittest.TestCase):
         self.assertIn('a[href^="http"]::after{content:" (" attr(href) ")"', css.split("@media print{", 1)[1])
         # Only source cells hold http links, so print shows only their URLs.
         rows = self.table((self.public / "agencies.html").read_text(encoding="utf-8")).rows[1:]
-        self.assertEqual([href.startswith("http") for row in rows for href in row[0][1] + row[6][1]], [False] * 4)
+        self.assertEqual([href.startswith("http") for row in rows for href in row[0][1] + row[7][1]], [False] * 4)
 
 
 if __name__ == "__main__":
