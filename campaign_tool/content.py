@@ -562,7 +562,7 @@ MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes", "recording_url",
-                "recording_start"}
+                "recording_start", "minutes_url", "minutes_approved_on"}
 RECORDING_START = re.compile(r"([0-9]{1,2}):([0-5][0-9]):([0-5][0-9])")
 VOTE_VALUES = ("yes", "no", "abstain", "absent", "recused")
 PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
@@ -609,7 +609,8 @@ def load_outcome(value, starts_at, status, label, today=None):
     """Organizer-verified result of a past meeting (DF2237-11), read from an official https record."""
     if status == "cancelled":
         raise ContentError(f"{label}: a cancelled meeting has no outcome")
-    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes", "recording_url", "recording_start"}, label)
+    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes", "recording_url", "recording_start",
+                                                       "minutes_url", "minutes_approved_on"}, label)
     if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
         raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
     held, now = starts_at[:10], (today or date.today()).isoformat()
@@ -647,12 +648,31 @@ def load_outcome(value, starts_at, status, label, today=None):
             raise ContentError(f"{label}.recording_start: needs recording_url")
         if not match or (int(match[1]), int(match[2]), int(match[3])) > (12, 0, 0):
             raise ContentError(f"{label}.recording_start: use H:MM:SS, at most 12:00:00")
+    minutes = _load_minutes(value, held, now, label)  # DF2207-05: the body's approved minutes, always as a pair
     return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
             "verified_by": value["verified_by"], "verified_at": value["verified_at"],
             **({"vote": value["vote"]} if "vote" in value else {}),
             **({"votes": [{"name": v["name"], "vote": v["vote"]} for v in votes]} if "votes" in value else {}),
             **({"recording_url": recording} if "recording_url" in value else {}),
-            **({"recording_start": start} if "recording_start" in value else {})}
+            **({"recording_start": start} if "recording_start" in value else {}), **minutes}
+
+
+def _load_minutes(value, held, now, label):
+    """``{minutes_url, minutes_approved_on}`` or ``{}``; one without the other, or a null, is refused by field name."""
+    present = [key for key in ("minutes_url", "minutes_approved_on") if key in value]
+    if not present:
+        return {}
+    for key in ("minutes_url", "minutes_approved_on"):
+        if key not in value:
+            raise ContentError(f"{label}.{key}: needed together with {present[0]}")
+    url, day = value["minutes_url"], value["minutes_approved_on"]
+    if isinstance(url, str) and len(url) > 500:
+        raise ContentError(f"{label}.minutes_url: at most 500 characters")
+    _https(url, f"{label}.minutes_url")
+    if (not isinstance(day, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day)
+            or not held <= _timestamp(day, f"{label}.minutes_approved_on", date_only=True) <= now):
+        raise ContentError(f"{label}.minutes_approved_on: must be a YYYY-MM-DD date from {held} to {now}")
+    return {"minutes_url": url, "minutes_approved_on": day}
 
 
 def load_cited_findings(value, label):

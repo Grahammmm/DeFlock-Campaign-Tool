@@ -211,7 +211,7 @@ PUBLIC_COPY_FIELDS = ("matches", "checked_on", "reason")
 PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "sources")
 PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0137-09: meetings open data
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
-PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes")  # never verified_by / verified_at
+PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes", "minutes_url", "minutes_approved_on")  # never verified_by / verified_at
 PUBLIC_VOTE_FIELDS = ("name", "vote")
 # DF1207-14: data/findings.csv and data/sources.csv are flattened from the built public JSON documents, so no CSV column
 # can exist that the JSON does not carry; "sources", "corrections" and "public_copy" are the only nested values.
@@ -420,7 +420,15 @@ def meeting_outcome_html(meeting, t=None):
                      + start)
     return (f'<p class="meeting-outcome">Outcome: {e(OUTCOME_LABELS[outcome["result"]])} on {time_tag(outcome["on"])}{vote}'
             f' · <a href="{e(outcome["source_url"])}" rel="noopener noreferrer">Official record</a>'
-            f' · verified by {e(outcome["verified_by"])}{recording}</p>')
+            f' · verified by {e(outcome["verified_by"])}{recording}</p>' + _minutes_html(outcome, t))
+
+
+def _minutes_html(outcome, t):
+    """DF2207-05: the organizer's record versus the body's approved minutes; a plain link, never fetched or embedded."""
+    if outcome.get("minutes_url") and outcome.get("minutes_approved_on"):
+        return (f'<p class="meeting-minutes"><a href="{e(outcome["minutes_url"])}" rel="noopener noreferrer">'
+                f'{t("meeting.minutes_confirmed", date=e(outcome["minutes_approved_on"]))}</a></p>')
+    return f'<p class="meeting-minutes">{t("meeting.minutes_pending")}</p>'
 
 
 def _day(value):
@@ -1028,6 +1036,7 @@ class Site:
             f'<a href="/sources.html#{e(s["fragment"])}">{self.t("agency.in_library")}</a></p></li>'
             for s in self.model["sources"] if s["agency_id"] == aid)
         meetings = "".join(self.meeting_item(m) for m in self.upcoming if m.get("agency_id") == aid)
+        past = "".join(self.meeting_item(m) for m in self.past if m.get("agency_id") == aid)  # DF2207-05
         links = self.official_links(agency)
         main = (f'    <article class="section finding-body" id="content"><p class="eyebrow">{self.t("kind." + agency["kind"])}</p>'
                 f'<h2>{e(agency["name"])}</h2><p>{e(agency["jurisdiction_name"])}</p>'
@@ -1047,6 +1056,7 @@ class Site:
                 + (f'<ul class="source-table">{records}</ul>' if records else f'<p>{self.t("notice.no_sources")}</p>')
                 + f'<h3>{self.t("agency.upcoming")}</h3>'
                 + f'<div class="meeting-list">{meetings or "<p>" + self.t("agency.no_upcoming") + "</p>"}</div>'
+                + (f'<h3>{self.t("agency.past_meetings")}</h3><div class="meeting-list">{past}</div>' if past else "")
                 + ('' if agency["verified"] else f'<p class="archive-hint">{self.t("agency.unverified")}</p>')
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         description = profile["summary"] or self.labels["agency.page_description"].format(name=agency["name"])
@@ -1890,7 +1900,8 @@ class Site:
                  "url": f'/meetings/{meeting["id"]}.html'}
         outcome = meeting.get("outcome")
         if outcome and meeting["status"] != "cancelled" and meeting["starts_at"][:10] < self.today.isoformat():
-            value["outcome"] = {key: outcome[key] for key in ("result", "on", "source_url", "vote") if key in outcome}
+            value["outcome"] = {key: outcome[key] for key in ("result", "on", "source_url", "vote", "minutes_url",
+                                                              "minutes_approved_on") if key in outcome}
             if "votes" in outcome:  # DF0137-07 per-member votes, in stored order
                 value["outcome"]["votes"] = [{"name": v["name"], "vote": v["vote"]} for v in outcome["votes"]]
         return value
