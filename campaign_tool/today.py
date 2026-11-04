@@ -9,14 +9,15 @@ import shlex
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from . import findings, kit, kit_track, meeting_comments, meeting_stage
+from . import body_schedules, findings, kit, kit_track, meeting_comments, meeting_stage
+from .body_schedules import read_body_schedules
 from .content import CONTINUATION_KEYS, _read_json, continuation_issues, continuation_targets, load_agencies, load_meeting
 
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
          "request_installment_due", "request_download_pending", "request_download_expired", "finding_ready",
          "finding_blocked",
          "contract_ending", "minutes_pending", "continued_pending", "direction_pending", "stale_comment_kit", "stale_contact", "review_waiting",
-         "unreadable")
+         "stale_body_schedule", "expected_regular_meeting", "unreadable")
 WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS, REVIEW_DAYS = 7, 180, 120, 7
 CONTRACT_DAYS, CONTRACT_ENDED_DAYS, MINUTES_DAYS, DIRECTION_DAYS = 90, 30, 45, 14
 
@@ -250,6 +251,34 @@ def _contracts(root, as_of, directory, days):
     return items
 
 
+def _body_schedules(root, as_of):
+    """DF0022-10: for each organizer-verified regular body schedule, the next two expected dates with no staged meeting
+    of that body ("watch for the agenda"; never a scheduled meeting, never a posting deadline), plus a stale warning.
+    A broken schedule file raises (one ``unreadable`` item from ``todo``); a broken meeting file is already its own
+    item in ``_meetings`` and simply suppresses nothing here."""
+    schedules = read_body_schedules(root, today=as_of)
+    if not schedules:
+        return []
+    staged, folder = [], root / "content" / "meetings"
+    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        try:
+            staged.append(load_meeting(_read_json(path), "meetings/" + path.name, today=as_of))
+        except (ValueError, OSError):
+            continue
+    items = []
+    for schedule in schedules:
+        body, source = schedule["body"], schedule["source_url"]
+        if body_schedules.stale(schedule, as_of):
+            items.append(_item("stale_body_schedule", f"Regular meeting schedule for {body} is stale (checked "
+                               f"{schedule['checked_on']}); re-check {source}",
+                               f"Re-check {source} and update content/body-schedules.json", schedule["checked_on"], body))
+        for day in body_schedules.next_expected_dates(schedule, staged, as_of):
+            items.append(_item("expected_regular_meeting", f"Expected {body} meeting {day.isoformat()}: watch for the agenda",
+                               f"Check {source} for the agenda; stage only a verified meeting", day.isoformat(),
+                               f"{body} {day.isoformat()}"))
+    return items
+
+
 def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS):
     """Ranked to-do items ``{rank, kind, what, due, command}``; reads only, never raises for a broken input."""
     root = Path(root)
@@ -260,7 +289,8 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days
                (lambda: _contracts(root, as_of, directory, contract_days), "content/agencies.json"),
                (lambda: _review_waiting(root, as_of, directory, review_days), "private/review-assignments/"),
                (lambda: _stale_kits(root, directory), "content/"),
-               (lambda: _contacts(root, as_of, directory), "kit/agencies.json"))
+               (lambda: _contacts(root, as_of, directory), "kit/agencies.json"),
+               (lambda: _body_schedules(root, as_of), "content/body-schedules.json"))
     items = []
     for read, label in sources:
         try:
