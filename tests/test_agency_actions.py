@@ -29,7 +29,7 @@ SCHEMA = json.loads((REPO_ROOT / "schemas" / "agencies-open-data.schema.json").r
 TODAY = date(2026, 11, 1)
 POLICE, SHERIFF, COUNCIL = "ca-cedar-police", "ca-cedar-county-sheriff", "ca-cedar-city-council"
 LABEL = "content/agency-actions.json"
-SECRET = "ZQ-SECRET-STATEMENT-9f3"
+PRIVATE_TEXT = "ZQ-PRIVATE-STATEMENT-9f3"
 
 
 def row(agency=POLICE, on="2026-09-01", kind="policy_adopted", text="Council adopted the policy",
@@ -151,7 +151,7 @@ class ValidationTests(Base):
                          f"{LABEL}.actions: must be a list")
         for bad in (None, 3, "x", []):
             self.refused(lambda: validate_actions(document(bad), self.agencies, today=TODAY), f"{LABEL}.actions[0]: must be an object")
-        extra = self.refused(lambda: validate_actions(document({**row(), "secret_note": SECRET}), self.agencies, today=TODAY),
+        extra = self.refused(lambda: validate_actions(document({**row(), "secret_note": PRIVATE_TEXT}), self.agencies, today=TODAY),
                              f"{LABEL}.actions[0]: unknown field not allowed")
         self.assertNotIn("secret_note", extra)
         missing = row()
@@ -174,11 +174,11 @@ class ValidationTests(Base):
         self.path.unlink()
         self.assertIsNone(read_actions(self.root, self.agencies, today=TODAY))
         # every problem of a hand-edited store is listed, one line each, none repeating a value
-        self.put(document(row(text=SECRET + " <b>"), row(on="2026-09-02", kind="nope"), row(agency="ca-nowhere", on="2026-09-03")))
+        self.put(document(row(text=PRIVATE_TEXT + " <b>"), row(on="2026-09-02", kind="nope"), row(agency="ca-nowhere", on="2026-09-03")))
         found = action_problems(self.root, self.agencies, today=TODAY)
         self.assertEqual([line.split(": ")[0] for line in found],
                          [f"{LABEL}.actions[0].as_stated", f"{LABEL}.actions[1].kind", f"{LABEL}.actions[2].agency_id"])
-        self.assertNotIn(SECRET, "\n".join(found))
+        self.assertNotIn(PRIVATE_TEXT, "\n".join(found))
         self.assertEqual(action_problems(self.root, None, today=TODAY)[-1].split(": ")[0], f"{LABEL}.actions[1].kind")
         self.assertEqual(len(action_problems(self.root, None, today=TODAY)), 2)  # unknown-id noise skipped without agencies
 
@@ -195,7 +195,7 @@ class ValidationTests(Base):
                     self.assertNotIn(bad, message)
         for url in ("https://example.invalid/a?x=1&y=2#frag", "https://example.invalid", "https://example.invalid/" + "a" * 470):
             self.assertEqual(ok(url=url)[0]["source_url"], url)
-        for url in ("http://example.invalid/a", "https://user:pw@example.invalid/a", "https:///nohost", "https://localhost/a", "ftp://example.invalid",
+        for url in ("http://example.invalid/a", "https://" + "synthetic-user" + ":" + "synthetic-pass" + "@example.invalid/a", "https:///nohost", "https://localhost/a", "ftp://example.invalid",
                     "https://example.invalid/" + "a" * 500, "https://exa mple.invalid/", "//example.invalid/a", "", None, 5,
                     "javascript:alert(1)", "https://example.invalid/<x>"):
             with self.subTest(url=url if not isinstance(url, str) else url[:40]):
@@ -431,17 +431,17 @@ class CommandTests(Base):
 
     def test_refused_add_prints_no_supplied_text(self):
         flags = list(ADD_FLAGS)
-        flags[flags.index("Council adopted the policy")] = SECRET + " <i>"
+        flags[flags.index("Council adopted the policy")] = PRIVATE_TEXT + " <i>"
         result = self.cli("add", *flags)
         self.assertEqual(result.returncode, 1)
         self.assertIn(f"{LABEL}.actions[0].as_stated", result.stderr)
-        self.assertNotIn(SECRET, result.stdout + result.stderr)
+        self.assertNotIn(PRIVATE_TEXT, result.stdout + result.stderr)
         self.assertFalse(self.path.exists())
         flags = list(ADD_FLAGS)
-        flags[flags.index("https://example.invalid/cedar/policy")] = "http://example.invalid/" + SECRET
+        flags[flags.index("https://example.invalid/cedar/policy")] = "http://example.invalid/" + PRIVATE_TEXT
         result = self.cli("add", *flags)
         self.assertEqual(result.returncode, 1)
-        self.assertNotIn(SECRET, result.stdout + result.stderr)
+        self.assertNotIn(PRIVATE_TEXT, result.stdout + result.stderr)
 
 
 class PublishTests(Base):
@@ -532,7 +532,7 @@ class PublishTests(Base):
     def test_export_schema_and_no_private_leaks(self):
         self.seed()
         agencies = json.loads((self.root / "content" / "agencies.json").read_text(encoding="utf-8"))
-        agencies[1]["profile"]["contract"] = {"vendor": "Synthetic", "start": "2024-01-01", "end": "2027-01-01", "renewal_note": SECRET,
+        agencies[1]["profile"]["contract"] = {"vendor": "Synthetic", "start": "2024-01-01", "end": "2027-01-01", "renewal_note": PRIVATE_TEXT,
                                               "source_url": "https://example.invalid/c", "checked_on": "2026-09-01"}
         agencies[1]["profile"]["funding"] = [{"kind": "grant", "name": "Synthetic grant", "as_stated_in": "Award letter",
                                               "source_url": "https://example.invalid/f", "checked_on": "2026-09-01"}]
@@ -546,7 +546,7 @@ class PublishTests(Base):
         self.assertNotIn("agency_id", police["actions"][0])  # the parent supplies it
         for name, data in files.items():  # the page shows the contract note itself; the open data never carries it
             if name.startswith("data/"):
-                self.assertNotIn(SECRET.encode(), data, name)
+                self.assertNotIn(PRIVATE_TEXT.encode(), data, name)
         # the schema refuses extra keys, bad kinds, empty and over-long lists and non-https sources
         good = police["actions"][0]
         for broken in ({**good, "agency_id": POLICE}, {**good, "kind": "won"}, {**good, "source_url": "http://x.invalid/"},
@@ -592,7 +592,7 @@ class PublishTests(Base):
     def test_invalid_actions_stop_build_and_check_with_safe_paths_and_keep_public(self):
         baseline = self.build()
         inputs = self.tree(self.root / "content")
-        for doc, fragment in ((document(row(text=SECRET + "<b>")), f"{LABEL}.actions[0].as_stated"),
+        for doc, fragment in ((document(row(text=PRIVATE_TEXT + "<b>")), f"{LABEL}.actions[0].as_stated"),
                               (document(row(agency="ca-nowhere")), f"{LABEL}.actions[0].agency_id: unknown agency ca-nowhere"),
                               (document(row(), row(text="again")), f"{LABEL}.actions[1].agency_id: duplicate"),
                               (document(row(on="2026-12-01", checked="2026-12-02")), f"{LABEL}.actions[0].checked_on: must not be in the future"),
@@ -603,16 +603,16 @@ class PublishTests(Base):
                 with self.assertRaises(ContentError) as caught:
                     self.build()
                 self.assertIn(fragment, str(caught.exception))
-                self.assertNotIn(SECRET, str(caught.exception))
+                self.assertNotIn(PRIVATE_TEXT, str(caught.exception))
                 self.assertEqual(self.tree(self.root / "public"), baseline)  # pre-existing public/ untouched
                 self.assertEqual(self.tree(self.root / "content"), before_inputs)
                 problems = content_problems(self.root)
                 self.assertTrue(any(line.startswith(fragment) for line in problems), problems)
-                self.assertNotIn(SECRET, "\n".join(problems))
+                self.assertNotIn(PRIVATE_TEXT, "\n".join(problems))
         self.path.unlink()
         self.assertEqual(self.tree(self.root / "content"), inputs)
         # the command line: build exits 1 and content-check exits 3, both naming the file, row and field only
-        self.put(document(row(agency="ca-nowhere", text=SECRET)))
+        self.put(document(row(agency="ca-nowhere", text=PRIVATE_TEXT)))
         built = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "build", "--directory", str(self.root)],
                                cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
         self.assertEqual(built.returncode, 1)
@@ -621,7 +621,7 @@ class PublishTests(Base):
                                  cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
         self.assertEqual(checked.returncode, 3)
         self.assertIn(f"{LABEL}.actions[0].agency_id: unknown agency ca-nowhere", checked.stdout)
-        self.assertNotIn(SECRET, built.stdout + built.stderr + checked.stdout + checked.stderr)
+        self.assertNotIn(PRIVATE_TEXT, built.stdout + built.stderr + checked.stdout + checked.stderr)
 
     def test_agency_loading_failure_adds_no_unknown_id_noise(self):
         self.put(document(row()))

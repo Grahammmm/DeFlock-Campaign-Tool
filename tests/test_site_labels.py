@@ -301,7 +301,10 @@ class LabelsTest(unittest.TestCase):
         self.assertIn('<a href="/supporters.html">Xsupporters.titleX</a>', (root / "public" / "index.html").read_text(encoding="utf-8"))
 
     def test_agency_actions_labels_replace_every_fixed_string_when_actions_are_recorded(self):
-        root = self.root("rich", labels={key: f"X{key}X" for key in DEFAULTS})
+        markers = {key: f"X{key}X" for key in DEFAULTS}
+        # Keep interpolation so the nested kind labels remain observable.
+        markers["agency.action_line"] += " {on} {kind} {statement} {source} {checked}"
+        root = self.root("rich", labels=markers)
         for kind in ACTION_KINDS:
             add_action(root, "ca-cedar-police", on="2026-08-01", kind=kind, as_stated=f"Zq {kind} statement",
                        source_url=f"https://example.invalid/zq-{kind}", checked_on="2026-09-01", today=SOON)

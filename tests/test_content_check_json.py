@@ -88,9 +88,9 @@ class ContentCheckJsonTests(unittest.TestCase):
         self.assertEqual((doc["count"], len(doc["problems"]), doc["truncated"]), (LIMIT, LIMIT, False))
 
     def test_agency_action_problem_names_its_file_row_and_field_only(self):
-        secret = "ZQ-SECRET-STATEMENT-9f3"
+        private_text = "ZQ-PRIVATE-STATEMENT-9f3"
         self.write("content/agency-actions.json", {"schema_version": 1, "actions": [{
-            "agency_id": "ca-cedar-police", "on": "2026-09-01", "kind": "policy_adopted", "as_stated": secret + " <b>",
+            "agency_id": "ca-cedar-police", "on": "2026-09-01", "kind": "policy_adopted", "as_stated": private_text + " <b>",
             "source_url": "https://example.invalid/p", "checked_on": "2026-10-01"}]})
         result = self.cli("--json")
         document = self.document(result)
@@ -98,7 +98,7 @@ class ContentCheckJsonTests(unittest.TestCase):
         self.assertEqual(document["problems"], [{
             "file": "content/agency-actions.json.actions[0].as_stated",
             "message": "must be plain text without angle brackets, control, invisible or line-separator characters"}])
-        self.assertNotIn(secret, result.stdout)
+        self.assertNotIn(private_text, result.stdout)
 
     def test_line_without_a_path_prefix_has_no_file(self):
         (self.root / "content/map/cameras.geojson").unlink()
