@@ -9,7 +9,7 @@ import { ApprovalError, approveAction, editAction, executeAction, rejectAction, 
 import { AuthError, requireIdentity, requireRunner, type AccessIdentity } from "./auth.ts";
 import { commentKitMarkdown, kitFinding } from "./comment_kit.ts";
 import { runScheduled } from "./cron.ts";
-import { Repo } from "./db.ts";
+import { MAIL_CLASSIFICATIONS, Repo } from "./db.ts";
 import type { Env } from "./env.ts";
 import { exportResponse } from "./export.ts";
 import { UNSUBSCRIBE_PLACEHOLDER } from "./executors/send_newsletter.ts";
@@ -138,7 +138,19 @@ app.post("/requests/:id/draft-followup", async (c) => {
 app.get("/inbox", async (c) => {
   const requests = new Map((await c.var.repo.requests()).map((r) => [r.request_id, r]));
   const agencies = new Map((await c.var.repo.agencies()).map((a) => [a.agency_id, a]));
-  return render(c, "Inbox", V.inbox(await c.var.repo.inbox(), requests, agencies));
+  return render(c, "Inbox", V.inbox(await c.var.repo.inbox(), requests, agencies, c.req.query("notice") ?? null));
+});
+
+// An organizer confirms or corrects the classification of one inbound message. The reviewer
+// is the verified Access identity; a reviewed_by field in the body is ignored.
+app.post("/inbox/:id/classification", async (c) => {
+  const form = await formOrJson(c);
+  const classification = typeof form.classification === "string" ? form.classification : "";
+  if (classification === "unclassified" || !MAIL_CLASSIFICATIONS.includes(classification)) return c.json({ error: "classification invalid" }, 400);
+  const row = await c.var.repo.reviewClassification(c.req.param("id"), classification, c.var.identity.email);
+  if (!row) return c.text("not found", 404);
+  if (wantsJson(c) || c.req.header("content-type")?.includes("json")) return c.json(row);
+  return c.redirect("/inbox?notice=" + encodeURIComponent(`classification set to ${classification} by ${c.var.identity.email}`));
 });
 
 // Records ---------------------------------------------------------------------------

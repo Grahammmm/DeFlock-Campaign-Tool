@@ -1,4 +1,4 @@
-import { executionClaimId, requiresDeliveryReconciliation, requiresExecutionQuiescence } from "../db.ts";
+import { MAIL_CLASSIFICATIONS, executionClaimId, requiresDeliveryReconciliation, requiresExecutionQuiescence } from "../db.ts";
 // Server-rendered workspace screens. Every value is escaped by the html tag.
 import { fmtDate, html, jsonBlock, raw, type Safe } from "@deflock/shared/html";
 import { reviewBlockers, type JsonObject } from "@deflock/shared/review";
@@ -41,11 +41,21 @@ ${followupJob ? html`<p class="notice">Follow-up job ${followupJob.job_id} is ${
 <h2>Body (Markdown)</h2><pre class="json">${r.body_md}</pre>`;
 }
 
-export function inbox(rows: CorrespondenceRow[], requests: Map<string, RequestRow>, agencies: Map<string, AgencyRow>): Safe {
+export function inbox(rows: CorrespondenceRow[], requests: Map<string, RequestRow>, agencies: Map<string, AgencyRow>, notice: string | null = null): Safe {
+  const reviewable = MAIL_CLASSIFICATIONS.filter((v) => v !== "unclassified");
+  const classCell = (c: CorrespondenceRow): Safe => {
+    const current = c.classification ?? "unclassified";
+    if (c.direction !== "inbound") return html`${current}`;
+    const proposed = c.reviewed_at && c.proposed_classification && c.proposed_classification !== current ? html`<br><span class="meta">proposed: ${c.proposed_classification}</span>` : "";
+    const reviewed = c.reviewed_at ? html`<br><span class="meta">reviewed by ${c.reviewed_by ?? "unknown"} ${c.reviewed_at}</span>` : "";
+    const placeholder = reviewable.includes(current) ? "" : html`<option value="" selected disabled>choose...</option>`;
+    return html`<form method="post" action="/inbox/${c.correspondence_id}/classification"><select name="classification" required aria-label="Classification">${placeholder}${reviewable.map((v) => html`<option value="${v}"${v === current ? raw(" selected") : ""}>${v}</option>`)}</select> <button class="secondary" type="submit">Save review</button></form>${proposed}${reviewed}`;
+  };
   return html`<h1>Inbox</h1>
 <p>Raw messages are preserved by hash before anything else happens. Classification is proposed by the runner and reviewed here.</p>
+${notice ? html`<p class="notice">${notice}</p>` : ""}
 <table class="data"><tr><th>Received</th><th>Direction</th><th>From</th><th>Subject</th><th>Classification</th><th>Request</th><th>Raw</th></tr>
-${rows.map((c) => { const req = c.request_id ? requests.get(c.request_id) : null; return html`<tr><td>${c.received_at}</td><td>${c.direction}</td><td>${c.from_addr ?? ""}</td><td>${c.subject ?? ""}</td><td>${c.classification ?? "unclassified"}</td><td>${req ? html`<a href="/requests/${req.request_id}">${agencies.get(req.agency_id)?.name ?? req.agency_id}</a>` : ""}</td><td>${c.raw_sha256 ? html`<a href="/records/${c.raw_sha256}">${c.raw_sha256.slice(0, 12)}</a>` : ""}</td></tr>`; })}
+${rows.map((c) => { const req = c.request_id ? requests.get(c.request_id) : null; return html`<tr><td>${c.received_at}</td><td>${c.direction}</td><td>${c.from_addr ?? ""}</td><td>${c.subject ?? ""}</td><td>${classCell(c)}</td><td>${req ? html`<a href="/requests/${req.request_id}">${agencies.get(req.agency_id)?.name ?? req.agency_id}</a>` : ""}</td><td>${c.raw_sha256 ? html`<a href="/records/${c.raw_sha256}">${c.raw_sha256.slice(0, 12)}</a>` : ""}</td></tr>`; })}
 </table>${rows.length ? "" : html`<p>Nothing received yet.</p>`}`;
 }
 
