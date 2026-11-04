@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "collection-triage-v1",
+  "description": "Unattended first-pass triage of a returned records collection: one verdict per member, a kind and a cited reason, review order. Triage is a machine first pass, not a review: every row stays unreviewed.",
+  "type": "object",
+  "required": ["schema", "name", "members", "unreadable", "counts", "generated_at"],
+  "properties": {
+    "schema": {"const": "collection-triage-v1"},
+    "name": {"type": "string", "minLength": 1},
+    "members": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "confidence", "review_state", "reason"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["responsive", "policy", "contract", "search-log", "boilerplate", "duplicate", "unsorted"]},
+          "confidence": {"enum": ["high", "medium", "low"]},
+          "review_state": {"const": "unreviewed"},
+          "reason": {
+            "type": "object",
+            "required": ["signal", "locator", "text_sha256"],
+            "properties": {
+              "signal": {"type": "string", "minLength": 1},
+              "locator": {"type": "string", "minLength": 1},
+              "text_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        }
+      }
+    },
+    "unreadable": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "counts": {
+      "type": "object",
+      "required": ["responsive", "policy", "contract", "search-log", "boilerplate", "duplicate", "unsorted"],
+      "properties": {
+        "responsive": {"type": "integer", "minimum": 0},
+        "policy": {"type": "integer", "minimum": 0},
+        "contract": {"type": "integer", "minimum": 0},
+        "search-log": {"type": "integer", "minimum": 0},
+        "boilerplate": {"type": "integer", "minimum": 0},
+        "duplicate": {"type": "integer", "minimum": 0},
+        "unsorted": {"type": "integer", "minimum": 0}}
+    },
+    "generated_at": {"type": "string"}
+  }
+}
