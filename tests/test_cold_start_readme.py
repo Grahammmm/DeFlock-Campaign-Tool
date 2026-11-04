@@ -172,6 +172,16 @@ class ColdStartReadmeTests(unittest.TestCase):
         self.assertEqual(len(lint_doc(bad, tracked, subcommands)), 2)
         self.assertIn("docs/FORK-AND-RUN.md", (REPO / "CONTRIBUTING.md").read_text(encoding="utf-8"))
 
+    def test_readme_links_the_findings_guide_outside_start_locally(self):
+        start = re.search(r"^## Start locally\s*$(.*?)(?=^## |\Z)", self.readme, re.M | re.S).group(1)
+        self.assertNotIn("FINDINGS-GUIDE", start)
+        self.assertEqual(self.readme.count("](docs/FINDINGS-GUIDE.md)"), 1)
+        self.assertTrue((self.clone / "docs" / "FINDINGS-GUIDE.md").is_file())
+        self.assertIn("](docs/REVIEW-GUIDE.md)", self.readme)  # the reviewer-side link stays
+        self.assertEqual(lint_doc("[g](docs/FINDINGS-GUIDE.md)", set(tracked_files(REPO)), set(), doc="README.md"), [])
+        self.assertEqual(lint_doc("[x](docs/NO-SUCH-GUIDE.md)", set(tracked_files(REPO)), set(), doc="README.md"),
+                         ["link does not resolve to a tracked file: docs/NO-SUCH-GUIDE.md"])
+
 
 if __name__ == "__main__":
     unittest.main()
