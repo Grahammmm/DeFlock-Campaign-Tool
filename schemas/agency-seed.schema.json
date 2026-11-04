@@ -99,6 +99,11 @@
                   ],
                   "pattern": "^https://"
                 },
+                "official_domain": {
+                  "description": "Independently verified official hostname; never inferred from records_url.",
+                  "type": "string",
+                  "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+                },
                 "records_email": {
                   "type": [
                     "string",

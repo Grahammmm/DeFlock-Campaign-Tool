@@ -75,17 +75,19 @@ python3 tools/agency_verify.py report NEWDIR
 `agency-evidence-v1` row per agency into a new `NEWDIR` (0700, the row file 0600). A verdict is
 a **field** decided from the citations alone, never from an agency's name, its county, or a
 neighbour's verdict: `evidenced` (a citation naming an ALPR system or vendor on a page under the
-agency's own domain), `likely` (a citation on a third-party or regional page), `no-evidence`
+agency's independently recorded optional `official_domain`), `likely` (a citation on a
+third-party/regional page or with ownership unknown), `no-evidence`
 (every recorded link fetched, nothing found), `unreachable` (a recorded link could not be
 fetched, the reason named), `not-checked` (no link recorded yet). `evidenced` with zero
 citations is structurally impossible. A citation stores the URL, fetch time, HTTP status, the
 SHA-256 of the fetched bytes, the quote, and the quote's byte offset - so the claim is
 checkable later and a page change shows as a changed hash, not a silent drift. The quote is
-rejected if it matches the shared email/phone/plate patterns, so a staff directory line can
-never become a citation.
+rejected if its context matches shared email/phone/plate or conservative address/officer-name
+patterns; later clean windows are still considered. These heuristics do not replace privacy review.
 
 **Limits.** Fetching is https-only, one request per recorded link, no crawling, no off-host
-redirects, a fixed polite delay, a per-run cap (`--limit`, default 25), a byte cap, a fixed
+redirects, cached plain-text robots policies (missing permits, unreadable refuses), a fixed
+polite delay, a per-run cap (`--limit`, default 25), a byte cap, a fixed
 timeout, and a plain identifying user agent. Nothing is logged in, submitted, or sent; no form,
 no search query, no robots-disallowed path. Fetched bytes are not stored - only the hash, the
 status, and the quote. Nothing is written into the seed: promoting an `evidenced` row is a

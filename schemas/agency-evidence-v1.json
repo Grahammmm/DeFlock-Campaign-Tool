@@ -47,7 +47,7 @@
           "type": "array",
           "items": {
             "type": "object", "required": ["url", "categories"],
-            "properties": { "url": { "type": "string" }, "categories": { "type": "array", "items": { "enum": ["email", "phone", "plate"] } } }
+            "properties": { "url": { "type": "string" }, "categories": { "type": "array", "items": { "enum": ["email", "phone", "plate", "address", "officer"] } } }
           }
         }
       }

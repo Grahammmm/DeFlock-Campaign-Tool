@@ -15,11 +15,12 @@ recorded. evidenced with zero citations is structurally impossible.
 Fetching discipline: https only, one request per recorded link, no crawling, no following off-host redirects, a fixed
 polite delay between requests, a per-run cap (--limit, default 25), a byte cap per response, a fixed timeout, a plain
 identifying user agent. Nothing is logged in, nothing is submitted, no form, no search query, no robots-disallowed path.
-Privacy: fetched bytes are not stored; only the hash, the status, and the quote. The quote is rejected if it matches the
-shared email/phone/plate patterns, so a staff directory line can never become a citation.
+Privacy: fetched bytes are not stored; only the hash, the status, and the quote. Quote context is checked against
+shared email/phone/plate and conservative address/officer-name patterns; independent privacy review remains required.
 Exit 0 clean, 1 any fetch failed (rows still written, failures named as unreachable), 2 usage. Output is PRIVATE and
 REVIEW REQUIRED."""
 import argparse, datetime, hashlib, importlib.util, json, os, re, sys, time, urllib.error, urllib.request
+import urllib.robotparser
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -57,50 +58,66 @@ def host_of(url):  # the bare lowercase hostname of a URL, or ""
         return ""
 
 def agency_domain(agency):
-    # the agency's own domain: an explicit official_domain field, else the host of its recorded link, else ""
+    # Ownership must be independently recorded, never inferred from the candidate link.
     dom = agency.get("official_domain")
     if isinstance(dom, str) and dom.strip():
         return dom.strip().lower()
-    url = agency.get("records_url")
-    return host_of(url) if isinstance(url, str) else ""
+    return ""
 
 def alpr_terms_in(quote):  # the fixed term list, whole word, case-insensitive, longest-first
     text = quote.lower()
     return [term for term in sorted(ALPR_TERMS, key=len, reverse=True) if re.search(r"\b" + re.escape(term) + r"\b", text)]
 
-def extract_quote(text):  # the first ALPR term span in the decoded text, with its offset in the fetched bytes
-    best = None
-    for term in sorted(ALPR_TERMS, key=len, reverse=True):  # longest first: a longer term wins the span
-        match = re.search(r"\b" + re.escape(term) + r"\b", text, re.I)
-        if match and (best is None or match.start() < best[0]):
-            best = (match.start(), match.end(), term)
-    if best is None:
-        return None
-    start, end, term = best
-    quote = " ".join(text[max(0, start - 24):min(len(text), end + 96)].split())[:QUOTE_MAX]
-    offset = len(text[:start].encode("utf-8"))
-    return quote, offset, term
+TERM_RX = re.compile(r"\b(?:" + "|".join(re.escape(t) for t in sorted(ALPR_TERMS, key=len, reverse=True)) + r")\b", re.I)
+PRIVATE_CONTEXT = (
+    ("address", re.compile(r"\b\d{1,6}\s+(?:[\w.-]+\s+){1,5}(?:street|st|avenue|ave|road|rd|lane|ln|drive|dr|court|ct|way|boulevard|blvd)\b", re.I)),
+    ("officer", re.compile(r"\b(?:officer|sergeant|detective|deputy|captain|chief|lieutenant|sgt|det|lt)\.?\s+[a-z]+", re.I)),
+)
 
-ROBOT_DISALLOW = re.compile(r"^disallow:\s*/\s*$", re.I)  # a robots line that disallows every path
+def quote_windows(text):
+    for match in TERM_RX.finditer(text):
+        start = max(0, match.start() - 24)
+        end = min(len(text), match.end() + 96, start + QUOTE_MAX)
+        yield text[start:end], len(text[:start].encode("utf-8")), match.group().lower(), text[max(0, start - QUOTE_MAX):end + QUOTE_MAX]
+
+def extract_quote(text):
+    found = next(quote_windows(text), None)
+    return found[:3] if found else None
 
 class Robots:
-    """One cached robots.txt per host. A missing robots.txt or a fetch failure means no restriction."""
+    """Cache path- and user-agent-aware plain-text policies per origin."""
     def __init__(self, fetcher):
         self._fetcher, self._cache = fetcher, {}
-    def disallowed(self, url):  # True only when a robots.txt line disallows every path (host-level)
-        host = host_of(url)
-        if not host:
-            return False
-        if host not in self._cache:
-            final, status, body, reason = self._fetcher("https://" + host + "/robots.txt")
-            if reason is not None or body is None:
-                self._cache[host] = False
-            else:
-                text = body.decode("utf-8", "replace")
-                self._cache[host] = any(ROBOT_DISALLOW.match(line.strip()) for line in text.splitlines())
-        return self._cache[host]
+    def disallowed(self, url):
+        origin = "https://" + urlsplit(url).netloc
+        if origin not in self._cache:
+            _, status, body, reason = self._fetcher(origin + "/robots.txt")
+            parser = urllib.robotparser.RobotFileParser()
+            # Missing policy permits; unreadable policy fails closed.
+            text = body.decode("utf-8", "replace") if body is not None else "" if status == 404 else "User-agent: *\nDisallow: /"
+            parser.parse(text.splitlines())
+            self._cache[origin] = parser
+            time.sleep(DELAY)
+        return not self._cache[origin].can_fetch(USER_AGENT, url)
 
-def fetch(url, robots=None):
+class RedirectRefused(Exception):
+    pass
+
+class RedirectGuard(urllib.request.HTTPRedirectHandler):
+    def __init__(self, host, robots=None):
+        self.host, self.robots = host, robots
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        reason = ("redirect off host" if host_of(newurl) != self.host else
+                  "http scheme" if urlsplit(newurl).scheme != "https" else
+                  "robots-disallowed" if self.robots and self.robots.disallowed(newurl) else None)
+        if reason:
+            if fp is not None:
+                fp.close()
+            raise RedirectRefused(reason)
+        time.sleep(DELAY)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+def fetch(url, robots=None, content_type="text/html"):
     """Fetch one recorded link once: https only, no off-host redirect, text/html only, <= BYTE_CAP bytes, honest UA, no retry.
 
     -> (final_url, http_status, body_bytes, reason) where exactly one of body/reason is set. reason names the failure."""
@@ -111,18 +128,23 @@ def fetch(url, robots=None):
         return url, None, None, "robots-disallowed"
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        opener = urllib.request.build_opener(RedirectGuard(host_of(url), robots))
+        with opener.open(request, timeout=TIMEOUT) as response:
             final = response.geturl()
             start_host, end_host = host_of(url), host_of(final)
-            if end_host and start_host and end_host != start_host and not end_host.endswith("." + start_host):
+            if end_host != start_host:
                 return final, response.status, None, "redirect off host"
+            if urlsplit(final).scheme != "https":
+                return final, response.status, None, "http scheme"
             ctype = (response.headers.get("Content-Type") or "").lower()
-            if not ctype.startswith("text/html"):
+            if not ctype.startswith(content_type):
                 return final, response.status, None, "content-type not text/html"
             body = response.read(BYTE_CAP + 1)
             if len(body) > BYTE_CAP:
                 return final, response.status, None, "over byte cap"
             return final, response.status, body, None
+    except RedirectRefused as err:
+        return url, None, None, str(err)
     except urllib.error.HTTPError as err:
         err.close()
         return url, err.code, None, "http %d" % err.code
@@ -143,18 +165,22 @@ def evidence_row(agency, patterns, now, fetcher=fetch):
         return dict(agency=agency.get("agency_id"), name=agency.get("name"), verdict="unreachable",
                     citations=[], unreachable=[dict(url=url, reason=reason, http_status=status)], not_checked=[],
                     domain=agency_domain(agency))
-    text = body.decode("utf-8", "replace")
+    try:
+        text = body.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        return dict(agency=agency.get("agency_id"), name=agency.get("name"), verdict="unreachable",
+                    citations=[], unreachable=[dict(url=url, reason="invalid utf-8", http_status=status)],
+                    not_checked=[], domain=agency_domain(agency))
     citations, rejected = [], []
-    found = extract_quote(text)
-    if found is not None:
-        quote, offset, term = found
-        cats = clean_quote(quote, patterns)
+    for quote, offset, term, context in quote_windows(text):
+        cats = clean_quote(context, patterns) + clean_quote(context, PRIVATE_CONTEXT)
         if cats:
             rejected.append(dict(url=url, categories=cats))  # never the rejected text: it matched a personal-data pattern
         else:
-            citations.append(dict(url=url, fetched_at=now, http_status=status,
+            citations.append(dict(url=final, fetched_at=now, http_status=status,
                                   content_sha256=hashlib.sha256(body).hexdigest(),
                                   quote=quote, quote_offset=offset, alpr_terms=[term]))
+            break
     return dict(agency=agency.get("agency_id"), name=agency.get("name"), verdict=None, citations=citations,
                 unreachable=[], not_checked=[], rejected_quotes=rejected, domain=agency_domain(agency))
 
@@ -206,7 +232,7 @@ def checked_out(out_path):  # OUT must be absolute, normalized, outside the repo
         raise Refused("out parent is not an existing link-free directory")
     return out
 
-def run_seed(seed_path, out_path, agency_slugs, limit, fetcher=fetch):
+def run_seed(seed_path, out_path, agency_slugs, limit, fetcher=None):
     patterns = privacy().PATTERNS
     if limit < 1:
         raise Refused("usage: --limit must be at least 1")
@@ -223,6 +249,11 @@ def run_seed(seed_path, out_path, agency_slugs, limit, fetcher=fetch):
         all_agencies = [a for a in all_agencies if a.get("agency_id") in slugs]
     selected = all_agencies[:limit]
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if fetcher is None:
+        robots = Robots(lambda url: fetch(url, content_type="text/plain"))
+        def checked_fetch(url):
+            return fetch(url, robots=robots)
+        fetcher = checked_fetch
     rows = []
     for i, agency in enumerate(selected):
         if i > 0:
