@@ -16,7 +16,7 @@ SCALARS = ("first_step_days", "determination_days", "first_production_days", "fi
 WAITS = ("extension_days", "clarification_days")
 HEADER = ("row_type", "agency_id", "request", "name", "metric", "start_on", "end_on", "days", "open", "count",
           "median", "note")
-ORGANIZER = ("clarified", "fee_paid")  # the organizer's own actions: never the agency's first response
+ORGANIZER = ("clarified", "fee_paid", "withdrawn")  # the organizer's own actions: never the agency's first response
 UNREADABLE = "kit/sent.json unreadable: "
 MALFORMED = UNREADABLE + "malformed timing steps"
 
@@ -77,7 +77,7 @@ def _parse(entry, today):
         if bad:
             raise ValueError(MALFORMED)
         answered = answered or kind in ("determination", "produced", "denied")
-        closed = kind == "closed"
+        closed = kind in ("closed", "withdrawn")
         previous = on
         steps.append((kind, on, step.get("partial") is True))
     return steps
@@ -93,11 +93,12 @@ def _row(agency_id, request, name, entry, steps, cutoff):
     days = lambda found: None if found is None else (found - sent).days  # noqa: E731
     first = lambda test: next((on for kind, on, partial in steps if test(kind, partial)), None)  # noqa: E731
     final = first(lambda kind, partial: kind == "produced" and not partial)
-    ends = ("determination", "produced", "denied", "closed")
-    stopped = any(kind in ("denied", "closed") for kind, _, _ in steps)
+    ends = ("determination", "produced", "denied", "closed", "withdrawn")
+    stopped = any(kind in ("denied", "closed", "withdrawn") for kind, _, _ in steps)
     extensions = [_span(on, next((o for k, o, _ in steps[i + 1:] if k in ends), None), cutoff)
                   for i, (kind, on, _) in enumerate(steps) if kind == "extension"]
-    clarifications = [_span(on, next((o for k, o, _ in steps[i + 1:] if k in ("clarified", "closed")), None), cutoff)
+    clarifications = [_span(on, next((o for k, o, _ in steps[i + 1:] if k in ("clarified", "closed", "withdrawn")), None),
+                            cutoff)
                       for i, (kind, on, _) in enumerate(steps) if kind == "clarification_requested"]
     return {"agency_id": agency_id, "request": request, "name": name, "sent_on": entry["sent_on"],
             "first_step_days": days(first(lambda kind, partial: kind not in ORGANIZER)),

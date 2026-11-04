@@ -4,7 +4,8 @@ Reads ``kit/sent.json`` and ``content/agencies.json`` only; a dry run prints one
 nothing. ``--apply`` builds the whole new document, validates it with ``content.load_agencies`` and then makes one atomic
 write. Only ``topic``, ``asked_on``, ``state`` and ``updated_on`` are derived, and the private request name is kept as
 ``asked.request`` so the next run finds the same item. Notes, bases, references and record hashes of a request never reach
-content. A request closed without production is left for the organizer to choose. Nothing is fetched or sent.
+content. A request closed without production is left for the organizer to choose; one the campaign withdrew itself is
+proposed as ``withdrawn``. Nothing is fetched or sent.
 """
 import copy
 import json
@@ -49,6 +50,8 @@ def state_of(entry):
     steps = [s for s in entry["steps"] if isinstance(s, dict)]
     if not steps:
         return "awaiting_response"
+    if any(s.get("kind") == "withdrawn" for s in steps):  # the campaign's own terminal act wins over any production
+        return "withdrawn"
     produced = [s for s in steps if s.get("kind") == "produced"]
     if produced:
         scopes, answers = entry.get("scopes"), kit_track._answers(steps)
