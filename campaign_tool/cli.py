@@ -989,6 +989,7 @@ def main():
     for flag in ("--directory", "--date", "--note"):
         correct_p.add_argument(flag, required=True)
     correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
+    correct_p.add_argument("--approved-by", help="Named person approving this correction (the publication gate refuses without one)")
     withdraw_p = finding_cmds.add_parser("withdraw", help="Move a published finding to private/withdrawn/ (no notice page, no build)")
     withdraw_p.add_argument("id", metavar="ID")
     for flag in ("--directory", "--reason"):
@@ -1200,7 +1201,7 @@ def main():
                 print(json.dumps(rows, indent=2, ensure_ascii=False) if args.as_json else findings.status_table(rows))
                 return
             if args.finding_command == "correct":
-                print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft)))
+                print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft, None, args.approved_by)))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 return
             if args.finding_command == "withdraw":

@@ -34,7 +34,7 @@ class FindingCorrectTests(unittest.TestCase):
         self.original = json.loads(self.path.read_text(encoding="utf-8"))
 
     def correct(self, date="2026-03-06", note="Fixed the page number.", from_draft=None, now=LATER):
-        return findings.correct(self.root, "syn-pub-1", date, note, from_draft, now=now)
+        return findings.correct(self.root, "syn-pub-1", date, note, from_draft, now=now, approved_by="Pat Organizer")
 
     def document(self):
         return json.loads(self.path.read_text(encoding="utf-8"))
@@ -59,7 +59,7 @@ class FindingCorrectTests(unittest.TestCase):
 
     def test_note_only_correction_via_cli_keeps_everything_else(self):
         result = self.cli("finding", "correct", "syn-pub-1", "--directory", self.root, "--date", "2026-03-04",
-                          "--note", "  Fixed the page number.  ")
+                          "--note", "  Fixed the page number.  ", "--approved-by", "Pat Organizer")
         lines = result.stdout.splitlines()
         self.assertEqual(json.loads(lines[0]), {"corrected": "synthetic-title", "corrections": 1})
         self.assertIn("Not built or deployed.", lines[1])
