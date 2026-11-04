@@ -317,12 +317,21 @@ class IngestEmlTests(unittest.TestCase):
                 self.refused(mixed(("quoted-printable", "fine"), ("quoted-printable", payload)), label)
 
     def test_attachment_encoding_header_is_unambiguous(self):
-        for header in (None, "7BIT", "8bit", "Binary", "Base64", " QUOTED-Printable "):
+        for header in (None, "7BIT", "8bit", "Binary", "Base64", "base64 ", "base64\t",
+                       " QUOTED-Printable ", "quoted-printable ", "quoted-printable\t"):
             with self.subTest(header):
-                payload = {"Base64": "AP8BAgM=", " QUOTED-Printable ": "a=3Db"}.get(header, "plain \u00e9 \x01")
+                encoding = header.strip().lower() if header is not None else "7bit"
+                payload, expected = {"base64": ("AP8BAgM=", b"\x00\xff\x01\x02\x03"),
+                                     "quoted-printable": ("a=3Db", b"a=b")}.get(
+                                         encoding, ("plain \u00e9 \x01", "plain \u00e9 \x01".encode()))
                 path = self.write(mixed((header, payload)), "ok.eml")
-                report = self.ingest(path, dry=True)
-                self.assertEqual(len(report["attachments"]), 1)
+                preview = self.ingest(path, dry=True)
+                self.assertEqual(len(preview["attachments"]), 1)
+                self.assertEqual(preview["attachments"][0]["sha256"], hashlib.sha256(expected).hexdigest())
+                report = self.ingest(path)
+                self.assertEqual(report["attachments"][0]["sha256"], preview["attachments"][0]["sha256"])
+                blob = (self.root / "private" / "objects" / report["attachments"][0]["sha256"]).read_bytes()
+                self.assertEqual(blob, expected)
         report = self.ingest(self.write(mixed(("8bit", "\u00e9\xff")), "id.eml"))
         blob = (self.root / "private" / "objects" / report["attachments"][0]["sha256"]).read_bytes()
         self.assertEqual(blob, "\u00e9\xff".encode())

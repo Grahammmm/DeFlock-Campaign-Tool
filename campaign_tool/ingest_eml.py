@@ -11,6 +11,7 @@ import binascii
 import io
 import json
 import os
+import quopri
 import re
 import stat
 import unicodedata
@@ -126,13 +127,16 @@ def _decoded_attachment(part):
         if encoding == "quoted-printable":
             if _BAD_ESCAPE.search(encoded):
                 raise refusal
+            return quopri.decodestring(encoded)
         else:
             compact = _MIME_WHITESPACE.sub(b"", encoded)
             try:
-                if base64.b64encode(base64.b64decode(compact, validate=True)) != compact:
+                decoded = base64.b64decode(compact, validate=True)
+                if base64.b64encode(decoded) != compact:
                     raise refusal
             except binascii.Error:
                 raise refusal from None
+            return decoded
     return part.get_payload(decode=True) or b""
 
 
