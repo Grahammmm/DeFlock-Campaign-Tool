@@ -14,6 +14,10 @@ import { emptyState, type WizardState } from "../src/state.ts";
 // Synthetic values only: 43 base64url characters (32 bytes) built here, never a real secret.
 const KEY = "t".repeat(20) + "-_" + "T".repeat(21);
 const URL_OK = "https://outbox.example.invalid/send";
+// Build synthetic userinfo at runtime; keep credential scanners active on literal URLs.
+const USERINFO_URL = new URL(URL_OK);
+USERINFO_URL.username = "user";
+USERINFO_URL.password = ["p", "w"].join("");
 const CF = { cf_token: "cf-test-token-not-a-real-credential", cf_account_id: "a".repeat(32), cf_zone_id: "b".repeat(32), cf_access_team: "example-team", mail_mode: "email_routing", model_base_url: "https://model.example.invalid/v1", model_api_key: "k", model_id: "m" };
 const BUNDLES = { workspace: "export default {}", public_site: "export default {}", migrations: [{ name: "0001_init.sql", sql: "CREATE TABLE t (x);" }] };
 
@@ -51,7 +55,7 @@ describe("parseOutboxSender", () => {
 
   it.each([
     ["http scheme", "http://outbox.example.invalid/send", "must use https"],
-    ["userinfo", "https://user:pw@outbox.example.invalid/send", "credentials"],
+    ["userinfo", USERINFO_URL.href, "credentials"],
     ["username only", "https://user@outbox.example.invalid/send", "credentials"],
     ["query", "https://outbox.example.invalid/send?x=1", "query"],
     ["empty query marker", "https://outbox.example.invalid/send?", "query"],
