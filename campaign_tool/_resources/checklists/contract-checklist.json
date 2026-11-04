@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "status": "draft",
+  "elements": [
+    {"id": "term_renewal", "label": "Term and automatic renewal"},
+    {"id": "price_changes", "label": "Price changes"},
+    {"id": "data_ownership", "label": "Data ownership"},
+    {"id": "retention", "label": "Retention"},
+    {"id": "sharing_network", "label": "Sharing and national-network access"},
+    {"id": "vendor_data_use", "label": "Vendor use of data"},
+    {"id": "audit_search_logs", "label": "Audit and search-log access"},
+    {"id": "termination_data_exit", "label": "Termination and data return or deletion"}
+  ]
+}
