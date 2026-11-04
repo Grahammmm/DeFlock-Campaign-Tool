@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Flock today (NB-DF-11): one ranked, read-only organizer to-do list for one date.
-  --store DIR --watchlist CSV --roster CSV --date YYYY-MM-DD [--findings SLUG=CSV ...] [--json]
+  --store DIR --watchlist CSV --roster CSV --date YYYY-MM-DD [--findings SLUG=CSV ...] [--agency SLUG ...] [--json]
+--agency (RF0510-12, up to 20 store agency folders) keeps only those slugs' items and totals; an unknown slug is refused first.
 --json (RF0140-8) prints one flock-today-v1 object (same items, source errors, totals; review_required) instead of the
 lines, on stdout only; a store refusal stays its one plain line, exit 1.
 Ranks: 1 reminder-passed/reminder-today, 2 reminder-week (1-7 days out), 3 stale-cited (needs --findings for that
@@ -27,6 +28,7 @@ requests_tool, sweep = _tool("flock_requests"), _tool("flock_sweep")
 monitor, facts_tool, Fail = sweep.monitor, sweep.facts_tool, sweep.Fail
 REVIEW = ("ready-verify", "verify-open", "compare-open", "family-refused")
 SLUG_CSV = re.compile(r"([a-z0-9]+(?:-[a-z0-9]+)*)=(.+)")
+SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")  # SLUG_CSV's slug part
 ERRORS = (Fail, OSError, UnicodeDecodeError, csv.Error, ValueError, KeyError)
 TOTALS = (("reminders", ("reminder-passed", "reminder-today", "reminder-week")), ("leads", ("lead-new",)),
           ("stale", ("stale-cited",)), ("reviews", ("review-wait",)), ("unreviewed", ("facts-unreviewed",)),
@@ -119,17 +121,26 @@ def main(argv=None):
     for name in ("--store", "--watchlist", "--roster", "--date"):
         parser.add_argument(name, required=True)
     parser.add_argument("--findings", action="append", metavar="SLUG=CSV")
+    parser.add_argument("--agency", action="append", metavar="SLUG", help="only this agency's items (repeatable, <= 20)")
     parser.add_argument("--json", action="store_true", help="one flock-today-v1 JSON object instead of the lines")
     a = parser.parse_args(argv)
     if not facts_tool.valid_date(a.date):
         parser.error("--date must be YYYY-MM-DD")
-    findings = findings_arg(parser, a.findings)
+    findings, chosen = findings_arg(parser, a.findings), a.agency or []
+    if len(chosen) > 20 or len(set(chosen)) < len(chosen) or not all(SLUG.fullmatch(s) for s in chosen):
+        parser.error("--agency must be a slug, at most 20, no repeats")
+    if chosen and set(findings) - set(chosen):
+        parser.error("--findings slug not in --agency")
     try:
         store = monitor.private_store(a.store)
     except Fail as exc:
         return print(exc) or 1
     if not store.is_dir():
         return print("store is not a directory") or 1
+    for s in chosen:  # each chosen slug is a real agency folder (no link), checked before any source runs
+        folder = store / "agencies" / s
+        if folder.parent.is_symlink() or folder.is_symlink() or not folder.is_dir():
+            return print("today | refused | unknown agency %s" % s) or 1
     sources = [("requests", lambda: reminders(store, a.date)), ("leads", lambda: leads(store))]
     sources += [("stale:" + s, lambda s=s, p=p: stale_cited(store, a.date, s, p)) for s, p in findings.items()]
     sources += [("facts", lambda: unreviewed(store)), ("sweep", lambda: reviews(store, a.watchlist, a.roster, a.date))]
@@ -140,12 +151,14 @@ def main(argv=None):
         except ERRORS as exc:
             errors.append((name, type(exc).__name__))
     items.sort(key=lambda i: (i[0], i[2], i[3], i[4]))  # stable: equal keys keep each tool's own order
+    items = [i for i in items if i[3] in chosen] if chosen else items  # errors stay: a failing source is store-wide
     count = {key: sum(i[1] in kinds for i in items) for key, kinds in TOTALS}
     count["stale"] = count["stale"] if findings else "-"
+    scope = " agencies=%s" % ",".join(chosen) if chosen else ""
     if a.json:  # the same items, errors and counts as the lines below; no new data
         keys = ("rank", "kind", "date", "slug", "item", "next")
         print(json.dumps({"schema": "flock-today-v1", "review_required": True, "date": a.date,
-                          "note": "provisional; not a legal status",
+                          **({"agencies": chosen} if chosen else {}), "note": "provisional; not a legal status",
                           "items": [dict(zip(keys, (i[0], i[1], i[2] or None) + tuple(i[3:6]))) for i in items],
                           "source_errors": [{"source": n, "error": e} for n, e in errors],
                           "totals": dict([("items", len(items))] + [(k, None if count[k] == "-" else count[k])
@@ -155,7 +168,7 @@ def main(argv=None):
     lines += ["today | %d | %s | %s | %s | %s" % (i[0], i[1], i[3], i[4], i[5]) for i in items]
     print(*lines, sep="\n") if lines else None
     print("today | date=%s items=%d " % (a.date, len(items)) + " ".join("%s=%s" % (k, count[k]) for k, _ in TOTALS)
-          + " | provisional; not a legal status")
+          + scope + " | provisional; not a legal status")
     return 1 if errors else 0
 
 

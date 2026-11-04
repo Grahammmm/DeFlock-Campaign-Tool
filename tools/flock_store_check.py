@@ -3,7 +3,8 @@
 place but not the others, and the age of the newest store backup. Reads the store and backups only: the one write is
 the optional --json-out file, new, 0600, outside the store, backups and repository.
   python3 tools/flock_store_check.py STORE [--backups DIR --max-backup-age-days N] [--today YYYY-MM-DD]
-                                     [--json | --json-out NEWFILE]
+                                     [--json | --json-out NEWFILE] [--section NAME ...]
+--section NAME (repeatable) runs only the named checks, still in the fixed section order.
 Prints row numbers, field names, slugs and counts only; --json prints the same lines as one flock-store-check-v1
 document instead, --json-out writes that document as well as the text. Exit 0 no errors, 1 errors, 2 usage or refusal."""
 import argparse, contextlib, csv, importlib.util, io, json, os, re, sys, tarfile
@@ -40,7 +41,7 @@ def requests(store):
     return ([], ["none"]) if errs == ["store: no agencies/*/REQUESTS.csv found"] else (errs, [])
 
 def contacts(store):
-    real = folders(store / "agencies")[0]
+    real = [f for f in folders(store / "agencies")[0] if os.path.lexists(f / "CONTACT.csv")]  # absent = no contacts yet
     return [f"{shown(f.name)}: {e}" for f in real for e in email_tool.contact(f / "CONTACT.csv", f.name)[1]], \
         [] if real else ["none"]
 
@@ -171,7 +172,7 @@ def collect(store, args):
               "requests": requests, "contacts": contacts,
               "watchlists": watchlists, "publish": publish_runs, "slugs": slugs, "backup": lambda _: backups(args)}
     out = []
-    for section in SECTIONS:
+    for section in [s for s in SECTIONS if not args.section or s in args.section]:
         try:
             errs, info = checks[section](store)
         except RAISED as exc:  # the class only, never a path or record text
@@ -181,26 +182,28 @@ def collect(store, args):
                     "lines": lines})
     return out
 
-def document(sections, today):
+def document(sections, today, selected=None):  # "selected" only with --section, so the default stays byte-identical
     totals = {"sections": len(sections), "errors": sum(s["errors"] for s in sections),
               "notes": sum(s["notes"] for s in sections)}
     doc = {"schema": "flock-store-check-v1", "review_required": True, "today": today.isoformat(), "sections": sections,
-           "totals": totals, "note": NOTE}
+           "totals": totals, "note": NOTE, **({"selected": selected} if selected else {})}
     return json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
 
 def run(store, args, target=None):
     sections = collect(store, args)
+    chosen = [s["name"] for s in sections] if args.section else None
     total = sum(s["errors"] for s in sections)
     if args.json:
-        print(document(sections, args.today), end="")
+        print(document(sections, args.today, chosen), end="")
     else:
         for s in sections:
             print("".join(f"{s['name']} | {line}\n" for line in s["lines"] + [f"errors={s['errors']}"]), end="")
         notes = sum(s["notes"] for s in sections)
-        print(f"store check | sections={len(sections)} errors={total} notes={notes} | {NOTE}")
+        of = f" of {len(SECTIONS)} ({','.join(chosen)})" if chosen else ""
+        print(f"store check | sections={len(sections)}{of} errors={total} notes={notes} | {NOTE}")
     if target is not None:
         try:
-            _write_new(target, document(sections, args.today).encode("ascii"))
+            _write_new(target, document(sections, args.today, chosen).encode("ascii"))
         except OSError as exc:  # the class only, never the path
             return print(f"store check: json-out write failed ({type(exc).__name__})", file=sys.stderr) or 2
     return 1 if total else 0
@@ -214,7 +217,12 @@ def main(argv=None):
     machine = parser.add_mutually_exclusive_group()
     machine.add_argument("--json", action="store_true", help="print one flock-store-check-v1 document instead of the text")
     machine.add_argument("--json-out", metavar="NEWFILE", help="also write that document to a new 0600 file")
+    parser.add_argument("--section", action="append", choices=SECTIONS, metavar="NAME", help="run only this check")
     args = parser.parse_args(argv)
+    if args.section and len(set(args.section)) != len(args.section):
+        parser.error("--section NAME given twice")
+    if args.section and "backup" not in args.section and (args.backups, args.max_backup_age_days) != (None, None):
+        parser.error("--backups needs --section backup")
     if (args.backups is None) != (args.max_backup_age_days is None):
         parser.error("--backups and --max-backup-age-days go together")
     if args.max_backup_age_days is not None and not 1 <= args.max_backup_age_days <= 365:

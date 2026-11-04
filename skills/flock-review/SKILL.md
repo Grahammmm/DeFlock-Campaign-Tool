@@ -67,6 +67,7 @@ unreviewed rows (disagree / needs-source rows are withheld downstream, and verif
    and `SOURCES.json` only when its final lint passes; a lint error fails the stage, which re-runs on the next `run`. The manual
    `python3 tools/flock_report.py build CONFIG` still works for a re-run after an upstream wording fix.
 2. Before handing the draft on, `python3 tools/flock_report.py check CONFIG` exits 0 (last line ends `state=current`).
+   For a machine copy add `--json` (`check CONFIG --json`: flock-report-check-v1; `region --check ... --json`: flock-report-region-check-v1).
 3. Shown: priority rows (contradicted / not met) and sample rows the independent check agreed with, each with numbered cites to a
    record page or rule section. Withheld and only counted: not-posted rows and rows the check disputed or could not source.
 4. On `row <id>: <rule>` or `line N: <rule>`, fix the wording in ASSESSMENTS (G1 `assess` re-mark) or add the derived name to

@@ -6,9 +6,10 @@ metadata (build's ``image_meta.check_asset``). Cross-file rules use loaded files
 """
 from pathlib import Path
 
-from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, _bounds, _read_json,
-                      _require_keys, _slug, _text, _validate_cameras, default_agencies, load_agencies,
-                      load_finding, load_map, load_meeting, load_site, load_snapshot, load_sources, plain_text)
+from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, _asked, _bounds, _read_json,
+                      _require_keys, _slug, _text, _validate_cameras, check_source_pages, default_agencies,
+                      load_agencies, load_finding, load_map, load_meeting, load_site, load_snapshot, load_sources,
+                      plain_text)
 from .finding_law import check_findings, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
@@ -155,8 +156,10 @@ def content_problems(root, limit=LIMIT):
         meeting_ids.add(meeting["id"])
 
     sources_path = content_dir / "sources.json"
-    if sources_path.is_file():
-        _attempt(problems, "sources.json", lambda: load_sources(_read_json(sources_path)))
+    library = (_attempt(problems, "sources.json", lambda: load_sources(_read_json(sources_path)))
+               if sources_path.is_file() else [])
+    if library is not None:  # an unreadable library is already named; build refuses it before the page check
+        problems.extend(check_source_pages(findings, library))
 
     labels_path = content_dir / "labels.json"  # optional, read exactly as load_content: a symlink is named, not read
     if labels_path.is_file() or labels_path.is_symlink():
@@ -164,6 +167,11 @@ def content_problems(root, limit=LIMIT):
 
     agencies_path = content_dir / "agencies.json"
     if agencies_path.is_file():
+        document = _attempt(problems, "content/agencies.json", lambda: _read_json(agencies_path))
+        if isinstance(document, list):
+            for index, entry in enumerate(document):
+                if isinstance(entry, dict) and entry.get("selected", True) is True:
+                    _asked(entry, f"content/agencies.json[{index}].asked", problems=problems)
         agencies = _attempt(problems, "content/agencies.json",
                             lambda: load_agencies(_read_json(agencies_path), "content/agencies.json"))
     else:

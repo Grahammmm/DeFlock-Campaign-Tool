@@ -106,7 +106,10 @@ class KitRequestsTests(unittest.TestCase):
             self.assertEqual(row["determination_due"], law.deadline(self.package, entry["sent_on"]).isoformat())
         self.assertEqual(set(rows[0]), {"agency_id", "request", "name", "sent_on", "channel", "draft_changed_since_sent",
                                         "determination_due", "with_extension", "steps", "extended", "closed",
-                                        "last_step", "records", "record_prefixes", "fee_estimate", "over_fee_cap"})
+                                        "last_step", "records", "record_prefixes", "fee_estimate", "over_fee_cap",
+                                        "stated_production_date", "waiting_on_you_since", "producing",
+                                        "next_installment", "reference", "fee_state", "fee_paid"})
+        self.assertEqual([(r["producing"], r["next_installment"]) for r in rows], [(False, None), (False, None)])
         printed = json.loads(self.ok(self.respond("2026-03-03", "acknowledged")).split("Recorded only.")[0])
         self.assertEqual(printed["request"], "main")
         after = json.loads(self.sent.read_text())

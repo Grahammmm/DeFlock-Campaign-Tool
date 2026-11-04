@@ -22,7 +22,7 @@ except ImportError:  # Windows
     fcntl = None
     import msvcrt
 
-from . import content
+from . import content, publication_gate
 from .content import FINDING_KEYS
 from .evidence import PREFIX, _ledger_hashes, _object_present
 from .review import CLASSIFICATIONS, ROLES, _who, content_hash, review_blockers
@@ -534,6 +534,9 @@ def publish(root, draft_path, approved_by, now=None):
     # One campaign-wide lock covers the uniqueness checks, the write and the log entry, so two
     # concurrent publishes cannot both pass the checks before either writes.
     with _locked(root / "private", ".publish.lock"):
+        approval = {"artefact_id": draft["id"], "content_hash": reviewed_hash(draft), "approved_by": approved_by,
+                    "approved_on": when[:10], "status": "approved"}  # the person at the CLI is the recorded approver
+        publication_gate.assert_publishable(draft["id"], reviewed_hash(load_draft(draft_path)), [approval])  # re-read: an edit refuses
         return dict(_publish_locked(root, draft, finding, document, approved_by, when), receipt_trust=trust)
 
 

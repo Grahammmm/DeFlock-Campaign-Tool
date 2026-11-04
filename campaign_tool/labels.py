@@ -12,7 +12,8 @@ CLASSIFICATION_LABELS = {"documented_fact": "Documented fact", "apparent_conflic
                          "confirmed_conflict": "Confirmed conflict", "information_gap": "Information gap",
                          "redaction": "Redaction", "agency_assertion": "Agency assertion", "no_conflict": "No conflict found"}
 CONFIDENCE_LABELS = {"verified": "Verified against the record", "likely": "Likely; awaiting further records"}
-KIND_LABELS = {"sheriff": "County sheriff", "police": "City police", "chp": "State highway patrol", "district_attorney":
+KIND_LABELS = {"sheriff": "County sheriff", "police": "City police", "chp": "State highway patrol",
+               "campus_police": "Campus police", "district_attorney":
                "District attorney", "county_board": "County board", "city_council": "City council", "other": "Other public body"}
 DEFAULTS = {
     "nav.label": "Site", "nav.home": "Home", "nav.agencies": "Agencies", "nav.findings": "Findings",
@@ -90,6 +91,14 @@ DEFAULTS = {
     "agency.published_findings": "Published findings", "agency.source_records": "Source records",
     "agency.received": "received {date}", "agency.in_library": "In the source library",
     "agency.upcoming": "Upcoming meetings", "agency.no_upcoming": "No upcoming meetings are listed for this body.",
+    "agency.transparency_heading": "Reported on the Flock transparency portal",
+    "agency.transparency_checked": "as reported by the vendor, checked {date}",
+    "agency.transparency_cameras": "Cameras: {count}", "agency.transparency_retention_days": "Retention days: {count}",
+    "agency.transparency_searches_last_30_days": "Searches in the last 30 days: {count}",
+    "agency.transparency_hotlist_alerts": "Hotlist alerts: {count}",
+    "agency.transparency_shared_with_agencies": "Shared with agencies: {count}",
+    "agency.transparency_up": "up {count} since {date}", "agency.transparency_down": "down {count} since {date}",
+    "agency.transparency_same": "no change since {date}",
     "officials.heading": "Who decides", "officials.source": "source",
     "officials.listed": ("Listed from the body's official site ({source}), checked {date}. "
                          "Contact officials only through the channels on that site."),

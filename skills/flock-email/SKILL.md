@@ -17,6 +17,7 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
 ## Check
 - Before a draft: `python3 tools/flock_email.py check <store> --max-age-days 90` lists who is ready (`contact | <slug> | ready | domain=<domain>`) or `stale`; reads only.
   A domain warning (`warn: domain differs from source host <host>`, counted in `mismatch=N`) needs a human look at the source page before drafting.
+  Add `--json` for one `flock-email-contact-v1` document (per agency: state, domain only, stale date/age, first error, warn host; totals; same exit; review required).
 
 ## Draft
 - `python3 tools/flock_email.py draft <run folder> --drafts <operator folder outside the repo> --max-age-days 90`. It prints
@@ -32,11 +33,14 @@ Wraps F5b's `FOLLOWUP-DRAFT.md` into `EMAIL-DRAFT.md` for G to read. The tool ca
   `flock_approve.py approve <run folder> --signature <file>.sig`, which writes `EMAIL-APPROVAL.json` (`"state": "approved"`).
   That field, never a line in the draft, is the approval (docs/APPROVALS.md).
 - Right before sending by hand, `python3 tools/flock_approve.py verify <run folder>` must exit 0. Any edit voids it.
+- An email already marked sent cannot be approved afterwards; flock_email status keeps reporting it as sent without approval.
 
 ## Status
 - After sending by hand, fill `Sent by: <name> YYYY-MM-DD` (the send date); `python3 tools/flock_approve.py status STORE` must exit 0
   (one `email | <slug> | <date> | <stage>` line per run, signatures checked; reads only, prints no address or filled value).
   `flock_email.py status` cannot check signatures and shows an approval only as `approval unverified`.
+  `python3 tools/flock_email.py status STORE --json` and `python3 tools/flock_approve.py status STORE --json` print the same stages,
+  counts and exit code as one `flock-email-status-v1` document (`signatures_checked` true only for flock_approve; review required).
   `python3 tools/flock_requests.py --check STORE` then needs a REQUESTS row of that agency with `sent` equal to that date.
 
 ## Open

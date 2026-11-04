@@ -2,6 +2,7 @@
 """Flock sweep: each watch-list agency's F1->F3->F4 stage, blocker and next command; CARDS plan; rating matrix.
   status|plan|matrix --watchlist CSV --roster CSV --store DIR [--out FILE|DIR] [--max N] [--date YYYY-MM-DD] [--prev DIR]
   funnel ... --out DIR [--inventory SLUG=CSV ...]: FUNNEL.csv + one counts line per roster row, first zero = stalls_at
+  status ... --json: the same rows, unwatched names and counts as one flock-sweep-status-v1 document (--out stays CSV)
 Reads the store only; never runs a model, kanban or hermes. Prints slugs, stages, counts and commands, never claim,
 quote or fact text. Summary: blocked = agencies - finished - ready - unmapped; unwatched = in_scope=yes roster rows
 with no watch-list row, named (roster order) on the line before it. Exit 0 ok, 1 errors, 2 usage."""
@@ -241,13 +242,18 @@ def main(argv=None):
     parser.add_argument("--inventory", action="append", default=[])
     parser.add_argument("--max", type=int, default=2)
     parser.add_argument("--date", default=datetime.date.today().isoformat())
+    parser.add_argument("--json", action="store_true")
     a = parser.parse_args(argv)
     form = r"[a-z0-9]+(-[a-z0-9]+)*=.+"
     if not (a.watchlist and a.roster and a.store) or a.max < 1 or not facts_tool.valid_date(a.date) \
             or (a.command in ("matrix", "funnel")) != bool(a.out) and a.command != "status" or a.prev and a.command != "matrix" \
-            or a.inventory and (a.command != "funnel" or not all(re.fullmatch(form, x) for x in a.inventory)):
+            or a.inventory and (a.command != "funnel" or not all(re.fullmatch(form, x) for x in a.inventory)) \
+            or a.json and a.command != "status":
         parser.error("usage: status|plan|matrix|funnel --watchlist CSV --roster CSV --store DIR [--out PATH] [--max N]"
-                     " [--date D] [--prev DIR] [--inventory SLUG=CSV ...]")
+                     " [--date D] [--prev DIR] [--inventory SLUG=CSV ...] [--json (status only)]")
+    def doc(**fields):  # flock-sweep-status-v1: only values the text form prints
+        base = dict(schema="flock-sweep-status-v1", review_required=True, errors=[], agencies=[], counts=None, unwatched=[])
+        return print(json.dumps(dict(base, **fields), sort_keys=True, indent=1, ensure_ascii=False))
     try:
         store, agencies, roster = load_inputs(a)
         inv = dict(x.split("=", 1) for x in a.inventory)
@@ -264,14 +270,18 @@ def main(argv=None):
             verify.write(out, text)
         fin, ready, unmapped = (sum(r["stage"] in s for r in rows) for s in (("finished",), READY, ("unmapped",)))
         names = [r["watch_agency"] for r in roster if r["in_scope"] == "yes" and r["watch_agency"] not in agencies]
+        counts = dict(agencies=len(rows), finished=fin, ready=ready, blocked=len(rows) - fin - ready - unmapped,
+                      unmapped=unmapped, unwatched=len(names))
+        if a.json:
+            return doc(date=a.date, agencies=[{k: r[k] for k in STATUS} for r in rows], unwatched=names, counts=counts) or 0
         named = "unwatched: %s\n" % "; ".join(names) if names else ""  # stdout only, never --out
-        print(text + named + "agencies=%d finished=%d ready=%d blocked=%d unmapped=%d unwatched=%d" % (
-            len(rows), fin, ready, len(rows) - fin - ready - unmapped, unmapped, len(names)))
+        print(text + named + " ".join("%s=%d" % kv for kv in counts.items()))
         return 0
     except Fail as exc:
-        return print(exc) or 1
+        error = str(exc)
     except (OSError, ValueError, csv.Error) as exc:
-        return print("file unreadable (%s)" % type(exc).__name__) or 1
+        error = "file unreadable (%s)" % type(exc).__name__
+    return (doc(errors=error.splitlines()) if a.json else print(error)) or 1
 
 if __name__ == "__main__":
     sys.exit(main())

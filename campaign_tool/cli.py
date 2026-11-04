@@ -204,6 +204,9 @@ def ingest(args, root):
     if getattr(args, "eml", None) is not None:
         from .ingest_eml import ingest_eml
         return ingest_eml(args, root)
+    if getattr(args, "mbox", None) is not None:
+        from .ingest_mbox import ingest_mbox
+        return ingest_mbox(args, root)
     source = Path(args.file)
     if source.is_symlink() or not source.is_file():
         raise ValueError("Input must be a regular, non-symlink file")
@@ -347,6 +350,11 @@ def status_counts(root):
         db.close()
 
 
+LAW_REVIEW_ACTION = ("reviewed_law_package: false — needs a second reader independent of the author, who checks each "
+                     "rule against its cited primary text and signs reviewed_by in a PR (docs/LAW-PACKAGES.md); "
+                     "build the packet with 'campaign-tool law review-packet'")
+
+
 def law_package_report(cfg):
     """Status of the jurisdiction law package: draft, reviewed or missing."""
     from .law import package_status
@@ -383,6 +391,8 @@ def doctor_report(root, contact_max_age_days=None, stale_days=None):
     }
     if "law_package_error" in law:
         report["law_package_error"] = law["law_package_error"]
+    if law["law_package_status"] == "draft":
+        report["next_actions"].append(LAW_REVIEW_ACTION)
     from .kit import kit_status, stale_contacts
     report.update(kit_status(root))
     if contact_max_age_days is not None and (found := stale_contacts(root, contact_max_age_days)) is not None:
@@ -430,8 +440,10 @@ def kit(args, root):
 
 
 def social_cmd(root, platforms=None):
-    from .social import build_social
+    from .social import build_social, review_notes
     print(json.dumps(build_social(root, platforms), indent=2, ensure_ascii=False))
+    for note in review_notes(root):  # DF-4 alert-only: stderr; the stdout summary and exit code are unchanged
+        print(note, file=sys.stderr)
     print("Drafts written to kit/social. Nothing was posted.")
 
 
@@ -447,7 +459,12 @@ def check_public_tree(public):
     return hits
 
 
-def build(root, check=False):
+def _site_claim_notes(root):
+    from .legal_claims import site_notes
+    return site_notes(root)
+
+
+def build(root, check=False, budget=None):
     from .site import build_site
     public = root / "public"
     notes = []
@@ -463,37 +480,92 @@ def build(root, check=False):
         total += size
         print(f"  {path.relative_to(public).as_posix():<40} {size:>9} bytes")
     print(f"  {len(written)} files, {total} bytes")
+    for note in _site_claim_notes(root):  # DF-4 alert-only: notes for the publish gate, never an error or an exit code
+        print(note)
     if check:
+        from .site_check import check_accessibility, check_links
         hits = check_public_tree(public)
         for path, line, label in hits:
             print(f"public/{path}:{line}: {label}", file=sys.stderr)
+        broken = check_links(public)
+        for page, href in broken:
+            print(f"public/{page}: broken link {href}", file=sys.stderr)
+        a11y = check_accessibility(public)  # pattern lint, not an audit
+        for page, code, detail in a11y:
+            print(f"public/{page}: {code} {detail}", file=sys.stderr)
+        if a11y:  # one Stopped: line with a count per kind
+            found = [f"{len(hits)} potential leak(s)"] * bool(hits) + [f"{len(broken)} broken link(s)"] * bool(broken)
+            raise ValueError(f"public tree check found {' and '.join(found + [f'{len(a11y)} accessibility issue(s)'])}; "
+                             "fix content and rebuild")
+        if hits and broken:  # both lists are already on stderr; one Stopped: line names both counts
+            raise ValueError(f"public tree check found {len(hits)} potential leak(s) and {len(broken)} broken link(s); "
+                             "fix content and rebuild")
         if hits:
             raise ValueError(f"public tree check found {len(hits)} potential leak(s); fix content and rebuild")
-        print("Public tree check passed (pattern scan only; human review still required).")
+        if broken:
+            raise ValueError(f"public tree check found {len(broken)} broken link(s); fix content and rebuild")
+        print("Public tree check passed (pattern scan, internal links and accessibility pattern lint; "
+              "not an accessibility audit; human review still required).")
+    return 0 if budget is None else weight_budget(public, budget)
+
+
+def weight_budget(public, budget):
+    from .site_check import page_weights
+    rows = page_weights(public)
+    print("Page weight (first-party: html + referenced site-local css/js/images, uncompressed):")
+    for row in rows:
+        print(f"  {row['page']} {row['total']} bytes")
+    over = [row for row in rows if row["total"] > budget * 1024]
+    for row in over:
+        named = ", ".join(f"{p} {n}" for p, n in sorted(row["assets"], key=lambda a: (-a[1], a[0]))[:3])
+        print(f"over budget: {row['page']} {row['total']} bytes > {budget} KB; largest: {named or '(no assets)'}")
+    if not over:
+        print(f"Page weight within {budget} KB (first-party, uncompressed).")
+    return 3 if over else 0
+
+
+def _positive_kb(value):
+    if not value.isdigit() or int(value) < 1:
+        raise argparse.ArgumentTypeError("must be a positive whole number of KB")
+    return int(value)
 
 
 def backup_cmd(args, root):
-    from .backup import export
-    manifest = export(root, args.out)
+    from .backup import BackupError, export, export_into
+    if args.into is not None:
+        try:
+            name, manifest = export_into(root, args.into, args.encrypt_to)
+        except (OSError, ValueError) as exc:  # one stderr line so cron mail stays one line
+            text = " ".join((str(exc) if isinstance(exc, BackupError) else getattr(exc, "strerror", None) or type(exc).__name__).split())
+            print(text if text.startswith("backup: ") else f"backup failed: {text}", file=sys.stderr)
+            sys.exit(1)
+        counts = manifest["counts"]
+        print(f"backup ok: {name} {'encrypted' if manifest.get('encrypted') else 'UNENCRYPTED'} "
+              f"files={counts['files']} bytes={counts['bytes']} manifest_sha256={manifest['manifest_sha256']}")
+        return
+    manifest = export(root, args.out, encrypt_to=args.encrypt_to)
     print(json.dumps({"out": str(args.out), "files": manifest["counts"]["files"], "bytes": manifest["counts"]["bytes"],
                       "objects": manifest["counts"].get("objects", 0), "engine_version": manifest["engine_version"],
                       "manifest_sha256": manifest["manifest_sha256"]},
                      indent=2))
-    print("Archive is unencrypted; encrypt it before storing it anywhere shared.", file=sys.stdout)
+    if manifest.get("encrypted"):
+        print(f"Archive is encrypted to {manifest['recipient']}; keep the private key and its passphrase apart from the archive.")
+    else:
+        print("Archive is unencrypted; encrypt it before storing it anywhere shared.", file=sys.stdout)
     print("Record manifest_sha256 somewhere other than with the archive and pass it to "
           "`verify --expect-manifest-sha256`: without it verify checks integrity, not tampering.", file=sys.stdout)
 
 
 def restore_cmd(args, root):
     from .backup import restore
-    report = restore(args.file, root)
+    report = restore(args.file, root, gnupg_home=args.gnupg_home)
     print(json.dumps({"restored_to": report["restored_to"], "files": report["files"],
                       "engine_version": report["engine_version"], "created_at": report["created_at"]}, indent=2))
 
 
 def verify_cmd(args):
     from .backup import verify
-    report = verify(args.file, expected_manifest_sha256=args.expect_manifest_sha256)
+    report = verify(args.file, expected_manifest_sha256=args.expect_manifest_sha256, gnupg_home=args.gnupg_home)
     if not args.expect_manifest_sha256:
         report["note"] = "integrity check only; pass --expect-manifest-sha256 <digest from backup> to detect a rewritten archive"
     print(json.dumps(report, indent=2))
@@ -503,7 +575,7 @@ def backup_drill_cmd(args):
     from .backup import drill
     if args.receipt and os.path.lexists(args.receipt):
         raise ValueError(f"{args.receipt} exists; the drill never overwrites a receipt")
-    receipt = drill(args.file, args.expect_manifest_sha256, doctor=doctor_report)
+    receipt = drill(args.file, args.expect_manifest_sha256, doctor=doctor_report, gnupg_home=args.gnupg_home)
     text = json.dumps(receipt, indent=2)
     if args.receipt:
         with os.fdopen(os.open(args.receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as out:
@@ -515,7 +587,7 @@ def backup_drill_cmd(args):
 
 def backup_list_cmd(args):
     from .backup import list_archives
-    report = list_archives(args.dir, args.keep_daily, args.keep_weekly)
+    report = list_archives(args.dir, args.keep_daily, args.keep_weekly, gnupg_home=args.gnupg_home)
     print(json.dumps(report, indent=2) + "\nReport only; nothing was deleted.")
     sys.exit(3 if any(item["verify"] == "failed" for item in report["archives"]) else 0)
 
@@ -651,15 +723,20 @@ def main():
                                 "never extracted to disk; nested archives are stored, not opened")
             source.add_argument("--eml", help="One emailed production .eml: message stored as is, each attachment "
                                 "stored and linked to it; headers never printed")
+            source.add_argument("--mbox", help="One local mbox export: each message stored like --eml, linked to "
+                                "the mailbox; headers never printed")
             cmd.add_argument("--source-id", required=True,
                              help="Stable non-secret production/message identity, not a signed URL")
             cmd.add_argument("--dry-run", action="store_true", help="Read and hash only; ledger read-only, nothing written")
         if name == "build":
             mode = cmd.add_mutually_exclusive_group()
             mode.add_argument("--check", action="store_true",
-                              help="Scan the generated public/ tree for private paths and credential patterns")
+                              help="Scan the generated public/ tree for private paths and credential patterns, "
+                                   "and fail on site-local links or #fragments that do not resolve")
             mode.add_argument("--preview", action="store_true",
                               help="List files a rebuild would add, remove or change in public/; writes nothing")
+            cmd.add_argument("--budget", type=_positive_kb, metavar="KB", help="Print each page's first-party "
+                             "weight (html + referenced css/js/images, uncompressed); exit 3 when a page exceeds KB")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
             cmd.add_argument("--fix-modes", action="store_true",
@@ -680,7 +757,7 @@ def main():
                          help="Fall back to the Census geocoder when the seed cannot resolve the location")
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
-                              "city_council, district_attorney, chp")
+                              "city_council, district_attorney, chp, campus_police (opt-in)")
     kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
@@ -694,13 +771,18 @@ def main():
     press_draft.add_argument("--date")
     backup_p = commands.add_parser("backup", help="Write a verified tar of the campaign directory")
     backup_p.add_argument("--directory", required=True)
-    backup_p.add_argument("--out", required=True, help="Archive path to create (must not exist)")
+    backup_out = backup_p.add_mutually_exclusive_group(required=True)
+    backup_out.add_argument("--out", help="Archive path to create (must not exist)")
+    backup_out.add_argument("--into", help="Existing private folder; writes a new deflock-backup-<UTC stamp>.tar[.gpg] and prints one status line")
+    backup_p.add_argument("--encrypt-to", default=None, help="Public key file; the archive is encrypted to it (GnuPG)")
     restore_p = commands.add_parser("restore", help="Restore a backup into an empty directory")
     restore_p.add_argument("--file", required=True)
     restore_p.add_argument("--directory", required=True)
+    restore_p.add_argument("--gnupg-home", default=None, help="GnuPG home holding the private key (encrypted archives)")
     verify_p = commands.add_parser("verify", help="Re-hash every member of a backup against its manifest")
     verify_p.add_argument("--file", required=True)
     verify_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`, kept apart from the archive")
+    verify_p.add_argument("--gnupg-home", default=None, help="GnuPG home holding the private key (encrypted archives)")
     diff_p = commands.add_parser("backup-diff", help="List files added/removed/changed since a backup (read-only; exit 3 on drift)")
     diff_p.add_argument("--file", required=True)
     diff_p.add_argument("--directory", required=True)
@@ -709,8 +791,10 @@ def main():
     drill_p.add_argument("--file", required=True)
     drill_p.add_argument("--expect-manifest-sha256", default=None, help="manifest digest printed by `backup`")
     drill_p.add_argument("--receipt", help="Also write the receipt JSON here (must not exist)")
-    list_p = commands.add_parser("backup-list", help="Re-verify every *.tar in a folder; report what a keep rule keeps (deletes nothing)")
+    drill_p.add_argument("--gnupg-home", default=None, help="GnuPG home holding the private key (encrypted archives)")
+    list_p = commands.add_parser("backup-list", help="Re-verify every *.tar and *.tar.gpg in a folder; report what a keep rule keeps (deletes nothing)")
     list_p.add_argument("--dir", required=True)
+    list_p.add_argument("--gnupg-home", default=None, help="GnuPG home holding the private key (encrypted archives)")
     from .backup import KEEP_LIMITS, keep_count
     for flag, key, period in (("--keep-daily", "keep_daily", "UTC day"), ("--keep-weekly", "keep_weekly", "ISO week")):
         list_p.add_argument(flag, type=keep_count(KEEP_LIMITS[key]), help=f"Newest per {period}, most recent N (0-{KEEP_LIMITS[key]})")
@@ -771,6 +855,8 @@ def main():
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     sent_p.add_argument("--request", default="main", help="Name of a further request to this agency, drafted in "
                         "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
+    sent_p.add_argument("--reference", metavar="REF", help="The agency's own request number (1-40: A-Z a-z 0-9 - _ # .)")
+    sent_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
@@ -793,17 +879,28 @@ def main():
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
     due_p.add_argument("--request", help="Only requests with this name (refused when none is recorded)")
+    calendar_p = commands.add_parser("kit-calendar", help="Private .ics of open requests' dates and comment deadlines")
+    for flag in ("--directory", "--out", "--as-of"):  # --as-of YYYY-MM-DD: earlier comment deadlines left out
+        calendar_p.add_argument(flag, required=flag != "--as-of")
     response_p = commands.add_parser("kit-response", help="Record a dated agency response step on a sent request")
     for flag in ("--directory", "--agency", "--date"):
         response_p.add_argument(flag, required=True)
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
-                                                               "produced", "denied", "closed", "fee_estimate"))
-    response_p.add_argument("--amount", metavar="USD", help="fee_estimate only: the agency's estimate, 0-100000 "
+                                                               "produced", "denied", "closed", "fee_estimate",
+                                                               "clarification_requested", "clarified", "fee_paid",
+                                                               "fee_waived"))
+    response_p.add_argument("--amount", metavar="USD", help="fee_estimate (required) or fee_paid (optional): 0-100000 "
                             "(e.g. 245.50); recorded only, nothing is paid")
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
     response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    response_p.add_argument("--expected-on", metavar="YYYY-MM-DD", help="determination or a later step: the agency's "
+                            "own stated production date (provisional, not a legal deadline)")
+    response_p.add_argument("--reference", metavar="REF", help="The agency's own request number, stored once")
+    response_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
+    response_p.add_argument("--partial", action="store_true", help="produced only: part of the records; the request "
+                            "stays open (--expected-on: the agency's next installment date)")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -848,9 +945,11 @@ def main():
     verify.add_argument("--differs-because", choices=("redacted", "converted", "unknown"), default=None)
     content_cmds = commands.add_parser("content", help="Scaffold content/ for the public site").add_subparsers(
         dest="content_command", required=True)
-    content_cmds.add_parser(
+    content_init = content_cmds.add_parser(
         "init", help="Write a minimal valid content/ with [EDIT ME: ...] placeholders; refuses an existing content/"
-    ).add_argument("--directory", required=True)
+    )
+    content_init.add_argument("--directory", required=True)
+    content_init.add_argument("--from", dest="source_campaign")
     strip_p = content_cmds.add_parser("strip-metadata", help="Write <name>.clean<ext> beside a JPEG/PNG/WebP without "
                                       "its EXIF, GPS, XMP, IPTC, comment or text metadata (no re-encode)")
     strip_p.add_argument("file")
@@ -927,6 +1026,16 @@ def main():
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
     today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
+    from .today import CONTRACT_DAYS, contract_days
+    today_p.add_argument("--contract-days", type=contract_days, default=CONTRACT_DAYS, metavar="N", help="Contracts "
+                         "ending within N days, default 90; ended in the last 30 days are always listed")
+    law_packet = commands.add_parser("law", help="Law package tools; nothing here marks a package reviewed"
+                                     ).add_subparsers(dest="law_command", required=True).add_parser(
+        "review-packet", help="Private packet for a human law reviewer in a new --out folder; reviews nothing")
+    law_packet.add_argument("--jurisdiction", required=True)
+    law_packet.add_argument("--out", required=True, help="New absolute folder outside the repository")
+    law_packet.add_argument("--as-of", help="Worksheet source ages counted to YYYY-MM-DD (default today)")
+    law_packet.add_argument("--base", help=argparse.SUPPRESS)
     pack = commands.add_parser("meeting-pack", help="Write a private printable meeting pack; publishes nothing")
     pack.add_argument("--directory", required=True)
     pack_which = pack.add_mutually_exclusive_group(required=True)
@@ -950,6 +1059,8 @@ def main():
         parser.error("--json requires --checklist")
     if args.command == "social" and args.check and args.platform:
         parser.error("--check reads kit/social only; it cannot be combined with --platform")
+    if args.command == "build" and args.preview and args.budget is not None:
+        parser.error("--budget measures a written build; it cannot be combined with --preview")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -957,6 +1068,9 @@ def main():
             fixes.emit(exc)
             sys.exit(1)
         return
+    if args.command == "law":
+        from .law_packet import main as law_packet_main
+        sys.exit(law_packet_main(args))
     root = Path(args.directory).expanduser().resolve()
     try:
         if args.command == "init":
@@ -991,7 +1105,9 @@ def main():
             print("Preview only; public/ was not changed.")
             sys.exit(3 if report["added"] or report["removed"] or report["changed"] else 0)
         elif args.command == "build":
-            build(root, check=args.check)
+            code = build(root, check=args.check, budget=args.budget)
+            if code:
+                sys.exit(code)
         elif args.command == "backup":
             backup_cmd(args, root)
         elif args.command == "restore":
@@ -1128,8 +1244,8 @@ def main():
             print(json.dumps(strip_file(args.file, args.out), indent=2))
         elif args.command == "content":
             from .content_init import init_content
-            print(json.dumps(init_content(root), indent=2))
-            print('content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
+            print(json.dumps(init_content(root, args.source_campaign), indent=2))
+            print(f"content/ written from {Path(args.source_campaign).name}. Review every copied page and replace anything specific to the other locality; nothing was built or deployed." if args.source_campaign is not None else 'content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
         elif args.command == "kit-agency":
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
@@ -1142,7 +1258,8 @@ def main():
         elif args.command == "kit-sent":
             from .kit_track import record_sent
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
-                                         replace=args.replace), indent=2))
+                                         replace=args.replace, reference=args.reference,
+                                         replace_reference=args.replace_reference), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
@@ -1159,9 +1276,11 @@ def main():
             report = kit_track_status(root, request=args.request)
             print(json.dumps(report, indent=2))
             for row in report["requests"]:  # a reminder on stderr; stdout stays one JSON document
+                label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
                 if row["over_fee_cap"]:
-                    label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
+                if row["fee_state"] == "unpaid":
+                    print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
@@ -1169,17 +1288,27 @@ def main():
         elif args.command == "today":
             from .today import run_cli as today_cli
             read_config(root)  # not a campaign folder: Stopped, before any source is read
-            print(today_cli(root, args.as_of, args.as_json))
+            print(today_cli(root, args.as_of, args.as_json, args.contract_days))
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
-            if report["past_due"]:
+            if report["past_due"] + report["stated_date_passed"] + report["installment_passed"]:
+                sys.exit(3)
+        elif args.command == "kit-calendar":
+            from .kit_calendar import calendar
+            try:
+                print(json.dumps(calendar(root, args.out, args.as_of), indent=2))
+            except ValueError as exc:
+                print(f"Stopped: {exc}", file=sys.stderr)
                 sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step
-            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note,
-                                         records=args.record, request=args.request, amount=args.amount), indent=2))
+            print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
+                                         request=args.request, amount=args.amount, expected_on=args.expected_on,
+                                         reference=args.reference, replace_reference=args.replace_reference,
+                                         partial=args.partial),
+                             indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
             read_config(root)
@@ -1204,4 +1333,4 @@ def main():
                 doctor(root, args.contact_max_age_days, args.stale_days)
     except (OSError, ValueError, sqlite3.Error) as exc:
         fixes.emit(exc)
-        sys.exit(1)
+        sys.exit(getattr(exc, "exit_code", 1))  # kit_track.WaitingOnYou: 3

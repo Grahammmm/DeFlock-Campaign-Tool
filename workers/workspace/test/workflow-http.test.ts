@@ -113,6 +113,57 @@ describe("settings, subscribers, meetings, backup", () => {
     expect(page).toContain("send_newsletter");
   });
 
+  it("DF-4: advisory legal-claim flags travel from a newsletter draft to its send card and are shown on the approval page", async () => {
+    const repo = await seedCampaign();
+    const signer = await makeSigner();
+    const flag = "review-required: text line 2: legal-claim wording (non-compliant)";
+    const { row: job } = await repo.enqueueJob("newsletter_draft", "nd-flag-1", { trigger: "monthly", month: "2026-10" });
+    await repo.db.prepare("UPDATE job SET state = 'done', outputs_json = ? WHERE job_id = ?").bind(JSON.stringify({ draft: { subject: "October update", html: "<p>hi</p><p>{{ unsubscribe }}</p>", text: "hi", review_flags: [flag] } }), job.job_id).run();
+    let r = await organizerRequest(signer, "organizer@example.invalid", "/subscribers");
+    expect(await (await call(r.request, r.overrides)).text()).toContain(flag); // the draft screen shows it before Approve & send
+    r = await organizerRequest(signer, "organizer@example.invalid", `/subscribers/drafts/${job.job_id}/propose`, { method: "POST", headers: { accept: "application/json" } });
+    const res = await call(r.request, r.overrides);
+    expect(res.status).toBe(201); // flagged: still proposed, not blocked
+    const { action_id } = (await res.json()) as { action_id: string };
+    const action = await repo.action(action_id);
+    expect(action?.state).toBe("proposed");
+    expect(JSON.parse(action!.proposal_json).review_flags).toEqual([flag]);
+    r = await organizerRequest(signer, "organizer@example.invalid", "/approvals");
+    const page = await (await call(r.request, r.overrides)).text();
+    expect(page).toContain("Wording review required before approving");
+    expect(page).toContain(flag);
+    expect(page).toContain(`/approvals/${action_id}/approve`); // the approve button is still there
+  });
+
+  it("DF-4: a deploy_site card shows the flags its build_site job reported, and stays approvable", async () => {
+    const repo = await seedCampaign();
+    const signer = await makeSigner();
+    const flag = "review-required: findings/cedar-policy-posted: legal-claim wording (violation-verb)";
+    const { row: build } = await repo.enqueueJob("build_site", "bs-flag-1", { site_version: "m1" });
+    await repo.db.prepare("UPDATE job SET state = 'done', outputs_json = ? WHERE job_id = ?").bind(JSON.stringify({ version: "m1", review_flags: [flag] }), build.job_id).run();
+    const { row: card } = await repo.propose("deploy_site", build.job_id, { site_version: "m1", build_job_id: build.job_id }, "ds-flag-1", "organizer@example.invalid");
+    let r = await organizerRequest(signer, "organizer@example.invalid", "/approvals");
+    const page = await (await call(r.request, r.overrides)).text();
+    expect(page).toContain("Wording review required before approving");
+    expect(page).toContain(flag);
+    expect(page).toContain(`/approvals/${card.action_id}/approve`);
+  });
+
+  it("DF-4: a clean build shows no wording warning", async () => {
+    const repo = await seedCampaign();
+    const signer = await makeSigner();
+    const { row: clean } = await repo.enqueueJob("build_site", "bs-clean-1", { site_version: "m2" });
+    await repo.db.prepare("UPDATE job SET state = 'done', outputs_json = ? WHERE job_id = ?").bind(JSON.stringify({ version: "m2", review_flags: [] }), clean.job_id).run();
+    const { row: card } = await repo.propose("deploy_site", clean.job_id, { site_version: "m2", build_job_id: clean.job_id }, "ds-clean-1", "organizer@example.invalid");
+    const r = await organizerRequest(signer, "organizer@example.invalid", "/approvals");
+    const page = await (await call(r.request, r.overrides)).text();
+    expect(page).toContain(`/approvals/${card.action_id}/approve`);
+    // the database is shared across these tests, so look only at this card's own markup
+    const own = page.slice(page.indexOf(`<h3>deploy_site`, page.indexOf(card.action_id) - 200), page.indexOf(`/approvals/${card.action_id}/approve`));
+    expect(own).toContain(card.action_id);
+    expect(own).not.toContain("Wording review required before approving");
+  });
+
   it("meetings: manual add, comment kit from published findings only, backup job", async () => {
     const repo = await seedCampaign();
     const signer = await makeSigner();

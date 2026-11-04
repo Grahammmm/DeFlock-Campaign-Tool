@@ -2,6 +2,8 @@
 
 ``summary REPORT.json`` / ``summary --dir DIR`` print to stdout and write nothing. No verb records,
 signs or marks a review; output names the review owed per human gate and is never acceptance.
+``summary … --json`` prints the same values as one run-report-review-v1 document; exit codes are unchanged.
+``--dir … --since S [--until U]`` keeps invalid reports and valid ones started in [S, U); the rest are counted as excluded.
 Exit 1: invalid report, failed work stage, finished after --now, or a run_id with differing
 contents. Exit 2: refused input. Otherwise 0."""
 import argparse
@@ -33,6 +35,7 @@ GATES = {"GATE_REVIEW_REQUIRED": GATE_2, "LEGAL_REVIEW_REQUIRED": GATE_3, **dict
     STAGE_SPAWN_FAILED STAGE_RESULT_INVALID STAGE_LEFT_PROCESSES UPSTREAM_FAILED""".split(), "operator (no gate)")}
 REVIEWED = ("REVIEWED | none by this tool | machine-valid is review-required, not semantic "
             "acceptance; extracted and OCR text stay unreviewed; not a legal status")
+UNMAPPED = "unmapped -> operator"
 
 
 class Refused(Exception):  # the reason never echoes a path
@@ -82,50 +85,66 @@ def load(data):
     return report, None
 
 
-def summarise(report, diagnostic, now=None):
-    """Return (lines, exit status) for one report."""
+def facts(report, diagnostic, now=None):
+    """Return (facts, exit status) for one report; the text and the JSON are both rendered from these facts."""
     run_id = _field(report, "run_id", RUN_ID) or "unknown"
-    out = []
-    def emit(*parts):
-        out.append(" | ".join(("review", run_id) + parts))
     if diagnostic is not None:  # an invalid report is never summarised as ok
-        for parts in (("VALID", "no", diagnostic), ("WORK", "not interpreted"), ("OWED", "not interpreted"), (REVIEWED,)):
-            emit(*parts)
-        return out, 1
-    emit("VALID", "yes")
-    emit("MODE", report["mode"], *(["TEST evidence only; not live"] if report["mode"] == "test" else []))
+        return {"run_id": run_id, "valid": False, "diagnostic": diagnostic, "status": 1}, 1
     stubbed = {item["stage"] for item in report["needs_g"] if item["code"] == STUB_CODE}
-    if stubbed:
-        emit("STUB", "yes", "output of this run is not real data")
     work = report["stages"][:-1]
     known = {s["name"]: s["status"] in ("ok", "warn") and s["name"] not in stubbed for s in work}
-    emit("WORK", " ".join(f"{s['name']}={s['status']} out={s['counts']['output'] if known[s['name']] else 'unknown'}"
-                          for s in work))
     outcomes = work[4].get("outcomes", [])
-    unmapped = sum(1 for item in outcomes if item["code"] not in KNOWN_OUTCOMES)
-    text = " ".join(f"{_code(item['code'])}={item['count']}" for item in outcomes) or "none recorded"
-    emit("WORK", "counts", f"{text} unmapped={unmapped}" if known["extract"] else "unknown")
-    work_failed = any(stage["status"] == "fail" for stage in work)
-    notify = report["stages"][-1]["status"]
-    only = " (notify only)" if notify == "fail" and not work_failed else ""
-    emit("NOTIFY", "failed" if notify == "fail" else notify, "does not affect WORK",
-         f"rollup={report['overall_status']}{only}")
-    emit("OWED", f"review_required={report['review_required_count']} -> {GATE_2}")
-    ocr = report.get("ocr")
-    emit("OWED", *([f"ocr pages_reviewed={ocr['pages_reviewed']}/{ocr['pages_ocr']}",
-                    f"pages unreviewed={ocr['pages_ocr'] - ocr['pages_reviewed']}"] if ocr else ["ocr unknown"]))
+    notify, ocr = report["stages"][-1]["status"], report.get("ocr")
     awaiting = coverage_counts(report)["awaiting_ocr"]
-    emit("OWED", f"AWAITING_OCR={'unknown' if awaiting is None or 'extract' in stubbed else awaiting}")
-    for item in report["needs_g"]:
-        code = _code(item["code"])
-        gate = f"-> {GATES[code]}" if code in GATES else "unmapped -> operator"
-        emit("OWED", f"{code} x{item['count']} [{item['severity']}] {gate}")
     seconds = (now - _parse(report["finished_at"])).total_seconds() if now is not None else 0
-    future = seconds < 0
-    if now is not None:
-        emit("AGE", *(["in the future", "do not trust"] if future else [f"{int(seconds // 3600)}h since finished_at"]))
+    status = 1 if any(s["status"] == "fail" for s in work) or seconds < 0 else 0
+    return {"run_id": run_id, "valid": True, "diagnostic": None, "mode": report["mode"],
+            "test_only": report["mode"] == "test", "stub": bool(stubbed),
+            "work": [{"stage": s["name"], "status": s["status"],
+                      "output": s["counts"]["output"] if known[s["name"]] else None} for s in work],
+            "outcomes": [{"code": _code(i["code"]), "count": i["count"]} for i in outcomes] if known["extract"] else None,
+            "unmapped": sum(i["code"] not in KNOWN_OUTCOMES for i in outcomes) if known["extract"] else None,
+            "notify": "failed" if notify == "fail" else notify, "rollup": report["overall_status"],
+            "review_required": report["review_required_count"],
+            "ocr": {"pages_ocr": ocr["pages_ocr"], "pages_reviewed": ocr["pages_reviewed"],
+                    "pages_unreviewed": ocr["pages_ocr"] - ocr["pages_reviewed"]} if ocr else None,
+            "awaiting_ocr": None if awaiting is None or "extract" in stubbed else awaiting,
+            "owed": [{"code": c, "count": i["count"], "severity": i["severity"], "gate": GATES.get(c, UNMAPPED)}
+                     for i in report["needs_g"] for c in (_code(i["code"]),)],
+            "age_hours": None if now is None else "future" if seconds < 0 else int(seconds // 3600),
+            "status": status}, status
+
+
+def render(f):
+    """Text lines for one facts dict."""
+    out = []
+    def emit(*parts):
+        out.append(" | ".join(("review", f["run_id"]) + parts))
+    if not f["valid"]:
+        for parts in (("VALID", "no", f["diagnostic"]), ("WORK", "not interpreted"), ("OWED", "not interpreted"), (REVIEWED,)):
+            emit(*parts)
+        return out
+    emit("VALID", "yes")
+    emit("MODE", f["mode"], *(["TEST evidence only; not live"] if f["test_only"] else []))
+    if f["stub"]:
+        emit("STUB", "yes", "output of this run is not real data")
+    emit("WORK", " ".join(f"{w['stage']}={w['status']} out={'unknown' if w['output'] is None else w['output']}"
+                          for w in f["work"]))
+    text = " ".join(f"{o['code']}={o['count']}" for o in f["outcomes"] or []) or "none recorded"
+    emit("WORK", "counts", "unknown" if f["outcomes"] is None else f"{text} unmapped={f['unmapped']}")
+    only = " (notify only)" if f["notify"] == "failed" and all(w["status"] != "fail" for w in f["work"]) else ""
+    emit("NOTIFY", f["notify"], "does not affect WORK", f"rollup={f['rollup']}{only}")
+    emit("OWED", f"review_required={f['review_required']} -> {GATE_2}")
+    ocr = f["ocr"]
+    emit("OWED", *([f"ocr pages_reviewed={ocr['pages_reviewed']}/{ocr['pages_ocr']}",
+                    f"pages unreviewed={ocr['pages_unreviewed']}"] if ocr else ["ocr unknown"]))
+    emit("OWED", f"AWAITING_OCR={'unknown' if f['awaiting_ocr'] is None else f['awaiting_ocr']}")
+    for o in f["owed"]:
+        emit("OWED", f"{o['code']} x{o['count']} [{o['severity']}] {o['gate'] if o['gate'] == UNMAPPED else '-> ' + o['gate']}")
+    if f["age_hours"] is not None:
+        emit("AGE", *(["in the future", "do not trust"] if f["age_hours"] == "future" else [f"{f['age_hours']}h since finished_at"]))
     emit(REVIEWED)
-    return out, 1 if work_failed or future else 0
+    return out
 
 
 def list_dir(directory):
@@ -137,31 +156,69 @@ def list_dir(directory):
     return [read_file(path) for path in paths]
 
 
-def summarise_dir(blobs, now):
+def summarise_dir(blobs, now, window=None):
+    """Return (entries, counts, status); an entry is (duplicate or None, facts or None) in text order.
+    With window (since, until or None): invalid reports and valid ones started in [since, until) are kept."""
     loaded = [(data, *load(data)) for data in blobs]
     loaded.sort(key=lambda x: (_field(x[1], "started_at", STAMP) or "", _field(x[1], "run_id", RUN_ID) or "", x[0]))
+    total = len(loaded)
+    if window is not None:  # before duplicate detection: an excluded copy is never compared
+        since, until = window  # fixed-width UTC stamps, already strptime-checked: string order is time order
+        loaded = [x for x in loaded if x[2] is not None or since <= x[1]["started_at"] and (
+            until is None or x[1]["started_at"] < until)]
     variants = {}
     for data, report, diag in loaded:
         if diag is None:
             variants.setdefault(report["run_id"], set()).add(data)
-    lines, status, valid, invalid, dupes, seen = [], 0, 0, 0, 0, set()
+    entries, status, valid, invalid, dupes, seen = [], 0, 0, 0, 0, set()
     for data, report, diag in loaded:
         run_id = report["run_id"] if diag is None else None
         if run_id is not None and (run_id, data) in seen:
-            lines.append(f"review | {run_id} | DUPLICATE | identical")
+            entries.append(({"run_id": run_id, "kind": "identical"}, None))
             dupes += 1
             continue
         seen.add((run_id, data))
-        block, code = summarise(report, diag, now)
-        if run_id is not None and len(variants[run_id]) > 1:
-            block.insert(1, f"review | {run_id} | DUPLICATE | run_id | contents differ")
+        f, code = facts(report, diag, now)
+        differ = run_id is not None and len(variants[run_id]) > 1
+        if differ:
             dupes, code = dupes + 1, 1
-        lines += block
+            f["status"] = code
+        entries.append(({"run_id": run_id, "kind": "contents differ"} if differ else None, f))
         valid, invalid = (valid + 1, invalid) if diag is None else (valid, invalid + 1)
         status = max(status, code)
-    lines.append(f"review | reports={valid + invalid} valid={valid} invalid={invalid} "
-                 f"duplicates={dupes} | machine-valid is not reviewed")
-    return lines, status
+    counts = {"reports": valid + invalid, "valid": valid, "invalid": invalid, "duplicates": dupes}
+    return entries, counts if window is None else {**counts, "excluded": total - len(loaded)}, status
+
+
+def dir_lines(entries, counts, window=None):
+    lines = []
+    for dup, f in entries:
+        if f is None:
+            lines.append(f"review | {dup['run_id']} | DUPLICATE | identical")
+            continue
+        block = render(f)
+        if dup is not None:
+            block.insert(1, f"review | {dup['run_id']} | DUPLICATE | run_id | contents differ")
+        lines += block
+    span = "" if window is None else f" excluded={counts['excluded']} window={window[0]}..{window[1] or 'open'}"
+    lines.append(f"review | reports={counts['reports']} valid={counts['valid']} invalid={counts['invalid']} "
+                 f"duplicates={counts['duplicates']}{span} | machine-valid is not reviewed")
+    return lines
+
+
+def document(entries, counts, window=None):
+    return {"schema": "run-report-review-v1", "review_required": True, "reviewed": "none by this tool",
+            "reports": [f for _, f in entries if f is not None], "duplicates": [d for d, _ in entries if d is not None],
+            "counts": counts, **({} if window is None else {"window": {"since": window[0], "until": window[1]}})}
+
+
+def _stamp(name, value):  # the shape check passes 2026-02-30 or 25:00:00; strptime rejects them
+    if value is not None and not STAMP.match(value):
+        raise Refused(f"{name} must be YYYY-MM-DDTHH:MM:SSZ")
+    try:
+        return _parse(value) if value is not None else None
+    except ValueError:
+        raise Refused(f"{name} is not a real UTC date and time") from None
 
 
 def main(argv=None):
@@ -170,22 +227,33 @@ def main(argv=None):
     summary.add_argument("report", nargs="?")
     summary.add_argument("--dir")
     summary.add_argument("--now", help="YYYY-MM-DDTHH:MM:SSZ; adds an AGE line only")
+    summary.add_argument("--since", help="with --dir: only valid reports with started_at >= SINCE (invalid always shown)")
+    summary.add_argument("--until", help="with --since: only started_at < UNTIL")
+    summary.add_argument("--json", action="store_true", help="print one run-report-review-v1 document instead")
     args = parser.parse_args(argv)
     try:
         if (args.report is None) == (args.dir is None):
             raise Refused("give exactly one of REPORT.json or --dir")
-        if args.now is not None and not STAMP.match(args.now):
-            raise Refused("--now must be YYYY-MM-DDTHH:MM:SSZ")
-        try:  # the shape check passes 2026-02-30 or 25:00:00; strptime rejects them
-            now = _parse(args.now) if args.now is not None else None
-        except ValueError:
-            raise Refused("--now is not a real UTC date and time") from None
-        lines, status = (summarise_dir(list_dir(Path(args.dir)), now) if args.dir is not None
-                         else summarise(*load(read_file(Path(args.report))), now))
+        now = _stamp("--now", args.now)
+        window = None if args.since is None and args.until is None else (args.since, args.until)
+        if window is not None and args.dir is None:
+            raise Refused("--since and --until need --dir")
+        since, until = _stamp("--since", args.since), _stamp("--until", args.until)
+        if window is not None and since is None:
+            raise Refused("--until needs --since")
+        if until is not None and until <= since:
+            raise Refused("--until must be after --since")
+        if args.dir is not None:
+            entries, counts, status = summarise_dir(list_dir(Path(args.dir)), now, window)
+            lines = dir_lines(entries, counts, window)
+        else:
+            f, status = facts(*load(read_file(Path(args.report))), now)
+            entries, counts, lines = [(None, f)], {"reports": 1, "valid": int(f["valid"]),
+                                                   "invalid": int(not f["valid"]), "duplicates": 0}, render(f)
     except (Refused, OSError) as exc:
         print(f"review | refused | {exc if isinstance(exc, Refused) else 'unreadable'}", file=sys.stderr)
         return 2
-    print("\n".join(lines))
+    print(json.dumps(document(entries, counts, window), indent=1, sort_keys=True) if args.json else "\n".join(lines))
     return status
 
 

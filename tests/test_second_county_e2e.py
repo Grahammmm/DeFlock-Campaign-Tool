@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from campaign_tool import discovery
 from campaign_tool.cli import check_public_tree
 
 REPO = Path(__file__).resolve().parents[1]
@@ -45,7 +46,9 @@ class SecondCountyE2ETests(unittest.TestCase):
         return json.loads((folder / relative).read_text(encoding="utf-8"))
 
     def seed_agencies(self, county):
-        return {agency["agency_id"]: agency for agency in self.counties[county]["agencies"]}
+        # The default kit is every seed agency of a default kind; opt-in kinds (campus_police) stay out.
+        return {agency["agency_id"]: agency for agency in self.counties[county]["agencies"]
+                if agency["kind"] in discovery.DEFAULT_INCLUDE}
 
     def assert_kit(self, folder, county):
         actual = self.read(folder, "kit/agencies.json")

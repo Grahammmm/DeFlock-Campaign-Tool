@@ -30,72 +30,28 @@ SAMPLES = (  # one exception per fix text, in table order
     ValueError("Stored object integrity mismatch; intake stopped"),
     ValueError("ledger has a journal or WAL file beside it; nothing was written"),
     ValueError("public tree check found 4 potential leak(s); fix content and rebuild"),
+    ValueError("public tree check found 4 broken link(s); fix content and rebuild"),
     ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response"),
     ValueError("r.json exists; the drill never overwrites a receipt"), sqlite3.DatabaseError("file is not a database"),
     PermissionError(errno.EACCES, "m", "/t"), OSError(errno.ENOSPC, "m"))
-NO_FIX = {  # rendered raise text -> why no Fix: line (a new message must be added to the table or here)
-    "5: 5": "wrapper that appends ': <file>' to a message the table already matches by prefix",
-    **dict.fromkeys((
-        "5/ must not be a symlink", "5/ is not a folder", "Agency name must be plain text without angle brackets: 5",
-        "5 must be a JSON list of agencies", "5 must be an https:// URL with a host",
-        "run kit first: kit/agencies.json is missing", "agency_id 5 must appear exactly once in kit/agencies.json (found 5)",
-        "give at least one of records_email, records_url, portal", "records_email must be a plain address like records@agency.example",
-        "checked_on must be a real YYYY-MM-DD date", "checked_on 5 is after today",
-        "5: every entry needs an agency_id like 'ca-example-police'", "5: entry 5 needs a name",
-        "5; the Census geocoder places 5 in 5, which is not in the seed yet", "5 Online lookup also failed: 5",
-    ), "kit message that already names the field and the rule; not in the table"),
-    **dict.fromkeys((
-        "agency_id 5 is not in kit/agencies.json", "kit/requests/5.md must be a regular file (not a symlink)",
-        "--date must be a real YYYY-MM-DD date", "--date 5 must be between 2000-01-01 and today",
-        "--channel must be one of name", "5 already recorded as sent on 5; use --replace to correct it",
-        "5 has recorded steps; its entry sent on 5 cannot be replaced",
-        "--note must be plain text without <, > or control characters",
-        "kit/requests/5.md still has 5 unfilled placeholder(s) or an unverified recipient; run kit-check",
-        "--request must be 1-40 characters a-z, 0-9 or -, starting with a letter or digit",
-        "kit/requests/5.md is another agency's draft; choose another --request name",
-    ), "kit-sent message that already names the option to change; not in the table"),
-    **dict.fromkeys((
-        "--note must be 1-5 characters after collapsing whitespace", "--kind must be one of name",
-        "no hand-sent request recorded for 5; run kit-sent first", "kit/sent.json unreadable: malformed steps for 5",
-        "no sent request 5/5; run kit-sent --request 5 first",
-        "--date 5 is before the request was sent on 5", "--date 5 is before the previous step (5 on 5)",
-        "--date 5 is in the future", "5 is closed; no step can follow closed",
-        "acknowledged is allowed only as the first step, once", "extension is allowed only once",
-        "extension is not allowed after a determination, produced or denied step", "5 is allowed at most once",
-        "closed needs at least one prior step",
-    ), "kit-response message that already names the option or the step order rule; not in the table"),
-    **dict.fromkeys((
-        "--record is only for produced steps", "--record: at most 5 records per step",
-        "--record #5: the same record is given twice", "--record #5: already linked on 5",
-        "--record #5: name",  # wraps the resolve_hash refusal (not ingested / no ledger / 12 hex / ambiguous)
-    ), "kit-response --record message that names the record number and the rule to change; not in the table"),
-    **dict.fromkeys((
-        "fee_estimate needs --amount USD", "--amount is only for fee_estimate steps",
-        "--amount must be US dollars like 245 or 245.50 (no sign, commas or exponent)", "--amount must be from 0 to 100000",
-    ), "kit-response --amount message that already names the option and the rule; not in the table"),
-    "--as-of must be a real YYYY-MM-DD date": "kit-due message that already names the option and the format",
-    "no sent request */5: no agency has a request recorded under that name":
-        "kit-due --request message that already names the request; not in the table",
-    "--scope needs a law package; none found for 5": "kit message that already names the option and the missing law package",
-    **dict.fromkeys((
-        "--as-of 5 is in the future", "no hand-sent request recorded for 5", "request for 5 is closed",
-        "request for 5 was answered (5 on 5); no follow-up drafted", "no law package: dates cannot be computed",
-        "not past due: provisional determination date 5", "kit/followups/5 must not be a symlink",
-        "kit/followups/5 already exists; use --replace to rewrite it",
-    ), "kit-followup message that already names the option or the request state that stops the draft; not in the table"),
-    **dict.fromkeys((
-        "no recorded denial for 5", "no law package: --rule cannot be checked", "--rule 5 is given twice",
-        "--rule 5 is not in the law package", "--rule 5 is not in force on the denial date 5",
-    ), "kit-denial-reply message that already names the option or the missing denial; not in the table"),
-    "symlink or larger than 64 KB": "internal meeting_stage reason, wrapped by its caller",
-    "must be 0-5": "argparse keep-count message; already names the range",
-    **dict.fromkeys((
-        "5: --out is a symlink; choose a real private folder outside public/ and content/",
-        "5: --out is inside 5/; choose a private folder outside public/ and content/",
-        "5: must be a real folder, not a symlink or a file", "finding preview needs content/ (run content init first)",
-        "5: slug 5 is already used by finding 5; build would refuse the duplicate", "draft 5; build would refuse it",
-    ), "finding preview message that already names the option or folder to change; not in the table"),
-}
+# Exception additions: add one uniquely named JSON object per work unit in
+# tests/cli_fixes_no_fix/ instead of editing a shared table. Each key is rendered
+# raise text and each value explains why it needs no Fix: line. The loader rejects
+# duplicate keys so a conflicting explanation cannot silently hide an entry.
+NO_FIX = {}
+fixture_dir = REPO_ROOT / "tests" / "cli_fixes_no_fix"
+if not (fixture_dir / "baseline.json").is_file():
+    raise ValueError("NO_FIX baseline fixture is missing")
+for path in sorted(fixture_dir.glob("*.json")):
+    additions = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(additions, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in additions.items()):
+        raise ValueError(f"{path}: expected an object of message-to-reason strings")
+    overlap = NO_FIX.keys() & additions.keys()
+    if overlap:
+        raise ValueError(f"{path}: duplicate NO_FIX messages: {sorted(overlap)}")
+    NO_FIX.update(additions)
+if not NO_FIX:
+    raise ValueError("NO_FIX fixtures are missing or empty")
 
 
 def render(node):
@@ -267,6 +223,8 @@ class FixTests(unittest.TestCase):
         self.assertEqual(fixes.fix_for(ValueError("Alpha limit: 50 MiB per file; original was not imported: sub/a.bin")), texts[6])
         self.assertEqual(fixes.fix_for(ValueError("--dir must be a real directory, not a symlink or a file")), texts[7])
         self.assertEqual(fixes.fix_for(ValueError("Folder changed during the run (not a real directory): a")), texts[7])
+        both = fixes.fix_for(ValueError("public tree check found 3 potential leak(s) and 4 broken link(s); fix content and rebuild"))
+        self.assertEqual(both, str(texts[12]).replace("Fix the 4 ", "Fix the 7 "))
 
     def test_exit_codes_without_fix_are_unchanged(self):
         self.init()

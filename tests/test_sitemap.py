@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 BASE = "https://cedar-records.example.invalid"
 S = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
-FIXED = ["/agencies.html", "/corrections.html", "/sources.html", "/meetings.html", "/about.html", "/methods.html",
+FIXED = ["/agencies.html", "/corrections.html", "/sources.html", "/meetings.html", "/about.html", "/methods.html", "/timeline.html",
          "/meetings/cedar-council-2026-10.html",  # DF2022-03: the example's one meeting page
          "/agencies/cedar.html",  # DF2237-08: Cedar Police has sources (and the finding)
          "/cameras.html"]
@@ -81,7 +81,7 @@ class SitemapTests(unittest.TestCase):
         self.assertEqual((urls[BASE + "/"], urls[BASE + "/findings/"]), ("2026-03-07", "2026-03-07"))
         for path in FIXED:
             self.assertIsNone(urls[BASE + path], path)
-        self.assertEqual(len(urls), len(FIXED) + 4)
+        self.assertEqual(len(urls), len(FIXED) + 5)
         self.assertIn('<a href="/sitemap.xml">Sitemap</a>', self.all_text()["index.html"])
         self.assertIn(f"Sitemap: {BASE}/sitemap.xml", self.all_text()["robots.txt"])
 
@@ -104,7 +104,7 @@ class SitemapTests(unittest.TestCase):
         self.build()
         text = (self.public / "sitemap.xml").read_text(encoding="utf-8")
         self.assertNotIn("lastmod", text)
-        self.assertEqual(sorted(self.urls()), sorted(BASE + p for p in ["/", "/findings/"] + FIXED))
+        self.assertEqual(sorted(self.urls()), sorted(BASE + p for p in ["/", "/findings/", "/findings/packet-all.html"] + FIXED))
 
     # 4. no base_url (null or key absent): no sitemap, no link anywhere, no robots line, one note; a rebuild with it writes it
     def test_no_base_url_no_sitemap_then_rebuild_with_one(self):

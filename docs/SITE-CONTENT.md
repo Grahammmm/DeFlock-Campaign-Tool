@@ -1,5 +1,7 @@
 # Site content model and multi-page build
 
+The findings index links to `/findings/packet-all.html`, a printable summary of all published findings, with source references and corrections. The packet links to each full finding and omits its body. A published finding whose output path conflicts with a generated page causes the build to refuse without changing `public/`.
+
 `campaign_tool build --directory D` renders `D/public/` from `D/campaign.json`
 plus a reviewed `D/content/` directory. Without `content/` the command still
 writes the neutral one-page starter (`index.html`, `style.css`, `_headers`),
@@ -21,6 +23,13 @@ read-only and exits 0 when clean or without `content/`, 3 when anything is liste
 ## Content directory
 
 `python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+
+### Second locality
+
+Initialize the new campaign first, then run `python3 -m campaign_tool content init --directory NEW --from OLD`.
+Only public site text, labels and eligible pages are copied; contact, signup and base URL are reset.
+The summary lists copied files, replacements, skipped entries and text needing review. Review every page and
+all locality-specific claims before any publication; this command builds and deploys nothing.
 
 Finding citations and the source library lead with “From a document we hold”,
 the receipt date and agency when known, and public-copy or private-original status.
@@ -83,6 +92,12 @@ Rule check: every id in `rule_ids` (unique, non-empty, at most 120 characters) a
 rule in the campaign's law package (`campaign.json` country-state) in force on `event_date`, or `build` stops and
 `content-check` names it; `content-check` also prints `law package <jurisdiction>: draft|reviewed|missing`.
 
+Optional `sources[].page` (a whole number from 1 to 100000) adds "Open page N of the public copy" under the source,
+linking the library entry's `public_url` with `#page=N` when its path ends in `.pdf` and it has no fragment (otherwise
+the bare URL, "Open the public copy (page N)"). `build` stops and `content-check` names a page on a source that is not
+in `sources.json`, has no `public_url`, or is above the entry's `pages` (when that is above 0). `data/findings.json`
+carries `page` only when it is set.
+
 Every finding page shows the classification, a confidence label, the event
 date, each source with the first 12 characters of its SHA-256 and its locator,
 limitations, counterevidence, a Corrections section and the
@@ -96,7 +111,19 @@ showing its latest correction date. The starter preview has no such page.
 
 Share previews: every page carries `og:*` and `twitter:card` `summary` tags from its own title and description
 (a finding page: its title and summary, `og:type` `article` with its published/updated times); `og:url` only
-when `site.json.base_url` is set. There is no share image by design and nothing is fetched.
+when `site.json.base_url` is set on non-finding pages. A finding emits `og:url` only for a root HTTPS
+origin (for example `https://example.invalid`, optionally ending in `/`), without credentials, port,
+subpath, query or fragment. Configure that origin for a complete absolute preview; this build does
+not provision one. Accepted non-root base values keep their existing canonical behavior, but no
+finding `og:url` is invented. There is no share image by design and nothing is fetched.
+
+Each finding has a **Share this finding** link to `/findings/<slug>.html`; copy its target with normal
+browser behavior. No clipboard script, send endpoint, tracking or new approval is involved. Preview
+title and description are exactly the validated public title and summary, not private source text.
+A refused rebuild leaves the previous public tree intact: it does not retract an earlier page.
+Removing a finding and successfully rebuilding removes its generated page; slug changes provide no
+redirect or link-durability promise. External approval expiry/revocation and crawler caches remain
+the publication owner's responsibility; rendering neither verifies nor refreshes approval receipts.
 
 ### Agencies, cards and the picker
 
@@ -127,6 +154,13 @@ the build naming `<file>[n].profile.alpr_policy` (and the field); `null` or
 absent shows nothing. `agencies.html` shows "Posted ALPR usage policy (checked
 <date>, where we found it)" on that agency's card only; neither URL is fetched.
 Linking a policy says only that it was posted; it is not a finding about compliance.
+
+An agency's optional `asked` (≤ 20 items) lists what the organizer asked it: `{"topic", "asked_on", "state",
+"updated_on"?, "note"?}`. `topic` ≤ 120 and `note` ≤ 200 plain-text characters; `asked_on`/`updated_on` are real
+YYYY-MM-DD dates not after the build date, `updated_on` not before `asked_on`; `state` is one of `awaiting_response`,
+`acknowledged`, `partly_answered`, `answered`, `declined_in_writing`, `withdrawn`. A bad item stops the build naming
+`content/agencies.json[n].asked[i].<field>`; `content-check` lists every such problem, one line each. Kit agencies
+never carry it. It is shown only on `agencies.html` (docs/AGENCY-CARDS.md), never exported to data or feeds.
 
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
@@ -240,8 +274,18 @@ refuses with `data/sources.json: ...` and writes nothing on any other key or a
 `public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan
-over the output and fails on any hit. The command prints a manifest of every
-written file with its size. Meetings on or after the build date (the typed
+over the output and fails on any hit, and on any site-local `href`/`src` that
+names no written `public/` file or `#fragment` with no matching `id` on its
+target page (`public/<page>: broken link <href>`; external links are never
+fetched). It also runs an accessibility pattern lint (`public/<page>: <code> <detail>`): `img-alt` (no `alt`;
+`alt=""` is fine), `heading-skip` (e.g. `h2→h4`), `link-text` (empty link with no `aria-label`/`title`),
+`duplicate-id` and `html-lang`. It is a pattern lint, not an accessibility audit. The command prints a manifest of every
+written file with its size. `build --budget KB` then prints each page's first-party
+weight (HTML plus site-local stylesheets, preloads, scripts and `img`/`source` files it
+references, each once; on-disk bytes, uncompressed) and exits 3 naming every page over
+`KB*1024` bytes with its three largest assets. Files a script fetches at run time (map
+GeoJSON) are not counted; external hosts are never fetched; a failed `--check` wins.
+Meetings on or after the build date (the typed
 `starts_at` date, no time-zone conversion) are upcoming, soonest first (home: next
 three); `meetings.html` then lists `#past-meetings`, most recent first.
 Every meeting (upcoming, past or cancelled) also gets `meetings/<id>.html`: when,
@@ -325,13 +369,19 @@ repeated `from`, a chain or a loop; a withdrawn finding's path pointed at a diff
 
 ## Brand (`site.json.brand`, optional)
 Example: `{"logo": "logo.png", "logo_alt": "Cedar Valley Watch", "accent": "#b83d2c", "ink": "#092b2d", "favicon": "favicon.ico"}`.
-Every key is optional. `logo` (a PNG or WebP in `content/public-assets/`, plain names, no symlink, no image metadata,
+Every key is optional. `logo` (a PNG, WebP or SVG in `content/public-assets/`, plain names, no symlink, no image metadata,
 1-2000 px each side) shows inside the header's brand link with its own width and height; `logo_alt` (1-120 characters
-of plain text) is required with it. `favicon` (`.ico` or a metadata-free `.png`) adds `<link rel="icon">` to every
+of plain text) is required with it. `favicon` (`.ico`, a metadata-free `.png` or an `.svg`) adds `<link rel="icon">` to every
 page. `accent` and `ink` (`#rrggbb`, stored lowercase) append one `:root{--coral:…;--ink:…}` rule to `style.css` for
 the keys set. The build checks WCAG 2.x contrast of at least 4.5:1 for `ink` on cream (`#fff8ec`) and paper
-(`#f3eee4`) and `accent` on cream, and refuses with the field, the pair and the ratio. SVG logos and favicons are
-refused until the SVG safety check exists. A missing, misnamed, oversize or unreadable file, an unknown key or a bad
+(`#f3eee4`) and `accent` on cream, and refuses with the field, the pair and the ratio. A logo or favicon may also be
+an `.svg` that passes the same SVG safety check as any public asset (no `DOCTYPE`/entity, `script`, `foreignObject`,
+`on*` handler, link, `url()` or external reference; a refusal names the kinds, never the value). Its size is the
+root's numeric `width` and `height` (unitless or `px`), else the root `viewBox` (four numbers, width and height above
+zero, rounded to whole pixels); percent, `em`, other units or neither readable is refused as `unreadable SVG (no
+readable width and height)`. A logo is 1-2000 px each side as for PNG; it is always an `<img>` (never inline SVG)
+and an SVG favicon is `<link rel="icon" type="image/svg+xml">`. The CSP is unchanged (`img-src 'self'` covers it).
+A missing, misnamed, oversize or unreadable file, an unknown key or a bad
 colour is refused by field name (the value is never printed); `content-check` lists the same lines. Without `brand`
 every built file is byte-identical.
 

@@ -19,8 +19,8 @@ PRIVACY = (("email", privacy.EMAIL), ("phone", privacy.PHONE), ("url", re.compil
            ("plate", privacy.PLATE), ("hex", re.compile(r"[0-9a-f]{32,}", re.I)))
 FINDING_KEYS = {"finding_id", "topic", "claim_class", "rating", "text", "cites", "review"}
 TOP_KEYS = {"schema_version", "slug", "agency", "run_date", "header", "author_family", "verifier_family", "findings"}
-def text_rules(text, vigilant_only):  # categories that refuse publication; GATED is banned even with a quote (PLAN §3)
-    cats = [name for name, rx in ((("always", compare.ALWAYS), ("gated", compare.GATED)) + PRIVACY) if rx.search(text)]
+def text_rules(text, vigilant_only):  # categories that refuse publication; quote-gated wording is a note, not a refusal (DF-4 ruling 1)
+    cats = [name for name, rx in (("always", compare.ALWAYS),) + PRIVACY if rx.search(text)]
     return cats + (["vendor"] if vigilant_only and compare.FLOCK.search(text) else [])
 def matches(pattern, value):
     return isinstance(value, str) and bool(re.fullmatch(pattern, value))
@@ -108,6 +108,7 @@ def derive(run, site_slug, new=False, recheck=False):  # export's checks and doc
         out.append({"finding_id": f["finding_id"], "topic": f["topic"], "claim_class": f["claim_class"], "rating": "strong",
                     "text": text, "cites": cites,
                     "review": {"status": "pending", "approved_by": "", "approved_on": "", "approval_ref": ""}})
+    flags = claim_notes(out)  # DF-4 alert-only: the entry is still exported, pending; its human approval is the gate
     if not out:
         return 1, lines + ["exported=0 refused=%d" % len(lines)], None
     meta = json.loads((run / "RUN.json").read_text(encoding="utf-8"))
@@ -115,7 +116,10 @@ def derive(run, site_slug, new=False, recheck=False):  # export's checks and doc
     doc = {"schema_version": 1, "slug": site_slug, "agency": agency.name, "run_date": run.name, "header": HEADLINE,
            "author_family": meta["author_provider"].strip().lower(), "verifier_family": signed["verifier_provider"].strip().lower(),
            "findings": out}
-    return 0, lines + ["exported=%d refused=%d" % (len(out), len(lines))], doc
+    return 0, lines + flags + ["exported=%d refused=%d" % (len(out), len(lines))], doc
+def claim_notes(findings):  # DF-4: review-required notes naming the finding id and rules, never the text; not errors
+    return privacy.review_notes([("finding %s" % (f["finding_id"] if isinstance(f, dict) and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", str(f.get("finding_id"))) else "#%d" % n), f.get("text") if isinstance(f, dict) else None)
+                                 for n, f in enumerate(findings, 1)], compare.GATED)
 def export(run, site_slug):
     code, lines, doc = derive(run, site_slug, new=True)
     print("".join(line + "\n" for line in lines[:-1]), end="")
@@ -212,7 +216,7 @@ def check(path, run=None, logged=None):
     notes, moved = drift(doc, run) if run and not errs else ([], [])
     errs += history(doc, run) if run and not errs and not moved else []
     last = "findings=%d approved=%d errors=%d" % (len(doc["findings"]), approved, len(errs + moved))
-    print("\n".join(notes + errs + moved + [last + (" drift=%d" % len(moved) if run else "")]))
+    print("\n".join(notes + claim_notes(doc["findings"]) + errs + moved + [last + (" drift=%d" % len(moved) if run else "")]))
     return 1 if errs or moved else 0
 def stage(run):  # RF1130-3 -> (stage, counts); check's per-entry lines are captured, never printed
     if not (run / "PUBLISH.json").exists():
@@ -227,8 +231,11 @@ def stage(run):  # RF1130-3 -> (stage, counts); check's per-entry lines are capt
     counts = (n["findings"], n["findings"] - n["approved"], n["approved"], n["errors"])
     return ("invalid" if n["errors"] > n["drift"] else "drifted" if n["drift"] else "pending" if not n["approved"]
             else "approved" if n["approved"] == n["findings"] else "partly-approved"), counts
-def status(store):  # RF1130-3: one publication-stage line per verified run (agencies/*/runs/*), read-only
+def status(store, as_json=False):  # RF1130-3: one publication-stage line per verified run (agencies/*/runs/*), read-only
+    schema, note = "flock-publish-status-v1", "review-required; G decides any site use"  # RF0910-11: --json, same rows and exit
     if (store / "agencies").is_symlink() or not (store / "agencies").is_dir():
+        if as_json:
+            return print(json.dumps({"error": "no agencies folder", "schema": schema}, sort_keys=True)) or 2
         return print("status: no agencies folder", file=sys.stderr) or 2
     name, rows = lambda p: p.name if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", p.name) else "?", []  # noqa: E731
     for agency in sorted(store.joinpath("agencies").iterdir()):
@@ -242,10 +249,15 @@ def status(store):  # RF1130-3: one publication-stage line per verified run (age
             elif run.is_dir() and (run / "VERIFY.json").exists():  # earlier stages belong to flock_sweep
                 rows.append((name(agency), name(run)) + stage(run))
     tally, line = collections.Counter(row[2] for row in rows), "publish | %s | %s | %s | findings=%s pending=%s approved=%s errors=%s"
+    stages, code = ("no-export", "invalid", "drifted", "pending", "partly-approved", "approved"), 1 if tally["invalid"] or tally["drifted"] or tally["link-refused"] else 0
+    if as_json:  # counts are integers, or null where the text shows "-"; link_refused is a JSON-only total
+        keys = ("agency", "run", "stage", "findings", "pending", "approved", "errors")
+        totals = {"runs": len(rows), **{k.replace("-", "_"): tally[k] for k in stages + ("link-refused",)}}
+        doc = {"schema": schema, "runs": [dict(zip(keys, row[:3] + (row[3] or (None,) * 4))) for row in rows], "totals": totals, "note": note}
+        return print(json.dumps(doc, sort_keys=True, ensure_ascii=False)) or code
     print("".join(line % (row[:3] + (row[3] or ("-",) * 4)) + "\n" for row in rows), end="")
-    print("publish | runs=%d %s | review-required; G decides any site use" % (len(rows), " ".join("%s=%d" % (
-        k.replace("-", "_"), tally[k]) for k in ("no-export", "invalid", "drifted", "pending", "partly-approved", "approved"))))
-    return 1 if tally["invalid"] or tally["drifted"] or tally["link-refused"] else 0
+    print("publish | runs=%d %s | %s" % (len(rows), " ".join("%s=%d" % (k.replace("-", "_"), tally[k]) for k in stages), note))
+    return code
 def recheck(run, today, dry):  # DF1537-10: approved entries citing a disputed, missing or expired fact -> needs-review (exit 3)
     target, buf = run / "PUBLISH.json", io.StringIO()
     if target.is_symlink() or not target.is_file():
@@ -276,7 +288,7 @@ def gate(run):  # check's lines are captured (ids and rules only) -> (failed, li
     with contextlib.redirect_stdout(buf):
         failed = check(target, run)
     return failed, buf.getvalue().splitlines(), None if failed else json.loads(target.read_text(encoding="utf-8"))
-def change(run, a):  # DF1537-11 withdraw/correct: approved or needs-review -> withdrawn/superseded; change-log row first
+def change(run, a, dry=False):  # DF1537-11 withdraw/correct: approved or needs-review -> withdrawn/superseded; change-log row first
     log, status, replaced = run / CHANGES, "withdrawn" if a.command == "withdraw" else "superseded", ""
     failed, lines, doc = gate(run)
     errs = lines if failed else []
@@ -300,7 +312,9 @@ def change(run, a):  # DF1537-11 withdraw/correct: approved or needs-review -> w
             else ["--replaced-by: text equals the old text"] if compare.squash(other["text"]) == compare.squash(entry["text"]) else []
         replaced = "%s:%s" % (new.name, new_id)
     if errs:
-        return print("\n".join(errs + ["%s refused | nothing written" % a.command])) or 1
+        return print("\n".join(errs + ["%s refused | nothing written%s" % (a.command, " (dry run)" if dry else "")])) or 1
+    if dry:  # RF0910-10: every check above ran; no open, truncate, unlink or write is reached
+        return print("would %s | %s | %s%s\ndry run | nothing written" % (status, short(a.finding), "by %s | " % replaced if replaced else "", a.on)) or 0
     row, before = io.StringIO(), log.read_bytes() if log.exists() else None
     csv.writer(row, lineterminator="\n").writerows(([] if before else [CHANGE_HEADER]) + [[a.finding, a.command, a.on, a.by, a.approval_ref, replaced]])
     with os.fdopen(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600), "ab") as out: out.write(row.getvalue().encode())  # noqa: E701
@@ -320,21 +334,23 @@ def main(argv=None):
     parser.add_argument("--copy"); parser.add_argument("--out")  # stage only (NB-DF-17, tools/flock_publish_stage.py)
     parser.add_argument("--agency"); parser.add_argument("--against")  # brief only (DF1537-12, flock_publish_brief.py; --out | --against FILE)
     parser.add_argument("--today"); parser.add_argument("--dry-run", action="store_true")  # recheck (DF1537-10) or stage without --out (RF0310-7)
+    parser.add_argument("--json", action="store_true")  # status only (RF0910-11)
     for flag in ("--finding", "--on", "--by", "--approval-ref", "--replaced-by"): parser.add_argument(flag)  # noqa: E701 - DF1537-11
     args = parser.parse_args(argv)
-    usage = ("usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR] | status STORE | stage RUNDIR --copy FILE --out DIR"
+    usage = ("usage: export RUNDIR --site-slug S | --check FILE [--run RUNDIR] | status STORE [--json] | stage RUNDIR --copy FILE --out DIR"
              " | stage RUNDIR --copy FILE --dry-run | brief STORE --agency SLUG --out FILE|--against FILE | recheck RUNDIR [--today YYYY-MM-DD] [--dry-run]"
-             " | withdraw RUNDIR --finding ID --on D --by NAME --approval-ref REF | correct RUNDIR --finding ID --replaced-by NEWRUNDIR:NEWID"
-             " --on D --by NAME --approval-ref REF")
+             " | withdraw RUNDIR --finding ID --on D --by NAME --approval-ref REF [--dry-run] | correct RUNDIR --finding ID --replaced-by NEWRUNDIR:NEWID"
+             " --on D --by NAME --approval-ref REF [--dry-run]")
     changing = args.command in ("withdraw", "correct") and args.rundir and None not in (args.finding, args.on, args.by, args.approval_ref) and \
         (args.replaced_by is None) == (args.command == "withdraw") and (args.check, args.run, args.site_slug, args.copy, args.out, args.agency) == (None,) * 6
     if (args.finding, args.on, args.by, args.approval_ref, args.replaced_by) != (None,) * 5 and not changing: parser.error(usage)  # noqa: E701
     rechecking = args.command == "recheck" and args.rundir and (args.check, args.run, args.site_slug, args.copy, args.out, args.agency) == (None,) * 6
     staging = args.command == "stage" and args.rundir and args.copy and (args.out is None) == args.dry_run and (args.check, args.run, args.site_slug) == (None,) * 3
-    if args.today is not None and not rechecking or args.dry_run and not (rechecking or staging) or rechecking and args.today is not None and not iso_day(args.today):
+    if args.today is not None and not rechecking or args.dry_run and not (rechecking or staging or changing) or rechecking and args.today is not None and not iso_day(args.today):
         parser.error(usage)
     checking = args.check and args.run != "" and not (args.command or args.rundir or args.site_slug)
     listing = args.command == "status" and args.rundir and (args.check, args.run, args.site_slug) == (None,) * 3
+    if args.json and not listing: parser.error(usage)  # noqa: E701
     briefing = args.command == "brief" and args.rundir and args.agency and bool(args.out) != bool(args.against) and \
         (args.check, args.run, args.site_slug, args.copy) == (None,) * 4 and None in (args.out, args.against)  # exactly one of --out/--against
     if (args.copy is not None or args.out is not None) and not (staging or briefing) or (args.agency, args.against) != (None, None) and not briefing: parser.error(usage)  # noqa: E701,E501
@@ -350,14 +366,14 @@ def main(argv=None):
         if rechecking:
             return recheck(run, args.today or datetime.date.today().isoformat(), args.dry_run)
         if changing:
-            return change(run, args)
+            return change(run, args, args.dry_run)
         if staging or briefing:  # loaded only for its verb; --out/--copy are refused inside the same repository root
             spec = importlib.util.spec_from_file_location("_flock_publish_" + args.command, Path(__file__).resolve().with_name("flock_publish_%s.py" % args.command))
             spec.loader.exec_module(verb := importlib.util.module_from_spec(spec))
             if briefing and args.against:  # RF0450-10: read-only, exit 0 current / 3 drifted
                 return verb.against(run, args.agency, args.against, verify_tool.REPO)
             return verb.brief(run, args.agency, args.out, verify_tool.REPO) if briefing else verb.stage(run, args.copy, args.out, verify_tool.REPO, args.dry_run)
-        return status(run) if listing else check(args.check, run) if checking else export(run, args.site_slug)
+        return status(run, args.json) if listing else check(args.check, run) if checking else export(run, args.site_slug)
     except (OSError, ValueError) as exc:  # the class only, never a path or record text
         return print("io: %s" % type(exc).__name__) or 1
 if __name__ == "__main__":

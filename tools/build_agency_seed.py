@@ -292,6 +292,25 @@ COMPLETE_COUNTIES = {
 }
 
 
+# UC and CSU campus police (kind campus_police, opt-in only): (county_fips, system, campus, display name).
+# Contributor knowledge, unverified; campus records offices differ from city/county ones.
+_UC = ("Berkeley", "06001"), ("Davis", "06113"), ("Irvine", "06059"), ("Los Angeles", "06037"), \
+    ("Merced", "06047"), ("Riverside", "06065"), ("San Diego", "06073"), ("San Francisco", "06075"), \
+    ("Santa Barbara", "06083"), ("Santa Cruz", "06087")
+_CSU = ("Bakersfield", "06029"), ("Channel Islands", "06111"), ("Chico", "06007"), ("Dominguez Hills", "06037"), \
+    ("East Bay", "06001"), ("Fresno", "06019"), ("Fullerton", "06059"), ("Humboldt", "06023"), \
+    ("Long Beach", "06037"), ("Los Angeles", "06037"), ("Maritime Academy", "06095"), ("Monterey Bay", "06053"), \
+    ("Northridge", "06037"), ("Pomona", "06037"), ("Sacramento", "06067"), ("San Bernardino", "06071"), \
+    ("San Diego", "06073"), ("San Francisco", "06075"), ("San José", "06085"), ("San Luis Obispo", "06079"), \
+    ("San Marcos", "06073"), ("Sonoma", "06097"), ("Stanislaus", "06099")
+CAL_POLY = {"Humboldt": "Cal Poly Humboldt", "Pomona": "Cal Poly Pomona", "San Luis Obispo": "Cal Poly"}
+CAMPUSES = [(fips, "UC", campus, f"University of California, {campus} Police Department") for campus, fips in _UC] + [
+    (fips, "CSU", campus, CAL_POLY.get(campus, "California State University, " + campus)
+     + " University Police Department") for campus, fips in _CSU]
+CAMPUS_NOTE = ("UC/CSU campus police department; seeded from contributor knowledge; "
+               "submit to the campus records office, verify")
+
+
 def slugify(text):
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     text = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -336,6 +355,13 @@ def county_agencies(fips, name, slug):
     ]
 
 
+def campus_agencies(fips, slug):
+    """Campus police for county ``fips`` in CAMPUSES order (``slug`` is the county slug, kept for symmetry)."""
+    return [agency(f"{STATE}-{slugify(system + ' ' + campus)}-campus-police", name, "campus_police",
+                   f"{system} ({campus})", sources=[source(CAMPUS_NOTE)])
+            for row_fips, system, campus, name in CAMPUSES if row_fips == fips]
+
+
 def city_agencies(city, policing, overlay):
     slug = slugify(city)
     body = "Town" if city in TOWNS else "City"
@@ -368,6 +394,7 @@ def build(overlay=None):
     for fips, name, seat, cities in COUNTIES:
         slug = slugify(name)
         agencies = county_agencies(fips, name, slug)
+        agencies.extend(campus_agencies(fips, slug))
         for city, policing in cities:
             agencies.extend(city_agencies(city, policing, overlay))
         counties.append({"county_fips": fips, "name": name, "seat": seat, "agencies": agencies})
@@ -388,6 +415,12 @@ def check_tables():
             raise ValueError(f"duplicate city in {name}")
     if fips_seen != expected:
         raise ValueError(f"county fips mismatch: {sorted(expected ^ fips_seen)}")
+    campuses = [(system, campus) for _fips, system, campus, _name in CAMPUSES]
+    if len(set(campuses)) != len(campuses):
+        raise ValueError("duplicate campus row")
+    for fips, system, campus, _name in CAMPUSES:
+        if fips not in fips_seen:
+            raise ValueError(f"campus {system} {campus}: {fips} is not a county fips")
     for county in build()["counties"]:
         for entry in county["agencies"]:
             if entry["agency_id"] in ids:

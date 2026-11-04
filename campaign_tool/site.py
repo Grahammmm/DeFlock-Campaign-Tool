@@ -18,11 +18,13 @@ import tempfile
 from datetime import date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
+from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import CITY_KINDS, MAX_GEOJSON_BYTES, ContentError, _read_json, load_content, utc_moment
+from .content import CITY_KINDS, MAX_GEOJSON_BYTES, TRANSPARENCY_FIELDS, ContentError, _read_json, load_content, utc_moment
 from .corrections_policy import policy_html
+from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, KIND_LABELS, html_text
 from .markdown_lite import render as markdown
 from .shell import render
@@ -34,7 +36,7 @@ ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
-                       "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+                       "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies",
                        "_redirects", "methods.html"}
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
@@ -95,7 +97,7 @@ window.findingFilter={apply:apply};})();
 PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
                          "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
                          "counterevidence", "corrections", "url")
-PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id")
+PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page")
 PUBLIC_CORRECTION_FIELDS = ("date", "note")
 PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
 # data/sources.json (DF1822-14): the source library as open data; never note, fragment or a full sha256.
@@ -136,6 +138,7 @@ body,.topbar,.campaign-banner,.site-footer,.finding-list li,.notice,.source-tabl
 .section{padding:0 0 1rem;max-width:none}a{color:#000}
 a[href^="http"]::after{content:" (" attr(href) ")";font-size:.85em;overflow-wrap:anywhere}
 .finding-body h3,.source-table li,.meeting-list article,.agency-document-group{break-inside:avoid}h2,h3{break-after:avoid}
+.packet-finding{break-inside:avoid-page}.packet-finding+.packet-finding{break-before:auto}
 details::details-content{content-visibility:visible;display:block}details>summary{list-style:none}
 }
 """
@@ -183,6 +186,19 @@ def _one_line(text):
     return " ".join(str(text).split())
 
 
+def finding_path(finding):
+    """Existing root-relative route; the content loader validates the slug."""
+    return f'/findings/{finding["slug"]}.html'
+
+
+def _preview_origin(base):
+    """Only a validated root HTTPS origin can identify an absolute finding URL."""
+    parts = urlsplit(base)
+    return (parts.scheme == "https" and bool(parts.hostname)
+            and parts.netloc.lower() == parts.hostname and parts.path in ("", "/")
+            and not parts.query and not parts.fragment and "?" not in base and "#" not in base)
+
+
 def short_hash(sha256):
     return sha256[:12]
 
@@ -203,6 +219,18 @@ def policy_line(policy):  # links a posted ALPR usage policy an organizer found;
             'rel="noopener noreferrer">where we found it</a>)</p>')
 
 
+ASKED_SENTENCES = {"awaiting_response": "No written response recorded as of{day}.", "answered": "Answered{day}.",
+                   "acknowledged": "Acknowledged{day}; no records yet.", "partly_answered": "Partly answered{day}.",
+                   "declined_in_writing": "Declined in writing{on}.", "withdrawn": "We withdrew this request{day}."}
+
+
+def asked_sentence(item, today):
+    """Plain-text state sentence for one asked item; awaiting with no update uses the build date."""
+    when = item.get("updated_on") or (today.isoformat() if item["state"] == "awaiting_response" else "")
+    day, on = (f" {date_label(when)}", f" on {date_label(when)}") if when else ("", "")
+    return ASKED_SENTENCES[item["state"]].format(day=day, on=on)
+
+
 OUTCOME_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
                   "amended": "Approved with amendments", "no_action": "No action taken",
                   "informational": "Informational item only"}
@@ -217,6 +245,16 @@ COPY_HOWTO = ('<p class="copy-howto" id="check-a-copy"><strong>How to check a co
               'compute its SHA-256 with <code>sha256sum FILE</code> (Linux), <code>shasum -a 256 FILE</code> (macOS) or '
               '<code>Get-FileHash FILE</code> (Windows PowerShell). If the result starts with the record number, it is '
               'the same file.</p>')
+
+
+def page_link(entry, page):
+    """DF2037-04: 'Open page N of the public copy' (``#page=N`` on a PDF path without a fragment); "" without page."""
+    if page is None or not entry or not entry.get("public_url"):
+        return ""
+    url, parts = entry["public_url"], urlsplit(entry["public_url"])
+    if parts.path.lower().endswith(".pdf") and not parts.fragment and "#" not in url:
+        return f'<p class="record-page"><a href="{e(f"{url}#page={page}")}" rel="noopener noreferrer">Open page {page} of the public copy</a></p>'
+    return f'<p class="record-page"><a href="{e(url)}" rel="noopener noreferrer">Open the public copy (page {page})</a></p>'
 
 
 def copy_status(source):
@@ -311,6 +349,7 @@ class Site:
         qualifying = {f["agency_id"] for f in model["findings"]} | {s["agency_id"] for s in model["sources"]}
         self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
                               for a in model["agencies"] if a["agency_id"] in qualifying}
+        self.timeline = timeline_events(model, self.today, self._agency_pages)
 
     def agency_pages(self):
         """``{agency_id: "/agencies/<slug>.html"}`` for agencies with findings or sources, model order."""
@@ -341,6 +380,7 @@ class Site:
         links += "".join(  # content pages with nav: true (DF2237-07), after About, labelled by their own title
             f'<a href="/{page["slug"]}.html"' + (' aria-current="page"' if current == "page:" + page["slug"] else "")
             + f'>{e(page["title"])}</a>' for page in self.model.get("pages", []) if page["nav"])
+        links += '<a href="/timeline.html"' + (' aria-current="page"' if current == "timeline" else "") + ">Timeline</a>"
         return f'<nav class="site-nav" aria-label="{self.t("nav.label")}">{links}</nav>'
 
     def header(self, current):
@@ -374,9 +414,11 @@ class Site:
 
     def share(self, title, description, path, kind, published, modified):
         """Open Graph + Twitter summary tags from the page's own text; no image, og:url only with base_url."""
-        tags = [("property", "og:site_name", self.name), ("property", "og:title", e(_one_line(title))),
-                ("property", "og:description", e(_one_line(description))), ("property", "og:type", kind)]
-        if self.base:
+        tags = [("property", "og:site_name", self.name),
+                ("property", "og:title", e(title if kind == "article" else _one_line(title)).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")),
+                ("property", "og:description", e(description if kind == "article" else _one_line(description)).replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#9;")),
+                ("property", "og:type", kind)]
+        if self.base and (kind != "article" or _preview_origin(self.base)):
             tags.append(("property", "og:url", e(self.base + path)))
         tags += [("name", "twitter:card", "summary"), ("name", "twitter:title", e(_one_line(title))),
                  ("name", "twitter:description", e(_one_line(description)))]
@@ -393,7 +435,8 @@ class Site:
         extra = "".join(f'  <link rel="stylesheet" href="{href}">\n' for href in stylesheets)
         extra += "".join(f'  <script defer src="{src}"></script>\n' for src in scripts)
         favicon = self.site.get("brand", {}).get("favicon")
-        icon = f'  <link rel="icon" href="/{e(favicon)}">\n' if favicon else ""
+        svg_icon = ' type="image/svg+xml"' if favicon and favicon.lower().endswith(".svg") else ""
+        icon = f'  <link rel="icon"{svg_icon} href="/{e(favicon)}">\n' if favicon else ""
         return ('  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
                 f'  <meta name="description" content="{e(description)}">\n'
                 + (self.share(title, description, path, kind, published, modified) if index
@@ -430,7 +473,7 @@ class Site:
                  f' data-year="{e(finding["event_date"][:4])}"' if filter_attrs else "")
         return (f'<li{attrs}><div class="finding-meta">{self.pill(finding["classification"])}'
                 f'<span>{self.confidence_link(finding["confidence"])}</span><span>{self.t("finding.event_date", date=date_label(finding["event_date"]))}</span>{corrected}</div>'
-                f'<h3><a href="/findings/{e(finding["slug"])}.html">{e(finding["title"])}</a></h3><p>{e(finding["summary"])}</p></li>')
+                f'<h3><a href="{e(finding_path(finding))}">{e(finding["title"])}</a></h3><p>{e(finding["summary"])}</p></li>')
 
     def findings_list(self, findings, empty=None, filter_attrs=False):
         if not findings:
@@ -510,8 +553,10 @@ class Site:
                 f'<p class="eyebrow">{self.t("eyebrow.agency_profile")}</p><h3 id="city-name"></h3>'
                 '<p class="city-meta"><span class="status-pill" id="city-status"></span> <span class="city-vendor" id="city-vendor"></span> '
                 '<span id="city-camera-count" hidden></span></p><p class="city-summary" id="city-summary"></p>'
-                '<ul class="city-facts" id="city-facts"></ul><p><a class="text-link" id="city-records-link" href="sources.html#library"></a> <a class="text-link" id="city-flock-link" rel="noopener noreferrer" hidden>'
-                f'{self.t("agency.flock_portal")}</a></p></div><aside class="city-watch"><p class="eyebrow">{self.t("eyebrow.open_questions")}</p><p id="city-open"></p>'
+                '<ul class="city-facts" id="city-facts"></ul><p><a class="text-link" id="city-records-link" href="sources.html#library">' + e(self.site["source_link_label"]) + '</a> <a class="text-link" id="city-flock-link" rel="noopener noreferrer" hidden>'
+                f'{self.t("agency.flock_portal")}</a> <a class="text-link" id="city-agency-link"'
+                + (f' data-label="{self.t("agency.page")}"' if self.agency_pages() else '')
+                + f' hidden></a></p></div><aside class="city-watch"><p class="eyebrow">{self.t("eyebrow.open_questions")}</p><p id="city-open"></p>'
                 '<div class="policy-flags" id="city-flags"></div></aside></article>')
 
     def map_section(self):
@@ -557,6 +602,26 @@ class Site:
                 + f' ({self.t("agency.checked", date=date_label(contract["checked_on"]))} <a href="{e(contract["source_url"])}" '
                   f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>')
 
+    def transparency_block(self, agency, heading="h4"):
+        """Newest organizer-transcribed portal snapshot, as the vendor reported it, with change since the previous one."""
+        snapshots = agency.get("transparency")
+        if not snapshots:
+            return ""
+        newest, previous, lines = snapshots[0], (snapshots[1:] or [{}])[0], []
+        for key in TRANSPARENCY_FIELDS:
+            if newest[key] is None:
+                continue
+            line, before = self.t(f"agency.transparency_{key}", count=newest[key]), previous.get(key)
+            if before is not None:
+                change = newest[key] - before
+                word = "up" if change > 0 else "down" if change < 0 else "same"
+                line += f' ({self.t("agency.transparency_" + word, count=abs(change), date=time_tag(previous["checked_on"]))})'
+            lines.append(f"<li>{line}</li>")
+        return (f'<section class="agency-transparency"><{heading}>{self.t("agency.transparency_heading")}</{heading}>'
+                + (f'<ul>{"".join(lines)}</ul>' if lines else "")
+                + f'<p><a href="{e(newest["source_url"])}" rel="noopener noreferrer">'
+                + self.t("agency.transparency_checked", date=time_tag(newest["checked_on"])) + '</a></p></section>')
+
     def contracts_section(self):  # contracts ending in [build date, +180 days], soonest first; "" when none
         first, last = self.today.isoformat(), (self.today + timedelta(days=180)).isoformat()
         soon = sorted((a for a in self.model["agencies"] if a["contract"] and first <= a["contract"]["end"] <= last),
@@ -567,12 +632,14 @@ class Site:
                 f'<h2>{self.t("heading.contracts")}</h2></div></div><ul class="contract-list">{items}</ul></section>\n') if soon else ""
 
     # -- pages ---------------------------------------------------------------
+    def timeline_html(self):
+        return self.page("timeline", "Timeline", "Public campaign dates", "/timeline.html", render_timeline(self, self.timeline))
 
     def index_html(self):
         mission = self.md(self.site["mission_md"]) if self.site["mission_md"] else ('<div class="mission-grid">' + "".join(
             f'<article><span>0{n}</span><h3>{self.t(f"intro.step{n}_title")}</h3><p>{self.t(f"intro.step{n}")}</p></article>'
             for n in (1, 2, 3)) + '</div>')
-        cards = (f'    <section class="section cities-section" id="agencies"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
+        cards = (f'    <section class="section cities-section" id="agencies"><div class="section-heading" id="content"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
                  f'<h2>{self.t("heading.agencies_home")}</h2></div><p>{self.t("intro.agencies_home")} '
                  f'<a href="/agencies.html">{self.t("intro.full_agency_list")}</a>.</p></div>'
                  + ('' if self.map else '<div class="city-panel-static">' + self.picker() + '</div>')
@@ -604,6 +671,20 @@ class Site:
             links.append(f'<a href="{e(agency["flock_transparency_url"])}" rel="noopener noreferrer">{self.t("agency.flock_portal")}</a>')
         return links
 
+    def agency_blocks(self, agency, findings):
+        """Confirmed / not known / asked, from organizer content only; awaiting with no update → the build date."""
+        profile, asked = agency["profile"], []
+        confirmed = [e(fact) for fact in profile["facts"]] + [f"{len(findings)} published finding(s) with sources"] * bool(findings)
+        unknown = [e(text) for text in [profile["open"]] * bool(profile["open"]) + profile["flags"]]
+        for item in sorted(agency.get("asked", []), key=lambda row: row["asked_on"], reverse=True):
+            asked.append(f'{e(item["topic"])} — asked {date_label(item["asked_on"])}. ' + e(asked_sentence(item, self.today))
+                         + (f' {e(item["note"])}' if item.get("note") else ""))
+        return "".join(f'<section class="agency-block"><h4>{title}</h4>' + (
+            "<ul>" + "".join(f"<li>{value}</li>" for value in values) + "</ul>" if values else f"<p>{empty}</p>") + "</section>"
+            for title, values, empty in (("What is confirmed", confirmed, "Nothing is confirmed by a published finding yet."),
+                                         ("What is not known", unknown, "Nothing listed yet."),
+                                         ("What we asked", asked, "No request is listed for this agency yet.")))
+
     def agencies_html(self):
         articles = []
         for agency in self.model["agencies"]:
@@ -619,10 +700,11 @@ class Site:
             body = (f'<p class="eyebrow">{self.t("kind." + agency["kind"])}</p><h3>{e(agency["name"])}</h3>'
                     f'<p>{e(agency["jurisdiction_name"])}</p><p><span class="status-pill">{e(agency["profile"]["status"])}</span></p>'
                     + (f'<p>{e(agency["profile"]["summary"])}</p>' if agency["profile"]["summary"] else "")
+                    + self.agency_blocks(agency, findings)
                     + (f'<p>{self.t("agency.findings", count=len(findings))} ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
-                    + self.contract_line(agency["contract"])
+                    + self.contract_line(agency["contract"]) + self.transparency_block(agency)
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
@@ -669,7 +751,7 @@ class Site:
                 + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
-                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.who_decides(aid)
+                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.transparency_block(agency, "h3") + self.who_decides(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
@@ -688,12 +770,43 @@ class Site:
                  if form else "")
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.findings")}</p>'
                 f'<h2>{self.t("heading.findings")}</h2></div><p>{self.t("intro.findings")} <a href="/feed.xml">{self.t("intro.atom_feed")}</a> · '
-                f'<a href="/data/findings.json" type="application/json">{self.t("intro.open_data")}</a>.</p>'
+                f'<a href="/data/findings.json" type="application/json">{self.t("intro.open_data")}</a> · <a href="/findings/packet-all.html">Printable packet</a>.</p>'
                 '<p><a href="/methods.html">How to read our findings</a> defines each classification and confidence label.</p></div>'
                 f'{form}{self.findings_list(self.model["findings"], filter_attrs=True)}{empty}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", self.labels["title.findings"], self.labels["title.findings_description"], "/findings/", main,
                          ["/findings/filter.js"] if form else [])
+
+    def packet_html(self):
+        findings = self.model["findings"]
+        contents = ''.join(f'<li><a href="#f-{e(f["slug"])}">{e(f["title"])}</a></li>' for f in findings)
+        articles = []
+        for f in findings:
+            sources = []
+            for source in f["sources"]:
+                fragment = self.fragment_for_sha.get(source["sha256"])
+                title = e(source["title"])
+                if fragment:
+                    title = f'<a href="/sources.html#{e(fragment)}">{title}</a>'
+                rule = f' · rule {e(source["rule_id"])}' if source.get("rule_id") else ''
+                sources.append(f'<li>{title} · sha256 {e(short_hash(source["sha256"]))} · {e(source["locator"])}{rule}</li>')
+            agency = self.agencies_by_id.get(f["agency_id"])
+            agency_line = (f'<p>Agency: <a href="{e(self.agency_pages().get(agency["agency_id"], "/agencies.html#" + agency["slug"]))}">{e(agency["name"])}</a></p>' if agency else '')
+            limits = ''.join(f'<li>{e(item)}</li>' for item in f["limitations"]) or '<li>None stated.</li>'
+            corrections = ''.join(f'<li>{time_tag(c["date"])}: {e(c["note"])}</li>' for c in sorted(f["corrections"], key=lambda c: c["date"]))
+            corrections = f'<ul>{corrections}</ul>' if corrections else f'<p>{self.t("notice.no_corrections")}</p>'
+            updated = f' · Updated {date_label(f["updated_at"])}' if f["updated_at"] else ''
+            url = self.base + f'/findings/{f["slug"]}.html'
+            articles.append(f'<article class="packet-finding" id="f-{e(f["slug"])}"><h3>{e(f["title"])}</h3>'
+                f'<p>{self.pill(f["classification"])} · {self.confidence_link(f["confidence"])} · {time_tag(f["event_date"])} · '
+                f'Published {date_label(f["published_at"])}{updated}</p><p>{e(f["summary"])}</p>{agency_line}'
+                f'<h4>Sources</h4><ul>{"".join(sources)}</ul><h4>Limitations</h4><ul>{limits}</ul>'
+                f'<h4>Corrections</h4>{corrections}<p>Finding {e(f["id"])} · <a href="{e(url)}">{e(url)}</a></p></article>')
+        main = (f'<section class="section" id="content"><h2>Findings packet</h2><p>As of {e(self.today.isoformat())} · '
+                f'{len(findings)} published findings · print or save as PDF</p>'
+                + (f'<ol>{contents}</ol>{"".join(articles)}' if findings else f'<p>{self.t("notice.no_findings")}</p>')
+                + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("findings", "Findings packet", "Every published finding on one printable page", "/findings/packet-all.html", main)
 
     def related_findings(self, finding, limit=5):
         """Up to `limit` other published findings with the same (non-empty) agency_id or a shared cited sha256, as
@@ -742,7 +855,8 @@ class Site:
             sentence, record = source_line(entry, source, owner.get("name"))
             number = f'{self.t("sources.record_no")} <code>{record}</code>'
             number = f'<a href="/sources.html#{e(fragment)}">{number}</a>' if fragment else number
-            sources.append(f'<li><p>{sentence}</p><p class="record-no">{number}{copy_status(entry)}</p></li>')
+            sources.append(f'<li><p>{sentence}</p>{page_link(entry, source.get("page"))}'
+                           f'<p class="record-no">{number}{copy_status(entry)}</p></li>')
         corrections = ("".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time>: {e(c["note"])}</li>' for c in finding["corrections"])
                        or f'<li>{self.t("notice.no_corrections")}</li>')
         agency = self.agencies_by_id.get(finding["agency_id"])
@@ -767,6 +881,7 @@ class Site:
                 f'<span>{self.t("finding.event_date", date=when(finding))}</span>'
                 f'<span>{self.t("finding.published", date=date_label(finding["published_at"]))}{updated}</span></div>'
                 f'<h2>{e(finding["title"])}</h2><p><strong>{e(finding["summary"])}</strong></p>{agency_line}'
+                f'<p><a href="{e(finding_path(finding))}">Share this finding</a></p>'
                 + (self.md(finding["body_md"]) if finding["body_md"] else "")
                 + f'<h3>{self.t("finding.sources")}</h3><ul class="source-table">{"".join(sources)}</ul>'
                 + f'<p class="provenance-note">{e(EXPLAINER)}</p>' + self.legal_basis(finding)
@@ -775,7 +890,7 @@ class Site:
                 + f'<p><a href="/corrections.html">{self.t("finding.all_corrections")}</a></p>'
                 + f'<p><a href="/corrections.html#request">{self.t("finding.ask_correction")}</a></p>'
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
-        return self.page("findings", finding["title"], finding["summary"], f'/findings/{finding["slug"]}.html', main,
+        return self.page("findings", finding["title"], finding["summary"], finding_path(finding), main,
                          kind="article", published=finding["published_at"], modified=finding["updated_at"])
 
     def finding_preview_html(self, finding):
@@ -1012,6 +1127,9 @@ class Site:
             if not entry["facts"]:
                 findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
                 entry["facts"] = [f["title"] for f in findings] or ["No published findings for this agency yet."]
+            if agency["agency_id"] in self.agency_pages():
+                entry["agencyPage"] = self.agency_pages()[agency["agency_id"]]
+                entry["findingCount"] = sum(f["agency_id"] == agency["agency_id"] for f in self.model["findings"])
             cities[agency["slug"]] = entry
         if self.map:
             slug = self.map["controller"]["group_slug"]
@@ -1079,7 +1197,7 @@ class Site:
 
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
-                 "/methods.html"]
+                 "/methods.html", "/findings/packet-all.html", "/timeline.html"]
         paths += ["/cameras.html"] if self.map else []
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
         paths += list(self.agency_pages().values())
@@ -1092,7 +1210,7 @@ class Site:
         root = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
         days = {f'/findings/{f["slug"]}.html': utc_moment(finding_updated(f)).astimezone(timezone.utc).date().isoformat()
                 for f in self.model["findings"]}
-        days["/"] = days["/findings/"] = max(days.values(), default="")
+        days["/"] = days["/findings/"] = days["/findings/packet-all.html"] = max(days.values(), default="")
         for path in self.page_paths():
             url = ET.SubElement(root, "url")
             ET.SubElement(url, "loc").text = self.base + path
@@ -1131,7 +1249,7 @@ class Site:
             entry = ET.SubElement(feed, f"{{{ns}}}entry")
             ET.SubElement(entry, f"{{{ns}}}title").text = finding["title"]
             ET.SubElement(entry, f"{{{ns}}}id").text = "urn:deflock-finding:" + finding["id"]
-            ET.SubElement(entry, f"{{{ns}}}link", href=f'{self.base}/findings/{finding["slug"]}.html')
+            ET.SubElement(entry, f"{{{ns}}}link", href=self.base + finding_path(finding))
             ET.SubElement(entry, f"{{{ns}}}published").text = finding["published_at"]
             ET.SubElement(entry, f"{{{ns}}}updated").text = finding_updated(finding)
             corrected = max((_day(c["date"]) for c in finding["corrections"]), default=None)
@@ -1149,7 +1267,8 @@ class Site:
         value = {key: finding[key] for key in PUBLIC_FINDING_FIELDS if key not in ("sources", "corrections", "url")}
         value["limitations"], value["counterevidence"] = list(finding["limitations"]), list(finding["counterevidence"])
         value["sources"] = [{"sha256_prefix": short_hash(s["sha256"]), "title": s["title"], "locator": s["locator"],
-                             "rule_id": s["rule_id"]} for s in finding["sources"]]
+                             "rule_id": s["rule_id"], **({"page": s["page"]} if s.get("page") is not None else {})}
+                            for s in finding["sources"]]
         value["corrections"] = [{"date": c["date"], "note": c["note"]} for c in finding["corrections"]]
         value["url"] = f'{self.base}/findings/{finding["slug"]}.html'
         return value
@@ -1255,12 +1374,12 @@ def _plan_site(root, today=None, notes=None):
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
         "index.html": site.index_html(), "agencies.html": site.agencies_html(),
-        "findings/index.html": site.findings_index_html(), "sources.html": site.sources_html(),
+        "findings/index.html": site.findings_index_html(), "findings/packet-all.html": site.packet_html(), "sources.html": site.sources_html(),
         "meetings.html": site.meetings_html(), "about.html": site.about_html(),
         "corrections.html": site.corrections_html(), "404.html": site.not_found_html(), "methods.html": site.methods_html(),
+        "timeline.html": site.timeline_html(),
     }
-    for finding in model["findings"]:
-        pages[f'findings/{finding["slug"]}.html'] = site.finding_html(finding)
+
     for meeting in model["meetings"]:
         pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
     for page in model["pages"]:
@@ -1272,6 +1391,11 @@ def _plan_site(root, today=None, notes=None):
         if "cameras.html" in pages:  # content/pages/cameras.json would otherwise be silently replaced
             raise ContentError("content/pages/cameras.json: collides with the generated cameras.html (the map's point list)")
         pages["cameras.html"] = site.cameras_html()
+    for finding in model["findings"]:
+        path = f'findings/{finding["slug"]}.html'
+        if path in pages:
+            raise ContentError(f'published finding {finding["id"]} ({path}): collides with generated page {path}')
+        pages[path] = site.finding_html(finding)
     brand = model["site"].get("brand", {})  # site.json brand: one appended rule per set part, nothing without it
     colours = ";".join(f"--{var}:{brand[key]}" for key, var in (("accent", "coral"), ("ink", "ink")) if key in brand)
     css = (pages["index.html"]["css"] + EXTRA_CSS + (f":root{{{colours}}}\n" if colours else "")

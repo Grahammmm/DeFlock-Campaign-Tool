@@ -169,11 +169,9 @@ def write_atomic(path, rows):
         raise
 
 
-def do_import(args):
+def plan_import(args):
+    """Every import check, no writes (RF0740-9): (errors, source rows by slug, store rows by slug)."""
     store = Path(args.store).resolve()
-    if store == REPO or REPO in store.parents:
-        print("store inside repository")
-        return 1
     v2, rows, errors = load(args.src, kind=args.kind)
     by_slug, old = {}, {}
     for _, row in rows:
@@ -191,56 +189,84 @@ def do_import(args):
         _, found, errs = load(path, slug) if path.exists() else (True, [], [])
         errors += ["store file %d: %s" % (n, e) for e in errs]
         old[slug] = [r for _, r in found]
+    return errors, by_slug, old
+
+
+def do_import(args):
+    store = Path(args.store).resolve()
+    if store == REPO or REPO in store.parents:
+        print("store inside repository")
+        return 1
+    errors, by_slug, old = plan_import(args)
     if errors:
         print("\n".join(errors))
         print("imported=0 duplicates=0 errors=%d" % len(errors))
         return 1
-    imported = duplicates = 0
+    fresh = {}  # per slug: source rows not in the store and not repeated earlier in the source
     for slug, new_rows in by_slug.items():
-        seen, fresh = {dedupe_key(r) for r in old[slug]}, []
+        seen, fresh[slug] = {dedupe_key(r) for r in old[slug]}, []
         for row in new_rows:
-            duplicates += dedupe_key(row) in seen
             if dedupe_key(row) not in seen:
-                fresh.append(row)
+                fresh[slug].append(row)
                 seen.add(dedupe_key(row))
-        if fresh:
-            write_atomic(store / "agencies" / slug / "FACTS.csv", old[slug] + fresh)
-        imported += len(fresh)
+    imported = sum(len(rows) for rows in fresh.values())
+    duplicates = sum(len(rows) for rows in by_slug.values()) - imported
+    if args.dry_run:  # slug and counts only; returns before any write_atomic, so no folder or file is made
+        for slug in sorted(fresh):
+            print("would-import | %s | new=%d duplicates=%d" % (slug, len(fresh[slug]), len(by_slug[slug]) - len(fresh[slug])))
+        print("imported=0 would_import=%d duplicates=%d errors=0 agencies=%d dry_run=1" % (imported, duplicates, len(by_slug)))
+        return 0
+    for slug, rows in fresh.items():
+        if rows:
+            write_atomic(store / "agencies" / slug / "FACTS.csv", old[slug] + rows)
     print("imported=%d duplicates=%d errors=0 agencies=%d" % (imported, duplicates, len(by_slug)))
     return 0
 
 
-def coverage(args):
+def coverage_data(args):
+    """(refusal or None, data) for coverage (RF0740-11): flock-facts-coverage-v1; the sha256 joins only, never shown."""
     slug = slugify(args.agency)
     path = Path(args.store) / "agencies" / slug / "FACTS.csv"
     if not path.is_file():
-        return print("facts: %s has no FACTS.csv" % slug) or 1
+        return "facts: %s has no FACTS.csv" % slug, {}
     errors = check_file(path, slug)
     if errors:
-        return print("facts: %d errors (run --check)" % len(errors)) or 1
+        return "facts: %d errors (run --check)" % len(errors), {}
     with open(args.inventory, encoding="utf-8-sig", newline="") as handle:
         records = list(csv.reader(handle))
     head = records[0] if records else []
     lacks = [c for c in ("request", "doc_id", "sha256", "analysis_only") if c not in head]
     if lacks:
-        return print("inventory: header lacks %s" % ", ".join(lacks)) or 1
+        return "inventory: header lacks %s" % ", ".join(lacks), {}
     docs, facts = {}, {}
     for number, rec in ((n, r) for n, r in enumerate(records[1:], 2) if r):
         if len(rec) != len(head):
-            return print("inventory: row %d: columns have the wrong count" % number) or 1
+            return "inventory: row %d: columns have the wrong count" % number, {}
         docs.setdefault((row := dict(zip(head, rec)))["sha256"].strip(), []).append(row)
     for _, row in load(path, slug)[1]:
         facts.setdefault(row["source_sha256"].strip(), []).append(row)
     withheld = {sha for sha, rows in docs.items() if any(r["analysis_only"] != "no" for r in rows)}
     posted = sorted((rows[0]["request"].strip(), rows[0]["doc_id"].strip(), sha) for sha, rows in docs.items() if sha not in withheld)
     covered = sum(sha in facts for _, _, sha in posted)
-    for request, doc_id, sha in posted:
-        got = facts.get(sha, [])
-        print("coverage | %s | document %s | facts=%d pages=%d unreadable=%d" % (request or "-", doc_id, len(got),
-              len({r["page"].strip() for r in got}), sum(r["value"].strip() == "UNREADABLE" for r in got)))
-    print("documents=%d posted=%d covered=%d uncovered=%d withheld=%d facts_on_withheld=%d orphan_facts=%d"
-          " | fact rows per document, not a review verdict" % (len(docs), len(posted), covered, len(posted) - covered,
-          len(withheld), sum(len(facts.get(s, ())) for s in withheld), sum(len(v) for s, v in facts.items() if s not in docs)))
+    documents = [{"request": request or "-", "doc_id": doc_id, "facts": len(got), "pages": len({r["page"].strip() for r in got}),
+                  "unreadable": sum(r["value"].strip() == "UNREADABLE" for r in got)}
+                 for request, doc_id, got in ((q, d, facts.get(s, [])) for q, d, s in posted)]
+    totals = {"documents": len(docs), "posted": len(posted), "covered": covered, "uncovered": len(posted) - covered,
+              "withheld": len(withheld), "facts_on_withheld": sum(len(facts.get(s, ())) for s in withheld),
+              "orphan_facts": sum(len(v) for s, v in facts.items() if s not in docs)}
+    return None, {"schema": "flock-facts-coverage-v1", "agency": slug, "documents": documents, "totals": totals,
+                  "note": "fact rows per document, not a review verdict"}
+
+
+def coverage(args):
+    refusal, data = coverage_data(args)
+    if refusal:
+        return print(refusal) or 1
+    if args.json:
+        return print(json.dumps(data, indent=2, sort_keys=False, ensure_ascii=True)) or 0
+    for d in data["documents"]:
+        print("coverage | %s | document %s | facts=%d pages=%d unreadable=%d" % tuple(d.values()))
+    print(" ".join("%s=%d" % kv for kv in data["totals"].items()) + " | " + data["note"])
     return 0
 
 
@@ -263,25 +289,41 @@ def store_files(store, slug):
         ([] if slug else list(agencies.glob("*"))) + files)) if p.is_symlink()]
 
 
-def status(args):
-    """Review state per agency (RF1220-2): counts by kind and status, and ids to review. Read-only; never a value or quote."""
+def status_data(args):
+    """(errors, data) for status (RF0740-10): flock-facts-status-v1 counts, listed ids and totals; never a value, quote or hash."""
     files, errors = store_files(Path(args.store), slugify(args.agency or ""))
     errors = errors or ["file %d: %s" % (n, e) for n, f in enumerate(files, 1) for e in check_file(f, f.parent.name)]
     if errors or not files:
-        return fail(errors or ["no FACTS.csv files in store"])
-    listed, total = [], {"rows": 0, "unreviewed": 0, "disputed": 0}
+        return errors or ["no FACTS.csv files in store"], {}
+    agencies, listed = [], []
     for f in files:
         rows, count = load(f, f.parent.name)[1], {}
         for _, row in rows:
-            for key in ("rows", row["kind"], row["status"]) + ("unreadable",) * (row["value"].strip() == "UNREADABLE"):
+            for key in (row["kind"], row["status"]) + ("unreadable",) * (row["value"].strip() == "UNREADABLE"):
                 count[key] = count.get(key, 0) + 1
-        print(" | ".join([f.parent.name, "rows=%d" % len(rows)] + [" ".join("%s=%d" % (k, count.get(k, 0)) for k in group) for group in (
-            ("record", "policy", "law", "public"), ("unreviewed", "checked", "disputed"), ("unreadable",))]))
-        listed += ["%s | %s | %s | %s | page %s | row %d" % (f.parent.name, r["fact_id"], r["kind"], r["fact_type"], r["page"].strip(), n)
-                   for n, r in rows if r["status"] == args.list]
-        total = {k: v + count.get(k, 0) for k, v in total.items()}
-    print(*listed, sep="\n") if listed else None
-    print("agencies=%d rows=%d unreviewed=%d disputed=%d" % (len(files), total["rows"], total["unreviewed"], total["disputed"]))
+        agencies.append({"agency": f.parent.name, "rows": len(rows), "kinds": {k: count.get(k, 0) for k in (
+            "record", "policy", "law", "public")}, "statuses": {k: count.get(k, 0) for k in ("unreviewed", "checked", "disputed")},
+            "unreadable": count.get("unreadable", 0)})
+        listed += [{"agency": f.parent.name, "fact_id": r["fact_id"], "kind": r["kind"], "fact_type": r["fact_type"],
+                    "page": int(r["page"].strip()), "row": n} for n, r in rows if r["status"] == args.list]
+    totals = {"agencies": len(files), "rows": sum(a["rows"] for a in agencies)}
+    totals.update((k, sum(a["statuses"][k] for a in agencies)) for k in ("unreviewed", "disputed"))
+    return [], {"schema": "flock-facts-status-v1", "agencies": agencies, "listed": listed, "totals": totals, "list": args.list}
+
+
+def status(args):
+    """Review state per agency (RF1220-2): counts by kind and status, and ids to review. Read-only; never a value or quote."""
+    errors, data = status_data(args)
+    if errors:
+        return fail(errors)
+    if args.json:
+        return print(json.dumps(data, indent=2, sort_keys=False, ensure_ascii=True)) or 0
+    for a in data["agencies"]:
+        print(" | ".join([a["agency"], "rows=%d" % a["rows"]] + [" ".join("%s=%d" % kv for kv in group.items()) for group in (
+            a["kinds"], a["statuses"], {"unreadable": a["unreadable"]})]))
+    for r in data["listed"]:
+        print("%s | %s | %s | %s | page %d | row %d" % (r["agency"], r["fact_id"], r["kind"], r["fact_type"], r["page"], r["row"]))
+    print("agencies=%d rows=%d unreviewed=%d disputed=%d" % tuple(data["totals"].values()))
     return 0
 
 
@@ -496,6 +538,32 @@ def review(args):
     return 0
 
 
+def reviews(args):
+    """RF0420-9: one agency's FACT-REVIEWS.csv history after the full check `review` runs. Read-only; ids, statuses, dates
+    and counts only, never a reviewer, note, value, quote or page. A reversal is a fact changed into both checked and disputed."""
+    store, slug = Path(args.store).resolve(), slugify(args.agency)
+    if store == REPO or REPO in store.parents:
+        return fail(["store inside repository"])
+    files, errors = store_files(store, slug)
+    log = store / "agencies" / slug / "FACT-REVIEWS.csv"
+    errors = errors or ["file 1: %s" % e for e in check_file(files[0], slug) + check_reviews(log, files[0])]
+    if errors:
+        return fail(errors)
+    if args.fact is not None and args.fact not in {r["fact_id"] for _, r in load(files[0], slug)[1]}:
+        return fail(["--fact: unknown fact id"])
+    rows = []
+    if log.exists():
+        with open(log, encoding="utf-8-sig", newline="") as handle:
+            rows = [dict(zip(REVIEW_HEAD, rec)) for rec in list(csv.reader(handle))[1:] if rec]
+    rows = [r for r in rows if args.fact in (None, r["fact_id"]) and r["reviewed_at"] >= (args.since or "")]
+    into = {s: {r["fact_id"] for r in rows if r["to_status"] == s} for s in ("checked", "disputed")}
+    for r in rows:
+        print("reviews | %s | %s | %s -> %s | %s" % (slug, r["fact_id"], r["from_status"], r["to_status"], r["reviewed_at"]))
+    print("reviews=%d facts=%d to_checked=%d to_disputed=%d reversals=%d" % (len(rows), len({r["fact_id"] for r in rows}), sum(
+        r["to_status"] == "checked" for r in rows), sum(r["to_status"] == "disputed" for r in rows), len(into["checked"] & into["disputed"])))
+    return 0
+
+
 def main(argv=None):
     try:
         return _main(argv)
@@ -506,21 +574,37 @@ def main(argv=None):
 
 def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", nargs="*", help="import SRC | coverage --store DIR --agency NAME --inventory CSV"
-                        " | status --store DIR [--agency SLUG] [--list unreviewed|disputed]"
+    parser.add_argument("command", nargs="*", help="import SRC | coverage --store DIR --agency NAME --inventory CSV [--json]"
+                        " | status --store DIR [--agency SLUG] [--list unreviewed|disputed] [--json]"
                         " | quote-check --store DIR --text EXPORT [--agency SLUG]"
                         " | stale --store DIR --date YYYY-MM-DD [--agency SLUG] [--findings FINDINGS.csv]"
                         " | review --store DIR --agency SLUG --ids ID[,ID...] --set checked|disputed --reviewer NAME"
-                        " [--date YYYY-MM-DD] [--note TEXT] | unreadable --store DIR --out FILE.csv [--agency SLUG]")
+                        " [--date YYYY-MM-DD] [--note TEXT] | unreadable --store DIR --out FILE.csv [--agency SLUG]"
+                        " | reviews --store DIR --agency SLUG [--fact ID] [--since YYYY-MM-DD]")
     for name in ("--check", "--store", "--added-by", "--agency", "--inventory", "--list", "--text", "--findings", "--date",
-                 "--ids", "--reviewer", "--note", "--out"):
+                 "--ids", "--reviewer", "--note", "--out", "--fact", "--since"):
         parser.add_argument(name)
     parser.add_argument("--kind", default="record", choices=sorted(KINDS))
     parser.add_argument("--status", default="checked", choices=sorted(STATUSES))
     parser.add_argument("--set", choices=["checked", "disputed"])
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.json and args.command[:1] not in (["status"], ["coverage"]):
+        parser.error("--json belongs to status or coverage")
+    if args.dry_run and (args.command[:1] != ["import"] or args.check is not None):
+        parser.error("--dry-run belongs to import only")
     if args.out is not None and args.command[:1] != ["unreadable"]:
         parser.error("--out belongs to unreadable only")
+    if (args.fact is not None or args.since is not None) and args.command[:1] != ["reviews"]:
+        parser.error("--fact and --since belong to reviews only")
+    if args.command[:1] == ["reviews"]:
+        if len(args.command) != 1 or args.check or not args.store or not slugify(args.agency or "") or any(v is not None for v in (
+                args.inventory, args.list, args.added_by, args.date, args.findings, args.text, args.ids, args.set, args.reviewer,
+                args.note)) or (args.fact is not None and not re.fullmatch(r"F-[0-9a-f]{12}", args.fact)) \
+                or (args.since is not None and not valid_date(args.since)):
+            parser.error("usage: reviews --store DIR --agency SLUG [--fact ID] [--since YYYY-MM-DD]")
+        return reviews(args)
     if args.command[:1] == ["review"]:
         if len(args.command) != 1 or args.check or not args.store or not slugify(args.agency or "") or not args.ids \
                 or not args.set or args.reviewer is None or args.inventory or args.list is not None \
@@ -564,7 +648,7 @@ def _main(argv=None):
         return coverage(args)
     if args.check or args.list is not None or args.command[:1] != ["import"] or len(args.command) != 2 or not args.store \
             or not (args.added_by or "").strip() or not valid_date(args.date):
-        parser.error("usage: import SRC --store DIR --added-by NAME [--date YYYY-MM-DD] | --check PATH"
+        parser.error("usage: import SRC --store DIR --added-by NAME [--date YYYY-MM-DD] [--dry-run] | --check PATH"
                      " | coverage --store DIR --agency NAME --inventory CSV")
     args.src = args.command[1]
     return do_import(args)

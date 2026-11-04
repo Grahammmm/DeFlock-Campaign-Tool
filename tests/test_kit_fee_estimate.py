@@ -141,7 +141,9 @@ class FeeEstimateTests(unittest.TestCase):
         self.ok("2026-03-05", "acknowledged")
         (self.kit / kit.SETTINGS_NAME).write_text("not json", encoding="utf-8")  # unread without an estimate
         row, err = self.row()
-        self.assertEqual(set(row), OLD_KEYS | {"fee_estimate", "over_fee_cap"})
+        self.assertEqual(set(row), OLD_KEYS | {"fee_estimate", "over_fee_cap", "stated_production_date",
+                                               "waiting_on_you_since", "reference", "producing", "next_installment",
+                                               "fee_state", "fee_paid"})
         self.assertEqual((row["fee_estimate"], row["over_fee_cap"], row["steps"]), (None, None, 1))
         self.assertEqual(row["last_step"], {"on": "2026-03-05", "kind": "acknowledged"})
         self.assertEqual(err, "")

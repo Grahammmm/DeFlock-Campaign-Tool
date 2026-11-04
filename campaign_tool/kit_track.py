@@ -12,7 +12,54 @@ from pathlib import Path
 from . import kit, kit_check, law
 
 CHANNELS = ("email", "portal", "mail")
-KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed", "fee_estimate")
+KINDS = ("acknowledged", "extension", "determination", "produced", "denied", "closed", "fee_estimate",
+         "clarification_requested", "clarified", "fee_paid", "fee_waived")
+SETTLED = {"fee_paid": "paid", "fee_waived": "waived"}  # a payment or waiver of the latest estimate before it
+WAITING = "waiting on you since {} (the agency asked to clarify or narrow the request)"
+WAIT_NOTE = (" Waiting on you: the agency asked to clarify or narrow the request; reply first. Not counted as past"
+             " due; no claim that this pauses any legal period.")
+
+
+def _waiting_since(steps):  # date of the latest clarification_requested not yet clarified (or closed), else None
+    asked = [i for i, s in enumerate(steps) if s.get("kind") == "clarification_requested"]
+    ended = asked and any(s.get("kind") in ("clarified", "closed") for s in steps[asked[-1] + 1:])
+    return steps[asked[-1]].get("on") if asked and not ended else None
+
+
+class WaitingOnYou(ValueError):  # kit-followup refusal while the agency waits on the organizer: exit 3
+    exit_code = 3
+
+
+class ReferenceConflict(ValueError):  # a different agency reference already stored: exit 3, nothing written
+    exit_code = 3
+
+
+REFERENCE = re.compile(r"[A-Za-z0-9_#.\-]{1,40}")  # the agency's own request number, e.g. R0123-110125
+
+
+def _reference(reference, replace_reference):  # validated before anything is read or written
+    if replace_reference and reference is None:
+        raise ValueError("--replace-reference needs --reference")
+    if reference is not None and (not isinstance(reference, str) or not REFERENCE.fullmatch(reference)):
+        raise ValueError("--reference must be 1-40 letters, digits, - _ # or .")
+    return reference
+
+
+def _set_reference(entry, reference, replace_reference):  # stored once on the entry, never on a step
+    stored = entry.get("reference")
+    if reference is None or reference == stored:
+        return
+    if stored is not None and not replace_reference:
+        raise ReferenceConflict(f"reference already recorded as {stored}; pass --replace-reference to change it")
+    entry["reference"] = reference
+
+
+def reference_lines(entry):
+    """(subject suffix, first body line) quoting the stored agency reference; empty strings when none."""
+    reference = entry.get("reference")
+    return (f" (Your reference {reference})", f"Regarding your reference {reference},") if reference else ("", "")
+
+
 AMOUNT = re.compile(r"[0-9]{1,6}(\.[0-9]{1,2})?")  # plain USD: no sign, exponent, NaN or thousands separator
 AMOUNT_MAX_CENTS = 10_000_000  # $100,000.00
 OVER_CAP = "over your fee cap: decide before paying"
@@ -69,7 +116,9 @@ def _entry_ok(key, entry):
     return (parts and kit.AGENCY_ID.match(parts[0]) and isinstance(entry, dict) and _day(entry.get("sent_on"))
             and entry.get("channel") in CHANNELS and entry.get("draft") == _draft_path(*parts)
             and isinstance(entry.get("draft_sha256"), str) and SHA256.fullmatch(entry["draft_sha256"])
-            and _day(entry.get("recorded_at"), STAMP, datetime.fromisoformat) and isinstance(entry.get("steps"), list))
+            and _day(entry.get("recorded_at"), STAMP, datetime.fromisoformat) and isinstance(entry.get("steps"), list)
+            and ("reference" not in entry or isinstance(entry["reference"], str)
+                 and REFERENCE.fullmatch(entry["reference"])))
 
 
 def read_sent(root):
@@ -113,9 +162,11 @@ def _check(root, agency, request):  # main: kit-check's own report; a named requ
     return {"placeholder_count": len(hits), "ok": not hits and agency.get("verified") is True}
 
 
-def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=False, today=None):
+def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=False, today=None, reference=None,
+                replace_reference=False):
     """Record one hand-sent request in kit/sent.json and return its entry."""
     root, request = Path(root), _request(request)
+    reference = _reference(reference, replace_reference)
     path = root / "kit" / "agencies.json"
     if not path.is_file() or path.is_symlink():
         raise ValueError("run kit first: kit/agencies.json is missing")
@@ -149,6 +200,9 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
         raise ValueError(f"{label} has recorded steps; its entry sent on {previous['sent_on']} cannot be replaced")
     entry = {"sent_on": sent_on, "channel": channel, "draft": draft, "draft_sha256": digest,
              "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "steps": []}
+    if previous and "reference" in previous:  # a --replace correction keeps the stored reference
+        entry["reference"] = previous["reference"]
+    _set_reference(entry, reference, replace_reference)
     requests[key] = entry
     kit._write_json(root / "kit" / "sent.json",
                     {"schema_version": 1, "requests": dict(sorted(requests.items()))})
@@ -197,22 +251,70 @@ def _amount_cents(amount):  # decimal string to whole cents with no float math; 
     return cents
 
 
-def _amount_ok(step):  # amount_cents only on fee_estimate steps, always there, an int from 0 to 10,000,000
-    if step.get("kind") != "fee_estimate":
-        return "amount_cents" not in step
+def _amount_ok(step):  # amount_cents: always on fee_estimate, optional on fee_paid, never elsewhere; int 0-10,000,000
+    if step.get("kind") not in ("fee_estimate", "fee_paid") or "amount_cents" not in step:
+        return "amount_cents" not in step and step.get("kind") != "fee_estimate"
     value = step.get("amount_cents")
     return type(value) is int and 0 <= value <= AMOUNT_MAX_CENTS
+
+
+def _fee(steps):  # (latest fee_estimate index by date then recorded order, else None; a settlement step after it)
+    dated = [(s.get("on") if isinstance(s.get("on"), str) else "", i) for i, s in enumerate(steps)
+             if s.get("kind") == "fee_estimate"]
+    last = max(dated)[1] if dated else None
+    return last, None if last is None else next((s for s in steps[last + 1:] if s.get("kind") in SETTLED), None)
+
+
+def _fee_state(steps):  # null | "unpaid" | "paid" | "waived": from the latest estimate and any settlement after it
+    last, settled = _fee(steps)
+    return None if last is None else SETTLED[settled["kind"]] if settled else "unpaid"
 
 
 def _dollars(cents):
     return f"${cents // 100:,}.{cents % 100:02d}"
 
 
-def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None):
+NOT_STATED = ("produced", "denied", "closed")  # kinds that never carry the agency's stated production date
+STATED = "stated date passed — the agency's own date; provisional, not a legal deadline"
+
+
+def _partial(step):  # a rolling production: more records to come; key absent = final (every older file)
+    return step.get("kind") == "produced" and step.get("partial") is True
+
+
+def _expected_ok(steps):  # expected_on only on the determination or a later restating step; a date not before its own
+    seen = False  # partial produced: the agency's next installment date, allowed without a determination
+    for s in steps:
+        seen = seen or s.get("kind") == "determination"
+        if "partial" in s and not _partial(s):
+            return False
+        if "expected_on" in s and (not (seen or _partial(s)) or (s.get("kind") in NOT_STATED and not _partial(s))
+                                   or not _day(s["expected_on"]) or not _day(s.get("on"))
+                                   or s["expected_on"] < s["on"]):
+            return False
+    return True
+
+
+def _producing(steps):  # >= 1 partial produced step and no final produced, denied or closed step
+    return any(map(_partial, steps)) and not any(s.get("kind") in ("denied", "closed") or s.get("kind") == "produced"
+                                                 and not _partial(s) for s in steps)
+
+
+def _next_installment(steps):  # the latest expected_on on or after the latest partial step, else None
+    last = max((i for i, s in enumerate(steps) if _partial(s)), default=None)
+    return None if last is None else next((s["expected_on"] for s in reversed(steps[last:]) if "expected_on" in s),
+                                          None)
+
+
+def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None,
+                expected_on=None, reference=None, replace_reference=False, partial=False):
     """Append one dated agency response step to a hand-sent request and return the updated entry."""
     root, request = Path(root), _request(request)
+    reference = _reference(reference, replace_reference)
     if kind not in KINDS:
         raise ValueError("--kind must be one of " + ", ".join(KINDS))
+    if partial and kind != "produced":
+        raise ValueError("--partial is only for produced steps")
     records = list(records or ())  # produced only: ledger prefixes; full hashes stored, 12-char prefixes returned
     if records and kind != "produced":
         raise ValueError("--record is only for produced steps")
@@ -228,7 +330,7 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     label = _label(agency_id, request)
     steps = entry["steps"]
     if not all(isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) and _amount_ok(s)
-               and _step_records(s) == s.get("records", []) for s in steps):
+               and _step_records(s) == s.get("records", []) for s in steps) or not _expected_ok(steps):
         raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
     day = _day(on)
     if day is None:
@@ -252,13 +354,37 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
         raise ValueError(f"{kind} is allowed at most once")
     if kind == "closed" and not kinds:
         raise ValueError("closed needs at least one prior step")
+    if kind == "clarification_requested" and {"produced", "denied"} & set(kinds):
+        raise ValueError("clarification_requested is not allowed after a produced or denied step")
+    if kind == "clarification_requested" and _waiting_since(steps):
+        raise ValueError(f"a clarification request is already open since {_waiting_since(steps)}")
+    if kind == "clarified" and not _waiting_since(steps):
+        raise ValueError("no open clarification request to answer")
+    final = [s["on"] for s in steps if s["kind"] == "produced" and not _partial(s)]
+    if partial and final:
+        raise ValueError(f"production already final on {final[-1]}")
     if kind == "fee_estimate" and amount is None:
         raise ValueError("fee_estimate needs --amount USD")
-    if kind != "fee_estimate" and amount is not None:
-        raise ValueError("--amount is only for fee_estimate steps")
+    if kind not in ("fee_estimate", "fee_paid") and amount is not None:
+        raise ValueError("--amount is only for fee_estimate and fee_paid steps")
+    estimate, settled = _fee(steps) if kind in SETTLED else (0, None)
+    if estimate is None:
+        raise ValueError(f"{kind} needs a fee_estimate earlier on this request")
+    if settled is not None:
+        raise ValueError(f"the {steps[estimate]['on']} estimate is already {SETTLED[settled['kind']]}")
+    if expected_on is not None and not partial and (kind in NOT_STATED or (kind != "determination"
+                                                                           and "determination" not in kinds)):
+        raise ValueError("--expected-on is for the determination or a later step that restates the date")
+    if expected_on is not None and _day(expected_on) is None:
+        raise ValueError("--expected-on must be a real YYYY-MM-DD date")
+    if expected_on is not None and _day(expected_on) < day:
+        raise ValueError(f"stated date {expected_on} is before the {kind} on {on}")
     cents = None if amount is None else _amount_cents(amount)  # every refusal above and here writes nothing
     hashes = _resolve_records(root, records, steps) if records else []
-    step = {"on": on, "kind": kind, **({"amount_cents": cents} if cents is not None else {}),
+    _set_reference(entry, reference, replace_reference)  # last refusal: nothing written on a conflict
+    step = {"on": on, "kind": kind, **({"partial": True} if partial else {}),
+            **({"expected_on": expected_on} if expected_on is not None else {}),
+            **({"amount_cents": cents} if cents is not None else {}),
             **({"note": note} if note else {}), **({"records": hashes} if hashes else {}),
             "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     entry["steps"] = [*steps, step]
@@ -290,9 +416,13 @@ def status(root, today=None, law_base=None, *, request=None):
         steps = [s for s in entry["steps"] if isinstance(s, dict)]
         kinds = [s.get("kind") for s in steps]
         fees = [(s.get("on"), i, s) for i, s in enumerate(steps) if "amount_cents" in s or kinds[i] == "fee_estimate"]
-        if not all(_amount_ok(s) and _day(on) for on, _, s in fees):
+        if not all(_amount_ok(s) and _day(on) for on, _, s in fees) or not _expected_ok(steps):
             raise ValueError(f"kit/sent.json unreadable: malformed steps for {_label(agency_id, name)!r}")
-        estimate = max(fees)[2]["amount_cents"] if fees else None  # latest date, then the later recorded step
+        last, settled = _fee(steps)  # the latest estimate: latest date, then the later recorded step
+        estimate = None if last is None else steps[last]["amount_cents"]
+        fee_paid = _dollars(settled["amount_cents"]) if settled and "amount_cents" in settled else None
+        stated = next((s["expected_on"] for s in reversed(steps) if "expected_on" in s and not _partial(s)), None)
+        producing = _producing(steps)  # stated: latest one wins; a partial step's date is the next installment
         if estimate is not None and cap == ():
             cap = kit.fee_cap_cents(root / "kit", today)
         linked = sorted({digest for s in steps for digest in _step_records(s)})
@@ -308,13 +438,17 @@ def status(root, today=None, law_base=None, *, request=None):
                      "records": len(linked), "record_prefixes": [h[:12] for h in linked[:PREFIXES_MAX]],
                      **({"more": len(linked) - PREFIXES_MAX} if len(linked) > PREFIXES_MAX else {}),
                      "fee_estimate": None if estimate is None else _dollars(estimate),
-                     "over_fee_cap": None if estimate is None or cap is None else estimate > cap})
-    return {"requests": rows, "law_package_status": package_status, "note": NOTE}
+                     "over_fee_cap": None if estimate is None or cap is None else estimate > cap,
+                     "stated_production_date": stated, "waiting_on_you_since": _waiting_since(steps),
+                     "producing": producing, "next_installment": _next_installment(steps) if producing else None,
+                     "reference": entry.get("reference"), "fee_state": _fee_state(steps), "fee_paid": fee_paid})
+    waiting = any(row["waiting_on_you_since"] for row in rows)
+    return {"requests": rows, "law_package_status": package_status, "note": NOTE + (WAIT_NOTE if waiting else "")}
 
 
 ANSWERED = {"determination", "produced", "denied"}
 CSV_HEADER = ("agency_id", "name", "drafted", "sent_on", "channel", "last_step_on", "last_step_kind", "records",
-              "sources", "findings")
+              "sources", "findings", "fee")
 
 
 def coverage(root):
@@ -342,13 +476,14 @@ def coverage(root):
                      "last_step": {"on": steps[-1].get("on"), "kind": steps[-1].get("kind")} if steps else None,
                      "records": len({h for s in steps if s.get("kind") == "produced" for h in _step_records(s)}),
                      "sources": sources.count(agency_id), "findings": findings.count(agency_id),
-                     "answered": bool(ANSWERED & {s.get("kind") for s in steps})})
+                     "fee_state": _fee_state(steps), "answered": bool(ANSWERED & {s.get("kind") for s in steps})})
     rows.sort(key=lambda row: (row["sent_on"] is not None, row["agency_id"]))
     totals = {"selected": len(rows), "drafted": sum(r["drafted"] for r in rows),
               "sent": sum(r["sent_on"] is not None for r in rows), "answered": sum(r.pop("answered") for r in rows),
               "with_records": sum(r["records"] > 0 for r in rows), "with_findings": sum(r["findings"] > 0 for r in rows),
               "unselected_with_requests": len({parts[0] for parts in map(_split, requests)
-                                               if parts and parts[0] not in selected})}
+                                               if parts and parts[0] not in selected}),
+              "fee_unpaid": sum(r["fee_state"] == "unpaid" for r in rows)}
     note = ("Read-only counts from kit/ and content/." if model else
             "No content/ folder: sources and findings are 0.") + " Agencies with no sent request come first."
     return {"rows": rows, "totals": totals, "note": note}
@@ -357,7 +492,7 @@ def coverage(root):
 def _cells(row):
     step = row["last_step"] or {}
     return [row["agency_id"], row["name"], row["drafted"], row["sent_on"], row["channel"], step.get("on"),
-            step.get("kind"), row["records"], row["sources"], row["findings"]]
+            step.get("kind"), row["records"], row["sources"], row["findings"], row["fee_state"]]
 
 
 def _csv_cell(value):
@@ -376,9 +511,9 @@ def format_coverage(report, as_csv=False):
         for row in report["rows"]:
             writer.writerow([_csv_cell(c) for c in _cells(row)])
         return out.getvalue()
-    line = "{:<36} {:<40} {:<7} {:<10} {:<7} {:<10} {:<13} {:>7} {:>7} {:>8}"
+    line = "{:<36} {:<40} {:<7} {:<10} {:<7} {:<10} {:<13} {:>7} {:>7} {:>8} {}"
     lines = [line.format("agency_id", "name", "drafted", "sent_on", "channel", "last_on", "last_kind", "records",
-                         "sources", "findings")]
+                         "sources", "findings", "fee")]
     for row in report["rows"]:
         cells = _cells(row)
         cells[1] = "".join(c if c.isprintable() else " " for c in cells[1])[:40]
@@ -396,16 +531,32 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None):
     report = status(root, law_base=law_base, request=request)
     if request is not None and not report["requests"]:
         raise ValueError(f"no sent request */{request}: no agency has a request recorded under that name")
-    kinds = {_split(key): {s.get("kind") for s in entry["steps"] if isinstance(s, dict)}
-             for key, entry in read_sent(root).items()}
-    open_rows, answered = [], []
+    entries = {_split(key): [s for s in entry["steps"] if isinstance(s, dict)] for key, entry in read_sent(root).items()}
+    open_rows, answered, stated_passed = [], [], []
     for row in report["requests"]:
         if row["closed"]:
             continue
         base = {"agency_id": row["agency_id"], "request": row["request"], "name": row["name"],
-                "sent_on": row["sent_on"]}
-        if kinds.get((row["agency_id"], row["request"]), set()) & ANSWERED:
+                "sent_on": row["sent_on"], "reference": row["reference"]}
+        steps = entries.get((row["agency_id"], row["request"]), [])
+        if row["waiting_on_you_since"]:  # no claim that this pauses any legal clock; the provisional date stays shown
+            since, due_on = row["waiting_on_you_since"], row["determination_due"]
+            open_rows.append({**base, "due": due_on, "days": due_on and (date.fromisoformat(due_on) - day).days,
+                              "state": "waiting_on_you", "since": since, "note": WAITING.format(since)})
+        elif row["producing"]:  # a rolling production stays open, counted against the agency's next installment
+            nxt = row["next_installment"]
+            days = nxt and (date.fromisoformat(nxt) - day).days
+            open_rows.append({**base, "due": nxt, "days": days,
+                              "state": "installment_passed" if nxt and days < 0 else "producing"})
+        elif {s.get("kind") for s in steps} & ANSWERED:
             answered.append({**base, "last_step": row["last_step"]})
+            setter = max((i for i, s in enumerate(steps) if "expected_on" in s and not _partial(s)), default=None)
+            stated = row["stated_production_date"]  # a final produced step after the step that set it clears it
+            if setter is not None and not any(s.get("kind") == "produced" and not _partial(s)
+                                              for s in steps[setter + 1:]) \
+                    and day > date.fromisoformat(stated):
+                stated_passed.append({**base, "state": "stated_date_passed", "stated": stated,
+                                      "days": (day - date.fromisoformat(stated)).days})
         elif row["determination_due"] is None:
             open_rows.append({**base, "due": None, "days": None, "state": "no_law_package"})
         else:
@@ -413,10 +564,16 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None):
             open_rows.append({**base, "due": row["determination_due"], "days": days,
                               "state": "past_due" if days < 0 else "due_today" if days == 0 else "upcoming"})
     open_rows.sort(key=lambda row: (row["due"] or "", row["agency_id"], row["request"]))
+    waiting = sum(row["state"] == "waiting_on_you" for row in open_rows)  # never sets exit 3 by itself
+    stated_passed.sort(key=lambda row: (row["stated"], row["agency_id"], row["request"]))
     missing = report["law_package_status"] == "missing"
     return {"as_of": day.isoformat(), "law_package_status": report["law_package_status"], "open": open_rows,
             "answered": answered, "past_due": sum(row["state"] == "past_due" for row in open_rows),
-            "note": ("No law package: determination dates cannot be computed. " if missing else "") + NOTE}
+            "stated_passed": stated_passed, "stated_date_passed": len(stated_passed),
+            "installment_passed": sum(row["state"] == "installment_passed" for row in open_rows),
+            "waiting_on_you": waiting,
+            "note": ("No law package: determination dates cannot be computed. " if missing else "") + NOTE
+            + (f" {STATED[0].upper()}{STATED[1:]}." if stated_passed else "") + (WAIT_NOTE if waiting else "")}
 
 
 def _followup_target(root, name, replace):  # private kit/followups/ (0700); symlinks and silent overwrites refused
@@ -445,15 +602,19 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
     steps = [s for s in entry["steps"] if isinstance(s, dict)]
     if any(s.get("kind") == "closed" for s in steps):
         raise ValueError(f"request for {agency_id} is closed")
+    if _waiting_since(steps):
+        raise WaitingOnYou(f"waiting on you since {_waiting_since(steps)} — reply to the agency's clarification first")
     answer = next((s for s in steps if s.get("kind") in ANSWERED), None)
-    if answer:
+    if answer and not _producing(steps):
         raise ValueError(f"request for {agency_id} was answered ({answer['kind']} on {answer.get('on')}); "
                          "no follow-up drafted")
     row = next((r for r in due(root, day.isoformat(), law_base=law_base)["open"]
                 if (r["agency_id"], r["request"]) == (agency_id, "main")), None)
     if row is None or row["state"] == "no_law_package":
         raise ValueError("no law package: dates cannot be computed")
-    if row["state"] != "past_due":
+    if row["state"] == "producing":
+        raise ValueError(f"records still coming: next installment {row['due'] or 'not stated'}; not passed")
+    if row["state"] not in ("past_due", "installment_passed"):
         raise ValueError(f"not past due: provisional determination date {row['due']}")
     try:
         package = law.load_package(kit._jurisdiction(read_config(root)), law_base)
@@ -462,11 +623,15 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
     target = _followup_target(root, f"{agency_id}-{day.isoformat()}.md", replace)
     statute, name = package["records_law"], row["name"] or agency_id
     extended = " (extended, as the agency noted)" if any(s.get("kind") == "extension" for s in steps) else ""
-    lines = [f"# Follow-up draft: {name}", "", "DRAFT — NOT SENT. Review before sending it yourself.", "",
-             f"To: {name}, records custodian", "",
-             f"On {entry['sent_on']} we sent a records request by {entry['channel']} to {name}. Its provisional "
-             f"determination date{extended} was {row['due']}; the period runs from the agency's receipt of the "
-             f"request. As of {day.isoformat()} we have no record of a determination, records produced or a denial.",
+    subject, first = reference_lines(entry)
+    told = (f"Its provisional determination date{extended} was {row['due']}; the period runs from the agency's "
+            f"receipt of the request. As of {day.isoformat()} we have no record of a determination, records produced "
+            "or a denial.") if row["state"] == "past_due" else (
+        f"We have received part of the records; you said the next installment would come on {row['due']}. As of "
+        f"{day.isoformat()} we have no record of that installment.")
+    lines = [f"# Follow-up draft: {name}{subject}", "", "DRAFT — NOT SENT. Review before sending it yourself.", "",
+             f"To: {name}, records custodian", "", *([first, ""] if first else []),
+             f"On {entry['sent_on']} we sent a records request by {entry['channel']} to {name}. {told}",
              "", f"Please tell us the status of the request under the {statute['name']}, {statute['citation']}, "
              "and when you expect to respond.", "", kit.DEFAULT_REQUESTER, "", "---", ""]
     if package["status"] != "reviewed":
@@ -475,13 +640,13 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
     return {"written": f"kit/followups/{target.name}", "due": row["due"], "days_past": -row["days"], "note": NOTE}
 
 
-DENIAL_TEMPLATE = """# Denial reply draft: {name}
+DENIAL_TEMPLATE = """# Denial reply draft: {name}{subject}
 
 DRAFT — NOT SENT. Review before sending it yourself.
 
 To: {name}, records custodian
 
-On {sent_on} we sent a records request by {channel} to {name}. On {denied_on} we recorded the agency's response
+{first}On {sent_on} we sent a records request by {channel} to {name}. On {denied_on} we recorded the agency's response
 as a denial. We asked for: [EDIT ME: what you asked for]
 
 Please:
@@ -531,7 +696,9 @@ def denial_reply(root, agency_id, rules=(), *, replace=False, law_base=None):
         if path.is_file() and not path.is_symlink() else {}
     name = names.get(agency_id) or agency_id
     target = _followup_target(root, f"{agency_id}-denial-{denied_on}.md", replace)
+    subject, first = reference_lines(entry)
     kit._write_text(target, DENIAL_TEMPLATE.format(
-        name=name, sent_on=entry["sent_on"], channel=entry["channel"], denied_on=denied_on, status=status,
+        name=name, subject=subject, first=first and first + "\n\n", sent_on=entry["sent_on"],
+        channel=entry["channel"], denied_on=denied_on, status=status,
         citations=f"\nRules we noted for this reply:\n{citations}" if rules else ""))
     return {"written": f"kit/followups/{target.name}", "rules": rules, "law_package_status": status}

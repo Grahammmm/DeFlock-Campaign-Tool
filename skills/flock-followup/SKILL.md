@@ -38,6 +38,7 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
 - List reminders: `python3 tools/flock_requests.py due <file or store dir>`. One line per open
   row, soonest first, unknown receipts last. With any error it prints nothing and exits 1.
   Relate it to a day: `python3 tools/flock_requests.py due <file or store dir> --as-of YYYY-MM-DD`.
+  One agency only: add `--agency SLUG` (repeatable, any order with `--as-of`; not with `--ics`).
 
 ## Alerts
 
@@ -64,6 +65,14 @@ skill never upgrades. It also drafts a follow-up request (`draft`); it is never 
   `state --json` outputs and prints `diff | request|run | <slug> | <id or date> | <old> -> <new>` (or `new: <s>` / `gone (was <s>)`),
   then `changed= new= gone= unmatched=` and the totals that moved. Masked labels are counted, never paired; a basis change alone
   is not a change. Exit 0 nothing changed, 3 something changed, 1 a snapshot is not flock-state-v1 (names side and field only).
+
+## Deadlines
+
+- `python3 tools/flock_deadlines.py due --store <store dir> --date D` prints, read-only, each open request against the law
+  package's dated determination rule: `drafted`/`due`, `inside`, `already`, `edited-kept`, `clock-unknown` (no sent date) or
+  `rule-incomplete`. Dates are provisional reminders, not legal due dates, while the package is `draft`.
+- `run --store <store dir> --date D [--out NEWDIR]` drafts one follow-up per passed (request, rule, reminder date) and files
+  it `pending` in `STORE/deadlines/QUEUE.csv`; it never sends or approves (docs/APPROVALS.md). Re-running is safe.
 
 ## Open
 

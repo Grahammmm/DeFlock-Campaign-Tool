@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Private LAW.csv + per-agency POLICY.csv: --check, versions, governing (each agency on a date), gaps, changes (policy-kind
 FACTS types that differ between consecutive adopted versions), coverage (us-ca package rules with no LAW row) and compare
-(agencies' governing policy facts on one date grouped into value classes by fact id). Prints ids, labels, dates, fact
-types, counts only."""
+(agencies' governing policy facts on one date grouped into value classes by fact id) and stale (LAW rows whose text was
+accessed more than N days before today, or after it) and review (LAW and POLICY rows still unreviewed or disputed, with
+their age). Prints ids, labels, dates, fact types, counts only."""
 import csv
 import hashlib
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -158,60 +160,127 @@ def versions(rows, agency, on):
                    f" | adoption {'verified' if adopted else 'unverified'} | governs {span}")
     return out
 
-def governing(law_rows, policy_rows, on):  # one line per agency (sorted slug), LAW rows in effect, counts; ids and dates only
-    out, n, agencies = [], {"governing": 0, "other_dates": 0, "unverified_only": 0}, sorted({slug(r["agency"]) for _, r in policy_rows})
+NOTE = "research view, not a legal conclusion"
+
+def kv(n, keys=None):
+    return " ".join(f"{k}={n[k]}" for k in keys or n)
+
+def governing_rows(law_rows, policy_rows, on):  # -> (rows, counts): per agency (sorted slug) its governing versions or one none row
+    rows, n, agencies = [], {"governing": 0, "other_dates": 0, "unverified_only": 0}, sorted({slug(r["agency"]) for _, r in policy_rows})
     for a in agencies:
         hits, mine = governs_on(policy_rows, a, on), governs_on(policy_rows, a, None)
-        out += [f"governing | {a} | {r['policy_id']} | {r['version_label']} | governs {r['governs_from']}..{r['governs_to'] or 'open'}"
-                f" | policy_row {r['policy_row_id']}" for r in hits]
+        rows += [{"agency": a, "kind": "governing", "policy_id": r["policy_id"], "version_label": r["version_label"],
+                  "governs_from": r["governs_from"], "governs_to": r["governs_to"] or None, "policy_row_id": r["policy_row_id"]}
+                 for r in hits]
         kind = "governing" if hits else "unverified_only" if all(r["adoption_evidence"] == "unverified" for r in mine) else "other_dates"
-        out += [] if hits else [f"governing | {a} | " + (f"none on {on} (adopted versions exist for other dates)" if kind == "other_dates"
-                                                       else f"none established (adoption unverified for all {len(mine)} rows)")]
+        rows += [] if hits else [{"agency": a, "kind": kind, "unverified": len(mine) if kind == "unverified_only" else None}]
         n[kind] += 1
     live = sum(r["effective_from"] <= on and (not r["effective_to"] or on <= r["effective_to"]) for _, r in law_rows)
-    return out + [f"law in effect on {on}: {live} of {len(law_rows)} rows",
-                  f"agencies={len(agencies)} " + " ".join(f"{k}={v}" for k, v in n.items()) + " | research view, not a legal conclusion"]
+    return rows, {"agencies": len(agencies), **n, "law_in_effect": live, "law_rows": len(law_rows)}
 
-def gaps(policy_rows, on):  # per (agency, policy_id): days no adopted window governs, a closed last window, nothing adopted
+def governing_lines(rows, n, on):
+    return [f"governing | {r['agency']} | {r['policy_id']} | {r['version_label']} | governs {r['governs_from']}..{r['governs_to'] or 'open'}"
+            f" | policy_row {r['policy_row_id']}" if r["kind"] == "governing" else f"governing | {r['agency']} | "
+            + (f"none on {on} (adopted versions exist for other dates)" if r["kind"] == "other_dates"
+               else f"none established (adoption unverified for all {r['unverified']} rows)") for r in rows] + [
+        f"law in effect on {on}: {n['law_in_effect']} of {n['law_rows']} rows",
+        f"agencies={n['agencies']} " + kv(n, ("governing", "other_dates", "unverified_only")) + f" | {NOTE}"]
+
+def governing(law_rows, policy_rows, on): return governing_lines(*governing_rows(law_rows, policy_rows, on), on)
+
+def gaps_rows(policy_rows, on):  # per (agency, policy_id): days no adopted window governs, a closed last window, nothing adopted
     groups, out, n = {}, [], {"gaps": 0, "closed": 0, "unestablished": 0}
     for _, r in policy_rows:
         groups.setdefault((slug(r["agency"]), r["policy_id"]), []).append(r)
     for (a, pid), rows in sorted(groups.items()):
-        won = sorted((r for r in rows if r["adoption_evidence"] != "unverified"), key=lambda r: r["governs_from"])
+        won, row = sorted((r for r in rows if r["adoption_evidence"] != "unverified"), key=lambda r: r["governs_from"]), \
+            lambda kind, lo=None, hi=None, unverified=None: {"agency": a, "policy_id": pid, "kind": kind, "from": lo and str(lo),
+                                                              "to": hi and str(hi), "unverified": unverified}
         for prev, nxt in zip(won, won[1:]):  # a clean load has no overlap, so prev is never open-ended here
             end, start = day(prev["governs_to"]), day(nxt["governs_from"])
             if end and start and (start - end).days > 1:
-                out.append(f"{a} | {pid} | gap {end + timedelta(days=1)}..{start - timedelta(days=1)}")
+                out.append(row("gap", end + timedelta(days=1), start - timedelta(days=1)))
                 n["gaps"] += 1
         last = day(won[-1]["governs_to"]) if won else None
         if last and last < day(on):
-            out.append(f"{a} | {pid} | closed {last} (nothing governs on {on})")
+            out.append(row("closed", hi=last))
             n["closed"] += 1
         if not won:
-            out.append(f"{a} | {pid} | not established ({len(rows)} unverified)")
+            out.append(row("unestablished", unverified=len(rows)))
             n["unestablished"] += 1
-    agencies = len({a for a, _ in groups})
-    return out + [f"agencies={agencies} policies={len(groups)} " + " ".join(f"{k}={v}" for k, v in n.items())]
+    return out, {"agencies": len({a for a, _ in groups}), "policies": len(groups), **n}
 
-def coverage(law_rows, rules, on=None):  # per package rule (sorted id): no LAW row, none in effect on `on`, only disputed
+def gaps_lines(rows, n, on):
+    return [f"{r['agency']} | {r['policy_id']} | " + (f"gap {r['from']}..{r['to']}" if r["kind"] == "gap" else
+            f"closed {r['to']} (nothing governs on {on})" if r["kind"] == "closed" else f"not established ({r['unverified']} unverified)")
+            for r in rows] + [kv(n)]
+
+def gaps(policy_rows, on): return gaps_lines(*gaps_rows(policy_rows, on), on)
+
+def coverage_rows(law_rows, rules, on=None):  # per package rule (sorted id): no LAW row, none in effect on `on`, only disputed
     by, out, n, flagged = {}, [], {"missing": 0, "not_in_effect": 0, "disputed_only": 0}, set()
     for _, r in law_rows:
         by.setdefault(r["rule_id"], []).append(r)
     for rid, review in sorted((x["rule_id"], x["review"]) for x in rules):
         mine, hits = by.get(rid, []), []
-        if not mine:
-            hits.append(("missing", f"no LAW row | review {review}"))
+        hits += [] if mine else ["missing"]
         if mine and on and not any(r["effective_from"] <= on and (not r["effective_to"] or on <= r["effective_to"]) for r in mine):
-            hits.append(("not_in_effect", f"not in effect on {on} ({len(mine)} rows)"))
+            hits.append("not_in_effect")
         if mine and all(r["status"] == "disputed" for r in mine):
-            hits.append(("disputed_only", f"only disputed rows ({len(mine)})"))
-        for kind, text in hits:
-            out.append(f"coverage | {rid} | {text}")
+            hits.append("disputed_only")
+        for kind in hits:
+            out.append({"rule_id": rid, "kind": kind, "review": None if mine else review, "rows": len(mine)})
             n[kind] += 1
             flagged.add(rid)
     total = len({x["rule_id"] for x in rules})
-    return out + [f"rules={total} covered={total - len(flagged)} " + " ".join(f"{k}={v}" for k, v in n.items())
-                  + " | research view, not a legal conclusion"]
+    return out, {"rules": total, "covered": total - len(flagged), **n}
+
+def coverage_lines(rows, n, on):
+    text = {"missing": "no LAW row | review {review}", "not_in_effect": "not in effect on {on} ({rows} rows)",
+            "disputed_only": "only disputed rows ({rows})"}
+    return [f"coverage | {r['rule_id']} | " + text[r["kind"]].format(on=on, **r) for r in rows] + [kv(n) + f" | {NOTE}"]
+
+def coverage(law_rows, rules, on=None): return coverage_lines(*coverage_rows(law_rows, rules, on), on)
+
+def stale_rows(law_rows, today, max_age):  # per LAW row (rule_id, then CSV row): accessed > max_age days before today, or after
+    out, n = [], {"law": len(law_rows), "stale": 0, "future": 0}
+    for _, r in sorted(law_rows, key=lambda x: (x[1]["rule_id"], x[0])):
+        age = (today - day(r["accessed"])).days
+        kind = "stale" if age > max_age else "future" if age < 0 else None
+        if kind:
+            out.append({"rule_id": r["rule_id"], "kind": kind, "accessed": r["accessed"], "age_days": age, "status": r["status"]})
+            n[kind] += 1
+    return out, n
+
+def stale_lines(rows, n, today, max_age):
+    return [f"{r['kind']} | {r['rule_id']} | accessed {r['accessed']} | {r['age_days']} days | {r['status']} | {NOTE}" for r in rows] \
+        + [kv(n) + f" max_age_days={max_age} today={today}"]
+
+def stale(law_rows, today, max_age): return stale_lines(*stale_rows(law_rows, today, max_age), today, max_age)
+
+def review_rows(law_rows, policy_rows, agency, today):  # rows still unreviewed or disputed; read-only, never changes a status
+    out, n = [], dict.fromkeys((f"{k}_{s}" for k in ("law", "policy") for s in ("unreviewed", "disputed")), 0)
+    age = lambda r: None if day(r["added_at"]) > today else (today - day(r["added_at"])).days  # noqa: E731
+    cut = lambda v: v.replace("|", "/")[:60]  # noqa: E731
+    for _, r in sorted(law_rows, key=lambda x: (x[1]["rule_id"], x[0])):
+        if r["status"] != "checked":
+            out.append({"table": "law", "rule_id": r["rule_id"], "status": r["status"], "added_at": r["added_at"], "age_days": age(r)})
+            n["law_" + r["status"]] += 1
+    mine = [r for _, r in policy_rows if agency is None or slug(r["agency"]) == agency]
+    for r in sorted(mine, key=lambda r: (slug(r["agency"]), r["policy_id"], r["policy_row_id"])):
+        if r["status"] != "checked":
+            out.append({"table": "policy", "agency": slug(r["agency"]), "policy_row_id": r["policy_row_id"], "policy_id": cut(r["policy_id"]),
+                        "version_label": cut(r["version_label"]), "status": r["status"], "added_at": r["added_at"], "age_days": age(r)})
+            n["policy_" + r["status"]] += 1
+    return out, n
+
+def review_lines(rows, n):
+    when = lambda r: f"added {r['added_at']} " + ("(future)" if r["age_days"] is None else f"({r['age_days']} days)")  # noqa: E731
+    return [f"review | law | {r['rule_id']} | {r['status']} | {when(r)}" if r["table"] == "law" else
+            f"review | policy | {r['agency']} | {r['policy_row_id']} | {r['policy_id']} {r['version_label']} | {r['status']} | {when(r)}"
+            for r in rows] + [kv(n)]
+
+def review(law_rows, policy_rows, agency, today): return review_lines(*review_rows(law_rows, policy_rows, agency, today))
 
 def policy_facts(store, agencies):  # -> ({slug: policy-kind FACTS rows}, errors); a folder without FACTS.csv has none
     spec = importlib.util.spec_from_file_location("_flock_facts", Path(__file__).resolve().parent / "flock_facts.py")
@@ -231,7 +300,7 @@ def policy_facts(store, agencies):  # -> ({slug: policy-kind FACTS rows}, errors
         out[a] = [r for _, r in rows if r["kind"] == "policy"]
     return out, errs
 
-def changes(policy_rows, facts):  # per agency + policy_id: fact types differing between consecutive adopted versions
+def changes_rows(policy_rows, facts):  # per agency + policy_id: fact types differing between consecutive adopted versions
     groups, out, n = {}, [], {"pairs": 0, "changed_pairs": 0, "unknown_pairs": 0, "disputed_skipped": 0}
     for _, r in policy_rows:
         groups.setdefault((slug(r["agency"]), r["policy_id"]), []).append(r)
@@ -244,31 +313,40 @@ def changes(policy_rows, facts):  # per agency + policy_id: fact types differing
             elif f["source_sha256"].strip() in docs:
                 kept.setdefault(f["source_sha256"].strip(), {}).setdefault(" ".join(f["fact_type"].split()), []).append(f)
         for prev, nxt in zip(won, won[1:]):
-            head, old, new = f"changes | {a} | {pid} | {prev['version_label']} -> {nxt['version_label']} | ", \
-                kept.get(prev["doc_sha256"], {}), kept.get(nxt["doc_sha256"], {})
+            old, new = kept.get(prev["doc_sha256"], {}), kept.get(nxt["doc_sha256"], {})
+            row = lambda kind, t=None, version=None: {  # noqa: E731
+                "agency": a, "policy_id": pid, "from_version": prev["version_label"], "to_version": nxt["version_label"], "kind": kind,
+                "version": version, "fact_type": t, "old_fact_ids": sorted(f["fact_id"] for f in old.get(t, [])),
+                "new_fact_ids": sorted(f["fact_id"] for f in new.get(t, []))}
             n["pairs"] += 1
             if not old or not new:  # unknown, not a change
-                out += [head + f"no policy facts for {r['version_label']}" for r, side in ((prev, old), (nxt, new)) if not side]
+                out += [row("no_facts", version=r["version_label"]) for r, side in ((prev, old), (nxt, new)) if not side]
                 n["unknown_pairs"] += 1
                 continue
-            ids = lambda side, t: ";".join(sorted(f["fact_id"] for f in side[t]))  # noqa: E731
             vals = lambda side, t: sorted(" ".join(f["value"].split()).casefold() for f in side[t])  # noqa: E731
-            items = [f"added {t} {ids(new, t)}" if t not in old else f"removed {t} {ids(old, t)}" if t not in new
-                     else f"changed {t} {ids(old, t)} -> {ids(new, t)}" for t in sorted(old.keys() | new.keys())
+            items = [row("added" if t not in old else "removed" if t not in new else "changed", t) for t in sorted(old.keys() | new.keys())
                      if t not in old or t not in new or vals(old, t) != vals(new, t)]
-            out += [head + x for x in items]
+            out += items
             n["changed_pairs"] += bool(items)
-    return out + [f"agencies={len({a for a, _ in groups})} policies={len(groups)} "
-                  + " ".join(f"{k}={v}" for k, v in n.items()) + " | ids only, review-required"]
+    return out, {"agencies": len({a for a, _ in groups}), "policies": len(groups), **n}
 
-def compare(policy_rows, facts, on, types=None):  # per fact type: agencies grouped by governing-policy value class on `on`
-    out, kept, n = [], {}, {"agencies": 0, "governed": 0, "ungoverned": 0, "types": 0, "differ": 0, "agree": 0,
-                            "disputed_skipped": 0}
+def changes_lines(rows, n):
+    ids = lambda r, k: ";".join(r[k + "_fact_ids"])  # noqa: E731
+    item = {"no_facts": lambda r: f"no policy facts for {r['version']}", "added": lambda r: f"added {r['fact_type']} {ids(r, 'new')}",
+            "removed": lambda r: f"removed {r['fact_type']} {ids(r, 'old')}",
+            "changed": lambda r: f"changed {r['fact_type']} {ids(r, 'old')} -> {ids(r, 'new')}"}
+    return [f"changes | {r['agency']} | {r['policy_id']} | {r['from_version']} -> {r['to_version']} | " + item[r["kind"]](r) for r in rows] \
+        + [kv(n) + " | ids only, review-required"]
+
+def changes(policy_rows, facts): return changes_lines(*changes_rows(policy_rows, facts))
+
+def _compare(policy_rows, facts, on, types=None):  # per fact type: agencies grouped by governing-policy value class on `on`
+    ungoverned, rows, kept, n = [], [], {}, {"agencies": 0, "governed": 0, "ungoverned": 0, "types": 0, "differ": 0,
+                                             "agree": 0, "disputed_skipped": 0}  # report: slugs, fact ids, counts only
     agencies = sorted({slug(r["agency"]) for _, r in policy_rows})
     for a in agencies:  # kept[a] = {fact type: [facts]} from documents governing on `on`; disputed ones counted, not used
         docs, kept[a] = {r["doc_sha256"] for r in governs_on(policy_rows, a, on)}, {}
-        if not docs:
-            out.append(f"compare | {a} | no governing adopted policy on {on}")
+        ungoverned += [] if docs else [a]
         n["governed" if docs else "ungoverned"] += 1
         for f in facts.get(a, []):
             if f["source_sha256"].strip() in docs and f["status"] == "disputed":
@@ -283,21 +361,40 @@ def compare(policy_rows, facts, on, types=None):  # per fact type: agencies grou
                 undocumented.append(a)
                 continue
             key = tuple(sorted(" ".join(f["value"].split()).casefold() for f in kept[a][t]))
-            classes.setdefault(key, []).append(f"{a} ({';'.join(sorted(f['fact_id'] for f in kept[a][t]))})")
-        parts = [f"class {i}: " + ", ".join(members) for i, members in enumerate(classes.values(), 1)]
-        parts += [f"undocumented: {', '.join(undocumented)}"] if undocumented else []
+            classes.setdefault(key, []).append({"agency": a, "fact_ids": sorted(f["fact_id"] for f in kept[a][t])})
         verdict = "differ" if len(classes) >= 2 else \
-            "agree" if len(classes) == 1 and len(next(iter(classes.values()))) >= 2 and not undocumented else ""
-        if verdict:
-            parts.append(verdict)
-            n[verdict] += 1
-        out.append(f"compare | {t} | " + " | ".join(parts))
+            "agree" if len(classes) == 1 and len(next(iter(classes.values()))) >= 2 and not undocumented else None
+        n.update({verdict: n[verdict] + 1} if verdict else {})
+        rows.append({"fact_type": t, "classes": [{"class": i, "members": m} for i, m in enumerate(classes.values(), 1)],
+                     "undocumented": undocumented, "verdict": verdict})
     n.update(agencies=len(agencies), types=len(wanted))
-    return out + [" ".join(f"{k}={v}" for k, v in n.items()) + " | ids only, research view, not a legal conclusion"]
+    return {"on": on, "types_requested": wanted if types else None, "ungoverned": ungoverned, "types": rows, "counts": n}
+
+def compare_lines(rep):  # the text form of a _compare report
+    out = [f"compare | {a} | no governing adopted policy on {rep['on']}" for a in rep["ungoverned"]]
+    for t in rep["types"]:
+        parts = [f"class {c['class']}: " + ", ".join(f"{m['agency']} ({';'.join(m['fact_ids'])})" for m in c["members"])
+                 for c in t["classes"]] + ([f"undocumented: {', '.join(t['undocumented'])}"] if t["undocumented"] else [])
+        out.append(f"compare | {t['fact_type']} | " + " | ".join(parts + ([t["verdict"]] if t["verdict"] else [])))
+    return out + [" ".join(f"{k}={v}" for k, v in rep["counts"].items()) + " | ids only, research view, not a legal conclusion"]
+
+def compare(policy_rows, facts, on, types=None):
+    return compare_lines(_compare(policy_rows, facts, on, types))
 
 USAGE = ("usage: flock_law_policy.py --check PATH | versions PATH --agency SLUG [--on YYYY-MM-DD]"
-         " | governing STORE --on YYYY-MM-DD | gaps STORE --on YYYY-MM-DD | changes STORE [--agency SLUG]"
-         " | coverage STORE [--on YYYY-MM-DD] | compare STORE --on YYYY-MM-DD [--types T1,T2]")
+         " | governing STORE --on YYYY-MM-DD [--json] | gaps STORE --on YYYY-MM-DD [--json] | changes STORE [--agency SLUG] [--json]"
+         " | coverage STORE [--on YYYY-MM-DD] [--json] | compare STORE --on YYYY-MM-DD [--types T1,T2] [--json]"
+         " | stale STORE --max-age-days N [--today YYYY-MM-DD] [--json] | review STORE [--agency SLUG] [--today YYYY-MM-DD] [--json]")
+REPORTS = ("governing", "gaps", "coverage", "stale", "review", "changes")  # a trailing --json prints one line of JSON instead
+
+def report(as_json, errs, name, make, lines, code=3, **head):  # errors -> stderr only, exit 1; else text or JSON from one row set
+    if errs:
+        print("\n".join(errs), file=sys.stderr)
+        return 1
+    rows, counts = make()
+    print(json.dumps({"schema": f"flock-law-policy-{name}-v1", **head, "rows": rows, "counts": counts, "note": NOTE},
+                     sort_keys=True, ensure_ascii=True) if as_json else "\n".join(lines(rows, counts)))
+    return code if rows else 0
 
 def main(argv):
     try:
@@ -313,14 +410,19 @@ def run(argv):
         law_rows, policy_rows, errs = load_all(argv[1])
         print("\n".join(errs + [f"law={len(law_rows)} policy={len(policy_rows)} errors={len(errs)}"]))
         return 1 if errs else 0
+    as_json = argv[:1] in [[r] for r in REPORTS] and argv[-1:] == ["--json"]  # accepted only as the last argument, once
+    argv = argv[:-1] if as_json else argv
+    if argv[:1] in [[r] for r in REPORTS] and "--json" in argv[2:]:
+        print(USAGE, file=sys.stderr)
+        return 2
     if argv[:1] in (["governing"], ["gaps"]):  # STORE must be a directory; any store error -> stderr, nothing on stdout, exit 1
         if len(argv) != 4 or argv[2] != "--on" or not day(argv[3]) or not Path(argv[1]).is_dir():
             print(USAGE, file=sys.stderr)
             return 2
         law_rows, policy_rows, errs = load_all(argv[1])
-        out = errs or (governing(law_rows, policy_rows, argv[3]) if argv[0] == "governing" else gaps(policy_rows, argv[3]))
-        print("\n".join(out), file=sys.stderr if errs else sys.stdout)
-        return 1 if errs else 3 if argv[0] == "gaps" and len(out) > 1 else 0  # gaps: every line but the count is a finding
+        gov, on = argv[0] == "governing", argv[3]  # gaps: every row is a finding (exit 3); governing is a view (exit 0)
+        return report(as_json, errs, argv[0], lambda: governing_rows(law_rows, policy_rows, on) if gov else gaps_rows(policy_rows, on),
+                      lambda r, n: governing_lines(r, n, on) if gov else gaps_lines(r, n, on), 0 if gov else 3, on=on)
     if argv[:1] == ["coverage"]:  # STORE a directory with LAW.csv; any load or package error -> stderr only, exit 1
         on = argv[3] if len(argv) == 4 else None
         if len(argv) not in (2, 4) or (on and (argv[2] != "--on" or not day(on))) or not Path(argv[1]).is_dir():
@@ -334,9 +436,32 @@ def run(argv):
             rules = rules if errs else law.load_package("us-ca")["rules"]
         except (ValueError, KeyError, TypeError, OSError):
             errs = ["row 1: law package unreadable"]
-        out = errs or coverage(law_rows, rules, on)
-        print("\n".join(out), file=sys.stderr if errs else sys.stdout)
-        return 1 if errs else 3 if len(out) > 1 else 0
+        return report(as_json, errs, "coverage", lambda: coverage_rows(law_rows, rules, on), lambda r, n: coverage_lines(r, n, on), on=on)
+    if argv[:1] == ["stale"]:  # STORE a directory with LAW.csv; N 1..3650 days; any load error -> stderr only, exit 1
+        on = argv[5] if len(argv) == 6 else None
+        if len(argv) not in (4, 6) or argv[2] != "--max-age-days" or not re.fullmatch("[0-9]{1,4}", argv[3]) \
+                or not 1 <= int(argv[3]) <= 3650 or (on is not None and (argv[4] != "--today" or not day(on))) \
+                or not Path(argv[1]).is_dir():
+            print(USAGE, file=sys.stderr)
+            return 2
+        if not (Path(argv[1]) / "LAW.csv").is_file():
+            print("store: no LAW.csv", file=sys.stderr)
+            return 1
+        law_rows, _, errs = load_all(argv[1])
+        today, age = day(on) if on else date.today(), int(argv[3])
+        return report(as_json, errs, "stale", lambda: stale_rows(law_rows, today, age), lambda r, n: stale_lines(r, n, today, age),
+                      today=str(today), max_age_days=age)
+    if argv[:1] == ["review"]:  # STORE a directory; any load error -> stderr only, exit 1; exit 3 when any row waits
+        opts = dict(zip(argv[2::2], argv[3::2]))
+        ag = opts.get("--agency", "x")
+        if len(argv) not in (2, 4, 6) or len(opts) != len(argv) // 2 - 1 or set(opts) - {"--agency", "--today"} \
+                or not ag or slug(ag) != ag or not day(opts.get("--today", "2000-01-01")) or not Path(argv[1]).is_dir():
+            print(USAGE, file=sys.stderr)
+            return 2
+        law_rows, policy_rows, errs = load_all(argv[1])
+        ag, today = opts.get("--agency"), day(opts.get("--today", "")) or date.today()
+        return report(as_json, errs, "review", lambda: review_rows(law_rows, policy_rows, ag, today), review_lines,
+                      today=str(today), agency=ag)
     if argv[:1] == ["changes"]:  # a report, not findings: exit 0 clean; any POLICY or in-scope FACTS error -> stderr, exit 1
         if not (len(argv) == 2 or len(argv) == 4 and argv[2] == "--agency" and argv[3] and slug(argv[3]) == argv[3]) \
                 or not Path(argv[1]).is_dir():
@@ -345,11 +470,11 @@ def run(argv):
         _, policy_rows, errs = load_all(argv[1])
         rows = [(n, r) for n, r in policy_rows if len(argv) == 2 or slug(r["agency"]) == argv[3]]
         facts, more = ({}, []) if errs else policy_facts(argv[1], sorted({slug(r["agency"]) for _, r in rows}))
-        out = (errs := errs + more) or changes(rows, facts)
-        print("\n".join(out), file=sys.stderr if errs else sys.stdout)
-        return 1 if errs else 0
+        return report(as_json, errs + more, "changes", lambda: changes_rows(rows, facts), changes_lines, 0,
+                      agency=argv[3] if len(argv) == 4 else None)
     if argv[:1] == ["compare"]:  # STORE a directory; POLICY or FACTS errors -> stderr only, exit 1; exit 3 when a type differs
-        opts = dict(zip(argv[2::2], argv[3::2])) if len(argv) in (4, 6) else {}
+        as_json, argv = argv[2:].count("--json"), argv[:2] + [x for x in argv[2:] if x != "--json"]  # --json at most once
+        opts = dict(zip(argv[2::2], argv[3::2])) if len(argv) in (4, 6) and as_json < 2 else {}
         names = [t.strip() for t in opts.get("--types", "x").split(",")]
         if len(opts) != len(argv) // 2 - 1 or set(opts) - {"--on", "--types"} or not day(opts.get("--on", "")) \
                 or not 0 < len(names) <= 20 or not all(0 < len(t) <= 60 for t in names) or not Path(argv[1]).is_dir():
@@ -357,9 +482,14 @@ def run(argv):
             return 2
         _, policy_rows, errs = load_all(argv[1])
         facts, more = ({}, []) if errs else policy_facts(argv[1], sorted({slug(r["agency"]) for _, r in policy_rows}))
-        out = (errs := errs + more) or compare(policy_rows, facts, opts["--on"], names if "--types" in opts else None)
-        print("\n".join(out), file=sys.stderr if errs else sys.stdout)
-        return 1 if errs else 3 if any(x.endswith(" | differ") for x in out[:-1]) else 0
+        if errs := errs + more:
+            print("\n".join(errs), file=sys.stderr)
+            return 1
+        rep = _compare(policy_rows, facts, opts["--on"], names if "--types" in opts else None)
+        print(json.dumps({"schema": "flock-law-policy-compare-v1", "review_required": True, **rep,
+                          "note": "research view, not a legal conclusion"}, sort_keys=True, indent=1, ensure_ascii=False)
+              if as_json else "\n".join(compare_lines(rep)))
+        return 3 if any(t["verdict"] == "differ" for t in rep["types"]) else 0
     on = argv[5] if len(argv) == 6 else None
     if len(argv) not in (4, 6) or argv[0] != "versions" or argv[2] != "--agency" or (on and (argv[4] != "--on" or not day(on))):
         print(USAGE, file=sys.stderr)

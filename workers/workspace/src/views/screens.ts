@@ -118,10 +118,20 @@ ${actions.length ? html`<h2>Approval cards</h2><table class="data"><tr><th>Card<
 <h2>Finding JSON</h2>${jsonBlock(JSON.parse(f.finding_json))}`;
 }
 
-export function approvals(rows: ExternalActionRow[], notice: string | null): Safe {
+/** DF-4: advisory "review-required" notes (place + rule, never the text) from the legal-claim wording guard. Never throws. */
+export function reviewFlagsOf(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string").slice(0, 50) : [];
+}
+
+function reviewFlagsNotice(flags: string[]): Safe | string {
+  return flags.length ? html`<div class="notice warn"><strong>Wording review required before approving</strong> - the legal-claim guard flagged text that may assert a legal violation. Advisory only; it does not block approval.<ul>${flags.map((f) => html`<li>${f}</li>`)}</ul></div>` : "";
+}
+
+export function approvals(rows: ExternalActionRow[], notice: string | null, buildFlags: Record<string, string[]> = {}): Safe {
   const proposed = rows.filter((a) => a.state === "proposed");
   const other = rows.filter((a) => a.state !== "proposed");
   const card = (a: ExternalActionRow) => html`<div class="card"><h3>${a.kind} ${statePill(a.state)}</h3><p class="meta">${a.action_id} - subject ${a.subject_id ?? "n/a"} - proposed by ${a.proposed_by} ${a.created_at}${a.approved_by ? html`<br>approved by ${a.approved_by} ${a.approved_at}` : ""}${a.executed_at ? html`<br>executed ${a.executed_at}` : ""}${a.error && !executionClaimId(a) ? html`<br><span class="pill bad">${a.error}</span>` : ""}</p>
+${reviewFlagsNotice([...reviewFlagsOf((JSON.parse(a.proposal_json) as { review_flags?: unknown }).review_flags), ...(buildFlags[a.action_id] ?? [])])}
 ${jsonBlock(JSON.parse(a.proposal_json))}
 ${a.state === "proposed" ? html`<form method="post" action="/approvals/${a.action_id}/approve" style="display:inline"><button class="primary" type="submit">Approve</button></form>
 <form method="post" action="/approvals/${a.action_id}/edit" class="stack" style="margin-top:.6rem"><label class="field">Edit proposal (JSON merged over the current one)<textarea name="proposal" style="min-height:5rem">{}</textarea></label><button class="secondary" type="submit">Save edit</button></form>
@@ -139,7 +149,7 @@ ${a.state === "approved" ? html`<form method="post" action="/approvals/${a.actio
 </div>`;
   return html`<h1>Approvals</h1>
 ${notice ? html`<p class="notice">${notice}</p>` : ""}
-<p>Every proposed external effect is a card. Only approved cards with an approver identity from Cloudflare Access are executed, and execution records a provider receipt. Executing an executed card again returns the existing receipt. send_request and send_followup fail with <code>sender_not_configured</code> until an outbox sender is registered; post_social is <code>not_implemented</code>; pay_fee is <code>manual_only</code>.</p>
+<p>Every proposed external effect is a card. Only approved cards with an approver identity from Cloudflare Access are executed, and execution records a provider receipt. Executing an executed card again returns the existing receipt. send_request and send_followup fail with <code>sender_not_configured</code> until an outbox sender is registered; post_social posts one approved draft to one platform only when the card's content hash matches the exact text, and fails with <code>social_not_configured</code> (readiness <code>social_posting: not configured</code>) until <code>MASTODON_URL</code> and its token secret are set; pay_fee is <code>manual_only</code>.</p>
 <h2>Waiting (${proposed.length})</h2><div class="cards">${proposed.map(card)}</div>
 <h2>History</h2><div class="cards">${other.map(card)}</div>`;
 }
@@ -160,7 +170,9 @@ export function subscribers(events: SubscriberEventRow[], drafts: JobRow[], send
     const subject = draft && typeof draft.subject === "string" ? draft.subject : "(no draft yet)";
     const text = draft && typeof draft.text === "string" ? draft.text : "";
     const inputs = JSON.parse(j.inputs_json) as { trigger?: string; month?: string };
+    const flags = reviewFlagsOf(draft?.review_flags);
     return html`<div class="card"><h3>${subject} ${statePill(j.state)}</h3><p class="meta">${j.job_id} - ${inputs.trigger ?? "?"}${inputs.month ? " " + inputs.month : ""} - enqueued ${j.enqueued_at}${j.error ? html`<br><span class="pill bad">${j.error}</span>` : ""}</p>
+${reviewFlagsNotice(flags)}
 ${text ? html`<pre class="json">${text.slice(0, 3000)}</pre>` : ""}
 ${j.state === "done" && draft ? html`<form method="post" action="/subscribers/drafts/${j.job_id}/propose"><button class="primary" type="submit">Approve &amp; send (creates a send_newsletter card)</button></form>` : html`<p class="meta">The runner builds the draft; it appears here when the job is done.</p>`}</div>`;
   };
@@ -179,7 +191,7 @@ export function meetings(rows: MeetingRow[], notice: string | null): Safe {
   return html`<h1>Meetings</h1>
 ${notice ? html`<p class="notice">${notice}</p>` : ""}
 <p>Meetings come from the Legistar import (<code>campaign_tool meetings</code>, kit/meetings.json) or are added here. A comment kit is generated from published findings only and is rendered on the public meetings page after the next build.</p>
-<table class="data"><tr><th>Body</th><th>Starts</th><th>Agenda item</th><th>Relevance</th><th>RSVPs</th><th>Source</th><th>Comment kit</th></tr>${rows.map((m) => html`<tr><td>${m.body_name}</td><td>${m.starts_at}</td><td>${m.agenda_url ? html`<a href="${m.agenda_url}" rel="noopener">${m.agenda_item ?? "agenda"}</a>` : m.agenda_item ?? ""}</td><td>${m.relevance ?? ""}</td><td>${m.rsvp_count}</td><td>${m.source ?? ""}</td><td><form method="post" action="/meetings/${m.meeting_id}/comment-kit"><button class="secondary" type="submit">${m.comment_kit_md ? "Regenerate kit" : "Generate kit"}</button></form></td></tr>${m.comment_kit_md ? html`<tr><td colspan="7"><details><summary>Comment kit (Markdown)</summary><pre class="json">${m.comment_kit_md}</pre></details></td></tr>` : ""}`)}</table>
+<table class="data"><tr><th>Body</th><th>Starts</th><th>Agenda item</th><th>Relevance</th><th>RSVPs</th><th>Source</th><th>Comment kit</th></tr>${rows.map((m) => html`<tr><td>${m.body_name}</td><td>${m.date_state === "unknown" ? "date unknown" : m.starts_at}</td><td>${m.agenda_url ? html`<a href="${m.agenda_url}" rel="noopener">${m.agenda_item ?? "agenda"}</a>` : m.agenda_item ?? ""}</td><td>${m.relevance ?? ""}</td><td>${m.rsvp_count}</td><td>${m.source ?? ""}${m.supersedes ? html`<br>revision ${m.revision} of ${m.source_url} item ${m.item_id}` : ""}</td><td>${m.date_state === "unknown" ? "needs a date" : html`<form method="post" action="/meetings/${m.meeting_id}/comment-kit"><button class="secondary" type="submit">${m.comment_kit_md ? "Regenerate kit" : "Generate kit"}</button></form>`}</td></tr>${m.comment_kit_md ? html`<tr><td colspan="7"><details><summary>Comment kit (Markdown)</summary><pre class="json">${m.comment_kit_md}</pre></details></td></tr>` : ""}`)}</table>
 <h2>Add a meeting</h2>
 <form method="post" action="/meetings" class="stack"><label class="field">Body name<input type="text" name="body_name" required></label><label class="field">Starts (ISO-8601)<input type="text" name="starts_at" required placeholder="2026-10-14T18:00:00-07:00"></label><label class="field">Agenda URL (https)<input type="url" name="agenda_url"></label><label class="field">Agenda item<input type="text" name="agenda_item"></label><label class="field">Agency id (optional)<input type="text" name="agency_id" pattern="[a-z]{2}-[a-z0-9-]{1,80}"></label><label class="field">Relevance<select name="relevance"><option>alpr_item</option><option>budget</option><option>consent_calendar</option><option>none</option></select></label><button class="primary" type="submit">Add</button></form>`;
 }

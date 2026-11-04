@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Flock page: records-page story data builder + lint for the site rules (G4).
   build --cards C --sources S --location L --thread T --base-sources N --out F [--replace] [--not-posted ID..] [--not-posted-title T..]
-  lint  --story S --location L --thread T --base-sources N [--not-posted ID..] [--not-posted-title T..]
+  lint  --story S --location L --thread T --base-sources N [--not-posted ID..] [--not-posted-title T..] [--json]
   check --cards C --sources S --location L --thread T --base-sources N --story F [--not-posted ID..] [--not-posted-title T..]
+  check … --json  prints one flock-page-check-v1 document (state, differing_keys, counts, errors, superseded); same exit
 build turns a model-written CARDS.json plus G3's SOURCES.json into <slug>-story.json (the keys of the site's morrobay-story.mjs),
 numbering cites after the page's N base sources; it lints its own result first and writes nothing on any error. lint checks story,
 thread and location against site rules 1, 2, 3, 4, 7, 8, 9 and the draft tone; it prints `<area> <index>: <rule> <reason>` errors
@@ -81,7 +82,7 @@ def lint(story, thread, location, base, hidden_ids=(), hidden_titles=()):
         bad = [("R1", "outreach in story", OUTREACH.search(s)), ("R9", "email-like string", EMAIL.search(s)),
                ("R9", "phone-like string", PHONE.search(s)), ("R9", "plate-like string", PLATE.search(s)),
                ("R9", "access-link parameter", any(ACCESS.search(u) for u in URL.findall(s))),
-               ("tone", "always-banned wording", compare.ALWAYS.search(s)), ("tone", "quote-gated wording", compare.GATED.search(s))]
+               ("tone", "always-banned wording", compare.ALWAYS.search(s))]  # quote-gated wording: a note (claim_notes), DF-4
         errs += ["%s %d: %s %s" % (area, i, rule, why) for rule, why, hit in bad if hit]
         errs += ["%s %d: R8 inventory document not posted" % (area, i) for doc in INVDOC.findall(s)
                  if doc not in loc_docs or doc not in verified]
@@ -181,9 +182,24 @@ def assemble(cards, sources, location, base):
     story = {k: meta[k] for k in META}
     story.update(programEvents=cards.get("programEvents") or [], keyDates=cards.get("keyDates") or [], extraSources=lines, **out)
     return {k: story[k] for k in KEYS}, errs
-def report(errs, n):
-    print("\n".join(errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)]))
+def problem(e, inp=False):  # one error line -> {area, index, rule, why}; an input/io refusal -> area "input", whole line as why
+    m = None if inp else re.fullmatch(r"(\S+) (\d+): (.*)", e)
+    if not m:
+        return dict(area="input", index=0, rule="input", why=e)
+    rule, _, why = m.group(3).partition(" ")
+    return dict(area=m.group(1), index=int(m.group(2)), rule=rule, why=why)
+def report(errs, n, story=None, as_json=False, inp=False):  # lint --json: one flock-page-lint-v1 document from the same errs/n; same exit
+    notes = claim_notes(story)  # DF-4 advisory notes: first text lines; under --json on stderr, so stdout stays one v1 document
+    if as_json:
+        if notes:
+            print("\n".join(notes), file=sys.stderr)
+        print(json.dumps(dict(schema="flock-page-lint-v1", review_required=True, counts={k: n[k] for k in COUNTS}, errors=len(errs),
+                              problems=[problem(e, inp) for e in errs]), sort_keys=True, indent=1, ensure_ascii=False))
+    else:
+        print("\n".join(notes + errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d" % len(errs)]))
     return 1 if errs else 0
+def claim_notes(story):  # DF-4 alert-only: legal-claim and quote-gated wording notes; never errors, never text
+    return privacy.review_notes((("%s %d" % (area, i), text) for area, i, text in walk(story)), compare.GATED) if isinstance(story, dict) else []
 def dump(story): return json.dumps(story, indent=2, ensure_ascii=False) + "\n"
 def fresh(args):  # build's shared part: inputs -> assemble -> lint; -> (story | None, errs, counts), errors as build printed them
     errs, n = [], dict.fromkeys(COUNTS, 0)
@@ -197,7 +213,7 @@ def fresh(args):  # build's shared part: inputs -> assemble -> lint; -> (story |
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         return None, errs + ["io 0: %s" % type(exc).__name__], n
 def build(args):
-    n, errs, tmp = dict.fromkeys(COUNTS, 0), [], None
+    n, errs, tmp, story = dict.fromkeys(COUNTS, 0), [], None, None
     try:
         out = Path(os.path.expanduser(args.out))  # a link as the final component is refused; links above it still resolve
         if os.path.islink(out) or not out.parent.is_dir():
@@ -225,23 +241,27 @@ def build(args):
         if tmp is not None:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)  # a failed build leaves no temp file
-    return report(errs, n)
+    return report(errs, n, story)
 def run_lint(args):
+    got = {}
+    inp = True  # an error raised before lint returned is an input refusal
     try:
         got = _inputs(args, ("story", "location", "thread"))
         errs, n = _stage("lint", lint, got["story"], got["thread"], got["location"], args.base_sources, args.not_posted,
                          args.not_posted_title)
+        inp = False
     except Fail as exc:
         errs, n = str(exc).splitlines(), dict.fromkeys(COUNTS, 0)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         errs, n = ["io 0: %s" % type(exc).__name__], dict.fromkeys(COUNTS, 0)
-    return report(errs, n)
+    return report(errs, n, got.get("story"), args.json, inp)
 def superseded(f):  # regular files named <F>.superseded-* beside F; links are not counted
     with contextlib.suppress(OSError):
         return sum(e.name.startswith(f.name + ".superseded-") and e.is_file(follow_symlinks=False) for e in os.scandir(f.parent))
     return 0
 def check(args):  # read-only: the story on disk vs a fresh in-memory build; never writes, never follows a final link
     f, errs, n, state = Path(os.path.expanduser(args.story)), [], dict.fromkeys(COUNTS, 0), "invalid"
+    story, differing = None, []
     if os.path.islink(f):
         state = "link"
     elif f.resolve() == REPO or REPO in f.resolve().parents:
@@ -256,16 +276,23 @@ def check(args):  # read-only: the story on disk vs a fresh in-memory build; nev
                 if state == "stale":
                     old = json.loads(disk.decode("utf-8"))
                     old = old if isinstance(old, dict) else {}
-                    errs.append("story 0: differs from a fresh build (keys: %s)" % (", ".join(k for k in KEYS if old.get(k) != story[k])
-                                                                                     or "none"))
+                    differing = [k for k in KEYS if old.get(k) != story[k]]  # one list: the text line and the JSON key list
+                    errs.append("story 0: differs from a fresh build (keys: %s)" % (", ".join(differing) or "none"))
         except FileNotFoundError:
             state = "missing"
         except ValueError:  # not UTF-8, not JSON or truncated
             errs.append("story 0: unreadable JSON")
         except OSError as exc:
             state, errs = "invalid", ["io 0: %s" % type(exc).__name__]
-    print("\n".join(errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d superseded=%d state=%s"
-                            % (len(errs), superseded(f), state)]))
+    notes, sup = claim_notes(story), superseded(f)
+    if args.json:  # check --json: one flock-page-check-v1 document from the same state/errs/counts; DF-4 notes go to stderr
+        if notes:
+            print("\n".join(notes), file=sys.stderr)
+        print(json.dumps(dict(schema="flock-page-check-v1", review_required=True, state=state, differing_keys=differing,
+                              counts={k: n[k] for k in COUNTS}, errors=errs, superseded=sup), sort_keys=True, indent=1, ensure_ascii=False))
+    else:
+        print("\n".join(notes + errs + [" ".join("%s=%d" % (k, n[k]) for k in COUNTS) + " errors=%d superseded=%d state=%s"
+                                        % (len(errs), sup, state)]))
     return 0 if state == "current" else 1
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -280,6 +307,8 @@ def main(argv=None):
         p.add_argument("--not-posted-title", nargs="*", default=[], action="extend")
         if name == "build":
             p.add_argument("--replace", action="store_true")
+        if name in ("lint", "check"):
+            p.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     return {"build": build, "lint": run_lint, "check": check}[args.command](args)
 if __name__ == "__main__":

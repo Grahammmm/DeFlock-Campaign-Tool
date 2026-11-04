@@ -25,7 +25,8 @@ from .review import CLASSIFICATIONS, review_blockers
 CONFIDENCE = ("verified", "likely", "needs_attorney_review")
 SIGNUP_MODES = ("none", "brevo_hosted")
 SIGNUP_HOST_SUFFIXES = (".sibforms.com",)
-AGENCY_KINDS = ("sheriff", "police", "chp", "district_attorney", "county_board", "city_council", "other")
+AGENCY_KINDS = ("sheriff", "police", "chp", "campus_police", "district_attorney", "county_board", "city_council",
+                "other")
 CITY_KINDS = ("police", "city_council")
 PORTAL_VENDORS = ("nextrequest", "govqa", "justfoia", "none", "unknown")
 SLUG = re.compile(r"[a-z][a-z0-9-]{0,63}")
@@ -144,7 +145,6 @@ ASSET_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")  # site._asset_plan
 TEXT_BACKGROUNDS = {"cream": "#fff8ec", "paper": "#f3eee4"}  # styles.css.tmpl --cream / --paper
 BRAND_CONTRAST = (("ink", ("cream", "paper")), ("accent", ("cream",)))  # the text pairs the stylesheet uses
 MIN_CONTRAST, LOGO_MAX_SIDE = 4.5, 2000
-NO_SVG = "SVG files need the SVG safety check (DF2037-03), which this build does not have; use PNG or WebP"
 PROFILE_KEYS = {"vendor", "status", "summary", "cameraCount", "facts", "open", "flags"}
 SIGNUP_KEYS = {"mode", "form_html_allowlisted_url", "label", "note"}
 
@@ -162,16 +162,14 @@ def contrast(first, second):
 
 
 def _brand_asset(value, assets_dir, label, suffixes):
-    """(width, height) of a PNG/WebP public asset (None for .ico or without ``assets_dir``); the value is never shown."""
-    from . import image_meta  # local: image_meta imports this module
+    """(width, height) of a PNG/WebP/SVG public asset (None for .ico or without ``assets_dir``); the value is never shown."""
+    from . import doc_assets, image_meta  # local: both import this module
     parts = value.split("/") if isinstance(value, str) else []
     if not parts or len(parts) > 8 or any(not ASSET_PART.fullmatch(part) for part in parts):
         raise ContentError(f"{label}: use a plain file name inside content/public-assets/")
     suffix = Path(value).suffix.lower()
-    if suffix == ".svg":
-        raise ContentError(f"{label}: {NO_SVG}")
     if suffix not in suffixes:
-        raise ContentError(f"{label}: use a {' or '.join(suffixes)} file")
+        raise ContentError(f"{label}: use a {', '.join(suffixes[:-1])} or {suffixes[-1]} file")
     if assets_dir is None:  # callers that render no page (meeting packs) check everything but the file
         return None
     chain = [Path(assets_dir).joinpath(*parts[:depth]) for depth in range(len(parts) + 1)]
@@ -180,6 +178,15 @@ def _brand_asset(value, assets_dir, label, suffixes):
     path = chain[-1]
     if not path.is_file() or path.stat().st_size > image_meta.MAX_BYTES:
         raise ContentError(f"{label}: file not found in content/public-assets/ or over 5 MiB")
+    if suffix == ".svg":
+        data = path.read_bytes()
+        kinds = doc_assets.svg_kinds(data)
+        if kinds:
+            raise ContentError(f"{label}: SVG ({', '.join(kinds)})")
+        size = doc_assets.svg_size(data)
+        if size is None:
+            raise ContentError(f"{label}: unreadable SVG (no readable width and height)")
+        return size
     if suffix not in image_meta.FORMATS:
         return None
     data = path.read_bytes()
@@ -213,12 +220,12 @@ def load_brand(value, assets_dir=None):
         alt = value.get("logo_alt")
         if not plain_text(alt) or not alt.strip() or len(alt) > 120:
             raise ContentError(f"{label}.logo_alt: required with logo, 1-120 characters of plain text")
-        size = _brand_asset(value["logo"], assets_dir, f"{label}.logo", (".png", ".webp"))
+        size = _brand_asset(value["logo"], assets_dir, f"{label}.logo", (".png", ".webp", ".svg"))
         if size and not all(1 <= side <= LOGO_MAX_SIDE for side in size):
             raise ContentError(f"{label}.logo: {size[0]}x{size[1]} px; each side must be 1-{LOGO_MAX_SIDE} px")
         brand.update(logo=value["logo"], logo_alt=alt, logo_size=size)
     if "favicon" in value:
-        _brand_asset(value["favicon"], assets_dir, f"{label}.favicon", (".ico", ".png"))
+        _brand_asset(value["favicon"], assets_dir, f"{label}.favicon", (".ico", ".png", ".svg"))
         brand["favicon"] = value["favicon"]
     return brand
 
@@ -299,7 +306,7 @@ FINDING_KEYS = {"id", "title", "slug", "summary", "body_md", "classification", "
 FINDING_REQUIRED = {"id", "title", "slug", "summary", "classification", "confidence",
                     "event_date", "sources", "published_at", "corrections", "state",
                     "author", "limitations", "counterevidence"}
-SOURCE_KEYS = {"sha256", "locator", "title", "rule_id"}
+SOURCE_KEYS = {"sha256", "locator", "title", "rule_id", "page"}
 CORRECTION_KEYS = {"date", "note"}
 
 
@@ -328,11 +335,15 @@ def load_finding(document, label):
         _require_keys(source, SOURCE_KEYS, {"sha256", "locator"}, f"{label}.sources[{index}]")
         if not SHA256.fullmatch(str(source["sha256"])):
             raise ContentError(f"{label}.sources[{index}].sha256: must be 64 lowercase hex characters")
+        page = source.get("page")
+        if "page" in source and not (type(page) is int and 1 <= page <= 100000):
+            raise ContentError(f"{label}.sources[{index}].page: a whole number of 1 or more")
         sources.append({
             "sha256": source["sha256"],
             "locator": _text(source, "locator", f"{label}.sources[{index}]", allow_empty=False),
             "title": _text(source, "title", f"{label}.sources[{index}]", default="Source record"),
             "rule_id": _text(source, "rule_id", f"{label}.sources[{index}]", required=False, default=None),
+            "page": page,
         })
     published_at = _timestamp(document["published_at"], f"{label}.published_at")
     published_day = datetime.fromisoformat(published_at.replace("Z", "+00:00")).date()
@@ -543,11 +554,31 @@ def load_sources(document):
     return entries
 
 
+def check_source_pages(findings, sources):
+    """DF2037-04: problem lines for finding ``sources[].page`` against the library (build and content-check)."""
+    problems = []
+    for finding in findings:
+        for index, source in enumerate(finding["sources"]):
+            if source.get("page") is None:
+                continue
+            where = f"findings/{finding['slug']}.sources[{index}].page"
+            entry = next((s for s in sources if s["sha256"] == source["sha256"]), None)  # as site.finding_html
+            if entry is None:
+                problems.append(f"{where}: source is not in the library")
+            elif not entry["public_url"]:
+                problems.append(f"{where}: the source has no public copy")
+            elif entry["pages"] and source["page"] > entry["pages"]:
+                problems.append(f"{where}: above the copy's {entry['pages']} pages")
+    return problems
+
+
 # --- agencies --------------------------------------------------------------
 
 AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", "records_email",
                "portal", "selected", "verified", "sources", "slug", "profile", "place_fips",
-               "flock_transparency_slug", "muckrock_agency_id", "notes", "verification"}
+               "flock_transparency_slug", "muckrock_agency_id", "notes", "verification", "asked"}
+ASKED_STATES = ("awaiting_response", "acknowledged", "partly_answered", "answered", "declined_in_writing", "withdrawn")
+ASKED_KEYS, ASKED_TEXT = ("topic", "asked_on", "state", "updated_on", "note"), {"topic": 120, "note": 200}
 CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on"}
 FLOCK_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){0,7}")
 VERIFIED_FIELDS = ("records_email", "records_url", "portal")
@@ -621,6 +652,41 @@ def _alpr_policy(value, label):
             "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
 
 
+TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts", "shared_with_agencies")
+
+
+def _transparency(value, label, slug, today=None):
+    """Organizer-transcribed Flock transparency-portal snapshots (``profile.transparency``), newest first; never fetched."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 24:
+        raise ContentError(f"{label}: must be a list of at most 24 snapshots")
+    if value and slug is None:
+        raise ContentError(f"{label}: needs a verified agency with a flock_transparency_slug")
+    result = []
+    for index, snapshot in enumerate(value):
+        item = f"{label}[{index}]"
+        _require_keys(snapshot, {"checked_on", "source_url", *TRANSPARENCY_FIELDS}, {"checked_on", "source_url"}, item)
+        if _calendar_day(snapshot["checked_on"], f"{item}.checked_on") > (today or date.today()):
+            raise ContentError(f"{item}.checked_on: must not be after the build date")
+        if result and snapshot["checked_on"] >= result[-1]["checked_on"]:
+            raise ContentError(f"{item}.checked_on: " + ("duplicate date" if snapshot["checked_on"] == result[-1]["checked_on"]
+                                                          else "snapshots must be listed newest first"))
+        portal = f"https://transparency.flocksafety.com/{slug}"
+        if _https(snapshot["source_url"], f"{item}.source_url") not in (portal, portal + "/"):
+            raise ContentError(f"{item}.source_url: must be {portal}")
+        clean = {"checked_on": snapshot["checked_on"], "source_url": snapshot["source_url"]}
+        for key in TRANSPARENCY_FIELDS:
+            number = snapshot.get(key)
+            if number is not None and (type(number) is not int or number < 0):
+                raise ContentError(f"{item}.{key}: must be null or a non-negative integer")
+            if key == "retention_days" and number is not None and number > 3650:
+                raise ContentError(f"{item}.retention_days: at most 3650")
+            clean[key] = number
+        result.append(clean)
+    return result
+
+
 def _flock_url(entry, item):
     """Transparency-portal link for an organizer-verified slug; built from the slug only, never fetched."""
     slug = entry.get("flock_transparency_slug")
@@ -638,7 +704,39 @@ def _agency_slug(agency):
     return _slug(rest, f"agencies[{agency['agency_id']}] derived slug")
 
 
-def load_agencies(document, label):
+def _asked(entry, label, today=None, problems=None):
+    """Organizer-entered requests; every problem goes to ``problems`` (content-check), else the first is raised."""
+    issues, result, values = [], [], entry.get("asked", [])
+    if not isinstance(values, list) or len(values) > 20:
+        issues, values = [f"{label}: must be a list of at most 20 items"], []
+    for index, value in enumerate(values):
+        item, clean = f"{label}[{index}]", {}
+        if not isinstance(value, dict):
+            issues.append(f"{item}: must be an object")
+            continue
+        issues += [f"{item}: unknown field {key!r}" for key in sorted(set(value) - set(ASKED_KEYS))]
+        for key in [key for key in ASKED_KEYS if key in value or key in ("topic", "asked_on", "state")]:
+            try:
+                if key in ASKED_TEXT and len(_text(value, key, item, allow_empty=key == "note")) > ASKED_TEXT[key]:
+                    raise ContentError(f"{item}.{key}: at most {ASKED_TEXT[key]} characters")
+                if key == "state" and value.get(key) not in ASKED_STATES:
+                    raise ContentError(f"{item}.state: choose one of {list(ASKED_STATES)}")
+                if key.endswith("_on") and _calendar_day(value.get(key), f"{item}.{key}") > (today or date.today()):
+                    raise ContentError(f"{item}.{key}: must not be after the build date")
+                clean[key] = value[key]
+            except ContentError as exc:
+                issues.append(str(exc))
+        if clean.get("updated_on", "9") < clean.get("asked_on", ""):
+            issues.append(f"{item}.updated_on: must not be before asked_on")
+        result.append(clean)
+    if problems is not None:
+        problems.extend(issues)
+    elif issues:
+        raise ContentError(issues[0])
+    return result
+
+
+def load_agencies(document, label, today=None):
     if not isinstance(document, list) or len(document) > 500:
         raise ContentError(f"{label}: must be a list of agencies")
     agencies, ids, slugs = [], set(), set()
@@ -657,7 +755,7 @@ def load_agencies(document, label):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy", "transparency"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -675,9 +773,12 @@ def load_agencies(document, label):
                        "url": _https(portal.get("url"), f"{item}.portal.url", allow_none=True)},
             "verified": entry.get("verified") is True,
             "verification": _verification(entry, item),
+            "asked": _asked(entry, f"{item}.asked", today) if label == "content/agencies.json" else [],
             "flock_transparency_url": _flock_url(entry, item),
             "contract": _contract(profile.get("contract"), f"{item}.profile.contract"),  # kept out of card JS
             "alpr_policy": _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy"),  # likewise
+            "transparency": _transparency(profile.get("transparency"), f"{item}.profile.transparency",  # likewise
+                                          entry.get("flock_transparency_slug") if _flock_url(entry, item) else None, today),
             "profile": {
                 "vendor": _text(profile, "vendor", f"{item}.profile", default="Not yet documented"),
                 "status": _text(profile, "status", f"{item}.profile", default="Records requested"),
@@ -979,10 +1080,13 @@ def load_content(root, today=None):
 
     sources_path = content_dir / "sources.json"
     sources = load_sources(_read_json(sources_path)) if sources_path.is_file() else []
+    page_problems = check_source_pages(findings, sources)
+    if page_problems:
+        raise ContentError(page_problems[0])
 
     agencies_path = content_dir / "agencies.json"
     if agencies_path.is_file():
-        agencies = load_agencies(_read_json(agencies_path), "content/agencies.json")
+        agencies = load_agencies(_read_json(agencies_path), "content/agencies.json", today)
     else:
         agencies = default_agencies(root)
 

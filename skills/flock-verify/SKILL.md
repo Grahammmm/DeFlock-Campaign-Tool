@@ -29,6 +29,7 @@ outputs. A clean check is machine-valid and review-required, not semantic or leg
 ## Diff
 - After a re-run, `python3 tools/flock_verify.py diff OLD NEW` the previous and new run (read-only; exit 3 on any
   `public-ok lost`). Every `public-ok lost` id goes to the organizer before any publication step.
+- `diff OLD NEW --json` prints the same as one `flock-verify-diff-v1` document (`review_required: true`); refusals stay text.
 
 ## Never
 - Verify a run authored by your own family, or take the family from a profile name.

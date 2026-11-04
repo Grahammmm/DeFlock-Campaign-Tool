@@ -17,7 +17,8 @@ review-required, not a legal conclusion.
 - Human redaction and names review of each `text` (the pipeline's redaction gate; names are not machine-checked).
 
 ## Before you approve
-- `python3 tools/flock_review_queue.py show STORE [--agency SLUG] --out NEWDIR [--json]` writes a private review queue.
+- `python3 tools/flock_review_queue.py show STORE [--agency SLUG [--run RUN]] --out NEWDIR [--json]` writes a private review queue.
+  `--run RUN` (needs `--agency`) shows that one run only and names it in the header and summary row; an unknown, malformed or linked run is refused before NEWDIR is made.
   With `--json` it also writes `review-queue.json` (`flock-review-queue-v1`: ids, statuses, verdicts, warning codes, not-reviewable reasons and counts, no finding text), both files or neither; it is review-required and approves nothing.
 - Read each independent challenge, warning, citation and receipt; this report approves nothing.
 
@@ -45,6 +46,9 @@ review-required, not a legal conclusion.
 
 ## Status
 - Any time: `python3 tools/flock_publish.py status STORE` lists every verified run's publication stage (counts only, read-only).
+- `status STORE --json` prints one `flock-publish-status-v1` document (same rows, same exit 0/1/2): `runs` lists `agency`, `run`,
+  `stage`, `findings`, `pending`, `approved`, `errors` (integers, or null where the text shows `-`); `totals` has `runs` and one
+  count per stage (`no_export` … `approved`, plus `link_refused`); `note` is review-required. No agencies folder: `{"error", "schema"}`, exit 2.
 
 ## Brief
 - Private draft (**NEEDS G** before any send): `python3 tools/flock_publish.py brief STORE --agency SLUG --out FILE.md`
@@ -59,6 +63,9 @@ review-required, not a legal conclusion.
   a run of the same agency, with new text). The entry becomes terminal `withdrawn`/`superseded` with a row in private `PUBLISH-CHANGES.csv`;
   `--check --run` and `stage` then refuse any approved entry with that text in the agency's runs. The operator removes or replaces the
   site file in a site PR (the tool never edits a site).
+- Check first: add `--dry-run` to the same `withdraw`/`correct` command. Every check runs and the tool prints
+  `would withdrawn | ID | D` or `would superseded | ID | by RUN:NEWID | D`, then `dry run | nothing written` (exit 0; a refusal
+  exits 1 ending `nothing written (dry run)`). Neither `PUBLISH-CHANGES.csv` nor `PUBLISH.json` is written; then run it without `--dry-run`.
 
 ## Never
 - Set `approved` from a model, or edit an exported `text` instead of re-running the run.

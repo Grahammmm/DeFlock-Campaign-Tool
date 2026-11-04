@@ -87,7 +87,7 @@ class RelatedFindingsTests(unittest.TestCase):
                                                      "Same agency", "Same agency", "Same agency"])
         page = self.page("a-finding")
         self.assertNotIn("h-finding", page)
-        self.assertNotIn('href="/findings/a-finding.html"', page)
+        self.assertNotIn('href="/findings/a-finding.html"', page.split('<h3 id="related">Related findings</h3>', 1)[1].split('<h3 id="corrections">', 1)[0])
         self.assertEqual(related_items(self.page("h-finding")), [("c-finding", "Same agency")])
         self.assertEqual(related_items(self.page("b-finding")), [("a-finding", "Shares 2 source records")])
 
@@ -139,7 +139,7 @@ class RelatedFindingsTests(unittest.TestCase):
         self.assertLess(page.index('Counterevidence considered'), page.index('id="related"'))
         self.assertLess(page.index('id="related"'), page.index('id="corrections"'))
         for path in (self.root / "public" / "findings").glob("*.html"):
-            if path.name != "index.html":
+            if path.name not in ("index.html", "packet-all.html"):
                 self.assertEqual(path.read_text(encoding="utf-8").count('id="corrections"'), 1, path.name)
         model = load_content(self.root)
         other = next(f for f in model["findings"] if f["slug"] == "x-other")

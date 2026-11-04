@@ -44,6 +44,7 @@ import sys
 from pathlib import Path
 
 from campaign_tool import law
+from campaign_tool.legal_claims import site_notes
 from campaign_tool.site import build_site
 from ..loop import Result, private_dir, private_write
 from . import idempotency_key
@@ -202,6 +203,11 @@ def run(ctx):
     if leaks:
         ctx.log("site.leak_check_failed", job_id=ctx.job_id, count=len(leaks), labels=sorted({label for _, _, label in leaks}))
         return Result("failed", error=f"public tree check found {len(leaks)} potential leak(s); nothing uploaded")
+    # DF-4 alert-only: wording that asserts a legal violation is carried to the human approval gate as notes (never text), and
+    # never changes the build, the upload or the card. site_notes cannot raise.
+    review_flags = site_notes(root)
+    if review_flags:
+        ctx.log("site.legal_claim_review", job_id=ctx.job_id, count=len(review_flags))
     manifest = []
     for path in sorted(p for p in written if p.is_file()):
         relative = path.relative_to(public).as_posix()
@@ -209,7 +215,7 @@ def run(ctx):
         ctx.workspace.put_site_file(version, relative, data, _media_type(path))
         manifest.append({"path": relative, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)})
     manifest_sha = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
-    outputs = {"version": version, "manifest": manifest, "manifest_sha256": manifest_sha}
+    outputs = {"version": version, "manifest": manifest, "manifest_sha256": manifest_sha, "review_flags": review_flags}
     receipt = {"version": version, "manifest_sha256": manifest_sha}
     if input_manifest_sha is not None:
         # The producer already owns the deploy card and its build_job_id gate.
@@ -219,7 +225,8 @@ def run(ctx):
         receipt.update(input_manifest_sha256=input_manifest_sha, build_job_id=ctx.job_id)
     else:
         proposal = {"site_version": version, "file_count": len(manifest), "manifest_sha256": manifest_sha,
-                    "note": "Files are staged in the public bucket; nothing is served until approved."}
+                    "note": "Files are staged in the public bucket; nothing is served until approved.",
+                    "review_flags": review_flags}
         action = ctx.workspace.propose("deploy_site", version, proposal, idempotency_key("deploy_site", version, manifest_sha), ctx.job_id)
         outputs["action_id"] = action.get("action_id")
     ctx.log("site.built", job_id=ctx.job_id, version=version, files=len(manifest), action_id=outputs.get("action_id"))

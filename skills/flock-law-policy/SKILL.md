@@ -32,18 +32,30 @@ A clean check is machine-valid and review-required, not legal acceptance.
 
 ## Governing
 - Every agency on one date: `python3 tools/flock_law_policy.py governing STORE --on YYYY-MM-DD` (STORE a directory).
+- Machine copy: add `--json` (last) for one line `flock-law-policy-governing-v1` (per-agency kind, policy ids, labels, windows, row ids; LAW counts); same exit codes, empty stdout on errors.
 
 ## Gaps
 - Days no adopted version governs: `python3 tools/flock_law_policy.py gaps STORE --on YYYY-MM-DD`; exit 3 lists each
   gap, closed policy or policy not established (a review prompt, not a finding of non-compliance).
+- Machine copy: add `--json` (last) for one line `flock-law-policy-gaps-v1` (agency, policy id, kind gap|closed|unestablished, dates, counts); same exit codes, empty stdout on errors.
 
 ## Coverage
 - Package rules with no LAW row: `python3 tools/flock_law_policy.py coverage STORE [--on YYYY-MM-DD]`; exit 3 names
   each (with `--on`, also rules with no row in effect that day; any rule whose rows are all `disputed`).
+- Machine copy: add `--json` (last) for one line `flock-law-policy-coverage-v1` (rule id, kind, package review label, row count); same exit codes, empty stdout on errors.
 
 ## Changes
 - Policy facts that differ between consecutive adopted versions: `python3 tools/flock_law_policy.py changes STORE [--agency SLUG]`
   (fact types and FACTS ids only; exit 0 is a report, review each line; `no policy facts for LABEL` is unknown, not a change).
+- Machine copy: add `--json` (last) for one line `flock-law-policy-changes-v1` (version pair, kind, fact type, old/new FACTS ids; never values); same exit codes, empty stdout on errors.
+
+## Stale
+- LAW rows read too long ago: `python3 tools/flock_law_policy.py stale STORE --max-age-days N [--today YYYY-MM-DD]`; exit 3 lists each.
+- Machine copy: add `--json` (last) for one line `flock-law-policy-stale-v1` (rule id, kind stale|future, accessed, age_days, status); same exit codes, empty stdout on errors.
+
+## Review
+- Rows still `unreviewed` or `disputed`: `python3 tools/flock_law_policy.py review STORE [--agency SLUG] [--today YYYY-MM-DD]`; exit 3 lists each.
+- Machine copy: add `--json` (last) for one line `flock-law-policy-review-v1` (table, rule or policy row ids, status, added_at, age_days); same exit codes, empty stdout on errors.
 
 ## Compare
 - Agencies side by side on one date: `python3 tools/flock_law_policy.py compare STORE --on YYYY-MM-DD [--types T1,T2]`.
@@ -51,6 +63,7 @@ A clean check is machine-valid and review-required, not legal acceptance.
   normalised value (FACTS ids shown, values never); `undocumented:` lists the rest, and an agency with no governing
   policy is named once. Disputed facts are counted, not used. Exit 3 when any type `differ`s: a prompt to read those
   documents, not a legal conclusion.
+- Machine copy: add `--json` for one `flock-law-policy-compare-v1` document (classes, member slugs, fact ids, verdicts; never values); same exit codes.
 
 ## Outputs
 - Counts `law=L policy=P errors=K`, row numbers, ids, labels and dates. Never duty or evidence text.

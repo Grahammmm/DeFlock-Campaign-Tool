@@ -150,3 +150,45 @@ When the existing pinned `ledger(path, readonly=True)` opens a quiet
 WAL-mode ledger, SQLite can create its own `-shm` sidecar and an empty
 `-wal` file next to the database. The main file bytes, inode and logical
 content stay unchanged, and the tests assert this.
+
+## Stated production date (kit requests)
+
+`kit-response --kind determination --expected-on YYYY-MM-DD` (or a later step, such as `fee_estimate`, that
+restates it) records the agency's own stated production date; a date before that step's date is refused.
+`kit-status` shows the latest one as `stated_production_date`. `kit due` lists a request whose stated date has
+passed with no `produced` step since (closed requests never) under `stated_passed` as `stated_date_passed`,
+counts it and exits 3: stated date passed — the agency's own date; provisional, not a legal deadline.
+
+`kit-response --kind produced --partial [--expected-on YYYY-MM-DD]` records a rolling production: the request stays
+open (`producing: true`, `next_installment` in `kit-status`) until a final `produced` (no `--partial`), `denied` or
+`closed` step; a partial after a final one is refused. `kit due` lists it as `producing` (due = the agency's next
+installment date) or, once that date has passed, `installment_passed` (counted, exit 3); `today` shows it and
+`kit-followup` drafts a reminder naming the date. Only a final `produced` step clears a stated production date.
+
+## Clarification requested (kit requests)
+
+`kit-response --kind clarification_requested` records the agency asking you to clarify or narrow a request (not after
+`produced`, `denied` or `closed`; one open at a time); `--kind clarified` records your reply, refused with none open.
+While one is open, `kit-status` shows `waiting_on_you_since`, `kit due` lists it as `waiting_on_you` (counted apart,
+never past due, stated date passed or exit 3; the provisional date still shown) and `kit-followup` stops with exit 3,
+writing nothing. The tool makes no claim that a clarification pauses any legal period.
+
+## Agency reference number (kit requests)
+
+`kit-sent`/`kit-response --reference REF` (1-40 letters, digits, `- _ # .`) stores the agency's own number once per
+request; a different one exits 3 unless `--replace-reference`. `kit-status`/`kit due` rows show `reference`; the
+followup and denial-reply drafts add `(Your reference REF)` to the title and open `Regarding your reference REF,`.
+
+`kit-response --kind fee_paid [--amount USD]` or `--kind fee_waived` records that the latest `fee_estimate` on that
+request was paid (amount optional, whole cents, 0-100000) or waived; refused with no earlier estimate or when that
+estimate is already settled (a new estimate re-opens it). `kit-status`, its `--csv` and `kit-coverage` show `fee_state`
+(`unpaid`/`paid`/`waived`) beside the estimate and `fee_paid`; `kit-status` names each unpaid estimate on stderr.
+Nothing is paid by the tool; the fee-cap reminder is unchanged.
+
+## Private calendar (kit-calendar)
+
+`kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import
+into your own calendar: an all-day event for each open request's provisional determination date (answered requests
+keep only the agency's stated production date) and a timed event for each staged, not cancelled meeting's verified
+written-comment deadline on or after `--as-of`. It holds ids, dates, agency or body names and the official source
+link only. It is refused inside the campaign's `public/` or `content/` and never overwrites: re-run into a new file.

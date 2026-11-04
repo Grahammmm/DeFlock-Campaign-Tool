@@ -18,18 +18,18 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples/fictional-campaign"
 # STARTER_SHA re-captured from main a9db9b0c: the only starter CSS change since the
 # mobile pin (5926dda5) is #620's .record-no and .provenance-note rules.
 PRINT_SHA = (
-    "f7818cba38e2d518"  # pragma: allowlist secret
-    "44cff79c0cfc3c58"  # pragma: allowlist secret
-    "6d2514e54ef168aa"  # pragma: allowlist secret
-    "64bda5cc2fd1c252"  # pragma: allowlist secret
+    "e01ceedc11aceb58"  # pragma: allowlist secret
+    "35275988a67a1e2f"  # pragma: allowlist secret
+    "eb29c644d71226a6"  # pragma: allowlist secret
+    "8200fb9eace85d3a"  # pragma: allowlist secret
 )
-# Re-pinned after DF1822-08 added only .comment-deadline{font-weight:700} to styles.css.tmpl;
-# previous pin a8499bf6...c1af (after #620's .record-no and .provenance-note).
+# Re-pinned after BF-df-agency-cards-public added only the .agency-block rules to styles.css.tmpl;
+# previous pin 565079ca...2100 (after DF1822-08's .comment-deadline).
 STARTER_SHA = (
-    "565079ca7824e359"  # pragma: allowlist secret
-    "ffd2c1a7633317cb"  # pragma: allowlist secret
-    "124e4ef068998fe7"  # pragma: allowlist secret
-    "7a22a46f26ee2100"  # pragma: allowlist secret
+    "a3a870402a1c0979"  # pragma: allowlist secret
+    "717c1123a091c939"  # pragma: allowlist secret
+    "b69679db171355a7"  # pragma: allowlist secret
+    "595f1567231e0e7c"  # pragma: allowlist secret
 )
 
 

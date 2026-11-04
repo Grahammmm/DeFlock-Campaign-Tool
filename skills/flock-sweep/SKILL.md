@@ -47,11 +47,21 @@ calls kanban or hermes and never writes into the store. Each model run stays its
   `--json` prints one `flock-today-v1` object instead (items, source errors, totals, `review_required`); same exit codes.
 
 ## Agency timeline
-- Before a meeting: `python3 tools/flock_agency.py timeline S --agency SLUG [--as-of D] [--inventory CSV] [--json]` prints one
-  agency's recorded events oldest first, then `still open` lines with a provisional reminder. Ids, counts and amounts only;
+- Before a meeting: `python3 tools/flock_agency.py timeline S --agency SLUG [--since D] [--as-of D] [--inventory CSV] [--json]` prints one
+  agency's recorded events oldest first (outside a --since/--as-of window only counted, `before=N after=N`; undated stay), then `still open` lines with a provisional reminder. Ids, counts and amounts only;
   read-only. A bad source is one `source-error` line (exit 1); a failing email-run state also exits 1.
 - Every agency at once: `python3 tools/flock_agency.py index S [--as-of D] [--json]` prints one status line per agency folder
   (requests, open, last event, next provisional reminder, failing runs, errors per file); links and non-slug folders are `skipped`.
+
+## Rehearsal
+- One agency end to end: `python3 tools/rehearse_agency.py --store S --agency SLUG --out NEWDIR [--as-of D]` writes REHEARSAL.md and
+  rehearsal.json (`records-rehearsal-v1`, review_required): twelve stage rows (state, source, next human step, gate send/publish/law)
+  and the first break. States come from recorded fields only; OCR reads `not-wired`. Read-only; sends and publishes nothing; the
+  human steps it names are taken attended. A source that fails to load is `unknown` plus a source error (exit 1).
+
+## Dashboard
+- `python3 tools/flock_dashboard.py build --store S --date D --out NEWDIR` writes a private, static snapshot.
+- Rebuild before use; source failures are NOT CURRENT. Sent date and next step are NOT RECORDED until the state contract supplies them.
 
 ## Report
 - Private cited draft: `python3 tools/flock_report.py region --matrix DIR --agency SLUG=CONFIG ... --out DIR2` (one

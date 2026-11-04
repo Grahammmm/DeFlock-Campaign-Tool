@@ -154,12 +154,12 @@ class ShareMetaTests(unittest.TestCase):
         html = self.build()[FINDING]
         tags = share_tags(html)
         for key in ("og:title", "twitter:title"):
-            self.assertEqual(values(tags, key), [" ".join(title.split())], key)
+            self.assertEqual(values(tags, key), [title if key == "og:title" else " ".join(title.split())], key)
         for key in ("og:description", "twitter:description"):
-            self.assertEqual(values(tags, key), [" ".join(summary.split())], key)
+            self.assertEqual(values(tags, key), [summary if key == "og:description" else " ".join(summary.split())], key)
         head = html.split("</head>", 1)[0]
         self.assert_share_lines_safe(head)
-        self.assertIn('content="Cedar &quot;policy&quot; posted &amp; filed again"', head)
+        self.assertIn('property="og:title" content="Cedar &quot;policy&quot; posted &amp; filed&#10;&#9;again"', head)
 
     def test_angle_brackets_are_escaped_in_share_values(self):
         # The content model refuses angle brackets in finding text; the renderer must still escape them.
@@ -168,7 +168,7 @@ class ShareMetaTests(unittest.TestCase):
         summary = 'S <script>alert(1)</script>\n\t& "q"'
         head = site.head(title, summary, "/findings/x.html", kind="article", published="2026-02-01T18:00:00+00:00")
         tags = share_tags(head)
-        self.assertEqual(values(tags, "og:title"), [" ".join(title.split())])
+        self.assertEqual(values(tags, "og:title"), [title])
         self.assertEqual(values(tags, "twitter:description"), [" ".join(summary.split())])
         self.assert_share_lines_safe(head)
         self.assertNotIn("<script>alert", head)

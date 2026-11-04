@@ -18,6 +18,7 @@ import { assembleManifest, type BrevoSettings } from "./manifest.ts";
 import { issueCorrection, proposePublication, submitReview, withdrawFinding, WorkflowError } from "./publication.ts";
 import { recomputeState } from "./review_state.ts";
 import { runnerApi } from "./runner.ts";
+import { subscribeWebhook } from "./routes/subscribe_webhook.ts";
 import { signDownload, verifyDownload } from "./signing.ts";
 import { page } from "./views/layout.ts";
 import * as V from "./views/screens.ts";
@@ -48,6 +49,9 @@ app.get("/api/runner/export.json", (c) => {
   return exportResponse(new Repo(c.env.DB, c.env.CAMPAIGN_ID), c.env.CAMPAIGN_ID);
 });
 app.route("/api/runner", runnerApi);
+
+// Subscription webhook: HMAC-verified provider deliveries only; records events and list counts, never sends.
+app.route("/api/webhooks/subscribe", subscribeWebhook);
 
 // Signed downloads: HMAC link minted by an authenticated organizer; no Access on this path.
 app.get("/dl/:sha256", async (c) => {
@@ -244,7 +248,19 @@ app.post("/findings/:id/withdraw", async (c) => {
 });
 
 // Approvals -------------------------------------------------------------------------
-app.get("/approvals", async (c) => render(c, "Approvals", V.approvals(await c.var.repo.actions(), c.req.query("notice") ?? null)));
+app.get("/approvals", async (c) => {
+  const actions = await c.var.repo.actions();
+  // DF-4 advisory legal-claim wording flags. A deploy_site card created before the build ran (proposeRebuild) cannot carry them, so
+  // they are read from its build_site job outputs and shown on the card. Display only: they never change approval or execution.
+  const buildFlags: Record<string, string[]> = {};
+  for (const a of actions) {
+    if (a.kind !== "deploy_site" || a.state !== "proposed") continue;
+    const buildJobId = (JSON.parse(a.proposal_json) as { build_job_id?: unknown }).build_job_id;
+    const job = typeof buildJobId === "string" ? await c.var.repo.job(buildJobId) : null;
+    if (job?.outputs_json) buildFlags[a.action_id] = V.reviewFlagsOf((JSON.parse(job.outputs_json) as { review_flags?: unknown }).review_flags);
+  }
+  return render(c, "Approvals", V.approvals(actions, c.req.query("notice") ?? null, buildFlags));
+});
 
 app.post("/approvals/:id/approve", async (c) => {
   const row = await approveAction(c.var.repo, c.req.param("id"), c.var.identity);
@@ -350,7 +366,7 @@ app.post("/subscribers/drafts/:job_id/propose", async (c) => {
   const { row, inserted } = await c.var.repo.propose(
     "send_newsletter",
     job.job_id,
-    { subject: draft.subject, html: draft.html, text: typeof draft.text === "string" ? draft.text : "", list_id: brevo?.list_id ?? null, draft_job_id: job.job_id },
+    { subject: draft.subject, html: draft.html, text: typeof draft.text === "string" ? draft.text : "", list_id: brevo?.list_id ?? null, draft_job_id: job.job_id, review_flags: V.reviewFlagsOf(draft.review_flags) },
     await sha256Hex("send_newsletter:" + job.job_id + ":" + (await sha256Hex(draft.html))),
     c.var.identity.email,
   );
@@ -415,6 +431,7 @@ function secretPresence(env: Env): V.SecretPresence[] {
     { name: "ACCESS_AUD", present: Boolean(env.ACCESS_AUD), note: "Access application audience tag" },
     { name: "ACCESS_TEAM_DOMAIN", present: Boolean(env.ACCESS_TEAM_DOMAIN), note: "Access team domain used to fetch signing certificates" },
     { name: "BREVO_API_KEY", present: Boolean(env.BREVO_API_KEY), note: "Brevo v3 key used only by the send_newsletter executor (campaign create + send)" },
+    { name: "SUBSCRIBE_WEBHOOK_SECRET", present: Boolean(env.SUBSCRIBE_WEBHOOK_SECRET), note: "HMAC secret verifying POST /api/webhooks/subscribe deliveries" },
   ];
 }
 

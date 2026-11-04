@@ -2,12 +2,13 @@
 """Flock review batch: where every agency config in a list stands in the G1 pipeline, and what it waits for.
   status LIST [--run] [--roster ROSTER.csv] [--golden-config CFG --golden-expect FILE] [--out DIR] [--prev OLD.csv]
   | plan LIST [--max N] (N <= 2) [same options but --out, --prev]
+status LIST --json prints the same rows, changes and counts as one flock-review-batch-status-v1 document (no config path; not with --run).
 status is read-only and writes only <out>/BATCH-STATUS.csv (and BATCH-CHANGES.csv with --prev: rows advanced, regressed, state, new, removed
 since OLD.csv, which is read first). --run (needs the golden pair) advances every `ready` agency one flock_review
 `run` at a time (exit 3 = reached a wait stage; exit 1 = failed, the batch goes on). plan prints at most N `[RUN]` card bodies for
 agencies waiting on a model step. The Morro Bay golden must pass before --run or plan. Never runs a model, never touches kanban; no network.
 Prints slugs, stage ids, states, why codes, counts and paths only. Exit 0 ok, 1 validation / gate / IO, 2 usage. done is not review or release."""
-import argparse, contextlib, csv, importlib.util, io, os, re, subprocess, sys
+import argparse, contextlib, csv, importlib.util, io, json, os, re, subprocess, sys
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
@@ -229,11 +230,23 @@ def plan(entries, rows, limit):  # at most `limit` model cards in flight, counti
               end="\n\n")
 
 
+def document(rows=(), found=None, moved=None, tally=None, errors=()):  # the --json form of status: same rows, changes, counts
+    num = lambda v: int(v) if re.fullmatch(r"\d+", str(v), re.ASCII) else None  # noqa: E731
+    doc = {"schema": "flock-review-batch-status-v1", "review_required": True, "errors": list(errors), "counts": tally,
+           "agencies": [{k: num(r[k]) if k.startswith("stages_") else r[k] for k in HEADER if k != "config"} for r in rows]}
+    if not errors:  # a path-keyed (unreadable) config has key null: no config path is ever printed
+        doc.update(change_counts=moved, changes=None if found is None else [dict(
+            key=None if c[1].startswith("config:") else c[1], kind=c[0], old_state=c[2] or None, new_state=c[3] or None,
+            old_done=num(c[4]), new_done=num(c[5])) for c in found if c[0]])
+    print(json.dumps(doc, sort_keys=True, indent=1, ensure_ascii=False))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=("status", "plan"))
     parser.add_argument("list", metavar="LIST")
     parser.add_argument("--run", action="store_true")
+    parser.add_argument("--json", action="store_true")
     parser.add_argument("--max", type=int, default=2, metavar="N")
     for name in ("--roster", "--golden-config", "--golden-expect", "--out", "--prev"):
         parser.add_argument(name)
@@ -244,6 +257,9 @@ def main(argv=None):
         parser.error("plan prints cards only; --out is for status")
     if args.prev and args.command == "plan":
         parser.error("plan prints cards only; --prev is for status")
+    if args.json and (args.run or args.command == "plan"):
+        parser.error("--json is for status without --run (--run prints progress while it runs)")
+    emit = (lambda line: None) if args.json else print  # noqa: E731
     try:
         prev = read_prev(args.prev) if args.prev else None
         out = out_dir(args.out) if args.out else None
@@ -253,9 +269,10 @@ def main(argv=None):
         rows = advance(entries, roster) if args.run else [agency(c, roster) for c in entries]
         if args.command == "plan":
             return plan(entries, rows, args.max) or 0
+        found = moved = None
         for row in rows:
-            print("%s %s %s/%s next=%s" % (row["slug"] or "-", row["state"], row["stages_done"], row["stages_total"], row["next"] or "-")
-                  + (" why=" + row["why"] if row["why"] else ""))
+            emit("%s %s %s/%s next=%s" % (row["slug"] or "-", row["state"], row["stages_done"], row["stages_total"], row["next"] or "-")
+                 + (" why=" + row["why"] if row["why"] else ""))
         if out:
             text = io.StringIO()
             writer = csv.DictWriter(text, fieldnames=HEADER, extrasaction="ignore", lineterminator="\n")
@@ -264,23 +281,23 @@ def main(argv=None):
             fr.put(out / "BATCH-STATUS.csv", text.getvalue().encode())
         if prev is not None:  # what moved since the last status (unchanged rows are counted, not listed)
             found = changes(prev, rows)
+            moved = {k: sum(c[0] == k for c in found) for k in ("advanced", "regressed", "state", "new", "removed")}
+            moved["unchanged"] = sum(not c[0] for c in found)
             for c in (c for c in found if c[0]):
-                print("change %s %s %s->%s %s->%s" % (c[1], c[0], c[2] or "-", c[3] or "-", c[4] or "-", c[5] or "-"))
-            print("changes " + " ".join("%s=%d" % (k, sum(c[0] == k for c in found)) for k in ("advanced", "regressed", "state", "new",
-                  "removed")) + " unchanged=%d" % sum(not c[0] for c in found))
+                emit("change %s %s %s->%s %s->%s" % (c[1], c[0], c[2] or "-", c[3] or "-", c[4] or "-", c[5] or "-"))
+            emit("changes " + " ".join("%s=%d" % kv for kv in moved.items()))
             if out:
                 text = io.StringIO()
                 csv.writer(text, lineterminator="\n").writerows([CHANGE] + [[c[1], c[0], *c[2:]] for c in found if c[0]])
                 fr.put(out / "BATCH-CHANGES.csv", text.getvalue().encode())
         count = lambda word: sum(r["state"] == word for r in rows)  # noqa: E731
-        print("agencies=%d done=%d waiting=%d in_flight=%d failed=%d invalid=%d held=%d locked=%d ready=%d" % (
-            len(rows), count("done"), count("waiting"), count("in-flight"), count("failed"), count("invalid"), count("held"), count("locked"),
-            count("ready")))
-        return 0
-    except fr.Fail as exc:
-        return print(exc) or exc.code
-    except OSError as exc:
-        return print("io: %s" % type(exc).__name__) or 1
+        tally = {"agencies": len(rows), **{w.replace("-", "_"): count(w) for w in ("done", "waiting", "in-flight", "failed", "invalid",
+                                                                                  "held", "locked", "ready")}}
+        emit(" ".join("%s=%d" % kv for kv in tally.items()))
+        return (document(rows, found, moved, tally) if args.json else None) or 0
+    except (fr.Fail, OSError) as exc:
+        line, code = (str(exc), exc.code) if isinstance(exc, fr.Fail) else ("io: %s" % type(exc).__name__, 1)
+        return (document(errors=[line]) if args.json else print(line)) or code
 
 
 if __name__ == "__main__":

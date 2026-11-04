@@ -49,17 +49,24 @@ and never contains a secret.
 
 The plan is an ordered list of Cloudflare API calls with placeholders resolved from earlier
 outputs: token and zone verification; D1 database; R2 buckets `<slug>-originals` and
-`<slug>-public`; KV namespace; Queue; the two Worker scripts (multipart upload of the built
+`<slug>-public`; KV namespace; the two Worker scripts (multipart upload of the built
 bundles with bindings); D1 migrations and a seed of the campaign, agencies and drafts; DNS
 (`AAAA 100::`, proxied) and Worker routes for `<domain>` and `workspace.<domain>`; an Access
 application and an allow policy for the organizer email; Email Routing enable + rule for
 `requests@<domain>`; Worker secrets; cron triggers. Apply writes one receipt per resource,
 stops at the first failure, and returns the rollback list (newest first). The rollback calls
 are listed, not executed, unless `rollbackOnFailure` is set by the caller; the wizard UI does
-not execute them.
+not execute them. Zone verification fails before any create step unless both the public
+and workspace hostnames equal the returned zone name or are its dot-delimited subdomains.
+
+The wizard does not create or bind a Cloudflare Queue: jobs use the D1-backed runner
+poll loop. It does not upload IMAP/SMTP Worker secrets, because neither the Worker
+nor runner consumes them; selecting that mailbox mode does not configure mail
+transport. A future adapter needs its own explicit configuration and review.
 
 `DRY_RUN=1` makes the client record every call without sending it and return synthetic ids,
-so the whole flow can be exercised offline. Production deployment still requires the owner
+including an assumed matching zone name, so the whole flow can be exercised offline.
+A dry run does not validate the real zone or its ownership. Production deployment still requires the owner
 approvals in AGENTS.md.
 
 ## Workspace (`workers/workspace`)
@@ -126,6 +133,17 @@ enqueues `build_site` with the full content manifest and proposes `deploy_site`
 `not_implemented` and `pay_fee` with `manual_only` (fees are paid by a person and recorded on
 the card). Execution is idempotent: an executed card returns its receipt, a failed one records
 `<code>: <message>` and an incident. No code path sends without an approved row.
+
+Migrations in `workers/workspace/migrations/` are immutable once applied; an upgrade is a new
+numbered file. `0004_meeting_identity.sql` rebuilds `meeting` (SQLite cannot drop `NOT NULL`
+in place: new table, copy, drop, rename, in one transaction with foreign keys deferred) so
+`starts_at` may be NULL for `date_state = 'unknown'`, and adds the source identity and revision
+columns. Every existing row keeps its values with `date_state = 'known'` and `revision = 1`.
+Re-running the file by hand fails on its first `ALTER` and rolls back. Identity rule: the
+partial unique index `meeting_source_identity (campaign_id, source_url, item_id, revision)`
+covers only rows with both `source_url` and `item_id`, so manual meetings never collide and a
+polled meeting cannot be filed twice at one revision; revisions are new rows, never updates
+([MEETINGS.md](MEETINGS.md)). `workers/schema/d1.sql` holds the same shape for new installs.
 
 ## Tests
 
