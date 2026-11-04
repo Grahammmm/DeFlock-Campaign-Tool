@@ -50,13 +50,17 @@ def _check_row(objects, sha, expected):
     return None
 
 
-def check_store(root):
+def check_store(root, rows=None):
+    """``rows``: (sha256, byte_count) objects rows from a caller's in-memory ledger copy; the ledger file is then
+    never opened (SQLite mode=ro can still create -wal/-shm beside a WAL-mode file)."""
     private = root / "private"
     objects = private / "objects"
     if private.is_symlink() or objects.is_symlink():
         raise ValueError("private/objects must not be a symlink")
     ledger = private / "ledger.sqlite"
-    rows = _ledger_rows(ledger) if ledger.exists() else []
+    if rows is None:
+        rows = _ledger_rows(ledger) if ledger.exists() else []
+    rows = list(rows)
     problems, known = [], set()
     for sha, expected in rows:
         known.add(sha)
