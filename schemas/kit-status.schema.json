@@ -38,10 +38,11 @@
               "on": {"$ref": "#/$defs/date_or_null"},
               "kind": {
                 "enum": ["acknowledged", "extension", "determination", "produced", "denied", "closed",
-                         "fee_estimate", "clarification_requested", "clarified", "fee_paid", "fee_waived"]
+                         "fee_estimate", "clarification_requested", "clarified", "fee_paid", "fee_waived", "withdrawn"]
               }
             }
           },
+          "withdrawn_on": {"$ref": "#/$defs/date"},
           "records": {"type": "integer", "minimum": 0},
           "record_prefixes": {"type": "array", "items": {"$ref": "#/$defs/prefix"}},
           "more": {"type": "integer", "minimum": 1},
