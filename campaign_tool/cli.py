@@ -1159,6 +1159,10 @@ def main():
     pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
+    flyer = commands.add_parser("flyer", help="Write a private printable one-page campaign flyer; prints and publishes nothing")
+    flyer.add_argument("--directory", required=True)
+    flyer.add_argument("--max-findings", type=int, choices=range(1, 7), default=3)
+    flyer.add_argument("--replace", action="store_true")
     _campaign_option(parser)
     campaigns = commands.add_parser("campaigns", help="A named register of campaign directories; names and paths only"
                                     ).add_subparsers(dest="campaigns_command", required=True)
@@ -1267,6 +1271,10 @@ def main():
             backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "flyer":
+            from .flyer import build as flyer_build
+            print(json.dumps(flyer_build(Path(args.directory).expanduser(), args.max_findings, replace=args.replace)))
+            print("Private file; nothing was printed, sent or published.")
         elif args.command == "meeting-pack" and args.upcoming:
             from .meeting_pack import build_upcoming
             report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
