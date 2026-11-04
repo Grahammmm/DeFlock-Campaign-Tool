@@ -72,6 +72,14 @@ class VerifyCopyTests(unittest.TestCase):
         return path
 
     def page(self, name):
+        # DF1103-11: the build refuses two entries sharing a 12-char record number, but the mutation fixtures keep
+        # aliases and a prefix collision on purpose; render from the same library with later duplicates dropped.
+        seen, library = set(), []
+        for item in self.library():
+            if item["sha256"][:12] not in seen:
+                seen.add(item["sha256"][:12])
+                library.append(item)
+        self.write_library(library)
         build_site(self.root)
         return (self.root / "public" / name).read_text(encoding="utf-8")
 
@@ -84,19 +92,19 @@ class VerifyCopyTests(unittest.TestCase):
     def test_matching_copy_is_recorded_on_every_entry_and_shown_without_network(self):
         with mock.patch("socket.socket", side_effect=OSError("network is not allowed in this test")):
             result = verify_copy(self.root, A[:12], str(self.copy), "2026-02-01", today=TODAY)
+            check = {"matches": True, "checked_on": "2026-02-01"}
+            self.assertEqual([e.get("public_copy") for e in self.library()], [check, check, None, None, None])  # every alias
             sources_html, finding_html = self.page("sources.html"), self.page(f"findings/{SLUG}.html")
-        check = {"matches": True, "checked_on": "2026-02-01"}
         self.assertEqual(result, {"sha256_prefix": A[:12], **check})
-        self.assertEqual([e.get("public_copy") for e in self.library()], [check, check, None, None, None])
         status = f'Public copy checked <time datetime="2026-02-01">2026-02-01</time>: {SAME}'
-        self.assertEqual(sources_html.count(status), 2)
+        self.assertEqual(sources_html.count(status), 1)  # one rendered entry per record number (was 2 with the alias)
         self.assertIn(status, finding_html)
         for how in ("How to check a copy", "<code>sha256sum FILE</code>", "<code>shasum -a 256 FILE</code>",
                     "<code>Get-FileHash FILE</code>"):
             self.assertEqual(sources_html.count(how), 1, how)
         doc = json.loads((self.root / "public" / "data" / "sources.json").read_text(encoding="utf-8"))
         law.validate(doc, SCHEMA)
-        self.assertEqual([row["public_copy"] for row in doc["sources"]], [check, check, None, None, None])
+        self.assertEqual([row["public_copy"] for row in doc["sources"]], [check, None, None])
 
     def test_differing_copy_with_a_reason_is_stored_and_shown(self):
         wording = {"redacted": "differs (redacted copy)", "converted": "differs (converted copy)",
@@ -371,6 +379,7 @@ class UrlScopedVerifyCopyTests(unittest.TestCase):
 
     def test_url_scoped_cli_and_public_output_without_network(self):
         self.write_library([entry(A, "cedar-original", url=U1), entry(A, "cedar-redacted", url=U2)])
+        render_only = hashlib.sha256(b"synthetic distinct render record\n").hexdigest()  # DF1103-11: see below
         redacted = self.download(b"synthetic redacted public copy\n", "redacted.pdf")
         digest = hashlib.sha256(redacted.read_bytes()).hexdigest()
         helped = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "sources", "verify-copy", "--help"],
@@ -391,6 +400,9 @@ class UrlScopedVerifyCopyTests(unittest.TestCase):
             for private in (str(self.tmp), "redacted.pdf", "downloaded.pdf", U1, U2, "cedar-original", "cedar-redacted",
                             A, digest):
                 self.assertNotIn(private, report)
+        checked = self.library()  # the build refuses a shared record number, so render the second URL as its own record
+        checked[1]["sha256"] = render_only
+        self.write_library(checked)
         with mock.patch("socket.socket", side_effect=OSError("network is not allowed in this test")):
             html = self.page("sources.html")
         self.assertEqual(html.count(f'Public copy checked <time datetime="2026-02-01">2026-02-01</time>: {SAME}'), 1)
