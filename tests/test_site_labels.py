@@ -227,16 +227,19 @@ class LabelsTest(unittest.TestCase):
         # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
         # meeting.votes*, vote.*: the fixture records no votes (tests/test_meeting_votes.py covers those labels).
         # handout.*: only the private meeting-pack handout writes these (tests/test_meeting_pack.py covers them).
+        # agency.votes_*: the fixture records no votes (tests/test_site_member_votes.py covers those labels).
         absent = ["agency.transparency_cameras", "agency.transparency_checked", "agency.transparency_down",
                   "agency.transparency_heading", "agency.transparency_hotlist_alerts", "agency.transparency_retention_days",
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
+                  "agency.votes_heading", "agency.votes_more", "agency.votes_none", "agency.votes_source",
                   "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
                   "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.title",
                   "handout.what_we_found",
                   "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
+                  "meeting.recording", "meeting.recording_from",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
                   "officials.heading", "officials.listed", "officials.source", "privacy.signup_policy",
                   "vote.absent", "vote.abstain", "vote.no", "vote.recused", "vote.yes"]

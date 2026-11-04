@@ -12,6 +12,7 @@ from pathlib import Path
 from .cli import read_config
 from .content import _read_json, load_finding, load_meeting, load_site, load_sources
 from .labels import DEFAULTS, MAX_LABELS_BYTES, html_text, load_labels
+from . import meeting_comments
 from .meeting_stage import stale_kits
 from .site import FULL_HASH
 
@@ -156,8 +157,13 @@ def build(root, meeting_id, max_findings=5, today=None, *, replace=False, allow_
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+    try:  # a missing or unreadable kit/comments-sent.json is simply "none recorded"; `today` reports a bad file
+        sent = meeting_comments.read(root).get(meeting_id)
+    except ValueError:
+        sent = None
     return {'written': [str((folder / name).relative_to(root)) for name in outputs],
-            'findings': len(findings), 'truncated': truncated}
+            'findings': len(findings), 'truncated': truncated,
+            'comment_sent': {'on': sent['on'], 'channel': sent['channel']} if sent else None}
 
 
 def build_upcoming(root, within_days=14, today=None, *, max_findings=5, replace=False):

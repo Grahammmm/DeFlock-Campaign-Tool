@@ -205,6 +205,22 @@ reason (cancelled, stale kit, pack exists, invalid id, symlinked or unreadable f
 the window are not listed. Exit 0 when nothing was skipped, 3 when something needs attention.
 `--allow-past` is refused with `--upcoming`. Nothing is sent or published.
 
+## Recording a comment you submitted
+
+After you have sent a written comment (or spoken one) yourself, record it with
+`python3 -m campaign_tool meetings-comment-sent --directory D --id M --on YYYY-MM-DD --channel email|portal|mail|in_person [--file LETTER] [--replace]`.
+It writes the private `kit/comments-sent.json` (`{"schema_version": 1, "comments": {"M": {"on", "channel",
+"letter_sha256"?, "letter_bytes"?, "recorded_at"}}}`, mode 0600), prints the entry with a 12-character hash
+prefix and `Recorded only. Nothing was sent.` The tool sends and submits nothing. With `--file` (a regular,
+non-symlink file of at most 5 MiB) only the letter's SHA-256 and byte count are kept, never its text or path.
+It refuses an unknown or cancelled meeting, an id with anything but letters, digits, dots, underscores or
+hyphens, an `--on` that is in the future or after the meeting's own day, and a second record for the same
+meeting unless `--replace` (the refusal names the first date). Once a meeting has a recorded comment `today`
+no longer lists its `comment_deadline` item, and `meeting-pack` returns `"comment_sent": {"on", "channel"}`
+(`null` when none) and prints `Comment recorded as submitted on <on> (<channel>).`; the three pack files are
+unchanged. A malformed `kit/comments-sent.json` shows in `today` as one `unreadable` item (every deadline is
+still listed), `meeting-pack` treats it as no record, and `meetings-comment-sent` refuses until it is fixed.
+
 ## Recording an outcome
 
 After a staged meeting has happened, an organizer who read the result on the agency's own record
@@ -227,6 +243,17 @@ spaces collapsed). Problems are listed together by file row (the header is row 1
 `votes row 3: unknown name "X" (not in officials.json for <agency_id>)` or `votes row 5: name listed twice`,
 and nothing is written. Votes are never inferred from `--vote`. Changing votes needs `--replace`, and
 `--replace` without `--votes` drops them (`votes: none`). The meeting page shows a "Recorded votes" table.
+
+`--recording-url URL [--recording-start H:MM:SS]` adds the body's own official https video or audio of the meeting,
+which the organizer has checked, to the same outcome. It is only ever a link: the tool never fetches, embeds,
+downloads or rewrites it (the start time is shown as text, not added to the URL). There is no recording-only
+command; a recording goes in with the outcome, or with `--replace` (which drops the old recording unless it is
+given again). The URL must be https with no user name or password, at most 500 characters; the start is
+`H:MM:SS` (minutes and seconds two digits) and at most `12:00:00`, and needs a URL
+(`recording_start needs recording_url`). Bad values are refused naming `recording_url` or `recording_start`,
+and `content-check` and `build` refuse the same mistakes in a hand-edited file. Past meetings in the meetings
+list and the meeting page then end the outcome line with `Watch the discussion (from H:MM:SS)`; the wording
+comes from the `meeting.recording` and `meeting.recording_from` labels. Outcomes without a recording render as before.
 
 ## Not done
 

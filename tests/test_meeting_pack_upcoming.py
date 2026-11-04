@@ -79,7 +79,7 @@ class MeetingPackUpcomingTests(unittest.TestCase):
         report = self.up()
         self.assertEqual(report['window'], {'from': NOW.isoformat(), 'to': at(14), 'days': 14})
         self.assertEqual(report['skipped'], [])
-        self.assertEqual(report['built'], [{'id': 'soon', 'starts_at': at(2), 'findings': 2, 'truncated': 0, 'written': [
+        self.assertEqual(report['built'], [{'id': 'soon', 'starts_at': at(2), 'findings': 2, 'truncated': 0, 'comment_sent': None, 'written': [
             f'kit/meeting-packs/soon/{name}' for name in ('handout.html', 'comment.md', 'sources.csv')]}])
         self.assertEqual(sorted(p.name for p in self.packs.iterdir()), ['soon'])
         report = self.up(30, replace=True)

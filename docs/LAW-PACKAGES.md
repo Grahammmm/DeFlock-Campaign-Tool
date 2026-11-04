@@ -149,6 +149,42 @@ The packet states no conclusion and changes nothing in the package. While a
 package is `draft`, `doctor` lists the reviewer requirement and this command in
 `next_actions`.
 
+## After an amendment: law impact
+
+When a package is amended (a later amendment returns it to `draft`), list what the change touches before anyone
+decides whether a correction is needed:
+
+    python3 -m campaign_tool.law impact OLD.json NEW.json --directory D [--json]
+
+OLD and NEW are two versions of one jurisdiction's package. Each is read with the same loader and validator as
+`show`; a file that fails, or two different jurisdictions, stops with exit 2 and a message naming the file.
+Rules are matched by `rule_id`; a rule is **changed** when its `citation`, `duty`, `exceptions` (compared in
+order, so a reordered list counts), `effective_from` or `effective_to` differs. Every other rule field, including
+`remedy`, `sources` and `review`, is ignored. Added and removed rules are named.
+
+The *changed window* is the set of days whose answer may differ: the union of the old and new effective intervals
+when the citation, duty or exceptions changed, the symmetric difference of the two intervals when only the dates
+changed, the new interval for an added rule and the old one for a removed rule (`effective_to: null` is no end).
+
+A published finding (including a corrected one) or an open draft is **affected** when it cites a changed, added or
+removed rule, through `rule_ids` or `sources[].rule_id`, and its `event_date` falls in that rule's window.
+Withdrawn findings are skipped. A draft whose `event_date` is still an `[EDIT ME` marker (or missing) is listed
+under "drafts with no event date" because it may be affected; it does not set the exit code. A file that cannot be
+read is listed as `unreadable <path>` and counted, never skipped. The next command depends on the finding's state:
+
+- For an unpublished draft: `campaign_tool finding review-status <draft path> --directory D`.
+  Edit the draft to reassess the cited rules, then obtain fresh reviews before publication.
+  `finding diff` requires a published counterpart, so it is not offered for an unpublished draft.
+- For a pending correction with a published counterpart:
+  `campaign_tool finding diff ID --directory D --from <draft path>`.
+  If a correction is needed, revise that draft and obtain fresh reviews before correcting the published finding.
+- For a published finding: `campaign_tool finding diff ID --directory D --from DRAFT`,
+  then `finding correct` if the diff shows the published text needs it.
+
+Exit 0: no finding affected. Exit 3: at least one affected. Exit 2: an input error. The command is read-only: it
+writes no file, never marks a package reviewed and never records a correction. It states no legal conclusion;
+whether a correction is needed, and whether the amended package may be reviewed, stay with the human reviewers.
+
 ## Current state
 
 `us-ca` is a draft authored from leginfo.legislature.ca.gov and the California

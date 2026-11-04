@@ -279,15 +279,22 @@ def copy_status(source):
     return f' · <span class="copy-check">Public copy checked {time_tag(check["checked_on"])}: {verdict}</span>'
 
 
-def meeting_outcome_html(meeting):
-    """The organizer-verified outcome line (DF2237-11); "" when none was recorded."""
+def meeting_outcome_html(meeting, t=None):
+    """The organizer-verified outcome line (DF2237-11); "" when none was recorded. ``t`` is ``Site.t`` (labels);
+    the optional official recording (DF1422-10) is a plain link, never embedded, fetched or rewritten."""
     outcome = meeting.get("outcome")
     if not outcome:
         return ""
+    t = t or (lambda key, **values: html_text(DEFAULTS[key]).format(**values))
     vote = f' ({e(outcome["vote"])})' if outcome.get("vote") else ""
+    recording = ""
+    if outcome.get("recording_url"):
+        start = f' {t("meeting.recording_from", start=e(outcome["recording_start"]))}' if outcome.get("recording_start") else ""
+        recording = (f' · <a href="{e(outcome["recording_url"])}" rel="noopener noreferrer">{t("meeting.recording")}</a>'
+                     + start)
     return (f'<p class="meeting-outcome">Outcome: {e(OUTCOME_LABELS[outcome["result"]])} on {time_tag(outcome["on"])}{vote}'
             f' · <a href="{e(outcome["source_url"])}" rel="noopener noreferrer">Official record</a>'
-            f' · verified by {e(outcome["verified_by"])}</p>')
+            f' · verified by {e(outcome["verified_by"])}{recording}</p>')
 
 
 def _day(value):
@@ -554,7 +561,7 @@ class Site:
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a>'
                   if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">{self.t("meeting.page")}</a>'
         item = f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
-        item += meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else ""
+        item += meeting_outcome_html(meeting, self.t) if meeting["starts_at"][:10] < self.today.isoformat() else ""
         item += self._written_deadline(meeting)
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
@@ -770,16 +777,42 @@ class Site:
                 + '</section>\n')
         return self.page("agencies", self.labels["title.agencies"], self.labels["title.agencies_description"], "/agencies.html", main)
 
+    @staticmethod
+    def _official_name(person):
+        return (f'<a href="{e(person["profile_url"])}" rel="noopener noreferrer">{e(person["name"])}</a>'
+                if person["profile_url"] else e(person["name"]))
+
+    def votes_section(self, agency_id):
+        """DF0137-08: each listed official's recorded votes in the body's past meetings, newest first; "" with none."""
+        today = self.today.isoformat()
+        held = sorted((m for m in self.model["meetings"] if m.get("agency_id") == agency_id and m["status"] != "cancelled"
+                       and m["starts_at"][:10] < today and (m.get("outcome") or {}).get("votes")), key=lambda m: m["id"])
+        held.sort(key=lambda m: m["starts_at"][:10], reverse=True)  # stable: same-day meetings stay in id order
+        if not held:
+            return ""
+
+        def line(m, vote):
+            return (f'<li>{self.t("vote." + vote)} · <a href="/meetings/{e(m["id"])}.html">{e(m["body"])}, '
+                    f'{time_tag(m["starts_at"][:10])}</a> · <a href="{e(m["outcome"]["source_url"])}" '
+                    f'rel="noopener noreferrer">{self.t("agency.votes_source")}</a></li>')
+        out = ""
+        for person in self.model.get("officials", {}).get(agency_id) or []:
+            mine = [line(m, v["vote"]) for m in held for v in m["outcome"]["votes"] if v["name"] == person["name"]]
+            out += f'<h4>{self._official_name(person)}</h4>'
+            if not mine:
+                out += f'<p>{self.t("agency.votes_none")}</p>'
+                continue
+            out += "<ul>" + "".join(mine[:50]) + "</ul>"
+            out += f'<p>{self.t("agency.votes_more", count=len(mine) - 50)}</p>' if len(mine) > 50 else ""
+        return f'<section class="member-votes"><h3>{self.t("agency.votes_heading")}</h3>{out}</section>' if out else ""
+
     def who_decides(self, agency_id):
         """DF2237-13: the body's organizer-checked officials, or "" when ``content/officials.json`` lists none."""
         people = self.model.get("officials", {}).get(agency_id)
         if not people:
             return ""
 
-        def name(p):
-            return (f'<a href="{e(p["profile_url"])}" rel="noopener noreferrer">{e(p["name"])}</a>'
-                    if p["profile_url"] else e(p["name"]))
-        items = "".join(f'<li>{name(p)}, {e(p["role"])}</li>' for p in people)
+        items = "".join(f'<li>{self._official_name(p)}, {e(p["role"])}</li>' for p in people)
         newest = max(people, key=lambda p: p["checked_on"])  # first listed wins a tie
         source = f'<a href="{e(newest["source_url"])}">{self.t("officials.source")}</a>'
         return (f'<section class="who-decides"><h3>{self.t("officials.heading")}</h3><ul>{items}</ul><p>'
@@ -805,7 +838,7 @@ class Site:
                 + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
-                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.transparency_block(agency, "h3") + self.who_decides(aid)
+                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.transparency_block(agency, "h3") + self.who_decides(aid) + self.votes_section(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
@@ -1046,7 +1079,7 @@ class Site:
                 + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
                 + (f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
                 + self.who_decides(meeting.get("agency_id"))
-                + (meeting_outcome_html(meeting) + self.recorded_votes(meeting)
+                + (meeting_outcome_html(meeting, self.t) + self.recorded_votes(meeting)
                    if meeting["starts_at"][:10] < self.today.isoformat() else "")
                 + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
