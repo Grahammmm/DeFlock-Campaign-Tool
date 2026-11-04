@@ -21,7 +21,8 @@ S = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
 FIXED = ["/agencies.html", "/corrections.html", "/sources.html", "/meetings.html", "/about.html", "/methods.html", "/privacy.html", "/search.html", "/timeline.html",
          "/meetings/cedar-council-2026-10.html",  # DF2022-03: the example's one meeting page
          "/agencies/cedar.html",  # DF2237-08: Cedar Police has sources (and the finding)
-         "/cameras.html"]
+         "/cameras.html",
+         "/sources/cafecafecafe.html", "/sources/beefbeefbeef.html"]  # DF1103-11: one record page per library entry
 NOTE = "sitemap.xml skipped: content/site.json has no base_url"
 
 

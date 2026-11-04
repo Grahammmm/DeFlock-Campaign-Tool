@@ -27,10 +27,12 @@ RULE = "ca-civ-1798.90.5-definitions"
 RULE_URL = "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."
 NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network access attempted"))
 
-# sha256 of every file the fictional example renders on origin/main (514d4f03) with today=2026-10-01 and no
-# glossary.json: captured from an untouched detached main worktree, never from the candidate. A later change to the
-# generated site re-captures this table (render the example with today=2026-10-01 and no glossary.json; sha256 each file).
-# DF2207-11 funding parity: only agencies.csv gains an empty funding column; removing it restores its previous digest.
+# sha256 of the no-glossary fictional render with today=2026-10-01. Captured independently
+# from PR #910 (4249cded72d58ec5f39305ced48d7cecbea32e7e) and origin/main
+# (a918b28912ea859ee7030ca847e6144d0311f5b6), never from the merged candidate:
+# source-record pages and links come from that PR; unrelated current-main output comes from main.
+# DF2207-11 CSV baselines were captured from untouched origin/main (514d4f03).
+# Funding parity: only agencies.csv gains an empty funding column; removing it restores its previous digest.
 BASELINE = {
     "404.html": "de1094d7b8cb47ad4d2725c3bbc91e05c5fe550651ebecaca4271bf927531cc0",  # pragma: allowlist secret -- public rendered-file SHA-256
     "_headers": "d8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e",  # pragma: allowlist secret -- public rendered-file SHA-256
@@ -53,7 +55,7 @@ BASELINE = {
     "data/sources.json": "be46346e4e80de79575cc5250b27a921b329f22ffd8dd3a81b18a4a1bc603caf",  # pragma: allowlist secret -- public rendered-file SHA-256
     "feed.xml": "e6c4da912d1ea1bee41a34396d0dfb0187aeed960758830ad033f74afcbabf54",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/agency/cedar.xml": "555f536dddc3d3c6134c4b69ce281cc387f75efafbdb1d2ea0dc1dc9fda45414",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "findings/cedar-policy-posted.html": "90c81bff7945ffb3b8b8051458e38c0ea42aa458e8cb2bf3ec50507773ec07c5",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "findings/cedar-policy-posted.html": "eefcc625293a9151390e6271af3b8d67a99c46bcd2d23ef252175e2e65815bc6",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/cite.js": "13f4d137f53aaa98bcc1cf1662769871f5629dda97e5700cf97727fca110cb47",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/index.html": "40cc854ea4e41c64ef83bea812f95175fabf625f1a60d2da14d2c9f2efc1722f",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/packet-all.html": "621e8a02dbdb1a74803b293d2c5e2c9ccff14bbe34388e8b96d47a89af1726af",  # pragma: allowlist secret -- public rendered-file SHA-256
@@ -66,8 +68,10 @@ BASELINE = {
     "search.html": "c0e38535264dc884144c511d8f129b7041b49206feef8dcf4e48b08c91cefce6",  # pragma: allowlist secret -- public rendered-file SHA-256
     "search.js": "0f6185d1995caa68bb3292cf15417996ee917bf5b3c48c81d05cbd057d0da1f6",  # pragma: allowlist secret -- public rendered-file SHA-256
     "site-data.js": "bbce3111f93457ba0bc47b04ba0876e13bbcafa57305f61a9b046e72d62c0541",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "sitemap.xml": "f73a746d9985d9c996df1adfc19a7e6ab03b00362fa8ba0316742634e0d77383",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "sources.html": "3012e2059aa77e36817d4d3f55aecaed12d6dda834b412e97612a6ace8365012",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "sitemap.xml": "ab05fa8c7d57a393d8997b194fcef21e0e444f2f4eef751c101df532b9fd522e",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "sources/beefbeefbeef.html": "e52a34a2d4b3a46eee5166200ca31f5157abe3db09bfadceddf839376b14989f",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "sources/cafecafecafe.html": "89576baba1ce994f6bbb7a7f34ebba77d8356254acb984b15f38a49988705e0c",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "sources.html": "74e85c0b93832d2d978dfe5c36b92d77700dc11880de2abea58b533f468ab083",  # pragma: allowlist secret -- public rendered-file SHA-256
     "style.css": "640f0eb310ea16f07977566cd01d4298d73fed80b89603ce3d711072ec4aabc0",  # pragma: allowlist secret -- public rendered-file SHA-256
     "timeline.html": "22a4670fa3c5d65575e84b32222b4a15bb8d4ba90168fb9ba1039de3ec80690c",  # pragma: allowlist secret -- public rendered-file SHA-256
 }

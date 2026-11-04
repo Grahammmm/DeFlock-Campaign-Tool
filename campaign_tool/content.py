@@ -21,7 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import map_controller
+from . import law, map_controller
 from .agency_cards import text as plain_text, visible
 from .review import CLASSIFICATIONS, review_blockers
 
@@ -141,7 +141,9 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image"}
+             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image",
+             "comment_asks"}
+MAX_COMMENT_ASKS, MAX_ASK_CHARS = 3, 200
 SHARE_IMAGE_KEYS = {"path", "alt"}
 SHARE_RATIO, SHARE_RATIO_TOLERANCE = 1.905, 0.02  # 1200x630
 BRAND_KEYS = {"logo", "logo_alt", "accent", "ink", "favicon"}
@@ -251,6 +253,27 @@ def load_share_image(value, assets_dir=None):
     return {"path": value["path"], "alt": alt, "size": size}
 
 
+def load_comment_asks(value, label):
+    """DF2207-07: the campaign's own public-comment asks, 1-3 plain-text strings of 1-200 characters.
+
+    Checked on the raw text; nothing is coerced, trimmed or dropped. A refusal names the one-based position, never the text.
+    Control and format characters (newline, tab, DEL, bidi, zero-width) and U+2028/U+2029 are refused as well as angle brackets."""
+    if not isinstance(value, list) or not value:
+        raise ContentError(f"{label}: must be a list of 1 to {MAX_COMMENT_ASKS} asks")
+    if len(value) > MAX_COMMENT_ASKS:
+        raise ContentError(f"{label}[{MAX_COMMENT_ASKS + 1}]: at most {MAX_COMMENT_ASKS} asks")
+    for index, ask in enumerate(value, 1):
+        where = f"{label}[{index}]"
+        if not isinstance(ask, str) or not ask.strip():
+            raise ContentError(f"{where}: must be a non-empty string")
+        if len(ask) > MAX_ASK_CHARS:
+            raise ContentError(f"{where}: at most {MAX_ASK_CHARS} characters")
+        if (not plain_text(ask) or "\u2028" in ask or "\u2029" in ask
+                or any(unicodedata.category(char) in ("Cc", "Cf") for char in ask)):
+            raise ContentError(f"{where}: must be plain text on one line without angle brackets or control characters")
+    return list(value)
+
+
 def load_site(document, assets_dir=None):
     """``assets_dir`` (content/public-assets) lets ``brand`` check its logo and favicon files."""
     _require_keys(document, SITE_KEYS, {"schema_version", "tagline", "about_md"}, "site.json")
@@ -317,6 +340,8 @@ def load_site(document, assets_dir=None):
                                   default="This is not legal advice. Findings describe records and "
                                           "published rules as of the event date; consult counsel "
                                           "before relying on them."),
+        **({"comment_asks": load_comment_asks(document["comment_asks"], "site.json.comment_asks")}
+           if "comment_asks" in document else {}),
         **({"brand": load_brand(document["brand"], assets_dir)} if "brand" in document else {}),
         **({"share_image": load_share_image(document["share_image"], assets_dir)} if "share_image" in document else {}),
     }
@@ -958,6 +983,82 @@ def _alpr_policy(value, label):
             "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
 
 
+POLICY_CHECK_KEYS = {"checked_on", "policy_url", "elements"}
+POLICY_STATUSES = ("addressed", "not_found", "unclear")
+CHECKLIST_JURISDICTION = "us-ca"  # the only checklist resource; see jurisdictions/us-ca/policy-checklist.json
+
+
+def _policy_check(value, label, alpr_policy, today=None):
+    """DF1207-06: an organizer's reading of a posted policy (``profile.policy_check``) against the draft checklist.
+
+    Every problem is named by field in ONE refusal (``; `` separated), so build and content-check list them all.
+    Never fetched; no score or judgement.
+    Returns ``{"checked_on", "policy_url", "elements": [{"id", "label", "status", "page"?}]}`` in checklist order."""
+    if value is None:
+        return None
+    issues, elements = [], []
+    alpr, shaped = alpr_policy if isinstance(alpr_policy, dict) else None, isinstance(value, dict)
+    if not shaped:
+        issues.append(f"{label}: must be an object")
+        value = {}
+    issues += [f"{label}: unknown field {str(key)[:40]!r}" for key in sorted(set(value) - POLICY_CHECK_KEYS, key=str)]
+    issues += [f"{label}.{key}: required" for key in ("checked_on", "policy_url", "elements") if shaped and key not in value]
+    if "policy_url" in value:
+        if alpr is None:
+            issues.append(f"{label}.policy_url: needs profile.alpr_policy for the same agency")
+        elif value["policy_url"] != alpr.get("url"):
+            issues.append(f"{label}.policy_url: must equal profile.alpr_policy.url")
+    if "checked_on" in value:
+        try:
+            checked, posted = _calendar_day(value["checked_on"], f"{label}.checked_on"), None
+            try:
+                posted = _calendar_day(alpr.get("checked_on"), "alpr_policy.checked_on") if alpr else None
+            except ContentError:
+                pass  # a bad alpr_policy.checked_on is reported on its own field
+            if checked > (today or date.today()):
+                issues.append(f"{label}.checked_on: must not be after the build date")
+            elif posted and checked < posted:
+                issues.append(f"{label}.checked_on: must not be before profile.alpr_policy.checked_on")
+        except ContentError as exc:
+            issues.append(str(exc))
+    if "elements" in value:
+        try:
+            checklist = law.load_checklist(CHECKLIST_JURISDICTION)["elements"]
+        except ValueError as exc:
+            checklist = []
+            issues.append(f"{label}.elements: the policy checklist could not be loaded ({exc})")
+        given = value["elements"]
+        if not isinstance(given, dict):
+            issues.append(f"{label}.elements: must be an object keyed by element id")
+            given = {}
+        known = {element["id"] for element in checklist}
+        issues += [f"{label}.elements.{str(key)[:40]}: unknown element" for key in sorted(set(given) - known, key=str)]
+        for element in checklist:
+            where, entry = f"{label}.elements.{element['id']}", given.get(element["id"])
+            if element["id"] not in given:
+                issues.append(f"{where}: missing")
+                continue
+            if not isinstance(entry, dict):
+                issues.append(f"{where}: must be an object with status and optional page")
+                continue
+            issues += [f"{where}: unknown field {str(key)[:40]!r}" for key in sorted(set(entry) - {"status", "page"}, key=str)]
+            status, bad = entry.get("status"), len(issues)
+            if status not in POLICY_STATUSES:
+                issues.append(f"{where}.status: choose one of {list(POLICY_STATUSES)}")
+            page = entry.get("page")
+            if "page" in entry:
+                if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= 9999:
+                    issues.append(f"{where}.page: must be a whole number from 1 to 9999")
+                elif status != "addressed":
+                    issues.append(f"{where}.page: only allowed when status is addressed")
+            if len(issues) == bad:
+                elements.append({"id": element["id"], "label": element["label"], "status": status,
+                                 **({"page": page} if "page" in entry else {})})
+    if issues:
+        raise ContentError("; ".join(issues))
+    return {"checked_on": value["checked_on"], "policy_url": value["policy_url"], "elements": elements}
+
+
 TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts", "shared_with_agencies")
 
 
@@ -1070,7 +1171,7 @@ def load_agencies(document, label, today=None):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy", "transparency", "funding"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy", "policy_check", "transparency", "funding"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -1091,7 +1192,8 @@ def load_agencies(document, label, today=None):
             "asked": _asked(entry, f"{item}.asked", today) if label == "content/agencies.json" else [],
             "flock_transparency_url": _flock_url(entry, item),
             "contract": _contract(profile.get("contract"), f"{item}.profile.contract"),  # kept out of card JS
-            "alpr_policy": _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy"),  # likewise
+            "alpr_policy": (alpr_policy := _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy")),  # likewise
+            "policy_check": _policy_check(profile.get("policy_check"), f"{item}.profile.policy_check", alpr_policy, today),  # likewise
             "transparency": _transparency(profile.get("transparency"), f"{item}.profile.transparency",  # likewise
                                           entry.get("flock_transparency_slug") if _flock_url(entry, item) else None, today),
             "profile": {

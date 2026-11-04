@@ -4,10 +4,15 @@ The message bytes are read once (no link followed), parsed in memory with the st
 stored first. Every non-multipart part with a filename is an attachment: its decoded payload is stored with a
 receipt `<message>/<sanitized filename>` and linked to the message by one ledger `contains` row. Body text and
 inline parts without a filename stay only inside the stored message. A forwarded `message/rfc822` part is one
-`.eml` member and is never opened. No header value (Subject, From, To, Date, ...) is printed or logged."""
+`.eml` member and is never opened. Attachment transfer encodings are decoded strictly: a malformed one refuses the
+message before any write (see docs/INGEST-MAIL.md). No header value (Subject, From, To, Date, ...) is printed or logged."""
+import base64
+import binascii
 import io
 import json
 import os
+import quopri
+import re
 import stat
 import unicodedata
 from email import errors, policy
@@ -22,6 +27,10 @@ MAX_PART_BYTES = MAX_BYTES  # decoded attachment cap
 MAX_NAME = 120
 _FATAL = (errors.NoBoundaryInMultipartDefect, errors.StartBoundaryNotFoundDefect,
           errors.MultipartInvariantViolationDefect)
+_BAD_ENCODING = "InvalidAttachmentEncoding"
+_ENCODINGS = ("7bit", "8bit", "binary", "base64", "quoted-printable")
+_MIME_WHITESPACE = re.compile(rb"[ \t\r\n]")
+_BAD_ESCAPE = re.compile(rb"=(?![0-9A-Fa-f]{2}|\r\n|\n)")  # an `=` that starts no hex pair or soft line break
 
 
 def _read_message(path):
@@ -97,6 +106,37 @@ def _payload(part):
         inner, buffer = part.get_payload(0), io.BytesIO()
         BytesGenerator(buffer, mangle_from_=False, policy=policy.default.clone(refold_source="none")).flatten(inner)
         return buffer.getvalue()
+    return _decoded_attachment(part)
+
+
+def _decoded_attachment(part):
+    """Decoded bytes of an ordinary attachment under the strict transfer-encoding rules of docs/INGEST-MAIL.md.
+
+    Exactly one supported Content-Transfer-Encoding (or none = 7bit); base64 must be canonical and quoted-printable
+    must have only well-formed escapes. Anything else raises ValueError with a fixed message that carries no value."""
+    refusal = ValueError(f"malformed MIME ({_BAD_ENCODING}); nothing was imported")
+    headers = part.get_all("content-transfer-encoding")
+    encoding = "7bit" if headers is None else str(headers[0]).strip().lower() if len(headers) == 1 else None
+    if encoding not in _ENCODINGS:
+        raise refusal
+    if encoding in ("base64", "quoted-printable"):
+        try:  # `_payload`: the undecoded wire text; get_payload() would charset-decode it with replacement
+            encoded = part._payload.encode("ascii", "surrogateescape" if encoding != "base64" else "strict")
+        except (UnicodeError, AttributeError):
+            raise refusal from None
+        if encoding == "quoted-printable":
+            if _BAD_ESCAPE.search(encoded):
+                raise refusal
+            return quopri.decodestring(encoded)
+        else:
+            compact = _MIME_WHITESPACE.sub(b"", encoded)
+            try:
+                decoded = base64.b64decode(compact, validate=True)
+                if base64.b64encode(decoded) != compact:
+                    raise refusal
+            except binascii.Error:
+                raise refusal from None
+            return decoded
     return part.get_payload(decode=True) or b""
 
 
