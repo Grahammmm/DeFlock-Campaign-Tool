@@ -990,6 +990,11 @@ def main():
     response_p.add_argument("--withheld-basis", action="append", default=[], metavar="TEXT",
                             help="denied or produced only, repeatable (at most 5): the agency's own stated reason or "
                             "code section, as written (1-200 chars, no control characters; never record contents)")
+    response_p.add_argument("--scope", action="append", default=[], metavar="ID",
+                            help="repeatable, with --disposition: a law-package scope this request asked for that the "
+                            "agency's answer covers (not on acknowledged, extension, clarification or fee_estimate steps)")
+    response_p.add_argument("--disposition", choices=("produced", "partly_produced", "withheld", "no_records_stated"),
+                            help="with --scope: what the agency said about those scopes (your record, not a legal finding)")
     muckrock_p = commands.add_parser("kit-muckrock-import", help="Propose the kit-response step a MuckRock request JSON you "
                                      "saved by hand implies; fetches and sends nothing")
     for flag in ("--directory", "--agency", "--from-json"):
@@ -1545,7 +1550,8 @@ def main():
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
                                          reference=args.reference, replace_reference=args.replace_reference,
                                          partial=args.partial, correspondence=args.correspondence,
-                                         withheld_basis=args.withheld_basis),
+                                         withheld_basis=args.withheld_basis, scope_ids=args.scope,
+                                         disposition=args.disposition),
                              indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-withheld":

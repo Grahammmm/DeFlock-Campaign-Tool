@@ -185,8 +185,30 @@ def _check(root, agency, request):  # main: kit-check's own report; a named requ
     return {"placeholder_count": len(hits), "ok": not hits and agency.get("verified") is True}
 
 
+def _asked_scopes(root, law_base=None):
+    """The law-package scope ids kit/summary.json says the drafts cover, or None (never guessed) when it cannot say."""
+    from .cli import read_config  # local import: cli imports this module lazily
+    path = Path(root) / "kit" / "summary.json"
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_BYTES:
+            return None
+        summary = json.loads(path.read_bytes().decode("utf-8"))
+        known = [s["scope_id"] for s in law.load_package(kit._jurisdiction(read_config(root)), law_base)["request_scopes"]]
+    except (OSError, ValueError):
+        return None
+    asked = summary.get("scopes") if isinstance(summary, dict) else None
+    if asked == "all":
+        return known or None
+    if not (isinstance(asked, list) and asked and all(isinstance(i, str) for i in asked)):
+        return None
+    for scope_id in asked:
+        if scope_id not in known:
+            raise ValueError(f"kit/summary.json names scope {scope_id!r}, which is not in the law package; rebuild the kit")
+    return list(dict.fromkeys(asked))
+
+
 def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=False, today=None, reference=None,
-                replace_reference=False, correspondence=(), request_url=None):
+                replace_reference=False, correspondence=(), request_url=None, law_base=None):
     """Record one hand-sent request in kit/sent.json and return its entry."""
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
@@ -226,8 +248,11 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
         raise ValueError(f"{label} already recorded as sent on {previous['sent_on']}; use --replace to correct it")
     if previous and previous["steps"]:
         raise ValueError(f"{label} has recorded steps; its entry sent on {previous['sent_on']} cannot be replaced")
+    scopes = _asked_scopes(root, law_base)  # read on every call, so --replace re-reads the current kit
     entry = {"sent_on": sent_on, "channel": channel, "draft": draft, "draft_sha256": digest,
              "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "steps": []}
+    if scopes:
+        entry["scopes"] = scopes
     if request_url:
         entry["request_url"] = request_url
     if previous and "reference" in previous:  # a --replace correction keeps the stored reference
@@ -361,6 +386,59 @@ def _bases(steps):  # [{"on", "kind", "basis"}] for every recorded basis, in ste
             for s in steps if s.get("kind") in BASIS_KINDS for text in s.get("withheld_basis", [])]
 
 
+DISPOSITIONS = ("produced", "partly_produced", "withheld", "no_records_stated")  # the agency's answer, per scope
+NO_SCOPE_KINDS = ("acknowledged", "extension", "clarification_requested", "clarified", "fee_estimate")
+
+
+def _scopes_ok(entry):  # entry["scopes"]: absent, or a non-empty list of unique strings
+    value = entry.get("scopes")
+    return "scopes" not in entry or (isinstance(value, list) and bool(value) and all(isinstance(i, str) for i in value)
+                                     and len(set(value)) == len(value))
+
+
+def _answers_ok(step, entry):  # scope_answers: absent, or {asked scope id: known disposition} on an allowed kind
+    if "scope_answers" not in step:
+        return True
+    value = step["scope_answers"]
+    return (step.get("kind") not in NO_SCOPE_KINDS and isinstance(value, dict) and bool(value)
+            and isinstance(entry.get("scopes"), list)
+            and all(k in entry["scopes"] and v in DISPOSITIONS for k, v in value.items()))
+
+
+def _clean_scopes(kind, scope_ids, disposition):  # refused before anything is read; (ids, disposition) or ([], None)
+    scope_ids = list(scope_ids or ())
+    if not scope_ids and disposition is None:
+        return [], None
+    if not scope_ids or disposition is None:
+        raise ValueError("--scope and --disposition go together: give both or neither")
+    if disposition not in DISPOSITIONS:
+        raise ValueError("--disposition must be one of " + ", ".join(DISPOSITIONS))
+    if kind in NO_SCOPE_KINDS:
+        raise ValueError(f"--scope is not allowed on a {kind} step")
+    for number, scope_id in enumerate(scope_ids, 1):
+        if not isinstance(scope_id, str) or scope_id in scope_ids[:number - 1]:
+            raise ValueError(f"--scope {scope_id}: the same scope is given twice")
+    return scope_ids, disposition
+
+
+def _answers(steps):  # {scope_id: (latest disposition, its step date)}; tolerant, for read-only reports
+    latest = {}
+    for s in steps:
+        found = s.get("scope_answers")
+        for scope_id, disposition in (found.items() if isinstance(found, dict) else ()):
+            latest[scope_id] = (disposition, s.get("on"))
+    return latest
+
+
+def _scope_rows(entry, steps):  # None when the request recorded no scopes, else one row per asked scope, entry order
+    scopes = entry.get("scopes")
+    if not isinstance(scopes, list):
+        return None
+    latest = _answers(steps)
+    return [{"scope_id": i, "answer": latest.get(i, (None, None))[0], "on": latest.get(i, (None, None))[1]}
+            for i in scopes]
+
+
 def _fee(steps):  # (latest fee_estimate index by date then recorded order, else None; a settlement step after it)
     dated = [(s.get("on") if isinstance(s.get("on"), str) else "", i) for i, s in enumerate(steps)
              if s.get("kind") == "fee_estimate"]
@@ -411,12 +489,13 @@ def _next_installment(steps):  # the latest expected_on on or after the latest p
 
 def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None,
                 expected_on=None, reference=None, replace_reference=False, partial=False, correspondence=(),
-                dry_run=False, withheld_basis=()):
+                dry_run=False, withheld_basis=(), scope_ids=(), disposition=None):
     """Append one dated agency response step (``dry_run``: check and return it, write nothing)."""
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
     if kind not in KINDS:
         raise ValueError("--kind must be one of " + ", ".join(KINDS))
+    scope_ids, disposition = _clean_scopes(kind, scope_ids, disposition)
     if partial and kind != "produced":
         raise ValueError("--partial is only for produced steps")
     records = list(records or ())  # produced only: ledger prefixes; full hashes stored, 12-char prefixes returned
@@ -435,10 +514,16 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
         raise ValueError(f"no hand-sent request recorded for {agency_id}; run kit-sent first")
     label = _label(agency_id, request)
     steps = entry["steps"]
-    if not all(isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) and _amount_ok(s)
-               and _step_records(s) == s.get("records", []) and _steps_corr_ok(s) and _basis_ok(s)
-               for s in steps) or not _expected_ok(steps):
+    if not _scopes_ok(entry) or not all(
+            isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) and _amount_ok(s)
+            and _step_records(s) == s.get("records", []) and _steps_corr_ok(s) and _basis_ok(s)
+            and _answers_ok(s, entry) for s in steps) or not _expected_ok(steps):
         raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
+    if scope_ids and "scopes" not in entry:
+        raise ValueError("scopes not recorded for this request; --scope cannot be checked")
+    for scope_id in scope_ids:
+        if scope_id not in entry.get("scopes", ()):
+            raise ValueError(f"--scope {scope_id} was not asked in this request")
     day = _day(on)
     if day is None:
         raise ValueError("--date must be a real YYYY-MM-DD date")
@@ -500,6 +585,7 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
             **({"amount_cents": cents} if cents is not None else {}),
             **({"note": note} if note else {}), **({"records": hashes} if hashes else {}),
             **({"correspondence": corr} if corr else {}), **({"withheld_basis": stated_bases} if stated_bases else {}),
+            **({"scope_answers": dict(sorted(dict.fromkeys(scope_ids, disposition).items()))} if scope_ids else {}),
             "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     entry["steps"] = [*steps, step]
     if not dry_run:
@@ -532,7 +618,8 @@ def status(root, today=None, law_base=None, *, request=None):
         fees = [(s.get("on"), i, s) for i, s in enumerate(steps) if "amount_cents" in s or kinds[i] == "fee_estimate"]
         if not all(_amount_ok(s) and _day(on) for on, _, s in fees) or not _expected_ok(steps) \
                 or not all(map(_steps_corr_ok, steps)) \
-                or not all(map(_basis_ok, steps)):
+                or not all(map(_basis_ok, steps)) or not _scopes_ok(entry) \
+                or not all(_answers_ok(s, entry) for s in steps):
             raise ValueError(f"kit/sent.json unreadable: malformed steps for {_label(agency_id, name)!r}")
         last, settled = _fee(steps)  # the latest estimate: latest date, then the later recorded step
         estimate = None if last is None else steps[last]["amount_cents"]
@@ -562,14 +649,21 @@ def status(root, today=None, law_base=None, *, request=None):
                      "stated_production_date": stated, "waiting_on_you_since": _waiting_since(steps),
                      "producing": producing, "next_installment": _next_installment(steps) if producing else None,
                      "reference": entry.get("reference"), "fee_state": _fee_state(steps), "fee_paid": fee_paid,
-                     "withheld_basis": _bases(steps)})
+                     "withheld_basis": _bases(steps), "scopes": _scope_rows(entry, steps)})
     waiting = any(row["waiting_on_you_since"] for row in rows)
     return {"requests": rows, "law_package_status": package_status, "note": NOTE + (WAIT_NOTE if waiting else "")}
 
 
 ANSWERED = {"determination", "produced", "denied"}
 CSV_HEADER = ("agency_id", "name", "drafted", "sent_on", "channel", "last_step_on", "last_step_kind", "records",
-              "sources", "findings", "fee")
+              "sources", "findings", "fee", "scopes")
+
+
+def _scope_summary(entry, steps):  # None before a request is sent; "not recorded"; else "k/n answered"
+    if not entry:
+        return None
+    rows = _scope_rows(entry, steps)
+    return "not recorded" if rows is None else f"{sum(r['answer'] is not None for r in rows)}/{len(rows)} answered"
 
 
 def coverage(root):
@@ -597,7 +691,8 @@ def coverage(root):
                      "last_step": {"on": steps[-1].get("on"), "kind": steps[-1].get("kind")} if steps else None,
                      "records": len({h for s in steps if s.get("kind") == "produced" for h in _step_records(s)}),
                      "sources": sources.count(agency_id), "findings": findings.count(agency_id),
-                     "fee_state": _fee_state(steps), "answered": bool(ANSWERED & {s.get("kind") for s in steps})})
+                     "fee_state": _fee_state(steps), "scopes": _scope_summary(entry, steps),
+                     "answered": bool(ANSWERED & {s.get("kind") for s in steps})})
     rows.sort(key=lambda row: (row["sent_on"] is not None, row["agency_id"]))
     totals = {"selected": len(rows), "drafted": sum(r["drafted"] for r in rows),
               "sent": sum(r["sent_on"] is not None for r in rows), "answered": sum(r.pop("answered") for r in rows),
@@ -613,7 +708,7 @@ def coverage(root):
 def _cells(row):
     step = row["last_step"] or {}
     return [row["agency_id"], row["name"], row["drafted"], row["sent_on"], row["channel"], step.get("on"),
-            step.get("kind"), row["records"], row["sources"], row["findings"], row["fee_state"]]
+            step.get("kind"), row["records"], row["sources"], row["findings"], row["fee_state"], row["scopes"]]
 
 
 def _csv_cell(value):
@@ -632,9 +727,9 @@ def format_coverage(report, as_csv=False):
         for row in report["rows"]:
             writer.writerow([_csv_cell(c) for c in _cells(row)])
         return out.getvalue()
-    line = "{:<36} {:<40} {:<7} {:<10} {:<9} {:<10} {:<13} {:>7} {:>7} {:>8} {}"
+    line = "{:<36} {:<40} {:<7} {:<10} {:<9} {:<10} {:<13} {:>7} {:>7} {:>8} {:<7} {}"
     lines = [line.format("agency_id", "name", "drafted", "sent_on", "channel", "last_on", "last_kind", "records",
-                         "sources", "findings", "fee")]
+                         "sources", "findings", "fee", "scopes")]
     for row in report["rows"]:
         cells = _cells(row)
         cells[1] = "".join(c if c.isprintable() else " " for c in cells[1])[:40]
