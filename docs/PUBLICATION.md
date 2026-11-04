@@ -68,6 +68,9 @@ finding that still carries one. Nothing is published.
         --decision approve|reject|changes_requested --reviewer NAME --rationale TEXT
     python3 -m campaign_tool finding review-status DRAFT --directory D
 
+A volunteer reviewer's role-by-role walkthrough (what to read and check, how to choose a decision, a synthetic example)
+is in [REVIEW-GUIDE.md](REVIEW-GUIDE.md); this section stays the reference.
+
 `finding review` appends one receipt to `D/private/reviews/<finding id>.json` (directory 0700,
 file 0600, atomic write) under an exclusive lock on `D/private/reviews/.lock` (0600), so
 concurrent reviews never drop each other's receipts, and writes nothing else. Reviewer names
@@ -370,7 +373,8 @@ sign-off, the privacy lint and the legal-claim notes are separate conditions.
 
 ## Not done
 
-No reviewer signatures or identity check (roster names are self-asserted); the workspace Worker has
+Offline review signatures are optional (see Signed receipts above) and only prove a receipt was made with a key in the
+organizer-held roster; there is no other identity check (roster names are self-asserted); the workspace Worker has
 no reviewer directory or role assignment beyond the Access policy; no automatic notification to
 reviewers. `finding assign DRAFT --directory D --role R --reviewer NAME --on D [--replace]` only records, privately in
 `private/review-assignments/`, who was asked to review which role since which date (refused for the draft's author, and

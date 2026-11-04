@@ -38,6 +38,7 @@ mail or publishes anything.
 | Flock monitor, sweep, region | Index-page monitoring (links recorded, never fetched), watch-list sweep status and plans, a ranked read-only daily to-do list, county region scaffolds. | `tools/flock_monitor.py`, `tools/flock_sweep.py`, `tools/flock_today.py`, `tools/flock_region.py`, `skills/flock-monitor/`, `skills/flock-sweep/`, `skills/flock-region/` |
 | Flock review, report, page | The staged review run, its verify sample, golden check and batch runner, its report draft and a page draft. | `tools/flock_review.py`, `tools/flock_review_verify.py`, `tools/flock_review_golden.py`, `tools/flock_review_batch.py`, `tools/flock_report.py`, `tools/flock_page.py`, `tools/flock_privacy.py` (email/phone/plate patterns shared by the report, page and publish lints), `tools/flock_privacy_scan.py` (same patterns over a private draft folder; path:line: category only), `skills/flock-review/`, `skills/flock-page/` |
 | Flock publish exporter | Writes `PUBLISH.json` with every entry pending human review; publication needs G. `brief` writes a private 0600 partner/press brief draft from approved entries; never sent or built. | `tools/flock_publish.py`, `tools/flock_publish_stage.py`, `tools/flock_publish_brief.py`, `skills/flock-publish/` |
+| Flock redaction workflow | Private text-only proposals, verified human signature sign-off and staging-validated immutable derivatives; originals unchanged, nothing publishes. | `tools/flock_redact.py`, [REDACTION.md](REDACTION.md) |
 | Flock redaction records | Read-only proposal, trusted sign-off and derivative eligibility; exporter refuses missing originals and required-but-ineligible redactions. Eligibility never approves publication. | `tools/flock_redaction_record.py`, [REDACTION.md](REDACTION.md) |
 | Flock review queue | Private challenge and receipt report for human review; never approves or publishes. | `tools/flock_review_queue.py` |
 | Custody report | One private page per published finding: the source hashes and re-hash result, when and from which agency each source was received, its preservation receipt, the review receipts bound to the current content, and every missing link named. Read-only and never published. A hash establishes byte identity, not authenticity. | `tools/custody_report.py`, `schemas/custody-report-v1.json`, [RECONCILIATION.md](RECONCILIATION.md) |
@@ -72,7 +73,7 @@ The hosted path is not deployed, and no deploy receipt exists; the fresh-account
 - Runner: processes workspace jobs in a container.
 
 Before serving anyone, the hosted path still needs:
-- A registered outbox sender in the workspace (`df-bind-sender`).
+- A registered outbox sender in the workspace (`df-bind-sender`): the setup wizard can now write the settings, but no gateway or key is provisioned.
 - Account configuration and verification for the social posting adapter (`df-social-posting`), now implemented offline.
 - Provider configuration and verification for the Brevo webhook and list count (`df-subscribe`); the code is tested offline.
 - Feed configuration and deployment for the Legistar poll (`df-legistar-poll`). The poll is implemented offline.
@@ -92,7 +93,7 @@ Only items with no implementation in this repository.
 
 | Item | Evidence that it is not built |
 | --- | --- |
-| Registered sender for the Worker `send_request`/`send_followup` executors | Outbox code is bound; an unconfigured sender refuses with `sender_not_configured`: `workers/workspace/src/executors/types.ts`. A deployed workspace still needs a registered sender. |
+| Registered sender for the Worker `send_request`/`send_followup` executors | Outbox code is bound, and the wizard's Outbox sender step writes `OUTBOX_GATEWAY_URL` and `OUTBOX_SIGNING_KEY` as a both-or-neither pair, but nothing is provisioned: without the pair a workspace refuses with `sender_not_configured`: `workers/workspace/src/executors/types.ts`. A deployed workspace still needs a registered sender. |
 | Live social posting | `post_social` has one Mastodon adapter behind per-post approval, but no account is configured: `workers/workspace/src/executors/post_social.ts` |
 | Independently reviewed state-law packages | California ships `status: draft`: `jurisdictions/us-ca/package.json` |
 | Live Legistar polling from the Worker | `pollLegistar` runs inline on the cron slots and is tested offline. It is not deployed and `LEGISTAR_FEEDS` is not configured: [MEETINGS.md](MEETINGS.md) |

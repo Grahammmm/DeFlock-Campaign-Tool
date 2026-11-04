@@ -14,6 +14,7 @@ import type { Env } from "./env.ts";
 import { buildPlan, planNames, redactStep } from "./plan.ts";
 import * as S from "./screens.ts";
 import { decryptBlob, encryptBlob, SessionError, SessionStore, sessionIdFromCookie } from "./session.ts";
+import { parseOutboxSender } from "./steps/outbox-sender.ts";
 import { emptyState, isStrictLocalUrl, isValidCron, isValidDomain, isValidEmail, stripSecrets, type Accounts, type Channel, type WizardState } from "./state.ts";
 
 const SEED = seedJson as AgencySeed;
@@ -213,7 +214,10 @@ app.post("/setup/5", async (c) => {
     model: modelUrl ? { base_url: modelUrl, api_key: str("model_api_key") || prev?.model?.api_key || "", model_id: str("model_id") } : null,
   };
   if (accounts.brevo && (!accounts.brevo.api_key || !accounts.brevo.list_id)) errors.push("Brevo needs both an API key and a list id, or leave both empty");
-  const next: WizardState = { ...s, accounts, mail_mode: mode, plan: null, step: Math.max(s.step, 6) };
+  const outbox = parseOutboxSender(str("outbox_gateway_url"), str("outbox_signing_key"));
+  if (outbox.error) errors.push(outbox.error);
+  accounts.outbox = outbox.sender;
+  const next: WizardState = { ...s, accounts, mail_mode: mode, outbox_sender: outbox.status === "registered" ? "registered" : "skipped", plan: null, step: Math.max(s.step, 6) };
   if (errors.length) return page(c, 5, S.screenAccounts({ ...next, accounts: { ...accounts, cloudflare: { ...accounts.cloudflare, api_token: "" } } }), errors.join("; "));
   return redirect("/setup/6", await save(c, next));
 });
@@ -289,6 +293,7 @@ export function launchReceipt(s: WizardState): Record<string, unknown> {
     agencies: s.agencies.filter((a) => a.selected).map((a) => a.agency_id),
     requests: Object.values(s.requests).map((r) => ({ agency_id: r.agency_id, channel: r.channel, fee_cap_cents: r.fee_cap_cents })),
     resources: { ...n, workspace_url: u.workspace, public_url: u.public },
+    outbox_sender: s.outbox_sender ?? "skipped",
     deploy: s.deploy,
     handoff_at: s.handoff_at,
   };
