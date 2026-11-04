@@ -211,7 +211,15 @@ export const SIGNUP_TEST_CHECKLIST = [
   "Record the date, the address's last four characters and the result in the launch receipt; then delete the test contact.",
 ] as const;
 
-export function settings(campaign: CampaignRow | null, rows: SettingRow[], secrets: SecretPresence[], notice: string | null, brevo: BrevoSettings | null): Safe {
+/** Recorded outcome of the signup test: which steps were confirmed, by whom, when. No address or free text is ever stored. */
+export interface SignupTest {
+  checks: boolean[];
+  done: number;
+  recorded_by: string;
+  recorded_at: string;
+}
+
+export function settings(campaign: CampaignRow | null, rows: SettingRow[], secrets: SecretPresence[], notice: string | null, brevo: BrevoSettings | null, signupTest: SignupTest | null = null): Safe {
   return html`<h1>Settings</h1>
 ${notice ? html`<p class="notice">${raw(notice)}</p>` : ""}
 <h2>Newsletter (Brevo, non-secret settings)</h2>
@@ -223,7 +231,8 @@ ${notice ? html`<p class="notice">${raw(notice)}</p>` : ""}
 <label class="field">Consent footer (your reviewed wording: why the reader receives this, who sends it and from where; must keep the sentence "Unsubscribe at any time." — drafts without a campaign footer carry a template marker and cannot be sent)<textarea name="consent_footer" rows="3" maxlength="600">${brevo?.consent_footer ?? ""}</textarea></label>
 <button class="secondary" type="submit">Save Brevo settings</button>${brevo?.updated_at ? html`<span class="meta"> saved ${brevo.updated_at} by ${brevo.updated_by ?? ""}</span>` : ""}</form>
 <h3>Test signup flow (docs/CLOUDFLARE.md step 9)</h3>
-<div class="checklist">${SIGNUP_TEST_CHECKLIST.map((item, i) => html`<label><input type="checkbox" name="signup_check_${i}"> ${item}</label>`)}</div>
+<form method="post" action="/settings/signup-test" class="stack"><div class="checklist">${SIGNUP_TEST_CHECKLIST.map((item, i) => html`<label><input type="checkbox" name="signup_check_${i}"${signupTest?.checks[i] ? raw(" checked") : ""}> ${item}</label>`)}</div>
+<button class="secondary" type="submit">Record signup test</button> <span class="meta">${signupTest ? (signupTest.done === SIGNUP_TEST_CHECKLIST.length ? html`All ${SIGNUP_TEST_CHECKLIST.length} steps confirmed` : html`Recorded ${signupTest.done} of ${SIGNUP_TEST_CHECKLIST.length}`) : ""}${signupTest ? html` by ${signupTest.recorded_by} at ${signupTest.recorded_at}` : "Not recorded yet."}</span></form>
 <h2>Backup</h2>
 <form method="post" action="/api/backup" class="stack"><p>Enqueues a <code>backup</code> job: the runner pulls <code>/api/runner/export.json</code> and every original by hash into one verified tar (docs/BACKUP.md). Organizers can also download <a href="/api/export.json">the D1 export</a> directly.</p><button class="secondary" type="submit">Queue backup job</button></form>
 <h2>Secrets (presence only; values are never displayed)</h2>
