@@ -102,6 +102,16 @@ def legal_notes(items):
         return ["review-required: legal-claim wording (guard-error)"]
 
 
+def faq_notes(entries):
+    """entries: the validated ``content/faq.json`` entries -> review-required notes for EVERY answer_md (DF0022-01).
+    Each answer is scanned on its own, so neutral question wording hides nothing; a rule citation suppresses nothing.
+    Alert-only like ``legal_notes``: the notes name ``faq.json.entries[N].answer_md`` and the rules, never the text."""
+    try:
+        return legal_notes((f"faq.json.entries[{n}].answer_md", entry["answer_md"]) for n, entry in enumerate(entries or []))
+    except Exception:  # noqa: BLE001
+        return ["review-required: legal-claim wording (guard-error)"]
+
+
 def site_notes(root):
     """root: a campaign directory -> review-required notes for its finding content (the text the site build publishes).
     Used by the CLI build and the runner build_site job, so both carry the same flags to their human approval gate."""
@@ -110,6 +120,7 @@ def site_notes(root):
         model = load_content(root)
         walk = lambda v: [t for x in v.values() for t in walk(x)] if isinstance(v, dict) else \
             [t for x in v for t in walk(x)] if isinstance(v, (list, tuple)) else [v] if isinstance(v, str) else []
-        return legal_notes((f"findings/{f.get('slug', '?')}", t) for f in (model or {}).get("findings", []) for t in walk(f))
+        return (legal_notes((f"findings/{f.get('slug', '?')}", t) for f in (model or {}).get("findings", []) for t in walk(f))
+                + faq_notes((model or {}).get("faq")))  # DF0022-01: every FAQ answer, scanned on its own
     except Exception:  # noqa: BLE001 - alert-only: a scan that cannot run is itself a flag, never a failure
         return ["review-required: legal-claim wording (site content could not be scanned; read the findings before publishing)"]
