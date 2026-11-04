@@ -170,9 +170,16 @@ A published finding (including a corrected one) or an open draft is **affected**
 removed rule, through `rule_ids` or `sources[].rule_id`, and its `event_date` falls in that rule's window.
 Withdrawn findings are skipped. A draft whose `event_date` is still an `[EDIT ME` marker (or missing) is listed
 under "drafts with no event date" because it may be affected; it does not set the exit code. A file that cannot be
-read is listed as `unreadable <path>` and counted, never skipped. Each affected finding gets the next command:
-`finding diff ID --directory D --from DRAFT`, then `finding correct` if the diff shows the published text needs
-it; for a draft, `finding diff ID --directory D --from <that draft>`.
+read is listed as `unreadable <path>` and counted, never skipped. The next command depends on the finding's state:
+
+- For an unpublished draft: `campaign_tool finding review-status <draft path> --directory D`.
+  Edit the draft to reassess the cited rules, then obtain fresh reviews before publication.
+  `finding diff` requires a published counterpart, so it is not offered for an unpublished draft.
+- For a pending correction with a published counterpart:
+  `campaign_tool finding diff ID --directory D --from <draft path>`.
+  If a correction is needed, revise that draft and obtain fresh reviews before correcting the published finding.
+- For a published finding: `campaign_tool finding diff ID --directory D --from DRAFT`,
+  then `finding correct` if the diff shows the published text needs it.
 
 Exit 0: no finding affected. Exit 3: at least one affected. Exit 2: an input error. The command is read-only: it
 writes no file, never marks a package reviewed and never records a correction. It states no legal conclusion;
