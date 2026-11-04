@@ -11,8 +11,9 @@ from pathlib import Path
 
 from .cli import read_config
 from .content import _read_json, load_finding, load_meeting, load_site, load_sources
+from .labels import DEFAULTS, MAX_LABELS_BYTES, html_text, load_labels
 from .meeting_stage import stale_kits
-from .site import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, FULL_HASH
+from .site import FULL_HASH
 
 
 def _unlinked(path):
@@ -21,10 +22,18 @@ def _unlinked(path):
             raise ValueError("symlink on meeting-pack path; use real directories and files")
 
 
-def _handout(name, meeting, findings, library, site, truncated):
+def _load_labels(content):
+    """``content/labels.json`` merged over the English defaults, read as the site reads it (a symlink is refused)."""
+    path = content / 'labels.json'
+    return load_labels(_read_json(path, MAX_LABELS_BYTES)) if path.is_file() or path.is_symlink() else dict(DEFAULTS)
+
+
+def _handout(name, meeting, findings, library, site, truncated, labels):
     e = lambda value: html.escape(str(value), quote=True)
+    # Label text is escaped once; values are filled in by format, never re-formatted (a title may hold braces).
+    t = lambda key, **values: html_text(labels[key]).format(**values)
     base = (site.get("base_url") or "").rstrip("/")
-    parts = ['<!doctype html><html lang="en"><meta charset="utf-8"><title>Meeting handout</title>',
+    parts = ['<!doctype html><html lang="' + e(site['language']) + '"><meta charset="utf-8"><title>' + t('handout.title') + '</title>',
              '<style>@page { size: letter; margin: 0.6in } body { font: 10pt sans-serif; }',
              'h1 { font-size: 16pt } h2 { font-size: 12pt } p { margin: .3em 0 }',
              'article { break-inside: avoid; margin: .6em 0 } .summary { white-space: nowrap;',
@@ -33,29 +42,29 @@ def _handout(name, meeting, findings, library, site, truncated):
              f'<h1>{e(name)}</h1><p>{e(meeting["body"])} — {e(meeting["starts_at"])}</p>',
              f'<p>{e(meeting["agenda_item"])} · {e(meeting["location"])}</p>']
     if meeting.get("agenda_url"):
-        parts.append(f'<p><a href="{e(meeting["agenda_url"])}">Agenda</a></p>')
-    parts.append('<h2>What we found</h2>')
+        parts.append(f'<p><a href="{e(meeting["agenda_url"])}">' + t('handout.agenda') + '</a></p>')
+    parts.append('<h2>' + t('handout.what_we_found') + '</h2>')
     if not findings:
-        parts.append('<p>Records are requested; nothing is published yet.</p>')
+        parts.append('<p>' + t('handout.nothing_published') + '</p>')
     for finding in findings:
         parts.append(f'<article><strong>{e(finding["title"])}</strong>'
                      f'<p class="summary">{e(" ".join(finding["summary"].split()))}</p>'
-                     f'<p>{e(CLASSIFICATION_LABELS[finding["classification"]])}; '
-                     f'{e(CONFIDENCE_LABELS[finding["confidence"]])}</p>')
+                     f'<p>{t("classification." + finding["classification"])}; '
+                     f'{t("confidence." + finding["confidence"])}</p>')
         if finding["corrections"]:
-            parts.append(f'<p>corrected {e(max(c["date"] for c in finding["corrections"]))}</p>')
+            parts.append('<p>' + t('handout.corrected', date=e(max(c['date'] for c in finding['corrections']))) + '</p>')
         for source in finding["sources"]:
             entry = library.get(source["sha256"], {})
-            parts.append(f'<p>Source: {e(source["title"])}, received '
-                         f'{e(entry.get("received_at", "not recorded"))}, record {source["sha256"][:12]}</p>')
+            parts.append('<p>' + t('handout.source_line', title=e(source['title']),
+                                   date=e(entry.get('received_at', t('handout.not_recorded'))),
+                                   record=source['sha256'][:12]) + '</p>')
         if base:
             url = base + '/findings/' + finding['slug'] + '.html'
             parts.append(f'<p><a href="{e(url)}">{e(url)}</a></p>')
         parts.append('</article>')
     if truncated:
-        parts.append(f'<p>{truncated} more on the site' + (f': {e(base)}' if base else '') + '</p>')
-    parts.extend(['<p>What the record number means: the first 12 characters of a SHA-256 fingerprint of the file '
-                  'exactly as received. It shows the file has not changed since; it does not by itself prove who wrote it.</p>',
+        parts.append('<p>' + t('handout.more_on_site', count=truncated) + (f': {e(base)}' if base else '') + '</p>')
+    parts.extend(['<p>' + t('handout.record_explainer') + '</p>',
                   f'<p>{e(site["not_legal_advice"])}</p></body></html>'])
     return '\n'.join(parts)
 
@@ -94,6 +103,7 @@ def build(root, meeting_id, max_findings=5, today=None, *, replace=False, allow_
     site = load_site(_read_json(content / 'site.json'))
     library = load_sources(_read_json(content / 'sources.json')) if (content / 'sources.json').exists() else []
     library = {entry['sha256']: entry for entry in library}
+    labels = _load_labels(content)
     findings = []
     for path in sorted((content / 'findings').glob('*.json')):
         document = _read_json(path)
@@ -124,7 +134,7 @@ def build(root, meeting_id, max_findings=5, today=None, *, replace=False, allow_
     writer.writerow(['title', 'record_prefix', 'received', 'locator', 'public_copy', 'cited_by'])
     for row in rows.values():
         writer.writerow([*row[:3], '; '.join(row[3]), row[4], '; '.join(row[5])])
-    outputs = {'handout.html': _handout(read_config(root)['name'], meeting, findings, library, site, truncated),
+    outputs = {'handout.html': _handout(read_config(root)['name'], meeting, findings, library, site, truncated, labels),
                'comment.md': raw.get('comment_kit_md', ''), 'sources.csv': sheet.getvalue()}
     if any(FULL_HASH.search(text) for text in outputs.values()):
         raise ValueError("pack contains a full hash; re-stage using 12-character record prefixes")
