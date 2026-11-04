@@ -77,6 +77,8 @@ DEFAULTS = {
     "finding.counterevidence": "Counterevidence considered", "finding.filter_count": "Showing {count} of {count}",
     "finding.none_identified": "None identified at publication.", "finding.corrections": "Corrections",
     "finding.all_corrections": "All corrections", "finding.ask_correction": "Ask for a correction",
+    "finding.cite": "Cite this finding", "finding.cite_copy": "Copy", "finding.cite_copied": "Copied",
+    "finding.cite_select": "Select and copy",
     "finding.related": "Related findings", "finding.same_agency": "Same agency",
     "finding.shares_one": "Shares {count} source record", "finding.shares_many": "Shares {count} source records",
     "finding.filter_label": "Filter findings", "finding.filter_agency": "Agency",

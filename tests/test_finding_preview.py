@@ -27,6 +27,7 @@ NOW = datetime(2026, 3, 4, 5, 6, 7, tzinfo=timezone.utc)
 SLUG, DRAFT_ID = "cedar-draft-preview", "fnd_00000000000000d1"
 BANNER = '    <p class="draft-banner" role="note">Draft - not published</p>'
 NOINDEX = '  <meta name="robots" content="noindex">'
+CITE_SCRIPT = '  <script defer src="/findings/cite.js"></script>'
 RULE_ID = "ca-civ-1798.90.51-usage-and-privacy-policy"
 LIBRARY_TITLES = ("Synthetic Cedar Police ALPR policy", "Synthetic Cedar Police vendor agreement excerpt")
 
@@ -101,6 +102,9 @@ class FindingPreviewTests(unittest.TestCase):
                        "Synthetic summary with &#x27;quotes&#x27; &amp; an ampersand.") + LIBRARY_TITLES:
             self.assertIn(needle, html)
         self.assertNotIn('Cedar "draft"', html)
+        self.assertNotIn('<script', html)
+        self.assertIn('<p class="cite-text">', html)
+        self.assertIn('class="cite-copy" hidden', html)
         self.assertEqual(stat.S_IMODE(self.out.stat().st_mode), 0o700)
         self.assertEqual(sorted(p.relative_to(self.out).as_posix() for p in self.out.rglob("*")),
                          ["findings", f"findings/{SLUG}.html", "style.css"])
@@ -108,7 +112,7 @@ class FindingPreviewTests(unittest.TestCase):
 
     def assert_preview_equals_build(self, document):
         """Preview ``document``, then publish the same finding into content/ and build: the pages differ only by
-        the banner and noindex lines, and style.css is the build's own."""
+        the banner, noindex and published-only citation script lines; style.css is the build's own."""
         self.write_draft(document)
         finding_preview(self.root, self.draft, self.out, now=NOW)
         preview = self.page()
@@ -118,12 +122,15 @@ class FindingPreviewTests(unittest.TestCase):
         (self.root / "content" / "findings" / f"{SLUG}.json").write_text(json.dumps(published), encoding="utf-8")
         build_site(self.root)
         built = (self.public / "findings" / f"{SLUG}.html").read_text(encoding="utf-8").splitlines()
-        self.assertEqual([line for line in preview.splitlines() if line not in (BANNER, NOINDEX)], built)
-        self.assertEqual(len(preview.splitlines()), len(built) + 2)
+        self.assertNotIn('<script', preview)
+        self.assertEqual(built.count(CITE_SCRIPT), 1)
+        self.assertEqual([line for line in preview.splitlines() if line not in (BANNER, NOINDEX)],
+                         [line for line in built if line != CITE_SCRIPT])
+        self.assertEqual(len(preview.splitlines()), len(built) + 1)
         self.assertEqual((self.out / "style.css").read_text(encoding="utf-8"), css)
         return preview
 
-    def test_page_equals_build_page_except_banner_and_noindex(self):
+    def test_page_equals_build_page_except_banner_noindex_and_citation_script(self):
         self.assert_preview_equals_build(draft())
 
     def test_first_rule_citing_draft_shows_citation_and_package_status_as_build_will(self):
