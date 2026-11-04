@@ -26,7 +26,7 @@ SUBJECT, ADDRESS, PHONE, PLATE = "Records Request 4471", "clerk@agency.example",
 
 
 @functools.lru_cache(maxsize=None)
-def message(n, *, mid=None, body=None, attachments=(("report.pdf", b"%PDF-1.4 synthetic"),), extra=""):
+def message(n, *, mid=None, body=None, attachments=(("report.pdf", b"%PDF-1.4 synthetic"),), extra="", boundary=None):
     """Cached: the MIME boundary is random, and identical input must give identical bytes."""
     msg = EmailMessage()
     msg["From"], msg["To"], msg["Subject"] = ADDRESS, "records@campaign.example", SUBJECT + extra
@@ -34,6 +34,8 @@ def message(n, *, mid=None, body=None, attachments=(("report.pdf", b"%PDF-1.4 sy
     msg.set_content(body or "Responsive records attached. Call %s re plate %s. #%d" % (PHONE, PLATE, n))
     for name, data in attachments:
         msg.add_attachment(data, maintype="application", subtype="octet-stream", filename=name)
+    if boundary is not None:
+        msg.set_boundary(boundary)
     return msg.as_bytes()
 
 
@@ -284,7 +286,9 @@ class MailPollTest(unittest.TestCase):
 
     # 9
     def test_unsafe_attachment_names_refused_message_still_recorded(self):
-        raw = message(1, attachments=(("../../escape.txt", b"one"), ("a\\b.txt", b"two"), ("ok.txt", b"three")))
+        # This fixed MIME boundary produces a legitimate SHA-256 containing "bad".
+        raw = message(1, attachments=(("../../escape.txt", b"one"), ("a\\b.txt", b"two"), ("ok.txt", b"three")),
+                      boundary="synthetic-unsafe-65")
         nul = raw.replace(b'filename="ok.txt"', b"filename*=utf-8''bad%00name.txt")
         before = sorted(p.name for p in self.root.iterdir())
         code, line, err = self.run_poll(Box({1: nul}))
@@ -298,7 +302,13 @@ class MailPollTest(unittest.TestCase):
         poll_root = (self.store / "mail-poll").resolve()
         for path in poll_root.rglob("*"):
             self.assertTrue(path.resolve().is_relative_to(poll_root))
-        self.assertFalse([p for p in self.root.rglob("*") if "escape" in p.name or "bad" in p.name])
+        sha = hashlib.sha256(nul).hexdigest()
+        self.assertEqual(
+            {p.relative_to(self.store).as_posix() for p in self.store.rglob("*") if p.is_file()},
+            {"mail-poll/state.json", f"mail-poll/receipts/{sha}.json", f"mail-poll/quarantine/{sha}.eml"},
+        )
+        self.assertFalse([p for p in self.root.rglob("*")
+                          if p.name in {"escape.txt", "b.txt", "a\\b.txt", "bad", "bad\x00name.txt", "ok.txt"}])
         self.assert_line(self.run_poll(Box({1: nul}))[1], already=1)
 
     # dry run

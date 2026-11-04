@@ -17,6 +17,7 @@ from campaign_tool.cli import read_config
 from campaign_tool.content import ContentError, load_content
 from campaign_tool.labels import DEFAULTS, JS_DEFAULTS, PLACEHOLDER, html_text, load_labels
 from campaign_tool.site import FILTER_JS, build_site, preview
+from campaign_tool.supporters import KINDS, add_supporter
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "fictional-campaign"
 SOON, LATE = date(2026, 10, 1), date(2027, 1, 1)  # LATE: every meeting past, every contract ended
@@ -261,8 +262,28 @@ class LabelsTest(unittest.TestCase):
                   "meeting.minutes_confirmed", "meeting.minutes_pending", "meeting.recording", "meeting.recording_from",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
                   "officials.heading", "officials.listed", "officials.source", "privacy.signup_policy",
+                  "supporters.description", "supporters.joined", "supporters.kind.business",
+                  "supporters.kind.civil_liberties", "supporters.kind.community", "supporters.kind.faith",
+                  "supporters.kind.labor", "supporters.kind.neighborhood", "supporters.kind.other", "supporters.title",
                   "vote.absent", "vote.abstain", "vote.no", "vote.recused", "vote.yes"]
         self.assertEqual(sorted(set(DEFAULTS) - set(JS_DEFAULTS) - seen), absent)  # js.*: the script tests below
+
+    def test_supporters_labels_replace_every_fixed_string_when_organizations_are_listed(self):
+        root = self.root("rich", labels={key: f"X{key}X" for key in DEFAULTS})
+        for kind in KINDS:
+            add_supporter(root, name=f"Zq {kind} Org", kind=kind, organization=True, confirmed_on="2026-09-01", how="form",
+                          today=SOON)
+        build_site(root, today=SOON)
+        page = (root / "public" / "supporters.html").read_text(encoding="utf-8")
+        keys = [key for key in DEFAULTS if key.startswith("supporters.")]
+        self.assertEqual(len(keys), 10)
+        for key in keys:
+            self.assertIn(f"X{key}X", page, key)
+        for text in (DEFAULTS[key] for key in keys):
+            for chunk in PLACEHOLDER.split(text):
+                if len(chunk.split()) >= 2:
+                    self.assertNotIn(chunk.strip(), page)
+        self.assertIn('<a href="/supporters.html">Xsupporters.titleX</a>', (root / "public" / "index.html").read_text(encoding="utf-8"))
 
     def test_non_page_outputs_and_starter_ignore_labels(self):
         markers = {key: f"X{key}X" for key in DEFAULTS if key not in JS_DEFAULTS}  # no js.* key: scripts unchanged
