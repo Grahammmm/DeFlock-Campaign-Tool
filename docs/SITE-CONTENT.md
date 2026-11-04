@@ -382,7 +382,10 @@ exist: one header row, then one row per record in the JSON's order, columns in t
 byte-order mark, CRLF line ends, standard quoting. Flattening: `null` is an empty cell, `true`/`false` stay `true`/`false`, a
 list of strings is joined with `; `, `sources` (findings) is the `; `-joined `sha256_prefix` values, `corrections` the
 `; `-joined `date: note`, `cited_by` the `; `-joined finding ids, and `public_copy` (sources) becomes the three columns
-`public_copy_matches`, `public_copy_checked_on` and `public_copy_reason`. A cell that begins with `=`, `+`, `-`, `@`, a tab or a
+`public_copy_matches`, `public_copy_checked_on` and `public_copy_reason`. Optional `also_agency_ids` and `agency_response`
+are empty cells when omitted by the public JSON (including a pending response); present `also_agency_ids` are joined with
+`; `, and a present `agency_response` is a JSON object serialized with sorted keys in one cell, using only its public fields.
+A cell that begins with `=`, `+`, `-`, `@`, a tab or a
 carriage return is written with a leading `'` so a spreadsheet does not run it as a formula (the `kit-status --csv` rule; the JSON
 is not changed). A meetings CSV is not built.
 `data/meetings.json` is the staged meetings as open data (`schemas/meetings-open-data.schema.json`), linked from

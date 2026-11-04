@@ -1917,7 +1917,10 @@ def _cell(value):
 
 def _flat_finding(finding):
     """One findings.json record as a ``{column: cell}`` row (sources by prefix, corrections as ``date: note``)."""
-    row = {key: finding[key] for key in FINDINGS_CSV_COLUMNS}
+    row = {key: finding.get(key) if key in ("also_agency_ids", "agency_response") else finding[key]
+           for key in FINDINGS_CSV_COLUMNS}
+    if row["agency_response"] is not None:
+        row["agency_response"] = json.dumps(row["agency_response"], ensure_ascii=False, sort_keys=True)
     row["sources"] = [source["sha256_prefix"] for source in finding["sources"]]
     row["corrections"] = [f'{c["date"]}: {c["note"]}' for c in finding["corrections"]]
     return {key: _cell(value) for key, value in row.items()}

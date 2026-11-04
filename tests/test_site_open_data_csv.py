@@ -90,7 +90,7 @@ class OpenDataCsvTests(unittest.TestCase):
         self.assertGreaterEqual(len(findings), 2)
         for record, row in zip(findings, rows):
             for key in PUBLIC_FINDING_FIELDS:
-                value = record[key]
+                value = record.get(key) if key in ("also_agency_ids", "agency_response") else record[key]
                 if key == "sources":
                     value = "; ".join(s["sha256_prefix"] for s in value)
                 elif key == "corrections":
@@ -121,6 +121,31 @@ class OpenDataCsvTests(unittest.TestCase):
         self.assertEqual([r["public_copy_matches"] for r in rows], ["false", "true", ""])
         self.assertEqual(rows[0]["public_copy_reason"], "redacted")
         self.assertEqual(rows[2]["pages"], "0")
+
+    def test_optional_public_fields_match_json_and_pending_stays_private(self):
+        self.build()
+        _, rows = self.rows("findings")
+        self.assertEqual(rows[0]["also_agency_ids"], "")
+        self.assertEqual(rows[0]["agency_response"], "")
+        pending = {"status": "pending", "prepared_on": "2026-02-02", "reply_by": "2026-02-20"}
+        before = self.build()["findings.csv"]
+        self.finding(SLUG, agency_response=pending)
+        self.assertEqual(self.build()["findings.csv"], before)
+        for status in ("received", "declined", "no_response"):
+            with self.subTest(status=status):
+                response = {**pending, "status": status, "asked_on": "2026-02-03", "on": "2026-02-20"}
+                if status == "received":
+                    response.update(text='=Réponse, "quoted"\nSecond line', record_sha256=A)
+                self.finding(SLUG, also_agency_ids=["ca-cedar-county-sheriff", "ca-cedar-city-council"], agency_response=response)
+                self.build()
+                record = json.loads(self.read("data/findings.json"))["findings"][0]
+                _, rows = self.rows("findings")
+                self.assertEqual(rows[0]["also_agency_ids"], "; ".join(record["also_agency_ids"]))
+                self.assertEqual(json.loads(rows[0]["agency_response"]), record["agency_response"])
+                self.assertNotIn("prepared_on", rows[0]["agency_response"])
+                self.assertNotIn(A, rows[0]["agency_response"])
+                if status == "received":
+                    self.assertEqual(json.loads(rows[0]["agency_response"])["record_sha256_prefix"], A[:12])
 
     # 2. formula guard: only a leading formula character is prefixed; the JSON is untouched
     def test_formula_cells_are_prefixed_and_plain_equals_is_not(self):
