@@ -1,0 +1,5 @@
+{
+  "5 is withdrawn by us; no step can follow withdrawn": "kit-response message that already names the request state that stops the step; not in the table",
+  "withdrawn needs --note T: why the campaign withdrew its own request": "kit-response message that already names the option and the rule; not in the table",
+  "request for 5 was withdrawn by us on 5; no follow-up drafted": "kit-followup message that already names the request state that stops the draft; not in the table"
+}
