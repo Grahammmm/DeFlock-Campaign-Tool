@@ -432,6 +432,36 @@ def doctor_report(root, contact_max_age_days=None, stale_days=None):
     return report
 
 
+def readiness(root, campaign_id=None, out=None):
+    from datetime import datetime, timezone
+    from tools.flock_privacy import categories
+    campaign_id = campaign_id if campaign_id is not None else read_config(root).get("campaign_id")
+    if not isinstance(campaign_id, str) or not campaign_id.strip():
+        raise ValueError("readiness_campaign_id_absent: supply --campaign-id or config campaign_id")
+    report = doctor_report(root)
+    actions = report["next_actions"]
+    for index, sentence in enumerate(actions):
+        if found := categories(sentence):
+            raise ValueError(f"readiness_unsafe_next_action: index {index}, category {found[0]}")
+        if len(sentence) > 240:
+            raise ValueError(f"readiness_next_action_length: index {index}")
+    if len(actions) > 40:
+        raise ValueError("readiness_next_actions_count: maximum 40")
+    counts = {key: len(report.get(key, [])) + report.get(key + "_more", 0)
+              for key in ("stale_contacts", "stale_inputs", "stale_comment_kits", "contracts_ending")}
+    counts["correction_requests_open_over_14_days"] = report.get("correction_requests_open_over_14_days", 0)
+    snapshot = {"schema_version": 1, "generated_at": datetime.now(timezone.utc).isoformat(),
+                "campaign_id": campaign_id, "law_package_status": report["law_package_status"],
+                "production_ready": report["production_ready"],
+                "safe_to_send_automatically": report["safe_to_send_automatically"],
+                "next_actions": actions, "counts": counts}
+    encoded = json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n"
+    if out is None:
+        print(encoded, end="")
+    else:
+        Path(out).write_text(encoded, encoding="utf-8")
+
+
 def kit(args, root):
     from .kit import build_kit
     summary = build_kit(root, online=args.online, include=args.include, scopes=args.scope)
@@ -751,6 +781,10 @@ def main():
             cmd.add_argument("--stale-days", type=int, metavar="N", help="Name inputs dated over N days ago (1-3650)")
             cmd.add_argument("--checklist", action="store_true", help="Print each check as ok/todo with its next step and owner")
             cmd.add_argument("--json", action="store_true", help="With --checklist: print the checklist rows as JSON")
+    readiness_p = commands.add_parser("readiness", help="Project doctor as a private snapshot; no network")
+    readiness_p.add_argument("--directory", required=True)
+    readiness_p.add_argument("--campaign-id", help="Otherwise use config campaign_id; absence refuses")
+    readiness_p.add_argument("--out", help="Write only after all checks pass; otherwise print JSON")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -1325,6 +1359,8 @@ def main():
             from .kit_track import denial_reply
             print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
             print("Draft only. Nothing was sent.")
+        elif args.command == "readiness":
+            readiness(root, args.campaign_id, args.out)
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
             print(render(doctor_report(root, args.contact_max_age_days, args.stale_days), args.directory, as_json=args.json,
