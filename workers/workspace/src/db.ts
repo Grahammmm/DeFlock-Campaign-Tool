@@ -94,7 +94,13 @@ export interface CorrespondenceRow {
   summary: string | null;
   created_at: string;
   updated_at: string;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  proposed_classification?: string | null;
 }
+
+/** Every value correspondence.classification may hold (the CHECK constraint in d1.sql). */
+export const MAIL_CLASSIFICATIONS = ["acknowledgement", "extension", "fee_estimate", "partial_production", "production", "denial", "clarification", "unrelated", "unclassified"];
 
 export interface OriginalRow {
   campaign_id: string;
@@ -501,6 +507,22 @@ export class Repo {
     return { row: existing ?? res.row, inserted: false };
   }
 
+  /**
+   * An organizer confirms or corrects one inbound message's classification. One UPDATE scoped by
+   * campaign and direction; keeps the runner's first proposal and records who reviewed and when.
+   * Null for an unknown id, another campaign's row or an outbound message.
+   */
+  async reviewClassification(correspondenceId: string, classification: string, reviewer: string): Promise<CorrespondenceRow | null> {
+    const clock = nowIso();
+    await this.db.prepare(
+      "UPDATE correspondence SET proposed_classification = COALESCE(proposed_classification, classification), classification = ?, " +
+      "classification_confidence = 'organizer', reviewed_by = ?, reviewed_at = ?, updated_at = ? " +
+      "WHERE campaign_id = ? AND correspondence_id = ? AND direction = 'inbound'",
+    ).bind(classification, reviewer, clock, clock, this.campaignId, correspondenceId).run();
+    const row = await this.correspondence(correspondenceId);
+    return row && row.direction === "inbound" ? row : null;
+  }
+
   updateCorrespondence(id: string, patch: Partial<CorrespondenceRow>): Promise<void> {
     return this.update("correspondence", "correspondence_id", id, patch);
   }
@@ -870,7 +892,7 @@ export class Repo {
     ];
     if (patch) statements.push(this.db.prepare(
       "UPDATE correspondence SET classification = ?, classification_confidence = ?, summary = ?, updated_at = ? " +
-      "WHERE campaign_id = ? AND correspondence_id = ? AND " + gate,
+      "WHERE campaign_id = ? AND correspondence_id = ? AND reviewed_at IS NULL AND " + gate,
     ).bind(patch.classification, patch.classification_confidence, patch.summary, clock,
       this.campaignId, patch.correspondence_id, ...args));
     statements.push(

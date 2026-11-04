@@ -117,7 +117,7 @@ identity check, so an attacker page cannot drive an organizer's Access cookie th
 approval routes. Finding authors are always the verified identity of the submitter.
 
 Screens: Dashboard, Requests (+ detail with the correspondence timeline and a "Draft
-follow-up" button that enqueues a `draft_followup` job), Inbox, Records (signed ten-minute
+follow-up" button that enqueues a `draft_followup` job), Inbox (an organizer confirms or corrects a message classification with `POST /inbox/:id/classification`; the reviewer is the Access identity, and a later `classify_mail` result never overwrites a reviewed row), Records (signed ten-minute
 download links served by the Worker; the bucket has no public URL), Findings (review gate
 computed by the `review_blockers` port; review receipts take the reviewer from the Access
 identity), Approvals (Approve / Edit / Reject / Execute; `approved_by` is the Access email),
