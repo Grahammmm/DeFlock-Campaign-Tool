@@ -11,7 +11,9 @@ what is waiting on you, request reminders, snapshot age and every organizer acti
 The previous dashboard is at `/status`. [Workers setup and status](docs/WORKERS.md)
 explain this interface; this repository does not provision a workspace for you.
 
-## Start locally (documented fallback)
+## Start locally
+
+This is the documented fallback when a hosted workspace is not available.
 
 New organizer? After cloning, run `python3 -m campaign_tool setup --directory ../my-campaign`.
 Answer name, county, two-letter state and optional city/place; setup runs offline and lists drafts to review.
