@@ -38,17 +38,20 @@ class MeetingsError(ValueError):
 
 def load_keywords(path=KEYWORDS_FILE):
     """Compile the one ALPR keyword list (also generated for the Workers); no built-in fallback."""
+    problem = None
     try:
         spec = json.loads(Path(path).read_text(encoding="utf-8"))
         alternatives = spec["alternatives"]
         if type(spec["schema_version"]) is not int or spec["schema_version"] != 1 or spec["flags"] != "i":
-            raise ValueError("expected schema_version 1 and flags \"i\"")
-        if not isinstance(alternatives, list) or not alternatives or not all(
+            problem = "ValueError: expected schema_version 1 and flags \"i\""
+        elif not isinstance(alternatives, list) or not alternatives or not all(
                 isinstance(a, str) and a for a in alternatives):
-            raise ValueError("alternatives must be a non-empty list of non-empty strings")
-        return re.compile("|".join(alternatives), re.IGNORECASE)
+            problem = "ValueError: alternatives must be a non-empty list of non-empty strings"
+        else:
+            return re.compile("|".join(alternatives), re.IGNORECASE)
     except (OSError, ValueError, TypeError, KeyError, re.error) as exc:
-        raise MeetingsError(f"meeting keywords {path}: {type(exc).__name__}: {exc}") from None
+        problem = f"{type(exc).__name__}: {exc}"
+    raise MeetingsError(f"meeting keywords {path}: {problem}")
 
 
 KEYWORDS = load_keywords()
