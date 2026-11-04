@@ -999,6 +999,13 @@ def main():
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
     due_p.add_argument("--request", help="Only requests with this name (refused when none is recorded)")
+    timing_p = commands.add_parser("kit-timing", help="Private response-time report from kit/sent.json: calendar days "
+                                   "between recorded steps (read-only; provisional, not a legal deadline)",
+                                   description="Calendar days between recorded steps; provisional; not a legal deadline. "
+                                   "Reads kit/sent.json only; nothing is sent.")
+    timing_p.add_argument("--directory", required=True)
+    timing_p.add_argument("--as-of", help="YYYY-MM-DD to count to (default today); not a reconstruction of past knowledge")
+    timing_p.add_argument("--csv", metavar="FILE", help="Write a new private .csv (0600) outside public/ and content/")
     calendar_p = commands.add_parser("kit-calendar", help="Private .ics of open requests' dates and comment deadlines")
     for flag in ("--directory", "--out", "--as-of"):  # --as-of YYYY-MM-DD: earlier comment deadlines left out
         calendar_p.add_argument(flag, required=flag != "--as-of")
@@ -1059,6 +1066,10 @@ def main():
     denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
                           help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
     denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
+    asked_p = commands.add_parser("kit-asked", help="Propose content/agencies.json 'asked' items from kit/sent.json "
+                                  "(dry run by default); nothing is sent or published")
+    asked_p.add_argument("--directory", required=True)
+    asked_p.add_argument("--apply", action="store_true", help="Write the proposal (validated, one atomic write)")
     withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
                                      "section number in the agency's own words (read-only)")
     withheld_p.add_argument("--directory", required=True)
@@ -1183,6 +1194,10 @@ def main():
     roster_add.add_argument("--name", required=True)
     roster_add.add_argument("--role", action="append", required=True, help="factual, legal or privacy; repeatable")
     roster_add.add_argument("--ssh-key", metavar="FILE.pub", help="Set or replace this reviewer's signing key")
+    roster_add.add_argument("--interest-agency", metavar="ID", action="append",
+                            help="Agency this reviewer works for or otherwise declares; repeatable; replaces the list")
+    roster_add.add_argument("--interest-note", metavar="T", help="Private note (1-200 characters); never printed or published")
+    roster_add.add_argument("--clear-interests", action="store_true", help="Remove the declared agencies and note")
     roster_cmds.add_parser("list", help="Print the roster (read-only)")
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
@@ -1454,7 +1469,10 @@ def main():
             from . import findings
             read_config(root)
             add = args.reviewers_command == "add"
-            print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key) if add
+            print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key,
+                                                   interest_agencies=args.interest_agency,
+                                                   interest_note=args.interest_note,
+                                                   clear_interests=args.clear_interests) if add
                              else findings.list_reviewers(root), indent=2, ensure_ascii=False))
             if add:
                 print("Private roster updated; nothing was published.")
@@ -1641,6 +1659,15 @@ def main():
             print(json.dumps(kit_fees.write_csv(root, args.csv, report) if args.csv else report, indent=2))
             print("Private file; nothing was sent or published." if args.csv else "Read-only. Nothing was sent.",
                   file=sys.stdout if args.csv else sys.stderr)
+        elif args.command == "kit-timing":
+            from . import kit_timing
+            report = kit_timing.report(root, args.as_of)
+            if args.csv:
+                kit_timing.check_csv(root, args.csv)  # a refused path prints no table
+            print(kit_timing.format_report(report))
+            if args.csv:
+                print(json.dumps(kit_timing.write_csv(root, args.csv, report), indent=2))
+            print("Read-only. Nothing was sent.", file=sys.stderr)
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
@@ -1680,6 +1707,11 @@ def main():
                                          disposition=args.disposition, download_expires_on=args.download_expires_on),
                              indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-asked":
+            from .kit_asked import run_cli as kit_asked_cli
+            code = kit_asked_cli(root, args.apply)
+            if code:
+                sys.exit(code)
         elif args.command == "kit-withheld":
             from .kit_track import format_withheld, withheld
             report = withheld(root)
