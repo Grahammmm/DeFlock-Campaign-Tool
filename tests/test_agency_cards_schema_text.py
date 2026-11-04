@@ -328,15 +328,15 @@ class SchemaTextPolicy(unittest.TestCase):
                 self.assertNotIn(plain["pattern"], rule.patterns)
 
     def test_runtime_diagnostics_and_example_output_unchanged(self):
-        secret = "SECRETVALUE"
-        cases = [("summary", None, "A\u202e" + secret), ("facts", 0, secret + "\u200b"), ("name", None, "\x07" + secret),
+        marker = "synthetic-diagnostic-marker"
+        cases = [("summary", None, "A\u202e" + marker), ("facts", 0, marker + "\u200b"), ("name", None, "\x07" + marker),
                  ("source_link_label", None, " \t ")]
         for field, items, value in cases:
             config = config_with(field, items, value)
             with self.subTest(field=field):
                 found = agency_cards.problems(config)
                 self.assertEqual(found, [expected_problem(field, items)])
-                self.assertNotIn(secret, "".join(found))
+                self.assertNotIn(marker, "".join(found))
                 with self.assertRaises(ValueError) as caught:
                     agency_cards.render(config)
                 self.assertEqual(str(caught.exception), "; ".join(found))
