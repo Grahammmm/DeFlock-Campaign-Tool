@@ -330,6 +330,45 @@ command exits 2 and nothing is written. A row equal to a step already recorded o
 `already recorded, skipped`; the same row twice in the file is refused on its second line. Without `--apply` the command
 only checks; with `--apply` every new step is recorded in file order in one atomic write. Nothing is fetched or sent.
 
+## Requests sent before you used the tool (kit-sent-import)
+
+`kit-sent-import --directory D --csv FILE [--apply]` records requests the campaign sent before it used this tool, so
+their timelines, contacts and reminders can follow. `kit-sent` refuses these because it needs a kit draft that passes
+`kit-check`; this command asks for neither. The file is private, UTF-8 (a BOM is fine), at most 512 KiB and 1-500 data
+rows, a regular file (a symlink is refused), with the header exactly
+`agency_id,request,sent_on,channel,reference,letter_record`. Synthetic example:
+
+```
+agency_id,request,sent_on,channel,reference,letter_record
+ca-example-police,,2026-03-02,email,R0123-030226,3f9a1c0d7b2e
+ca-example-police,contract-2026,2026-03-09,portal,,
+ca-example-sheriff,main,2026-02-27,mail,,
+```
+
+`agency_id` must appear exactly once in `kit/agencies.json` (selected or not; no verified contact is needed). `request`
+is empty or `main` for the original request, else a name of 1-40 characters a-z, 0-9 or `-`. `sent_on` is a real
+`YYYY-MM-DD` date from 2000-01-01 to today. `channel` is `email`, `portal` or `mail` (a MuckRock request comes from
+`kit-muckrock-import`). `reference` is the agency's own number (1-40 letters, digits, `-` `_` `#` `.`) or empty.
+`letter_record` is empty or one ledger prefix (12 or more lowercase hex characters) of the sent letter you already
+ingested; it is stored as correspondence (the full hash, never a production record), and the same original may support
+separate requests. The ledger is only read: nothing is ingested and no letter is opened.
+
+Rows are checked in file order against `kit/agencies.json`, the request-name and reference rules and the requests
+already recorded plus the rows before them. An existing request, ordinary or imported, is refused, as is a second row
+for the same request (`same request as line N`); there is no skip, replace or merge mode, so rerunning a file that was
+applied is refused. Any refused row is named as `line <L>: <field>: <reason>` (physical line, header is line 1; up to 20
+are listed, then `and N more`), no input value is repeated, the command exits 2 and nothing is written, even for a bad row at
+the end of the file. Without `--apply` it only checks and prints `{"checked": N, "imported": 0, "written": false}`; with `--apply`
+every row is recorded in one atomic write to the private `kit/sent.json` (mode 0600). Nothing is fetched or sent.
+
+An imported entry is a historical assertion by the organizer: `imported: true`, the date, channel, optional reference and
+letter, and no draft or draft hash. Its origin is permanent: `kit-sent` cannot replace it, and nothing edits or converts
+it. `kit-status` shows `draft_changed_since_sent: null` and `imported: true` for it (blank in `kit-status --csv`), and
+`kit-coverage` still reports `drafted` honestly. Provisional deadlines and their warnings are unchanged: they run from
+the recorded sent date, which is your statement, not the agency's receipt. Then fill the timeline with
+`kit-response-import` (preview, then `--apply`), add your own `kit-contact` entries and use `kit-response-undo` as for
+any hand-sent request.
+
 ## Taking back the latest step (kit-response-undo)
 
 `kit-response-undo --directory D --agency ID [--request NAME] --reason TEXT` removes exactly the last recorded step of a

@@ -98,6 +98,23 @@ class CopyBranding(unittest.TestCase):
         build = cli('build', '--directory', self.new, '--check')
         self.assertEqual(build.returncode, 0, build.stderr)
 
+    def test_init_from_does_not_copy_press_contact(self):
+        site = json.loads((self.content / 'site.json').read_text())
+        write(self.content / 'site.json', dict(site, press={'contact_role': 'Press lead', 'contact_email': 'press-old@example.org',
+                                                           'about_md': 'Old press copy.'}))
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dest = self.new / 'content'
+        self.assertNotIn('press', json.loads((dest / 'site.json').read_text()))
+        for path in dest.rglob('*'):
+            if path.is_file():
+                text = path.read_text()
+                self.assertNotIn('press-old@example.org', text)
+                self.assertNotIn('Old press copy.', text)
+        build = cli('build', '--directory', self.new, '--check')
+        self.assertEqual(build.returncode, 0, build.stderr)
+        self.assertFalse((self.new / 'public' / 'press.html').exists())
+
     def test_optional_labels_and_pages(self):
         result = self.run_copy()
         self.assertEqual(result.returncode, 0, result.stderr)

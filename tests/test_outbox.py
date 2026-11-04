@@ -3,10 +3,14 @@ import io
 import json
 import os
 import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 import urllib.error
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from campaign_tool import outbox as ob
@@ -581,3 +585,272 @@ class ConcurrentCapTests(unittest.TestCase):
                 self.assertEqual(box.send(key, lambda _: self.fail("replayed sent row"))["state"], "sent")
                 self.assertFalse(box.db.in_transaction)
             finally: box.close()
+
+
+BAD_FEES = [-1, True, False, 0.9, 1.0, float("nan"), float("inf"), float("-inf"), "0", None, [], {}, [1], 2 ** 63]
+FEE_MESSAGE = "fee_cap_cents must be an integer between 0 and 9223372036854775807"
+CAMPAIGN_FEE_MESSAGE = "campaign_fee_cap_cents must be an integer between 0 and 9223372036854775807"
+MAX_FEE = 2 ** 63 - 1
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def snapshot(box):
+    return ([tuple(r) for r in box.db.execute("SELECT *, typeof(fee_cap_cents) FROM outbox ORDER BY idempotency_key")],
+            [tuple(r) for r in box.db.execute("SELECT * FROM outbox_retry_approval ORDER BY event_id")])
+
+
+class OutboxFeeTests(unittest.TestCase):
+    """RF0210-3: fees are exact integer cents and the cap reads the fee that was signed."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clock = Clock()
+        self.n = 0
+        refuse = unittest.mock.patch.object(socket.socket, "connect", side_effect=AssertionError("outbound socket"))
+        refuse.start()
+        self.addCleanup(refuse.stop)
+
+    def new_box(self, cap=5000, name=None):
+        self.n += 1
+        box = ob.Outbox(Path(self.tmp.name) / (name or f"j{self.n}") / "outbox.sqlite", campaign_fee_cap_cents=cap, clock=self.clock)
+        self.addCleanup(box.close)
+        return box
+
+    def approved(self, box, **kw):
+        key = box.propose(draft(**kw))["idempotency_key"]
+        APPROVERS.approve(box, key, "o@example.invalid")
+        return key
+
+    def test_propose_fee_requires_exact_nonnegative_sqlite_integer(self):
+        box = self.new_box()
+        for bad in BAD_FEES:
+            with self.subTest(fee=repr(bad)):
+                item = draft(request_id="req_fresh")
+                item.fee_cap_cents = bad
+                with self.assertRaises(ob.OutboxError) as ctx:
+                    box.propose(item)
+                self.assertNotIsInstance(ctx.exception, ob.Blocked)
+                self.assertEqual(str(ctx.exception), FEE_MESSAGE)
+                self.assertEqual(snapshot(box), ([], []))
+        # An existing key: the invalid replay is refused (not returned as the old row) and nothing changes.
+        key = box.propose(draft(request_id="req_dup", fee=7))["idempotency_key"]
+        other = box.propose(draft(request_id="req_other", agency="ca-other", fee=3))
+        before = snapshot(box)
+        for bad in BAD_FEES:
+            with self.subTest(replay=repr(bad)):
+                item = draft(request_id="req_dup")
+                item.fee_cap_cents = bad
+                with self.assertRaises(ob.OutboxError):
+                    box.propose(item)
+                self.assertEqual(snapshot(box), before)
+        self.assertEqual(box.propose(draft(request_id="req_dup", fee=7))["idempotency_key"], key)  # valid replay unchanged
+        self.assertEqual(box.row(other["idempotency_key"]), other)
+
+    def test_fee_boundaries_preserve_exact_draft_json(self):
+        for fee in (0, 1, MAX_FEE):
+            with self.subTest(fee=fee):
+                box = self.new_box(None)
+                row = box.propose(draft(request_id=f"req_edge_{fee}", fee=fee))
+                self.assertEqual((row["fee_cap_cents"], json.loads(row["draft_json"])["fee_cap_cents"]), (fee, fee))
+                self.assertIs(type(json.loads(row["draft_json"])["fee_cap_cents"]), int)
+                self.assertEqual(box.db.execute("SELECT typeof(fee_cap_cents) FROM outbox").fetchone()[0], "integer")
+        # (campaign cap, fee, expected reason or None); every case uses its own journal and agency.
+        cases = [(5000, 4999, None), (5000, 5000, None), (5000, 5001, "fee_cap_exceeded"), (0, 0, None), (0, 1, "fee_cap_exceeded"),
+                 (None, MAX_FEE, None), (MAX_FEE, MAX_FEE, None), (MAX_FEE - 1, MAX_FEE, "fee_cap_exceeded"), (MAX_FEE, 0, None)]
+        for cap, fee, reason in cases:
+            with self.subTest(cap=cap, fee=fee):
+                box = self.new_box(cap)
+                key = self.approved(box, fee=fee)
+                sent = []
+                transport = lambda d: sent.append(d.fee_cap_cents) or ob.ProviderReceipt("email", "id")
+                if reason:
+                    with self.assertRaises(ob.Blocked) as ctx:
+                        box.send(key, transport)
+                    self.assertEqual((ctx.exception.reason, ctx.exception.detail, sent), (reason, f"{fee} > campaign cap {cap}", []))
+                else:
+                    self.assertEqual(box.send(key, transport)["state"], "sent")
+                    self.assertEqual(sent, [fee])
+
+    def test_campaign_fee_validation_precedes_filesystem_effects(self):
+        root = Path(self.tmp.name)
+        for bad in (-1, True, False, 1.5, 0.0, float("nan"), float("inf"), "5", "", [], {}, 2 ** 63):
+            with self.subTest(cap=repr(bad)):
+                with unittest.mock.patch.object(ob.sqlite3, "connect") as connect:
+                    with self.assertRaises(ob.OutboxError) as ctx:
+                        ob.Outbox(root / "absent" / "outbox.sqlite", campaign_fee_cap_cents=bad)
+                self.assertEqual(str(ctx.exception), CAMPAIGN_FEE_MESSAGE)
+                connect.assert_not_called()
+                self.assertFalse((root / "absent").exists())
+        # An existing directory and database keep their bytes and modes.
+        existing = root / "existing"
+        existing.mkdir(mode=0o755)
+        os.chmod(existing, 0o755)
+        db_path = existing / "outbox.sqlite"
+        db_path.write_bytes(b"synthetic not-a-database bytes")
+        os.chmod(db_path, 0o644)
+        for bad in (-1, 1.5, "5", True, 2 ** 63):
+            with self.assertRaises(ob.OutboxError):
+                ob.Outbox(db_path, campaign_fee_cap_cents=bad)
+        self.assertEqual((db_path.read_bytes(), os.stat(db_path).st_mode & 0o777, os.stat(existing).st_mode & 0o777),
+                         (b"synthetic not-a-database bytes", 0o644, 0o755))
+        self.assertEqual(sorted(p.name for p in existing.iterdir()), ["outbox.sqlite"])
+        for ok in (0, 1, MAX_FEE, None):
+            with self.subTest(accepted=ok):
+                box = ob.Outbox(root / f"ok{ok}" / "outbox.sqlite", campaign_fee_cap_cents=ok)
+                self.assertEqual(box.campaign_fee_cap_cents, ok)
+                box.close()
+        default = ob.Outbox(root / "default" / "outbox.sqlite")
+        self.addCleanup(default.close)
+        self.assertEqual(default.campaign_fee_cap_cents, 0)
+
+    def test_invalid_fee_guard_preserves_other_state_rules(self):
+        box = self.new_box(None)
+        # Signed text mutation still reports not_approved even when the fee column also disagrees.
+        key = self.approved(box, request_id="req_text", agency="ca-text", fee=5000)
+        changed = box.row(key)["draft_json"].replace("Synthetic body", "Changed body")
+        box.db.execute("UPDATE outbox SET draft_json=?, fee_cap_cents=0 WHERE idempotency_key=?", (changed, key))
+        with self.assertRaises(ob.Blocked) as ctx:
+            box.send(key, lambda d: self.fail("must not send"))
+        self.assertEqual(ctx.exception.reason, "not_approved")
+        # A sending row with a malformed fee stays an ambiguity hold.
+        hold = self.approved(box, request_id="req_hold", agency="ca-hold", fee=10)
+        box.db.execute("UPDATE outbox SET state='sending', sending_at=?, fee_cap_cents=0 WHERE idempotency_key=?", (self.clock.stamp, hold))
+        with self.assertRaises(ob.Blocked) as ctx:
+            box.send(hold, lambda d: self.fail("must not send"))
+        self.assertEqual(ctx.exception.reason, "ambiguous_send_unresolved")
+        # An already-sent row with malformed data stays a no-transport no-op, unrewritten.
+        done = self.approved(box, request_id="req_done", agency="ca-done", fee=20)
+        box.send(done, lambda d: ob.ProviderReceipt("email", "id-done"))
+        box.db.execute("UPDATE outbox SET fee_cap_cents=-5 WHERE idempotency_key=?", (done,))
+        before = snapshot(box)
+        self.assertEqual(box.send(done, lambda d: self.fail("sent twice"))["state"], "sent")
+        self.assertEqual(snapshot(box), before)
+        # A refusal consumes no daily slot: a valid different request to the same agency still sends.
+        bad = self.approved(box, request_id="req_bad", agency="ca-slot", fee=5)
+        box.db.execute("UPDATE outbox SET fee_cap_cents=6 WHERE idempotency_key=?", (bad,))
+        with self.assertRaises(ob.Blocked) as ctx:
+            box.send(bad, lambda d: self.fail("must not send"))
+        self.assertEqual(ctx.exception.reason, "invalid_fee_cap")
+        good = self.approved(box, request_id="req_good", agency="ca-slot", fee=5)
+        self.assertEqual(box.send(good, lambda d: ob.ProviderReceipt("email", "id-good"))["state"], "sent")
+        # Daily cap, follow-up and over-cap rows keep their ordinary reasons.
+        again = self.approved(box, request_id="req_again", agency="ca-slot")
+        with self.assertRaises(ob.Blocked) as ctx:
+            box.send(again, lambda d: self.fail("must not send"))
+        self.assertEqual(ctx.exception.reason, "daily_agency_cap")
+        capped = self.new_box(5000)
+        follow = self.approved(capped, request_id="req_follow", agency="ca-follow", kind="send_followup", fee=9000)
+        with self.assertRaises(ob.Blocked) as ctx:
+            capped.send(follow, lambda d: self.fail("must not send"))
+        self.assertEqual((ctx.exception.reason, ctx.exception.detail), ("fee_cap_exceeded", "9000 > campaign cap 5000"))
+        ok = self.approved(capped, request_id="req_follow_ok", agency="ca-follow-ok", kind="send_followup", fee=5000)
+        self.assertEqual(capped.send(ok, lambda d: ob.ProviderReceipt("email", "id-follow"))["state"], "sent")
+
+    def test_retry_round_is_refused_unchanged_when_fee_column_disagrees(self):
+        box = self.new_box(5000)
+        key = self.approved(box, request_id="req_retry", agency="ca-retry", fee=100)
+        with self.assertRaises(ob.OutboxError):
+            box.send(key, lambda d: (_ for _ in ()).throw(ob.OutboxError("definite refusal")))
+        self.clock.stamp = "2026-09-30T10:01:00Z"
+        APPROVERS.approve_retry(box, key, "new@example.invalid", self.clock.stamp)
+        box.db.execute("UPDATE outbox SET fee_cap_cents=0 WHERE idempotency_key=?", (key,))
+        before = snapshot(box)
+        self.assertEqual(len(before[1]), 1)
+        with self.assertRaises(ob.Blocked) as ctx:
+            box.send(key, lambda d: self.fail("must not send"))
+        self.assertEqual(ctx.exception.reason, "invalid_fee_cap")
+        self.assertEqual(snapshot(box), before)
+
+    # -- CLI -------------------------------------------------------------------------------------
+    def write_draft(self, **changes):
+        fields = json.loads(draft().to_json())
+        fields.update(subject="SENTINEL-PRIVATE-SUBJECT", body="SENTINEL-PRIVATE-BODY", **changes)
+        path = Path(self.tmp.name) / f"draft{self.n}.json"
+        self.n += 1
+        path.write_text(json.dumps(fields), encoding="utf-8")
+        return path
+
+    def run_main(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with redirect_stdout(out), redirect_stderr(err):
+                code = ob.main(list(argv))
+        except SystemExit as exc:
+            code = exc.code
+        return code, out.getvalue(), err.getvalue()
+
+    def test_cli_fee_proposal_refusal_is_structured_and_private(self):
+        journal = str(Path(self.tmp.name) / "cli" / "outbox.sqlite")
+        expected = {"state": "refused", "reason": FEE_MESSAGE}
+        for bad in (-1, 0.9, 1.0, "7", True, None, [1], {"a": 1}, 2 ** 63):
+            path = self.write_draft(fee_cap_cents=bad)
+            with self.subTest(fee=repr(bad)):
+                code, out, err = self.run_main("--journal", journal, "propose", str(path))
+                self.assertEqual((code, json.loads(out), err), (2, expected, ""))
+                self.assertNotIn("SENTINEL", out + err)
+                proc = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.outbox", "--journal", journal, "propose", str(path)],
+                                      cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+                self.assertEqual((proc.returncode, json.loads(proc.stdout), proc.stderr), (2, expected, ""))
+        box = ob.Outbox(journal)
+        self.addCleanup(box.close)
+        self.assertEqual(box.rows(), [])
+        # An omitted fee defaults to 0 and a valid one is stored as given.
+        fields = json.loads(self.write_draft().read_text(encoding="utf-8"))
+        del fields["fee_cap_cents"]
+        path = Path(self.tmp.name) / "omitted.json"
+        path.write_text(json.dumps(fields), encoding="utf-8")
+        code, out, err = self.run_main("--journal", journal, "propose", str(path))
+        self.assertEqual((code, json.loads(out)["state"], err), (0, "proposed", ""))
+        self.assertEqual(box.rows()[0]["fee_cap_cents"], 0)
+        proc = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.outbox", "--journal", journal, "propose",
+                               str(self.write_draft(request_id="req_cli_fee", fee_cap_cents=250))],
+                              cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+        self.assertEqual((proc.returncode, proc.stderr), (0, ""))
+        self.assertEqual(sorted(r["fee_cap_cents"] for r in box.rows()), [0, 250])
+
+    def test_cli_campaign_fee_parser_refuses_before_journal(self):
+        path = self.write_draft()
+        for token in ("-1", "1.5", "+5", "nan", "inf", "-0", "zz12abc34", "", " 5", "5 ", "1e3", "\u0663", "\u00b2",
+                      "9223372036854775808", "9" * 5000):
+            journal = Path(self.tmp.name) / f"refused{self.n}" / "outbox.sqlite"
+            self.n += 1
+            with self.subTest(token=token[:12]):
+                code, out, err = self.run_main("--journal", str(journal), "--fee-cap-cents", token, "propose", str(path))
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("campaign fee cap must be an integer between 0 and 9223372036854775807", err)
+                self.assertNotIn("zz12abc34", err)
+                self.assertNotIn("Traceback", err)
+                self.assertFalse(journal.parent.exists())
+        seen = []
+        real = ob.Outbox
+
+        def spy(*args, **kwargs):
+            seen.append(kwargs["campaign_fee_cap_cents"])
+            return real(*args, **kwargs)
+
+        for token, value in (("0", 0), ("007", 7), ("9223372036854775807", MAX_FEE), ("000000000000000000000000005", 5),
+                             ("0" * 5000, 0), ("0" * 5000 + "7", 7)):
+            with unittest.mock.patch.object(ob, "Outbox", spy):
+                code, out, err = self.run_main("--journal", str(Path(self.tmp.name) / f"ok{self.n}" / "outbox.sqlite"),
+                                               "--fee-cap-cents", token, "list")
+            self.n += 1
+            self.assertEqual((code, err), (0, ""))
+        self.assertEqual(seen, [0, 7, MAX_FEE, 5, 0, 7])
+        code, out, err = self.run_main("--journal", str(Path(self.tmp.name) / "default" / "outbox.sqlite"), "list")
+        self.assertEqual(code, 0)
+
+    def test_cli_send_reports_invalid_fee_cap(self):
+        box = self.new_box(0, name="clisend")
+        key = self.approved(box, fee=5000)
+        box.db.execute("UPDATE outbox SET fee_cap_cents=0 WHERE idempotency_key=?", (key,))
+        before = snapshot(box)
+        with unittest.mock.patch.object(ob, "send_email", side_effect=AssertionError("transport")) as email, \
+                unittest.mock.patch.object(ob, "file_muckrock", side_effect=AssertionError("transport")) as muckrock:
+            code, out, err = self.run_main("--journal", str(box.path), "--fee-cap-cents", "0", "send", key,
+                                           "--smtp-host", "smtp.example.invalid")
+        self.assertEqual((code, json.loads(out), err), (2, {"state": "blocked", "reason": "invalid_fee_cap"}, ""))
+        email.assert_not_called()
+        muckrock.assert_not_called()
+        self.assertEqual(snapshot(box), before)
+        self.assertFalse(box.db.in_transaction)
