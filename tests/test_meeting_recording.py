@@ -102,7 +102,7 @@ class MeetingRecordingTests(unittest.TestCase):
     def test_bad_urls_are_refused_naming_recording_url(self):
         long_url = "https://video.example.invalid/" + "a" * 471  # 501 characters
         self.assertEqual(len(long_url), 501)
-        for url in ("http://video.example.invalid/x.mp4", "https://user:pw@video.example.invalid/x.mp4", long_url,
+        for url in ("http://video.example.invalid/x.mp4", "https://user:pw@video.example.invalid/x.mp4", long_url,  # pragma: allowlist secret (synthetic rejected URL)
                     "ftp://video.example.invalid/x.mp4", "javascript:alert(1)"):
             self.refused("recording_url", url=url)
         self.assertEqual(len(self.record("https://video.example.invalid/" + "a" * 470)["recording_url"]), 500)
