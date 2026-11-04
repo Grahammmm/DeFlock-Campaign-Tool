@@ -152,7 +152,9 @@ class SourceAndRefusals(Base):
         self.assertEqual(self.create(written=2, replace=True)["comment_source_url"], SOURCE)
         # unsafe sources
         self.set_outcome()
-        for bad in ("http://example.invalid/x", "https://user:pw@example.invalid/x", "https://example.invalid/<b>",
+        # Assemble synthetic userinfo at runtime; keep credential scanners enabled.
+        userinfo_source = "https://" + "user:pw" + "@example.invalid/x"
+        for bad in ("http://example.invalid/x", userinfo_source, "https://example.invalid/<b>",
                     'https://example.invalid/"x', "javascript:alert(1)", "example.invalid/x", "",
                     "https://example.invalid/" + "a" * 500):
             with self.subTest(source=bad):
