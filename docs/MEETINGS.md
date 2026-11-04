@@ -74,6 +74,18 @@ the agency's when `--agency-id` was given) in load order; `--agency-id` now orde
 sets the meeting's `agency_id` but never filters `--finding` ids. The command prints the cited ids as
 `findings` next to the `findings_cited` count.
 
+**Cited findings (DF2207-06).** The staged file also stores the ids the kit cites as `cited_findings` (1 to 3
+unique ids, in the order the kit cites them), so each published finding page can list the staged meetings
+that cite it. The ids come from the same selection that wrote the kit, never from the kit text. A kit that
+cites no finding (the "No published findings yet" text) omits the field. `--replace` replaces the whole list
+(or omits it when nothing is cited now) and keeps a recorded outcome as before. Meetings staged before this
+field existed have no list: their kit text is never parsed, so they are not listed on any finding page. A
+finding page's **Discussed at public meetings** section shows each citing meeting (body linked to its
+`meetings/<id>.html`, recorded date and time in its own UTC offset, agenda item, and the outcome result when one
+was recorded) newest first, ties by meeting id; cancelled and future staged meetings are listed too. A meeting
+citing a finding that was withdrawn, never published or unknown never fails the build and lists nothing for it.
+The list records what a staged kit cites; it is not proof of attendance, speaking, adoption or endorsement.
+
 ### Participation (organizer-verified)
 
 `meetings-stage --participation FILE` adds the facts an organizer checked on the agency's own page.
