@@ -1,0 +1,14 @@
+{
+  "5 must be plain text without <, > or control characters": "kit-contact --with or --note message that already names the option and the rule; not in the table",
+  "5 must be 1-5 characters after collapsing whitespace": "kit-contact --with or --note message that already names the option and the length rule; not in the table",
+  "--with is a job title, not a person's name: no email address or phone number": "kit-contact --with message that already names the option and the rule; not in the table",
+  "--on must be a real YYYY-MM-DD date": "kit-contact --on message that already names the option and the format; not in the table",
+  "agency_id 5 is not a valid agency id": "kit-contact --agency message that already names the option; not in the table",
+  "kit/ must not be a symlink": "kit-contact refusal that already names the folder; not in the table",
+  "no sent request 5; run kit-sent5 first": "kit-contact message that already names the command to run first; not in the table",
+  "--on 5 is before the request was sent on 5": "kit-contact --on message that already names the option and the sent date; not in the table",
+  "--on 5 is in the future": "kit-contact --on message that already names the option and the rule; not in the table",
+  "kit/sent.json would be larger than 1 MiB; contact not recorded": "kit-contact size refusal that already names the file and the limit; not in the table",
+  "5 has a contact on 5, before --date 5; a contact cannot come before the request was sent": "kit-sent --replace message that already names the option and the contact date; not in the table",
+  "no contact recorded for 5 on or before 5; run kit-contact first or drop --cite-contact": "kit-followup --cite-contact message that already names the command to run or the option to drop; not in the table"
+}

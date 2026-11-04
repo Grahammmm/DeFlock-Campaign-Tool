@@ -211,7 +211,7 @@ class ReadinessTests(unittest.TestCase):
     def test_static_transport_and_view_boundaries(self):
         source = (ROOT / "workers/workspace/src/readiness.ts").read_text()
         self.assertNotRegex(source, r"views/|<html|<div")
-        self.assertIn('from tools.flock_privacy import categories', (ROOT / "campaign_tool/cli.py").read_text())
+        self.assertIn('from .privacy_patterns import categories', (ROOT / "campaign_tool/cli.py").read_text())
 
 
 if __name__ == "__main__":
