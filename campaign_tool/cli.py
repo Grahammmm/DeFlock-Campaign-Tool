@@ -1187,6 +1187,10 @@ def main():
     roster_add.add_argument("--name", required=True)
     roster_add.add_argument("--role", action="append", required=True, help="factual, legal or privacy; repeatable")
     roster_add.add_argument("--ssh-key", metavar="FILE.pub", help="Set or replace this reviewer's signing key")
+    roster_add.add_argument("--interest-agency", metavar="ID", action="append",
+                            help="Agency this reviewer works for or otherwise declares; repeatable; replaces the list")
+    roster_add.add_argument("--interest-note", metavar="T", help="Private note (1-200 characters); never printed or published")
+    roster_add.add_argument("--clear-interests", action="store_true", help="Remove the declared agencies and note")
     roster_cmds.add_parser("list", help="Print the roster (read-only)")
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
@@ -1458,7 +1462,10 @@ def main():
             from . import findings
             read_config(root)
             add = args.reviewers_command == "add"
-            print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key) if add
+            print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key,
+                                                   interest_agencies=args.interest_agency,
+                                                   interest_note=args.interest_note,
+                                                   clear_interests=args.clear_interests) if add
                              else findings.list_reviewers(root), indent=2, ensure_ascii=False))
             if add:
                 print("Private roster updated; nothing was published.")

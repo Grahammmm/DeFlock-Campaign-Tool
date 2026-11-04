@@ -60,12 +60,36 @@ def _who(value):
     return " ".join(value.split()).casefold() or None if isinstance(value, str) else None
 
 
-def review_blockers(finding, receipts, campaign_id=None):
+def declared_interest_agencies(finding, entry):
+    """DF0022-05: the agency ids a rostered reviewer declared that the finding is about (primary first, then the
+    extras): exact ids, in the finding's membership order, no names or notes. [] with no declaration."""
+    declared = entry.get("interest_agencies") if isinstance(entry, dict) else None
+    if not isinstance(declared, list) or not isinstance(finding, dict):
+        return []
+    # Same membership as content.finding_agency_ids (primary, then extras); not imported, as content imports this
+    # module and the workers scope check pins review.py's import closure.
+    extra = finding.get("also_agency_ids")
+    members = [finding.get("agency_id"), *(extra if isinstance(extra, list) else ())]
+    return [item for i, item in enumerate(members) if isinstance(item, str) and item in declared
+            and item not in members[:i]]
+
+
+def _rostered_entry(roster, name):
+    who = _who(name)
+    reviewers = roster.get("reviewers") if isinstance(roster, dict) else None
+    return next((e for e in reviewers if who is not None and isinstance(e, dict) and _who(e.get("name")) == who),
+                None) if isinstance(reviewers, list) else None
+
+
+def review_blockers(finding, receipts, campaign_id=None, roster=None):
     """Caller must separately authenticate receipt issuers and validate artifacts.
 
     ``campaign_id`` (findings passes the campaign's own id, or "" before it has one): only approvals carrying
     exactly that id count, and a current approval with no id or another campaign's id is named as a blocker
-    instead of being skipped silently. A challenge blocks whatever its binding. None keeps the unbound check."""
+    instead of being skipped silently. A challenge blocks whatever its binding. None keeps the unbound check.
+
+    ``roster`` (findings passes the validated current one): an approval from a rostered reviewer who declared an
+    interest in an agency the finding is about counts toward no role and no person; challenges still block."""
     if not isinstance(finding, dict):
         return ["invalid_finding"]
     published_view = receipts == []  # content.load_finding: see the wording gate below
@@ -103,6 +127,7 @@ def review_blockers(finding, receipts, campaign_id=None):
              and r.get("decision") == "approve" and isinstance(r.get("role"), str)
              and _who(r.get("reviewer")) not in (None, _who(finding.get("author")))
              and r.get("rationale") and r.get("reviewed_at")
+             and not (roster and declared_interest_agencies(finding, _rostered_entry(roster, r.get("reviewer"))))
              and (campaign_id is None or (bool(campaign_id) and r.get("campaign_id") == campaign_id))]
     if campaign_id is not None:
         approvals = [r for r in receipts if r.get("content_sha256") == digest and r.get("decision") == "approve"]
