@@ -7,6 +7,23 @@ creates one private `kit/press/` Markdown draft from published findings only. Re
 limitations, corrections, links and contact before any use. It sends and publishes nothing.
 Edited drafts are kept; the fresh version goes to `kit/press.suggested/`.
 
+### Letters to the editor
+
+`python3 -m campaign_tool press letter --directory D --finding ID [--finding ID] [--words N] [--outlet NAME] [--date YYYY-MM-DD]`
+writes one private, never-sent first-person letter to `kit/press/letters/<date>-<first-slug>.md` from one to
+three published findings (`--words` 150 to 400, default 250; `--outlet` is plain text for the salutation only).
+Each finding gets one short paragraph: its summary exactly as published, `(finding ID)`, `Corrected DATE.` with the
+latest correction date when it has any, and its finding link when `base_url` is set. The closing points to the next
+scheduled staged meeting of the FIRST finding's agency (no speaking or comment claims), else to the signup section
+(`/#participate`). `[YOUR NAME]` and `[YOUR CITY]` are left for the organizer.
+
+Finding paragraphs are dropped whole from the end until the visible body fits N words (whitespace tokens with a
+letter or digit; the two placeholders and the initial draft comment are not counted); only a first paragraph that
+cannot fit is refused. The count is printed as `Letter word count: X/N.` The legal-claim wording guard is alert-only:
+rule names are printed to stderr as `review-required` notes and nothing is blocked. Edited letters are kept and the
+fresh version goes to `kit/press/letters.suggested/`. The letter record is `kit/press/letters/.written.json`, separate
+from the release draft's. Nothing is sent or published; the release `press draft` is unchanged.
+
 How a finding goes from draft to the public site in the workspace Worker, and how it is
 corrected or withdrawn afterwards. Code: `workers/workspace/src/review_state.ts`,
 `publication.ts`, `manifest.ts`, `executors/publish_finding.ts`, `executors/deploy_site.ts`.
