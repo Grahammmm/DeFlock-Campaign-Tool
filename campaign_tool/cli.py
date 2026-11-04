@@ -434,13 +434,13 @@ def doctor_report(root, contact_max_age_days=None, stale_days=None):
     return report
 
 
-def readiness(root, campaign_id=None, out=None):
+def readiness(root, campaign_id=None, out=None, contact_max_age_days=None, stale_days=None):
     from datetime import datetime, timezone
     from tools.flock_privacy import categories
     campaign_id = campaign_id if campaign_id is not None else read_config(root).get("campaign_id")
     if not isinstance(campaign_id, str) or not campaign_id.strip():
         raise ValueError("readiness_campaign_id_absent: supply --campaign-id or config campaign_id")
-    report = doctor_report(root)
+    report = doctor_report(root, contact_max_age_days, stale_days)
     actions = report["next_actions"]
     for index, sentence in enumerate(actions):
         if found := categories(sentence):
@@ -793,6 +793,8 @@ def main():
     readiness_p.add_argument("--directory", required=True)
     readiness_p.add_argument("--campaign-id", help="Otherwise use config campaign_id; absence refuses")
     readiness_p.add_argument("--out", help="Write only after all checks pass; otherwise print JSON")
+    readiness_p.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified contacts checked over N days ago (at least 1)")
+    readiness_p.add_argument("--stale-days", type=int, metavar="N", help="Name inputs dated over N days ago (1-3650)")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
     kit_cmd.add_argument("--directory", required=True)
     kit_cmd.add_argument("--online", action="store_true",
@@ -1418,7 +1420,7 @@ def main():
             print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
             print("Draft only. Nothing was sent.")
         elif args.command == "readiness":
-            readiness(root, args.campaign_id, args.out)
+            readiness(root, args.campaign_id, args.out, args.contact_max_age_days, args.stale_days)
         elif args.command == "doctor" and args.checklist:
             from .doctor_checklist import render
             print(render(doctor_report(root, args.contact_max_age_days, args.stale_days), args.directory, as_json=args.json,

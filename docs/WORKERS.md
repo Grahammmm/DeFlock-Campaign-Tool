@@ -22,6 +22,10 @@ projects one `doctor_report` into `readiness-snapshot-v1`; it does not post or c
 `--campaign-id` overrides the campaign config's `campaign_id`; if neither is present the command
 refuses with `readiness_campaign_id_absent`, writing and posting nothing. No ID is derived.
 Counts replace private lists (including doctor's truncated-list remainder counts).
+Pass `--contact-max-age-days N` (at least 1) and `--stale-days N` (1–3650) to
+check contact and input ages using the same thresholds as `doctor`. These checks
+are opt-in, as in `doctor`; without the corresponding flag, that count is 0
+because the age check was not requested, not a claim that the data is fresh.
 Every next-action sentence is checked using `tools/flock_privacy.py`'s shared patterns.
 An unsafe sentence refuses the whole snapshot with its index and category, never its text.
 Nothing is filtered, redacted or reworded: emitted actions are exactly doctor's sentences.

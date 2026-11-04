@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -82,7 +82,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(before.returncode, 0, before.stderr)
         with patch.object(cli, "doctor_report", wraps=cli.doctor_report) as doctor:
             text = self.emit()
-        doctor.assert_called_once_with(self.root)
+        doctor.assert_called_once_with(self.root, None, None)
         snapshot = json.loads(text)
         self.assert_schema(snapshot)
         self.assertEqual(snapshot["next_actions"], json.loads(before.stdout)["next_actions"])
@@ -99,6 +99,44 @@ class ReadinessTests(unittest.TestCase):
         result = self.command("readiness", "--campaign-id", "explicit-id")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["campaign_id"], "explicit-id")
+
+    def test_age_flags_project_real_doctor_staleness(self):
+        old = (date.today() - timedelta(days=200)).isoformat()
+        contacts = [{"agency_id": f"synthetic-{i}", "name": PLANTED[0], "kind": "police",
+                     "selected": True, "verified": True,
+                     "verification": {"checked_on": old}} for i in range(3)]
+        (self.root / "kit" / "agencies.json").write_text(json.dumps(contacts))
+        (self.root / "kit" / "meetings.json").write_text(json.dumps({
+            "schema_version": 1, "generated": old + "T00:00:00+00:00", "meetings": []}))
+        for days, expected_contacts, meeting_stale in ((180, 3, True), (3650, 0, False)):
+            with self.subTest(days=days):
+                flags = ("--contact-max-age-days", str(days), "--stale-days", str(days))
+                doctor = self.command("doctor", *flags)
+                self.assertEqual(doctor.returncode, 0, doctor.stderr)
+                report = json.loads(doctor.stdout)
+                self.assertEqual(len(report["stale_contacts"]), expected_contacts)
+                self.assertEqual("kit/meetings.json" in [e["input"] for e in report["stale_inputs"]],
+                                 meeting_stale)
+                result = self.command("readiness", *flags)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                snapshot = json.loads(result.stdout)
+                self.assert_schema(snapshot)
+                for key in ("stale_contacts", "stale_inputs"):
+                    self.assertEqual(snapshot["counts"][key], len(report[key]) + report.get(key + "_more", 0))
+                self.assertEqual(snapshot["next_actions"], report["next_actions"])
+                for planted in PLANTED:
+                    self.assertNotIn(planted, result.stdout)
+
+    def test_invalid_age_flags_refuse_without_output(self):
+        for flag, values in (("--contact-max-age-days", ("0", "-1", "abc")),
+                             ("--stale-days", ("0", "-1", "3651", "abc"))):
+            for value in values:
+                with self.subTest(flag=flag, value=value):
+                    result = self.command("readiness", flag, value, "--out", str(self.out))
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn(flag, result.stderr)
+                    self.assertEqual(result.stdout, "")
+                    self.assertFalse(self.out.exists())
 
     def test_large_lists_and_doctor_truncation_become_counts_only(self):
         report = cli.doctor_report(self.root)
