@@ -39,7 +39,8 @@ VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies",
-                       "_redirects", "methods.html"}
+                       "_redirects", "methods.html", "privacy.html"}
+ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
 CLASSIFICATION_DEFINITIONS = {
@@ -437,6 +438,7 @@ class Site:
         if self.map:
             parts.append(f'<p>{e(self.map["attribution"])} · <a href="/cameras.html">Mapped points</a></p>')
         parts.append(f'<p>{e(self.site["not_legal_advice"])}</p>')
+        parts.append(f'<p><a href="/privacy.html">{self.t("footer.privacy")}</a></p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}'
                      ' · <a href="/methods.html">How to read our findings</a></p>')
@@ -1110,6 +1112,7 @@ class Site:
                          "What each finding label means, what record numbers show and how findings are reviewed",
                          "/methods.html", main)
 
+
     def check_cell(self, items):
         """DF1422-11: the newest organizer check as ``status · date · source`` (+ ``and N earlier``), or a dash."""
         if not items:
@@ -1123,6 +1126,61 @@ class Site:
         cell = (f'{self.t("map.check_" + newest["status"])} · '
                 f'<time datetime="{newest["checked_on"]}">{newest["checked_on"]}</time> · {link}')
         return cell + (f' · {self.t("map.check_earlier", count=len(items) - 1)}' if len(items) > 1 else "")
+
+    def privacy_facts(self):
+        """What the pages load and where a signup goes, from the settings csp() reads (map hosts, signup URL).
+        privacy_html() states only these; check_privacy() holds them against the final CSP and file list."""
+        signup, hosts = self.site["signup"], set()
+        if self.map:
+            hosts = {self.map["style_host"], *self.map["tile_hosts"]} - {None}
+        host = urlsplit(signup["url"]).hostname.lower() if signup["mode"] == "brevo_hosted" else None
+        return {"first_party_only": True, "cookies": False, "analytics": False, "map_hosts": sorted(hosts),
+                "signup": {"host": host, "origin": "https://" + host, "policy_url": signup["privacy_url"]} if host else None}
+
+    def privacy_html(self):
+        """/privacy.html (DF1207-16): every sentence is a ``privacy.*`` label chosen from ``privacy_facts()``."""
+        facts, signup = self.privacy_facts(), self.site["signup"]
+        parts = [self.t("privacy.scripts"), self.t("privacy.cookies")]
+        if facts["map_hosts"]:
+            parts.append(self.t("privacy.map", hosts=", ".join(e(host) for host in facts["map_hosts"])))
+        if facts["signup"]:
+            policy = facts["signup"]["policy_url"]
+            parts.append(self.t("privacy.signup", host=e(facts["signup"]["host"])) + f" {e(signup['note'])}" + (
+                f' <a href="{e(policy)}" rel="noopener noreferrer">{self.t("privacy.signup_policy")}</a>' if policy else ""))
+        contact = self.site["privacy_contact"] or self.site["contact_email"]
+        parts.append(f'{self.t("privacy.contact")} <a href="mailto:{e(contact)}">{e(contact)}</a>' if contact
+                     else self.t("privacy.no_contact"))
+        main = (f'    <section class="section finding-body" id="content"><h2>{self.t("privacy.title")}</h2>'
+                f'<p>{self.t("privacy.lead")}</p>' + "".join(f"<p>{part}</p>" for part in parts)
+                + f'<p class="notice">{self.t("privacy.notice")}</p></section>\n')
+        return self.page("privacy", self.labels["privacy.title"], self.labels["privacy.lead"], "/privacy.html", main)
+
+    def check_privacy(self, names, files):
+        """Raise ``ContentError`` when a claim on privacy.html contradicts the final CSP or the files being built."""
+        facts, directives = self.privacy_facts(), {}
+        for directive in self.csp().split("; "):
+            directives[directive.split()[0]] = directive.split()[1:]
+
+        def refuse(claim, against):
+            raise ContentError(f'privacy.html: "{claim}" contradicts {against}')
+        for name in ("script-src", "style-src", "font-src"):
+            if directives.get(name) != ["'self'"]:
+                refuse("scripts, stylesheets and fonts come from this site only", " ".join([name, *directives.get(name, [])]))
+        scripts = [n.lower() for n in names if n.endswith((".js", ".mjs"))] + [
+            src.lower() for name, html in files.items() if name.endswith(".html")
+            for src in re.findall(r'<script[^>]*\ssrc="([^"]*)"', html)]
+        found = sorted(n for n in scripts if any(word in n for word in ANALYTICS_NAMES))
+        if found:
+            refuse("no analytics", f"the built script {found[0]}")
+        if "set-cookie" in files.get("_headers", "").lower():
+            refuse("no cookies", "a Set-Cookie header in _headers")
+        loaded = sorted({h[len("https://"):] for d in ("img-src", "connect-src") for h in directives.get(d, []) if h.startswith("https://")})
+        if loaded != facts["map_hosts"]:
+            refuse("map tiles load from " + (", ".join(facts["map_hosts"]) or "no host"), "img-src/connect-src hosts: " + (", ".join(loaded) or "none"))
+        wanted = ["https://" + facts["signup"]["host"]] if facts["signup"] else ["'none'"]
+        if directives.get("form-action") != wanted:
+            refuse("signup goes to " + (facts["signup"]["host"] if facts["signup"] else "no host"), "form-action " + " ".join(directives.get("form-action", [])))
+
 
     def cameras_html(self):
         """No-JS list of mapped points (DF1507-13): each point in the first picker city (by name) whose boundary holds it,
@@ -1342,7 +1400,7 @@ class Site:
 
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
-                 "/methods.html", "/findings/packet-all.html", "/timeline.html"]
+                 "/methods.html", "/privacy.html", "/findings/packet-all.html", "/timeline.html"]
         paths += ["/cameras.html"] if self.map else []
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
         paths += list(self.agency_pages().values())
@@ -1522,7 +1580,7 @@ def _plan_site(root, today=None, notes=None):
         "findings/index.html": site.findings_index_html(), "findings/packet-all.html": site.packet_html(), "sources.html": site.sources_html(),
         "meetings.html": site.meetings_html(), "about.html": site.about_html(),
         "corrections.html": site.corrections_html(), "404.html": site.not_found_html(), "methods.html": site.methods_html(),
-        "timeline.html": site.timeline_html(),
+        "timeline.html": site.timeline_html(), "privacy.html": site.privacy_html(),
     }
 
     for meeting in model["meetings"]:
@@ -1573,6 +1631,7 @@ def _plan_site(root, today=None, notes=None):
         files["_redirects"] = load_redirects(model["redirects"], written, withdrawn_names(root)[1])
         if not files["_redirects"]:  # an empty list writes no file
             del files["_redirects"]
+    site.check_privacy([*files, *(Path(relative).as_posix() for _, relative, _ in plan)], files)  # before anything is written
     if isinstance(notes, list):
         notes.extend(site.camera_notes())
     return files, plan
