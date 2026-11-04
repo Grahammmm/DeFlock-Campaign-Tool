@@ -1509,9 +1509,12 @@ class Site:
         roles = sorted(ROLES)
         gate = (f'Before a finding is published it needs {", ".join(roles[:-1])} and {roles[-1]} review by at least two '
                 'people other than the author. Until then the build refuses to publish it.')
+        interests = ('Reviewers declare agency interests privately. A declared interest excludes their review from '
+                     'findings about that agency.')
         main = ('    <section class="section finding-body" id="content"><h2>How to read our findings</h2>'
                 f'{tables}<h3 id="record-numbers">Record numbers</h3><p class="provenance-note">{e(EXPLAINER)}</p>'
                 f'<h3 id="review">Review before publication</h3><p>{e(gate)}</p>'
+                f'<p>{e(interests)}</p>'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", "How to read our findings",
                          "What each finding label means, what record numbers show and how findings are reviewed",
