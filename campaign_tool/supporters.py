@@ -28,6 +28,9 @@ PUBLIC_REL, PRIVATE_REL = ("content", "supporters.json"), ("kit", "supporters-co
 PUBLIC_LABEL, PRIVATE_LABEL = "content/supporters.json", "kit/supporters-consent.json"
 ROW_KEYS = ("id", "name", "kind", "url", "joined_on", "organization")
 CONSENT_KEYS = ("organization", "confirmed_on", "how", "public_sha256", "correspondence")
+# DF2207-14: the optional co-sign grant group of a private record. Listing consent never implies it; all four or none.
+COSIGN_KEYS = ("cosign", "cosign_confirmed_on", "cosign_how", "cosign_correspondence")
+MAX_COSIGN_MEETINGS, MAX_COSIGNERS = 100, 30
 MAX_SUPPORTERS, MAX_BYTES, MAX_NAME, MAX_URL = 200, 1024 * 1024, 120, 300
 EARLIEST = date(2000, 1, 1)
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
@@ -142,18 +145,46 @@ def _row(row, today):
             "joined_on": _date(row["joined_on"], "joined_on", today), "organization": True}
 
 
+def cosign_scope(value):
+    """A validated co-sign grant scope: the text ``any`` or 1-100 unique meeting ids (copied, order kept)."""
+    if isinstance(value, str) and value == "any":
+        return "any"
+    if (isinstance(value, list) and 1 <= len(value) <= MAX_COSIGN_MEETINGS
+            and all(isinstance(item, str) and SLUG.fullmatch(item) and item != "any" for item in value)
+            and len(set(value)) == len(value)):
+        return list(value)
+    raise SupporterError(f"cosign: must be the text any or a list of 1-{MAX_COSIGN_MEETINGS} unique meeting ids")
+
+
+def _digest_or_none(value, key):
+    if value is not None and not (isinstance(value, str) and SHA256.fullmatch(value)):
+        raise SupporterError(f"{key}: must be a lowercase SHA-256 hex digest or null")
+    return value
+
+
 def _record(record, today):
-    if not isinstance(record, dict) or set(record) != set(CONSENT_KEYS):
-        raise SupporterError("record must have exactly the fields " + ", ".join(CONSENT_KEYS))
+    base = set(CONSENT_KEYS)
+    if not isinstance(record, dict) or not base <= set(record) <= base | set(COSIGN_KEYS):
+        raise SupporterError("record must have exactly the fields " + ", ".join(CONSENT_KEYS)
+                             + " (and optionally the co-sign group " + ", ".join(COSIGN_KEYS) + ")")
+    grant = set(record) & set(COSIGN_KEYS)
+    if grant and grant != set(COSIGN_KEYS):
+        raise SupporterError("the co-sign group must have all of " + ", ".join(COSIGN_KEYS) + " or none")
     if record["organization"] is not True:
         raise SupporterError("organization: must be the attestation true")
     for key in ("public_sha256", "correspondence"):
         value = record[key]
         if not (value is None and key == "correspondence") and not (isinstance(value, str) and SHA256.fullmatch(value)):
             raise SupporterError(f"{key}: must be a lowercase SHA-256 hex digest" + (" or null" if key == "correspondence" else ""))
-    return {"organization": True, "confirmed_on": _date(record["confirmed_on"], "confirmed_on", today),
-            "how": _how(record["how"]), "public_sha256": record["public_sha256"],
-            "correspondence": record["correspondence"]}
+    checked = {"organization": True, "confirmed_on": _date(record["confirmed_on"], "confirmed_on", today),
+               "how": _how(record["how"]), "public_sha256": record["public_sha256"],
+               "correspondence": record["correspondence"]}
+    if grant:
+        checked.update({"cosign": cosign_scope(record["cosign"]),
+                        "cosign_confirmed_on": _date(record["cosign_confirmed_on"], "cosign_confirmed_on", today),
+                        "cosign_how": _how(record["cosign_how"]),
+                        "cosign_correspondence": _digest_or_none(record["cosign_correspondence"], "cosign_correspondence")})
+    return checked
 
 
 def _ident(value, index):
@@ -552,3 +583,118 @@ def remove_supporter(root, supporter_id, *, today=None):
     public, private = _prepare(root, kept, {key: value for key, value in records.items() if key != supporter_id}, today)
     _install_pair(root, (PUBLIC_REL, public, 0o644), (PRIVATE_REL, private, 0o600), today)
     return {"id": supporter_id, "action": "removed"}
+
+
+# --- co-sign grants and checks (DF2207-14) ------------------------------------------------------
+
+def _install_private(root, data):
+    """Replace only the private store (0600, atomic rename); the public file is never opened for writing."""
+    root = Path(root)
+    _ensure_private_dir(root)
+    name = _temporary(root / PRIVATE_REL[0], data, 0o600)
+    try:
+        os.replace(name, root.joinpath(*PRIVATE_REL))
+    except OSError:
+        raise SupporterError("write failed; the previous private file was kept") from None
+    finally:
+        _discard(name)
+
+
+def set_cosign_consent(root, supporter_id, *, cosign=None, clear=False, confirmed_on=None, how=None,
+                       correspondence=None, today=None):
+    """Grant or revoke one listed organization's permission to be named under a staged written comment.
+
+    ``cosign`` is ``["any"]`` (alone) or 1-100 meeting ids; ``clear`` removes the whole optional grant group and needs
+    no confirmation. The prospective private store is validated whole before the atomic private-only replacement.
+    Returns ``{"id", "action"}`` only; nothing is restaged or published."""
+    root, today = Path(root), today or date.today()
+    if clear:
+        if cosign is not None or confirmed_on is not None or how is not None or correspondence is not None:
+            raise SupporterError("clearing a co-sign grant takes no scope or confirmation fields")
+    elif cosign is None:
+        raise SupporterError("give --cosign any|MEETING_ID ... or --clear-cosign")
+    rows, records = _state(root, today)
+    if not isinstance(supporter_id, str) or supporter_id not in {row["id"] for row in rows}:
+        raise SupporterError("unknown supporter id; nothing was changed")
+    record = {key: value for key, value in records[supporter_id].items() if key not in COSIGN_KEYS}
+    if not clear:
+        scope = list(cosign) if isinstance(cosign, (list, tuple)) else cosign
+        if isinstance(scope, list) and "any" in scope:
+            if scope != ["any"]:
+                raise SupporterError("cosign: the word any must stand alone")
+            scope = "any"
+        if confirmed_on is None or how is None:
+            raise SupporterError("a co-sign grant needs its own confirmation date and how it was confirmed")
+        record.update({"cosign": cosign_scope(scope), "cosign_confirmed_on": _date(confirmed_on, "cosign_confirmed_on", today),
+                       "cosign_how": _how(how), "cosign_correspondence": _correspondence(root, correspondence)})
+    updated = {**records, supporter_id: _record(record, today)}
+    _, private = _prepare(root, rows, updated, today)
+    _install_private(root, private)
+    return {"id": supporter_id, "action": "cosign cleared" if clear else "cosign granted"}
+
+
+def _listing(root, today):
+    """``({id: row}, {id: record})`` of the valid current rows and consent records (read-only; never raises)."""
+    rows, records, _ = _inspect(Path(root), today, always_private=True)
+    return {row["id"]: row for row in rows or []}, records or {}
+
+
+def _grant_reason(listed, records, supporter_id, meeting_id):
+    """Why ``supporter_id`` may not be named on ``meeting_id``, or None. Never repeats a stored value."""
+    row = listed.get(supporter_id)
+    if row is None:
+        return "is not listed in content/supporters.json"
+    record = records.get(supporter_id)
+    if record is None or record["public_sha256"] != row_hash(row) or record["confirmed_on"] != row["joined_on"]:
+        return "has no consent record matching the listed row"
+    scope = record.get("cosign")
+    if scope is None:
+        return "has not consented to co-sign"
+    if scope != "any" and meeting_id not in scope:
+        return "has not consented to co-sign this meeting"
+    return None
+
+
+def resolve_cosigners(root, meeting_id, supporter_ids, *, today=None):
+    """The ordered public rows for ``supporter_ids`` once each one's listing, attestation, binding and scope for
+    exactly ``meeting_id`` validate. Only public fields leave this helper."""
+    listed, records = _listing(root, today)
+    for supporter_id in supporter_ids:
+        reason = _grant_reason(listed, records, supporter_id, meeting_id)
+        if reason:
+            raise SupporterError(f"--cosign {supporter_id}: {reason}")
+    return [dict(listed[supporter_id]) for supporter_id in supporter_ids]
+
+
+def cosign_problems(root, meetings, *, today=None, skip_meeting_id=None):
+    """Sorted problem lines for every staged meeting that names co-signers (loaded meeting dicts). Read-only: each
+    id must still be listed, bound to its consent record and covered for that meeting, the meeting must still carry a
+    verified written comment, and the kit must hold exactly one generated block with those names in that order."""
+    from .meetings import COSIGN_HEADING, cosign_block_md  # local: meetings imports content
+    problems, state = [], None
+    for meeting in meetings:
+        if meeting.get("id") == skip_meeting_id and skip_meeting_id is not None:
+            continue
+        label, kit = f"meetings/{meeting.get('id')}.json", meeting.get("comment_kit_md") or ""
+        ids = meeting.get("cosigners")
+        headings = sum(1 for line in kit.splitlines() if line == COSIGN_HEADING)
+        if ids is None:
+            if headings:
+                problems.append(f"{label}: the comment kit has a co-signed block but the meeting lists no cosigners")
+            continue
+        if not (meeting.get("participation") or {}).get("written_comment"):
+            problems.append(f"{label}.cosigners: the meeting has no verified written comment")
+        state = state or _listing(root, today)
+        names = []
+        for supporter_id in ids:
+            reason = _grant_reason(*state, supporter_id, meeting.get("id"))
+            if reason:
+                problems.append(f"{label}.cosigners: {supporter_id}: {reason}")
+            else:
+                names.append(state[0][supporter_id]["name"])
+        if len(names) == len(ids):
+            section = kit.split("## Written comment\n", 1)[1].split("\n\n## ", 1)[0] if "## Written comment\n" in kit else ""
+            if headings != 1 or not section.endswith("\n\n" + cosign_block_md(names)):
+                problems.append(f"{label}.cosigners: the written comment does not hold exactly one current "
+                                "co-signed block for these organizations; stage it again with --replace")
+    return sorted(set(problems))

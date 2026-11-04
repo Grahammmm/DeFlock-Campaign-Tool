@@ -8,6 +8,8 @@
   "required": ["schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings"],
   "properties": {
     "schema_version": {"const": 1},
+    "license": {"enum": ["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"]},
+    "license_url": {"type": "string", "pattern": "^https://creativecommons.org/"},
     "campaign": {"type": "string", "minLength": 1},
     "generated_from": {"const": "content/findings"},
     "base_url": {"type": ["string", "null"]},
@@ -68,7 +70,8 @@
         "title": {"type": "string"},
         "locator": {"type": "string", "minLength": 1},
         "rule_id": {"type": ["string", "null"]},
-        "page": {"type": "integer", "minimum": 1, "maximum": 100000}
+        "page": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "quote": {"type": "string", "minLength": 1, "maxLength": 400}
       }
     },
     "correction": {

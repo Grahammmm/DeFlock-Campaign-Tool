@@ -34,6 +34,8 @@ FOOTER_FAQ = '<p><a href="/faq.html">FAQ</a></p>'
 # sha256 of every file the fictional example renders (today=2026-10-01, no faq.json) on origin/main daa479ec, which
 # already holds the glossary and source record pages: captured from an untouched detached worktree of that revision with
 # render-and-hash, never from this candidate. A later change to the generated site re-captures this table.
+# Camera GeoJSON digest refreshed from untouched origin/main 6daa8a2e4a7fe90d17b5f824170d1d7915c1ae7b;
+# the complete no-FAQ rendered inventory matches that independent render byte for byte.
 BASELINE = {
     "404.html": "b2991c912cf60b9f6da98217067eb5de2346263569dccb68e458107bdb4c2819",  # pragma: allowlist secret -- public rendered-file SHA-256
     "_headers": "d8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e",  # pragma: allowlist secret -- public rendered-file SHA-256
@@ -46,7 +48,7 @@ BASELINE = {
     "corrections.html": "0665ddcbcc6daa72939be2ada54a0fb422cfe2f735222efcd08d9bc9f213399f",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/agencies.csv": "de226f37600fdaac36bacba18473551b0a724fa89dcd3c8a743a7442cf1bb477",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/agencies.json": "9c3dd727cbd33c726007e50c84daab6bd9d38cffa53e4941aefdff67a707f7bb",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "data/cameras.geojson": "6778a5778765c0aa2460e0cddf3056e885318d86196a03097f545927165c47f6",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "data/cameras.geojson": "5f3c2ce066666761f6c940d1c2e1c33ccd8cc5275df5431084c1bfb7a4cdc146",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/city-boundaries.geojson": "68593cd8443c2ec42b01e4153cf28386727a9486503eccb5dc42ea1961511f19",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/findings.csv": "c0b05563d22729245783a2fc5953ddc60ed6defa42bc45556f4721f8d6d5880d",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/findings.json": "09d948c3ea4c0e3501f9f5b686f576c42c3f8c720dfb5ab8fcf61440396cc2b7",  # pragma: allowlist secret -- public rendered-file SHA-256
