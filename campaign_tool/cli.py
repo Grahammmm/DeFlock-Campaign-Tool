@@ -905,6 +905,8 @@ def main():
         verify_agency_p.add_argument(flag, help="Required without 'import'")
     for flag in ("--records-email", "--records-url", "--portal"):
         verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
+    verify_agency_p.add_argument("--mailing-address", help="Postal address the organizer checked on the same official page: "
+                                 "2-5 lines of 1-80 characters separated by | (never fetched; not with 'import')")
     verify_agency_p.add_argument("--csv", help="import: header agency_id,source_url,checked_on,records_email,records_url,"
                                  "portal_vendor,portal_url; 1-500 rows, all or none")
     verify_agency_p.add_argument("--check", action="store_true", help="import: validate only; write nothing")
@@ -949,11 +951,11 @@ def main():
                                   "selected agency's draft (read-only; exit 3)")
     check_p.add_argument("--directory", required=True)
     check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
-    copy_p = commands.add_parser("kit-copy", help="Sendable part of a draft as kit/outgoing/<id>.txt or an unsent .eml; "
-                                 "sends nothing")
+    copy_p = commands.add_parser("kit-copy", help="Sendable part of a draft as kit/outgoing/<id>.txt, an unsent .eml, or "
+                                 "(--for mail) a private printable <id>.letter.html and .letter.txt; sends and prints nothing")
     for flag in ("--directory", "--agency"):
         copy_p.add_argument(flag, required=True)
-    copy_p.add_argument("--for", dest="copy_for", required=True, choices=("portal", "email"))
+    copy_p.add_argument("--for", dest="copy_for", required=True, choices=("portal", "email", "mail"))
     copy_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
                                      "records, sources, findings (read-only)")
@@ -1424,7 +1426,8 @@ def main():
             run_cli(root, check=args.check)
         elif args.command == "kit-verify-agency" and args.action == "import":
             from .kit import verify_agencies_csv
-            single = [f for f in ("agency_id", "source_url", "checked_on", "records_email", "records_url", "portal")
+            single = [f for f in ("agency_id", "source_url", "checked_on", "records_email", "records_url", "portal",
+                                "mailing_address")
                       if getattr(args, f) is not None]
             if single:
                 verify_agency_p.error("import takes only --directory, --csv and --check, not "
@@ -1443,7 +1446,7 @@ def main():
                 verify_agency_p.error("the following arguments are required: " + ", ".join(missing))
             print(json.dumps(verify_agency(root, args.agency_id, source_url=args.source_url, checked_on=args.checked_on,
                                            records_email=args.records_email, records_url=args.records_url,
-                                           portal=args.portal), indent=2))
+                                           portal=args.portal, mailing_address=args.mailing_address), indent=2))
             print("Nothing was sent.")
         elif args.command == "content" and args.content_command == "strip-metadata":
             from .image_meta import strip_file
