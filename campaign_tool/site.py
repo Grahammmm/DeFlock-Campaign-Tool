@@ -1032,6 +1032,23 @@ class Site:
         note = f'<p>{e(meeting["note"])}</p>' if meeting.get("note") else ""
         return f'<section class="pre-meeting"><h4>Public meeting before the camera program</h4><p>{line}</p>{rule}{note}</section>'
 
+    def contract_check_block(self, agency, heading="h4"):
+        """DF2207-03: the organizer's reading of the linked contract; fixed wording, no score and no judgement.
+
+        \"\" when the agency has no ``contract_check``. Labels, notes and URLs are escaped; nothing is fetched."""
+        check = agency.get("contract_check")
+        if not check:
+            return ""
+        words = {"not_found": "not found in the linked contract", "unclear": "unclear", "addressed": "addressed"}
+        items = "".join(f'<li>{e(item["label"])}: {words[item["status"]]}'
+                        + (f' (page {item["page"]})' if "page" in item else "")
+                        + (f' <span class="contract-check-note">— {e(item["note"])}</span>' if "note" in item else "") + "</li>"
+                        for item in check["elements"])
+        return (f'<section class="contract-check"><{heading}>What the contract says (organizer reading, not a legal review)</{heading}>'
+                f'<ul>{items}</ul><p>Not found describes this reading, not whether a term exists elsewhere.</p>'
+                f'<p>Checked {date_label(check["checked_on"])} against <a href="{e(check["contract_url"])}" '
+                'rel="noopener noreferrer">the linked contract</a>. Checklist: draft.</p></section>')
+
     def transparency_block(self, agency, heading="h4"):
         """Newest organizer-transcribed portal snapshot, as the vendor reported it, with change since the previous one."""
         snapshots = agency.get("transparency")
@@ -1186,7 +1203,7 @@ class Site:
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
                     + self.policy_check_section(agency)
                     + self.pre_meeting_section(agency)
-                    + self.contract_line(agency["contract"]) + self.funding_block(agency) + self.transparency_block(agency)
+                    + self.contract_line(agency["contract"]) + self.contract_check_block(agency) + self.funding_block(agency) + self.transparency_block(agency)
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
@@ -1299,6 +1316,7 @@ class Site:
                    if profile["flags"] else "")
                 + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency) + self.pre_meeting_section(agency)
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
+                + self.contract_check_block(agency, "h3")
                 + self.funding_block(agency) + self.transparency_block(agency, "h3") + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
                 + self.local_rules_section(agency)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))

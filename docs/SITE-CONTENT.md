@@ -235,6 +235,24 @@ the Rule line is left out and the build is not refused. It is an organizer-verif
 yet" is not a statement that no meeting was held, and the section makes no finding that one was required, missed or
 adequate. It is not in card JS, open data or feeds.
 
+An agency's optional `profile.contract_check` (DF2207-03) records an organizer's reading of the linked ALPR vendor
+agreement against the draft, tool-wide checklist `checklists/contract-checklist.json` (not part of any law package;
+status `draft`, packaged byte-identical and checked by `tools/sync_campaign_resources.py`): `{"checked_on": "YYYY-MM-DD",
+"contract_url": "https://…", "elements": {"<id>": {"status": "addressed"|"not_found"|"unclear", "page"?: 1–9999,
+"note"?: 1–200 characters}}}`. `contract_url` must equal `profile.contract.source_url` exactly (so a valid
+`profile.contract` must be present); "verified" here means the organizer checked that source on that date, not the
+agency contact flag. Every checklist id (`term_renewal`, `price_changes`, `data_ownership`, `retention`,
+`sharing_network`, `vendor_data_use`, `audit_search_logs`, `termination_data_exit`) must be present once and no other;
+`page` is allowed with any status; `note` is plain text (no angle brackets or control characters) kept as written;
+`checked_on` is a real date not before `contract.checked_on` and not after the build date. A bad entry stops the build
+with the first problem and `content-check` lists every problem, each named `<file>[n].profile.contract_check.<field>`.
+The agency page and the agencies-list card show "What the contract says (organizer reading, not a legal review)":
+one line per element in checklist order ("addressed", "not found in the linked contract" or "unclear", then "(page N)"
+and the note), the check date, a link to the contract and "Checklist: draft". "Not found" describes the reading only,
+not whether a term exists elsewhere; there is no score, verdict or inferred duty. The `legal_claims` guard stays
+alert-only and can still flag an accusation typed into a note. Nothing is fetched; the section is not in card JS, open
+data or feeds, and an agency without `contract_check` shows no section.
+
 An agency's optional `asked` (≤ 20 items) lists what the organizer asked it: `{"topic", "asked_on", "state",
 "updated_on"?, "note"?}`. `topic` ≤ 120 and `note` ≤ 200 plain-text characters; `asked_on`/`updated_on` are real
 YYYY-MM-DD dates not after the build date, `updated_on` not before `asked_on`; `state` is one of `awaiting_response`,
