@@ -954,6 +954,9 @@ def main():
     outcome_p.add_argument("--direction", metavar="TEXT", help="A direction the body gave its staff, as the official source states it (1-200 plain-text characters; needs --return-by; alone it updates a recorded outcome)")
     outcome_p.add_argument("--return-by", metavar="YYYY-MM-DD", help="The date the official source says staff should report back (on or after the meeting)")
     outcome_p.add_argument("--direction-source", metavar="URL", help="https URL where the direction is stated (default: the outcome's --source)")
+    outcome_p.add_argument("--spoke", metavar="N", help="How many members of the public spoke on the item, as the official minutes or record state (0-999; alone with --written or --comment-source it updates a recorded outcome)")
+    outcome_p.add_argument("--written", metavar="M", help="How many written comments the official record says were received on the item (0-999)")
+    outcome_p.add_argument("--comment-source", metavar="URL", help="https URL of the record that states the counts (default: the outcome's minutes URL, else its --source)")
     sent_p = commands.add_parser("meetings-comment-sent", help="Record a comment you submitted by hand on a staged "
                                  "meeting in kit/comments-sent.json; sends nothing")
     for flag in ("--directory", "--id", "--on"):
