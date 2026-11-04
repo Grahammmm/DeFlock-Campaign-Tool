@@ -36,9 +36,9 @@ FOOTER_FAQ = '<p><a href="/faq.html">FAQ</a></p>'
 # render-and-hash, never from this candidate. A later change to the generated site re-captures this table.
 # Camera GeoJSON digest refreshed from untouched origin/main 6daa8a2e4a7fe90d17b5f824170d1d7915c1ae7b;
 # the complete no-FAQ rendered inventory matches that independent render byte for byte.
-# Source-filter asset, site-data, sources page and stylesheet refreshed from an untouched
-# detached main 9d4417c64fb35ad91b60f132bbe504ff06f0fe06 at the same fixed date;
-# the candidate's complete no-FAQ inventory matches that independent render.
+# Source-filter inventory and three digests refreshed from untouched origin/main
+# 6123a134c44a2f60934c063e814dafd9fc68db51 at TODAY; the candidate's complete
+# no-FAQ render is byte-identical to that independent main render.
 BASELINE = {
     "404.html": "b2991c912cf60b9f6da98217067eb5de2346263569dccb68e458107bdb4c2819",  # pragma: allowlist secret -- public rendered-file SHA-256
     "_headers": "d8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e",  # pragma: allowlist secret -- public rendered-file SHA-256
@@ -78,9 +78,9 @@ BASELINE = {
     "site-data.js": "992aa92b3f544c4deaba28d2661f8b9ed995939a7da592540f269f0fb0a23e7e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "sitemap.xml": "ab05fa8c7d57a393d8997b194fcef21e0e444f2f4eef751c101df532b9fd522e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "sources.html": "d36957ff6da8632165c36750951d444d235a3bedcf5721b186135aef0af84dd4",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "sources/filter.js": "4880474e6f4e552946692df7bbadbf9341d0c383f081b873d776d1cbc1070b2a",  # pragma: allowlist secret -- public rendered-file SHA-256
     "sources/beefbeefbeef.html": "fe3419b37acf26a42df77207a223a0fcbfed04b9567a32b4c44f113f0cda6772",  # pragma: allowlist secret -- public rendered-file SHA-256
     "sources/cafecafecafe.html": "c22983ff1eae601a774dc1b391063605d10cf8cf7719aca954fdef5dc4e300fb",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "sources/filter.js": "4880474e6f4e552946692df7bbadbf9341d0c383f081b873d776d1cbc1070b2a",  # pragma: allowlist secret -- public rendered-file SHA-256
     "style.css": "2dc934dbebe30b0c6c11780789a53d1a4c853f7cbbd5ff5b27cb347bed933bf4",  # pragma: allowlist secret -- public rendered-file SHA-256
     "timeline.html": "48af0aaa960234edcc8eac283c91e470c9136bfbc329cfa75e71e78757b41415",  # pragma: allowlist secret -- public rendered-file SHA-256
 }
