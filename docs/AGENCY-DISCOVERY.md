@@ -166,6 +166,16 @@ Give one or more of `--records-email`, `--records-url` and `--portal` (URLs must
 and changes only the fields it names. The organizer, not the tool, checks the page: `source_url` is never
 fetched and nothing is sent. Re-running `kit` keeps the entry and uses the email in unedited drafts.
 
+To record many checked contacts at once, use `kit-verify-agency import --directory D --csv FILE [--check]`. The
+first row must be exactly `agency_id,source_url,checked_on,records_email,records_url,portal_vendor,portal_url`
+(UTF-8, a leading byte-order mark is fine); 1-500 data rows, at most 512 KiB, and an empty cell means "not given".
+`portal_vendor` must be one of `nextrequest`, `govqa`, `justfoia`, `none`, `unknown` and needs a `portal_url`; a
+`portal_url` alone keeps the entry's vendor (or `unknown`). Every row passes the same checks as the single-agency
+command against the current `kit/agencies.json`, and an `agency_id` may appear only once in the file. If any row is
+bad, each is named as `line <L>: <reason>` (the header is line 1; the first 20, then `and N more`), the command exits 2
+and nothing is written; otherwise all rows are applied in file order in one write. `--check` runs every check and
+writes nothing. Output lists agency ids only, never an e-mail address, and no URL is fetched and nothing is sent.
+
 Contacts go out of date. `doctor --directory ../my-campaign --contact-max-age-days 180` adds `stale_contacts`: each
 selected, verified entry whose `verification.checked_on` is more than 180 days old (`agency_id`, `checked_on`,
 `age_days`, oldest first; a missing or invalid date is listed with nulls), at most 100 plus `stale_contacts_more`,
