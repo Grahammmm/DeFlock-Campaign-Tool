@@ -355,15 +355,37 @@ def worker(src, sha, form, dest, out, limits, depth, config=None):
                 infos=z.infolist()
                 if len(infos)>limits["members"] or sum(x.file_size for x in infos)>limits["expanded_bytes"] or any(not safe_member(x.filename) or x.file_size>limits["member_bytes"] or x.file_size/max(x.compress_size,1)>limits["ratio"] for x in infos): raise ValueError("unsafe_or_oversized_workbook_zip")
                 if any("vbaProject" in x.filename or "/embeddings/" in x.filename for x in infos): issue("workbook_embedded_content_not_extracted")
+            from openpyxl.chartsheet import Chartsheet
+            import xml.etree.ElementTree as ET
+            declared_states={}
+            try:
+                # openpyxl does not carry a chartsheet's declared state onto the
+                # loaded object (always "visible"); read only the sheet list.
+                with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                    for node in ET.fromstring(z.read("xl/workbook.xml")).iter():
+                        if node.tag.endswith("}sheet") and node.get("name") is not None: declared_states[node.get("name")]=node.get("state","visible")
+            except Exception: declared_states={}
             wb=load_workbook(io.BytesIO(raw),read_only=True,data_only=False,keep_links=False)
-            for sheet in wb.worksheets:
-                emit("workbook_sheet",dict(sheet=sheet.title),data=dict(state=sheet.sheet_state,declared_rows=sheet.max_row,declared_columns=sheet.max_column))
-                sheet.reset_dimensions()
-                for n,row in enumerate(sheet.iter_rows(),1):
-                    cells=[dict(cell=c.coordinate,value=c.value,type=c.data_type) for c in row if c.value is not None]
-                    stats["formulas"]+=sum(c["type"]=="f" for c in cells)
-                    emit("workbook_row",dict(sheet=sheet.title,row=n),js(cells),dict(cells=cells))
-            wb.close(); issue("workbook_cached_values_and_objects_not_reviewed",detail="Formula text retained; no recalculation, macro execution, object rendering or cached-value comparison.")
+            try:
+                # Account for every loaded sheet identity in workbook order,
+                # including chartsheets that wb.worksheets omits.
+                stats["sheets_expected"]=len(wb.sheetnames)
+                for name in wb.sheetnames:
+                    sheet=wb[name]
+                    if isinstance(sheet,Chartsheet):
+                        loc=dict(sheet=sheet.title)
+                        emit("workbook_sheet",loc,data=dict(state=declared_states.get(sheet.title,sheet.sheet_state),declared_rows=None,declared_columns=None,sheet_type="chartsheet",extraction_status="unsupported"))
+                        stats["chartsheets_unsupported"]+=1
+                        issue("workbook_chartsheet_not_extracted",loc,"Chartsheet content is not extracted; visual review required.")
+                        continue
+                    emit("workbook_sheet",dict(sheet=sheet.title),data=dict(state=sheet.sheet_state,declared_rows=sheet.max_row,declared_columns=sheet.max_column))
+                    sheet.reset_dimensions()
+                    for n,row in enumerate(sheet.iter_rows(),1):
+                        cells=[dict(cell=c.coordinate,value=c.value,type=c.data_type) for c in row if c.value is not None]
+                        stats["formulas"]+=sum(c["type"]=="f" for c in cells)
+                        emit("workbook_row",dict(sheet=sheet.title,row=n),js(cells),dict(cells=cells))
+            finally: wb.close()
+            issue("workbook_cached_values_and_objects_not_reviewed",detail="Formula text retained; no recalculation, macro execution, object rendering or cached-value comparison.")
         elif form=="zip":
             with zipfile.ZipFile(io.BytesIO(raw)) as z:
                 for n,info in enumerate(z.infolist(),1):
@@ -409,6 +431,7 @@ def extraction_policy(form,config):
     return hid(js(dict(format=form,paragraph_ordinals=2 if form=="docx" else None,
                        **({"csv_strict_records":1} if form in {"csv","tsv"} else {}),
                        **({"docx_text_separators":1,"docx_altchunk_unsupported":1} if form=="docx" else {}),
+                       **({"xlsx_sheet_inventory":1} if form=="xlsx" else {}),
                        excluded_path_fragments=sorted(set(config["excluded_path_fragments"])) if form in {"zip","eml"} else [])))
 def extraction_budget(form,limits,depth):
     """Bind effective parser resources, not the container's absolute location."""
@@ -478,7 +501,7 @@ def extract(db,out,limits,retry=False,selection=None,config=None):
             if isinstance(old_limits,dict) and all(key in old_limits for key in LIMITS):
                 previous_budget=hid(js(extraction_budget(doc["format"],old_limits,0)))
         # Old non-container/non-DOCX parsers are unchanged: keep finished work.
-        if previous_policy is None and doc["format"] not in {"zip","eml","docx"}:
+        if previous_policy is None and doc["format"] not in {"zip","eml","docx","xlsx"}:
             previous_policy=policy
         if doc["version"]==VERSION and previous_policy==policy and previous_budget==budget_hash and doc["stage"] not in {"pending","running"} and not retry: continue
         sources=db.execute("SELECT o.* FROM occurrences o JOIN seen s ON o.oid=s.oid AND o.sha=s.sha WHERE s.run=? AND o.sha=?",(inv,sha)).fetchall()

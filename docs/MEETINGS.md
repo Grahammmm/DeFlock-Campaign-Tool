@@ -422,6 +422,38 @@ day, a later meeting with no outcome and a malformed file never suppress it. Thi
 outcome does not prove staff did what was asked, its absence does not mean they did not, and no fulfillment status is
 stored. `data/meetings.json` carries `direction`, `return_by` and `direction_source` on the outcome, all or none.
 
+### Recording public-comment counts
+
+When the official minutes or record state how many members of the public spoke on the item and how many written
+comments were received, record them with `--spoke N`, `--written M` and `--comment-source URL`. Either count or both,
+including an explicit `0`; a count the record does not state is simply left out (absent is never shown as zero). Each is
+ASCII decimal digits only, 0 to 999 (leading zeros are read as the integer): `--spoke: must be a whole number from 0 to
+999` (likewise `--written`) refuses a sign, fraction, exponent, space, non-ASCII digit or blank. Two modes:
+
+- **With the outcome** (the four creation flags): the counts are part of the new outcome. The source defaults to the
+  outcome's `--source`. `--comment-source` without a count is refused (`--comment-source needs --spoke or --written`)
+  before anything is written.
+- **Counts only** (`--directory`, `--id`, `--spoke` and/or `--written`, no creation flag): adds the counts to an outcome
+  already recorded (`public comment counts: needs a recorded outcome`), on a held, non-cancelled meeting. The source
+  defaults to the outcome's current minutes URL, else its `--source`. Only the three count keys are merged; the result,
+  verifier, votes, recording, minutes, direction, continuation and every other key stay as stored. The first counts need
+  no `--replace`; a second is refused (`public comment counts already recorded; pass --replace to overwrite them`) and
+  `--replace` replaces the whole group: a count not given again is removed and the source is resolved anew. Counts-only
+  mode refuses `--vote`, `--votes`, `--recording-*`, `--continued-to*` and the direction flags
+  (`counts-only mode cannot be combined with FLAG`); minutes mode refuses the count flags; a partial set of creation
+  flags still names what is missing. A full `--replace` of the outcome drops omitted counts (as it drops omitted votes);
+  the minutes-only and direction-only `--replace` keep them. There is no way to clear counts by themselves.
+
+The three keys are stored flat on the outcome (`spoke`, `written`, `comment_source_url`, https, at most 500 characters,
+the source required with a count and not alone); `build` and `content-check` refuse a hand-edited null, boolean, float,
+string, out-of-range or sourceless group by field name. Nothing is fetched. The meeting page says
+`N people spoke and M written comments were received, as stated in SOURCE` (or `N people spoke, as stated in SOURCE`,
+or `M written comments were received, as stated in SOURCE`; SOURCE a plain link) under the direction line; the numbers
+are the record's literal totals, not a count of unique people, support or opposition, or comments sent by this campaign.
+The wording is the `meeting.comments_both`, `meeting.comments_spoke` and `meeting.comments_written` labels (Spanish draft
+in `examples/labels/es.json`). A meeting without counts is byte-identical to before; `today` is unchanged.
+`data/meetings.json` carries `spoke`, `written` and `comment_source_url` on the outcome.
+
 ## Meetings feed (`meetings.xml`)
 
 When `content/meetings/` stages at least one meeting, `build` writes `public/meetings.xml`, one Atom document
