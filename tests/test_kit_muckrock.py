@@ -12,7 +12,7 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from campaign_tool import cli, kit_track  # noqa: E402
+from campaign_tool import cli, kit, kit_track  # noqa: E402
 from tests.test_kit_check import ready_drafts  # noqa: E402
 
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "muckrock"
@@ -265,6 +265,191 @@ class KitMuckrockTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("future", err)
         self.assertEqual(len(self.steps()), 1)
+
+    # --- semantic comparison of the mapped step with the request's last step (RF0220-1)
+    def pay(self, price, status="payment", **fields):
+        return self.saved(status=status, price=price, datetime_updated="2026-03-10T14:30:00Z", **fields)
+
+    def test_revised_same_day_payment_is_proposed_applied_then_idempotent(self):
+        self.filed([("acknowledged", "2026-03-03")])
+        self.assertEqual(self.imp(self.pay("245.50"), "--apply")[0], 0)
+        first = self.steps()[-1]
+        for price, cents in (("300.00", 30000), ("250", 25000), ("0.00", 0)):  # up, down, then zero
+            with self.subTest(price=price):
+                before, count = self.sent.read_bytes(), len(self.steps())
+                code, out, err = self.imp(self.pay(price))  # dry run proposes and writes nothing
+                self.assertEqual(code, 0, err)
+                self.assertIn(f"--kind fee_estimate --date 2026-03-10 --amount {price}", out)
+                self.assertNotIn("already recorded", out)
+                self.assertEqual(self.sent.read_bytes(), before)
+                self.assertEqual(self.imp(self.pay(price), "--apply")[0], 0)
+                self.assertEqual((len(self.steps()), self.steps()[-1]["amount_cents"]), (count + 1, cents))
+                applied = self.sent.read_bytes()
+                code, out, _ = self.imp(self.pay(price), "--apply")  # the new latest value is a no-op
+                self.assertEqual(code, 0)
+                self.assertIn("already recorded", out)
+                self.assertEqual(self.sent.read_bytes(), applied)
+        self.assertEqual(self.steps()[1], first)  # the old estimate is kept, never replaced
+        self.assertEqual([s.get("amount_cents") for s in self.steps()], [None, 24550, 30000, 25000, 0])
+
+    def test_payment_identity_uses_cents_not_json_representation(self):
+        self.filed([("acknowledged", "2026-03-03")])
+        for price in ("245", 245, 245.0, "245.0", "245.00"):
+            with self.subTest(price=price):
+                self.assertEqual(self.imp(self.pay(price), "--apply")[0], 0)
+                count = len(self.steps())
+                self.assertEqual(self.steps()[-1]["amount_cents"], 24500)
+                for same in ("245", 245, 245.0, "245.0", "245.00"):
+                    code, out, err = self.imp(self.pay(same), "--apply")
+                    self.assertEqual(code, 0, err)
+                    self.assertIn("already recorded", out)
+                self.assertEqual(len(self.steps()), 1 + 1)  # acknowledged + the one estimate
+        self.sent.unlink()
+        self.filed([("acknowledged", "2026-03-03")])
+        for price in ("0", 0, 0.0, "0.00", "100000", 100000, "100000.00"):
+            with self.subTest(zero_or_max=price):
+                code, out, err = self.imp(self.pay(price), "--apply")
+                self.assertEqual(code, 0, err)
+        self.assertEqual([s.get("amount_cents") for s in self.steps()], [None, 0, 10_000_000])
+        # organizer-added notes and the stored recording time do not defeat equality on a non-closed step
+        document = json.loads(self.sent.read_text(encoding="utf-8"))
+        document["requests"][self.agency]["steps"][-1]["note"] = "organizer's own words"
+        self.sent.write_text(json.dumps(document), encoding="utf-8")
+        before = self.sent.read_bytes()
+        code, out, _ = self.imp(self.pay("100000.00"), "--apply")
+        self.assertEqual(code, 0)
+        self.assertIn("already recorded", out)
+        self.assertEqual(self.sent.read_bytes(), before)
+
+    def test_invalid_repeated_payment_cannot_hide_behind_dedup(self):
+        self.filed([("acknowledged", "2026-03-03")])
+        self.assertEqual(self.imp(self.pay("245.50"), "--apply")[0], 0)
+        before = self.sent.read_bytes()
+        bad_prices = ("NaN", "Infinity", "-245.50", "+245.50", "2.4550e2", "245.505", "1,000", "100000.01", "1000000",
+                      " 245.50", True, [245.5], {"a": 1}, float("nan"), float("inf"), 1e-7, -1)
+        for price in bad_prices:
+            for extra in ((), ("--apply",), ("--json",), ("--json", "--apply")):
+                with self.subTest(price=price, extra=extra):
+                    path = self.saved(status="payment", price=price, datetime_updated="2026-03-10T14:30:00Z")
+                    saved_bytes = path.read_bytes()
+                    code, out, err = self.imp(path, *extra)
+                    self.assertEqual(path.read_bytes(), saved_bytes)  # the saved file is never touched
+                    self.assertEqual(code, 1, out)
+                    self.assertNotIn("already recorded", out)
+                    self.assertTrue(err.startswith("Stopped: "), err)
+                    self.assertTrue("--amount" in err or "price must be" in err, err)
+                    self.assertNotIn("Traceback", err)
+                    self.assertEqual(self.sent.read_bytes(), before)
+        for price in (None, ""):  # no price at all is still the distinct, successful manual-recording no-op
+            for extra in ((), ("--apply",), ("--json",)):
+                with self.subTest(price=price, extra=extra):
+                    code, out, _ = self.imp(self.pay(price), *extra)
+                    self.assertEqual(code, 0)
+                    self.assertIn("record the estimate by hand", out)
+                    self.assertNotIn("already recorded", out)
+                    self.assertEqual(self.sent.read_bytes(), before)
+
+    def test_closure_reason_is_identity_and_change_obeys_closed_rule(self):
+        reasons = {"no_docs": "no responsive documents (MuckRock)", "abandoned": "withdrawn (MuckRock)"}
+        for first, other in (("no_docs", "abandoned"), ("abandoned", "no_docs")):
+            with self.subTest(first=first):
+                self.sent.unlink(missing_ok=True)
+                self.filed([("acknowledged", "2026-03-03")])
+                closing = self.saved(status=first, datetime_done="2026-03-12")
+                self.assertEqual(self.imp(closing, "--apply")[0], 0)
+                self.assertEqual(self.steps()[-1]["note"], reasons[first])
+                before = self.sent.read_bytes()
+                for extra in ((), ("--apply",)):  # an exact replay is a no-op even though the request is closed
+                    code, out, err = self.imp(closing, *extra)
+                    self.assertEqual(code, 0, err)
+                    self.assertIn("already recorded", out)
+                changed = self.saved(status=other, datetime_done="2026-03-12")
+                for extra in ((), ("--apply",), ("--json",), ("--json", "--apply")):
+                    with self.subTest(other=other, extra=extra):
+                        code, out, err = self.imp(changed, *extra)
+                        self.assertEqual(code, 1)
+                        self.assertNotIn("already recorded", out)
+                        self.assertIn(reasons[other], out)  # the proposal is shown ...
+                        self.assertIn("is closed; no step can follow closed", err)  # ... and the normal rule refuses it
+                        self.assertEqual(self.sent.read_bytes(), before)
+                self.assertEqual(self.steps()[-1]["note"], reasons[first])
+
+    def test_semantic_dedup_is_request_local_and_latest_only(self):
+        self.filed([("acknowledged", "2026-03-03")])
+        named = "named"
+        requests = self.root / "kit" / "requests"
+        (requests / f"{self.agency}--{named}.md").write_bytes((requests / f"{self.agency}.md").read_bytes())
+        code, _, err = run("kit-sent", "--directory", self.root, "--agency", self.agency, "--date", SENT_ON,
+                           "--channel", "muckrock", "--request-url", URL, "--request", named)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(run("kit-response", "--directory", self.root, "--agency", self.agency, "--date", "2026-03-03",
+                             "--kind", "acknowledged", "--request", named)[0], 0)
+        self.assertEqual(self.imp(self.pay("245.50"), "--apply")[0], 0)
+        main_before = [dict(s) for s in self.steps()]
+        code, out, err = self.imp(self.pay("245.50"), "--apply", "--request", named)  # not deduped by the main history
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("already recorded", out)
+        self.assertEqual(self.steps(), main_before)
+        self.assertEqual(self.imp(self.pay("300.00"), "--apply", "--request", named)[0], 0)
+        self.assertEqual(self.steps(), main_before)  # a named-request revision changes only its own entry
+        entries = json.loads(self.sent.read_text(encoding="utf-8"))["requests"]
+        key = next(k for k in entries if k != self.agency and k.startswith(self.agency))
+        self.assertEqual([s.get("amount_cents") for s in entries[key]["steps"]], [None, 24550, 30000])
+        # an intervening step is not looked through: only the LAST step decides
+        self.assertEqual(run("kit-response", "--directory", self.root, "--agency", self.agency, "--date", "2026-03-11",
+                             "--kind", "clarification_requested")[0], 0)
+        before = self.sent.read_bytes()
+        code, out, err = self.imp(self.pay("245.50"))
+        self.assertEqual(code, 1)  # proposed, then the normal chronology rule refuses a step dated before the last
+        self.assertNotIn("already recorded", out)
+        self.assertIn("before the previous step", err)
+        self.assertEqual(self.sent.read_bytes(), before)
+
+    def test_revised_import_updates_status_and_private_fee_totals(self):
+        (self.root / "kit" / kit.SETTINGS_NAME).write_text(json.dumps({"schema_version": 1, "fee_cap_usd": 250}),
+                                                          encoding="utf-8")
+        self.filed([("acknowledged", "2026-03-03")])
+        self.assertEqual(self.imp(self.pay("245.50"), "--apply")[0], 0)
+        self.assertEqual(self.imp(self.pay("300.00"), "--apply")[0], 0)
+        code, out, err = run("kit-status", "--directory", self.root)
+        self.assertEqual(code, 0, err)
+        row = next(r for r in json.loads(out)["requests"] if r["agency_id"] == self.agency)
+        self.assertEqual((row["fee_estimate"], row["over_fee_cap"]), ("$300.00", True))
+        code, out, err = run("kit-fees", "--directory", self.root)
+        self.assertEqual(code, 0, err)
+        report = json.loads(out)
+        self.assertEqual(report["schema"], "kit-fees-v1")
+        self.assertEqual(len(report["requests"]), 1)
+        text = json.dumps(report)
+        self.assertIn("$300.00", text)
+        self.assertNotIn("$545.50", text)
+        self.assertNotIn("545.50", text)
+
+    def test_other_mapped_steps_keep_rerun_and_partial_rules(self):
+        self.filed()
+        for status, on in (("processed", "2026-03-10"), ("rejected", "2026-03-12"), ("done", "2026-03-12")):
+            with self.subTest(status=status):
+                path = self.saved(status=status, datetime_done=f"{on}T10:00:00Z")
+                self.assertEqual(self.imp(path, "--apply")[0], 0)
+                before = self.sent.read_bytes()
+                code, out, err = self.imp(path, "--apply")
+                self.assertEqual(code, 0, err)
+                self.assertIn("already recorded", out)
+                self.assertEqual(self.sent.read_bytes(), before)
+        self.sent.unlink()
+        self.filed([("acknowledged", "2026-03-03")])
+        self.assertEqual(self.imp(self.saved(status="done", datetime_done="2026-03-12"), "--apply")[0], 0)
+        before = self.sent.read_bytes()
+        code, out, err = self.imp(self.saved(status="partial", datetime_done="2026-03-12"), "--apply")  # final -> partial
+        self.assertEqual(code, 1)
+        self.assertNotIn("already recorded", out)
+        self.assertEqual(self.sent.read_bytes(), before)
+        for date, words in (("2026-03-05", "before the previous step"), ("2999-01-01", "future")):
+            code, _, err = self.imp(self.saved(status="done", datetime_done=date), "--apply")
+            self.assertEqual(code, 1)
+            self.assertIn(words, err)
+            self.assertEqual(self.sent.read_bytes(), before)
+
 
     def test_unsafe_files_are_refused_before_sent_json_is_read(self):
         target = self.saved()

@@ -302,6 +302,16 @@ ASK_COUNT_WORDS = {1: "One ask", 2: "Two asks", 3: "Three asks"}
 ASKS_ABOVE = {1: "the ask", 2: "the two asks", 3: "the three asks"}
 
 
+COSIGN_HEADING = "**Co-signed by**"  # the shared Markdown subset renders only "## " headings, so the roster is bold text
+_MARKUP = re.compile(r"([\\*_\[\]()`<>#!|~])")
+
+
+def cosign_block_md(names):
+    """DF2207-14: the generated roster under a written comment: a bold ``Co-signed by`` line and one bullet per
+    organization name, each name kept literal (markup characters backslash-escaped). No URL, contact or evidence."""
+    return "\n".join([COSIGN_HEADING] + ["- " + _MARKUP.sub(r"\\\1", _clean(name)) for name in names])
+
+
 def default_asks(meeting):
     return [ASKS.get(meeting.get("relevance") or "", DEFAULT_ASK),
             "Require an annual public audit of searches, retention and outside-agency sharing, "
@@ -309,12 +319,20 @@ def default_asks(meeting):
             "Answer in writing which agencies can query this data today and under what written agreement."]
 
 
-def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None):
+def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None, cosign_names=None):
     """Markdown comment kit; ``findings`` are published finding dicts with title, summary,
     classification, confidence, path and sources[{title, locator, sha256}].
 
     ``asks`` (DF2207-07): the campaign's own 1-3 asks, validated here; they replace the relevance-based defaults in the
-    asks section, the written letter and (with a verified speaker limit) the spoken version. None keeps the defaults."""
+    asks section, the written letter and (with a verified speaker limit) the spoken version. None keeps the defaults.
+
+    ``cosign_names`` (DF2207-14): 1-30 consenting organization names, rendered by ``cosign_block_md`` after the
+    signature of the written letter only. The roster is a separate bounded block: it is not counted in the 400-word
+    letter body and never displaces a finding bullet. Without a real letter (no written comment, or the over-cap
+    advisory) the call raises MeetingsError rather than claim a co-signed letter. None leaves the kit unchanged."""
+    if cosign_names is not None and not (isinstance(cosign_names, (list, tuple)) and 1 <= len(cosign_names) <= 30
+                                         and all(isinstance(name, str) and name.strip() for name in cosign_names)):
+        raise MeetingsError("co-signers: give 1 to 30 organization names")
     if asks is not None:
         from .content import load_comment_asks
         asks = load_comment_asks(asks, "asks")
@@ -401,7 +419,13 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
         if words(letter) > 400:  # body, agenda item or campaign name alone over the cap: no letter, say so
             letter = letter[:2] + ["The letter would be over 400 words for this meeting; write a short one by "
                                    f"hand from {ASKS_ABOVE[len(resolved)] if asks is not None else 'the three asks'} above."]
+        if cosign_names is not None:
+            if words(letter) > 400 or not letter[-1] == "[city]":
+                raise MeetingsError("co-signers: the letter would be over 400 words, so no letter is written to sign")
+            letter.extend(["", *cosign_block_md(cosign_names).split("\n")])
         lines.extend(["## Written comment"] + letter + [""])
+    elif cosign_names is not None:
+        raise MeetingsError("co-signers: this meeting has no verified written comment to sign")
     lines.append("## How to take part")
     part = meeting.get("participation")
     if not part:
