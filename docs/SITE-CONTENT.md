@@ -404,6 +404,8 @@ Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descri
 `intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
 `signup.*`, `js.*` (scripts, below), `handout.*` (the private meeting-pack handout, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
 keeps its English default.
+A complete Spanish draft of every key is in [`examples/labels/es.json`](../examples/labels/es.json) ([README](../examples/labels/README.md)).
+Machine-made draft. A fluent Spanish reader must check every line before a campaign uses it; nothing here is reviewed.
 Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds
 `<`, `>` or a control character; a `{placeholder}` the key's default does not use (only `{name}`, `{county}`,
 `{state}`, `{count}`, `{date}` exist, plus `{shown}`/`{total}` in `js.filter_count` and `{evidence}`/`{source}` in
@@ -523,6 +525,21 @@ that do not strictly increase, a negative or non-integer count, a symlink or a f
 and never its value; `content-check` lists the same line. With two or more records `cameras.html` shows "Mapped points
 over time", a plain table (date, total, added, removed, and per-city columns when every record has `by_city`); with
 none or one the built site is unchanged. A mapped point, and a rising count, is not evidence of agency ownership.
+
+`content/map/point-checks.json` (optional; organizer-edited by hand, never fetched or written by the tool) records what
+an organizer found at single mapped points: `{"schema_version": 1, "checks": [{"node": 123, "status": "seen_in_person",
+"checked_on": "2026-11-01", "source": "<12-hex library prefix or https:// URL>", "note": "optional, 200 characters"}]}`.
+`node` must be an OpenStreetMap node id present in `cameras.geojson` (its `.../node/N` URL); `status` is
+`seen_in_person`, `in_agency_record`, `not_found_on_site` or `duplicate`; `checked_on` is a calendar day not after the
+build day; `source` is either the first 12 hex characters of one `sources.json` entry's sha256 (it must match exactly
+one) or an `https://` URL (no userinfo, at most 500 characters); `note` is plain text without an address or phone-like
+number. At most 5 checks per node, 2000 checks and 512 KiB; a symlink is refused. `build` refuses the file naming the
+field (`map/point-checks.json.checks[3].node: not a mapped point`) and never the value; `content-check` lists every
+refused entry. With the file, `cameras.html` gains an "Organizer check" column (newest check: status, date, source link;
+"and N earlier" when more; a dash when none) and the map popup one escaped line "Organizer check: <status>, <date>"
+(the note and the source stay off the popup and out of `site-data.js`). Without the file nothing is built differently.
+A check never removes or edits a point and never writes to OpenStreetMap: `duplicate` and `not_found_on_site` points stay
+on the map and in every count. `in_agency_record` says an agency record lists the point; it is never ownership.
 
 The build never downloads MapLibre. To enable the interactive map, copy the
 library into `content/vendor/maplibre-gl.js` and `content/vendor/maplibre-gl.css`

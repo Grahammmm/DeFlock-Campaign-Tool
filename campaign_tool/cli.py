@@ -11,7 +11,7 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import fixes
+from . import fixes, registry
 
 MAX_BYTES = 50 * 1024 * 1024
 MAX_DIR_FILES = 2000
@@ -702,6 +702,20 @@ def finding_preview(root, draft_path, out, now=None):
     return {"written": written, "slug": finding["slug"]}
 
 
+def _campaign_option(parser):
+    """Every parser that takes --directory also takes --campaign NAME (a registered campaign), never both."""
+    for action in list(parser._actions):
+        if isinstance(action, argparse._SubParsersAction):
+            for sub in action.choices.values():
+                _campaign_option(sub)
+    directory = next((a for a in parser._actions if "--directory" in a.option_strings), None)
+    if directory is not None and "--campaign" not in parser._option_string_actions:
+        group = parser.add_mutually_exclusive_group(required=directory.required)
+        group._group_actions.append(directory)
+        directory.required = False
+        group.add_argument("--campaign", metavar="NAME", action=registry.CampaignAction, help="A registered campaign, not --directory")
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -765,7 +779,7 @@ def main():
                          help="Fall back to the Census geocoder when the seed cannot resolve the location")
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
-                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in)")
+                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in), school_police (opt-in)")
     kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
@@ -877,10 +891,13 @@ def main():
             agency_p.add_argument("--kind", required=True, help="sheriff, police, chp, county_board, city_council, "
                                   "district_attorney or other")
             agency_p.add_argument("--note", default=None, help="Up to 300 characters")
+    from .kit_track import CHANNELS as kit_track_channels
     sent_p = commands.add_parser("kit-sent", help="Record a request the organizer sent by hand in kit/sent.json; sends nothing")
     for flag in ("--directory", "--agency", "--date"):
         sent_p.add_argument(flag, required=True)
-    sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail"))
+    sent_p.add_argument("--channel", required=True, choices=kit_track_channels)
+    sent_p.add_argument("--request-url", metavar="URL", help="With --channel muckrock only: the https://www.muckrock.com/foi/ "
+                        "page of the request you filed there (recorded, never fetched)")
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     sent_p.add_argument("--request", default="main", help="Name of a further request to this agency, drafted in "
                         "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
@@ -934,6 +951,13 @@ def main():
     response_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     response_p.add_argument("--partial", action="store_true", help="produced only: part of the records; the request "
                             "stays open (--expected-on: the agency's next installment date)")
+    muckrock_p = commands.add_parser("kit-muckrock-import", help="Propose the kit-response step a MuckRock request JSON you "
+                                     "saved by hand implies; fetches and sends nothing")
+    for flag in ("--directory", "--agency", "--from-json"):
+        muckrock_p.add_argument(flag, required=True)
+    muckrock_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    muckrock_p.add_argument("--apply", action="store_true", help="Record the step (default: dry run, nothing written)")
+    muckrock_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -1090,7 +1114,22 @@ def main():
     pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
+    _campaign_option(parser)
+    campaigns = commands.add_parser("campaigns", help="A named register of campaign directories; names and paths only"
+                                    ).add_subparsers(dest="campaigns_command", required=True)
+    for verb, text in (("add", "Register NAME at --directory"), ("remove", "Unregister NAME; deletes nothing"),
+                       ("list", "The registered names and directories"),
+                       ("status", "One private line per campaign: counts and waiting gates; publishes nothing")):
+        verb_p = campaigns.add_parser(verb, help=text)
+        if verb in ("add", "remove"):
+            verb_p.add_argument("name")
+        if verb == "add":
+            verb_p.add_argument("--directory", required=True)
     args = parser.parse_args()
+    if args.command == "campaigns":
+        sys.exit(registry.run(args))
+    if getattr(args, "campaign", None):  # from here no path under another registered campaign can be opened or written
+        registry.confine(args.directory, args.registered)
     if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
         if not args.upcoming or args.allow_past or args.within_days not in (None, *range(1, 91)):
             pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
@@ -1375,8 +1414,15 @@ def main():
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
                                          replace=args.replace, reference=args.reference,
                                          replace_reference=args.replace_reference,
-                                         correspondence=args.correspondence), indent=2))
+                                         correspondence=args.correspondence, request_url=args.request_url), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-muckrock-import":
+            from .kit_muckrock import render, run as muckrock_run
+            result = muckrock_run(root, args.agency, Path(args.from_json).expanduser(), args.request, args.apply)
+            print(json.dumps(result, indent=2) if args.as_json else render(result))
+            print(f"Read only from {args.from_json}. Nothing was fetched or sent.")
+            if result.get("refusal"):
+                raise ValueError(result["refusal"])
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
             kit_check_cli(root, as_json=args.as_json)

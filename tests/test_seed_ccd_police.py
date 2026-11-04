@@ -124,7 +124,7 @@ class SeedTests(unittest.TestCase):
         self.assertIn("all 482 incorporated cities", doc)
         self.assertNotIn("believed complete", doc)
         self.assertIn(f"({len(build_agency_seed.CCD_POLICE)}, from the\n`CCD_POLICE` table)", doc)
-        self.assertRegex(doc, r"(?i)private universities and school police are not\s+seeded")
+        self.assertRegex(doc, r"(?i)private universities are not\s+seeded")
         self.assertIsNone(re.search(r"[Cc]ommunity colleges[^.]*not\s+seeded", doc))
 
 
@@ -139,7 +139,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_default_include_never_lists_ccd_police(self):
         self.assertNotIn("ccd_police", discovery.DEFAULT_INCLUDE)
-        self.assertEqual(discovery.OPT_IN_KINDS, ("campus_police", "ccd_police"))
+        self.assertEqual(discovery.OPT_IN_KINDS, ("campus_police", "ccd_police", "school_police"))
         self.assertIn("ccd_police", discovery.LAW_ENFORCEMENT_KINDS)
         for query in ("Alameda County", "Fremont", "Los Angeles County", "Pasadena"):
             location = discovery.locate(query, "CA", self.seed)

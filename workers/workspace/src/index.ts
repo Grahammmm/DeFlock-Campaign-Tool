@@ -12,6 +12,7 @@ import { runScheduled } from "./cron.ts";
 import { Repo } from "./db.ts";
 import type { Env } from "./env.ts";
 import { exportResponse } from "./export.ts";
+import { mailSenderConfigured } from "./executors/index.ts";
 import { UNSUBSCRIBE_PLACEHOLDER } from "./executors/send_newsletter.ts";
 import { emailHandler } from "./mail.ts";
 import { assembleManifest, type BrevoSettings } from "./manifest.ts";
@@ -432,12 +433,14 @@ function secretPresence(env: Env): V.SecretPresence[] {
     { name: "ACCESS_TEAM_DOMAIN", present: Boolean(env.ACCESS_TEAM_DOMAIN), note: "Access team domain used to fetch signing certificates" },
     { name: "BREVO_API_KEY", present: Boolean(env.BREVO_API_KEY), note: "Brevo v3 key used only by the send_newsletter executor (campaign create + send)" },
     { name: "SUBSCRIBE_WEBHOOK_SECRET", present: Boolean(env.SUBSCRIBE_WEBHOOK_SECRET), note: "HMAC secret verifying POST /api/webhooks/subscribe deliveries" },
+    { name: "OUTBOX_GATEWAY_URL", present: Boolean(env.OUTBOX_GATEWAY_URL), note: "Signed outbox gateway URL; with OUTBOX_SIGNING_KEY lets approved send_request / send_followup cards deliver" },
+    { name: "OUTBOX_SIGNING_KEY", present: Boolean(env.OUTBOX_SIGNING_KEY), note: "HMAC key signing each outbox submission" },
   ];
 }
 
 app.get("/settings", async (c) => {
   const notice = c.req.query("notice");
-  return render(c, "Settings", V.settings(await c.var.repo.campaign(), await c.var.repo.settings(), secretPresence(c.env), notice ? html`${notice}`.value : null, await c.var.repo.setting<BrevoSettings>("brevo")));
+  return render(c, "Settings", V.settings(await c.var.repo.campaign(), await c.var.repo.settings(), secretPresence(c.env), notice ? html`${notice}`.value : null, await c.var.repo.setting<BrevoSettings>("brevo"), mailSenderConfigured(c.env)));
 });
 
 /** Non-secret Brevo settings: list id, hosted form URL, sender. The API key is a Worker secret. */
@@ -473,7 +476,7 @@ app.post("/settings/rotate-runner-token", async (c) => {
   await c.var.repo.putSetting("runner_token_fingerprint", { sha256: fingerprint, rotated_by: c.var.identity.email, rotated_at: nowIso(), applied: false });
   if (wantsJson(c)) return c.json({ token, fingerprint });
   const notice = html`New runner token (shown once, not stored): <code>${token}</code><br>Set it as the Worker secret RUNNER_TOKEN and on the runner. Fingerprint ${fingerprint.slice(0, 16)}.`;
-  return render(c, "Settings", V.settings(await c.var.repo.campaign(), await c.var.repo.settings(), secretPresence(c.env), notice.value, await c.var.repo.setting<BrevoSettings>("brevo")));
+  return render(c, "Settings", V.settings(await c.var.repo.campaign(), await c.var.repo.settings(), secretPresence(c.env), notice.value, await c.var.repo.setting<BrevoSettings>("brevo"), mailSenderConfigured(c.env)));
 });
 
 export default {
