@@ -757,7 +757,7 @@ def main():
                          help="Fall back to the Census geocoder when the seed cannot resolve the location")
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
-                              "city_council, district_attorney, chp, campus_police (opt-in)")
+                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in)")
     kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)

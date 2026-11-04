@@ -310,6 +310,55 @@ CAMPUSES = [(fips, "UC", campus, f"University of California, {campus} Police Dep
 CAMPUS_NOTE = ("UC/CSU campus police department; seeded from contributor knowledge; "
                "submit to the campus records office, verify")
 
+# California community college district police (kind ccd_police, opt-in only):
+# (county_fips of the district office, district, display name). Only districts that operate their OWN
+# police department (Education Code 72330) are listed; a district that contracts a city police or sheriff
+# is not. Each row was read from an official district or member-college page naming the department; those
+# page titles and URLs are recorded in the PR that added the row, not in the seed (url stays null).
+# Districts the CCCCO directory (https://www.cccco.edu/students/find-a-college/community-college-districts/,
+# 72 districts) lists but this table omits were not confirmed from an official source: add one with its page.
+CCD_POLICE = [
+    ("06083", "Allan Hancock Joint Community College District", "Allan Hancock Joint Community College District Police Department"),
+    ("06007", "Butte-Glenn Community College District", "Butte-Glenn Community College District Police Department"),
+    ("06037", "Cerritos Community College District", "Cerritos Community College District Police Department"),
+    ("06071", "Chaffey Community College District", "Chaffey Community College District Police Department"),
+    ("06059", "Coast Community College District", "Coast Community College District Police Department"),
+    ("06037", "Compton Community College District", "Compton Community College District Police Department"),
+    ("06013", "Contra Costa Community College District", "Contra Costa Community College District Police Department"),
+    ("06037", "El Camino Community College District", "El Camino Community College District Police Department"),
+    ("06085", "Foothill-De Anza Community College District", "Foothill-De Anza Community College District Police Department"),
+    ("06037", "Glendale Community College District", "Glendale Community College District Police Department"),
+    ("06067", "Los Rios Community College District", "Los Rios Community College District Police Department"),
+    ("06041", "Marin Community College District", "Marin Community College District Police Department"),
+    ("06047", "Merced Community College District", "Merced Community College District Police Department"),
+    ("06073", "MiraCosta Community College District", "MiraCosta Community College District Police Department"),
+    ("06037", "Mt. San Antonio Community College District", "Mt. San Antonio Community College District Police Department"),
+    ("06055", "Napa Valley Community College District", "Napa Valley Community College District Police Department"),
+    ("06001", "Ohlone Community College District", "Ohlone Community College District Police Department"),
+    ("06073", "Palomar Community College District", "Palomar Community College District Police Department"),
+    ("06037", "Pasadena Area Community College District", "Pasadena Area Community College District Police Department"),
+    ("06037", "Rio Hondo Community College District", "Rio Hondo Community College District Police Department"),
+    ("06065", "Riverside Community College District", "Riverside Community College District Police Department"),
+    ("06071", "San Bernardino Community College District", "San Bernardino Community College District Police Department"),
+    ("06073", "San Diego Community College District", "San Diego Community College District Police Department"),
+    ("06075", "San Francisco Community College District", "San Francisco Community College District Police Department"),
+    ("06077", "San Joaquin Delta Community College District", "San Joaquin Delta Community College District Police Department"),
+    ("06085", "San Jose-Evergreen Community College District", "San Jose-Evergreen Community College District Police Department"),
+    ("06079", "San Luis Obispo County Community College District", "San Luis Obispo County Community College District Police Department"),
+    ("06037", "Santa Monica Community College District", "Santa Monica Community College District Police Department"),
+    ("06107", "Sequoias Community College District", "Sequoias Community College District Police Department"),
+    ("06095", "Solano County Community College District", "Solano County Community College District Department of Public Safety"),
+    ("06097", "Sonoma County Junior College District", "Sonoma County Junior College District Police Department"),
+    ("06059", "South Orange County Community College District", "South Orange County Community College District Campus Police Departments"),
+    ("06073", "Southwestern Community College District", "Southwestern Community College District Police Department"),
+    ("06019", "State Center Community College District", "State Center Community College District Police Department"),
+    ("06111", "Ventura County Community College District", "Ventura County Community College District Police Department"),
+    ("06071", "Victor Valley Community College District", "Victor Valley Community College District Police Department"),
+    ("06085", "West Valley-Mission Community College District", "West Valley-Mission Community College District Police Department"),
+]
+CCD_NOTE = ("community college district police department; seeded from the district's official page; "
+            "submit to the district records office, verify")
+
 
 def slugify(text):
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
@@ -362,6 +411,13 @@ def campus_agencies(fips, slug):
             for row_fips, system, campus, name in CAMPUSES if row_fips == fips]
 
 
+def ccd_agencies(fips):
+    """Community college district police for county ``fips`` in CCD_POLICE order."""
+    return [agency(f"{STATE}-{slugify(district)}-ccd-police", name, "ccd_police", district,
+                   sources=[source(CCD_NOTE)])
+            for row_fips, district, name in CCD_POLICE if row_fips == fips]
+
+
 def city_agencies(city, policing, overlay):
     slug = slugify(city)
     body = "Town" if city in TOWNS else "City"
@@ -395,6 +451,7 @@ def build(overlay=None):
         slug = slugify(name)
         agencies = county_agencies(fips, name, slug)
         agencies.extend(campus_agencies(fips, slug))
+        agencies.extend(ccd_agencies(fips))
         for city, policing in cities:
             agencies.extend(city_agencies(city, policing, overlay))
         counties.append({"county_fips": fips, "name": name, "seat": seat, "agencies": agencies})
@@ -421,6 +478,12 @@ def check_tables():
     for fips, system, campus, _name in CAMPUSES:
         if fips not in fips_seen:
             raise ValueError(f"campus {system} {campus}: {fips} is not a county fips")
+    districts = [district for _fips, district, _name in CCD_POLICE]
+    if len(set(districts)) != len(districts):
+        raise ValueError("duplicate ccd district row")
+    for fips, district, _name in CCD_POLICE:
+        if fips not in fips_seen:
+            raise ValueError(f"ccd district {district}: {fips} is not a county fips")
     for county in build()["counties"]:
         for entry in county["agencies"]:
             if entry["agency_id"] in ids:

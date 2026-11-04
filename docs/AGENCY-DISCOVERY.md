@@ -33,14 +33,28 @@ opt-in: a kit lists them only with `--include campus_police`, never by
 default, so a kit without it is unchanged. Each entry is unverified with null
 contacts; its source note says to submit to the campus records office, which
 is separate from the city and county records offices and has its own
-procedure. Community colleges, private universities and school police are not
-seeded.
+procedure. Private universities and school police are not seeded.
 
-Coverage: all 58 counties. City lists are believed complete for San Luis
-Obispo, Santa Barbara, Monterey, Santa Cruz, Ventura, Kern, Fresno,
-Sacramento, San Diego, Alameda and Los Angeles counties; other counties list
-the cities a contributor could name with confidence and omit the rest rather
-than guess. `records_url`, `records_email`, `portal.url`, `place_fips`,
+California community college district police departments (37, from the
+`CCD_POLICE` table) are seeded in the county of the district office as kind
+`ccd_police`, after the campus police entries. Only districts that operate
+their own police department are listed; a district that contracts a city
+police department or the county sheriff, or that staffs unsworn campus
+safety officers, is not, and 35 of the 72 districts in the Chancellor's
+Office directory are absent for that reason or because no official page
+confirmed a department. They are opt-in: a kit lists them only with
+`--include ccd_police`, never by default, so a kit without it is unchanged.
+Each entry is unverified with null contacts; its source note says the entry
+was seeded from the district's official page and to submit to the district
+records office, which is separate from the city, county and campus records
+offices. The page each row came from is recorded in the pull request that
+added it, not in the seed.
+
+Coverage: all 58 counties, and all 482 incorporated cities, each with a
+`city_council` entry and a policing value (own police department, county
+sheriff, another agency, or not recorded). A city whose policing arrangement
+is not recorded has a council entry only, and its source note says to verify.
+`records_url`, `records_email`, `portal.url`, `place_fips`,
 `flock_transparency_slug` and `muckrock_agency_id` are null until someone
 verifies them, and `verified` is false everywhere. A wrong policing value is
 a bug: open a PR against the table with the official page as the source.
@@ -84,7 +98,8 @@ with `suggested: true`. For a city match the city's own agencies come first,
 then the county-wide ones; for a county match the county-wide agencies come
 first, then every city's agencies in seed order. `--include` (repeatable)
 restricts and orders kinds: `sheriff`, `police`, `county_board`,
-`city_council`, `district_attorney`, `chp`, and the opt-in `campus_police`.
+`city_council`, `district_attorney`, `chp`, and the opt-in `campus_police` and
+`ccd_police`.
 
 ## Online mode
 
