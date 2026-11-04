@@ -51,9 +51,11 @@ class SyntheticContentTests(unittest.TestCase):
 
 class SiteCapacityTests(unittest.TestCase):
     def test_site_loads_every_built_page_without_errors(self):
-        report = benchmark(24, 2, site=True)
+        # Cover every selectable path even as the generated site gains pages.
+        requests = benchmark_starter.MAX_SITE_PATHS
+        report = benchmark(requests, 2, site=True)
         self.assertEqual(report["schema"], "synthetic-site-capacity-v1")
-        self.assertEqual((report["requests"], report["errors"], report["failed_paths"]), (24, 0, []))
+        self.assertEqual((report["requests"], report["errors"], report["failed_paths"]), (requests, 0, []))
         pages = {page["path"]: page for page in report["pages"]}
         for path in ("/index.html", "/findings/synthetic-finding-1.html", "/findings/synthetic-finding-2.html",
                      "/meetings.html", "/sources.html", "/feed.xml", "/agency-cards.js", "/app.js", "/style.css"):
@@ -63,7 +65,7 @@ class SiteCapacityTests(unittest.TestCase):
             self.assertGreaterEqual(page["requests"], 1, page["path"])
             self.assertGreater(page["bytes"], 0, page["path"])
             self.assertLessEqual(page["p50"], page["p95"])
-        self.assertEqual(sum(page["requests"] for page in report["pages"]), 24)
+        self.assertEqual(sum(page["requests"] for page in report["pages"]), requests)
 
     def test_fewer_requests_than_pages_requests_first_sorted_paths_only(self):
         seen = []

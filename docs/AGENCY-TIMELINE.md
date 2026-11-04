@@ -235,3 +235,29 @@ under the normal step rules. `processed` is `acknowledged`; `fix` is `clarificat
 `fee_estimate` from `price` (none: record it by hand); `rejected` is `denied`; `no_docs` and `abandoned` are `closed`
 with a note; `partial` is `produced --partial`; `done` is `produced`. `started`, `submitted`, `ack`, `appealing` and
 `lawsuit` propose no step, and any other status is refused by name. Nothing is fetched or sent.
+
+## Requests filed on an agency portal (kit requests)
+
+`kit-sent --channel portal --request-url https://<portal host>/...` keeps a link back to a request you filed on the
+agency's NextRequest, GovQA or JustFOIA portal. The agency must already have its portal recorded by `kit-verify-agency
+--portal`, and the URL's host (compared lower-case) must equal that portal's host; the URL must be `https` with no
+login, port, query or fragment, at most 300 characters. It is refused with `--channel email` or `mail`, and for an agency
+with no verified portal. The link is stored as `request_url`, never fetched: the tool opens no portal page and uses no
+portal login. `kit-status` and `kit-due` show it on the request's row (`kit-status` also prints `Portal request: URL` on
+stderr), `kit-status --csv` adds a `request_url` column, and the `kit-followup` and `kit-denial-reply` drafts quote
+`Portal request: URL` after the reference line. `kit-sent --replace` keeps a stored link unless you give a new one.
+Older `kit/sent.json` files, with no `request_url`, read and write as before.
+
+## A transcribed timeline in one write (kit-response-import)
+
+`kit-response-import --directory D --agency ID --csv FILE [--request NAME] [--apply]` records a portal or letter history
+you copied into a CSV by hand instead of one `kit-response` call per event. The file is UTF-8 (a BOM is fine), at most
+256 KiB and 1-200 data rows, a regular file (a symlink is refused), with the header exactly
+`date,kind,note,amount,expected_on,partial`; an empty cell means not given and `partial` is empty, `yes` or `no`.
+`--record`, `--correspondence` and `--reference` are not columns: link records with `kit-response --record`; the agency
+reference is stored once. Each row is checked in file order by the same rules as `kit-response` (a dry run) against the
+recorded steps plus the rows before it, so a closing step in row 2 refuses an extension in row 3. Any refused row is
+named as `line <L>: <the kit-response message>` (the header is line 1; up to 20 are listed, then `and N more`), the
+command exits 2 and nothing is written. A row equal to a step already recorded on that request is reported
+`already recorded, skipped`; the same row twice in the file is refused on its second line. Without `--apply` the command
+only checks; with `--apply` every new step is recorded in file order in one atomic write. Nothing is fetched or sent.
