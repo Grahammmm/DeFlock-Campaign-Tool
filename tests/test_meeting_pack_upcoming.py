@@ -215,5 +215,40 @@ class MeetingPackUpcomingTests(unittest.TestCase):
         self.assertFalse(self.packs.exists())
 
 
+    # DF0137-17: build_upcoming follows site.json.language and content/labels.json for every pack it builds.
+    def spanish(self):
+        self.site['language'] = 'es'
+        self.write('site.json', self.site)
+        self.write('labels.json', {'schema_version': 1, 'labels': {
+            'handout.title': 'Hoja informativa', 'handout.what_we_found': 'Lo que encontramos',
+            'handout.source_line': 'Fuente: {title}, recibida {date}, registro {record}'}})
+
+    def test_labels_and_language_apply_to_every_pack_in_the_window(self):
+        self.stage('soon', at(2))
+        self.stage('later', at(5))
+        self.spanish()
+        report = self.up()
+        self.assertEqual((self.ids(report), report['skipped']), (['soon', 'later'], []))
+        for meeting_id in ('soon', 'later'):
+            page = (self.packs / meeting_id / 'handout.html').read_text()
+            self.assertIn('<html lang="es"><meta charset="utf-8"><title>Hoja informativa</title>', page)
+            self.assertIn('<h2>Lo que encontramos</h2>', page)
+            self.assertIn('Fuente: Source 1, recibida 2026-02-01T12:00:00Z, registro ', page)
+            self.assertNotIn('Source:', page)
+            self.assertEqual((self.packs / meeting_id / 'comment.md').read_text(), 'Hello.\nThank you.\n')
+
+    def test_bad_labels_skip_every_meeting_naming_the_key_and_write_nothing(self):
+        self.stage('soon', at(2))
+        self.stage('later', at(5))
+        self.write('labels.json', {'schema_version': 1, 'labels': {'handout.corrected': 'corregido {title}'}})
+        report = self.up()
+        self.assertEqual(report['built'], [])
+        self.assertEqual([item['id'] for item in report['skipped']], ['soon', 'later'])
+        for item in report['skipped']:
+            self.assertIn('handout.corrected', item['reason'])
+            self.assertIn('{title}', item['reason'])
+        self.assertFalse(self.packs.exists())
+
+
 if __name__ == '__main__':
     unittest.main()
