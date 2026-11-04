@@ -12,7 +12,7 @@ from pathlib import Path
 from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _alpr_policy, _asked, _bounds, _policy_check, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, continuation_problems,
                       default_agencies,
-                      history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
+                      history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_pages, load_site,
                       load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_glossary,
                       topics_namespace_problem)
 from .finding_law import check as check_law, jurisdiction, package_line
@@ -233,6 +233,7 @@ def content_problems(root, limit=LIMIT):
         problems.extend(check_source_pages(findings, library))
 
     _topics(problems, content_dir, findings if findings_intact else None, slugs)
+    _attempt(problems, "pages/", lambda: load_pages(content_dir, slugs))  # DF2207-10: the build's own page check (reserved slugs)
 
     labels_path = content_dir / "labels.json"  # optional, read exactly as load_content: a symlink is named, not read
     if labels_path.is_file() or labels_path.is_symlink():

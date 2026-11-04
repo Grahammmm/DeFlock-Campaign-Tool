@@ -43,7 +43,7 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 
 | Path | Required | Purpose |
 | --- | --- | --- |
-| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), `license` (below), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
+| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), `license` (below), optional `press` (below), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
 | `content/findings/*.json` | no | one published finding per file (schema below) |
 | `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id`, optional `cited_findings` (1 to 3 unique finding ids, written by `meetings-stage`) |
 | `content/sources.json` | no | source-library entries: `sha256`, `title`, `agency_id`, `received_at`, `public_url` or null, `fragment`, `pages`, `note` |
@@ -174,6 +174,50 @@ GeoJSON foreign members `license` = `ODbL-1.0`, `license_url` (the opendatacommo
 `© OpenStreetMap contributors` and `attribution_url`, whatever `site.json.license` says and even when it is absent. The
 points are not changed. This is the one file a build without `license` still changes. Boundary files are not derived
 from the camera data and are copied as before.
+
+### Press page for reporters (`site.json.press`)
+
+Optional. `site.json.press` = `{"contact_role": "<1-80 characters>", "contact_email": "<optional>", "about_md": "<optional, up to 1500 characters>"}`
+builds one public page, `/press.html`, with the campaign description, a press contact, the ten newest published
+findings with their citation text, the logo download and the open-data files with their licences.
+
+```json
+"press": {"contact_role": "Media contact", "contact_email": "media@your-campaign.example", "about_md": "Reporters: we can walk you through any finding and its records."}
+```
+
+**Review the address before you set it.** The role and the address are published on a public page and in the page
+source. Use an address the organizers have agreed to make public; the tool never falls back to `privacy_contact`, an
+author, an agency or a kit contact, and `init --from` never copies `press` to another locality.
+
+- `contact_role` is required: one line, 1 to 80 characters, no control characters; the page escapes it.
+- `contact_email` defaults to the validated `site.json.contact_email`. An explicit value must be a non-empty valid
+  address; `null`, an empty string or a malformed address is refused as `site.json.press.contact_email`, and so is a
+  missing one when `site.json.contact_email` is not set either.
+- `about_md` is plain text without angle brackets, up to 1500 characters (empty is fine). It renders after the
+  `site.json.about_md` campaign description and never replaces it.
+- Unknown fields, a non-object `press` and `null`/`false`/`[]` are refused as `site.json.press`. Without the key there is
+  no page, no footer link and no sitemap entry, and every other output is byte-identical. Removing the key and
+  rebuilding removes `press.html`.
+
+Findings: the ten newest by publication instant (UTC, then slug, descending; a correction, update or event date never
+reorders them), each with title link, summary, classification, confidence, publication date, the same "Cite this
+finding" text as the finding page and `data/findings.json`, and, when it has corrections, the usual "Corrected <date>"
+marker (newest correction) linking to that finding's `#corrections`. No copy button or script is added. With no
+findings the page shows the usual no-findings notice. Only published findings are listed.
+
+Logo and data: with `site.json.brand.logo` the page shows it and links the same copied `/<logo>` file with a `download`
+attribute (no second copy). It then links only the files this build writes: `data/findings`, `sources`, `agencies` and
+`meetings` as `.json` and `.csv`, `data/cameras.geojson` with a map, and the copied `data/county.geojson` and
+city-boundary file when present. Beside each link: `cameras.geojson` always shows ODbL and the OpenStreetMap credit;
+every other file shows `site.json.license` (name, deed link, attribution), or "License not specified" when you have set
+none (the tool never picks one). The page adds no keys to any data file.
+
+`press` is a reserved page and finding slug: a `content/pages/press.json` is refused even with press disabled, by `build`
+and by `content-check` (which now also runs the pages check). `press.html` is a generated top-level name, so a redirect
+or public asset at that path is refused. There is no top-nav item, feed entry or script. Labels: `footer.press`,
+`press.title`, `press.description`, `press.contact`, `press.findings`, `press.logo`, `press.data`,
+`press.download_logo`, `press.license_unspecified`; the finding labels (`finding.cite`, `finding.corrected`,
+`finding.published`, `notice.no_findings`) are reused. `examples/labels/es.json` carries Spanish drafts (still unreviewed).
 
 ### Agencies, cards and the picker
 
