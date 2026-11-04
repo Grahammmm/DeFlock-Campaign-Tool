@@ -1123,10 +1123,27 @@ class Site:
             more = f'<p>and {len(rows) - len(shown)} more on the map</p>' if len(shown) < len(rows) else ""
             sections += (f'<section class="camera-group"><h3>{e(name or self.map["group_label"])}</h3>'
                          f'<p>{len(rows)} mapped point{"" if len(rows) == 1 else "s"}</p>{table}{more}</section>')
+        # DF0137-13: map/history.json as a plain table once it has 2+ records (else nothing: the page is unchanged);
+        # city columns only when every record has by_city, a city one record lacks shows a dash
+        records, history = self.map.get("history") or [], ""
+        if len(records) >= 2:
+            cities = sorted({n for r in records for n in r["by_city"]}) if all(
+                r["by_city"] is not None for r in records) else []
+            head = "".join(f'<th scope="col">{self.t("map.history_" + key)}</th>'
+                           for key in ("date", "total", "added", "removed"))
+            head += "".join(f'<th scope="col">{e(name)}</th>' for name in cities)
+            body = "".join(f'<tr><td><time datetime="{r["recorded_on"]}">{r["recorded_on"]}</time></td>'
+                           + "".join(f"<td>{r[key]}</td>" for key in ("total", "added", "removed"))
+                           + "".join(f'<td>{r["by_city"].get(name, "—")}</td>' for name in cities) + "</tr>"
+                           for r in records)
+            history = (f'<section class="camera-history"><h3>{self.t("map.history_title")}</h3>'
+                       f'<p>{self.t("map.history_note")}</p><table><thead><tr>{head}</tr></thead>'
+                       f'<tbody>{body}</tbody></table></section>')
         main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Mapped points</p>'
                 '<h2>Community-mapped points; ownership unconfirmed.</h2></div>'
                 '<p>Points are community reports from OpenStreetMap, not confirmed agency ownership.</p></div>'
-                f'<p>{e(self.map["attribution"])}</p><p class="map-date">{self.map_date_line()}</p>{sections}</section>\n')
+                f'<p>{e(self.map["attribution"])}</p><p class="map-date">{self.map_date_line()}</p>{sections}'
+                f'{history}</section>\n')
         return self.page("cameras", "Mapped points", "List of community-mapped points by city; ownership unconfirmed",
                          "/cameras.html", main)
 
