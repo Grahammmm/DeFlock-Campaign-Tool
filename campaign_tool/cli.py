@@ -1187,6 +1187,11 @@ def main():
         packet_p.add_argument(flag, required=True)
     for sub in finding_cmds.choices.values():
         sub.add_argument("draft", metavar="DRAFT", help="Finding draft JSON file")
+    plain_p = finding_cmds.add_parser("check-plain", help="Advisory plain-language check of a draft or published finding "
+                                      "(read-only, never a gate; exit 3 when it has suggestions)")
+    plain_p.add_argument("target", metavar="DRAFT|ID", help="Finding draft JSON file, or the id of a published finding")
+    plain_p.add_argument("--directory", required=True)
+    plain_p.add_argument("--json", dest="as_json", action="store_true", help="Print the report as one JSON object")
     status_p = finding_cmds.add_parser("status", help="Every draft, published and withdrawn finding with its state "
                                        "and blockers by name (read-only)")
     status_p.add_argument("--directory", required=True)
@@ -1491,6 +1496,12 @@ def main():
         elif args.command == "finding" and args.finding_command == "diff":
             from .finding_diff import run_cli as diff_cli
             sys.exit(diff_cli(root, args.inputs, args.from_draft, args.as_json))
+        elif args.command == "finding" and args.finding_command == "check-plain":
+            from .plain_language import run_cli as plain_cli
+            read_config(root)
+            code = plain_cli(root, args.target, args.as_json)
+            if code:
+                sys.exit(code)
         elif args.command == "finding" and args.finding_command == "reviewers":
             from . import findings
             read_config(root)
@@ -1510,6 +1521,9 @@ def main():
                 sys.exit(2)
             print(json.dumps(result))
             print("Private preview only; public/ was not changed and nothing was published.")
+            from .plain_language import preview_lines
+            for line in preview_lines(root, args.draft):  # DF0022-04: advisory only; never changes the exit code
+                print(line)
         elif args.command == "finding" and args.finding_command == "packet":
             from .finding_packet import build_packet
             try:

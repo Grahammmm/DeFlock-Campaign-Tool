@@ -172,6 +172,43 @@ If the content file cannot be removed both copies remain and the leftover is nam
 id wins (a leftover content file is named); an unreadable file is an `unreadable` row with its path and a fixed reason
 (not JSON, a symlink, too large, ...). A reason that can quote the file, such as an unknown key, is withheld. Exit 0.
 
+### Plain-language check (advisory, never a gate)
+
+    python3 -m campaign_tool finding check-plain DRAFT|ID --directory D [--json]
+
+Reads one finding (a draft file, or the id of the one published finding in `content/findings/`) and lists readability
+suggestions for its `title`, `summary` and `body_md`, in that order. It is read-only, rewrites nothing, records no verdict
+and writes no file. `build`, `finding publish`, review receipts and content hashes never read it, and the legal-wording
+rule below is a different, blocking check that it does not touch. A draft need not pass review or evidence checks first.
+
+| Rule | Warns when |
+| --- | --- |
+| `long_sentence` | a sentence has more than 30 words |
+| `long_summary` | the summary has more than 60 words (reported once) |
+| `unexplained_abbreviation` | a whole word of 2 to 6 capital letters A-Z is used before it is spelled out |
+| `long_paragraph` | a paragraph has more than 150 words |
+
+Exactly 30, 60 or 150 words do not warn, and the rules may overlap. Each row names the field and the paragraph, sentence
+and word numbers (all counted from 1 in that field) of its first word, plus `start`/`end` code-point offsets into the
+original text with `--json`. A word is letters and digits with inner apostrophes or hyphens kept (`don't`, `well-known`);
+an underscore splits words. A paragraph is a block of lines with no blank line inside it; a sentence ends at `.`, `!` or `?`
+followed by a space or the end. Markdown is not parsed: link destinations and code count as written. Text inside matched
+double quotes ("..." or “...”) and text equal to one of the finding's source titles is skipped: its words are not counted and
+never reported, though they still count in a later word's number. An abbreviation counts as spelled out from the point where
+`expanded words (ABC)` or `ABC (expanded words)` appears, with the same number of words as letters and no skipped small
+words (`Automated license plate readers (ALPR)`); earlier uses still warn, and an expansion never spans two fields. An
+all-capital alias in the campaign's `content/glossary.json` (`ALPR` for "Automated license plate reader") also explains that
+abbreviation everywhere; the canonical term alone or a lowercase alias does not. A present but invalid glossary is refused
+with its usual message. `[EDIT ME: ...]` text is checked like any other, so `EDIT` and `ME` warn.
+
+Text output starts with `Plain-language suggestions (advisory only; not a publication gate).`, then one line per row, then
+`N suggestion(s). Nothing was changed.`; `--json` prints one object `{"advisory", "finding_id", "warnings": [...]}` instead.
+Exit 0: no rows (not a claim that the text is clear or approved). Exit 3: one or more rows. Exit 1: the input could not be
+read or is invalid (unreadable, symlinked or oversized file, a title or summary that is not a string, an id that is missing,
+unpublished or published twice), with nothing on stdout. Exit 2: wrong arguments. `finding preview` prints the same rows
+under `Plain language (advisory)` after its usual output and still exits 0. The check is a rough heuristic: it will flag
+names and initialisms you meant (a quoted name is skipped; others are not), and miss hard sentences that are short.
+
 ### Drafting a gap finding from a request
 
 When an agency denied a request or closed it without producing records, start the draft from the request
