@@ -1059,6 +1059,10 @@ def main():
     denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
                           help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
     denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
+    asked_p = commands.add_parser("kit-asked", help="Propose content/agencies.json 'asked' items from kit/sent.json "
+                                  "(dry run by default); nothing is sent or published")
+    asked_p.add_argument("--directory", required=True)
+    asked_p.add_argument("--apply", action="store_true", help="Write the proposal (validated, one atomic write)")
     withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
                                      "section number in the agency's own words (read-only)")
     withheld_p.add_argument("--directory", required=True)
@@ -1183,6 +1187,10 @@ def main():
     roster_add.add_argument("--name", required=True)
     roster_add.add_argument("--role", action="append", required=True, help="factual, legal or privacy; repeatable")
     roster_add.add_argument("--ssh-key", metavar="FILE.pub", help="Set or replace this reviewer's signing key")
+    roster_add.add_argument("--interest-agency", metavar="ID", action="append",
+                            help="Agency this reviewer works for or otherwise declares; repeatable; replaces the list")
+    roster_add.add_argument("--interest-note", metavar="T", help="Private note (1-200 characters); never printed or published")
+    roster_add.add_argument("--clear-interests", action="store_true", help="Remove the declared agencies and note")
     roster_cmds.add_parser("list", help="Print the roster (read-only)")
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
@@ -1454,7 +1462,10 @@ def main():
             from . import findings
             read_config(root)
             add = args.reviewers_command == "add"
-            print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key) if add
+            print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key,
+                                                   interest_agencies=args.interest_agency,
+                                                   interest_note=args.interest_note,
+                                                   clear_interests=args.clear_interests) if add
                              else findings.list_reviewers(root), indent=2, ensure_ascii=False))
             if add:
                 print("Private roster updated; nothing was published.")
@@ -1680,6 +1691,11 @@ def main():
                                          disposition=args.disposition, download_expires_on=args.download_expires_on),
                              indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-asked":
+            from .kit_asked import run_cli as kit_asked_cli
+            code = kit_asked_cli(root, args.apply)
+            if code:
+                sys.exit(code)
         elif args.command == "kit-withheld":
             from .kit_track import format_withheld, withheld
             report = withheld(root)

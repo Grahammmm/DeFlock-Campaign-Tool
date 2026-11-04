@@ -859,6 +859,27 @@ class Site:
                 + f'<p><a href="{e(newest["source_url"])}" rel="noopener noreferrer">'
                 + self.t("agency.transparency_checked", date=time_tag(newest["checked_on"])) + '</a></p></section>')
 
+    def agency_mapped_reported_block(self, agency):
+        """DF0022-13: the newest portal camera count beside the map's count for the same picker city, never compared.
+
+        "" unless the agency is a picker city, its newest snapshot has a camera count (0 counts) and the map counts its
+        boundary (0 counts). Two different populations; no difference, ratio or ranking is ever computed.
+        """
+        snapshots = agency.get("transparency") or []
+        reported = snapshots[0].get("cameras") if snapshots else None
+        if reported is None or not self.map or agency["agency_id"] not in {a["agency_id"] for a in self.picker_cities()}:
+            return ""
+        name = self.map["cities"][agency["slug"]]["name"] or agency["jurisdiction_name"] or agency["name"]
+        mapped = self.mapped_counts()[0].get(name)
+        if mapped is None:
+            return ""
+        unknown = self.t("agency.mapped_reported_unknown")
+        checked, day = snapshots[0].get("checked_on"), self.map.get("snapshot_date")
+        return ('<section class="agency-mapped-reported"><p>'
+                + self.t("agency.mapped_reported_counts", reported=e(str(reported)), mapped=e(str(mapped)),
+                         checked=time_tag(checked) if checked else unknown, map_date=time_tag(day) if day else unknown)
+                + f'</p><p>{self.t("agency.mapped_reported_caveat")}</p></section>')
+
     def contracts_section(self):  # contracts ending in [build date, +180 days], soonest first; "" when none
         first, last = self.today.isoformat(), (self.today + timedelta(days=180)).isoformat()
         soon = sorted((a for a in self.model["agencies"] if a["contract"] and first <= a["contract"]["end"] <= last),
@@ -1048,7 +1069,7 @@ class Site:
                    if profile["flags"] else "")
                 + (f'<p>{" · ".join(links)}</p>' if links else "")
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
-                + self.transparency_block(agency, "h3") + self.who_decides(aid) + self.votes_section(aid)
+                + self.transparency_block(agency, "h3") + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
@@ -1485,9 +1506,12 @@ class Site:
         roles = sorted(ROLES)
         gate = (f'Before a finding is published it needs {", ".join(roles[:-1])} and {roles[-1]} review by at least two '
                 'people other than the author. Until then the build refuses to publish it.')
+        interests = ('Reviewers declare agency interests privately. A declared interest excludes their review from '
+                     'findings about that agency.')
         main = ('    <section class="section finding-body" id="content"><h2>How to read our findings</h2>'
                 f'{tables}<h3 id="record-numbers">Record numbers</h3><p class="provenance-note">{e(EXPLAINER)}</p>'
                 f'<h3 id="review">Review before publication</h3><p>{e(gate)}</p>'
+                f'<p>{e(interests)}</p>'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", "How to read our findings",
                          "What each finding label means, what record numbers show and how findings are reviewed",
