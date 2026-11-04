@@ -194,9 +194,11 @@ def search_js():
 # data/findings.json emits only these keys, built field by field (DF2237-09); anything else refuses the build.
 PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
                          "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
-                         "counterevidence", "corrections", "url", "citation", "also_agency_ids")
+                         "counterevidence", "corrections", "url", "citation", "also_agency_ids", "agency_response")
 PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page")
 PUBLIC_CORRECTION_FIELDS = ("date", "note")
+# DF1103-08: only a received, declined or no_response reply is public; pending never is.
+PUBLIC_RESPONSE_FIELDS = ("status", "asked_on", "reply_by", "on", "text", "record_sha256_prefix")
 PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
 # data/sources.json (DF1822-14): the source library as open data; never note, fragment or a full sha256.
 PUBLIC_LIBRARY_FIELDS = ("sha256_prefix", "title", "agency_id", "agency_name", "received_at", "public_url", "pages",
@@ -1201,7 +1203,8 @@ class Site:
                 + (self.md(finding["body_md"]) if finding["body_md"] else "")
                 + f'<h3>{self.t("finding.sources")}</h3><ul class="source-table">{"".join(sources)}</ul>'
                 + f'<p class="provenance-note">{e(EXPLAINER)}</p>' + self.legal_basis(finding)
-                + f'<h3>{self.t("finding.limitations")}</h3><ul>{limits}</ul><h3>{self.t("finding.counterevidence")}</h3><ul>{counter}</ul>' + related
+                + f'<h3>{self.t("finding.limitations")}</h3><ul>{limits}</ul><h3>{self.t("finding.counterevidence")}</h3><ul>{counter}</ul>'
+                + self.agency_response_html(finding) + related
                 + f'<h3 id="corrections">{self.t("finding.corrections")}</h3><ul>{corrections}</ul>'
                 + f'<p><a href="/corrections.html">{self.t("finding.all_corrections")}</a></p>'
                 + f'<p><a href="/corrections.html#request">{self.t("finding.ask_correction")}</a></p>'
@@ -1210,6 +1213,27 @@ class Site:
         return self.page("findings", finding["title"], finding["summary"], finding_path(finding), main,
                          scripts=["/findings/cite.js"],
                          kind="article", published=finding["published_at"], modified=finding["updated_at"])
+
+    def agency_response_html(self, finding):
+        """The agency's reply (or silence) under "Agency response" as escaped plain text, never Markdown; "" when
+        the finding has no reply or only a prepared (pending) request. The record shows as its 12-character prefix."""
+        reply = finding.get("agency_response")
+        if not reply or reply["status"] == "pending":
+            return ""
+        if reply["status"] == "no_response":
+            line = self.t("finding.reply_no_response", asked_on=e(reply["asked_on"]), reply_by=e(reply["reply_by"]))
+            return f'<section class="agency-response" id="agency-response"><h3>{self.t("finding.agency_response")}</h3><p>{line}</p></section>'
+        line = self.t(f'finding.reply_{reply["status"]}', on=e(reply["on"]), asked_on=e(reply["asked_on"]))
+        text = f'<p class="reply-text">{e(reply["text"]).replace(chr(10), "<br>")}</p>' if "text" in reply else ""
+        record = ""
+        if "record_sha256" in reply:
+            fragment = self.fragment_for_sha.get(reply["record_sha256"])
+            number = f'{self.t("sources.record_no")} <code>{e(short_hash(reply["record_sha256"]))}</code>'
+            if fragment:
+                number = f'<a href="/sources.html#{e(fragment)}">{number}</a>'
+            record = f'<p class="record-no">{number}</p>'
+        return (f'<section class="agency-response" id="agency-response"><h3>{self.t("finding.agency_response")}</h3>'
+                f'<p>{line}</p>{text}{record}</section>')
 
     def cite_html(self, finding):
         """The citation as page text; the copy button stays hidden until findings/cite.js unhides it. A draft preview
@@ -1730,7 +1754,7 @@ class Site:
     def _public_finding(self, finding):
         """One published finding, copied key by key from the allowlists (never a dict copy)."""
         value = {key: finding[key] for key in PUBLIC_FINDING_FIELDS
-                 if key not in ("sources", "corrections", "url", "citation", "also_agency_ids")}
+                 if key not in ("sources", "corrections", "url", "citation", "also_agency_ids", "agency_response")}
         if finding.get("also_agency_ids") is not None:  # DF1952-07: optional; omitted entirely when absent
             value["also_agency_ids"] = list(finding["also_agency_ids"])
         value["limitations"], value["counterevidence"] = list(finding["limitations"]), list(finding["counterevidence"])
@@ -1740,6 +1764,12 @@ class Site:
         value["corrections"] = [{"date": c["date"], "note": c["note"]} for c in finding["corrections"]]
         value["url"] = f'{self.base}/findings/{finding["slug"]}.html'
         value["citation"] = citation(finding, self.cfg["name"], self.base)
+        reply = finding.get("agency_response")
+        if reply and reply["status"] != "pending":  # absent or pending: no key at all, so legacy rows are unchanged
+            value["agency_response"] = {
+                **{key: reply[key] for key in ("status", "asked_on", "reply_by", "on")},
+                **({"text": reply["text"]} if "text" in reply else {}),
+                **({"record_sha256_prefix": short_hash(reply["record_sha256"])} if "record_sha256" in reply else {})}
         return value
 
     def findings_json(self):
@@ -1747,7 +1777,8 @@ class Site:
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/findings",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "findings": [self._public_finding(f) for f in self.model["findings"]]}
-        finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {})})
+        finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {}),
+                                           "agency_response": (PUBLIC_RESPONSE_FIELDS, {})})
         _assert_public(doc, "data/findings.json", PUBLIC_TOP_LEVEL_FIELDS, {"findings": finding})
         return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
