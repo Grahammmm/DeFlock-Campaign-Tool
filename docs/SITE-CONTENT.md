@@ -228,6 +228,28 @@ Each `sources.html` entry ends with `Cited by:` and links to every published
 finding that cites its `sha256` (model order, once each), or with
 `Not cited by a published finding`. Drafts never appear.
 
+Record pages (DF1103-11): every library entry also gets `sources/<first 12 hex of its sha256>.html` (labels
+`sources.record_description`, `sources.record_page` = "Record details"). The page shows the title, the received date, the
+agency (linked to its page when it has one), the record number with the "How to check a copy" steps (on every record page,
+checked or not), the page count (0 included), the public copy link or the private-archive notice, the recorded copy check,
+the public note and each published finding that cites it, once, in model order. It is built only from the published model:
+originals, the ledger, the kit and private drafts are never read. Library entries link to it ("Record details"), and the
+record-number link on a finding page points to it when the entry is in the library; an uncatalogued citation stays unlinked.
+Packet, timeline, agency-card and agency-page links still use the `sources.html#<fragment>` group anchors. Record pages are in
+`sitemap.xml` (with a `base_url`, no `lastmod`), last, in library order; with no library entries none are written.
+
+Record numbers must be unique: any two library entries sharing the same 12-character prefix, including one `sha256` listed under
+two fragments, refuse the build naming the prefix and the entries' positions in `sources.json` (never a full hash). Nothing is
+overwritten or merged for you: consolidate the aliases by hand (keep one entry per record) before building. `sources add`,
+`sources edit` and `sources verify-copy` keep their own rules and do not rewrite the library for this. The top-level name
+`sources/` is reserved: `public-assets/sources/...` is refused as a generated path, with or without entries, and the slug
+`sources` is already a reserved content page.
+
+Downstream hook contract (for the library filter): each outer library `<li>` has `class="source-entry"`,
+`data-agency` (the entry's `agency_id`), `data-year` (the first four characters of `received_at`, no time-zone conversion),
+`data-cited` (`true` when a published finding cites it, else `false`) and `data-record` (the 12 lowercase hex characters).
+Every entry stays visible; the agency-document-group sections keep their ids.
+
 `content/officials.json` (optional, never fetched) lists who decides for a body:
 `{"schema_version": 1, "bodies": [{"agency_id", "officials": [{"name", "role",
 "profile_url"?, "source_url", "checked_on"}]}]}`. Each `agency_id` is a loaded agency,
@@ -351,7 +373,7 @@ New labels: `nav.topics`, `heading.topics`, `title.topics`, `title.topics_descri
 `index.html` (hero map when configured, agency cards, mission, latest findings,
 signup, meetings), `agencies.html`, `findings/index.html`,
 `findings/<slug>.html`, `sources.html` (with `#library` and one
-`#<fragment>` section per source group), `meetings.html`, `about.html`,
+`#<fragment>` section per source group), `sources/<12-hex record number>.html` (one per library entry), `meetings.html`, `about.html`,
 `style.css`, `_headers`, `robots.txt`, `sitemap.xml` (only when `base_url` is
 set: absolute `<loc>`s, finding pages and `/`, `/findings/` with the UTC day of
 the latest update or correction as `<lastmod>`; without `base_url` no sitemap,
