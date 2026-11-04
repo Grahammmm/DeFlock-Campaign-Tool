@@ -15,6 +15,27 @@ production campaign; the pilot's private repository still runs its own code.
 | `workers/workspace` | Access-protected organizer UI + API, runner API, approvals, cron, inbound mail. | Implemented core; sends are interfaces |
 | `workers/public-site` | Serves `sites/<version>/` from the public bucket with the site's `_headers` CSP. | Implemented |
 
+## Organizer entry point
+
+G's item-1 decision chose the Workers organizer workspace, not a second local web UI.
+After Access sign-in, `/` shows four blocks: Waiting on you, Where every request
+stands, Next action, and Everything you can do. Approval counts come only from
+proposed external actions; request groups and reminders come from recorded fields.
+Closed and denied requests are collapsed, not counted as open. Dates are reminders,
+not legal due dates. The law package remains provisional until reviewed.
+Each failed source is explicitly NOT CURRENT without hiding the other blocks.
+Next actions come verbatim from the private readiness snapshot with timestamp and
+age; absent, invalid, wrong-campaign or stale snapshots never supply actions.
+`/status` keeps the previous dashboard. All existing organizer screens remain linked.
+
+Optional `SETUP_URL` links to guided setup only when it is a valid HTTPS URL without
+embedded credentials. Unset or refused values show `python3 -m campaign_tool setup`
+instead. This is navigation only: destination Access/auth and provisioning approvals
+still apply. It adds no provisioning, secret, authentication or deployment change.
+The README's `init`, `kit`, `doctor`, `build` path remains the offline fallback.
+The `flock_*` operator scripts need the operator's private store and are labelled,
+not linked as organizer actions. No deployment or new readiness schedule is included.
+
 ## Private readiness snapshot (offline emitter; runner-authenticated transport)
 
 `python3 -m campaign_tool readiness --directory ../my-campaign --campaign-id CAMPAIGN_ID --out snapshot.json`

@@ -5,6 +5,7 @@ types it in; nothing is fetched or published. The whole meeting document is vali
 ``content.load_meeting`` before the atomic write.
 """
 import csv
+import json
 import os
 import stat
 import unicodedata
@@ -114,3 +115,61 @@ def record_outcome(root, meeting_id, result, on, source_url, verified_by, vote=N
         raise MeetingOutcomeError(f"content/meetings/{path.name} must not be a symlink")
     _write_json(path, updated)
     return outcome
+
+
+def record_minutes(root, meeting_id, minutes_url, minutes_approved_on, *, replace=False, today=None):
+    """Attach the body's approved official minutes to an already recorded outcome (DF2207-05).
+
+    Only ``minutes_url`` and ``minutes_approved_on`` are merged into the stored outcome; every other outcome and
+    meeting field stays exactly as stored. Nothing is fetched; the whole document is validated before the write."""
+    today = today or date.today()
+    path, document = _find(root / "content" / "meetings", meeting_id)
+    label = f"meetings/{path.name}"
+    meeting = load_meeting(document, label, today=today)
+    if meeting["status"] == "cancelled":
+        raise MeetingOutcomeError(f"minutes_url: meeting {meeting_id} is cancelled; it has no outcome")
+    if meeting["starts_at"][:10] > today.isoformat():
+        raise MeetingOutcomeError(f"minutes_url: meeting {meeting_id} has not happened yet ({meeting['starts_at'][:10]})")
+    if meeting["outcome"] is None:
+        raise MeetingOutcomeError(f"minutes_url: needs a recorded outcome (meeting {meeting_id} has none)")
+    if "minutes_url" in meeting["outcome"] and not replace:
+        raise MeetingOutcomeError(f"minutes_url: meeting {meeting_id} already has minutes approved on "
+                                  f"{meeting['outcome']['minutes_approved_on']}; pass --replace to overwrite them")
+    stored = {key: value for key, value in document["outcome"].items() if key not in MINUTES_KEYS}
+    updated = {**document, "outcome": {**stored, "minutes_url": minutes_url, "minutes_approved_on": minutes_approved_on}}
+    load_meeting(updated, label, today=today)
+    if os.path.islink(path):  # checked again right before the write
+        raise MeetingOutcomeError(f"content/meetings/{path.name} must not be a symlink")
+    _write_json(path, updated)
+    return updated["outcome"]
+
+
+MINUTES_KEYS = ("minutes_url", "minutes_approved_on")
+CREATION_FLAGS = (("result", "--result"), ("on", "--on"), ("source", "--source"), ("verified_by", "--verified-by"))
+MINUTES_ONLY_REFUSES = (("vote", "--vote"), ("votes", "--votes"), ("recording_url", "--recording-url"),
+                        ("recording_start", "--recording-start"))
+
+
+def run_outcome_command(root, args):
+    """The ``meetings-outcome`` command: creation mode (four flags) or minutes-only mode; returns the lines to print."""
+    minutes_url, minutes_on = args.minutes_url, args.minutes_approved_on
+    if minutes_url is None and minutes_on is None:
+        missing = [flag for name, flag in CREATION_FLAGS if getattr(args, name) is None]
+        if missing:
+            raise MeetingOutcomeError(f"{', '.join(missing)}: required to record an outcome "
+                                      "(or give --minutes-url and --minutes-approved-on to confirm an existing one)")
+        outcome = record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by, args.vote,
+                                 args.replace, votes_file=args.votes, recording_url=args.recording_url,
+                                 recording_start=args.recording_start)
+        return [json.dumps(outcome, indent=2)] + (["votes: none"] if args.replace and args.votes is None else []) \
+            + ["Recorded only. Nothing was published."]
+    for name, flag in (("minutes_url", "--minutes-url"), ("minutes_approved_on", "--minutes-approved-on")):
+        if getattr(args, name) is None:
+            raise MeetingOutcomeError(f"{flag}: needed together with "
+                                      f"{'--minutes-approved-on' if name == 'minutes_url' else '--minutes-url'}")
+    mixed = [flag for name, flag in CREATION_FLAGS + MINUTES_ONLY_REFUSES if getattr(args, name) is not None]
+    if mixed:
+        raise MeetingOutcomeError(f"{', '.join(mixed)}: cannot be combined with --minutes-url/--minutes-approved-on; "
+                                  "minutes only confirm an outcome already recorded")
+    outcome = record_minutes(root, args.id, minutes_url, minutes_on, replace=args.replace)
+    return [json.dumps(outcome, indent=2), "Recorded only. Nothing was published."]

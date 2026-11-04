@@ -106,6 +106,8 @@ class ContentCheckJsonTests(unittest.TestCase):
                          {"file": "law/local-rules.json.rules[0].source_url", "message": "must be an https:// URL"})
         self.assertEqual(problem_record("law/: must be a plain folder, not a symlink or a file"),
                          {"file": "law/", "message": "must be a plain folder, not a symlink or a file"})
+        self.assertEqual(problem_record("supporters.json: ab: no consent record"),
+                         {"file": "supporters.json", "message": "ab: no consent record"})  # DF2207-13 prefix
         self.assertEqual(problem_record("public-assets/a.png: has metadata: EXIF"),
                          {"file": "public-assets/a.png", "message": "has metadata: EXIF"})
 
