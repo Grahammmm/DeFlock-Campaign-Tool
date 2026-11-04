@@ -239,6 +239,27 @@ echoed. The site never adds costs up, ranks by them or divides them by camera co
 Labels: `agency.contract_cost`, `agency.cost_annual`, `agency.cost_total`, `agency.cost_one_time`, `agency.cost_source`,
 `agencies.glance_cost`. A contract without a cost reads and renders exactly as before.
 
+### How an agency is paid for, as stated (`profile.funding`)
+
+An optional `profile.funding` is a list of 1 to 10 entries (`null`, `[]` and a single object are refused), each
+transcribed by an organizer from one document: `kind` (`grant`, `general_fund`, `asset_forfeiture`, `donation` or
+`other`), `name` (the program or donor organization exactly as the document writes it, 1 to 120 characters, already
+trimmed, no angle brackets, control or invisible characters; the organizer checks that it is not a person), `as_stated_in`
+(the document's plain title, the same rule as the contract cost), `source_url` (https, never fetched) and `checked_on`
+(a real `YYYY-MM-DD` day not after the build date). Optional `amount_usd` with `period` (both or neither; the contract
+cost rules and display), and `fiscal_year` (four ASCII digits as the document states it, first digit 1 to 9; a future year
+is allowed, `checked_on` is not). Each entry carries its own document, source and date, so two entries never share
+provenance. Entries keep the order written and are never summed, sorted, merged or compared. The agency card and an
+existing agency page then show `How it is paid for, as stated in DOC (source, checked DATE)` after the kind, name,
+amount and fiscal year of each entry; funding alone does not create a page. `data/agencies.json` carries an optional
+`funding` array (the same keys; omitted when none) for agencies that have a page. A bad entry stops `build` (exit 1) and
+is listed by `content-check` (exit 3) with the entry's path and rule, e.g.
+`content/agencies.json[1].profile.funding[0].kind: choose one of [...]`; the supplied name or key is never echoed.
+The site says nothing about a donor beyond the name in the document. Labels: `agency.funding_provenance`,
+`agency.funding_fiscal_year`, `agency.funding_kind_grant`, `agency.funding_kind_general_fund`,
+`agency.funding_kind_asset_forfeiture`, `agency.funding_kind_donation`, `agency.funding_kind_other`. A profile without
+`funding` reads and renders exactly as before.
+
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
 also the `id` of the matching section in `sources.html`. Agencies without
@@ -530,7 +551,9 @@ and `agencies`; per agency `agency_id`, `name`, `kind`, `url` (the page path, wi
 (`topic`, `state`, `asked_on`, `updated_on` or null, newest `asked_on` first as the card lists them), `alpr_policy`
 (`url`, `checked_on`) or null, `contract` (`vendor`, `start`, `end`, `source_url`, `checked_on` and, only when the contract
 has one, `cost`: `amount_usd`, `period`, `as_stated_in`) or null, `transparency`
-(the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, and `camera_count`
+(the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, an optional
+`funding` array (only when recorded: `kind`, `name`, `as_stated_in`, `source_url`, `checked_on` and, when given,
+`amount_usd` with `period`, and `fiscal_year`), and `camera_count`
 (the card's camera-count sentence) or null. It never includes `records_email`, `records_url`, `portal`, the asked-item
 `note`, the contract `renewal_note`, kit files, notes or any other key; the build refuses with
 `data/agencies.json: non-public key ...` and writes nothing.

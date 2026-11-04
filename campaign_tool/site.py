@@ -223,10 +223,12 @@ SOURCES_CSV_COLUMNS = tuple(c for key in PUBLIC_LIBRARY_FIELDS
 # data/agencies.json (DF1422-12): what each agency card and page already show; never contacts, kit data or notes.
 PUBLIC_AGENCY_TOP_LEVEL = {"schema_version", "campaign", "generated_from", "base_url", "url_kind", "agencies"}
 PUBLIC_AGENCY_FIELDS = ("agency_id", "name", "kind", "url", "asked", "alpr_policy", "contract", "transparency", "camera_count")
+PUBLIC_AGENCY_OPTIONAL = ("funding",)  # DF2207-02: present only when the organizer recorded it
 PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
 PUBLIC_POLICY_FIELDS = ("url", "checked_on")
 PUBLIC_CONTRACT_FIELDS = ("vendor", "start", "end", "source_url", "checked_on")  # never renewal_note
 PUBLIC_COST_FIELDS = ("amount_usd", "period", "as_stated_in")  # contract.cost (DF1103-07): exactly these, when present
+PUBLIC_FUNDING_FIELDS = ("kind", "name", "as_stated_in", "source_url", "checked_on", "amount_usd", "period", "fiscal_year")  # DF2207-02
 PUBLIC_TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts",
                               "shared_with_agencies", "source_url", "checked_on")
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
@@ -884,6 +886,26 @@ class Site:
                   f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>'
                 + (self.contract_cost_line(contract) if contract.get("cost") else ""))
 
+    def funding_block(self, agency):
+        """DF2207-02: how the agency says it is paid for, one entry per document; "" when none was recorded.
+
+        Every entry carries its own document, source link and checked date; entries stay in the order recorded and
+        nothing is added up, ranked or explained beyond the name the document uses.
+        """
+        items = []
+        for entry in agency.get("funding", []):
+            parts = [f'<span class="funding-kind">{self.t("agency.funding_kind_" + entry["kind"])}</span>',
+                     f'<strong class="funding-name">{e(entry["name"])}</strong>']
+            if "amount_usd" in entry:
+                parts.append(e(self.contract_cost_amount(entry)) + " " + self.t("agency.cost_" + entry["period"]))
+            if "fiscal_year" in entry:
+                parts.append(self.t("agency.funding_fiscal_year", year=e(entry["fiscal_year"])))
+            source = f'<a href="{e(entry["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>'
+            provenance = self.t("agency.funding_provenance", document=e(entry["as_stated_in"]), source=source,
+                                date=time_tag(entry["checked_on"]))
+            items.append(f'<li>{" · ".join(parts)}. <span class="funding-provenance">{provenance}</span></li>')
+        return f'<ul class="agency-funding">{"".join(items)}</ul>' if items else ""
+
     def transparency_block(self, agency, heading="h4"):
         """Newest organizer-transcribed portal snapshot, as the vendor reported it, with change since the previous one."""
         snapshots = agency.get("transparency")
@@ -1036,7 +1058,7 @@ class Site:
                     + (f'<p>{self.t("agency.findings", count=len(findings))} ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
-                    + self.contract_line(agency["contract"]) + self.transparency_block(agency)
+                    + self.contract_line(agency["contract"]) + self.funding_block(agency) + self.transparency_block(agency)
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
@@ -1114,7 +1136,7 @@ class Site:
                    if profile["flags"] else "")
                 + (f'<p>{" · ".join(links)}</p>' if links else "")
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
-                + self.transparency_block(agency, "h3") + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
+                + self.funding_block(agency) + self.transparency_block(agency, "h3") + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
@@ -2020,6 +2042,8 @@ class Site:
                              if contract else None),
                 "transparency": ({k: newest[k] for k in PUBLIC_TRANSPARENCY_FIELDS if newest.get(k) is not None}
                                  if newest else None),
+                **({"funding": [{k: f[k] for k in PUBLIC_FUNDING_FIELDS if k in f} for f in agency["funding"]]}
+                   if agency.get("funding") else {}),  # DF2207-02: only when the organizer recorded it
                 "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
 
     def agencies_json(self):
@@ -2031,9 +2055,11 @@ class Site:
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "agencies": [self._public_agency(a, cities) for a in listed]}
         _assert_public(doc, "data/agencies.json", PUBLIC_AGENCY_TOP_LEVEL | set(self.license_top()),
-                       {"agencies": (PUBLIC_AGENCY_FIELDS, {"asked": (PUBLIC_ASKED_FIELDS, {}),
+                       {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL,
+                                     {"asked": (PUBLIC_ASKED_FIELDS, {}),
                                                             "alpr_policy": (PUBLIC_POLICY_FIELDS, {}),
                                                             "contract": (PUBLIC_CONTRACT_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
+                                                            "funding": (PUBLIC_FUNDING_FIELDS, {}),
                                                             "transparency": (PUBLIC_TRANSPARENCY_FIELDS, {})})})
         return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
