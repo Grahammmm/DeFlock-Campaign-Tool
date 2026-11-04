@@ -191,12 +191,12 @@ class FindingUpdateTests(Campaign, unittest.TestCase):
         self.log.rmdir()
         self.log.write_bytes(saved)
 
-        secret = "records arrived in two boxes"
-        self.update(note=secret)
+        synthetic_note = "records arrived in two boxes"
+        self.update(note=synthetic_note)
         entry = json.loads(self.log_lines()[-1])
         self.assertEqual(entry, {"at": "2026-03-10T12:00:00Z", "action": "update", "id": "syn-pub-1", "slug": "synthetic-title",
                                  "date": "2026-03-05", "content_sha256": findings.reviewed_hash(self.original), "updates": 1})
-        self.assertNotIn(secret, self.log.read_text(encoding="utf-8"))
+        self.assertNotIn(synthetic_note, self.log.read_text(encoding="utf-8"))
 
     def test_withdrawn_finding_takes_no_update(self):
         findings.withdraw(self.root, "syn-pub-1", "Synthetic reason.", now=LATER)
