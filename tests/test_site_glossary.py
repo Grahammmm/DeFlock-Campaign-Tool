@@ -505,7 +505,7 @@ class OffAndReservedTests(GlossaryCase):
                     self.put(glossary)
                 with self.assertRaisesRegex(ContentError, r"^pages/glossary\.json: slug glossary is reserved$"):
                     build_site(self.root, today=TODAY)
-                self.assertEqual(content_problems(self.root), [])  # (the checker has no pages rules; build is the gate)
+                self.assertEqual(content_problems(self.root), ["pages/glossary.json: slug glossary is reserved"])
         (pages / "glossary.json").unlink()
         folder = self.content / "public-assets" / "glossary.html"
         folder.mkdir(parents=True)

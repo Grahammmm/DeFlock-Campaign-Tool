@@ -126,6 +126,9 @@ DEFAULTS = {
     "meeting.continued_to": "Continued to {date}", "meeting.continued_from": "Continued from {date}",
     "meeting.cosigned_one": "Co-signed by {count} organization", "meeting.cosigned_many": "Co-signed by {count} organizations",
     "meeting.staff_direction": "Staff were directed to: {direction} (by {date}, as stated in {source})",
+    "meeting.comments_both": "{spoke} people spoke and {written} written comments were received, as stated in {source}",
+    "meeting.comments_spoke": "{spoke} people spoke, as stated in {source}",
+    "meeting.comments_written": "{written} written comments were received, as stated in {source}",
     "vote.absent": "Absent", "vote.recused": "Recused",
     "agency.votes_heading": "How members voted", "agency.votes_none": "No recorded vote",
     "agency.votes_source": "Official record", "agency.votes_more": "\u2026 and {count} earlier votes on the meeting pages",
@@ -209,6 +212,10 @@ DEFAULTS = {
     "supporters.kind.civil_liberties": "Civil liberties", "supporters.kind.community": "Community",
     "supporters.kind.faith": "Faith", "supporters.kind.labor": "Labor", "supporters.kind.neighborhood": "Neighborhood",
     "supporters.kind.business": "Business", "supporters.kind.other": "Other",
+    "footer.press": "Press", "press.title": "Press",
+    "press.description": "Campaign background, press contact, recent findings with citation text, logo and open data for reporters.",
+    "press.contact": "Press contact", "press.findings": "Recent findings", "press.logo": "Logo",
+    "press.data": "Open data", "press.download_logo": "Download the logo", "press.license_unspecified": "License not specified",
 }
 # DF0137-14: fixed strings the generated scripts write into the page. Defaults are today's exact English; site.py
 # switches the scripts to LABELS lookups (site-data.js) only when a js.* key differs from its default.
