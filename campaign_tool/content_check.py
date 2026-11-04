@@ -4,13 +4,14 @@
 invariant: ``content_problems(root) == []`` iff ``load_content(root)`` returns and no public-assets image carries
 metadata (build's ``image_meta.check_asset``). Cross-file rules use loaded files.
 """
+from datetime import date
 import json
 from pathlib import Path
 
-from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, ContentError, _asked, _bounds, _read_json,
+from .content import (CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _asked, _bounds, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, check_source_pages, default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
-                      load_snapshot, load_sources, plain_text)
+                      load_snapshot, load_sources, plain_text, point_check_problems, point_nodes)
 from .finding_law import check_findings, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
@@ -71,10 +72,27 @@ def _config_tail(document, cities):  # load_map's map-config.json checks that ru
     _text(document, "group_label", "map/map-config.json", default="Unincorporated area (ownership unconfirmed)")
 
 
-def _map(problems, content_dir):
-    """load_map stops at its first bad file; once it has refused (so parity holds), name the other files' too."""
+def _point_checks(problems, map_dir, library):
+    """DF1422-11: every refused entry of map/point-checks.json (load_map names only the first)."""
+    path = map_dir / "point-checks.json"
+    if not history_present(path):
+        return
+    nodes = set()
+    try:
+        nodes = point_nodes(_read_json(map_dir / "cameras.geojson", MAX_GEOJSON_BYTES))
+    except (ContentError, AttributeError, TypeError, OSError):
+        return  # an unreadable cameras.geojson is already named; every node would only add false lines
+    known = SOURCES_UNKNOWN if library is None else library
+    problems.extend(point_check_problems(path, nodes, known, date.today())[0])
+
+
+def _map(problems, content_dir, library=None):
+    """load_map stops at its first bad file; once it has refused (so parity holds), name the other files' too.
+
+    ``library``: the validated sources.json entries, or None when that file is itself refused."""
     before, map_dir = len(problems), content_dir / "map"
-    config = _attempt(problems, "map/map-config.json", lambda: load_map(content_dir))
+    config = _attempt(problems, "map/map-config.json",
+                      lambda: load_map(content_dir, SOURCES_UNKNOWN if library is None else library))
     if len(problems) == before:
         return config
     config_named = problems[-1].startswith("map/map-config.json")  # else load_map passed the config's head
@@ -99,6 +117,7 @@ def _map(problems, content_dir):
                 cities = result
         elif name in missing:
             problems.append(missing[name])
+    _point_checks(problems, map_dir, library)
     if not config_named:
         _attempt(problems, "map/attribution.txt", lambda: _attribution(document, map_dir))
         _attempt(problems, "map/map-config.json", lambda: _config_tail(document, cities))
@@ -180,7 +199,7 @@ def content_problems(root, limit=LIMIT):
     else:
         agencies = _attempt(problems, "kit/agencies.json", lambda: default_agencies(root))
 
-    map_config = _map(problems, content_dir)
+    map_config = _map(problems, content_dir, library)
     if map_config and agencies is not None:  # a broken agency list would only add false lines
         known = {agency["slug"] for agency in agencies if agency["kind"] in CITY_KINDS}
         for slug in map_config["controller"]["bounding_box_fallbacks"]:
