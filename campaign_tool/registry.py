@@ -161,7 +161,7 @@ def _state(root):
     waiting_send = sum(p.stem not in stems and p.is_file() and not p.is_symlink()
                        for p in (sorted(drafts.glob("*.md")) if drafts.is_dir() and not drafts.is_symlink() else []))
     last = [(r["last_step"] or {}).get("kind") for r in rows]
-    opened = sum(not (r["closed"] or kind == "denied" or (kind == "produced" and not r["producing"]))
+    opened = sum(not (r["closed"] or "withdrawn_on" in r or kind == "denied" or (kind == "produced" and not r["producing"]))
                  for r, kind in zip(rows, last))
     found = findings.status_rows(root)
     if any("error" in f for f in found):

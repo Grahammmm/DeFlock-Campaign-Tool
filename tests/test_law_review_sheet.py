@@ -83,7 +83,11 @@ class ReviewSheetTests(unittest.TestCase):
     def test_records_law_then_rules_in_order_with_blank_human_columns(self):
         output, table = self.sheet("--stale-days", "10")
         self.assertEqual(table[0], list(law.SHEET_COLUMNS))
+        self.assertEqual(table[0][-5:], ["package_sha256"] + HUMAN)
         rows = [dict(zip(table[0], row)) for row in table[1:]]
+        digest = law.package_sha256(synthetic_package())
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertEqual([r["package_sha256"] for r in rows], [digest] * 4)
         self.assertEqual([r["rule_id"] for r in rows], ["records_law", "ca-a", "ca-b", "ca-c"])
         self.assertEqual((output["rule_count"], output["rows_written"]), (3, 4))
         for row in rows:

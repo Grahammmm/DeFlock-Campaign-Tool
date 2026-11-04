@@ -113,7 +113,10 @@ class FindingsFilterTests(unittest.TestCase):
             self.build()
         for name, html in with_attrs.items():
             self.assertEqual(self.read(name), html, name)
-            self.assertNotIn("data-agency", html, name)
+            if name != "sources.html":  # DF1103-11: only the library's source-entry rows carry the data-agency hook
+                self.assertNotIn("data-agency", html, name)
+        self.assertEqual(with_attrs["sources.html"].count("data-agency"),
+                         with_attrs["sources.html"].count('<li class="source-entry" data-agency'))
         self.assertNotEqual(self.read("findings/index.html"), index_with)
         self.assertEqual(self.items(self.read("findings/index.html")), [])
 

@@ -26,8 +26,8 @@ from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
 from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, PRE_MEETING_RULE_ID, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
-                      ContentError, _read_json, check_finding_agencies, finding_agency_ids, glossary_terms_used,
-                      load_content, utc_moment)
+                      ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
+                      finding_agency_ids, glossary_terms_used, load_content, utc_moment)
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
@@ -44,7 +44,7 @@ ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
-                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies",
+                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
                        "_redirects", "methods.html", "privacy.html", "glossary.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
@@ -213,7 +213,8 @@ PUBLIC_COPY_FIELDS = ("matches", "checked_on", "reason")
 PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "sources")
 PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0137-09: meetings open data
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
-PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes", "minutes_url", "minutes_approved_on")  # never verified_by / verified_at
+PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes", "minutes_url", "minutes_approved_on",
+                         "continued_to", "continued_to_date")  # never verified_by / verified_at
 PUBLIC_VOTE_FIELDS = ("name", "vote")
 # DF1207-14: data/findings.csv and data/sources.csv are flattened from the built public JSON documents, so no CSV column
 # can exist that the JSON does not carry; "sources", "corrections" and "public_copy" are the only nested values.
@@ -523,7 +524,11 @@ class Site:
                     self.image_sizes["/" + source.relative_to(model["assets_dir"]).as_posix()] = size
         # Legal basis (DF1507-02): the package is read once, only when a finding cites a rule.
         self.rule_citations, self.law_status = {}, None
-        if any(finding_law.cited(f) for f in model["findings"]):
+        # DF1952-01: validated organizer-transcribed local rules (all versions); the package is read only for ids
+        # that are not local ones, so a local-only citation never touches the state package.
+        self.local_rules = model.get("local_rules") or []
+        local_ids = {rule["rule_id"] for rule in self.local_rules}
+        if any(rule_id not in local_ids for f in model["findings"] for rule_id in finding_law.cited(f)):
             name = finding_law.jurisdiction(self.root)
             try:
                 package = law.load_package(name) if name else None
@@ -556,6 +561,7 @@ class Site:
                       | {s["agency_id"] for s in model["sources"]})
         self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
                               for a in model["agencies"] if a["agency_id"] in qualifying}
+        self._record_pages = self._catalogue_record_pages(model["sources"])  # DF1103-11: refuses a shared 12-char prefix
         self.timeline = timeline_events(model, self.today, self._agency_pages)
         # DF1952-04: content/glossary.json; an absent file or an empty terms list switches every glossary output off.
         self.glossary = model.get("glossary") if (model.get("glossary") or {}).get("terms") else None
@@ -571,6 +577,50 @@ class Site:
     def agency_pages(self):
         """``{agency_id: "/agencies/<slug>.html"}`` for agencies with findings or sources, model order."""
         return self._agency_pages
+
+    @staticmethod
+    def _catalogue_record_pages(sources):
+        """``{sha256: "/sources/<12-hex prefix>.html"}``; any two library entries sharing a prefix (a prefix
+        collision, or one hash in two fragments) are refused before anything renders, naming the prefix and the
+        library positions, never a full hash."""
+        owners = {}
+        for index, source in enumerate(sources):
+            owners.setdefault(short_hash(source["sha256"]), []).append(index)
+        for prefix, indices in owners.items():
+            if len(indices) > 1:
+                raise ContentError(f"sources library: entries {', '.join(map(str, indices))} share record number {prefix}; "
+                                   f"each record page needs its own 12-character prefix, so consolidate the duplicates")
+        return {source["sha256"]: f'/sources/{short_hash(source["sha256"])}.html' for source in sources}
+
+    def record_pages(self):
+        """``{sha256: "/sources/<12-hex prefix>.html"}`` for every library entry, library order (DF1103-11)."""
+        return self._record_pages
+
+    def record_html(self, source):
+        """``sources/<prefix>.html``: one library entry's provenance, copy check and the published findings citing it.
+        Reads only the validated model; never the original, the ledger or the kit."""
+        prefix = short_hash(source["sha256"])
+        agency = self.agencies_by_id.get(source["agency_id"])
+        agency_page = self.agency_pages().get(source["agency_id"])
+        agency_name = e(agency["name"]) if agency else e(source["agency_id"])
+        agency_html = f'<a href="{e(agency_page)}">{agency_name}</a>' if agency_page else agency_name
+        sentence, record = source_line(source, source, agency["name"] if agency else None)
+        link = (f'<a href="{e(source["public_url"])}" rel="noopener noreferrer">{self.t("sources.public_copy")}</a>'
+                if source["public_url"] else self.t("sources.private"))
+        pages = f' · {self.t("sources.pages", count=source["pages"])}' if source["pages"] is not None else ""
+        note = f' · {e(source["note"])}' if source["note"] else ""
+        citing = self.cited_by.get(source["sha256"], [])
+        cited = (f'<h3>{self.t("sources.cited_by")}</h3><ul class="record-cited">'
+                 + "".join(f'<li><a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a></li>' for f in citing) + '</ul>'
+                 if citing else f'<p>{self.t("sources.not_cited")}</p>')
+        main = (f'    <article class="section finding-body" id="content"><p class="eyebrow">{self.t("eyebrow.sources")}</p>'
+                f'<h2>{e(source["title"])}</h2><p>{sentence}</p>'
+                f'<p>{agency_html} · {self.t("agency.received", date=time_tag(source["received_at"]))}</p>'
+                f'<p class="record-no">{self.t("sources.record_no")} <code>{record}</code>{pages} · {link}{copy_status(source)}{note}</p>'
+                f'<p class="provenance-note">{e(EXPLAINER)}</p>{COPY_HOWTO}{cited}'
+                f'<p><a href="/sources.html#{e(source["fragment"])}">{self.t("agency.in_library")}</a></p></article>\n')
+        return self.page("sources", source["title"], self.labels["sources.record_description"].format(record=prefix),
+                         f"/sources/{prefix}.html", main)
 
     def findings_for(self, agency_id):
         """Published findings about ``agency_id`` (primary or an also_agency_ids member), model order, each once."""
@@ -1078,7 +1128,8 @@ class Site:
             articles.append(f'<article id="{e(agency["slug"])}">{body}</article>')
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
                 f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")} '
-                f'<a href="/data/agencies.json" type="application/json">{self.t("intro.agencies_open_data")}</a>.</p></div>'
+                f'<a href="/data/agencies.json" type="application/json">{self.t("intro.agencies_open_data")}</a> · '
+                f'<a href="/data/agencies.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p></div>'
                 + ('<div class="agency-list">' + self.glance_section() + "".join(articles) + '</div>' if articles
                    else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
@@ -1284,6 +1335,16 @@ class Site:
         related.sort(key=lambda r: (-r[1], not r[2], -utc_moment(r[0]["published_at"]).timestamp(), r[0]["slug"]))
         return related[:limit]
 
+    def rule_item(self, finding, rule_id, is_local):
+        """One cited rule: a state rule's package citation, or the local version in force for the finding's agency and
+        event date followed by its transcription label (never the package status, never an inferred duty)."""
+        if not is_local:
+            return f"<li><code>{e(rule_id)}</code> — {e(self.rule_citations.get(rule_id, 'citation unavailable'))}</li>"
+        versions = [rule for rule in law.rules_in_force({"rules": []}, finding["event_date"], local_rules=self.local_rules,
+                                                        agency_id=finding.get("agency_id")) if rule["rule_id"] == rule_id]
+        citation = versions[0]["citation"] if versions else "citation unavailable"
+        return f"<li><code>{e(rule_id)}</code> — {e(citation)} ({e(law.LOCAL_RULE_LABEL)})</li>"
+
     def legal_basis(self, finding):
         """The finding's own rule_version/duty/exceptions and each cited rule's package citation; "" when none."""
         cited = finding_law.cited(finding)
@@ -1300,10 +1361,9 @@ class Site:
         elif exceptions and not isinstance(exceptions, list):
             parts.append(f"<p>Exceptions: {e(exceptions)}</p>")
         if cited:
-            parts.append("<ul>" + "".join(
-                f"<li><code>{e(rule_id)}</code> — {e(self.rule_citations.get(rule_id, 'citation unavailable'))}</li>"
-                for rule_id in cited) + "</ul>")
-            if self.law_status:
+            local = {rule["rule_id"] for rule in self.local_rules}
+            parts.append("<ul>" + "".join(self.rule_item(finding, rule_id, rule_id in local) for rule_id in cited) + "</ul>")
+            if self.law_status and any(rule_id not in local for rule_id in cited):
                 parts.append(f'<p class="notice">Law package status: {e(self.law_status)}.</p>')
         return "".join(parts) + "</section>"
 
@@ -1328,12 +1388,12 @@ class Site:
     def finding_html(self, finding):
         sources = []
         for source in finding["sources"]:
-            fragment = self.fragment_for_sha.get(source["sha256"])
+            record_page = self.record_pages().get(source["sha256"])
             entry = next((s for s in self.model["sources"] if s["sha256"] == source["sha256"]), None)
             owner = self.agencies_by_id.get(entry["agency_id"], {}) if entry else {}
             sentence, record = source_line(entry, source, owner.get("name"))
             number = f'{self.t("sources.record_no")} <code>{record}</code>'
-            number = f'<a href="/sources.html#{e(fragment)}">{number}</a>' if fragment else number
+            number = f'<a href="{e(record_page)}">{number}</a>' if record_page else number
             sources.append(f'<li><p>{sentence}</p>{page_link(entry, source.get("page"))}'
                            f'<p class="record-no">{number}{copy_status(entry)}</p></li>')
         corrections = ("".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time>: {e(c["note"])}</li>' for c in finding["corrections"])
@@ -1421,10 +1481,10 @@ class Site:
         text = f'<p class="reply-text">{e(reply["text"]).replace(chr(10), "<br>")}</p>' if "text" in reply else ""
         record = ""
         if "record_sha256" in reply:
-            fragment = self.fragment_for_sha.get(reply["record_sha256"])
+            record_page = self.record_pages().get(reply["record_sha256"])
             number = f'{self.t("sources.record_no")} <code>{e(short_hash(reply["record_sha256"]))}</code>'
-            if fragment:
-                number = f'<a href="/sources.html#{e(fragment)}">{number}</a>'
+            if record_page:
+                number = f'<a href="{e(record_page)}">{number}</a>'
             record = f'<p class="record-no">{number}</p>'
         return (f'<section class="agency-response" id="agency-response"><h3>{self.t("finding.agency_response")}</h3>'
                 f'<p>{line}</p>{text}{record}</section>')
@@ -1488,11 +1548,14 @@ class Site:
                 pages = f' · {self.t("sources.pages", count=source["pages"])}' if source["pages"] is not None else ""
                 note = f' · {e(source["note"])}' if source["note"] else ""
                 citing = self.cited_by.get(source["sha256"], [])
+                details = f' · <a href="{e(self.record_pages()[source["sha256"]])}">{self.t("sources.record_page")}</a>'
                 cited = (f' · {self.t("sources.cited_by")} ' + ", ".join(f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in citing)
                          if citing else f' · {self.t("sources.not_cited")}')
                 sentence, record = source_line(source, source, self.agencies_by_id.get(source["agency_id"], {}).get("name"))
-                items.append(f'<li><p>{sentence}</p><p class="record-no">{self.t("sources.record_no")} <code>{record}</code>{pages} · {link}'
-                             f'{copy_status(source)}{note}{cited}</p></li>')
+                hooks = (f' class="source-entry" data-agency="{e(source["agency_id"])}" data-year="{e(source["received_at"][:4])}"'
+                         f' data-cited="{"true" if citing else "false"}" data-record="{e(short_hash(source["sha256"]))}"')
+                items.append(f'<li{hooks}><p>{sentence}</p><p class="record-no">{self.t("sources.record_no")} <code>{record}</code>{pages} · {link}'
+                             f'{copy_status(source)}{note}{details}{cited}</p></li>')
             sections.append(f'<section class="agency-document-group" id="{e(fragment)}"><h3>{heading}</h3><ul class="source-table">{"".join(items)}</ul></section>')
         howto = COPY_HOWTO if any(copy_status(s) for s in self.model["sources"]) else ""  # unchanged page without checks
         main = (f'    <section class="section" id="content"><div class="section-heading" id="library"><div><p class="eyebrow">{self.t("eyebrow.sources")}</p>'
@@ -1505,7 +1568,8 @@ class Site:
     def meetings_html(self):
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p>'
                 f'<h2>{self.t("heading.meetings")}</h2></div><p>{self.t("intro.meetings")} '
-                f'<a href="/data/meetings.json" type="application/json">{self.t("intro.meetings_open_data")}</a>.</p></div>'
+                f'<a href="/data/meetings.json" type="application/json">{self.t("intro.meetings_open_data")}</a> · '
+                f'<a href="/data/meetings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p></div>'
                 '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
                 + '</div></section>\n')
         if self.past:
@@ -1525,6 +1589,34 @@ class Site:
                 f'</tr></thead><tbody>{rows}</tbody></table><p class="notice">{self.t("meeting.votes_source")} '
                 f'<a href="{source}" rel="noopener noreferrer">{source}</a></p>')
 
+    def meeting_continuation_html(self, meeting):
+        """DF0022-07: ``Continued to D`` (the stated destination of a continued item) and one ``Continued from D`` per
+        earlier meeting that points here; "" when neither applies. A date-only match is the same body on that exact
+        date, not a confirmed item identity. Plain links to the pages of this site; nothing is fetched or embedded."""
+        meetings, lines = self.model["meetings"], []
+        held = lambda m: m["status"] != "cancelled" and m["starts_at"][:10] < self.today.isoformat()  # noqa: E731
+
+        def line(key, day, target=None, more=""):
+            text = self.t(key, date="\0")
+            link = f'<a href="/meetings/{e(target["id"])}.html">{e(day)}</a>' if target else e(day)
+            return f'<p class="meeting-continuation">{text.replace(chr(0), link)}{more}</p>'
+
+        outcome = meeting.get("outcome") or {}
+        if held(meeting) and ("continued_to" in outcome or "continued_to_date" in outcome):
+            targets = continuation_targets(meeting, meetings)
+            day = outcome.get("continued_to_date") or (targets[0]["starts_at"][:10] if targets else None)
+            if day is not None:
+                if len(targets) > 1:  # several same-body meetings on the stated date: say so, never pick one
+                    lines.append(line("meeting.continued_to", day, more="".join(
+                        f' · <a href="/meetings/{e(t["id"])}.html">{self.t("meeting.page")} ({e(t["id"])})</a>' for t in targets)))
+                else:
+                    lines.append(line("meeting.continued_to", day, targets[0] if targets else None))
+        if getattr(self, "_continuation_back", None) is None:
+            self._continuation_back = continuation_back_links(meetings)
+        lines += [line("meeting.continued_from", source["starts_at"][:10], source)
+                  for source in self._continuation_back.get(meeting["id"], []) if held(source)]
+        return "".join(lines)
+
     def meeting_html(self, meeting):
         """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
         cancelled = meeting.get("status") == "cancelled"
@@ -1540,6 +1632,7 @@ class Site:
                 + self.who_decides(meeting.get("agency_id"))
                 + (meeting_outcome_html(meeting, self.t) + self.recorded_votes(meeting)
                    if meeting["starts_at"][:10] < self.today.isoformat() else "")
+                + self.meeting_continuation_html(meeting)
                 + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
@@ -1557,9 +1650,11 @@ class Site:
                 f'<a href="/data/findings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a> and '
                 '<a href="/data/sources.json" type="application/json">data/sources.json</a> · '
                 f'<a href="/data/sources.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>. '
-                f'{self.t("intro.meetings_open_data_about")} <a href="/data/meetings.json" type="application/json">data/meetings.json</a>.'
+                f'{self.t("intro.meetings_open_data_about")} <a href="/data/meetings.json" type="application/json">data/meetings.json</a> · '
+                f'<a href="/data/meetings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.'
                 + (f' {self.t("notice.no_meetings")}' if not self.model["meetings"] else "")
-                + f' {self.t("intro.agencies_open_data_about")} <a href="/data/agencies.json" type="application/json">data/agencies.json</a>.</p>'
+                + f' {self.t("intro.agencies_open_data_about")} <a href="/data/agencies.json" type="application/json">data/agencies.json</a> · '
+                + f'<a href="/data/agencies.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.</p>'
                 + (f'<p class="map-date">{self.map_date_line()}</p>' if self.map else "") +
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("about", self.labels["title.about"], self.labels["title.about_description"], "/about.html", main)
@@ -1894,6 +1989,7 @@ class Site:
         paths += list(self.agency_pages().values())
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
         paths += [f'/meetings/{m["id"]}.html' for m in self.model["meetings"]]
+        paths += list(self.record_pages().values())  # DF1103-11: library order, last
         return paths
 
     def sitemap_xml(self):
@@ -2024,7 +2120,8 @@ class Site:
         outcome = meeting.get("outcome")
         if outcome and meeting["status"] != "cancelled" and meeting["starts_at"][:10] < self.today.isoformat():
             value["outcome"] = {key: outcome[key] for key in ("result", "on", "source_url", "vote", "minutes_url",
-                                                              "minutes_approved_on") if key in outcome}
+                                                              "minutes_approved_on", "continued_to",
+                                                              "continued_to_date") if key in outcome}
             if "votes" in outcome:  # DF0137-07 per-member votes, in stored order
                 value["outcome"]["votes"] = [{"name": v["name"], "vote": v["vote"]} for v in outcome["votes"]]
         return value
@@ -2108,6 +2205,33 @@ def _flat_source(entry):
     row = {key: entry[key] for key in PUBLIC_LIBRARY_FIELDS if key != "public_copy"}
     row.update({f"public_copy_{key}": copy.get(key) for key in PUBLIC_COPY_FIELDS})
     return {key: _cell(row[key]) for key in SOURCES_CSV_COLUMNS}
+
+
+def _record_cell(value):
+    """One agency or meeting CSV cell (DF2207-11) from a parsed public JSON value, with the shared formula guard.
+
+    Strings stay as they are, numbers use their JSON spelling, ``true``/``false``, null is empty; a list joins its items with
+    ``; `` (string items as text, others as compact JSON) and an object is one compact JSON cell."""
+    from .kit_export import formula_safe  # local, as the other optional site steps
+
+    def compact(item):
+        return json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+
+    def text(item):
+        return item if isinstance(item, str) else compact(item)
+    if value is None:
+        return ""
+    return formula_safe("; ".join(text(item) for item in value) if isinstance(value, list) else text(value))
+
+
+def public_records_csv(json_text, record_key, fields):
+    """CSV text (DF2207-11) for the records of an already-built, allowlist-checked open-data JSON text.
+
+    Columns are the allowed record keys in the order the JSON writer serializes them (``sort_keys``), also for no records and
+    for optional keys the first record lacks; a record is one row in array order, a missing key is an empty cell."""
+    columns = sorted(fields)
+    records = json.loads(json_text)[record_key]
+    return _csv_text(columns, [{column: _record_cell(record.get(column)) for column in columns} for record in records])
 
 
 def _csv_text(columns, rows):
@@ -2223,6 +2347,8 @@ def _plan_site(root, today=None, notes=None):
         if "cameras.html" in pages:  # content/pages/cameras.json would otherwise be silently replaced
             raise ContentError("content/pages/cameras.json: collides with the generated cameras.html (the map's point list)")
         pages["cameras.html"] = site.cameras_html()
+    for source in model["sources"]:  # DF1103-11: one page per library entry; the prefixes were checked in Site()
+        pages[site.record_pages()[source["sha256"]][1:]] = site.record_html(source)
     for finding in model["findings"]:
         path = f'findings/{finding["slug"]}.html'
         if path in pages:
@@ -2233,14 +2359,17 @@ def _plan_site(root, today=None, notes=None):
     css = (pages["index.html"]["css"] + EXTRA_CSS + (f":root{{{colours}}}\n" if colours else "")
            + (".brand-logo{max-height:48px;width:auto;height:auto}\n" if "logo" in brand else ""))
     files = {name: page["html"] for name, page in pages.items()}
+    agencies_text, meetings_text = site.agencies_json(), site.meetings_json()  # each rendered once; its CSV is read back from it
     files.update({
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
         **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
         "site-data.js": site.site_data_js(), "search.js": search_js(),
         "agency-cards.js": agency_cards.render(site.cards_config(), relabel=bool(site.js_labels)),
         "app.js": site.app_js(), "data/findings.json": site.findings_json(), "data/findings.csv": site.findings_csv(),
-        "data/sources.json": site.sources_json(), "data/sources.csv": site.sources_csv(), "data/meetings.json": site.meetings_json(),
-        "data/agencies.json": site.agencies_json(),
+        "data/sources.json": site.sources_json(), "data/sources.csv": site.sources_csv(), "data/meetings.json": meetings_text,
+        "data/agencies.json": agencies_text,
+        "data/meetings.csv": public_records_csv(meetings_text, "meetings", PUBLIC_MEETING_FIELDS),
+        "data/agencies.csv": public_records_csv(agencies_text, "agencies", PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL),
     })
     if site.finding_filter():  # written only when the findings index loads it
         files["findings/filter.js"] = filter_js(bool(site.js_labels), site.multi_agency)
