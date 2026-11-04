@@ -95,11 +95,12 @@ class SignedReceiptTests(unittest.TestCase):
     def test_valid_signature_over_printed_payload_is_written_and_counted_signed(self):
         self.add("Alice Smith", "factual", key=self.alice)
         data = self.payload()
+        bound = findings.campaign_id(self.root)
         self.assertEqual(json.loads(data), {"id": "syn-finding-1", "content_sha256": findings.reviewed_hash(draft()),
                                             "role": "factual", "decision": "approve", "reviewer": "Alice Smith",
-                                            "rationale": "Checked p. 1.", "namespace": NS})
+                                            "rationale": "Checked p. 1.", "namespace": NS, "campaign_id": bound})
         self.assertEqual(data, findings.receipt_payload("syn-finding-1", findings.reviewed_hash(draft()), "factual",
-                                                        "approve", "Alice Smith", "Checked p. 1."))
+                                                        "approve", "Alice Smith", "Checked p. 1.", bound))
         signature = self.sign(self.alice, data)
         receipt = self.review(signature=signature)
         self.assertEqual((receipt["signature"], receipt["signed_by"]), (signature.read_text(), "Alice_Smith"))

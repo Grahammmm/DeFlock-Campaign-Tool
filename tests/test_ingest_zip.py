@@ -251,6 +251,8 @@ class IngestZipTests(unittest.TestCase):
     def test_dry_run_fresh_campaign_and_old_ledger_without_contains_write_nothing(self):
         x = b"synthetic x\n"
         path = self.archive([("x.pdf", x, {}), ("y.txt", b"y", {}), ("../evil", b"e", {})])
+        # Model a legacy campaign without private state, including the init identity.
+        (self.root / "private" / "campaign-id.json").unlink()
         (self.root / "private").rmdir()
         before = self.files()
         report = self.ingest(path, dry=True)
