@@ -820,6 +820,7 @@ def main():
     for flag in ("--directory", "--id", "--result", "--on", "--source", "--verified-by"):
         outcome_p.add_argument(flag, required=True)
     outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
+    outcome_p.add_argument("--votes", metavar="FILE", help="name,vote CSV (yes|no|abstain|absent|recused) read from the --source record")
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
     commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
                         ).add_argument("--directory", required=True)
@@ -889,8 +890,9 @@ def main():
         response_p.add_argument(flag, required=True)
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
                                                                "produced", "denied", "closed", "fee_estimate",
-                                                               "clarification_requested", "clarified"))
-    response_p.add_argument("--amount", metavar="USD", help="fee_estimate only: the agency's estimate, 0-100000 "
+                                                               "clarification_requested", "clarified", "fee_paid",
+                                                               "fee_waived"))
+    response_p.add_argument("--amount", metavar="USD", help="fee_estimate (required) or fee_paid (optional): 0-100000 "
                             "(e.g. 245.50); recorded only, nothing is paid")
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
@@ -993,6 +995,7 @@ def main():
     for flag in ("--directory", "--date", "--note"):
         correct_p.add_argument(flag, required=True)
     correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
+    correct_p.add_argument("--approved-by", help="Named person approving this correction (the publication gate refuses without one)")
     withdraw_p = finding_cmds.add_parser("withdraw", help="Move a published finding to private/withdrawn/ (no notice page, no build)")
     withdraw_p.add_argument("id", metavar="ID")
     for flag in ("--directory", "--reason"):
@@ -1031,6 +1034,9 @@ def main():
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
     today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
+    from .today import CONTRACT_DAYS, contract_days
+    today_p.add_argument("--contract-days", type=contract_days, default=CONTRACT_DAYS, metavar="N", help="Contracts "
+                         "ending within N days, default 90; ended in the last 30 days are always listed")
     law_packet = commands.add_parser("law", help="Law package tools; nothing here marks a package reviewed"
                                      ).add_subparsers(dest="law_command", required=True).add_parser(
         "review-packet", help="Private packet for a human law reviewer in a new --out folder; reviews nothing")
@@ -1133,7 +1139,9 @@ def main():
         elif args.command == "meetings-outcome":
             from .meeting_outcome import record_outcome
             print(json.dumps(record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by,
-                                            args.vote, args.replace), indent=2))
+                                            args.vote, args.replace, votes_file=args.votes), indent=2))
+            if args.replace and args.votes is None:  # the new outcome replaced the old one whole
+                print("votes: none")
             print("Recorded only. Nothing was published.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
@@ -1205,7 +1213,7 @@ def main():
                       "in this campaign, then rerun with --confirm.")
                 return
             if args.finding_command == "correct":
-                print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft)))
+                print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft, None, args.approved_by)))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 return
             if args.finding_command == "withdraw":
@@ -1284,9 +1292,11 @@ def main():
             report = kit_track_status(root, request=args.request)
             print(json.dumps(report, indent=2))
             for row in report["requests"]:  # a reminder on stderr; stdout stays one JSON document
+                label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
                 if row["over_fee_cap"]:
-                    label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
+                if row["fee_state"] == "unpaid":
+                    print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))
@@ -1294,7 +1304,7 @@ def main():
         elif args.command == "today":
             from .today import run_cli as today_cli
             read_config(root)  # not a campaign folder: Stopped, before any source is read
-            print(today_cli(root, args.as_of, args.as_json))
+            print(today_cli(root, args.as_of, args.as_json, args.contract_days))
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)

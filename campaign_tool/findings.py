@@ -22,7 +22,7 @@ except ImportError:  # Windows
     fcntl = None
     import msvcrt
 
-from . import content
+from . import content, publication_gate
 from .content import FINDING_KEYS
 from .evidence import PREFIX, _ledger_hashes, _object_present
 from .review import CLASSIFICATIONS, ROLES, _who, content_hash, review_blockers
@@ -660,6 +660,9 @@ def publish(root, draft_path, approved_by, now=None):
     # One campaign-wide lock covers the uniqueness checks, the write and the log entry, so two
     # concurrent publishes cannot both pass the checks before either writes.
     with _locked(root / "private", ".publish.lock"):
+        approval = {"artefact_id": draft["id"], "content_hash": reviewed_hash(draft), "approved_by": approved_by,
+                    "approved_on": when[:10], "status": "approved"}  # the person at the CLI is the recorded approver
+        publication_gate.assert_publishable(draft["id"], reviewed_hash(load_draft(draft_path)), [approval])  # re-read: an edit refuses
         return dict(_publish_locked(root, draft, finding, document, approved_by, when), receipt_trust=trust)
 
 
@@ -841,17 +844,18 @@ def _check_date(date, moment, published_at, corrections):
     return date
 
 
-def correct(root, finding_id, date, note, from_draft=None, now=None):
+def correct(root, finding_id, date, note, from_draft=None, now=None, approved_by=None):
     """Append one dated correction to the published finding with ``finding_id``; with ``from_draft``
     its reviewed fields are replaced by the draft's, which must clear the same gate as publish.
-    id, slug and published_at never change; each correction is logged. Never builds or deploys."""
+    id, slug and published_at never change; each correction is logged. Never builds or deploys.
+    ``approved_by`` is the named person who approves this correction; without one the publication gate refuses."""
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     note = _text("note", note, 1000)
     for folder in (root / "content", root / "private"):
         if not _real_dir(folder):
             raise ValueError(f"{folder}: no {folder.name}/ directory in this campaign")
     with _locked(root / "private", ".publish.lock"):
-        return _correct_locked(root, finding_id, date, note, from_draft, moment)
+        return _correct_locked(root, finding_id, date, note, from_draft, moment, approved_by)
 
 
 def _one_published(folder, finding_id):
@@ -866,7 +870,7 @@ def _one_published(folder, finding_id):
     return matches[0]
 
 
-def _correct_locked(root, finding_id, date, note, from_draft, moment):
+def _correct_locked(root, finding_id, date, note, from_draft, moment, approved_by=None):
     folder = root / "content" / "findings"
     target, existing = _one_published(folder, finding_id)
     current = content.load_finding(existing, f"content/findings/{target.name}")
@@ -874,6 +878,7 @@ def _correct_locked(root, finding_id, date, note, from_draft, moment):
     when = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
     kept = {"state": existing["state"], "published_at": existing["published_at"], "updated_at": when,
             "corrections": list(existing["corrections"]) + [{"date": date, "note": note}]}
+    draft = existing  # the content the approver saw: the published finding, or the reviewed draft below
     if from_draft is None:
         document = dict(reviewed_view(existing), **kept)
     else:
@@ -889,6 +894,10 @@ def _correct_locked(root, finding_id, date, note, from_draft, moment):
         problems = cited_problems(root, finding)
         if problems:
             raise ValueError(f"cited records not registered and stored: {problems}")
+    seal = lambda doc: publication_gate.content_digest({"date": date, "note": note, "reviewed": reviewed_hash(doc)})  # noqa: E731
+    publication_gate.assert_publishable(finding_id, seal(document if from_draft is None else load_draft(from_draft)), [
+        {"artefact_id": finding_id, "content_hash": seal(draft), "approved_by": approved_by,
+         "approved_on": when[:10], "status": "approved"}])  # the person at the CLI approves this exact correction; a re-read draft edit refuses
     entry = {"at": when, "action": "correct", "id": finding_id, "slug": current["slug"], "date": date,
              "content_sha256": reviewed_hash(document),
              "text_changed": reviewed_hash(document) != reviewed_hash(existing)}

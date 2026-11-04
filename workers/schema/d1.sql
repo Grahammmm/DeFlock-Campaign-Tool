@@ -222,16 +222,27 @@ CREATE TABLE IF NOT EXISTS meeting (
   campaign_id TEXT NOT NULL REFERENCES campaign(campaign_id),
   body_name TEXT NOT NULL,
   agency_id TEXT,
-  starts_at TEXT NOT NULL,
+  starts_at TEXT,                        -- NULL exactly when date_state = 'unknown'
+  date_state TEXT NOT NULL DEFAULT 'known' CHECK (date_state IN ('known','unknown')),
   agenda_url TEXT,
   agenda_item TEXT,
   relevance TEXT,                        -- alpr_item, budget, consent_calendar, none
   comment_kit_md TEXT,
   rsvp_count INTEGER NOT NULL DEFAULT 0,
   source TEXT,                           -- legistar, granicus, manual
+  source_url TEXT,                       -- polled meetings: public agenda source; NULL for manual rows
+  item_id TEXT,                          -- polled meetings: the source's item id
+  title_sha256 TEXT,
+  fetched_at TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,   -- immutable chain: a changed title is a new row
+  supersedes TEXT REFERENCES meeting(meeting_id),
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  CHECK ((date_state = 'known' AND starts_at IS NOT NULL) OR (date_state = 'unknown' AND starts_at IS NULL))
 );
+-- One row per polled (source_url, item_id) revision; manual meetings are outside the index.
+CREATE UNIQUE INDEX IF NOT EXISTS meeting_source_identity ON meeting(campaign_id, source_url, item_id, revision)
+  WHERE source_url IS NOT NULL AND item_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS job (
   job_id TEXT PRIMARY KEY,

@@ -297,6 +297,26 @@ class SvgKindsTests(unittest.TestCase):
     def test_limit_matches_build(self):
         self.assertEqual(doc_assets.MAX_BYTES, ASSET_MAX_BYTES)
 
+    # DF0137-16 2/3: width/height (unitless or px) else viewBox, rounded; anything else is None
+    def test_svg_size(self):
+        cases = {b' width="240" height="80"': (240, 80), b' width="240px" height="80PX"': (240, 80),
+                 b' width=" 12.5 " height=".5"': (12, 0), b' viewBox="0 0 512 128"': (512, 128),
+                 b' viewBox="-5,-5,40.6,10"': (41, 10), b' viewBox="0 0 512 128" width="100%"': (512, 128),
+                 b' viewBox="0 0 512 128" width="10em" height="3em"': (512, 128),
+                 b' viewBox="0 0 512 128" width="30" height="20"': (30, 20),
+                 b' viewBox="0 0 512 128" width="30"': (512, 128),
+                 b' viewBox="0 0 512" ': None, b' viewBox="0 0 -4 10"': None, b' viewBox="0 0 0 10"': None,
+                 b' viewBox="0 0 4 0"': None, b' viewBox="0 0 a b"': None, b' viewBox="0 0 1e999 5"': None,
+                 b' viewBox="0 0 nan 5"': None, b' viewBox="0 0 4 5 6"': None, b' viewBox=""': None,
+                 b' width="100%" height="100%"': None, b' width="10em" height="4em"': None,
+                 b' width="10mm" height="4mm"': None, b' width="-3" height="4"': None, b' width="0" height="4"': None,
+                 b' width="10"': None, b"": None}
+        for attrs, expected in cases.items():
+            self.assertEqual(doc_assets.svg_size(svg(b"", attrs)), expected, attrs)
+        self.assertIsNone(doc_assets.svg_size(b'<html width="4" height="4"/>'))
+        self.assertIsNone(doc_assets.svg_size(b"<svg width='4' height='4'><rect></svg>"))
+        self.assertEqual(doc_assets.svg_size(b'<s:svg xmlns:s="http://www.w3.org/2000/svg" width="4" height="5"/>'), (4, 5))
+
 
 class Campaign(unittest.TestCase):
     def setUp(self):

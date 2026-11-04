@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import CITY_KINDS, MAX_GEOJSON_BYTES, ContentError, _read_json, load_content, utc_moment
+from .content import CITY_KINDS, MAX_GEOJSON_BYTES, TRANSPARENCY_FIELDS, ContentError, _read_json, load_content, utc_moment
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, KIND_LABELS, html_text
@@ -219,6 +219,18 @@ def policy_line(policy):  # links a posted ALPR usage policy an organizer found;
             'rel="noopener noreferrer">where we found it</a>)</p>')
 
 
+ASKED_SENTENCES = {"awaiting_response": "No written response recorded as of{day}.", "answered": "Answered{day}.",
+                   "acknowledged": "Acknowledged{day}; no records yet.", "partly_answered": "Partly answered{day}.",
+                   "declined_in_writing": "Declined in writing{on}.", "withdrawn": "We withdrew this request{day}."}
+
+
+def asked_sentence(item, today):
+    """Plain-text state sentence for one asked item; awaiting with no update uses the build date."""
+    when = item.get("updated_on") or (today.isoformat() if item["state"] == "awaiting_response" else "")
+    day, on = (f" {date_label(when)}", f" on {date_label(when)}") if when else ("", "")
+    return ASKED_SENTENCES[item["state"]].format(day=day, on=on)
+
+
 OUTCOME_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
                   "amended": "Approved with amendments", "no_action": "No action taken",
                   "informational": "Informational item only"}
@@ -287,7 +299,6 @@ class Site:
         self.root = Path(root)
         self.cfg = cfg
         self.model = model
-        self.timeline = timeline_events(model, today or date.today())
         self.today = today or date.today()  # build date: contract terms
         # Split on the meeting's own typed calendar date (no time-zone conversion); today counts as upcoming.
         # A cancelled meeting is never upcoming; it stays listed under past meetings.
@@ -338,6 +349,7 @@ class Site:
         qualifying = {f["agency_id"] for f in model["findings"]} | {s["agency_id"] for s in model["sources"]}
         self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
                               for a in model["agencies"] if a["agency_id"] in qualifying}
+        self.timeline = timeline_events(model, self.today, self._agency_pages)
 
     def agency_pages(self):
         """``{agency_id: "/agencies/<slug>.html"}`` for agencies with findings or sources, model order."""
@@ -423,7 +435,8 @@ class Site:
         extra = "".join(f'  <link rel="stylesheet" href="{href}">\n' for href in stylesheets)
         extra += "".join(f'  <script defer src="{src}"></script>\n' for src in scripts)
         favicon = self.site.get("brand", {}).get("favicon")
-        icon = f'  <link rel="icon" href="/{e(favicon)}">\n' if favicon else ""
+        svg_icon = ' type="image/svg+xml"' if favicon and favicon.lower().endswith(".svg") else ""
+        icon = f'  <link rel="icon"{svg_icon} href="/{e(favicon)}">\n' if favicon else ""
         return ('  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
                 f'  <meta name="description" content="{e(description)}">\n'
                 + (self.share(title, description, path, kind, published, modified) if index
@@ -541,7 +554,9 @@ class Site:
                 '<p class="city-meta"><span class="status-pill" id="city-status"></span> <span class="city-vendor" id="city-vendor"></span> '
                 '<span id="city-camera-count" hidden></span></p><p class="city-summary" id="city-summary"></p>'
                 '<ul class="city-facts" id="city-facts"></ul><p><a class="text-link" id="city-records-link" href="sources.html#library">' + e(self.site["source_link_label"]) + '</a> <a class="text-link" id="city-flock-link" rel="noopener noreferrer" hidden>'
-                f'{self.t("agency.flock_portal")}</a></p></div><aside class="city-watch"><p class="eyebrow">{self.t("eyebrow.open_questions")}</p><p id="city-open"></p>'
+                f'{self.t("agency.flock_portal")}</a> <a class="text-link" id="city-agency-link"'
+                + (f' data-label="{self.t("agency.page")}"' if self.agency_pages() else '')
+                + f' hidden></a></p></div><aside class="city-watch"><p class="eyebrow">{self.t("eyebrow.open_questions")}</p><p id="city-open"></p>'
                 '<div class="policy-flags" id="city-flags"></div></aside></article>')
 
     def map_section(self):
@@ -586,6 +601,26 @@ class Site:
                 + (f'. {e(contract["renewal_note"])}' if contract["renewal_note"] else "")
                 + f' ({self.t("agency.checked", date=date_label(contract["checked_on"]))} <a href="{e(contract["source_url"])}" '
                   f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>')
+
+    def transparency_block(self, agency, heading="h4"):
+        """Newest organizer-transcribed portal snapshot, as the vendor reported it, with change since the previous one."""
+        snapshots = agency.get("transparency")
+        if not snapshots:
+            return ""
+        newest, previous, lines = snapshots[0], (snapshots[1:] or [{}])[0], []
+        for key in TRANSPARENCY_FIELDS:
+            if newest[key] is None:
+                continue
+            line, before = self.t(f"agency.transparency_{key}", count=newest[key]), previous.get(key)
+            if before is not None:
+                change = newest[key] - before
+                word = "up" if change > 0 else "down" if change < 0 else "same"
+                line += f' ({self.t("agency.transparency_" + word, count=abs(change), date=time_tag(previous["checked_on"]))})'
+            lines.append(f"<li>{line}</li>")
+        return (f'<section class="agency-transparency"><{heading}>{self.t("agency.transparency_heading")}</{heading}>'
+                + (f'<ul>{"".join(lines)}</ul>' if lines else "")
+                + f'<p><a href="{e(newest["source_url"])}" rel="noopener noreferrer">'
+                + self.t("agency.transparency_checked", date=time_tag(newest["checked_on"])) + '</a></p></section>')
 
     def contracts_section(self):  # contracts ending in [build date, +180 days], soonest first; "" when none
         first, last = self.today.isoformat(), (self.today + timedelta(days=180)).isoformat()
@@ -639,21 +674,42 @@ class Site:
     def agency_blocks(self, agency, findings):
         """Confirmed / not known / asked, from organizer content only; awaiting with no update → the build date."""
         profile, asked = agency["profile"], []
-        sentences = {"awaiting_response": "No written response recorded as of{day}.", "answered": "Answered{day}.",
-                     "acknowledged": "Acknowledged{day}; no records yet.", "partly_answered": "Partly answered{day}.",
-                     "declined_in_writing": "Declined in writing{on}.", "withdrawn": "We withdrew this request{day}."}
         confirmed = [e(fact) for fact in profile["facts"]] + [f"{len(findings)} published finding(s) with sources"] * bool(findings)
         unknown = [e(text) for text in [profile["open"]] * bool(profile["open"]) + profile["flags"]]
         for item in sorted(agency.get("asked", []), key=lambda row: row["asked_on"], reverse=True):
-            when = item.get("updated_on") or (self.today.isoformat() if item["state"] == "awaiting_response" else "")
-            day, on = (f" {date_label(when)}", f" on {date_label(when)}") if when else ("", "")
-            asked.append(f'{e(item["topic"])} — asked {date_label(item["asked_on"])}. ' + sentences[item["state"]].format(
-                day=day, on=on) + (f' {e(item["note"])}' if item.get("note") else ""))
-        return "".join(f'<section class="agency-block"><h4>{title}</h4>' + (
+            asked.append(f'{e(item["topic"])} — asked {date_label(item["asked_on"])}. ' + e(asked_sentence(item, self.today))
+                         + (f' {e(item["note"])}' if item.get("note") else ""))
+        return "".join(f'<section class="agency-block"><h4{anchor}>{title}</h4>' + (
             "<ul>" + "".join(f"<li>{value}</li>" for value in values) + "</ul>" if values else f"<p>{empty}</p>") + "</section>"
-            for title, values, empty in (("What is confirmed", confirmed, "Nothing is confirmed by a published finding yet."),
-                                         ("What is not known", unknown, "Nothing listed yet."),
-                                         ("What we asked", asked, "No request is listed for this agency yet.")))
+            for title, values, empty, anchor in (("What is confirmed", confirmed, "Nothing is confirmed by a published finding yet.", ""),
+                                                 ("What is not known", unknown, "Nothing listed yet.", ""),
+                                                 ("What we asked", asked, "No request is listed for this agency yet.",
+                                                  f' id="{e(agency["slug"])}-asked"')))
+
+    def glance_section(self):
+        """DF0137-12: every agency side by side in model order (never sorted by a number); each cell links its source."""
+        unchecked, rows = self.t("agencies.glance_not_checked"), []
+        heads = [self.t(f"agencies.glance_{key}") for key in ("agency", "cameras", "searches_last_30_days",
+                                                               "retention_days", "policy", "contract", "asked")]
+
+        def sourced(url, text, checked_on):
+            return (f'<a href="{e(url)}" rel="noopener noreferrer">{text}</a> '
+                    f'<small>{self.t("agencies.glance_checked", date=time_tag(checked_on))}</small>')
+        for agency in self.model["agencies"]:
+            newest, policy, contract = (agency.get("transparency") or [{}])[0], agency.get("alpr_policy"), agency["contract"]
+            asked, page = len(agency.get("asked", [])), self.agency_pages().get(agency["agency_id"], f'#{agency["slug"]}')
+            cells = [f'<a href="{e(page)}">{e(agency["name"])}</a>'] + [
+                sourced(newest["source_url"], e(newest[key]), newest["checked_on"]) if newest.get(key) is not None
+                else unchecked for key in ("cameras", "searches_last_30_days", "retention_days")]
+            cells += [sourced(policy["url"], self.t("agencies.glance_posted"), policy["checked_on"]) if policy else unchecked,
+                      sourced(contract["source_url"], time_tag(contract["end"]), contract["checked_on"]) if contract else unchecked,
+                      f'<a href="#{e(agency["slug"])}-asked">{asked}</a>' if asked else "0"]
+            rows.append('<tr><th scope="row" data-label="' + heads[0] + f'">{cells[0]}</th>'
+                        + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
+        return (f'<section class="at-a-glance" id="at-a-glance"><h3>{self.t("agencies.glance_heading")}</h3>'
+                f'<p>{self.t("agencies.glance_note")}</p><table class="glance-table"><caption>{self.t("agencies.glance_caption")}'
+                '</caption><thead><tr>' + "".join(f'<th scope="col">{head}</th>' for head in heads) + "</tr></thead><tbody>"
+                + "".join(rows) + "</tbody></table></section>")
 
     def agencies_html(self):
         articles = []
@@ -674,7 +730,7 @@ class Site:
                     + (f'<p>{self.t("agency.findings", count=len(findings))} ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
-                    + self.contract_line(agency["contract"])
+                    + self.contract_line(agency["contract"]) + self.transparency_block(agency)
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
@@ -682,7 +738,8 @@ class Site:
             articles.append(f'<article id="{e(agency["slug"])}">{body}</article>')
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
                 f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")}</p></div>'
-                + ('<div class="agency-list">' + "".join(articles) + '</div>' if articles else f'<p>{self.t("notice.no_agencies")}</p>')
+                + ('<div class="agency-list">' + self.glance_section() + "".join(articles) + '</div>' if articles
+                   else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
         return self.page("agencies", self.labels["title.agencies"], self.labels["title.agencies_description"], "/agencies.html", main)
 
@@ -721,7 +778,7 @@ class Site:
                 + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
-                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.who_decides(aid)
+                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.transparency_block(agency, "h3") + self.who_decides(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
@@ -936,6 +993,18 @@ class Site:
                      + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')
         return self.page("meetings", self.labels["title.meetings"], self.labels["title.meetings_description"], "/meetings.html", main)
 
+    def recorded_votes(self, meeting):
+        """DF0137-07: the organizer-verified per-member votes, read from the outcome's official record; "" without."""
+        votes = (meeting.get("outcome") or {}).get("votes")
+        if not votes:
+            return ""
+        rows = "".join(f'<tr><td>{e(v["name"])}</td><td>{self.t("vote." + v["vote"])}</td></tr>' for v in votes)
+        source = e(meeting["outcome"]["source_url"])
+        return (f'<h3>{self.t("meeting.votes")}</h3><table class="recorded-votes"><thead><tr>'
+                f'<th scope="col">{self.t("meeting.votes_member")}</th><th scope="col">{self.t("meeting.votes_vote")}</th>'
+                f'</tr></thead><tbody>{rows}</tbody></table><p class="notice">{self.t("meeting.votes_source")} '
+                f'<a href="{source}" rel="noopener noreferrer">{source}</a></p>')
+
     def meeting_html(self, meeting):
         """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
         cancelled = meeting.get("status") == "cancelled"
@@ -949,7 +1018,8 @@ class Site:
                 + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
                 + (f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
                 + self.who_decides(meeting.get("agency_id"))
-                + (meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else "")
+                + (meeting_outcome_html(meeting) + self.recorded_votes(meeting)
+                   if meeting["starts_at"][:10] < self.today.isoformat() else "")
                 + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
@@ -1097,6 +1167,9 @@ class Site:
             if not entry["facts"]:
                 findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
                 entry["facts"] = [f["title"] for f in findings] or ["No published findings for this agency yet."]
+            if agency["agency_id"] in self.agency_pages():
+                entry["agencyPage"] = self.agency_pages()[agency["agency_id"]]
+                entry["findingCount"] = sum(f["agency_id"] == agency["agency_id"] for f in self.model["findings"])
             cities[agency["slug"]] = entry
         if self.map:
             slug = self.map["controller"]["group_slug"]
