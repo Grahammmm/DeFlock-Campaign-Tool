@@ -122,6 +122,7 @@ DEFAULTS = {
     "sources.record_no": "Record no.", "sources.public_copy": "Public copy", "agency.official_source": "the official source",
     "sources.private": "Original held in the private archive; not downloadable here", "sources.pages": "{count} page(s)",
     "sources.cited_by": "Cited by:", "sources.not_cited": "Not cited by a published finding",
+    "sources.record_description": "Source record {record}", "sources.record_page": "Record details",
     "agency.records": "Records request page", "agency.portal": "Portal ({name})",
     "agency.flock_portal": "Flock transparency portal", "agency.sources": "{count} source record(s)",
     "agency.feed": "Findings feed", "agency.findings": "{count} published finding(s):",

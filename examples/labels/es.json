@@ -194,6 +194,8 @@
     "vote.absent": "Ausente",
     "vote.recused": "Se excusó",
     "sources.record_no": "Registro n.º",
+    "sources.record_description": "Registro fuente {record}",
+    "sources.record_page": "Detalles del registro",
     "sources.public_copy": "Copia pública",
     "agency.official_source": "la fuente oficial",
     "sources.private": "Original conservado en el archivo privado; no se puede descargar aquí",

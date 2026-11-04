@@ -82,7 +82,7 @@ class SourcesAddTests(unittest.TestCase):
         finding_path.write_text(json.dumps(finding), encoding="utf-8")
         build_site(self.root)
         page = (self.root / "public" / "findings" / "cedar-policy-posted.html").read_text(encoding="utf-8")
-        self.assertIn('href="/sources.html#cedar-new-record"', page)
+        self.assertIn(f'href="/sources/{DIGEST[:12]}.html"', page)
 
     def test_full_hash_accepted_and_absent_file_created_when_content_exists(self):
         self.ingest()
