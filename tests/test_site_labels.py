@@ -262,6 +262,7 @@ class LabelsTest(unittest.TestCase):
                   "map.check_in_agency_record", "map.check_not_found_on_site", "map.check_seen_in_person",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
+                  "meeting.continued_from", "meeting.continued_to",
                   "meeting.minutes_confirmed", "meeting.minutes_pending", "meeting.recording", "meeting.recording_from",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
                   "officials.heading", "officials.listed", "officials.source", "privacy.signup_policy",

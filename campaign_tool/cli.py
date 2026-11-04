@@ -938,6 +938,8 @@ def main():
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
     outcome_p.add_argument("--recording-url", help="https URL of the body's official video or audio of the meeting")
     outcome_p.add_argument("--recording-start", metavar="H:MM:SS", help="Where the discussion starts in the recording, at most 12:00:00")
+    outcome_p.add_argument("--continued-to", metavar="MEETING_ID", help="With --result continued: the staged later meeting of the same body the official source says the item moved to")
+    outcome_p.add_argument("--continued-to-date", metavar="YYYY-MM-DD", help="With --result continued: the later date the official source states (not with --continued-to)")
     sent_p = commands.add_parser("meetings-comment-sent", help="Record a comment you submitted by hand on a staged "
                                  "meeting in kit/comments-sent.json; sends nothing")
     for flag in ("--directory", "--id", "--on"):
@@ -1040,10 +1042,11 @@ def main():
     response_p.add_argument("--kind", required=True, choices=("acknowledged", "extension", "determination",
                                                                "produced", "denied", "closed", "fee_estimate",
                                                                "clarification_requested", "clarified", "fee_paid",
-                                                               "fee_waived"))
+                                                               "fee_waived", "withdrawn"))
     response_p.add_argument("--amount", metavar="USD", help="fee_estimate (required) or fee_paid (optional): 0-100000 "
                             "(e.g. 245.50); recorded only, nothing is paid")
-    response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
+    response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents); required for "
+                            "withdrawn, the campaign's own withdrawal of its request (not an agency closure)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
     response_p.add_argument("--correspondence", action="append", default=[], metavar="PREFIX",
@@ -1696,9 +1699,11 @@ def main():
             print(json.dumps(report, indent=2))
             for row in report["requests"]:  # a reminder on stderr; stdout stays one JSON document
                 label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
-                if row["over_fee_cap"]:
+                if "withdrawn_on" in row:  # ended by us: history stays in the JSON, but no reminder is actionable
+                    print(f"{label}: withdrawn by us on {row['withdrawn_on']}", file=sys.stderr)
+                if row["over_fee_cap"] and "withdrawn_on" not in row:
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
-                if row["fee_state"] == "unpaid":
+                if row["fee_state"] == "unpaid" and "withdrawn_on" not in row:
                     print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
                 if row.get("undone_steps"):
                     print(f"{label}: {row['undone_steps']} step(s) undone", file=sys.stderr)

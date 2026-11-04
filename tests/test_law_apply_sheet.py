@@ -150,8 +150,10 @@ class ApplySheetTests(unittest.TestCase):
             with self.subTest(message=message):
                 self.refused(sheet, message)
         path = self.tmp / "sheets" / "short.csv"
-        path.write_text(",".join(law.SHEET_COLUMNS) + "\nrecords_law" + "," * 17 + "\nca-a,x\n", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "row 2: expected 18 cells"):
+        first = ["records_law"] + [""] * (len(law.SHEET_COLUMNS) - 1)
+        first[law.SHEET_COLUMNS.index("package_sha256")] = law.package_sha256(synthetic_package())
+        path.write_text(",".join(law.SHEET_COLUMNS) + "\n" + ",".join(first) + "\nca-a,x\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "row 2: expected 19 cells"):
             law.read_sheet(path, synthetic_package())
 
     def test_edited_text_is_listed_not_applied(self):

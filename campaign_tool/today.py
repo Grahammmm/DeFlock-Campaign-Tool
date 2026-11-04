@@ -10,12 +10,13 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from . import findings, kit, kit_track, meeting_comments, meeting_stage
-from .content import _read_json, load_agencies, load_meeting
+from .content import CONTINUATION_KEYS, _read_json, continuation_issues, continuation_targets, load_agencies, load_meeting
 
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
          "request_installment_due", "request_download_pending", "request_download_expired", "finding_ready",
          "finding_blocked",
-         "contract_ending", "minutes_pending", "stale_comment_kit", "stale_contact", "review_waiting", "unreadable")
+         "contract_ending", "minutes_pending", "continued_pending", "stale_comment_kit", "stale_contact", "review_waiting",
+         "unreadable")
 WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS, REVIEW_DAYS = 7, 180, 120, 7
 CONTRACT_DAYS, CONTRACT_ENDED_DAYS, MINUTES_DAYS = 90, 30, 45
 
@@ -49,6 +50,7 @@ def _meetings(root, as_of, directory):
     except ValueError as exc:  # bad file: say so once, keep listing every deadline
         items.append(_unreadable(meeting_comments.LABEL, exc))
         submitted = {}
+    loaded = []  # DF0022-07, pass 1: one tolerant read of every file; a broken one is its own item and nothing more
     for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
         label = "content/meetings/" + path.name
         try:
@@ -59,9 +61,15 @@ def _meetings(root, as_of, directory):
         except (ValueError, OSError) as exc:
             items.append(_unreadable(label, exc))
             continue
-        ident = meeting["id"] or path.stem
+        loaded.append((label, {**meeting, "id": meeting["id"] or path.stem}, written, due, day))
+    staged = [entry[1] for entry in loaded]
+    unreliable = _continuation_unreadable(loaded, items)  # pass 2: relationships between the files read
+    for label, meeting, written, due, day in loaded:  # pass 3: the reminders of each readable meeting
+        ident = meeting["id"]
         if (pending := _minutes_item(meeting, ident, as_of, directory)) is not None:
             items.append(pending)
+        if label not in unreliable and (later := _continued_item(meeting, staged, as_of, directory)) is not None:
+            items.append(later)
         if meeting["status"] != "scheduled" or day is None or not as_of <= day <= as_of + timedelta(WINDOW_DAYS):
             continue
         if ident in submitted:
@@ -70,6 +78,37 @@ def _meetings(root, as_of, directory):
         items.append(_item("comment_deadline", f"Written comment due {due} for {meeting['body']} ({ident})",
                            f"submit written comment: {written['how']}{agenda}", due, ident))
     return items
+
+
+def _continuation_unreadable(loaded, items):
+    """DF0022-07: one ``unreadable`` item per meeting file whose continuation cannot be trusted (a duplicate id, or an
+    explicit ``continued_to`` that names no valid later meeting of the same body); returns those files' labels. Nothing
+    changes while no meeting carries a continuation, and no other meeting's reminder is ever suppressed."""
+    staged = [entry[1] for entry in loaded]
+    if not any(key in (meeting["outcome"] or {}) for meeting in staged for key in CONTINUATION_KEYS):
+        return set()
+    labels, flagged = {id(entry[1]): entry[0] for entry in loaded}, {}
+    for meeting in staged:
+        if sum(1 for other in staged if other["id"] == meeting["id"]) > 1:
+            flagged.setdefault(labels[id(meeting)], f"duplicate meeting ID {meeting['id']}")
+    for meeting, problem in continuation_issues(staged):
+        flagged.setdefault(labels[id(meeting)], f"outcome.continued_to: {problem}")
+    items.extend(_unreadable(label, reason) for label, reason in flagged.items())
+    return set(flagged)
+
+
+def _continued_item(meeting, meetings, as_of, directory):
+    """DF0022-07: a continued item whose stated date has passed with no meeting of that body staged on it. A follow-up
+    cue only: a later meeting on that date is not evidence the item was heard or resolved. An explicit ``continued_to``
+    never yields one (it is checked as a reference instead)."""
+    outcome = meeting["outcome"] or {}
+    stated = outcome.get("continued_to_date")
+    if stated is None or stated >= as_of.isoformat() or continuation_targets(meeting, meetings):
+        return None
+    return _item("continued_pending", f"Continued item for {meeting['body']} ({meeting['id']}): stated date {stated} has "
+                 "passed with no matching meeting staged; check the official agenda",
+                 f"open {shlex.quote(outcome['source_url'])} and stage the verified follow-up meeting with "
+                 f"meetings-stage --directory {directory} --id MEETING_ID", stated, meeting["id"])
 
 
 def _minutes_item(meeting, ident, as_of, directory):
