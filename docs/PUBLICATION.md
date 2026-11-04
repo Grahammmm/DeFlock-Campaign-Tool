@@ -131,6 +131,9 @@ correction's date (equal is fine); the note is non-empty, at most 1000 character
 With `--from DRAFT` the reviewed fields are replaced by the draft's (same id and slug), which must clear
 the same review blockers and cited-record check as `publish`; `id`, `slug`, `published_at` and earlier
 corrections are kept. One `{at, action: "correct", id, slug, date, content_sha256, text_changed}` line is logged.
+A finding about several agencies (`also_agency_ids`, see SITE-CONTENT.md) is hashed with that list as entered, so adding,
+removing or reordering an agency on a published finding needs a correction from a freshly reviewed draft; `publish` and
+`correct` refuse an unknown agency id before anything is written.
 
     python3 -m campaign_tool finding withdraw ID --directory D --reason TEXT
 
@@ -310,7 +313,8 @@ with a roster for an unlisted name or a role they do not hold); nothing is sent,
 blocker, receipt count or publication check reads it. `finding review-status` shows each role as assigned since D,
 receipt_recorded or unassigned, and `today --review-days N` (default 7) lists assignments with no receipt after N days.
 `finding diff ID --directory D --from DRAFT` (or `OLD NEW`) prints a read-only field-level
-diff of the public fields before a correction; exit 3 when they differ. The runner that executes
+diff of the public fields (including `agency_id` and `also_agency_ids`; a reorder of the extra agencies prints the old and
+the new ordered list) before a correction; exit 3 when they differ. The runner that executes
 `build_site` is a separate component (see [ROADMAP.md](ROADMAP.md)).
 
 The offline starter has a page-level preview: `python3 -m campaign_tool build --directory D --preview`
