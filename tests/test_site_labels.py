@@ -34,6 +34,7 @@ def enrich(root, maplibre=False):
     content = root / "content"
     site = json.loads((content / "site.json").read_text(encoding="utf-8"))
     site.update(mission_md="", contact_email="zq-team@example.invalid",
+                press={"contact_role": "Zq press lead"},  # DF2207-10: inherits the address; reaches every press label but the logo ones
                 signup={"mode": "brevo_hosted", "form_html_allowlisted_url": "https://zq.sibforms.com/serve/zq",
                         "label": "Zq join", "note": "Zq note."})
     _write(content / "site.json", site)
@@ -235,6 +236,7 @@ class LabelsTest(unittest.TestCase):
         # Codes the fixture has no finding or agency for; they render through the same t("<family>." + code) call.
         # officials.*: the fixture has no officials.json (tests/test_site_officials.py covers those labels).
         # map.history_*: the fixture has no map/history.json (tests/test_site_cameras_page.py covers those labels).
+        # press.logo, press.download_logo: the fixture has no brand logo (tests/test_site_press_page.py covers those labels).
         # map.check_*: the fixture has no map/point-checks.json (tests/test_map_point_checks.py covers those labels).
         # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
         # agency.mapped_reported_*: the fixture has no transparency snapshot (tests/test_agency_mapped_reported.py covers those).
@@ -270,7 +272,8 @@ class LabelsTest(unittest.TestCase):
                   "meeting.minutes_confirmed", "meeting.minutes_pending", "meeting.recording", "meeting.recording_from",
                   "meeting.staff_direction",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
-                  "officials.heading", "officials.listed", "officials.source", "privacy.signup_policy",
+                  "officials.heading", "officials.listed", "officials.source", "press.download_logo", "press.logo",
+                  "privacy.signup_policy",
                   "sharing.aliases", "sharing.checked", "sharing.count", "sharing.federal", "sharing.in_state",
                   "sharing.kind", "sharing.kind_federal", "sharing.kind_local", "sharing.kind_private", "sharing.kind_state",
                   "sharing.kind_unknown", "sharing.law_status", "sharing.lead", "sharing.out_of_state", "sharing.receiver",

@@ -49,8 +49,11 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "sharing.html"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "sharing.html", "press.html"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
+# DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
+PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
+    "data/cameras.geojson",)
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
 CLASSIFICATION_DEFINITIONS = {
@@ -781,6 +784,8 @@ class Site:
             parts.append(f'<p><a href="/topics/">{self.t("nav.topics")}</a></p>')
         if self.supporters:  # DF2207-13
             parts.append(f'<p><a href="/supporters.html">{self.t("supporters.title")}</a></p>')
+        if self.site.get("press"):  # DF2207-10: only with site.json.press
+            parts.append(f'<p><a href="/press.html">{self.t("footer.press")}</a></p>')
         parts.append(f'<p><a href="/privacy.html">{self.t("footer.privacy")}</a>'
                      + (f' · <a href="/glossary.html">{self.t("footer.glossary")}</a>' if self.glossary else "") + '</p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
@@ -1457,6 +1462,47 @@ class Site:
                 + (f'<ol>{contents}</ol>{"".join(articles)}' if findings else f'<p>{self.t("notice.no_findings")}</p>')
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", "Findings packet", "Every published finding on one printable page", "/findings/packet-all.html", main)
+
+    def press_license(self, path):
+        """DF2207-10: the licence text beside one open-data link. cameras.geojson is always ODbL with the OpenStreetMap
+        credit; every other file shows the organizer's site.json.license, or says none is specified (never a guess)."""
+        if path == "data/cameras.geojson":
+            return (f'<a href="{e(ODBL["url"])}" rel="license">{e(ODBL["name"])}</a>, '
+                    f'<a href="{e(ODBL["attribution_url"])}" rel="noopener noreferrer">{e(ODBL["attribution"])}</a>')
+        if not self.license:
+            return self.t("press.license_unspecified")
+        attribution = f', {e(self.license["attribution"])}' if "attribution" in self.license else ""
+        return f'<a href="{e(self.license["url"])}" rel="license">{e(self.license["name"])}</a>{attribution}'
+
+    def press_html(self, data_paths):
+        """/press.html (DF2207-10): the campaign description, the press contact, the ten newest published findings with their
+        exact citation text, the brand logo download and the open-data files this build writes (``data_paths``, with licences)."""
+        press, brand = self.site["press"], self.site.get("brand", {})
+        about = self.md(self.site["about_md"]) + (self.md(press["about_md"]) if press["about_md"] else "")
+        contact = (f'<h3>{self.t("press.contact")}</h3><p>{e(press["contact_role"])} · '
+                   f'<a href="mailto:{e(press["contact_email"])}">{e(press["contact_email"])}</a></p>')
+        newest = sorted(self.model["findings"], key=lambda f: (utc_moment(f["published_at"]), f["slug"]), reverse=True)[:10]
+        cards = []
+        for finding in newest:
+            latest = max((c["date"] for c in finding["corrections"]), default=None)
+            corrected = (f'<span class="status-pill"><a href="{e(finding_path(finding))}#corrections">'
+                         f'{self.t("finding.corrected", date=time_tag(latest))}</a></span>' if latest else "")
+            cards.append(
+                f'<li id="press-finding-{e(finding["slug"])}"><div class="finding-meta">{self.pill(finding["classification"])}'
+                f'<span>{self.confidence_link(finding["confidence"])}</span>'
+                f'<span>{self.t("finding.published", date=date_label(finding["published_at"]))}</span>{corrected}</div>'
+                f'<h4><a href="{e(finding_path(finding))}">{e(finding["title"])}</a></h4><p>{e(finding["summary"])}</p>'
+                f'<section class="cite"><h5>{self.t("finding.cite")}</h5>'
+                f'<p class="cite-text">{e(citation(finding, self.cfg["name"], self.base))}</p></section></li>')
+        recent = (f'<ul class="finding-list">{"".join(cards)}</ul>' if cards else f'<p>{self.t("notice.no_findings")}</p>')
+        logo = (f'<h3>{self.t("press.logo")}</h3><p><img class="brand-logo" src="/{e(brand["logo"])}" alt="{e(brand["logo_alt"])}" '
+                f'width="{brand["logo_size"][0]}" height="{brand["logo_size"][1]}"> '
+                f'<a href="/{e(brand["logo"])}" download>{self.t("press.download_logo")}</a></p>' if "logo" in brand else "")
+        data = "".join(f'<li><a href="/{e(path)}">{e(path)}</a> · {self.press_license(path)}</li>' for path in data_paths)
+        main = (f'    <section class="section finding-body" id="content"><h2>{self.t("press.title")}</h2>{about}{contact}'
+                f'<h3>{self.t("press.findings")}</h3>{recent}{logo}<h3>{self.t("press.data")}</h3><ul>{data}</ul>'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("press", self.labels["press.title"], self.labels["press.description"], "/press.html", main)
 
     def supporters_html(self):
         """/supporters.html (DF2207-13): consented organizations by kind (enum order), then name, with the joined date.
@@ -2329,6 +2375,7 @@ class Site:
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
         paths += ["/supporters.html"] if self.supporters else []  # DF2207-13
         paths += ["/sharing.html"] if self.sharing_rows else []  # DF0237-04
+        paths += ["/press.html"] if self.site.get("press") else []  # DF2207-10
         if self.model.get("newsletters"):  # DF1952-09: only with public issues
             paths += ["/newsletters.html"] + [f'/newsletters/{i["sent_on"]}.html' for i in reversed(self.model["newsletters"])]
         paths += list(self.agency_pages().values())
@@ -2856,16 +2903,20 @@ def _plan_site(root, today=None, notes=None):
     if model["meetings"]:  # DF1103-10: no staged meetings, no feed (the tree swap drops a stale one)
         files["meetings.xml"] = site.meetings_feed_xml()
     plan = []
+    map_data = []  # DF2207-10: the map files copied under data/ (county and city boundaries), for the press page
     if model["map"]:
         found = model["map"]
         files["data/cameras.geojson"] = site.cameras_geojson()  # DF1422-13: ODbL + OSM attribution members, always
         plan = [(found[key], relative, 8 * 1024 * 1024) for key, relative in (
             ("boundary_path", found["controller"]["city_boundaries_url"]),
             ("county_boundary_path", "data/county.geojson")) if found[key]]
+        map_data = [Path(relative).as_posix() for _, relative, _ in plan]
         plan += [(path, f"vendor/{name}", VENDOR_MAX_BYTES) for name, path in model["vendor"].items()]
     plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
     for source, _, limit in plan:  # every copy is checked before the filesystem changes
         _check_copy(source, limit)
+    if model["site"].get("press"):  # DF2207-10: links only the open data this build writes, never a scan of public/
+        files["press.html"] = site.press_html(sorted({name for name in PRESS_DATA_FILES if name in files} | set(map_data)))["html"]
     if "redirects" in model:  # DF2037-16: any present file, even JSON null, is checked against every path written
         from .findings import withdrawn_names  # local, as the other optional site steps
         written = [*files, *(Path(relative).as_posix() for _, relative, _ in plan)]
