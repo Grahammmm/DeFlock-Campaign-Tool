@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
+from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, PRE_MEETING_RULE_ID, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, finding_agency_ids, glossary_terms_used,
                       load_content, utc_moment)
 from .corrections_policy import policy_html
@@ -539,6 +539,15 @@ class Site:
                 self.checklist_law_status = law_status(law.load_package(CHECKLIST_JURISDICTION))
             except (OSError, ValueError):
                 pass
+        # DF1207-07: the rule's citation and the package label come from the shipped package by rule id; absent -> no Rule line.
+        self.pre_meeting_rule = None
+        if any(a.get("pre_implementation_meeting") for a in model["agencies"]):
+            try:
+                package = law.load_package(CHECKLIST_JURISDICTION)
+                rule = next((r for r in package["rules"] if r["rule_id"] == PRE_MEETING_RULE_ID), None)
+                self.pre_meeting_rule = (rule["citation"], law_status(package)) if rule else None
+            except (OSError, ValueError):
+                pass
         # DF2237-08: agencies with a published finding or a sources.json entry get /agencies/<slug>.html.
         for finding in model["findings"]:  # DF1952-07: a preview model's extra agencies must be this campaign's agencies
             check_finding_agencies(finding, self.agencies_by_id, f'findings/{finding["slug"]}.json')
@@ -889,6 +898,24 @@ class Site:
                 f'rel="noopener noreferrer">the posted policy</a>. Law package: {e(self.checklist_law_status or "status unavailable")}.'
                 '</p></section>')
 
+    def pre_meeting_section(self, agency):
+        """DF1207-07: the public meeting an organizer found before the camera program, or that none has been found yet.
+
+        Fixed wording; a missing record is never turned into a statement that no meeting was held."""
+        meeting = agency.get("pre_implementation_meeting")
+        if not meeting:
+            return ""
+        checked = date_label(meeting["checked_on"])
+        if meeting["status"] == "found":
+            line = (f'{e(meeting["body"])} discussed it on {date_label(meeting["meeting_on"])} '
+                    f'(<a href="{e(meeting["source_url"])}" rel="noopener noreferrer">official record</a>). Checked {checked}.')
+        else:
+            line = f"We have not found a record of one yet (checked {checked})."
+        rule = (f"<p>Rule: {e(self.pre_meeting_rule[0])}. Law package: {e(self.pre_meeting_rule[1])}.</p>"
+                if self.pre_meeting_rule else "")
+        note = f'<p>{e(meeting["note"])}</p>' if meeting.get("note") else ""
+        return f'<section class="pre-meeting"><h4>Public meeting before the camera program</h4><p>{line}</p>{rule}{note}</section>'
+
     def transparency_block(self, agency, heading="h4"):
         """Newest organizer-transcribed portal snapshot, as the vendor reported it, with change since the previous one."""
         snapshots = agency.get("transparency")
@@ -1042,6 +1069,7 @@ class Site:
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
                     + self.policy_check_section(agency)
+                    + self.pre_meeting_section(agency)
                     + self.contract_line(agency["contract"]) + self.funding_block(agency) + self.transparency_block(agency)
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
@@ -1118,7 +1146,7 @@ class Site:
                 + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
-                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency)
+                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency) + self.pre_meeting_section(agency)
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
                 + self.funding_block(agency) + self.transparency_block(agency, "h3") + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))

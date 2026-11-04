@@ -200,6 +200,21 @@ every field as `<file>[n].profile.policy_check.<field>` on one line. The agency 
 law package status label. It is an organizer's reading of what the document says, not a finding about compliance, and
 `not found` is never read as more than that. Nothing is fetched; the section is not in card JS, open data or feeds.
 
+An agency's optional `profile.pre_implementation_meeting` records the public meeting an organizer found before the
+agency's ALPR program started, for the public-comment rule in Civ. Code § 1798.90.55(a):
+`{"status": "found"|"not_found_yet", "checked_on", "meeting_on"?, "body"?, "source_url"?, "note"?}`. `found` needs
+`meeting_on` (a real YYYY-MM-DD date not after the build date), `body` (1-120 characters) and an `https://` `source_url`
+(the official record); `not_found_yet` refuses all three. `checked_on` is a real date not after the build date and not
+before `meeting_on`; `note` is up to 200 plain-text characters. Unknown fields are refused. Each problem is named
+`<file>[n].profile.pre_implementation_meeting.<field>`; the build stops at the first and `content-check` lists them all.
+The agency page and the agencies-list card show "Public meeting before the camera program": "`{body}` discussed it on
+`{meeting_on}` (official record). Checked `{checked_on}`." or "We have not found a record of one yet (checked
+`{checked_on}`).", then "Rule: `{citation}`. Law package: `{status}`." and the note. The citation and status come from the
+shipped law package by rule id `ca-civ-1798.90.55-public-comment-before-implementation`; if the package lacks the rule
+the Rule line is left out and the build is not refused. It is an organizer-verified record and never fetched: "not found
+yet" is not a statement that no meeting was held, and the section makes no finding that one was required, missed or
+adequate. It is not in card JS, open data or feeds.
+
 An agency's optional `asked` (≤ 20 items) lists what the organizer asked it: `{"topic", "asked_on", "state",
 "updated_on"?, "note"?}`. `topic` ≤ 120 and `note` ≤ 200 plain-text characters; `asked_on`/`updated_on` are real
 YYYY-MM-DD dates not after the build date, `updated_on` not before `asked_on`; `state` is one of `awaiting_response`,
