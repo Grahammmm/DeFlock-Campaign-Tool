@@ -577,6 +577,10 @@ class LegacyAndAtomicTests(Fixture):
             self.assertEqual(text.count(feed_link), 1 if name == "findings/index.html" else 0, name)
             if name == "findings/index.html":
                 text = text.replace(feed_link, "", 1)
+            data_link = '<p><a href="/data.html">Open data</a></p>'
+            self.assertEqual(text.count(data_link), 1 if name == "findings/index.html" else 0, name)
+            if name == "findings/index.html":
+                text = text.replace(data_link, "", 1)
             artifacts.append(f"{name}\n{text}")
         self.assertEqual(digest("\n".join(artifacts)), LEGACY_DIGEST)
         self.assertEqual(self.read("findings/filter.js"), FILTER_JS)

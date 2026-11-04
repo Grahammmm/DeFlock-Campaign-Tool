@@ -400,7 +400,18 @@ class IntegrityTests(Case):
             (self.public / "data").rename(moved)
             (self.public / "data").symlink_to(moved)
 
+        def omitted_city():
+            self.tamper_descriptor(lambda d: d.update(resources=[r for r in d["resources"] if "data/" + r["path"] != CITY]))
+            page = self.public / "data.html"
+            page.write_text(re.sub(r'<tr data-path="' + re.escape(CITY) + r'".*?</tr>', "", page.read_text(encoding="utf-8"), flags=re.S), encoding="utf-8")
+
+        def malformed_license():
+            self.tamper_descriptor(lambda d: d["resources"][0].update(licenses=[{"name": [], "path": "x"}]))
+
         cases = [
+            ("null descriptor", lambda: self.save_descriptor(None), "data/datapackage.json"),
+            ("omitted city and row", omitted_city, CITY),
+            ("unhashable license name", malformed_license, "data/agencies.csv"),
             ("deleted dataset", lambda: cameras.unlink(), "data/cameras.geojson"),
             ("same-size edit", same_size, "data/findings.json"),
             ("size change", grow, "data/findings.json"),
@@ -460,6 +471,20 @@ class IntegrityTests(Case):
                                 cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Public tree check passed", result.stdout)
+
+    def test_renamed_json_city_copy_cannot_be_omitted_with_its_row(self):
+        city = "data/renamed-city.json"
+        (self.content / "map/city-boundaries.geojson").rename(self.content / "map/renamed-city.json")
+        self.edit_json(self.content / "map/map-config.json", lambda d: d.update(city_boundaries_url=city))
+        self.build()
+        self.assertEqual(verify_data_package(self.public), [])
+        self.tamper_descriptor(lambda d: d.update(resources=[r for r in d["resources"] if "data/" + r["path"] != city]))
+        page = self.public / "data.html"
+        page.write_text(re.sub(r'<tr data-path="' + re.escape(city) + r'".*?</tr>', "", page.read_text(encoding="utf-8"), flags=re.S), encoding="utf-8")
+        self.assertIn((city, "present but not listed in the data package"), verify_data_package(self.public))
+        before = self.snapshot()
+        self.assertIn("data catalogue check failed", self.check_cli()[0])
+        self.assertEqual(self.snapshot(), before)
 
     def test_legacy_tree_without_a_catalogue_skips_the_precheck(self):
         (self.public / "data.html").unlink()

@@ -261,7 +261,9 @@ def _check_resource(public, resource, seen, problems, city_names):
     if full == "data/cameras.geojson" and resource.get("licenses") != [{"name": ODBL["id"], "path": ODBL["url"]}]:
         problems.append((full, "cameras.geojson must carry ODbL-1.0"))
     for item in resource.get("licenses") if isinstance(resource.get("licenses"), list) else [None]:
-        if not (isinstance(item, dict) and set(item) == {"name", "path"} and KNOWN_LICENSES.get(item["name"]) == item["path"]):
+        if not (isinstance(item, dict) and set(item) == {"name", "path"}
+                and isinstance(item["name"], str) and isinstance(item["path"], str)
+                and item["name"] in KNOWN_LICENSES and KNOWN_LICENSES[item["name"]] == item["path"]):
             problems.append((full, "licenses must be known {name, path} entries"))
             break
     if "attribution" in resource and not isinstance(resource["attribution"], str):
@@ -283,14 +285,15 @@ def verify_data_package(public):
             problems.append((path, "missing"))
         elif isinstance(data, str):
             problems.append((path, data))
-    document = None
+    unread = object()
+    document = unread
     if isinstance(raw, bytes):
         try:
             document = json.loads(raw.decode("utf-8"), object_pairs_hook=_duplicate_keys)
         except (UnicodeDecodeError, ValueError, RecursionError):
             problems.append((DESCRIPTOR, "is not valid JSON without duplicate keys"))
     listed, city_names = set(), []
-    if document is not None:
+    if document is not unread:
         resources = document.get("resources") if isinstance(document, dict) else None
         if (not isinstance(document, dict) or set(document) != PACKAGE_KEYS or document["profile"] != "data-package"
                 or document["name"] != PACKAGE_NAME or not isinstance(document["title"], str)
@@ -308,7 +311,16 @@ def verify_data_package(public):
                     expected_rows[full] = (str(resource["bytes"]), resource["hash"][7:])
             if len(city_names) > 1:
                 problems.append((DESCRIPTOR, "more than one city boundary is listed"))
-            for path in sorted(DATASETS):  # a generated file the package leaves out
+            # The map controller independently names the actual city copy (which may be renamed or JSON).
+            # Read its literal fetch argument, never execute JavaScript or discover unrelated data files.
+            expected_paths = set(DATASETS)
+            controller = _read_regular(public, "app.js")
+            if isinstance(controller, bytes):
+                for match in re.finditer(rb'fetch\(("data/[A-Za-z0-9._-]+")\)', controller):
+                    path = json.loads(match[1])
+                    if LOCAL_FILE.fullmatch(path[5:]) and path != DESCRIPTOR:
+                        expected_paths.add(path)
+            for path in sorted(expected_paths):  # a generated file the package leaves out
                 if path not in listed and os.path.lexists(public / path):
                     problems.append((path, "present but not listed in the data package"))
             if isinstance(page, bytes):
