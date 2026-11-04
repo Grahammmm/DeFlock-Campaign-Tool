@@ -637,8 +637,10 @@ MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 CONTINUATION_KEYS = ("continued_to", "continued_to_date")  # DF0022-07: where the official source says an item went
 DIRECTION_KEYS = ("direction", "return_by", "direction_source")  # DF0022-08: a staff direction the source states, as a trio
+COMMENT_KEYS = ("spoke", "written", "comment_source_url")  # DF0022-09: public-comment totals the official record states
 OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes", "recording_url",
-                "recording_start", "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS, *DIRECTION_KEYS}
+                "recording_start", "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS, *DIRECTION_KEYS,
+                *COMMENT_KEYS}
 RECORDING_START = re.compile(r"([0-9]{1,2}):([0-5][0-9]):([0-5][0-9])")
 VOTE_VALUES = ("yes", "no", "abstain", "absent", "recused")
 PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
@@ -687,7 +689,7 @@ def load_outcome(value, starts_at, status, label, today=None):
         raise ContentError(f"{label}: a cancelled meeting has no outcome")
     _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes", "recording_url", "recording_start",
                                                        "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS,
-                                                       *DIRECTION_KEYS}, label)
+                                                       *DIRECTION_KEYS, *COMMENT_KEYS}, label)
     if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
         raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
     held, now = starts_at[:10], (today or date.today()).isoformat()
@@ -728,12 +730,35 @@ def load_outcome(value, starts_at, status, label, today=None):
     minutes = _load_minutes(value, held, now, label)  # DF2207-05: the body's approved minutes, always as a pair
     continued = _load_continuation(value, held, label)  # DF0022-07: where a continued item went, as the source states
     direction = _load_direction(value, held, label)  # DF0022-08: what the body told its staff, as the source states
+    comments = load_comment_counts(value, label)  # DF0022-09: how many people spoke or wrote, as the record states
     return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
             "verified_by": value["verified_by"], "verified_at": value["verified_at"],
             **({"vote": value["vote"]} if "vote" in value else {}),
             **({"votes": [{"name": v["name"], "vote": v["vote"]} for v in votes]} if "votes" in value else {}),
             **({"recording_url": recording} if "recording_url" in value else {}),
-            **({"recording_start": start} if "recording_start" in value else {}), **minutes, **continued, **direction}
+            **({"recording_start": start} if "recording_start" in value else {}), **minutes, **continued, **direction,
+            **comments}
+
+
+def load_comment_counts(value, label):
+    """DF0022-09: ``{spoke?, written?, comment_source_url}`` or ``{}``. Each count is a whole number (``type is int``,
+    never a bool, float, string or null) from 0 to 999 exactly as the official record states it, and a count never
+    appears without the https record that states it. Zero is a stated count; an absent count is simply not stated."""
+    present = [key for key in ("spoke", "written") if key in value]
+    if not present:
+        if "comment_source_url" in value:
+            raise ContentError(f"{label}.comment_source_url: needs spoke or written")
+        return {}
+    for key in present:
+        if type(value[key]) is not int or not 0 <= value[key] <= 999:
+            raise ContentError(f"{label}.{key}: must be a whole number from 0 to 999")
+    if "comment_source_url" not in value:
+        raise ContentError(f"{label}.comment_source_url: required with spoke or written")
+    source = value["comment_source_url"]
+    if isinstance(source, str) and len(source) > 500:
+        raise ContentError(f"{label}.comment_source_url: at most 500 characters")
+    _https(source, f"{label}.comment_source_url")
+    return {**{key: value[key] for key in present}, "comment_source_url": source}
 
 
 def direction_text_ok(value):

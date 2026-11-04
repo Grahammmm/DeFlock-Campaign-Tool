@@ -746,7 +746,9 @@ held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `
 `minutes_approved_on` (the body's approved official minutes, both or neither; no derived confirmation flag), plus
 the optional `continued_to` (a staged meeting id) or `continued_to_date` (a stated date) of a `continued` result (one
 of the two, never both; no derived back-reference), plus the optional trio `direction`, `return_by` and
-`direction_source` (a staff direction as the official source states it; all or none; no reminder or fulfillment flag). It never
+`direction_source` (a staff direction as the official source states it; all or none; no reminder or fulfillment flag), plus the
+optional `spoke` and `written` whole numbers (0 to 999) with their https `comment_source_url` (the public-comment totals the
+official record states; at least one count with the source; no for/against split, name or quote). It never
 includes the comment kit, `participation`,
 contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
 `data/meetings.json: non-public key ...` and writes nothing.

@@ -218,7 +218,7 @@ PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
 PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes", "minutes_url", "minutes_approved_on",
                          "continued_to", "continued_to_date", "direction", "return_by",
-                         "direction_source")  # never verified_by / verified_at
+                         "direction_source", "spoke", "written", "comment_source_url")  # never verified_by / verified_at
 PUBLIC_VOTE_FIELDS = ("name", "vote")
 # DF1207-14: data/findings.csv and data/sources.csv are flattened from the built public JSON documents, so no CSV column
 # can exist that the JSON does not carry; "sources", "corrections" and "public_copy" are the only nested values.
@@ -1875,6 +1875,21 @@ class Site:
         return (f'<p class="meeting-direction">'
                 f'{self.t("meeting.staff_direction", direction=e(outcome["direction"]), date=e(outcome["return_by"]), source=link)}</p>')
 
+    def public_comment_counts(self, meeting):
+        """DF0022-09: ``N people spoke and M written comments were received, as stated in SOURCE`` (or the one count the
+        record states) for a held meeting whose outcome carries the group; "" otherwise. The numbers are the official
+        record's literal totals, the source a plain link; no for/against split, name or quote exists to show, and a count
+        the record did not state is never shown as zero."""
+        outcome = meeting.get("outcome") or {}
+        if ("spoke" not in outcome and "written" not in outcome) or meeting["status"] == "cancelled" \
+                or meeting["starts_at"][:10] >= self.today.isoformat():
+            return ""
+        source = e(outcome["comment_source_url"])
+        link = f'<a href="{source}" rel="noopener noreferrer">{source}</a>'
+        key = "meeting.comments_" + ("both" if "spoke" in outcome and "written" in outcome
+                                     else "spoke" if "spoke" in outcome else "written")
+        counts = {name: str(outcome[name]) for name in ("spoke", "written") if name in outcome}
+        return f'<p class="meeting-comments">{self.t(key, **counts, source=link)}</p>'
 
     def meeting_html(self, meeting):
         """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
@@ -1893,6 +1908,7 @@ class Site:
                    if meeting["starts_at"][:10] < self.today.isoformat() else "")
                 + self.meeting_continuation_html(meeting)
                 + self.meeting_direction_html(meeting)
+                + self.public_comment_counts(meeting)
                 + self._written_deadline(meeting)
                 + self._cosigned(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
@@ -2461,7 +2477,8 @@ class Site:
             value["outcome"] = {key: outcome[key] for key in ("result", "on", "source_url", "vote", "minutes_url",
                                                               "minutes_approved_on", "continued_to",
                                                               "continued_to_date", "direction", "return_by",
-                                                              "direction_source") if key in outcome}
+                                                              "direction_source", "spoke", "written",
+                                                              "comment_source_url") if key in outcome}
             if "votes" in outcome:  # DF0137-07 per-member votes, in stored order
                 value["outcome"]["votes"] = [{"name": v["name"], "vote": v["vote"]} for v in outcome["votes"]]
         return value
