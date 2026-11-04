@@ -10,7 +10,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from campaign_tool.cli import read_config
-from campaign_tool.content import load_content
+from campaign_tool.content import ContentError, load_content
 from campaign_tool.site import Site, build_site
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -140,11 +140,11 @@ class SourcesCitedByTests(unittest.TestCase):
         site = Site(self.root, read_config(self.root), load_content(self.root))
         self.assertEqual([f["slug"] for f in site.cited_by[BEEF]], ["two-locators"])
 
-    def test_same_sha_in_two_groups_lists_the_finding_in_both(self):
+    def test_same_sha_in_two_groups_is_refused_at_build(self):  # DF1103-11: one record number, one record page
         self.add_source(CAFE, "Synthetic policy copy filed elsewhere", fragment="other-records")
-        _, items = self.build()
-        for title in ("Synthetic Cedar Police ALPR policy", "Synthetic policy copy filed elsewhere"):
-            self.assertEqual([h for h, _ in self.cited(self.item(items, title))], ["/findings/cedar-policy-posted.html"])
+        with self.assertRaisesRegex(ContentError, r"entries 0, 2 share record number cafecafecafe") as raised:
+            self.build()
+        self.assertNotIn(CAFE, str(raised.exception))
 
     def test_finding_title_is_escaped(self):
         title = 'Tricky & "quoted" finding'  # the loader refuses angle brackets; see the renderer check below

@@ -152,7 +152,7 @@ class SitePrintTests(unittest.TestCase):
         sources = re.findall(r'<a [^>]*href="([^"]+)"', self.pages["sources.html"])
         self.assertTrue([h for h in sources if h.startswith("https://")], "sources page needs an https link")
         finding = re.findall(r'<a [^>]*href="([^"]+)"', self.pages["findings/cedar-policy-posted.html"])
-        internal = [h for h in finding if h.startswith("/sources.html#")]
+        internal = [h for h in finding if h.startswith("/sources/")]
         self.assertTrue(internal)
         for href in internal + ["#content", "mailto:organizer@example.invalid", "/meetings.html"]:
             self.assertFalse(href.startswith("http"), href)

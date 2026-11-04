@@ -127,6 +127,9 @@ class CaliforniaCorrectionTests(unittest.TestCase):
         canonical = ROOT / "jurisdictions" / "us-ca" / "package.json"
         bundled = ROOT / "campaign_tool" / "_resources" / "jurisdictions" / "us-ca" / "package.json"
         self.assertEqual(canonical.read_bytes(), bundled.read_bytes())
+        for name in ("policy-checklist.json",):  # DF1207-06: the checklist ships with the package
+            self.assertEqual((ROOT / "jurisdictions" / "us-ca" / name).read_bytes(),
+                             (ROOT / "campaign_tool" / "_resources" / "jurisdictions" / "us-ca" / name).read_bytes(), name)
         self.assertFalse(law.package_status("us-ca")[0] == "reviewed")
 
 
