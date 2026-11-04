@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import (CITY_KINDS, MAX_GEOJSON_BYTES, OSM_NODE_URL, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
+from .content import (CITY_KINDS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, load_content, utc_moment)
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
@@ -307,7 +307,6 @@ def js_json(value):
     return json.dumps(value, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
 
 
-COUNTED_APART = ("duplicate", "not_found_on_site")  # DF1422-11: listed and kept on the map, counted on their own
 # Popup line for app.js: ``pointChecks`` comes from site-data.js; every shown text goes through the controller's mapText.
 POINT_CHECK_RENDERER = (
     r'function(p){var m=/^https:\/\/www\.openstreetmap\.org\/node\/(\d+)$/.exec(String(p.url||""));'
@@ -1112,7 +1111,6 @@ class Site:
                          "What each finding label means, what record numbers show and how findings are reviewed",
                          "/methods.html", main)
 
-
     def check_cell(self, items):
         """DF1422-11: the newest organizer check as ``status · date · source`` (+ ``and N earlier``), or a dash."""
         if not items:
@@ -1278,23 +1276,6 @@ class Site:
             self._map_docs = docs
         return self._mapped_counts
 
-    def counted_apart(self):
-        """DF1422-11: ``{boundary name: points inside whose newest check is duplicate or not_found_on_site}``."""
-        if not hasattr(self, "_counted_apart"):
-            flagged = {node for node, items in ((self.map or {}).get("point_checks") or {}).items()
-                       if items[0]["status"] in COUNTED_APART}
-            self._counted_apart = {}
-            if flagged:
-                self.mapped_counts()
-                cameras, boundaries = self._map_docs
-                kept = []
-                for feature in cameras.get("features") or []:
-                    match = OSM_NODE_URL.fullmatch((feature.get("properties") or {}).get("url") or "")
-                    if match and int(match.group(1)) in flagged:
-                        kept.append(feature)
-                self._counted_apart = camera_counts.count_by_name(dict(cameras, features=kept), boundaries)[0]
-        return self._counted_apart
-
     def camera_notes(self):  # boundary names matching no picker city, then every boundary problem
         counts, problems = self.mapped_counts()
         picker = {agency["slug"] for agency in self.picker_cities()}
@@ -1315,9 +1296,6 @@ class Site:
             if entry["cameraCount"] == "" and entry["name"] in counts:  # an organizer-typed value always wins
                 n = counts[entry["name"]]
                 entry["cameraCount"] = self.labels["js.city_points_one" if n == 1 else "js.city_points_many"].format(count=n)
-                apart = self.counted_apart().get(entry["name"], 0)
-                if apart:  # DF1422-11: still in the count above, named here as an organizer's duplicate / not-found check
-                    entry["cameraCount"] += "; " + self.labels["map.check_apart"].format(count=apart)
             if not entry["facts"]:
                 findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
                 entry["facts"] = [f["title"] for f in findings] or [self.labels["js.city_no_findings"]]

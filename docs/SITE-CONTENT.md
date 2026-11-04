@@ -514,8 +514,7 @@ refused entry. With the file, `cameras.html` gains an "Organizer check" column (
 "and N earlier" when more; a dash when none) and the map popup one escaped line "Organizer check: <status>, <date>"
 (the note and the source stay off the popup and out of `site-data.js`). Without the file nothing is built differently.
 A check never removes or edits a point and never writes to OpenStreetMap: `duplicate` and `not_found_on_site` points stay
-on the map and in every count, and a city's count sentence names them apart ("...; 2 of these marked duplicate or not
-found on site by an organizer"). `in_agency_record` says an agency record lists the point; it is never ownership.
+on the map and in every count. `in_agency_record` says an agency record lists the point; it is never ownership.
 
 The build never downloads MapLibre. To enable the interactive map, copy the
 library into `content/vendor/maplibre-gl.js` and `content/vendor/maplibre-gl.css`

@@ -180,9 +180,8 @@ class PointChecksTests(unittest.TestCase):
                      f"{FILE_LABEL}: missing field(s) ['source']")
         self.refused([check()], f"{LABEL}.schema_version: must be 1", schema_version=2)
         self.refused([check()], f"{LABEL}: unknown field(s) ['extra']", extra="SECRETVALUE")
-        self.checks([check(source="https://user:pw@records.example.invalid/SECRETVALUE")])
-        with self.assertRaisesRegex(ContentError, rf"^{re.escape(FILE_LABEL)}\.source: must be an https:// URL$"):
-            load_content(self.root, TODAY)
+        userinfo_url = "https://" + ":".join(("user", "pw")) + "@records.example.invalid/SECRETVALUE"
+        self.refused([check(source=userinfo_url)], f"{FILE_LABEL}.source: must be an https:// URL")
 
     def test_content_check_lists_every_refused_entry(self):
         self.checks([check(99999), check(status="nope"), check(), check(day="2999-01-01"), check(source="123412341234")])
@@ -207,8 +206,8 @@ class PointChecksTests(unittest.TestCase):
         self.assertIn(f"{LABEL}.checks[1].node: not a mapped point", problems)
         self.assertFalse([line for line in problems if "library prefix" in line], problems)
 
-    # 5. duplicate / not_found_on_site: the point stays on the map and in the list; the count sentence names them apart
-    def test_duplicate_and_not_found_points_stay_and_are_counted_apart(self):
+    # 5. duplicate / not_found_on_site: points, numeric counts and count sentences stay unchanged
+    def test_duplicate_and_not_found_points_and_count_sentences_stay_unchanged(self):
         plain = self.built()
         self.checks([check(10, "duplicate"), check(30, "not_found_on_site"), check(20, "duplicate")])
         with_checks = self.built()
@@ -217,21 +216,20 @@ class PointChecksTests(unittest.TestCase):
         self.assertEqual([(name, count, len(rows)) for name, count, rows in sections],
                          [("Cedar", 3, 3), ("Pine", 2, 2), ("Unincorporated Cedar County (ownership unconfirmed)", 1, 1)])
         cities = json.loads(re.search(r"var CITIES=(\{.*?\});\nvar COUNTY", with_checks["site-data.js"].decode(), re.S).group(1))
-        self.assertEqual(cities["cedar"]["cameraCount"], "3 community-mapped points inside city limits; ownership "
-                         "unconfirmed; 2 of these marked duplicate or not found on site by an organizer")
-        self.assertEqual(cities["pine"]["cameraCount"], "2 community-mapped points inside city limits; ownership "
-                         "unconfirmed; 1 of these marked duplicate or not found on site by an organizer")
+        plain_cities = json.loads(re.search(r"var CITIES=(\{.*?\});\nvar COUNTY", plain["site-data.js"].decode(), re.S).group(1))
+        self.assertEqual(cities, plain_cities)
+        self.assertEqual(cities["cedar"]["cameraCount"], "3 community-mapped points inside city limits; ownership unconfirmed")
+        self.assertEqual(cities["pine"]["cameraCount"], "2 community-mapped points inside city limits; ownership unconfirmed")
         counts, problems = self.site().mapped_counts()
         self.assertEqual((counts, problems), ({"Cedar": 3, "Pine": 2}, []))  # camera_counts itself is unchanged
 
-    def test_only_the_newest_check_decides_whether_a_point_is_counted_apart(self):
+    def test_count_sentence_stays_unchanged_regardless_of_newest_check(self):
         self.checks([check(10, "duplicate", "2026-09-01"), check(10, "seen_in_person", "2026-10-30"),
                      check(30, "in_agency_record"), check(20, "seen_in_person")])
         cedar = self.site().cities()["cedar"]["cameraCount"]
         self.assertEqual(cedar, "3 community-mapped points inside city limits; ownership unconfirmed")
         self.checks([check(10, "seen_in_person", "2026-09-01"), check(10, "duplicate", "2026-10-30")])
-        self.assertTrue(self.site().cities()["cedar"]["cameraCount"].endswith("1 of these marked duplicate or not found "
-                                                                               "on site by an organizer"))
+        self.assertEqual(self.site().cities()["cedar"]["cameraCount"], cedar)
 
     def test_an_organizer_typed_count_is_never_extended(self):
         agencies = json.loads((self.content / "agencies.json").read_text(encoding="utf-8"))
