@@ -305,7 +305,9 @@ with exit 1.
 
 A finding page shows a "Legal basis" section when the finding cites a rule or sets `rule_version`, `duty` or
 `exceptions`: those fields, then each cited rule's package `citation` (never other package text) and the label
-"draft, not legally reviewed" unless the package status is `reviewed` (then "reviewed on DATE").
+"draft, not legally reviewed" unless the package status is `reviewed` (then "reviewed on DATE"). A cited `local-` rule
+from the campaign's `law/local-rules.json` (see LAW-PACKAGES.md) shows its citation for the finding's agency and event
+date plus the label "local rule, organizer-transcribed, not legally reviewed"; the package status is not applied to it.
 
 ## Corrections and withdrawal
 

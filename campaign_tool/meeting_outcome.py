@@ -11,7 +11,8 @@ import stat
 import unicodedata
 from datetime import date
 
-from .content import VOTE_VALUES, _read_json, default_agencies, load_agencies, load_meeting, load_officials
+from .content import (VOTE_VALUES, _read_json, continuation_issues, default_agencies, load_agencies, load_meeting,
+                      load_officials)
 from .kit import _write_json
 
 
@@ -89,10 +90,15 @@ def _find(folder, meeting_id):
 
 
 def record_outcome(root, meeting_id, result, on, source_url, verified_by, vote=None, replace=False, today=None,
-                   votes_file=None, recording_url=None, recording_start=None):
+                   votes_file=None, recording_url=None, recording_start=None, continued_to=None, continued_to_date=None):
     today = today or date.today()
     if recording_start is not None and recording_url is None:  # DF1422-10: a start time is part of a recording
         raise MeetingOutcomeError("recording_start needs recording_url")
+    if continued_to is not None and continued_to_date is not None:  # DF0022-07: one stated destination, not two
+        raise MeetingOutcomeError("--continued-to and --continued-to-date are mutually exclusive")
+    for name, value in (("continued_to", continued_to), ("continued_to_date", continued_to_date)):
+        if value is not None and result != "continued":
+            raise MeetingOutcomeError(f"{name}: requires result continued")
     rows = read_votes(votes_file) if votes_file is not None else None  # before any read of the meeting
     path, document = _find(root / "content" / "meetings", meeting_id)
     label = f"meetings/{path.name}"
@@ -108,13 +114,46 @@ def record_outcome(root, meeting_id, result, on, source_url, verified_by, vote=N
                "verified_at": today.isoformat(), **({"vote": vote} if vote is not None else {}),
                **({"votes": check_votes(rows, root, meeting["agency_id"], today)} if rows is not None else {}),
                **({"recording_url": recording_url} if recording_url is not None else {}),
-               **({"recording_start": recording_start} if recording_start is not None else {})}
+               **({"recording_start": recording_start} if recording_start is not None else {}),
+               **({"continued_to": continued_to} if continued_to is not None else {}),
+               **({"continued_to_date": continued_to_date} if continued_to_date is not None else {})}
     updated = {**document, "outcome": outcome}
-    load_meeting(updated, label, today=today)
+    prospective = load_meeting(updated, label, today=today)
+    if continued_to is not None:  # DF0022-07: the staged meetings with only this outcome replaced
+        _check_continuation(root, path, prospective, today)
     if os.path.islink(path):  # checked again right before the write
         raise MeetingOutcomeError(f"content/meetings/{path.name} must not be a symlink")
     _write_json(path, updated)
     return outcome
+
+
+def _check_continuation(root, path, meeting, today):
+    """DF0022-07: ``meeting``'s explicit ``continued_to`` must name one scheduled, later meeting of the same body among
+    the staged ones. Only this meeting's outcome is replaced in the set, so a broken reference elsewhere (or the one
+    being replaced) never blocks it; reads only, no symlink is followed, nothing is written."""
+    source = {**meeting, "id": meeting["id"] or path.stem}
+    staged, unreadable = [source], {}
+    for other in sorted((root / "content" / "meetings").glob("*.json")):
+        if other.name == path.name:
+            continue
+        if os.path.islink(other):
+            unreadable[other.stem] = f"content/meetings/{other.name} must not be a symlink"
+            continue
+        try:
+            loaded = load_meeting(_read_json(other), f"meetings/{other.name}", today=today)
+        except (ValueError, OSError) as exc:
+            unreadable[other.stem] = str(exc)
+            continue
+        staged.append({**loaded, "id": loaded["id"] or other.stem})
+    target = source["outcome"]["continued_to"]
+    where = f"meetings/{source['id']}.outcome.continued_to"
+    if target in unreadable:
+        raise MeetingOutcomeError(f"{where}: meeting {target} cannot be read ({unreadable[target]})")
+    if sum(1 for m in staged if m["id"] == source["id"]) > 1:
+        raise MeetingOutcomeError(f"{where}: duplicate meeting ID {source['id']}")
+    problems = [problem for found, problem in continuation_issues(staged) if found is source]
+    if problems:
+        raise MeetingOutcomeError(f"{where}: {problems[0]}")
 
 
 def record_minutes(root, meeting_id, minutes_url, minutes_approved_on, *, replace=False, today=None):
@@ -147,7 +186,8 @@ def record_minutes(root, meeting_id, minutes_url, minutes_approved_on, *, replac
 MINUTES_KEYS = ("minutes_url", "minutes_approved_on")
 CREATION_FLAGS = (("result", "--result"), ("on", "--on"), ("source", "--source"), ("verified_by", "--verified-by"))
 MINUTES_ONLY_REFUSES = (("vote", "--vote"), ("votes", "--votes"), ("recording_url", "--recording-url"),
-                        ("recording_start", "--recording-start"))
+                        ("recording_start", "--recording-start"), ("continued_to", "--continued-to"),
+                        ("continued_to_date", "--continued-to-date"))
 
 
 def run_outcome_command(root, args):
@@ -160,7 +200,8 @@ def run_outcome_command(root, args):
                                       "(or give --minutes-url and --minutes-approved-on to confirm an existing one)")
         outcome = record_outcome(root, args.id, args.result, args.on, args.source, args.verified_by, args.vote,
                                  args.replace, votes_file=args.votes, recording_url=args.recording_url,
-                                 recording_start=args.recording_start)
+                                 recording_start=args.recording_start, continued_to=args.continued_to,
+                                 continued_to_date=args.continued_to_date)
         return [json.dumps(outcome, indent=2)] + (["votes: none"] if args.replace and args.votes is None else []) \
             + ["Recorded only. Nothing was published."]
     for name, flag in (("minutes_url", "--minutes-url"), ("minutes_approved_on", "--minutes-approved-on")):
