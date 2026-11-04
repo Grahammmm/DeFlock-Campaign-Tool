@@ -141,6 +141,20 @@ https `agenda_url`, `agenda_item`, `agency_id` and `relevance`
 content manifest and therefore on the public meetings page after the next build and deploy,
 and in newsletter drafts as "Upcoming meetings".
 
+### Row shape (migration `0004_meeting_identity.sql`)
+
+A `meeting` row adds `date_state` (`known | unknown`), `source_url`, `item_id`, `title_sha256`,
+`fetched_at`, `revision` (from 1) and `supersedes`. `starts_at` is NULL exactly when
+`date_state = 'unknown'`; the schema refuses any other combination. Manual rows have no
+`source_url`/`item_id`. A polled meeting is filed by `Repo.fileMeeting` once per
+`(campaign, source_url, item_id, revision)` (a re-file of an unchanged item writes nothing and
+returns `inserted: false`; a changed title is refused there). A changed title goes through
+`Repo.fileMeetingRevision`, which inserts `revision + 1` with `supersedes` set to the previous
+head and never edits or deletes the previous row; a stale (non-head) or unchanged revision is
+refused. No method changes an identity column on an existing row. The screen lists undated
+meetings first as `date unknown` (no comment kit until dated), shows a chain only by its head
+with `revision N of <source_url> item <item_id>`, and newest first after that.
+
 ## Comment kit
 
 `POST /meetings/:id/comment-kit` generates Markdown from published findings only (each with

@@ -134,6 +134,17 @@ enqueues `build_site` with the full content manifest and proposes `deploy_site`
 the card). Execution is idempotent: an executed card returns its receipt, a failed one records
 `<code>: <message>` and an incident. No code path sends without an approved row.
 
+Migrations in `workers/workspace/migrations/` are immutable once applied; an upgrade is a new
+numbered file. `0004_meeting_identity.sql` rebuilds `meeting` (SQLite cannot drop `NOT NULL`
+in place: new table, copy, drop, rename, in one transaction with foreign keys deferred) so
+`starts_at` may be NULL for `date_state = 'unknown'`, and adds the source identity and revision
+columns. Every existing row keeps its values with `date_state = 'known'` and `revision = 1`.
+Re-running the file by hand fails on its first `ALTER` and rolls back. Identity rule: the
+partial unique index `meeting_source_identity (campaign_id, source_url, item_id, revision)`
+covers only rows with both `source_url` and `item_id`, so manual meetings never collide and a
+polled meeting cannot be filed twice at one revision; revisions are new rows, never updates
+([MEETINGS.md](MEETINGS.md)). `workers/schema/d1.sql` holds the same shape for new installs.
+
 ## Tests
 
 `npm test` runs, per package: shared (location resolution, agency ordering, default
