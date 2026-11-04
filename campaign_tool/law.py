@@ -596,10 +596,18 @@ def main(argv=None):
     apply = commands.add_parser("apply-sheet", help="Write a private proposed package from a filled worksheet")
     apply.add_argument("--sheet", required=True, help="Worksheet CSV filled in by a human reviewer")
     apply.add_argument("--out", required=True, help="New JSON path outside the repository")
+    impact = commands.add_parser("impact", help="Rules two package versions change and the findings they touch (read-only)")
+    impact.add_argument("old", metavar="OLD.json")
+    impact.add_argument("new", metavar="NEW.json")
+    impact.add_argument("--directory", required=True, help="Campaign folder holding the findings and drafts")
+    impact.add_argument("--json", dest="as_json", action="store_true", help="Print the report as JSON")
     for sub in (show, rules, remind, sheet, apply):
         sub.add_argument("jurisdiction")
         sub.add_argument("--base", help="Alternate jurisdictions directory")
     args = parser.parse_args(argv)
+    if args.command == "impact":
+        from .law_impact import run_cli
+        return run_cli(args.old, args.new, args.directory, args.as_json)
     try:
         package = load_package(args.jurisdiction, args.base)
         output = summary(package) if args.command == "show" else _command_output(args, package)
