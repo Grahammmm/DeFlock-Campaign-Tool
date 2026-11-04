@@ -341,7 +341,7 @@ CONSENT_FOOTER_TEMPLATE_MARKER = "[TEMPLATE CONSENT FOOTER: replace with the cam
 DEFAULT_CONSENT_FOOTER = "You receive this because you signed up for {name} updates. Unsubscribe at any time."
 
 
-def build_draft(manifest, now=None):
+def build_draft(manifest, now=None, *, archive_public=False):
     """Return ``{"subject", "html", "text", "counts", "excluded", "consent_footer"}``.
 
     Only findings published at or after ``since`` and meetings starting at or
@@ -354,6 +354,11 @@ def build_draft(manifest, now=None):
     wording (it must keep the sentence ``Unsubscribe at any time.`` for the
     provider placeholder). Without it the engine's template footer is used and
     marked, and the send executor refuses the draft.
+
+    ``archive_public=True`` (DF1952-09, only ``--from-content``) adds ``public_archive``
+    ``{"schema_version": 1, "title": SUBJECT, "body_md": PUBLIC_MARKDOWN}``: the Markdown
+    exactly as assembled before the consent footer, so no footer, sender or unsubscribe
+    wording, review flag or count can be in it. HTML and text are unchanged.
     """
     if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
         raise DraftError("manifest.schema_version must be 1")
@@ -473,6 +478,7 @@ def build_draft(manifest, now=None):
         lines.append(f"Read everything, with source hashes, at [{base_url}]({base_url}).")
     lines.append("Findings describe records and published rules as of the event date. This is not legal advice.")
     lines.append("")
+    public_markdown = "\n".join(lines).rstrip("\n") + "\n"  # frozen here, before any consent-footer text exists
     footer = campaign.get("consent_footer")
     if isinstance(footer, str) and footer.strip():
         footer = _clean(footer, "campaign.consent_footer", 600)
@@ -513,6 +519,8 @@ def build_draft(manifest, now=None):
         result["review_flags"] = review_flags
     if corrections:  # absent otherwise, so drafts without listed corrections stay byte-identical
         result["corrections_listed"] = len(corrections)
+    if archive_public:  # absent otherwise, so default, manifest and Worker callers are unchanged
+        result["public_archive"] = {"schema_version": 1, "title": result["subject"], "body_md": public_markdown}
     return result
 
 

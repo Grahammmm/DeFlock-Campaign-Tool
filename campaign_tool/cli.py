@@ -1022,6 +1022,10 @@ def main():
     response_p.add_argument("--withheld-basis", action="append", default=[], metavar="TEXT",
                             help="denied or produced only, repeatable (at most 5): the agency's own stated reason or "
                             "code section, as written (1-200 chars, no control characters; never record contents)")
+    response_p.add_argument("--download-expires-on", metavar="YYYY-MM-DD", help="produced only: the date the agency says "
+                            "its download link expires (not before --date). Only the date is kept; the link itself is "
+                            "never stored or fetched. The production stays 'download pending' until records are "
+                            "linked with a later produced --record step")
     response_p.add_argument("--scope", action="append", default=[], metavar="ID",
                             help="repeatable, with --disposition: a law-package scope this request asked for that the "
                             "agency's answer covers (not on acknowledged, extension, clarification or fee_estimate steps)")
@@ -1125,6 +1129,19 @@ def main():
     publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
     for flag in ("--directory", "--approved-by"):
         publish_p.add_argument(flag, required=True)
+    reply_req_p = finding_cmds.add_parser("reply-request", help="Write a private, never-sent request for comment to the "
+                                          "draft's agency (kit/replies/<id>.md); preparing it is not asking")
+    reply_req_p.add_argument("--directory", required=True)
+    reply_req_p.add_argument("--by", required=True, metavar="YYYY-MM-DD", help="Reply deadline, today or later")
+    reply_p = finding_cmds.add_parser("reply", help="Record the agency's reply or silence on the draft (nothing is sent; "
+                                      "any change needs fresh review)")
+    reply_p.add_argument("--directory", required=True)
+    reply_p.add_argument("--status", required=True, choices=("received", "declined", "no_response"))
+    reply_p.add_argument("--on", required=True, metavar="YYYY-MM-DD", help="Date of the reply, or of the check for no_response")
+    reply_p.add_argument("--asked-on", required=True, metavar="YYYY-MM-DD", help="Date YOU actually asked the agency, by hand; "
+                         "an unsent prepared request is not evidence of asking")
+    reply_p.add_argument("--text", help="The reply as written, 1-2000 characters (received needs it)")
+    reply_p.add_argument("--record", metavar="PREFIX", help="With received: 12-64 hex of the library record holding the reply")
     preview_p = finding_cmds.add_parser("preview", help="Render one draft's finding page privately to --out "
                                         "(banner, noindex; never public/, feed or sitemap)")
     for flag in ("--directory", "--out"):
@@ -1499,6 +1516,16 @@ def main():
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 print(findings.trust_line(result["receipt_trust"]))
                 return
+            if args.finding_command == "reply-request":
+                print(json.dumps(findings.reply_request(root, args.draft, args.by)))
+                print("Recorded only. Nothing was sent. Asking the agency is your manual step; "
+                      "record it with finding reply --asked-on.")
+                return
+            if args.finding_command == "reply":
+                print(json.dumps(findings.record_reply(root, args.draft, args.status, args.on, args.asked_on,
+                                                       text=args.text, record=args.record)))
+                print("Recorded only. Nothing was sent. The reply changes the reviewed text: review it again.")
+                return
             draft = findings.load_draft(args.draft)
             if args.finding_command == "review-payload":
                 sys.stdout.buffer.write(findings.review_payload(root, draft, args.role, args.decision, args.reviewer, args.rationale))
@@ -1609,6 +1636,8 @@ def main():
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
                 if row["fee_state"] == "unpaid":
                     print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
+                for item in row.get("downloads_pending", ()):
+                    print(f"{label}: {item['line']}", file=sys.stderr)
                 if row["channel"] == "portal" and row.get("request_url"):
                     print(f"{label}: Portal request: {row['request_url']}", file=sys.stderr)
         elif args.command == "kit-fees":
@@ -1636,7 +1665,8 @@ def main():
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
             print(json.dumps(report, indent=2))
-            if report["past_due"] + report["stated_date_passed"] + report["installment_passed"]:
+            if report["past_due"] + report["stated_date_passed"] + report["installment_passed"] \
+                    + report.get("download_expired", 0):
                 sys.exit(3)
         elif args.command == "kit-calendar":
             from .kit_calendar import calendar
@@ -1652,7 +1682,7 @@ def main():
                                          reference=args.reference, replace_reference=args.replace_reference,
                                          partial=args.partial, correspondence=args.correspondence,
                                          withheld_basis=args.withheld_basis, scope_ids=args.scope,
-                                         disposition=args.disposition),
+                                         disposition=args.disposition, download_expires_on=args.download_expires_on),
                              indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-withheld":

@@ -144,11 +144,13 @@ class NewsletterSentTests(unittest.TestCase):
         self.ok("--from-content")  # a new draft: only the late finding
         self.refused("sent date 2026-03-04 is before the last recorded send (2026-03-05)", "--record-sent", "2026-03-04")
         self.assertEqual(self.snapshot(), before)
-        self.ok("--record-sent", "2026-03-05")  # a second issue the same day keeps date order
+        self.refused("an issue was already recorded as sent on 2026-03-05", "--record-sent", "2026-03-05")  # one issue per day
+        self.assertEqual(self.snapshot(), before)
+        self.ok("--record-sent", "2026-03-06")  # a second issue on a later day
         issues = json.loads(self.sent.read_text())["issues"]
-        self.assertEqual([i["sent_on"] for i in issues], ["2026-03-05", "2026-03-05"])
+        self.assertEqual([i["sent_on"] for i in issues], ["2026-03-05", "2026-03-06"])
         self.assertNotEqual(issues[0]["draft_sha256"], issues[1]["draft_sha256"])
-        self.refused("this draft was already recorded as sent on 2026-03-05", "--record-sent", "2026-03-11")
+        self.refused("this draft was already recorded as sent on 2026-03-06", "--record-sent", "2026-03-11")
 
     def test_linked_folder_or_malformed_record_file_is_refused_never_rewritten(self):
         target = self.tmp / "outside.json"

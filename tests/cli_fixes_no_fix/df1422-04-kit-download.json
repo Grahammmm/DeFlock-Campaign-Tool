@@ -1,0 +1,5 @@
+{
+  "--download-expires-on is only for produced steps": "kit-response --download-expires-on message that already names the option and the rule; not in the table",
+  "--download-expires-on must be a real YYYY-MM-DD date": "kit-response --download-expires-on message that already names the option and the rule; not in the table",
+  "--download-expires-on 5 is before the produced step on 5": "kit-response --download-expires-on message that names the option and both dates; not in the table"
+}
