@@ -67,6 +67,8 @@ DEFAULTS = {
     "intro.open_data_about": "Published findings are also available as open data:",
     "intro.meetings_open_data": "Meetings and outcomes as open data (JSON)",
     "intro.meetings_open_data_about": "Meetings with their recorded outcomes, votes and official sources:",
+    "intro.agencies_open_data": "Agencies as open data (JSON)",
+    "intro.agencies_open_data_about": "Agencies with their asked items, posted policy, contract end and portal numbers, as each source reported them:",
     "notice.no_findings": "No findings have been published yet.", "notice.no_upcoming": "No upcoming meetings are listed.",
     "notice.past_meetings_link": "Past meetings and their comment kits", "notice.no_meetings": "No meetings are listed yet.",
     "notice.no_agencies": "No agencies are configured yet.", "notice.no_filter_match": "No published finding matches these filters.",
