@@ -175,6 +175,13 @@ DEFAULTS = {
     "signup.email": "Email address", "signup.placeholder": "you@example.org",
     "signup.provider_note": "Submitting opens the provider's hosted confirmation page.",
     "signup.none": "No email addresses are collected by this site. Follow meetings and findings here or by feed.",
+    "supporters.title": "Supporting organizations",
+    "supporters.description": ("Organizations that have confirmed they support this campaign. A listing is not a legal "
+                               "endorsement and does not let anyone speak for the organization."),
+    "supporters.joined": "Joined {date}",
+    "supporters.kind.civil_liberties": "Civil liberties", "supporters.kind.community": "Community",
+    "supporters.kind.faith": "Faith", "supporters.kind.labor": "Labor", "supporters.kind.neighborhood": "Neighborhood",
+    "supporters.kind.business": "Business", "supporters.kind.other": "Other",
 }
 # DF0137-14: fixed strings the generated scripts write into the page. Defaults are today's exact English; site.py
 # switches the scripts to LABELS lookups (site-data.js) only when a js.* key differs from its default.
