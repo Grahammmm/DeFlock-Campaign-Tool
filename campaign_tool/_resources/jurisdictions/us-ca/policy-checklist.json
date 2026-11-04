@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "status": "draft",
+  "rule_id": "ca-civ-1798.90.51-usage-and-privacy-policy",
+  "elements": [
+    {"id": "authorized_purposes", "label": "Authorized purposes for using the system and collecting information"},
+    {"id": "authorized_users_training", "label": "Job titles of the people authorized to access or use the system, or to collect ALPR information, and training requirements"},
+    {"id": "security_monitoring", "label": "Monitoring of security and of privacy-law requirements"},
+    {"id": "sharing_restrictions", "label": "Purposes, processes and restrictions for selling, sharing or transferring information"},
+    {"id": "custodian_title", "label": "Title of the custodian or owner responsible for the system"},
+    {"id": "accuracy_correction", "label": "Measures for accuracy and error correction"},
+    {"id": "retention_destruction", "label": "How long information is kept and how it is decided whether and when to destroy it"}
+  ]
+}
