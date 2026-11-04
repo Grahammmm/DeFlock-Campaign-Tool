@@ -154,8 +154,8 @@ class EnumCases(unittest.TestCase):
                 self.assertEqual(refusal(approvals=[approval(status=status)]).reason, "status_not_approved")
         self.assertEqual(refusal(approvals=[{k: v for k, v in approval().items() if k != "status"}]).reason, "status_not_approved")
 
-    def test_enum_is_fixed_at_seven(self):
-        self.assertEqual(len(gate.REASONS), 7)
+    def test_enum_is_fixed_at_eight(self):  # DF-APPROVAL-TIME-BIND added approval_unbound
+        self.assertEqual(len(gate.REASONS), 8)
         with self.assertRaises(AssertionError):
             gate.PublicationRefused("a1", "because")
 
