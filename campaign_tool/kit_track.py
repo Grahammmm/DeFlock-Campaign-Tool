@@ -116,7 +116,8 @@ def _hashes(value):  # the valid full SHA-256 strings in a stored list; [] when 
 
 
 def _corr_ok(value):  # a stored correspondence list: 1..RECORDS_MAX unique full hashes, nothing else
-    return bool(value) and len(value) <= RECORDS_MAX and _hashes(value) == value and len(set(value)) == len(value)
+    return (isinstance(value, list) and bool(value) and len(value) <= RECORDS_MAX
+            and _hashes(value) == value and len(set(value)) == len(value))
 
 
 def _entry_ok(key, entry):

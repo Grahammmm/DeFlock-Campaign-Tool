@@ -242,6 +242,27 @@ class KitCorrespondenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "malformed steps"):
             kit_track.status(self.root)
 
+    def test_non_list_correspondence_cli_refused_untouched(self):
+        self.sends()
+        good = json.loads(self.sent.read_text())
+        for location in ("entry", "step"):
+            for bad in (1, 1.5, True, 0, False):
+                with self.subTest(location=location, bad=bad):
+                    document = json.loads(json.dumps(good))
+                    entry = document["requests"][self.agency]
+                    if location == "entry":
+                        entry["correspondence"] = bad
+                    else:
+                        entry["steps"] = [{"on": "2026-03-05", "kind": "acknowledged",
+                                           "correspondence": bad}]
+                    self.sent.write_text(json.dumps(document))
+                    before = self.sent.read_bytes()
+                    words = ["kit/sent.json unreadable: malformed " +
+                             ("entry" if location == "entry" else "steps")]
+                    self.refused(run("kit-status", "--directory", self.root), words)
+                    self.refused(self.step("2026-03-20", "produced"), words)
+                    self.assertEqual(self.sent.read_bytes(), before)
+
     def test_too_many_correspondence_refused_untouched(self):
         self.sends()
         flags = [p for n in range(201) for p in ("--correspondence", synthetic(f"x{n}")[:12])]
