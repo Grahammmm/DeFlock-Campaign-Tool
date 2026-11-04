@@ -201,7 +201,7 @@ def search_js():
 PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
                          "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
                          "counterevidence", "corrections", "url", "citation", "also_agency_ids", "agency_response")
-PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page")
+PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page", "quote")
 PUBLIC_CORRECTION_FIELDS = ("date", "note")
 # DF1103-08: only a received, declined or no_response reply is public; pending never is.
 PUBLIC_RESPONSE_FIELDS = ("status", "asked_on", "reply_by", "on", "text", "record_sha256_prefix")
@@ -1223,7 +1223,7 @@ class Site:
                 if fragment:
                     title = f'<a href="/sources.html#{e(fragment)}">{title}</a>'
                 rule = f' · rule {e(source["rule_id"])}' if source.get("rule_id") else ''
-                sources.append(f'<li>{title} · sha256 {e(short_hash(source["sha256"]))} · {e(source["locator"])}{rule}</li>')
+                sources.append(f'<li>{title} · sha256 {e(short_hash(source["sha256"]))} · {e(source["locator"])}{rule}{self.source_quote(source)}</li>')
             links = self.agency_links(f)
             agency_line = f'<p>Agency: {links}</p>' if links else ''  # DF1952-07: primary first, then each extra agency
             limits = ''.join(f'<li>{e(item)}</li>' for item in f["limitations"]) or '<li>None stated.</li>'
@@ -1342,6 +1342,17 @@ class Site:
         return (f'<h3 id="discussed-at-public-meetings">Discussed at public meetings</h3><ul>{"".join(items)}</ul>'
                 if items else "")
 
+    def source_quote(self, source):
+        """DF1952-08: the transcribed excerpt of a finding source as an escaped blockquote with its attribution (and the
+        page when given); "" without a quote. Plain text only: never Markdown, never matched against the record."""
+        quote = source.get("quote")
+        if not quote:
+            return ""
+        page = source.get("page")
+        shown = f' · {self.t("finding.quote_page", page=page)}' if page is not None else ""
+        return (f'<blockquote class="source-quote"><p>{e(quote)}</p></blockquote>'
+                f'<p class="source-quote-note">{self.t("finding.quote_transcribed")}{shown}</p>')
+
     def finding_html(self, finding):
         sources = []
         for source in finding["sources"]:
@@ -1351,7 +1362,7 @@ class Site:
             sentence, record = source_line(entry, source, owner.get("name"))
             number = f'{self.t("sources.record_no")} <code>{record}</code>'
             number = f'<a href="{e(record_page)}">{number}</a>' if record_page else number
-            sources.append(f'<li><p>{sentence}</p>{page_link(entry, source.get("page"))}'
+            sources.append(f'<li><p>{sentence}</p>{self.source_quote(source)}{page_link(entry, source.get("page"))}'
                            f'<p class="record-no">{number}{copy_status(entry)}</p></li>')
         corrections = ("".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time>: {e(c["note"])}</li>' for c in finding["corrections"])
                        or f'<li>{self.t("notice.no_corrections")}</li>')
@@ -1982,7 +1993,8 @@ class Site:
             value["also_agency_ids"] = list(finding["also_agency_ids"])
         value["limitations"], value["counterevidence"] = list(finding["limitations"]), list(finding["counterevidence"])
         value["sources"] = [{"sha256_prefix": short_hash(s["sha256"]), "title": s["title"], "locator": s["locator"],
-                             "rule_id": s["rule_id"], **({"page": s["page"]} if s.get("page") is not None else {})}
+                             "rule_id": s["rule_id"], **({"page": s["page"]} if s.get("page") is not None else {}),
+                             **({"quote": s["quote"]} if s.get("quote") else {})}  # DF1952-08: optional, absent stays absent
                             for s in finding["sources"]]
         value["corrections"] = [{"date": c["date"], "note": c["note"]} for c in finding["corrections"]]
         value["url"] = f'{self.base}/findings/{finding["slug"]}.html'
