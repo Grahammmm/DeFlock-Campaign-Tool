@@ -44,7 +44,7 @@ ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
-                       "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
+                       "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
                        "_redirects", "methods.html", "privacy.html", "glossary.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
@@ -470,6 +470,26 @@ def point_check_renderer(labels):
     names = {status: labels["map.check_" + status] for status in POINT_CHECK_STATUSES}
     return ("(function(LABELS,HEADING){return " + POINT_CHECK_RENDERER + ";})("
             + js_json(names) + "," + js_json(labels["map.check_heading"]) + ")")
+
+
+def ics_text(value):
+    """RFC 5545 TEXT value: control characters (CR included) dropped, then \\ ; , and newline escaped."""
+    value = re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", "", str(value))
+    return value.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def ics_fold(line):
+    """Fold to at most 75 octets per line (CRLF + one space), never inside a UTF-8 sequence."""
+    parts, chunk, size, limit = [], "", 0, 75
+    for char in line:
+        width = len(char.encode("utf-8"))
+        if size + width > limit:
+            parts.append(chunk)
+            chunk, size, limit = "", 0, 74  # the leading space of a continuation line is one octet
+        chunk += char
+        size += width
+    parts.append(chunk)
+    return "\r\n ".join(parts)
 
 
 class Site:
@@ -1548,7 +1568,7 @@ class Site:
                 f'<a href="/data/meetings.json" type="application/json">{self.t("intro.meetings_open_data")}</a> · '
                 f'<a href="/data/meetings.csv" type="text/csv">{self.t("intro.open_data_csv")}</a>.'
                 + (f' <a href="/meetings.xml" type="application/atom+xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else "")
-                + '</p></div>'
+                + f' <a href="/meetings.ics">{self.t("intro.meetings_calendar")}</a></p></div>'
                 '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
                 + '</div></section>\n')
         if self.past:
@@ -2025,6 +2045,26 @@ class Site:
             ET.SubElement(entry, f"{{{ns}}}category", term=finding["classification"])
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(feed, encoding="unicode") + "\n"
 
+    def meetings_ics(self):
+        """Upcoming (not cancelled) meetings as an RFC 5545 calendar; deterministic for one build day."""
+        host = urlsplit(self.base).hostname if self.base else "deflock-campaign.invalid"
+        stamp = self.today.strftime("%Y%m%d") + "T000000Z"
+        lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DeFlock Campaign Tool//meetings//EN", "CALSCALE:GREGORIAN",
+                 "X-WR-CALNAME:" + ics_text(self.cfg["name"] + " meetings")]
+        for meeting in self.upcoming:
+            start = datetime.fromisoformat(meeting["starts_at"].replace("Z", "+00:00")).astimezone(timezone.utc)
+            lines += ["BEGIN:VEVENT", f'UID:meeting-{meeting["id"]}@{host}', "DTSTAMP:" + stamp,
+                      "DTSTART:" + start.strftime("%Y%m%dT%H%M%SZ"), "SUMMARY:" + ics_text(meeting["body"])]
+            if meeting["location"]:
+                lines.append("LOCATION:" + ics_text(meeting["location"]))
+            if meeting["agenda_url"]:
+                lines.append("URL:" + meeting["agenda_url"])
+            link = f'{self.base}/meetings.html#meeting-{meeting["id"]}'
+            lines += ["DESCRIPTION:" + ics_text((meeting["agenda_item"] + "\n" if meeting["agenda_item"] else "") + link),
+                      "END:VEVENT"]
+        lines.append("END:VCALENDAR")
+        return "".join(ics_fold(line) + "\r\n" for line in lines)
+
     def meetings_feed_entries(self):
         """DF1103-10: the staged meetings the feed lists, newest ``updated`` first, one per id, as plain dicts.
 
@@ -2445,7 +2485,7 @@ def _plan_site(root, today=None, notes=None):
     files.update({
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
         **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
-        "site-data.js": site.site_data_js(), "search.js": search_js(),
+        "meetings.ics": site.meetings_ics(), "site-data.js": site.site_data_js(), "search.js": search_js(),
         "agency-cards.js": agency_cards.render(site.cards_config(), relabel=bool(site.js_labels)),
         "app.js": site.app_js(), "data/findings.json": site.findings_json(), "data/findings.csv": site.findings_csv(),
         "data/sources.json": site.sources_json(), "data/sources.csv": site.sources_csv(), "data/meetings.json": meetings_text,
