@@ -202,6 +202,20 @@ section number found in the agency's own text (`Gov. Code § 7923.600`, `Governm
 `GC 7922.000`; a basis naming two sections appears under both; none: `no section number stated`). It is read-only and
 adds no legal reading. Older `kit/sent.json` files with no `withheld_basis` read unchanged.
 
+## Per-scope answers (kit requests)
+
+`kit-sent` records the law-package scope ids its draft covers as `scopes` (every package scope, in package order, when
+the kit was built without `--scope`; exactly the `--scope` list otherwise), read from `kit/summary.json`. A missing,
+symlinked or unreadable summary, or no law package, stores no `scopes` (never guessed); `--replace` re-reads it.
+`kit-response --scope ID [--scope ID ...] --disposition produced|partly_produced|withheld|no_records_stated` records, on
+that dated step, what the agency said about those scopes (`scope_answers`). Both flags or neither; every ID must be one
+the request asked for; a duplicate ID is refused; a request with no recorded `scopes` refuses `--scope`; not allowed on
+`acknowledged`, `extension`, `clarification_requested`, `clarified` or `fee_estimate` steps. A disposition is your record
+of what the agency said, never a legal finding, and is independent of `--withheld-basis`.
+`kit-status` rows carry `scopes`: `null` (request recorded before this existed: scopes not recorded) or, per asked scope,
+`{scope_id, answer, on}` with the latest disposition and its step date, `answer: null` for no answer yet. `kit-coverage`
+(table and `--csv`) gains a last `scopes` column: `not recorded` or `k/n answered`.
+
 ## Private calendar (kit-calendar)
 
 `kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import

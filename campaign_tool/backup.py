@@ -376,9 +376,25 @@ def export_into(root, folder, encrypt_to=None, now=None):
 DIFF_NAME_CAP = 200
 
 
-def diff(archive, root, expected_manifest_sha256=None):
-    """Names added/removed/changed in ``root`` since the backup; re-verifies first, writes nothing in ``root``."""
-    report = verify(archive, expected_manifest_sha256=expected_manifest_sha256)
+def diff(archive, root, expected_manifest_sha256=None, gnupg_home=None):
+    """Names added/removed/changed in ``root`` since the backup; re-verifies first, writes nothing in ``root``.
+
+    An encrypted archive is decrypted once into a private temp copy that the whole comparison uses and
+    that is removed afterwards; its report carries ``encrypted: true`` (plain reports gain no key).
+    """
+    if backup_crypt.is_encrypted(archive):
+        with backup_crypt.decrypted(archive, gnupg_home) as plain:
+            try:
+                result = _diff_tar(plain, root, expected_manifest_sha256)
+            except tarfile.TarError:
+                raise BackupError("invalid encrypted archive") from None
+        result["encrypted"] = True
+        return result
+    return _diff_tar(archive, root, expected_manifest_sha256)
+
+
+def _diff_tar(archive, root, expected_manifest_sha256=None):
+    report = _verify_tar(archive, expected_manifest_sha256)
     with tarfile.open(archive, mode="r:") as tar:
         manifest = _read_manifest(tar)
     if manifest["manifest_sha256"] != report["manifest_sha256"]:
