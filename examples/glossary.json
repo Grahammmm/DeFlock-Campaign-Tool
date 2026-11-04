@@ -59,7 +59,7 @@
     {
       "term": "search query",
       "aliases": ["plate search", "ALPR search"],
-      "definition_md": "A search someone runs in an ALPR database, such as typing in a plate number or choosing a place and time. A log of searches shows how the data is used and may hold personal details an agency has to remove before release."
+      "definition_md": "A search someone runs in an ALPR database, such as typing in a plate number or choosing a place and time. Ask what search details the log records and what any blank or hidden fields mean."
     },
     {
       "term": "usage and privacy policy",

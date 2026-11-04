@@ -47,7 +47,7 @@ RULES = {
     "extension": "ca-gov-7922.535-determination-and-extension-2026"}
 # Words a neutral starter must not use: late/entitlement/guarantee wording, automatic outcomes, violation wording.
 OVERCLAIM = re.compile(r"\b(?:late|overdue|entitled|entitlement|guarantee[ds]?|automatically|violat\w*|illegal|unlawful\w*|"
-                       r"non-?complian\w*|breach\w*)\b", re.I)
+                       r"non-?complian\w*|breach\w*|has to remove)\b", re.I)
 DEADLINE = re.compile(r"\b\d+[- ]?(?:calendar |business |working )?(?:days?|hours?|weeks?|months?|years?)\b", re.I)
 NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network access attempted"))
 
@@ -198,6 +198,9 @@ class StarterProseTests(StarterCase):
                 self.assertIsNone(OVERCLAIM.search(entry["definition_md"]), entry["definition_md"])
                 self.assertIsNone(DEADLINE.search(entry["definition_md"]), entry["definition_md"])
         definitions = {e["term"]: e["definition_md"] for e in starter()["terms"]}
+        self.assertEqual(definitions["search query"],
+                         "A search someone runs in an ALPR database, such as typing in a plate number or choosing a place and time. "
+                         "Ask what search details the log records and what any blank or hidden fields mean.")
         self.assertIn("not automatic", definitions["extension"])
         self.assertIn("not the same as handing the records over", definitions["determination"])
         self.assertIn("does not decide", definitions["ALPR end-user"])
