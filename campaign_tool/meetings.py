@@ -298,9 +298,27 @@ def _clean(text):
     return " ".join(str(text or "").replace("<", "").replace(">", "").split())
 
 
-def comment_kit_md(meeting, findings, campaign_name, base_url=None):
+ASK_COUNT_WORDS = {1: "One ask", 2: "Two asks", 3: "Three asks"}
+ASKS_ABOVE = {1: "the ask", 2: "the two asks", 3: "the three asks"}
+
+
+def default_asks(meeting):
+    return [ASKS.get(meeting.get("relevance") or "", DEFAULT_ASK),
+            "Require an annual public audit of searches, retention and outside-agency sharing, "
+            "presented at a noticed meeting.",
+            "Answer in writing which agencies can query this data today and under what written agreement."]
+
+
+def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None):
     """Markdown comment kit; ``findings`` are published finding dicts with title, summary,
-    classification, confidence, path and sources[{title, locator, sha256}]."""
+    classification, confidence, path and sources[{title, locator, sha256}].
+
+    ``asks`` (DF2207-07): the campaign's own 1-3 asks, validated here; they replace the relevance-based defaults in the
+    asks section, the written letter and (with a verified speaker limit) the spoken version. None keeps the defaults."""
+    if asks is not None:
+        from .content import load_comment_asks
+        asks = load_comment_asks(asks, "asks")
+    resolved = list(asks) if asks is not None else default_asks(meeting)
     def fixed(finding):  # latest correction date; "" when the finding was never corrected
         dates = [str(c.get("date") or "") for c in finding.get("corrections") or [] if isinstance(c, dict)]
         return _clean(max(dates, default=""))
@@ -333,12 +351,16 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
     minutes = (meeting.get("participation") or {}).get("speaker_minutes")
     if type(minutes) is int and 1 <= minutes <= 10:  # organizer-verified limit only; never assumed
         budget, body = 130 * minutes, lines[start:-1]  # 130 spoken words a minute
+        if asks is not None:  # the campaign's asks are spoken too, and never trimmed to fit
+            body = body + ["I ask you to:"] + [f"{n}. {ask}" for n, ask in enumerate(resolved, 1)]
         words = lambda rows: sum(len(row.split()) for row in rows)  # noqa: E731
         while words(body) > budget and any(row.startswith("- ") for row in body):  # whole bullets, from the end
             del body[max(i for i, row in enumerate(body) if row.startswith("- "))]
         lines.append(f"## Spoken comment ({minutes} minute{'' if minutes == 1 else 's'}, about {budget} words)")
         if words(body) > budget:
             lines.append("The speaker limit is too short for this kit; use the first sentence and one ask.")
+            if asks is not None:
+                lines.append("The asks section below lists every ask in order.")
         else:
             lines.extend(body + [f"Word count: {words(body)} of {budget}."])
         lines.append("")
@@ -348,12 +370,8 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
         due = datetime.fromisoformat(due.replace("Z", "+00:00")) if due else None
         return f"{due:%Y-%m-%d %H:%M} (UTC{due.isoformat()[-6:]})" if due else ""
 
-    asks = [ASKS.get(meeting.get("relevance") or "", DEFAULT_ASK),
-            "Require an annual public audit of searches, retention and outside-agency sharing, "
-            "presented at a noticed meeting.",
-            "Answer in writing which agencies can query this data today and under what written agreement."]
-    lines.append("## Three asks")
-    lines.extend("- " + ask for ask in asks)
+    lines.append("## " + ASK_COUNT_WORDS[len(resolved)])
+    lines.extend("- " + ask for ask in resolved)
     lines.append("")
     letter_for = (meeting.get("participation") or {}).get("written_comment")
     if letter_for:  # a letter to adapt and send by hand; no recipient or address is ever added here
@@ -375,14 +393,14 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None):
             letter.append(f"- {title + ': ' if title else ''}{_clean(finding.get('summary'))}"
                           + (f" ({refs})" if refs else "") + (f" (corrected {note})" if note else ""))
         letter.append("I ask you to:")
-        letter.extend(f"{n}. {ask}" for n, ask in enumerate(asks, 1))
+        letter.extend(f"{n}. {ask}" for n, ask in enumerate(resolved, 1))
         letter.extend(["Sincerely,", "[name]", "[city]"])
         words = lambda rows: sum(len(row.split()) for row in rows)  # noqa: E731
         while words(letter) > 400 and any(row.startswith("- ") for row in letter):  # whole bullets, from the end
             del letter[max(i for i, row in enumerate(letter) if row.startswith("- "))]
         if words(letter) > 400:  # body, agenda item or campaign name alone over the cap: no letter, say so
             letter = letter[:2] + ["The letter would be over 400 words for this meeting; write a short one by "
-                                   "hand from the three asks above."]
+                                   f"hand from {ASKS_ABOVE[len(resolved)] if asks is not None else 'the three asks'} above."]
         lines.extend(["## Written comment"] + letter + [""])
     lines.append("## How to take part")
     part = meeting.get("participation")
