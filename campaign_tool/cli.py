@@ -866,16 +866,23 @@ def main():
     outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
     outcome_p.add_argument("--votes", metavar="FILE", help="name,vote CSV (yes|no|abstain|absent|recused) read from the --source record")
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
-    commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
-                        ).add_argument("--directory", required=True)
+    content_check_p = commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)")
+    content_check_p.add_argument("--directory", required=True)
+    content_check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
     evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
     evidence_p.add_argument("--directory", required=True)
     evidence_p.add_argument("--check", action="store_true", help="Exit 3 when any citation has a problem")
-    verify_agency_p = commands.add_parser("kit-verify-agency", help="Record an organizer-checked records contact in kit/agencies.json")
-    for flag in ("--directory", "--agency-id", "--source-url", "--checked-on"):
-        verify_agency_p.add_argument(flag, required=True)
+    verify_agency_p = commands.add_parser("kit-verify-agency", help="Record an organizer-checked records contact in kit/agencies.json;"
+                                          " 'import --csv FILE' records many at once")
+    verify_agency_p.add_argument("action", nargs="?", choices=("import",), help="import: many checked contacts from one CSV")
+    verify_agency_p.add_argument("--directory", required=True)
+    for flag in ("--agency-id", "--source-url", "--checked-on"):
+        verify_agency_p.add_argument(flag, help="Required without 'import'")
     for flag in ("--records-email", "--records-url", "--portal"):
         verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
+    verify_agency_p.add_argument("--csv", help="import: header agency_id,source_url,checked_on,records_email,records_url,"
+                                 "portal_vendor,portal_url; 1-500 rows, all or none")
+    verify_agency_p.add_argument("--check", action="store_true", help="import: validate only; write nothing")
     agency_cmds = commands.add_parser("kit-agency", help="Add, select or deselect agencies in kit/agencies.json; the next"
                                       " kit run drafts requests for selected law-enforcement agencies"
                                       ).add_subparsers(dest="agency_command", required=True)
@@ -1299,12 +1306,29 @@ def main():
             print(json.dumps(result, indent=2, ensure_ascii=False) + "\nPrivate log only; nothing was sent or published.")
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
-            content_check_cli(root)
+            content_check_cli(root, as_json=args.as_json)
         elif args.command == "evidence":
             from .evidence import run_cli
             run_cli(root, check=args.check)
+        elif args.command == "kit-verify-agency" and args.action == "import":
+            from .kit import verify_agencies_csv
+            single = [f for f in ("agency_id", "source_url", "checked_on", "records_email", "records_url", "portal")
+                      if getattr(args, f) is not None]
+            if single:
+                verify_agency_p.error("import takes only --directory, --csv and --check, not "
+                                      + ", ".join("--" + f.replace("_", "-") for f in single))
+            if args.csv is None:
+                verify_agency_p.error("the following arguments are required: --csv")
+            print(json.dumps(verify_agencies_csv(root, Path(args.csv).expanduser(), check=args.check), indent=2))
+            print("Nothing was fetched or sent.")
         elif args.command == "kit-verify-agency":
             from .kit import verify_agency
+            stray = [f"--{f}" for f in ("csv",) if getattr(args, f) is not None] + ["--check"] * args.check
+            if stray:
+                verify_agency_p.error(", ".join(stray) + " only with 'import'")
+            if missing := [f"--{f.replace('_', '-')}" for f in ("agency_id", "source_url", "checked_on")
+                           if getattr(args, f) is None]:
+                verify_agency_p.error("the following arguments are required: " + ", ".join(missing))
             print(json.dumps(verify_agency(root, args.agency_id, source_url=args.source_url, checked_on=args.checked_on,
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
