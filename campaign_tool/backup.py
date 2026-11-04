@@ -265,6 +265,34 @@ def _snapshot_ledger(ledger, tmpdir):
     return target
 
 
+@contextlib.contextmanager
+def _staged_archive(out_path):
+    """Yield a payload path inside a private (0700) sibling staging directory of ``out_path``.
+
+    Plain archive bytes never exist under the requested name before they are verified. The
+    directory is removed on ordinary failure, KeyboardInterrupt and SystemExit; an abrupt
+    process exit can leave it behind (never a final-name archive). Only this run's own
+    directory is ever touched.
+    """
+    out_path = Path(out_path)
+    with tempfile.TemporaryDirectory(prefix=".deflock-archive-", dir=out_path.parent) as staging:
+        os.chmod(staging, 0o700)
+        yield Path(staging) / "archive.partial"
+
+
+def _publish_archive(staged, out_path):
+    """Commit a closed, verified staged archive under ``out_path`` without ever replacing anything."""
+    fd = os.open(staged, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.link(staged, out_path)  # same-filesystem hard link: the no-replace commit point
+    except FileExistsError:
+        raise BackupError("archive appeared before publication; choose a new file name") from None
+
+
 def export(root, out_path, encrypt_to=None):
     """Write the archive; returns the manifest dict. Refuses to overwrite ``out_path``.
 
@@ -275,7 +303,7 @@ def export(root, out_path, encrypt_to=None):
     out_path = Path(out_path)
     if not (root / "campaign.json").is_file():
         raise BackupError("campaign.json not found; is this a campaign directory?")
-    if out_path.exists():
+    if os.path.lexists(out_path):
         raise BackupError(f"{out_path} exists; choose a new file name")
     if (root / "private").is_symlink():
         raise BackupError("unsafe_private_directory: private must not be a symlink")
@@ -312,9 +340,8 @@ def export(root, out_path, encrypt_to=None):
         manifest = _manifest(files, counts, {"kind": "local", "root_name": root.name})
         manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
         manifest["manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
-        tar_path = Path(tmp) / "plain.tar" if encrypt_to is not None else out_path
-        fd = os.open(tar_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
+        def write_tar(tar_path):
+            fd = os.open(tar_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "wb") as handle, tarfile.open(fileobj=handle, mode="w", format=tarfile.PAX_FORMAT) as tar:
                 _add_bytes(tar, MANIFEST, manifest_bytes)
                 for name, path in staged:
@@ -326,13 +353,16 @@ def export(root, out_path, encrypt_to=None):
                         tar.addfile(info, source)
             # Detect source files changing between hashing and archive writing.
             verify(tar_path, expected_manifest_sha256=manifest["manifest_sha256"])
-            if encrypt_to is not None:
-                manifest["recipient"] = backup_crypt.encrypt(tar_path, out_path, encrypt_to)
-                manifest["encrypted"] = True
-        except BaseException:
-            if encrypt_to is None:
-                out_path.unlink(missing_ok=True)
-            raise
+
+        if encrypt_to is not None:
+            plain = Path(tmp) / "plain.tar"
+            write_tar(plain)
+            manifest["recipient"] = backup_crypt.encrypt(plain, out_path, encrypt_to)
+            manifest["encrypted"] = True
+        else:
+            with _staged_archive(out_path) as partial:
+                write_tar(partial)
+                _publish_archive(partial, out_path)
     return manifest
 
 
@@ -797,7 +827,7 @@ ORIGINAL_PATH = "/api/runner/originals/{sha256}"
 def export_hosted(client, out_path):
     """Archive a hosted campaign through the workspace runner API; returns the manifest."""
     out_path = Path(out_path)
-    if out_path.exists():
+    if os.path.lexists(out_path):
         raise BackupError(f"{out_path} exists; choose a new file name")
     raw = client.get(EXPORT_PATH)
     if not isinstance(raw, bytes) or len(raw) > MAX_MEMBER_BYTES:
@@ -817,9 +847,9 @@ def export_hosted(client, out_path):
     members = [("campaign.json", campaign_json), ("private/d1-export.json", canonical_export)]
     if len(originals) + len(members) + 1 > MAX_MEMBERS:
         raise BackupError("member_limit_exceeded")
-    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     files = {}
-    try:
+    with _staged_archive(out_path) as partial:
+        fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as handle, tarfile.open(fileobj=handle, mode="w", format=tarfile.PAX_FORMAT) as tar:
             # Manifest is written last in memory but must be first in the archive for
             # streaming verification, so members are buffered to a spool file.
@@ -856,8 +886,6 @@ def export_hosted(client, out_path):
                         info.uname = info.gname = ""
                         with open(item, "rb") as source:
                             tar.addfile(info, source)
-        verify(out_path, expected_manifest_sha256=manifest["manifest_sha256"])
-    except BaseException:
-        out_path.unlink(missing_ok=True)
-        raise
+        verify(partial, expected_manifest_sha256=manifest["manifest_sha256"])
+        _publish_archive(partial, out_path)
     return manifest

@@ -133,7 +133,8 @@ class SiteSearchTests(unittest.TestCase):
         self.build()
         plain_script, plain_html = self.read("search.js"), self.read("search.html")
         self.assertNotIn("/site-data.js", plain_html)
-        self.assertNotIn("LABELS=", self.read("site-data.js"))
+        labels = json.loads(re.search(r"^var LABELS=(.*);$", self.read("site-data.js"), re.M).group(1))
+        self.assertEqual(labels, {"js.filter_count": JS_DEFAULTS["js.filter_count"]})  # source filter only; no search overrides
         self.labels({"js.search_hint": "Escriba de 2 a 100 caracteres.", "footer.search": "Buscar"})
         shutil.rmtree(self.public)
         self.build()
