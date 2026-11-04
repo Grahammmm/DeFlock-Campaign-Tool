@@ -216,6 +216,8 @@ describe("runner API: followups, classification patch, site staging", () => {
     expect(safeSitePath("vendor/maplibre-gl.js")).toBe("vendor/maplibre-gl.js");
     expect(safeSitePath("_headers")).toBe("_headers");
     expect(safeSitePath("assets/Logo.PNG")).toBe("assets/Logo.PNG");
+    expect(safeSitePath("data/findings.csv")).toBe("data/findings.csv");
+    expect(safeSitePath("data/sources.csv")).toBe("data/sources.csv");
     for (const bad of ["", "/index.html", "a//b.html", "../index.html", "findings/../index.html", "./index.html", ".hidden", ".env",
       "index.html/", "run.sh", "setup.exe", "notes", "dir/noext", "a\\b.html", "x.html\0", "x.php", "x.htm.bak", "x.sqlite", "secrets.key",
       "a".repeat(130) + ".html", Array(17).fill("d").join("/") + "/x.html"]) {
@@ -243,6 +245,12 @@ describe("runner API: followups, classification patch, site staging", () => {
     res = await call(new Request(`${BASE}/site/v1.0/_headers`, { method: "PUT", headers: await siteHeaders(headers, "text/plain"), body: headers }));
     expect(res.status).toBe(201);
     expect(await (await env.PUBLIC_BUCKET.get("sites/v1.0/_headers"))?.text()).toBe(headers);
+    const csv = "title\r\nSynthetic finding\r\n";
+    res = await call(new Request(`${BASE}/site/v1.0/data/findings.csv`, { method: "PUT", headers: await siteHeaders(csv, "text/csv"), body: csv }));
+    expect(res.status).toBe(201);
+    const storedCsv = await env.PUBLIC_BUCKET.get("sites/v1.0/data/findings.csv");
+    expect(await storedCsv?.text()).toBe(csv);
+    expect(storedCsv?.httpMetadata?.contentType).toBe("text/csv");
     // rejections: version, traversal, hidden, extension, missing/mismatched hash, size, auth
     expect((await call(new Request(`${BASE}/site/Bad%20Version/index.html`, { method: "PUT", headers: await siteHeaders(html), body: html }))).status).toBe(400);
     expect((await call(new Request(`${BASE}/site/v1.0/..%2Fescape.html`, { method: "PUT", headers: await siteHeaders(html), body: html }))).status).toBe(400);

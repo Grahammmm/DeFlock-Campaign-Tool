@@ -36,8 +36,8 @@ CITY = "ca-cedar-city"  # an id that is a prefix of COUNCIL: exact token members
 BASE_SLUG = "cedar-policy-posted"
 KNOWN = {POLICE, SHERIFF, COUNCIL}
 # sha256 over the artifacts a primary-only campaign publishes (filter.js, findings.json, feed.xml, per-agency feeds,
-# findings index) for the fixture built by ``legacy_fixture``, recorded from main before DF1952-07.
-LEGACY_DIGEST = "6ddbabd69b0aa4a0ec5bcccf522ee530fda34915104646c4875c6d2ba4c6959d"  # pragma: allowlist secret -- SHA-256 of synthetic public artifacts, not a credential
+# findings index) for the fixture built by ``legacy_fixture``, including the DF1207-14 CSV link.
+LEGACY_DIGEST = "1fd68e1dc1306c13dc907317f4512b59c869ab478e787716291726f676cdee64"  # pragma: allowlist secret -- SHA-256 of synthetic public artifacts, not a credential
 
 NODE_HARNESS = r"""
 const fs=require('fs'),vm=require('vm'),path=require('path');

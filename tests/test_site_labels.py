@@ -58,6 +58,11 @@ def enrich(root, maplibre=False):
     _write(content / "agencies.json", agencies)
     _write(content / "topics" / "zq-topic.json", {"title": "Zq topic", "intro_md": "Zq intro.",
                                                   "finding_ids": ["fnd_0000000000000002", "fnd_0000000000000003"]})
+    _write(content / "glossary.json", {  # DF1952-04: reaches every glossary label (a rule-linked term, an alias, a finding that uses it)
+        "schema_version": 1, "notice_md": "Zq glossary notice.",
+        "terms": [{"term": "Zq title", "aliases": ["Zq alias"], "definition_md": "Zq definition.",
+                   "rule_id": "ca-civ-1798.90.5-definitions",
+                   "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."}]})
     _write(content / "meetings" / "zq-cancelled.json", {
         "id": "zq-cancelled", "body": "Zq board", "starts_at": "2026-09-01T18:00:00-07:00", "status": "cancelled"})
     if maplibre:
@@ -247,7 +252,7 @@ class LabelsTest(unittest.TestCase):
                   "map.check_in_agency_record", "map.check_not_found_on_site", "map.check_seen_in_person",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
-                  "meeting.recording", "meeting.recording_from",
+                  "meeting.minutes_confirmed", "meeting.minutes_pending", "meeting.recording", "meeting.recording_from",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
                   "officials.heading", "officials.listed", "officials.source", "privacy.signup_policy",
                   "vote.absent", "vote.abstain", "vote.no", "vote.recused", "vote.yes"]
