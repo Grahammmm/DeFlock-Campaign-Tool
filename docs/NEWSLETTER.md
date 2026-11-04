@@ -105,6 +105,19 @@ the heading is omitted when no entry is kept and `counts.records` is present onl
 Worker manifests carry no `records` key and render exactly as before; a `records` that is not a list, or a
 prefix that is not 12 lowercase hex characters, is refused (`DraftError`).
 
+`--from-content` also adds a **Camera map** section (after New in the records library, before Decisions) when
+`content/map/history.json` (DF0137-13) has a record whose `recorded_on` day is on or after the `--since` day
+(any day without `--since`) and not after the day the draft is built. Lines: `N community-mapped points
+(ownership unconfirmed), OpenStreetMap data of DAY.` (DAY is the `osm_base` day, else `recorded_on`) with a
+"Cameras page" link only when `campaign.base_url` is set; `Since PREVIOUS: A added, R removed.` (omitted for the
+first record ever; PREVIOUS is the record just before it on any date); and, when both records have `by_city`,
+`CITY: OLD → NEW` for each city whose count changed, sorted by city, at most 8 lines then "and N more on the
+cameras page.". The section is omitted when no record is in the window, and when the in-window record has `added`
+and `removed` both 0 and the same `by_city` as the previous one; `counts.map` is 1 only when it is shown. The
+manifest's `map` key (`records`, `label`, `path`) exists only when the history has a record; Worker manifests
+carry none and render exactly as before. A `map` that is not an object, `map.records` that is not a list or a
+malformed record is refused (`DraftError`). The wording never says cameras were installed and names no owner.
+
 Under each upcoming meeting `--from-content` adds one indented line. With participation facts an
 organizer verified (see MEETINGS.md) it reads `How to take part: In person: yes|no; Remote: HOW;
 Written comments: HOW, by DEADLINE; Speaker limit: N minutes (checked DAY) [Official details](URL)`,
