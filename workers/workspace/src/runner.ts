@@ -3,7 +3,7 @@
 import { Hono } from "hono";
 import { HEX64, nowIso, sha256Hex } from "@deflock/shared/ids";
 import { requireRunner } from "./auth.ts";
-import { ACTION_KINDS, JOB_KINDS, Repo, type ActionKind, type JobCompletion, type JobKind } from "./db.ts";
+import { ACTION_KINDS, JOB_KINDS, MAIL_CLASSIFICATIONS, Repo, type ActionKind, type JobCompletion, type JobKind } from "./db.ts";
 import type { Env } from "./env.ts";
 import { readinessError, type ReadinessSnapshot } from "./readiness.ts";
 
@@ -116,7 +116,7 @@ runnerApi.post("/jobs/:id/result", async (c) => {
       const classification = String(patch.classification ?? "unclassified");
       result.correspondence_update = {
         correspondence_id: target,
-        classification: CLASSIFICATIONS.includes(classification) ? classification : "unclassified",
+        classification: MAIL_CLASSIFICATIONS.includes(classification) ? classification : "unclassified",
         classification_confidence: typeof patch.classification_confidence === "string" ? patch.classification_confidence.slice(0, 32) : null,
         summary: typeof patch.summary === "string" ? patch.summary.slice(0, 300) : null,
       };
@@ -127,7 +127,6 @@ runnerApi.post("/jobs/:id/result", async (c) => {
   return c.json(accepted);
 });
 
-const CLASSIFICATIONS = ["acknowledgement", "extension", "fee_estimate", "partial_production", "production", "denial", "clarification", "unrelated", "unclassified"];
 const MAX_FOLLOWUPS = 200;
 
 function parseFollowups(value: unknown): { kind: JobKind; idempotency_key: string | null; inputs: Record<string, unknown> }[] {
