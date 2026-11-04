@@ -21,6 +21,14 @@ DEFAULTS = {
     "nav.home_page": "Home page", "header.skip": "Skip to content", "header.attend": "Attend a meeting",
     "footer.credit": "{name} is an independent local initiative. Built with DeFlock Campaign Tool.",
     "footer.contact": "Contact:", "footer.feed": "Findings feed", "footer.sitemap": "Sitemap",
+    "footer.privacy": "Privacy", "privacy.title": "Privacy", "privacy.signup_policy": "Read the provider's privacy policy",
+    "privacy.lead": "What this site loads, whether it stores anything on your device, and where a signup goes.",
+    "privacy.scripts": "Scripts, stylesheets and fonts are served from this site only. This site loads no third-party scripts.",
+    "privacy.cookies": "This site sets no cookies and runs no analytics or tracking scripts.",
+    "privacy.map": "The interactive map loads its style and map tiles from these hosts, which your browser contacts when it opens: {hosts}.",
+    "privacy.signup": "Your email address goes to {host} when you submit the signup form; this site never receives it.",
+    "privacy.contact": "Privacy contact:", "privacy.no_contact": "This campaign has not published a privacy contact.",
+    "privacy.notice": "This page is generated from the site's build settings. It is not legal advice and not a reviewed privacy policy.",
     "title.feed": "Findings", "title.home": "Home", "title.agencies": "Agencies",
     "title.agencies_description": "Public bodies covered by the campaign", "title.findings": "Findings",
     "title.findings_description": "Published, source-linked findings", "title.corrections": "Corrections",
@@ -81,6 +89,8 @@ DEFAULTS = {
     "meeting.votes_source": "From the official record:", "meeting.recording": "Watch the discussion",
     "meeting.recording_from": "(from {start})", "vote.yes": "Yes", "vote.no": "No", "vote.abstain": "Abstained",
     "vote.absent": "Absent", "vote.recused": "Recused",
+    "agency.votes_heading": "How members voted", "agency.votes_none": "No recorded vote",
+    "agency.votes_source": "Official record", "agency.votes_more": "\u2026 and {count} earlier votes on the meeting pages",
     "sources.record_no": "Record no.", "sources.public_copy": "Public copy", "agency.official_source": "the official source",
     "sources.private": "Original held in the private archive; not downloadable here", "sources.pages": "{count} page(s)",
     "sources.cited_by": "Cited by:", "sources.not_cited": "Not cited by a published finding",
@@ -127,6 +137,30 @@ DEFAULTS = {
     "signup.provider_note": "Submitting opens the provider's hosted confirmation page.",
     "signup.none": "No email addresses are collected by this site. Follow meetings and findings here or by feed.",
 }
+# DF0137-14: fixed strings the generated scripts write into the page. Defaults are today's exact English; site.py
+# switches the scripts to LABELS lookups (site-data.js) only when a js.* key differs from its default.
+JS_DEFAULTS = {
+    "js.filter_count": "Showing {shown} of {total}",
+    "js.mapped_point": "{count} mapped point", "js.mapped_points": "{count} mapped points",
+    "js.map_failed": "The interactive map could not load in this browser. You can still select a city below, {evidence}, or {source}.",
+    "js.map_evidence": "review the evidence notes", "js.map_source": "open the DeFlock source map",
+    "js.data_failed": "Camera data could not load. {source}", "js.data_source": "Open the DeFlock source map",
+    "js.popup_title": "Community-mapped ALPR point", "js.popup_no_manufacturer": "Manufacturer not specified",
+    "js.popup_no_operator": "Operator not specified", "js.popup_source": "View source record",
+    "js.county_findings": "{count} published finding(s) with hashed sources.",
+    "js.county_no_findings": "No findings have been published yet; records requests are in progress.",
+    "js.city_points_one": "{count} community-mapped point inside city limits; ownership unconfirmed",
+    "js.city_points_many": "{count} community-mapped points inside city limits; ownership unconfirmed",
+    "js.city_no_findings": "No published findings for this agency yet.",
+    "js.agency_findings_zero": "no published findings yet",
+    "js.agency_findings_one": "{count} published finding",
+    "js.agency_findings_many": "{count} published findings",
+    "js.group_vendor": "Not applicable", "js.group_status": "Ownership unconfirmed",
+    "js.group_summary": "{name}. Points outside city boundaries without an operator tag are research leads, not evidence of agency ownership.",
+    "js.group_fact": "Community-mapped points; verify with records requests.",
+    "js.group_open": "Which agency, if any, operates these points is unconfirmed.", "js.group_flag": "Unconfirmed",
+}
+DEFAULTS.update(JS_DEFAULTS)
 for _family, _labels in (("classification", CLASSIFICATION_LABELS), ("confidence", CONFIDENCE_LABELS), ("kind", KIND_LABELS)):
     DEFAULTS.update({f"{_family}.{code}": text for code, text in _labels.items()})
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")

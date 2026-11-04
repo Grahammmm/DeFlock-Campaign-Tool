@@ -10,7 +10,7 @@ import re
 import unicodedata
 
 REASONS = ("no_approval", "approver_unnamed", "content_changed_after_approval", "approval_for_other_content",
-           "approval_consumed", "redaction_unsigned", "status_not_approved")
+           "approval_consumed", "redaction_unsigned", "status_not_approved", "approval_unbound")
 PLACEHOLDERS = frozenset(("-", "n/a", "na", "none", "null", "tbd", "todo", "unknown", "anonymous", "auto", "system",
                           "agent", "bot", "ai", "llm", "model", "robot", "script", "cron", "automation", "automatic"))
 MACHINE_WORDS = frozenset(("auto", "automatic", "automation", "system", "agent", "bot", "ai", "llm", "coder", "reviewer",
@@ -88,16 +88,20 @@ def content_digest(obj):
 def entry_refusals(entries, fresh):
     """PUBLISH.json entries {finding_id, review, ...}: one line per approved entry the gate refuses (ids and enums only).
 
-    The approval is bound to the entry as it stands in the file (the file holds no hash from approval time: a known
-    limit, docs/PUBLICATION.md); the content is the entry the run re-derives."""
+    DF-APPROVAL-TIME-BIND: the approval is bound to review.content_hash, the hash of the entry (minus `review`) that the
+    person recorded when approving. The content is the entry the run re-derives now, and the file's own entry must still
+    equal it. A hash is never synthesized here: an approval with none recorded (a legacy approval) is approval_unbound
+    and approves nothing until a person re-reads the text and records its hash (skills/flock-publish)."""
     body = lambda f: content_digest({k: v for k, v in f.items() if k != "review"})  # noqa: E731
     now = {f.get("finding_id"): f for f in (fresh or {}).get("findings", [])}
     lines = []
     for entry in (e for e in entries if e["review"]["status"] == "approved"):
-        fid = entry["finding_id"]
+        fid, recorded = entry["finding_id"], entry["review"].get("content_hash")
         try:
-            assert_publishable(fid, body(now[fid]) if fid in now else None,
-                               [dict(entry["review"], artefact_id=fid, content_hash=body(entry))])
+            if not (isinstance(recorded, str) and recorded):
+                raise PublicationRefused(fid, "approval_unbound")
+            current = body(now[fid]) if fid in now and body(now[fid]) == body(entry) else None
+            assert_publishable(fid, current, [dict(entry["review"], artefact_id=fid, content_hash=recorded)])
         except PublicationRefused as exc:
             lines.append(str(exc))
     return lines

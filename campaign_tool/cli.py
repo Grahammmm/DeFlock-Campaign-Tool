@@ -765,7 +765,7 @@ def main():
                          help="Fall back to the Census geocoder when the seed cannot resolve the location")
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
-                              "city_council, district_attorney, chp, campus_police (opt-in)")
+                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in)")
     kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
@@ -834,16 +834,30 @@ def main():
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
     outcome_p.add_argument("--recording-url", help="https URL of the body's official video or audio of the meeting")
     outcome_p.add_argument("--recording-start", metavar="H:MM:SS", help="Where the discussion starts in the recording, at most 12:00:00")
-    commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)"
-                        ).add_argument("--directory", required=True)
+    sent_p = commands.add_parser("meetings-comment-sent", help="Record a comment you submitted by hand on a staged "
+                                 "meeting in kit/comments-sent.json; sends nothing")
+    for flag in ("--directory", "--id", "--on"):
+        sent_p.add_argument(flag, required=True)
+    sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail", "in_person"))
+    sent_p.add_argument("--file", help="The letter you sent: only its SHA-256 and size are kept, never its text or path")
+    sent_p.add_argument("--replace", action="store_true", help="Overwrite an existing record for this meeting")
+    content_check_p = commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)")
+    content_check_p.add_argument("--directory", required=True)
+    content_check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
     evidence_p = commands.add_parser("evidence", help="Check that published findings' cited records are registered and stored (read-only)")
     evidence_p.add_argument("--directory", required=True)
     evidence_p.add_argument("--check", action="store_true", help="Exit 3 when any citation has a problem")
-    verify_agency_p = commands.add_parser("kit-verify-agency", help="Record an organizer-checked records contact in kit/agencies.json")
-    for flag in ("--directory", "--agency-id", "--source-url", "--checked-on"):
-        verify_agency_p.add_argument(flag, required=True)
+    verify_agency_p = commands.add_parser("kit-verify-agency", help="Record an organizer-checked records contact in kit/agencies.json;"
+                                          " 'import --csv FILE' records many at once")
+    verify_agency_p.add_argument("action", nargs="?", choices=("import",), help="import: many checked contacts from one CSV")
+    verify_agency_p.add_argument("--directory", required=True)
+    for flag in ("--agency-id", "--source-url", "--checked-on"):
+        verify_agency_p.add_argument(flag, help="Required without 'import'")
     for flag in ("--records-email", "--records-url", "--portal"):
         verify_agency_p.add_argument(flag, help="Value the organizer checked on the official page (never fetched)")
+    verify_agency_p.add_argument("--csv", help="import: header agency_id,source_url,checked_on,records_email,records_url,"
+                                 "portal_vendor,portal_url; 1-500 rows, all or none")
+    verify_agency_p.add_argument("--check", action="store_true", help="import: validate only; write nothing")
     agency_cmds = commands.add_parser("kit-agency", help="Add, select or deselect agencies in kit/agencies.json; the next"
                                       " kit run drafts requests for selected law-enforcement agencies"
                                       ).add_subparsers(dest="agency_command", required=True)
@@ -872,6 +886,8 @@ def main():
                         "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
     sent_p.add_argument("--reference", metavar="REF", help="The agency's own request number (1-40: A-Z a-z 0-9 - _ # .)")
     sent_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
+    sent_p.add_argument("--correspondence", action="append", default=[], metavar="PREFIX",
+                        help="Repeatable: >= 12 hex of the ingested sent message or confirmation; not records")
     status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
@@ -909,6 +925,8 @@ def main():
     response_p.add_argument("--note", help="Short plain-text note (<= 200 chars; never record contents)")
     response_p.add_argument("--record", action="append", default=[], metavar="PREFIX",
                             help="produced only, repeatable: >= 12 hex of an ingested record's SHA-256")
+    response_p.add_argument("--correspondence", action="append", default=[], metavar="PREFIX",
+                            help="any kind, repeatable: >= 12 hex of an ingested letter or confirmation; not records")
     response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     response_p.add_argument("--expected-on", metavar="YYYY-MM-DD", help="determination or a later step: the agency's "
                             "own stated production date (provisional, not a legal deadline)")
@@ -1147,11 +1165,19 @@ def main():
             report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
                                     max_findings=args.max_findings, replace=args.replace)
             print(json.dumps(report, indent=2))
+            for built in report["built"]:
+                if built["comment_sent"]:
+                    print(f"{built['id']}: Comment recorded as submitted on {built['comment_sent']['on']} "
+                          f"({built['comment_sent']['channel']}).")
             sys.exit(3 if report["skipped"] else 0)
         elif args.command == "meeting-pack":
             from .meeting_pack import build as pack_build
-            print(json.dumps(pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
-                                        replace=args.replace, allow_past=args.allow_past)))
+            report = pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
+                                replace=args.replace, allow_past=args.allow_past)
+            print(json.dumps(report))
+            if report["comment_sent"]:
+                print(f"Comment recorded as submitted on {report['comment_sent']['on']} "
+                      f"({report['comment_sent']['channel']}).")
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
         elif args.command == "meetings-outcome":
@@ -1162,6 +1188,13 @@ def main():
             if args.replace and args.votes is None:  # the new outcome replaced the old one whole
                 print("votes: none")
             print("Recorded only. Nothing was published.")
+        elif args.command == "meetings-comment-sent":
+            from .meeting_comments import record
+            entry = record(root, args.id, args.on, args.channel, args.file, args.replace)
+            shown = {"id": args.id, **{k: v for k, v in entry.items() if k != "letter_sha256"},
+                     **({"letter_sha256_prefix": entry["letter_sha256"][:12]} if "letter_sha256" in entry else {})}
+            print(json.dumps(shown, indent=2))
+            print("Recorded only. Nothing was sent.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
@@ -1264,12 +1297,29 @@ def main():
             print(json.dumps(result, indent=2, ensure_ascii=False) + "\nPrivate log only; nothing was sent or published.")
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
-            content_check_cli(root)
+            content_check_cli(root, as_json=args.as_json)
         elif args.command == "evidence":
             from .evidence import run_cli
             run_cli(root, check=args.check)
+        elif args.command == "kit-verify-agency" and args.action == "import":
+            from .kit import verify_agencies_csv
+            single = [f for f in ("agency_id", "source_url", "checked_on", "records_email", "records_url", "portal")
+                      if getattr(args, f) is not None]
+            if single:
+                verify_agency_p.error("import takes only --directory, --csv and --check, not "
+                                      + ", ".join("--" + f.replace("_", "-") for f in single))
+            if args.csv is None:
+                verify_agency_p.error("the following arguments are required: --csv")
+            print(json.dumps(verify_agencies_csv(root, Path(args.csv).expanduser(), check=args.check), indent=2))
+            print("Nothing was fetched or sent.")
         elif args.command == "kit-verify-agency":
             from .kit import verify_agency
+            stray = [f"--{f}" for f in ("csv",) if getattr(args, f) is not None] + ["--check"] * args.check
+            if stray:
+                verify_agency_p.error(", ".join(stray) + " only with 'import'")
+            if missing := [f"--{f.replace('_', '-')}" for f in ("agency_id", "source_url", "checked_on")
+                           if getattr(args, f) is None]:
+                verify_agency_p.error("the following arguments are required: " + ", ".join(missing))
             print(json.dumps(verify_agency(root, args.agency_id, source_url=args.source_url, checked_on=args.checked_on,
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal), indent=2))
@@ -1294,7 +1344,8 @@ def main():
             from .kit_track import record_sent
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
                                          replace=args.replace, reference=args.reference,
-                                         replace_reference=args.replace_reference), indent=2))
+                                         replace_reference=args.replace_reference,
+                                         correspondence=args.correspondence), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
@@ -1342,7 +1393,7 @@ def main():
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
                                          reference=args.reference, replace_reference=args.replace_reference,
-                                         partial=args.partial),
+                                         partial=args.partial, correspondence=args.correspondence),
                              indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):

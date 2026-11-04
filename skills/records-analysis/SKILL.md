@@ -36,3 +36,11 @@ To find which preserved records mention a term, run `tools/records_search.py ind
 private folder outside any repository, then `query`. A hit is a pointer (document id, page,
 byte offset, hash), not a finding: open the cited document and read the context yourself.
 Read the closing coverage line; documents with no extracted text were not searched.
+
+## Historical coverage
+
+To see what the held documents establish about an agency's past, run `tools/historical_coverage.py build` into a private
+folder outside any repository, then `report`. Each date is the earliest one a held document carries, cited by hash and page;
+every other period is shown as unevidenced with its reason. A gap may be a document nobody has read yet, so treat it as a
+pointer to open the cited document, not a finding. The report states dates, never a judgement, and stays private until the
+publish gate.

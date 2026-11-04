@@ -24,7 +24,8 @@ class ReviewQueueJsonTest(rq.ReviewQueueTest):
 
     def test_waiting_order_statuses_and_counts_match_markdown_and_stdout(self):
         self.assertEqual(len(self.doc['findings']), 4)
-        self.doc['findings'][3]['review'] = dict(status='approved', approved_by='G', approved_on='2026-10-30', approval_ref='R-2')
+        self.doc['findings'][3]['review'] = dict(status='approved', approved_by='G', approved_on='2026-10-30', approval_ref='R-2',
+                                                 content_hash=queue.content_hash(self.doc['findings'][3]))  # bound when approved
         self.doc['findings'][2]['review'] = dict(status='needs-review', approved_by='G', approved_on='2026-10-30',
                                                  approval_ref='R-1')
         self.save()

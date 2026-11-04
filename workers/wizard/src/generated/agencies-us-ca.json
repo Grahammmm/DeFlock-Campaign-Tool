@@ -147,6 +147,29 @@
           ]
         },
         {
+          "agency_id": "ca-ohlone-community-college-district-ccd-police",
+          "name": "Ohlone Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Ohlone Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-alameda-police",
           "name": "Alameda Police Department",
           "kind": "police",
@@ -1272,6 +1295,29 @@
           ]
         },
         {
+          "agency_id": "ca-butte-glenn-community-college-district-ccd-police",
+          "name": "Butte-Glenn Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Butte-Glenn Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-biggs-city-council",
           "name": "Biggs City Council",
           "kind": "city_council",
@@ -1908,6 +1954,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-contra-costa-community-college-district-ccd-police",
+          "name": "Contra Costa Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Contra Costa Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -3171,6 +3240,29 @@
           "sources": [
             {
               "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-state-center-community-college-district-ccd-police",
+          "name": "State Center Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "State Center Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -6454,6 +6546,190 @@
           "sources": [
             {
               "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-cerritos-community-college-district-ccd-police",
+          "name": "Cerritos Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Cerritos Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-compton-community-college-district-ccd-police",
+          "name": "Compton Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Compton Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-el-camino-community-college-district-ccd-police",
+          "name": "El Camino Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "El Camino Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-glendale-community-college-district-ccd-police",
+          "name": "Glendale Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Glendale Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-mt-san-antonio-community-college-district-ccd-police",
+          "name": "Mt. San Antonio Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Mt. San Antonio Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-pasadena-area-community-college-district-ccd-police",
+          "name": "Pasadena Area Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Pasadena Area Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-rio-hondo-community-college-district-ccd-police",
+          "name": "Rio Hondo Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Rio Hondo Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-santa-monica-community-college-district-ccd-police",
+          "name": "Santa Monica Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Santa Monica Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -9809,6 +10085,29 @@
           ]
         },
         {
+          "agency_id": "ca-marin-community-college-district-ccd-police",
+          "name": "Marin Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Marin Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-belvedere-police",
           "name": "Belvedere Police Department",
           "kind": "police",
@@ -10721,6 +11020,29 @@
           "sources": [
             {
               "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-merced-community-college-district-ccd-police",
+          "name": "Merced Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Merced Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -12066,6 +12388,29 @@
           ]
         },
         {
+          "agency_id": "ca-napa-valley-community-college-district-ccd-police",
+          "name": "Napa Valley Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Napa Valley Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-american-canyon-city-council",
           "name": "American Canyon City Council",
           "kind": "city_council",
@@ -12626,6 +12971,29 @@
           "sources": [
             {
               "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-south-orange-county-community-college-district-ccd-police",
+          "name": "South Orange County Community College District Campus Police Departments",
+          "kind": "ccd_police",
+          "jurisdiction_name": "South Orange County Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -14470,6 +14838,29 @@
           ]
         },
         {
+          "agency_id": "ca-riverside-community-college-district-ccd-police",
+          "name": "Riverside Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Riverside Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-banning-police",
           "name": "Banning Police Department",
           "kind": "police",
@@ -15512,6 +15903,29 @@
           ]
         },
         {
+          "agency_id": "ca-los-rios-community-college-district-ccd-police",
+          "name": "Los Rios Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Los Rios Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-citrus-heights-police",
           "name": "Citrus Heights Police Department",
           "kind": "police",
@@ -16072,6 +16486,75 @@
           "sources": [
             {
               "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-chaffey-community-college-district-ccd-police",
+          "name": "Chaffey Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Chaffey Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-bernardino-community-college-district-ccd-police",
+          "name": "San Bernardino Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "San Bernardino Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-victor-valley-community-college-district-ccd-police",
+          "name": "Victor Valley Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Victor Valley Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -17028,6 +17511,98 @@
           ]
         },
         {
+          "agency_id": "ca-miracosta-community-college-district-ccd-police",
+          "name": "MiraCosta Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "MiraCosta Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-palomar-community-college-district-ccd-police",
+          "name": "Palomar Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Palomar Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-diego-community-college-district-ccd-police",
+          "name": "San Diego Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "San Diego Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-southwestern-community-college-district-ccd-police",
+          "name": "Southwestern Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Southwestern Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-carlsbad-police",
           "name": "Carlsbad Police Department",
           "kind": "police",
@@ -17794,6 +18369,29 @@
           ]
         },
         {
+          "agency_id": "ca-san-francisco-community-college-district-ccd-police",
+          "name": "San Francisco Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "San Francisco Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-san-francisco-police",
           "name": "San Francisco Police Department",
           "kind": "police",
@@ -17933,6 +18531,29 @@
           "sources": [
             {
               "title": "statewide agency; one entry per county so county kits include it; submit to CHP headquarters public records, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-joaquin-delta-community-college-district-ccd-police",
+          "name": "San Joaquin Delta Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "San Joaquin Delta Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -18354,6 +18975,29 @@
           "sources": [
             {
               "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-luis-obispo-county-community-college-district-ccd-police",
+          "name": "San Luis Obispo County Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "San Luis Obispo County Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -19708,6 +20352,29 @@
           ]
         },
         {
+          "agency_id": "ca-allan-hancock-joint-community-college-district-ccd-police",
+          "name": "Allan Hancock Joint Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Allan Hancock Joint Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-buellton-city-council",
           "name": "Buellton City Council",
           "kind": "city_council",
@@ -20100,6 +20767,75 @@
           "sources": [
             {
               "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-foothill-de-anza-community-college-district-ccd-police",
+          "name": "Foothill-De Anza Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Foothill-De Anza Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-san-jose-evergreen-community-college-district-ccd-police",
+          "name": "San Jose-Evergreen Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "San Jose-Evergreen Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-west-valley-mission-community-college-district-ccd-police",
+          "name": "West Valley-Mission Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "West Valley-Mission Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -21843,6 +22579,29 @@
           ]
         },
         {
+          "agency_id": "ca-solano-county-community-college-district-ccd-police",
+          "name": "Solano County Community College District Department of Public Safety",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Solano County Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-benicia-police",
           "name": "Benicia Police Department",
           "kind": "police",
@@ -22281,6 +23040,29 @@
           "sources": [
             {
               "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-sonoma-county-junior-college-district-ccd-police",
+          "name": "Sonoma County Junior College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Sonoma County Junior College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
@@ -23679,6 +24461,29 @@
           ]
         },
         {
+          "agency_id": "ca-sequoias-community-college-district-ccd-police",
+          "name": "Sequoias Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Sequoias Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-dinuba-police",
           "name": "Dinuba Police Department",
           "kind": "police",
@@ -24308,6 +25113,29 @@
           "sources": [
             {
               "title": "UC/CSU campus police department; seeded from contributor knowledge; submit to the campus records office, verify",
+              "url": null,
+              "accessed": "2026-09-30"
+            }
+          ]
+        },
+        {
+          "agency_id": "ca-ventura-county-community-college-district-ccd-police",
+          "name": "Ventura County Community College District Police Department",
+          "kind": "ccd_police",
+          "jurisdiction_name": "Ventura County Community College District",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "community college district police department; seeded from the district's official page; submit to the district records office, verify",
               "url": null,
               "accessed": "2026-09-30"
             }
