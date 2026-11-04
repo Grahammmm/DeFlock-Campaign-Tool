@@ -20,7 +20,7 @@
       "additionalProperties": false,
       "required": ["id", "slug", "title", "summary", "body_md", "classification", "confidence", "event_date",
                    "published_at", "updated_at", "agency_id", "sources", "limitations", "counterevidence",
-                   "corrections", "url"],
+                   "corrections", "url", "citation"],
       "properties": {
         "id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
         "slug": {"type": "string", "minLength": 1},
@@ -38,7 +38,8 @@
         "limitations": {"type": "array", "items": {"type": "string"}},
         "counterevidence": {"type": "array", "items": {"type": "string"}},
         "corrections": {"type": "array", "items": {"$ref": "#/$defs/correction"}},
-        "url": {"type": "string", "pattern": "^(https?://.+)?/findings/[^/]+\\.html$"}
+        "url": {"type": "string", "pattern": "^(https?://.+)?/findings/[^/]+\\.html$"},
+        "citation": {"type": "string", "minLength": 1}
       }
     },
     "source": {
