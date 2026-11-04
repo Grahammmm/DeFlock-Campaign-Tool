@@ -1088,6 +1088,11 @@ def main():
         import_p.add_argument(flag, required=True)
     import_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     import_p.add_argument("--apply", action="store_true", help="Record every row (default: check only, nothing written)")
+    sent_import_p = commands.add_parser("kit-sent-import", help="Record requests sent before you used the tool (CSV) "
+                                        "as imported entries in one checked write; sends nothing")
+    for flag in ("--directory", "--csv"):
+        sent_import_p.add_argument(flag, required=True)
+    sent_import_p.add_argument("--apply", action="store_true", help="Record every row (default: check only, nothing written)")
     followup_p = commands.add_parser("kit-followup", help="Private follow-up draft for a past-due sent request; never sent")
     for flag in ("--directory", "--agency"):
         followup_p.add_argument(flag, required=True)
@@ -1683,6 +1688,11 @@ def main():
                                          replace_reference=args.replace_reference,
                                          correspondence=args.correspondence, request_url=args.request_url), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-sent-import":
+            from .kit_import_sent import import_sent
+            print(json.dumps(import_sent(root, Path(args.csv).expanduser(), apply=args.apply), indent=2))
+            print("Recorded only. Nothing was sent." if args.apply else "Check only. Nothing was written or sent.",
+                  file=sys.stderr)
         elif args.command == "kit-muckrock-import":
             from .kit_muckrock import render, run as muckrock_run
             result = muckrock_run(root, args.agency, Path(args.from_json).expanduser(), args.request, args.apply)
