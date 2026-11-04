@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _alpr_policy, _asked, _bounds, _policy_check, _read_json,
+from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _alpr_policy, _asked, _bounds, _contract, _contract_check, _policy_check, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_site,
                       load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_glossary,
@@ -246,6 +246,11 @@ def content_problems(root, limit=LIMIT):
                 if isinstance(entry, dict) and entry.get("selected", True) is True:
                     _asked(entry, f"content/agencies.json[{index}].asked", problems=problems)
                     profile = entry.get("profile", {})
+                    if isinstance(profile, dict) and profile.get("contract_check") is not None:  # DF2207-03
+                        label = f"content/agencies.json[{index}].profile"
+                        contract = _attempt(problems, label + ".contract",
+                                            lambda: _contract(profile.get("contract"), label + ".contract"))
+                        _contract_check(profile["contract_check"], contract, label + ".contract_check", problems=problems)
                     if isinstance(profile, dict) and profile.get("policy_check") is not None:
                         label = f"content/agencies.json[{index}].profile"
                         alpr = _attempt(problems, label + ".alpr_policy",
