@@ -940,6 +940,9 @@ def main():
     outcome_p.add_argument("--recording-start", metavar="H:MM:SS", help="Where the discussion starts in the recording, at most 12:00:00")
     outcome_p.add_argument("--continued-to", metavar="MEETING_ID", help="With --result continued: the staged later meeting of the same body the official source says the item moved to")
     outcome_p.add_argument("--continued-to-date", metavar="YYYY-MM-DD", help="With --result continued: the later date the official source states (not with --continued-to)")
+    outcome_p.add_argument("--direction", metavar="TEXT", help="A direction the body gave its staff, as the official source states it (1-200 plain-text characters; needs --return-by; alone it updates a recorded outcome)")
+    outcome_p.add_argument("--return-by", metavar="YYYY-MM-DD", help="The date the official source says staff should report back (on or after the meeting)")
+    outcome_p.add_argument("--direction-source", metavar="URL", help="https URL where the direction is stated (default: the outcome's --source)")
     sent_p = commands.add_parser("meetings-comment-sent", help="Record a comment you submitted by hand on a staged "
                                  "meeting in kit/comments-sent.json; sends nothing")
     for flag in ("--directory", "--id", "--on"):

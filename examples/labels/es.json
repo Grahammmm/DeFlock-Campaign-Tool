@@ -237,6 +237,7 @@
     "meeting.minutes_pending": "Registrado por la campaña; acta aún sin aprobar",
     "meeting.continued_to": "Continuado al {date}",
     "meeting.continued_from": "Continuado desde el {date}",
+    "meeting.staff_direction": "Se indicó al personal que: {direction} (para el {date}, según consta en {source})",
     "agency.transparency_heading": "Informado en el portal de transparencia de Flock",
     "agency.transparency_checked": "según informa el proveedor, verificado el {date}",
     "agency.transparency_cameras": "Cámaras: {count}",
