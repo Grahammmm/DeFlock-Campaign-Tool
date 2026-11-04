@@ -33,14 +33,28 @@ opt-in: a kit lists them only with `--include campus_police`, never by
 default, so a kit without it is unchanged. Each entry is unverified with null
 contacts; its source note says to submit to the campus records office, which
 is separate from the city and county records offices and has its own
-procedure. Community colleges, private universities and school police are not
-seeded.
+procedure. Private universities and school police are not seeded.
 
-Coverage: all 58 counties. City lists are believed complete for San Luis
-Obispo, Santa Barbara, Monterey, Santa Cruz, Ventura, Kern, Fresno,
-Sacramento, San Diego, Alameda and Los Angeles counties; other counties list
-the cities a contributor could name with confidence and omit the rest rather
-than guess. `records_url`, `records_email`, `portal.url`, `place_fips`,
+California community college district police departments (36, from the
+`CCD_POLICE` table) are seeded in the county of the district office as kind
+`ccd_police`, after the campus police entries. Only districts that operate
+their own police department are listed; a district that contracts a city
+police department or the county sheriff, or that staffs unsworn campus
+safety officers, is not, and 36 of the 72 districts in the Chancellor's
+Office directory are absent for that reason or because no official page
+confirmed a department. They are opt-in: a kit lists them only with
+`--include ccd_police`, never by default, so a kit without it is unchanged.
+Each entry is unverified with null contacts; its source note says the entry
+was seeded from the district's official page and to submit to the district
+records office, which is separate from the city, county and campus records
+offices. The page each row came from is recorded in the pull request that
+added it, not in the seed.
+
+Coverage: all 58 counties, and all 482 incorporated cities, each with a
+`city_council` entry and a policing value (own police department, county
+sheriff, another agency, or not recorded). A city whose policing arrangement
+is not recorded has a council entry only, and its source note says to verify.
+`records_url`, `records_email`, `portal.url`, `place_fips`,
 `flock_transparency_slug` and `muckrock_agency_id` are null until someone
 verifies them, and `verified` is false everywhere. A wrong policing value is
 a bug: open a PR against the table with the official page as the source.
@@ -59,6 +73,39 @@ place file, keeps California incorporated places, writes
 merges that overlay whenever it exists, so the JSON stays a deterministic
 function of the tables plus the overlay. Tests and CI never run it; commit the
 overlay and the rebuilt seed together.
+
+## Automated evidence pass (`tools/agency_verify.py`)
+
+The seed above is unverified: it lists agencies, not ALPR users. `agency_verify` is the
+evidence pass that turns an unverified seed row into a **cited** verdict per agency. It reads
+public web pages the seed already names - it opens no gate and closes none.
+
+```sh
+python3 tools/agency_verify.py run --seed data/agencies/us-ca.json --out NEWDIR [--agency SLUG ...] [--limit N]
+python3 tools/agency_verify.py report NEWDIR
+```
+
+`run` fetches each agency's recorded index-page link (`records_url`) once and writes one
+`agency-evidence-v1` row per agency into a new `NEWDIR` (0700, the row file 0600). A verdict is
+a **field** decided from the citations alone, never from an agency's name, its county, or a
+neighbour's verdict: `evidenced` (a citation naming an ALPR system or vendor on a page under the
+agency's independently recorded optional `official_domain`), `likely` (a citation on a
+third-party/regional page or with ownership unknown), `no-evidence`
+(every recorded link fetched, nothing found), `unreachable` (a recorded link could not be
+fetched, the reason named), `not-checked` (no link recorded yet). `evidenced` with zero
+citations is structurally impossible. A citation stores the URL, fetch time, HTTP status, the
+SHA-256 of the fetched bytes, the quote, and the quote's byte offset - so the claim is
+checkable later and a page change shows as a changed hash, not a silent drift. The quote is
+rejected if its context matches shared email/phone/plate or conservative address/officer-name
+patterns; later clean windows are still considered. These heuristics do not replace privacy review.
+
+**Limits.** Fetching is https-only, one request per recorded link, no crawling, no off-host
+redirects, cached plain-text robots policies (missing permits, unreadable refuses), a fixed
+polite delay, a per-run cap (`--limit`, default 25), a byte cap, a fixed
+timeout, and a plain identifying user agent. Nothing is logged in, submitted, or sent; no form,
+no search query, no robots-disallowed path. Fetched bytes are not stored - only the hash, the
+status, and the quote. Nothing is written into the seed: promoting an `evidenced` row is a
+separate, attended decision. The verdict is evidence about a public body, not an allegation.
 
 ## How `locate` works
 
@@ -84,7 +131,8 @@ with `suggested: true`. For a city match the city's own agencies come first,
 then the county-wide ones; for a county match the county-wide agencies come
 first, then every city's agencies in seed order. `--include` (repeatable)
 restricts and orders kinds: `sheriff`, `police`, `county_board`,
-`city_council`, `district_attorney`, `chp`, and the opt-in `campus_police`.
+`city_council`, `district_attorney`, `chp`, and the opt-in `campus_police` and
+`ccd_police`.
 
 ## Online mode
 
@@ -165,6 +213,16 @@ Give one or more of `--records-email`, `--records-url` and `--portal` (URLs must
 `verified: true` and `verification` (`source_url`, `checked_on`, `fields`); a later call replaces `verification`
 and changes only the fields it names. The organizer, not the tool, checks the page: `source_url` is never
 fetched and nothing is sent. Re-running `kit` keeps the entry and uses the email in unedited drafts.
+
+To record many checked contacts at once, use `kit-verify-agency import --directory D --csv FILE [--check]`. The
+first row must be exactly `agency_id,source_url,checked_on,records_email,records_url,portal_vendor,portal_url`
+(UTF-8, a leading byte-order mark is fine); 1-500 data rows, at most 512 KiB, and an empty cell means "not given".
+`portal_vendor` must be one of `nextrequest`, `govqa`, `justfoia`, `none`, `unknown` and needs a `portal_url`; a
+`portal_url` alone keeps the entry's vendor (or `unknown`). Every row passes the same checks as the single-agency
+command against the current `kit/agencies.json`, and an `agency_id` may appear only once in the file. If any row is
+bad, each is named as `line <L>: <reason>` (the header is line 1; the first 20, then `and N more`), the command exits 2
+and nothing is written; otherwise all rows are applied in file order in one write. `--check` runs every check and
+writes nothing. Output lists agency ids only, never an e-mail address, and no URL is fetched and nothing is sent.
 
 Contacts go out of date. `doctor --directory ../my-campaign --contact-max-age-days 180` adds `stale_contacts`: each
 selected, verified entry whose `verification.checked_on` is more than 180 days old (`agency_id`, `checked_on`,

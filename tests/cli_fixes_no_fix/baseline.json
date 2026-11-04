@@ -75,5 +75,9 @@
   "5: must be a real folder, not a symlink or a file": "finding preview message that already names the option or folder to change; not in the table",
   "finding preview needs content/ (run content init first)": "finding preview message that already names the option or folder to change; not in the table",
   "5: slug 5 is already used by finding 5; build would refuse the duplicate": "finding preview message that already names the option or folder to change; not in the table",
-  "draft 5; build would refuse it": "finding preview message that already names the option or folder to change; not in the table"
+  "draft 5; build would refuse it": "finding preview message that already names the option or folder to change; not in the table",
+  "portal_vendor must be one of 5": "kit-verify-agency import row message that names the column and the rule; shown with its line number, not in the table",
+  "portal_vendor needs a portal_url": "kit-verify-agency import row message that names the column and the rule; shown with its line number, not in the table",
+  "expected 5 cells, found 5": "kit-verify-agency import row message that names the column and the rule; shown with its line number, not in the table",
+  "same agency as line 5": "kit-verify-agency import row message that names the column and the rule; shown with its line number, not in the table"
 }

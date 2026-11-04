@@ -26,7 +26,7 @@ if(built.status!==0)throw Error(built.stderr);
 const pub=name=>fs.readFileSync(path.join(root,'public',name),'utf8');
 const html=pub('findings/index.html');
 
-function setup(hash=''){
+function setup(hash='',code=pub('findings/filter.js')){
   const items=[...html.matchAll(/<li data-agency="([^"]*)" data-classification="([^"]*)" data-year="([^"]*)">/g)].map(m=>({
     attrs:{'data-agency':m[1],'data-classification':m[2],'data-year':m[3]},hidden:false,getAttribute(k){return this.attrs[k];}}));
   const nodes={'finding-filter':{hidden:true,handlers:{},addEventListener(e,f){this.handlers[e]=f;}},
@@ -40,7 +40,7 @@ function setup(hash=''){
   context.window=context;
   const before=new Set(Object.keys(context));
   vm.createContext(context);
-  vm.runInContext(pub('findings/filter.js'),context,{filename:'filter.js'});
+  vm.runInContext(code,context,{filename:'filter.js'});
   const added=Object.keys(context).filter(k=>!before.has(k));
   const visible=()=>items.filter(i=>!i.hidden).map(i=>i.attrs);
   return {context,nodes,items,replaced,added,visible};
@@ -111,4 +111,27 @@ test('without the form (a page with too few findings) the script does nothing',(
   context.window=context;vm.createContext(context);
   vm.runInContext(pub('findings/filter.js'),context);
   assert.equal(context.findingFilter,undefined);
+});
+
+// DF0137-14: a relabelled build reads the count from LABELS in site-data.js, loaded before filter.js.
+test('relabelled count reads js.filter_count; the HTML loads site-data.js first; no English left',()=>{
+  const es=fs.mkdtempSync(path.join(os.tmpdir(),'synthetic-filter-es-'));
+  fs.cpSync(root,es,{recursive:true,filter:p=>!p.includes(`${path.sep}public`)});
+  fs.writeFileSync(path.join(es,'content','labels.json'),JSON.stringify({schema_version:1,labels:{'js.filter_count':'Mostrando {shown} de {total}'}}));
+  const rebuilt=spawnSync('python3',['-B','-m','campaign_tool','build','--directory',es],{encoding:'utf8'});
+  assert.equal(rebuilt.status,0,rebuilt.stderr);
+  const esPub=name=>fs.readFileSync(path.join(es,'public',name),'utf8');
+  assert.match(esPub('findings/index.html'),/<script defer src="\/site-data\.js"><\/script>\n {2}<script defer src="\/findings\/filter\.js"><\/script>/);
+  const filter=esPub('findings/filter.js');
+  assert.equal(filter.includes('Showing'),false);
+  assert.doesNotMatch(filter,/https?:|import|require\(|eval|innerHTML/);
+  assert.ok(Buffer.byteLength(filter)<2048);
+  const {nodes,visible}=setup('',esPub('site-data.js')+'\n'+filter);
+  assert.equal(nodes['filter-count'].textContent,'Mostrando 6 de 6');
+  nodes['filter-agency'].value=SHERIFF;nodes['filter-classification'].value='information_gap';
+  nodes['finding-filter'].handlers.change();
+  assert.equal(visible().length,2);
+  assert.equal(nodes['filter-count'].textContent,'Mostrando 2 de 6');
+  const partial=setup('',esPub('site-data.js').replace('Mostrando {shown} de {total}','{total} en total')+'\n'+filter);
+  assert.equal(partial.nodes['filter-count'].textContent,'6 en total');  // a placeholder may be left out
 });
