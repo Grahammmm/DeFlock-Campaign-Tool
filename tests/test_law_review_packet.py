@@ -110,6 +110,21 @@ class ReviewPacketTests(unittest.TestCase):
                        capture_output=True, timeout=30)
         self.assertEqual(json.loads(cli_out.read_text(encoding="utf-8")), package)
 
+    def test_return_instructions_bind_the_worksheet_and_a_stale_return_is_refused(self):
+        out, _ = self.packet()
+        instructions = (out / "RETURN.md").read_text(encoding="utf-8")
+        for phrase in ("`package_sha256`", "never edit or copy it", "builds a new packet", "reassess"):
+            self.assertIn(phrase, instructions)
+        package = law.load_package("us-ca")
+        self.assertNotIn(law.package_sha256(package), instructions)
+        rows = law.read_sheet(out / "WORKSHEET.csv", package)
+        self.assertEqual({row["package_sha256"] for row in rows}, {law.package_sha256(package)})
+        amended = copy.deepcopy(package)
+        amended["rules"][0]["citation"] += " (amended)"
+        with self.assertRaisesRegex(ValueError, r"row 1 \(records_law\): worksheet belongs to a different law "
+                                                r"package; regenerate review-sheet or review-packet, nothing written"):
+            law.apply_sheet(amended, rows)
+
     def test_rules_md_lists_needs_attorney_review_first_then_likely_then_verified(self):
         out, result = self.packet()
         self.assertEqual(result["review_counts"], {"verified": 8, "likely": 1, "needs_attorney_review": 3})

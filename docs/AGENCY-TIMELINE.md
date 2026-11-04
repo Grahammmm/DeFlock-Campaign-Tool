@@ -226,6 +226,35 @@ of what the agency said, never a legal finding, and is independent of `--withhel
 `{scope_id, answer, on}` with the latest disposition and its step date, `answer: null` for no answer yet. `kit-coverage`
 (table and `--csv`) gains a last `scopes` column: `not recorded` or `k/n answered`.
 
+## Withdrawn by us (kit-response --kind withdrawn)
+
+`kit-response --directory D --agency ID [--request NAME] --date YYYY-MM-DD --kind withdrawn --note TEXT` records that
+the campaign withdrew its own sent request (sent twice, superseded, no longer wanted). It is the campaign's act, kept
+apart from `closed`, which is the agency's. `--note` is required (1-200 characters after whitespace is collapsed; no
+`<`, `>` or control characters) and stays private in `kit/sent.json`. `--partial`, `--record`, `--amount`,
+`--expected-on`, `--download-expires-on`, `--withheld-basis` and `--scope` are refused for it, and so is any such field in
+a stored withdrawn step. It may be the first step after `kit-sent` or follow any step that is not `closed`, including a
+partial production, a denial, an unpaid fee or an open clarification request. Nothing is sent to the agency.
+
+`withdrawn` is terminal: no step of any kind, a second withdrawal and a reference-only change included, may follow it,
+and `withdrawn` cannot follow `closed` (the closed refusal comes first). The only way back is `kit-response-undo`, which
+archives the full removed step in `kit/sent-undone.json` and replays the steps that remain; a stored withdrawal with no
+note, forbidden fields or any step after it makes that replay refuse and nothing is repaired. Undo never edits public
+content and does not run `kit-asked`.
+
+A withdrawn request stops generating work: `kit-due` (and so `today`), `kit-followup`, `kit-calendar` and the multi-
+campaign status count leave it out, with no past-due, waiting-on-you, stated-date, installment or download-pending item
+and no effect on the exit-3 rule. `kit-due --request NAME` for a known withdrawn request is empty work, exit 0;
+`kit-followup` refuses it (`was withdrawn by us on D`) before it reads the law package or creates `kit/followups/`, even
+with `--replace`. `kit-timing` treats the withdrawal as the organizer's action: it is never the agency's first response
+and it stops the open age and any open extension or clarification span.
+
+`kit-status` keeps the request row, with `last_step` `withdrawn`, `closed: false` and a new `withdrawn_on` (ISO day) that
+is present only for a withdrawn request, and prints `<request>: withdrawn by us on D` on stderr (stdout stays one JSON
+document). Retained fee and production history is shown as recorded, not as paid, and an unpaid or over-cap fee on a
+withdrawn request is no longer reminded about. `kit-status --csv` keeps its header; `last_step_kind` is `withdrawn` and
+`closed` is `no`. Older files, and rows without a withdrawal, read byte for byte as before.
+
 ## Public asked items from the tracker (kit-asked)
 
 `kit-asked --directory D [--apply]` proposes the public "What we asked" list in `content/agencies.json` from the private
@@ -244,8 +273,10 @@ the per-scope answers: no steps `awaiting_response`; `acknowledged`, `extension`
 `clarification_requested`, `clarified`, `fee_paid` or `fee_waived` as the latest step with no `produced` step
 `acknowledged`; `denied` with no `produced` step `declined_in_writing`; any `produced` step `answered` only when the
 request recorded scopes, every scope's latest answer is `produced` or `no_records_stated` and the latest production is
-not a rolling (`--partial`) one, otherwise `partly_answered`. A request `closed` without production is not proposed: the
-dry run says `organizer to choose` and any existing item is left as it is; `withdrawn` is never proposed.
+not a rolling (`--partial`) one, otherwise `partly_answered`. A `withdrawn` step (the campaign withdrew its own request)
+takes precedence over everything else: the item becomes `withdrawn` with `updated_on` the withdrawal date, and its private
+note, reference and hashes never reach content. A request `closed` without production is not proposed: the
+dry run says `organizer to choose` and any existing item is left as it is.
 
 An existing item with the same `request` is updated field by field and keeps its own `note`; an item with no `request`
 (typed by you) and its note are never touched. Notes, withheld bases, references and linked records of the tracker never

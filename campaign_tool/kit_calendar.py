@@ -56,7 +56,7 @@ def _request_events(root, law_base):
              for key, entry in kit_track.read_sent(root).items()}
     events = []
     for row in report["requests"]:
-        if row["closed"]:
+        if row["closed"] or "withdrawn_on" in row:
             continue
         answered = {s.get("kind") for s in steps.get((row["agency_id"], row["request"]), [])} & kit_track.ANSWERED
         if row["determination_due"] and not answered:

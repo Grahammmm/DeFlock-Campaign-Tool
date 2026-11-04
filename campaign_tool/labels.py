@@ -108,6 +108,7 @@ DEFAULTS = {
     "finding.filter_year": "Event year", "finding.filter_all_year": "All years",
     "meeting.agenda": "Agenda", "meeting.page": "Meeting page", "meeting.agenda_item": "Agenda item:",
     "meeting.cancelled": "Cancelled:", "meeting.kit": "Public comment kit", "meeting.all": "All meetings",
+    "meeting.feed": "Meetings feed", "title.meetings_feed": "Meetings Atom feed",
     "meeting.votes": "Recorded votes", "meeting.votes_member": "Member", "meeting.votes_vote": "Vote",
     "meeting.votes_source": "From the official record:", "meeting.recording": "Watch the discussion",
     "meeting.recording_from": "(from {start})", "vote.yes": "Yes", "vote.no": "No", "vote.abstain": "Abstained",
