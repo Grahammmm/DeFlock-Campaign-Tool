@@ -31,7 +31,7 @@ SCHEMA = json.loads((REPO_ROOT / "schemas" / "findings-open-data.schema.json").r
 SLUG = "cedar-policy-posted"
 CAFE, BEEF, GONE = "cafe" * 16, "beef" * 16, "d00d" * 16
 TODAY = date(2026, 3, 1)
-SECRET = "SYNTHETIC-EXCERPT-TEXT"
+EXCERPT_CANARY = "SYNTHETIC-EXCERPT-TEXT"
 TRICKY = '  **bold** <b>x</b> & "q" \'s\' é日本 [link](http://x.invalid)  '
 
 
@@ -87,14 +87,14 @@ class QuoteShapeTests(QuoteCase):
                 [source] = load_finding(self.document([dict(quoted_sources()[0], quote=quote)]), "f.json")["sources"]
                 self.assertEqual(source["quote"], quote)  # never stripped, collapsed, normalized or truncated
         bad = {"empty": "", "blank": "   ", "nbsp only": "\u00a0 ", "401": "z" * 401, "none": None, "number": 5,
-               "bool": True, "list": ["a"], "dict": {"a": 1}, "tab": SECRET + "\tx", "newline": SECRET + "\nx",
-               "cr": SECRET + "\rx", "nul": SECRET + "\x00x", "del": SECRET + "\x7f", "c1": SECRET + "\x85",
-               "bidi": SECRET + "\u202e", "zero width": SECRET + "\u200b", "bom": SECRET + "\ufeff"}
+               "bool": True, "list": ["a"], "dict": {"a": 1}, "tab": EXCERPT_CANARY + "\tx", "newline": EXCERPT_CANARY + "\nx",
+               "cr": EXCERPT_CANARY + "\rx", "nul": EXCERPT_CANARY + "\x00x", "del": EXCERPT_CANARY + "\x7f", "c1": EXCERPT_CANARY + "\x85",
+               "bidi": EXCERPT_CANARY + "\u202e", "zero width": EXCERPT_CANARY + "\u200b", "bom": EXCERPT_CANARY + "\ufeff"}
         for name, quote in bad.items():
             with self.subTest(refused=name):
                 message = self.refusal([quoted_sources()[0], dict(quoted_sources()[1], quote=quote)])
                 self.assertIn("findings/x.json.sources[1].quote", message)
-                self.assertNotIn(SECRET, message)  # the diagnostic names the key, never the excerpt
+                self.assertNotIn(EXCERPT_CANARY, message)  # the diagnostic names the key, never the excerpt
         # The locator rule stays for every source, with or without a quote or page.
         no_locator = {"sha256": CAFE, "title": "T", "quote": "Present.", "page": 1}
         self.assertIn("locator", self.refusal([no_locator]))  # also named by the review blockers, before any key check
@@ -107,16 +107,16 @@ class QuoteShapeTests(QuoteCase):
         self.assertNotIn("quote", plain)
 
     def test_loader_content_check_and_preview_agree(self):
-        self.set_sources([quoted_sources()[0], dict(quoted_sources()[1], quote=SECRET + "\nsecond line")])
+        self.set_sources([quoted_sources()[0], dict(quoted_sources()[1], quote=EXCERPT_CANARY + "\nsecond line")])
         with self.assertRaises(ContentError) as caught:
             load_content(self.root)
         self.assertIn("sources[1].quote", str(caught.exception))
         check = self.cli("content-check", "--directory", self.root)
         self.assertNotEqual(check.returncode, 0)
         self.assertIn("sources[1].quote", check.stdout + check.stderr)
-        self.assertNotIn(SECRET, check.stdout + check.stderr)
+        self.assertNotIn(EXCERPT_CANARY, check.stdout + check.stderr)
         draft = dict(self.document(copy.deepcopy(quoted_sources()[:2])), state="draft", published_at=None, corrections=[])
-        draft["sources"][1]["quote"] = SECRET + "\ttab"
+        draft["sources"][1]["quote"] = EXCERPT_CANARY + "\ttab"
         drafts = self.root / "private" / "drafts"
         drafts.mkdir(parents=True)
         (drafts / "d.json").write_text(json.dumps(draft), encoding="utf-8")
@@ -124,7 +124,7 @@ class QuoteShapeTests(QuoteCase):
         self.assertEqual(preview.returncode, 2)
         self.assertTrue(preview.stderr.startswith("Stopped: "), preview.stderr)
         self.assertIn("sources[1].quote", preview.stderr)
-        self.assertNotIn(SECRET, preview.stderr)
+        self.assertNotIn(EXCERPT_CANARY, preview.stderr)
         self.assertFalse((self.base / "out").exists())
 
 
@@ -249,16 +249,16 @@ class QuoteDiffTests(unittest.TestCase):
             self.assertEqual(entry["field"], "sources")
             self.assertEqual((entry["added"], entry["removed"]), ([], []))
             return entry["changed"]
-        for old, new in ((doc({}), doc({"quote": SECRET})), (doc({"quote": SECRET}), doc({"quote": SECRET + " "})),
-                         (doc({"quote": SECRET}), doc({}))):
+        for old, new in ((doc({}), doc({"quote": EXCERPT_CANARY})), (doc({"quote": EXCERPT_CANARY}), doc({"quote": EXCERPT_CANARY + " "})),
+                         (doc({"quote": EXCERPT_CANARY}), doc({}))):
             with self.subTest(old=old, new=new):
                 rows = changed(old, new)
                 self.assertEqual(rows, [{"sha256": "a" * 12, "keys": ["quote"]}])
-                self.assertNotIn(SECRET, json.dumps(finding_diff.diff(old, new)))
+                self.assertNotIn(EXCERPT_CANARY, json.dumps(finding_diff.diff(old, new)))
         self.assertEqual(finding_diff.diff(doc({}), doc({})), [])  # legacy source: no spurious diff
-        self.assertEqual(finding_diff.diff(doc({"quote": SECRET}), doc({"quote": SECRET})), [])
+        self.assertEqual(finding_diff.diff(doc({"quote": EXCERPT_CANARY}), doc({"quote": EXCERPT_CANARY})), [])
         # Repeated sha: a quote on only the second source is named, and a count change without quotes is not.
-        self.assertEqual(changed(doc({}, {"locator": "page:2"}), doc({}, {"locator": "page:2", "quote": SECRET})),
+        self.assertEqual(changed(doc({}, {"locator": "page:2"}), doc({}, {"locator": "page:2", "quote": EXCERPT_CANARY})),
                          [{"sha256": "a" * 12, "keys": ["quote"]}])
         self.assertEqual(changed(doc({}), doc({}, {"locator": "page:2"}))[0]["keys"], ["count", "locator", "title", "rule_id"])
         # Locator, title and rule edits still report alongside a quote edit.
