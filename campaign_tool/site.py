@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import (CITY_KINDS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
+from .content import (CITY_KINDS, FINDING_KEYS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, finding_agency_ids, glossary_terms_used,
                       load_content, utc_moment)
 from .corrections_policy import policy_html
@@ -2102,7 +2102,7 @@ def _asset_plan(model):
     return plan
 
 
-PRIVACY_GATE_PARTS = ("findings", "meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map")
+PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map")
 # Fields an organizer fills with a contact on purpose, or that are never published: not scanned. A library entry is scanned
 # through its public projection only (never note, fragment or the full hash); an agency without its private contact and notes.
 PRIVACY_GATE_SKIP = {"how", "contact_email", "privacy_contact"}
@@ -2126,6 +2126,9 @@ def _privacy_gate(model, cfg=None):
         elif isinstance(value, str):
             yield where, value
     parts = [(part, model.get(part)) for part in PRIVACY_GATE_PARTS]
+    # A finding is scanned through its declared fields only: an undeclared key on the model is never published.
+    parts.append(("findings", [{key: value for key, value in finding.items() if key in FINDING_KEYS}
+                               for finding in model.get("findings") or ()]))
     parts.append(("sources", [{key: source.get(key) for key in PRIVACY_GATE_LIBRARY} for source in model.get("sources") or ()]))
     parts += [("site", model.get("site")), ("campaign", {key: (cfg or {}).get(key) for key in ("name", "county", "state")})]
     for part, value in parts + [("agencies", model.get("agencies"))]:

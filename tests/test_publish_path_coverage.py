@@ -475,6 +475,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_gate_leaves_intentional_contacts_and_private_fields_alone(self):
         email, phone, plate = VALUES["email"], VALUES["phone"], VALUES["plate"]
+        _privacy_gate({"findings": [{"summary": "clean", "reviewer_email": email}]})  # an undeclared model key is never published
         _privacy_gate({"site": {"contact_email": email, "privacy_contact": email},
                        "agencies": [{"records_email": email, "notes": phone, "asked": [{"request": plate}]}],
                        "sources": [{"title": "t", "note": phone, "fragment": plate, "sha256": "a" * 64}]}, {"name": "Cedar"})
