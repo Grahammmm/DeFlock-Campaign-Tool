@@ -21,6 +21,8 @@ Only pages whose native status is not `ok` are sent to per-page OCR; native-text
 
 Runtime limits are per process/per output file and bounded parent waits. The timeout path kills the worker process group. These are not a container disk quota or network sandbox; deployment must provide those controls. Full OCR engine and descendant cleanup acceptance require the permitted production-equivalent runtime. Unit tests alone do not establish that runtime acceptance.
 
+Workbook receipts account for every sheet identity the parser loads, in workbook order, as one `workbook_sheet` unit each, and `counts.sheets_expected` records that denominator. A chartsheet has no rows to read, so it is emitted as a structural unit (`sheet_type` `chartsheet`, `extraction_status` `unsupported`, null declared rows and columns, declared state kept) counted in `counts.chartsheets_unsupported`, with one located `workbook_chartsheet_not_extracted` review gap; the chart is not rendered, parsed or described and no text is invented for it. `counts.workbook_sheet` therefore counts structural sheet units, not extracted content. The gap keeps the document partial and appears, with its sheet locator, in `coverage.json`, `coverage.md` and the document queue; it is never accepted as evidence and does not qualify for the native workbook exception. XLSX extraction policy `xlsx_sheet_inventory` 1 makes earlier XLSX extractions (including ones with no recorded policy) reparse once without `--retry`, retaining the previous attempt and the original bytes; later identical runs reuse the new result.
+
 ## Search
 
 `tools/records_search.py` searches the extracted text this adapter already wrote; it never extracts or OCRs again.
