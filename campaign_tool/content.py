@@ -44,7 +44,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "newsletters"}  # DF1952-04, DF1952-09
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters"}  # DF1952-04 / DF2207-13 / DF1952-09: reserved even without content
 
 
 class ContentError(ValueError):
@@ -1941,6 +1941,8 @@ def load_content(root, today=None):
 
     pages = load_pages(content_dir, slugs)
     topics = load_topics(content_dir, findings, pages)
+    from .supporters import load_supporters  # local: supporters imports this module
+    supporters = load_supporters(root, today=today)  # DF2207-13: None without content/supporters.json
     model = {
         "site": site,
         "findings": findings,
@@ -1964,4 +1966,6 @@ def load_content(root, today=None):
     # checked (and refused) by site against the pages it writes; without the file there is no key.
     if redirects_path.is_file() or redirects_path.is_symlink():
         model["redirects"] = _read_json(redirects_path)
+    if supporters is not None:  # DF2207-13: public rows only (never the private consent records)
+        model["supporters"] = supporters
     return model

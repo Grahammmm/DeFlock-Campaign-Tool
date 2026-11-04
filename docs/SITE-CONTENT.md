@@ -409,6 +409,52 @@ refused; without topics nothing changes and the output is byte-identical. `conte
 New labels: `nav.topics`, `heading.topics`, `title.topics`, `title.topics_description`, `finding.part_of`
 (`{topic}` is the already-escaped link list); `examples/labels/es.json` carries each.
 
+### Supporting organizations (`content/supporters.json`, optional)
+
+An organizer lists an organization only after recording its permission privately:
+
+```
+supporters add --directory DIR --name N --kind civil_liberties|community|faith|labor|neighborhood|business|other \
+  [--url https://...] --organization --confirmed-on YYYY-MM-DD --how email|letter|meeting|form [--correspondence PREFIX]
+supporters remove --directory DIR --id ID
+```
+
+`--organization` is required and is an explicit attestation, never inferred from the name or kind: only organizations
+are listed, never individuals. `add` writes the public row to `content/supporters.json` and the consent record to
+`kit/supporters-consent.json` (the `kit/` folder is created, or tightened, to 0700; the file is 0600) together; `remove` drops both. The command prints only
+`{"id", "action"}`: no consent record, hash, evidence text or private path. `--correspondence` is optional: 12 to 64
+lowercase hex characters of one ingested record, stored privately as its full digest; it is never published.
+
+The public file is exactly `{"schema_version": 1, "supporters": [{"id", "name", "kind", "url", "joined_on",
+"organization": true}]}` (all keys required, `url` null or https, at most 200 rows and 1 MiB, unknown or duplicate keys
+refused). The id is the lowercase name with other characters turned into single hyphens and must start with a letter and
+fit in 64 characters; a duplicate id or name (Unicode-folded) is refused. Names are never cleaned silently: leading or
+trailing spaces, control characters, angle brackets, a duplicate or a failed lint is a refusal. `joined_on` is the
+confirmation date (a real date from 2000-01-01 up to today).
+
+The private record is `{"organization": true, "confirmed_on", "how", "public_sha256", "correspondence"}` and
+`public_sha256` is the SHA-256 of the exact public row, so editing a listed row (name, kind, URL or date) needs a new
+confirmation: a matching id alone is not permission. `build` refuses with a `ContentError` (before any public write)
+for a public row with no record, a hash or date mismatch, a future date, a malformed store or a private store that
+group/other can read; `content-check` names every such id (sorted, no values) as `content/supporters.json: <id>: ...`.
+Read-only commands never create, change or fix either store.
+
+`supporters.html` appears only when at least one organization is listed. It groups organizations by kind (civil
+liberties, community, faith, labor, neighborhood, business, other), alphabetically by name, each with its
+`<time>` joined date and an optional external link. A footer link and a `sitemap.xml` entry appear with it; with no file,
+or an empty list, the site is byte-identical to before. The page says only that these are supporting organizations; it
+is not a legal endorsement and does not let anyone speak for them. `supporters` is a reserved page and finding slug even
+without a file. Labels: `supporters.title`, `supporters.description`, `supporters.joined` (`{date}`) and
+`supporters.kind.<kind>`; `examples/labels/es.json` carries Spanish drafts (still unreviewed).
+
+Limits: the lint refuses `@`, phone-number-like digit runs and contact labels (`email:`, `phone:`, `contact:`, `mailto:`)
+in names and URLs, but it does not recognise a person's name. The organization attestation and the organizer's own
+review before every `add` remain mandatory; no program can prove that free text names an organization rather than a
+person. The two files are replaced one after the other with a rollback on an ordinary write failure; an interrupted
+`add` can leave an orphan private record (never a public row without consent), which blocks further `add`/`remove`
+until the saved pair of files is restored. There is no crash-atomic transaction and no concurrent writer support; run
+one writer. Evidence originals are never deleted.
+
 ## Generated pages and files
 
 `index.html` (hero map when configured, agency cards, mission, latest findings,

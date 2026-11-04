@@ -20,6 +20,7 @@ from .image_meta import check_asset
 from .labels import MAX_LABELS_BYTES, load_labels
 from .newsletter.archive import FOLDER as NEWSLETTERS, issue_paths, load_public_issue
 from .redirects import check_file as check_redirects
+from .supporters import supporter_problems
 
 LIMIT = 200
 SCHEMA = "content-check-v1"
@@ -271,12 +272,13 @@ def content_problems(root, limit=LIMIT):
     for path in paths or []:
         _attempt(problems, f"{NEWSLETTERS}/{path.name}", lambda: load_public_issue(path))
     check_redirects(root, problems)  # DF2037-16: content/redirects.json with build's own refusal text
+    problems.extend(supporter_problems(root))  # DF2207-13: every invalid or unconsented supporter id, no values
     return _cap(sorted(set(problems)), limit)
 
 
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
 FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "topics/", "kit/", "newsletters/",
-                 "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json")
+                 "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json")
 
 
 def problem_record(line):
