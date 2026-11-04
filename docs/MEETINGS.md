@@ -250,6 +250,22 @@ Cancelled, past and stale kits stop: re-stage corrections with `meetings-stage -
 Use `--allow-past` for an archive, or `--replace` to regenerate an existing private pack.
 Nothing is sent or published. Review the print preview before handing it over.
 
+The three files are one pack, written as one prepared generation: the tool encodes and writes all three into a
+private `.M.new-<random>` directory beside the pack (0700 directory, 0600 files), then swaps that directory into
+`kit/meeting-packs/M`. A handled error (a full disk, a permission error) never leaves a new handout beside an old
+comment or sources sheet: a new pack is either complete or absent, and `--replace` moves the old directory to
+`.M.old-<random>`, promotes the new one, and puts the old one back if promotion fails. `--replace` refuses a pack that
+holds anything but the three expected regular files (an extra note, a subdirectory, a missing file, a link or a
+special file) with `meeting pack has unexpected contents; move it aside before regenerating`; it never deletes your
+files. If the old directory cannot be put back, the error names it (`previous pack retained at PATH`) and the next
+run refuses with `meeting pack recovery required; inspect PATH before rebuilding`: check which generation you want,
+then move or remove that `.M.old-*` directory yourself. If only the final removal of the old directory fails, the new
+pack is complete and the result carries `warnings` naming the retained copy; remove it after checking the new pack
+(`--replace` will not run until you do). An abandoned `.M.new-*` directory left by a killed process is never swept
+automatically; inspect it and remove it by hand. Not promised: durability after power loss, that the pack is
+invisible for the instant between the two renames, safety with two writers at once, or that `--upcoming` is
+all-or-nothing (packs finished before a later failure stay, and the error still stops the run).
+
 The handout follows the campaign's language: `<html lang>` is `site.json.language`, and its fixed headings and notes
 (title, "What we found", the empty-state sentence, the source line, "corrected", the agenda link, "N more on the
 site", the record-number explainer, and the classification and confidence wording) come from `content/labels.json`

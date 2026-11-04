@@ -173,20 +173,60 @@ class MeetingPackUpcomingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'time zone'):
             build_upcoming(self.root, today=datetime(2026, 11, 1))
 
-    def test_other_errors_propagate_and_earlier_packs_stay(self):
-        self.stage('first', at(1))
-        self.stage('second', at(2))
+    def pack_state(self, meeting_id):
+        folder = self.packs / meeting_id
+        return {p.name: (p.read_bytes(), p.stat().st_mode & 0o777) for p in folder.iterdir()}
+
+    def fail_promotion(self, meeting_id):
         real = os.replace
 
         def failing(source, target):
-            if '/second/' in str(target):
+            if Path(source).name.startswith(f'.{meeting_id}.new-') and Path(target).name == meeting_id:
                 raise OSError('synthetic disk failure')
             return real(source, target)
-        with patch('campaign_tool.meeting_pack.os.replace', side_effect=failing):
+        return patch('campaign_tool.meeting_pack.os.replace', side_effect=failing)
+
+    def test_other_errors_propagate_and_earlier_packs_stay(self):
+        self.stage('first', at(1))
+        self.stage('second', at(2))
+        with self.fail_promotion('second'):
             with self.assertRaisesRegex(OSError, 'synthetic disk failure'):
                 self.up()
         self.assertTrue((self.packs / 'first/handout.html').is_file())
-        self.assertFalse((self.packs / 'second/handout.html').exists())
+        self.assertEqual(sorted(p.name for p in self.packs.iterdir()), ['first'])
+
+    def test_upcoming_later_promotion_failure_preserves_earlier_pack(self):
+        self.stage('first', at(1))
+        self.stage('second', at(2))
+        self.assertEqual(self.ids(self.up()), ['first', 'second'])
+        old_first, old_second = self.pack_state('first'), self.pack_state('second')
+        self.finding(2, title='Replacement title')
+        with self.fail_promotion('second'):
+            with self.assertRaisesRegex(OSError, 'synthetic disk failure'):
+                self.up(replace=True)
+        self.assertIn(b'Replacement title', self.pack_state('first')['handout.html'][0])  # earlier success remains, complete
+        self.assertEqual(sorted(self.pack_state('first')), sorted(old_first))
+        self.assertEqual(self.pack_state('second'), old_second)  # the failing meeting is back to its old, whole pack
+        self.assertEqual(sorted(p.name for p in self.packs.iterdir()), ['first', 'second'])
+
+    def test_upcoming_cleanup_warning_is_per_meeting(self):
+        self.stage('first', at(1))
+        self.stage('second', at(2))
+        self.up()
+        real = shutil.rmtree
+
+        def rmtree(path, *args, **kwargs):
+            if Path(path).name.startswith('.first.old-'):
+                raise OSError('synthetic cleanup failure')
+            return real(path, *args, **kwargs)
+        with patch('campaign_tool.meeting_pack.shutil.rmtree', side_effect=rmtree):
+            report = self.up(replace=True)
+        backup = next(p for p in self.packs.iterdir() if p.name.startswith('.first.old-'))
+        self.assertEqual(self.ids(report), ['first', 'second'])
+        self.assertEqual(report['skipped'], [])
+        self.assertEqual(report['built'][0]['warnings'], [f'previous pack retained at {backup}; remove it after checking the new pack'])
+        self.assertNotIn('warnings', report['built'][1])
+        self.assertEqual(sorted(p.name for p in self.packs.iterdir()), [backup.name, 'first', 'second'])
 
     def test_cli_exit_codes(self):
         now = datetime.now(timezone.utc)

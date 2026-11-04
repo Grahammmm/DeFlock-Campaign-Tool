@@ -5,6 +5,9 @@ import io
 import json
 import os
 import re
+import secrets
+import shutil
+import stat
 import tempfile
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -68,6 +71,90 @@ def _handout(name, meeting, findings, library, site, truncated, labels):
     parts.extend(['<p>' + t('handout.record_explainer') + '</p>',
                   f'<p>{e(site["not_legal_advice"])}</p></body></html>'])
     return '\n'.join(parts)
+
+
+def _discard(path):
+    """Remove this invocation's own incomplete directory; a failure here never hides the original error."""
+    try:
+        shutil.rmtree(path)
+    except OSError:
+        pass
+
+
+def _check_pack_contents(folder, names):
+    """An existing pack must be a real directory holding exactly the expected regular files (nothing is read)."""
+    unexpected = ValueError("meeting pack has unexpected contents; move it aside before regenerating")
+    _unlinked(folder)
+    if not stat.S_ISDIR(os.lstat(folder).st_mode):
+        raise unexpected
+    with os.scandir(folder) as scan:
+        found = {entry.name: entry.stat(follow_symlinks=False).st_mode for entry in scan}
+    if set(found) != set(names) or not all(stat.S_ISREG(mode) for mode in found.values()):
+        raise unexpected
+
+
+def _write_member(path, data):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        stream = os.fdopen(fd, 'wb')
+    except BaseException:
+        os.close(fd)
+        raise
+    with stream:
+        stream.write(data)
+
+
+def _commit_pack(folder, outputs, *, replace):
+    """Publish the whole pack as one prepared directory; return warnings (empty unless cleanup of the old pack failed).
+
+    Handled errors never leave a subset or a mix of generations: the old directory is put back when promotion fails.
+    Not promised: durability across power loss, no gap between the two renames, concurrent writers, batch atomicity.
+    """
+    parent = folder.parent
+    _unlinked(folder)
+    pattern = re.compile(r'\.' + re.escape(folder.name) + r'\.old-[0-9a-f]+')
+    backups = sorted(parent / entry for entry in os.listdir(parent) if pattern.fullmatch(entry)) if parent.is_dir() else []
+    if backups:
+        raise ValueError(f"meeting pack recovery required; inspect {backups[0]} before rebuilding")
+    existing = os.path.lexists(folder)
+    if existing and not replace:
+        raise ValueError("meeting pack exists; use --replace to overwrite")
+    if existing:
+        _check_pack_contents(folder, outputs)
+    for directory in (parent.parent, parent):
+        directory.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)
+    prepared = Path(tempfile.mkdtemp(prefix=f'.{folder.name}.new-', dir=parent))
+    try:
+        for name, text in outputs.items():
+            _write_member(prepared / name, text.encode('utf-8'))
+        _unlinked(folder)
+        if not existing:
+            if os.path.lexists(folder):
+                raise ValueError("meeting pack exists; use --replace to overwrite")
+            os.replace(prepared, folder)
+            return []
+        _check_pack_contents(folder, outputs)
+        old = parent / f'.{folder.name}.old-{secrets.token_hex(8)}'
+        os.replace(folder, old)
+    except BaseException:
+        _discard(prepared)
+        raise
+    try:
+        os.replace(prepared, folder)
+    except OSError as error:
+        _discard(prepared)
+        try:
+            os.replace(old, folder)
+        except OSError as restore:
+            raise OSError(f"meeting pack restore failed; previous pack retained at {old}") from restore
+        raise error
+    try:
+        shutil.rmtree(old)
+    except OSError:
+        return [f"previous pack retained at {old}; remove it after checking the new pack"]
+    return []
 
 
 def build(root, meeting_id, max_findings=5, today=None, *, replace=False, allow_past=False):
@@ -145,25 +232,17 @@ def build(root, meeting_id, max_findings=5, today=None, *, replace=False, allow_
         _unlinked(folder / name)
     if folder.exists() and not replace:
         raise ValueError("meeting pack exists; use --replace to overwrite")
-    for directory in (root / 'kit', folder.parent, folder):
-        directory.mkdir(mode=0o700, exist_ok=True)
-        os.chmod(directory, 0o700)
-    for name, text in outputs.items():
-        fd, temporary = tempfile.mkstemp(dir=folder, prefix='.meeting-pack-')
-        try:
-            with os.fdopen(fd, 'wb') as stream:
-                stream.write(text.encode('utf-8'))
-            os.replace(temporary, folder / name)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+    warnings = _commit_pack(folder, outputs, replace=replace)
     try:  # a missing or unreadable kit/comments-sent.json is simply "none recorded"; `today` reports a bad file
         sent = meeting_comments.read(root).get(meeting_id)
     except ValueError:
         sent = None
-    return {'written': [str((folder / name).relative_to(root)) for name in outputs],
-            'findings': len(findings), 'truncated': truncated,
-            'comment_sent': {'on': sent['on'], 'channel': sent['channel']} if sent else None}
+    report = {'written': [str((folder / name).relative_to(root)) for name in outputs],
+              'findings': len(findings), 'truncated': truncated,
+              'comment_sent': {'on': sent['on'], 'channel': sent['channel']} if sent else None}
+    if warnings:
+        report['warnings'] = warnings
+    return report
 
 
 def build_upcoming(root, within_days=14, today=None, *, max_findings=5, replace=False):
