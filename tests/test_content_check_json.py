@@ -102,6 +102,8 @@ class ContentCheckJsonTests(unittest.TestCase):
                 self.assertEqual(problem_record(line), {"file": None, "message": line})
         self.assertEqual(problem_record("map/map-config.json.county_bounds: bad"),
                          {"file": "map/map-config.json.county_bounds", "message": "bad"})
+        self.assertEqual(problem_record("supporters.json: ab: no consent record"),
+                         {"file": "supporters.json", "message": "ab: no consent record"})  # DF2207-13 prefix
         self.assertEqual(problem_record("public-assets/a.png: has metadata: EXIF"),
                          {"file": "public-assets/a.png", "message": "has metadata: EXIF"})
 
