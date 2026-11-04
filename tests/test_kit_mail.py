@@ -182,7 +182,7 @@ class KitMailTests(unittest.TestCase):
         self.assertEqual(self.entry()["mailing_address"], ["Straße 5", "75001 Paris"])
         self.verify(" padded | lines ")
         self.assertEqual(self.entry()["mailing_address"], ["padded", "lines"])
-        secret = "SECRETLINE"
+        secret = "SECRETLINE"  # pragma: allowlist secret - synthetic postal-address redaction marker
         bad = {"one line": secret, "six lines": "|".join([secret] * 6), "blank middle": f"{secret}||B",
                "blank end": f"{secret}|", "blank only": "", "81 chars": secret + "x" * (81 - len(secret)) + "|B",
                "angle": f"{secret}|<b>", "greater": f"{secret}|a>b", "tab": f"{secret}\t|B", "newline": f"{secret}|B\n",
