@@ -28,13 +28,13 @@ BASE = "https://cedar-records.example.invalid"
 A = "{http://www.w3.org/2005/Atom}"
 RECORD = "https://example.invalid/cedar-council/minutes"
 AGENDA = "https://example.invalid/cedar-council/agenda"
-SECRET = "SENTINEL-PRIVATE-7731"
+PRIVATE_SENTINEL = "SENTINEL-PRIVATE-7731"
 EPOCH = "2000-01-01T00:00:00+00:00"
 OUTCOME = {"result": "approved", "on": "2026-10-14", "source_url": RECORD, "verified_by": "Synthetic Organizer",
            "verified_at": "2026-10-15", "vote": "2-1", "recording_url": "https://example.invalid/video",
            "votes": [{"name": "Zed Example", "vote": "no"}, {"name": "Ash Example", "vote": "yes"}]}
 PLAIN = {key: value for key, value in OUTCOME.items() if key not in ("votes", "recording_url")}  # no roll call: needs no officials
-PARTICIPATION = {"in_person": True, "remote": {"available": True, "how": f"Write {SECRET}@example.invalid"},
+PARTICIPATION = {"in_person": True, "remote": {"available": True, "how": f"Write {PRIVATE_SENTINEL}@example.invalid"},
                  "written_comment": {"how": "Email the clerk", "deadline": "2026-10-13T12:00:00-07:00"},
                  "source_url": RECORD, "verified_by": "Synthetic Organizer", "verified_at": "2026-10-10"}
 
@@ -141,15 +141,15 @@ class MeetingsFeedTests(unittest.TestCase):
         self.assertEqual(root.find(A + "updated").text, "2026-10-26T06:30:00+00:00")
 
     def test_rebuild_bytes_and_no_private_reads(self):
-        self.edit(participation=PARTICIPATION, outcome=OUTCOME, comment_kit_md=f"Kit text {SECRET}")
+        self.edit(participation=PARTICIPATION, outcome=OUTCOME, comment_kit_md=f"Kit text {PRIVATE_SENTINEL}")
         officials = [{"name": v["name"], "role": "Council member", "source_url": "https://cedar.example/council",
                       "checked_on": "2026-09-01"} for v in OUTCOME["votes"]]
         (self.root / "content" / "officials.json").write_text(json.dumps({"schema_version": 1, "bodies": [
             {"agency_id": "ca-cedar-city-council", "officials": officials}]}), encoding="utf-8")
         kit = self.root / "kit"
         kit.mkdir()
-        (kit / "meetings.json").write_text(json.dumps({"private": SECRET}), encoding="utf-8")
-        (kit / "comment-sent.json").write_text(json.dumps({"private": SECRET}), encoding="utf-8")
+        (kit / "meetings.json").write_text(json.dumps({"private": PRIVATE_SENTINEL}), encoding="utf-8")
+        (kit / "comment-sent.json").write_text(json.dumps({"private": PRIVATE_SENTINEL}), encoding="utf-8")
         self.build()
         first = self.read("meetings.xml")
         self.build()
@@ -158,7 +158,7 @@ class MeetingsFeedTests(unittest.TestCase):
         (kit / "subscribers.csv").write_text("a@example.invalid\n", encoding="utf-8")
         self.build()
         self.assertEqual(self.read("meetings.xml"), first)
-        for leaked in (SECRET, "Synthetic Organizer", "Zed Example", "Ash Example", "Kit text", "example/video", "video",
+        for leaked in (PRIVATE_SENTINEL, "Synthetic Organizer", "Zed Example", "Ash Example", "Kit text", "example/video", "video",
                        "participation", "Cedar Civic Center"):
             self.assertNotIn(leaked, first)
         # the feed methods read the loaded model only: no file open, no socket
