@@ -235,8 +235,30 @@ def _check(root, agency, request):  # main: kit-check's own report; a named requ
     return {"placeholder_count": len(hits), "ok": not hits and agency.get("verified") is True}
 
 
+def _asked_scopes(root, law_base=None):
+    """The law-package scope ids kit/summary.json says the drafts cover, or None (never guessed) when it cannot say."""
+    from .cli import read_config  # local import: cli imports this module lazily
+    path = Path(root) / "kit" / "summary.json"
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_BYTES:
+            return None
+        summary = json.loads(path.read_bytes().decode("utf-8"))
+        known = [s["scope_id"] for s in law.load_package(kit._jurisdiction(read_config(root)), law_base)["request_scopes"]]
+    except (OSError, ValueError):
+        return None
+    asked = summary.get("scopes") if isinstance(summary, dict) else None
+    if asked == "all":
+        return known or None
+    if not (isinstance(asked, list) and asked and all(isinstance(i, str) for i in asked)):
+        return None
+    for scope_id in asked:
+        if scope_id not in known:
+            raise ValueError(f"kit/summary.json names scope {scope_id!r}, which is not in the law package; rebuild the kit")
+    return list(dict.fromkeys(asked))
+
+
 def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=False, today=None, reference=None,
-                replace_reference=False, correspondence=(), request_url=None):
+                replace_reference=False, correspondence=(), request_url=None, law_base=None):
     """Record one hand-sent request in kit/sent.json and return its entry."""
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
@@ -280,8 +302,11 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
         raise ValueError(f"{label} already recorded as sent on {previous['sent_on']}; use --replace to correct it")
     if previous and previous["steps"]:
         raise ValueError(f"{label} has recorded steps; its entry sent on {previous['sent_on']} cannot be replaced")
+    scopes = _asked_scopes(root, law_base)  # read on every call, so --replace re-reads the current kit
     entry = {"sent_on": sent_on, "channel": channel, "draft": draft, "draft_sha256": digest,
              "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "steps": []}
+    if scopes:
+        entry["scopes"] = scopes
     if request_url:
         entry["request_url"] = request_url
     elif previous and previous.get("channel") == channel == "portal" and "request_url" in previous:
@@ -417,6 +442,59 @@ def _bases(steps):  # [{"on", "kind", "basis"}] for every recorded basis, in ste
             for s in steps if s.get("kind") in BASIS_KINDS for text in s.get("withheld_basis", [])]
 
 
+DISPOSITIONS = ("produced", "partly_produced", "withheld", "no_records_stated")  # the agency's answer, per scope
+NO_SCOPE_KINDS = ("acknowledged", "extension", "clarification_requested", "clarified", "fee_estimate")
+
+
+def _scopes_ok(entry):  # entry["scopes"]: absent, or a non-empty list of unique strings
+    value = entry.get("scopes")
+    return "scopes" not in entry or (isinstance(value, list) and bool(value) and all(isinstance(i, str) for i in value)
+                                     and len(set(value)) == len(value))
+
+
+def _answers_ok(step, entry):  # scope_answers: absent, or {asked scope id: known disposition} on an allowed kind
+    if "scope_answers" not in step:
+        return True
+    value = step["scope_answers"]
+    return (step.get("kind") not in NO_SCOPE_KINDS and isinstance(value, dict) and bool(value)
+            and isinstance(entry.get("scopes"), list)
+            and all(k in entry["scopes"] and v in DISPOSITIONS for k, v in value.items()))
+
+
+def _clean_scopes(kind, scope_ids, disposition):  # refused before anything is read; (ids, disposition) or ([], None)
+    scope_ids = list(scope_ids or ())
+    if not scope_ids and disposition is None:
+        return [], None
+    if not scope_ids or disposition is None:
+        raise ValueError("--scope and --disposition go together: give both or neither")
+    if disposition not in DISPOSITIONS:
+        raise ValueError("--disposition must be one of " + ", ".join(DISPOSITIONS))
+    if kind in NO_SCOPE_KINDS:
+        raise ValueError(f"--scope is not allowed on a {kind} step")
+    for number, scope_id in enumerate(scope_ids, 1):
+        if not isinstance(scope_id, str) or scope_id in scope_ids[:number - 1]:
+            raise ValueError(f"--scope {scope_id}: the same scope is given twice")
+    return scope_ids, disposition
+
+
+def _answers(steps):  # {scope_id: (latest disposition, its step date)}; tolerant, for read-only reports
+    latest = {}
+    for s in steps:
+        found = s.get("scope_answers")
+        for scope_id, disposition in (found.items() if isinstance(found, dict) else ()):
+            latest[scope_id] = (disposition, s.get("on"))
+    return latest
+
+
+def _scope_rows(entry, steps):  # None when the request recorded no scopes, else one row per asked scope, entry order
+    scopes = entry.get("scopes")
+    if not isinstance(scopes, list):
+        return None
+    latest = _answers(steps)
+    return [{"scope_id": i, "answer": latest.get(i, (None, None))[0], "on": latest.get(i, (None, None))[1]}
+            for i in scopes]
+
+
 def _fee(steps):  # (latest fee_estimate index by date then recorded order, else None; a settlement step after it)
     dated = [(s.get("on") if isinstance(s.get("on"), str) else "", i) for i, s in enumerate(steps)
              if s.get("kind") == "fee_estimate"]
@@ -437,8 +515,48 @@ NOT_STATED = ("produced", "denied", "closed")  # kinds that never carry the agen
 STATED = "stated date passed — the agency's own date; provisional, not a legal deadline"
 
 
+DOWNLOAD_ASK = "ask the agency for a new one"  # shown once a stated download-link expiry has passed
+
+
 def _partial(step):  # a rolling production: more records to come; key absent = final (every older file)
     return step.get("kind") == "produced" and step.get("partial") is True
+
+
+def _download_ok(step):  # download_expires_on: absent, or a real date on a produced step, not before the step's own date
+    if "download_expires_on" not in step:
+        return True
+    return (step.get("kind") == "produced" and _day(step["download_expires_on"]) is not None
+            and _day(step.get("on")) is not None and step["download_expires_on"] >= step["on"])
+
+
+def _download_pending(step):  # the agency sent an expiring download link and no record is linked to this step yet
+    return step.get("kind") == "produced" and "download_expires_on" in step and not _step_records(step)
+
+
+def _downloads(steps, day):
+    """Pending downloads of one request on ``day``: [{produced_on, expires_on, days_left, state, line}].
+
+    A later produced step that links records clears the latest earlier pending step; a closed request lists none.
+    The link itself is never stored: only the agency's stated expiry date is."""
+    if any(s.get("kind") == "closed" for s in steps):
+        return []
+    pending = []
+    for s in steps:
+        if s.get("kind") != "produced":
+            continue
+        if _step_records(s) and pending:
+            pending.pop()
+        if _download_pending(s):
+            pending.append(s)
+    rows = []
+    for s in pending:
+        left = (date.fromisoformat(s["download_expires_on"]) - day).days
+        head = f"Download pending: produced {s['on']}, link "
+        line = (head + f"expires {s['download_expires_on']} ({left} day{'' if left == 1 else 's'} left)" if left >= 0
+                else head + f"expired {s['download_expires_on']}: {DOWNLOAD_ASK}")
+        rows.append({"produced_on": s["on"], "expires_on": s["download_expires_on"], "days_left": left,
+                     "state": "pending" if left >= 0 else "expired", "line": line})
+    return rows
 
 
 def _expected_ok(steps):  # expected_on only on the determination or a later restating step; a date not before its own
@@ -467,14 +585,22 @@ def _next_installment(steps):  # the latest expected_on on or after the latest p
 
 def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None,
                 expected_on=None, reference=None, replace_reference=False, partial=False, correspondence=(),
-                dry_run=False, withheld_basis=()):
-    """Append one dated agency response step (``dry_run``: check and return it, write nothing)."""
+                dry_run=False, withheld_basis=(), download_expires_on=None, scope_ids=(), disposition=None):
+    """Append one dated agency response step (``dry_run``: check and return it, write nothing).
+
+    ``download_expires_on``: the agency's stated expiry of a download link (produced only). Only the date is stored."""
+
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
     if kind not in KINDS:
         raise ValueError("--kind must be one of " + ", ".join(KINDS))
+    scope_ids, disposition = _clean_scopes(kind, scope_ids, disposition)
     if partial and kind != "produced":
         raise ValueError("--partial is only for produced steps")
+    if download_expires_on is not None and kind != "produced":
+        raise ValueError("--download-expires-on is only for produced steps")
+    if download_expires_on is not None and _day(download_expires_on) is None:
+        raise ValueError("--download-expires-on must be a real YYYY-MM-DD date")
     records = list(records or ())  # produced only: ledger prefixes; full hashes stored, 12-char prefixes returned
     if records and kind != "produced":
         raise ValueError("--record is only for produced steps")
@@ -491,13 +617,21 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
         raise ValueError(f"no hand-sent request recorded for {agency_id}; run kit-sent first")
     label = _label(agency_id, request)
     steps = entry["steps"]
-    if not all(isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) and _amount_ok(s)
-               and _step_records(s) == s.get("records", []) and _steps_corr_ok(s) and _basis_ok(s)
-               for s in steps) or not _expected_ok(steps):
+    if not _scopes_ok(entry) or not all(
+            isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) and _amount_ok(s)
+            and _step_records(s) == s.get("records", []) and _steps_corr_ok(s) and _basis_ok(s)
+            and _answers_ok(s, entry) and _download_ok(s) for s in steps) or not _expected_ok(steps):
         raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
+    if scope_ids and "scopes" not in entry:
+        raise ValueError("scopes not recorded for this request; --scope cannot be checked")
+    for scope_id in scope_ids:
+        if scope_id not in entry.get("scopes", ()):
+            raise ValueError(f"--scope {scope_id} was not asked in this request")
     day = _day(on)
     if day is None:
         raise ValueError("--date must be a real YYYY-MM-DD date")
+    if download_expires_on is not None and _day(download_expires_on) < day:
+        raise ValueError(f"--download-expires-on {download_expires_on} is before the produced step on {on}")
     if day < _day(entry["sent_on"]):
         raise ValueError(f"--date {on} is before the request was sent on {entry['sent_on']}")
     if steps and day < _day(steps[-1]["on"]):
@@ -553,9 +687,11 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     _set_reference(entry, reference, replace_reference)  # last refusal: nothing written on a conflict
     step = {"on": on, "kind": kind, **({"partial": True} if partial else {}),
             **({"expected_on": expected_on} if expected_on is not None else {}),
+            **({"download_expires_on": download_expires_on} if download_expires_on is not None else {}),
             **({"amount_cents": cents} if cents is not None else {}),
             **({"note": note} if note else {}), **({"records": hashes} if hashes else {}),
             **({"correspondence": corr} if corr else {}), **({"withheld_basis": stated_bases} if stated_bases else {}),
+            **({"scope_answers": dict(sorted(dict.fromkeys(scope_ids, disposition).items()))} if scope_ids else {}),
             "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     entry["steps"] = [*steps, step]
     if not dry_run:
@@ -588,7 +724,8 @@ def status(root, today=None, law_base=None, *, request=None):
         fees = [(s.get("on"), i, s) for i, s in enumerate(steps) if "amount_cents" in s or kinds[i] == "fee_estimate"]
         if not all(_amount_ok(s) and _day(on) for on, _, s in fees) or not _expected_ok(steps) \
                 or not all(map(_steps_corr_ok, steps)) \
-                or not all(map(_basis_ok, steps)):
+                or not all(map(_basis_ok, steps)) or not _scopes_ok(entry) \
+                or not all(_answers_ok(s, entry) and _download_ok(s) for s in steps):
             raise ValueError(f"kit/sent.json unreadable: malformed steps for {_label(agency_id, name)!r}")
         last, settled = _fee(steps)  # the latest estimate: latest date, then the later recorded step
         estimate = None if last is None else steps[last]["amount_cents"]
@@ -598,6 +735,7 @@ def status(root, today=None, law_base=None, *, request=None):
         if estimate is not None and cap == ():
             cap = kit.fee_cap_cents(root / "kit", today)
         linked = sorted({digest for s in steps for digest in _step_records(s)})
+        downloads = _downloads(steps, today or date.today())
         letters = sorted({*entry.get("correspondence", []), *(h for s in steps for h in s.get("correspondence", []))})
         extended = law.deadline(package, entry["sent_on"], extension=True).isoformat() if package else None
         due = (extended if "extension" in kinds else law.deadline(package, entry["sent_on"]).isoformat()) \
@@ -618,7 +756,8 @@ def status(root, today=None, law_base=None, *, request=None):
                      "stated_production_date": stated, "waiting_on_you_since": _waiting_since(steps),
                      "producing": producing, "next_installment": _next_installment(steps) if producing else None,
                      "reference": entry.get("reference"), "fee_state": _fee_state(steps), "fee_paid": fee_paid,
-                     "withheld_basis": _bases(steps),
+                     "withheld_basis": _bases(steps), "scopes": _scope_rows(entry, steps),
+                     **({"downloads_pending": downloads} if downloads else {}),
                      **({"request_url": entry["request_url"]} if "request_url" in entry else {})})
     waiting = any(row["waiting_on_you_since"] for row in rows)
     return {"requests": rows, "law_package_status": package_status, "note": NOTE + (WAIT_NOTE if waiting else "")}
@@ -626,7 +765,14 @@ def status(root, today=None, law_base=None, *, request=None):
 
 ANSWERED = {"determination", "produced", "denied"}
 CSV_HEADER = ("agency_id", "name", "drafted", "sent_on", "channel", "last_step_on", "last_step_kind", "records",
-              "sources", "findings", "fee")
+              "sources", "findings", "fee", "scopes")
+
+
+def _scope_summary(entry, steps):  # None before a request is sent; "not recorded"; else "k/n answered"
+    if not entry:
+        return None
+    rows = _scope_rows(entry, steps)
+    return "not recorded" if rows is None else f"{sum(r['answer'] is not None for r in rows)}/{len(rows)} answered"
 
 
 def coverage(root):
@@ -654,7 +800,8 @@ def coverage(root):
                      "last_step": {"on": steps[-1].get("on"), "kind": steps[-1].get("kind")} if steps else None,
                      "records": len({h for s in steps if s.get("kind") == "produced" for h in _step_records(s)}),
                      "sources": sources.count(agency_id), "findings": findings.count(agency_id),
-                     "fee_state": _fee_state(steps), "answered": bool(ANSWERED & {s.get("kind") for s in steps})})
+                     "fee_state": _fee_state(steps), "scopes": _scope_summary(entry, steps),
+                     "answered": bool(ANSWERED & {s.get("kind") for s in steps})})
     rows.sort(key=lambda row: (row["sent_on"] is not None, row["agency_id"]))
     totals = {"selected": len(rows), "drafted": sum(r["drafted"] for r in rows),
               "sent": sum(r["sent_on"] is not None for r in rows), "answered": sum(r.pop("answered") for r in rows),
@@ -670,7 +817,7 @@ def coverage(root):
 def _cells(row):
     step = row["last_step"] or {}
     return [row["agency_id"], row["name"], row["drafted"], row["sent_on"], row["channel"], step.get("on"),
-            step.get("kind"), row["records"], row["sources"], row["findings"], row["fee_state"]]
+            step.get("kind"), row["records"], row["sources"], row["findings"], row["fee_state"], row["scopes"]]
 
 
 def _csv_cell(value):
@@ -689,9 +836,9 @@ def format_coverage(report, as_csv=False):
         for row in report["rows"]:
             writer.writerow([_csv_cell(c) for c in _cells(row)])
         return out.getvalue()
-    line = "{:<36} {:<40} {:<7} {:<10} {:<9} {:<10} {:<13} {:>7} {:>7} {:>8} {}"
+    line = "{:<36} {:<40} {:<7} {:<10} {:<9} {:<10} {:<13} {:>7} {:>7} {:>8} {:<7} {}"
     lines = [line.format("agency_id", "name", "drafted", "sent_on", "channel", "last_on", "last_kind", "records",
-                         "sources", "findings", "fee")]
+                         "sources", "findings", "fee", "scopes")]
     for row in report["rows"]:
         cells = _cells(row)
         cells[1] = "".join(c if c.isprintable() else " " for c in cells[1])[:40]
@@ -742,8 +889,13 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None):
             days = (date.fromisoformat(row["determination_due"]) - day).days
             open_rows.append({**base, "due": row["determination_due"], "days": days,
                               "state": "past_due" if days < 0 else "due_today" if days == 0 else "upcoming"})
+        for item in _downloads(steps, day):  # one row per pending download link; the link itself is never kept
+            open_rows.append({**base, "due": item["expires_on"], "days": item["days_left"], "kind": "download",
+                              "state": "download_" + item["state"], "produced_on": item["produced_on"],
+                              "note": item["line"]})
     open_rows.sort(key=lambda row: (row["due"] or "", row["agency_id"], row["request"]))
     waiting = sum(row["state"] == "waiting_on_you" for row in open_rows)  # never sets exit 3 by itself
+    expired = sum(row["state"] == "download_expired" for row in open_rows)  # counts for exit 3 like past_due
     stated_passed.sort(key=lambda row: (row["stated"], row["agency_id"], row["request"]))
     missing = report["law_package_status"] == "missing"
     return {"as_of": day.isoformat(), "law_package_status": report["law_package_status"], "open": open_rows,
@@ -751,6 +903,7 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None):
             "stated_passed": stated_passed, "stated_date_passed": len(stated_passed),
             "installment_passed": sum(row["state"] == "installment_passed" for row in open_rows),
             "waiting_on_you": waiting,
+            **({"download_expired": expired} if any(r.get("kind") == "download" for r in open_rows) else {}),
             "note": ("No law package: determination dates cannot be computed. " if missing else "") + NOTE
             + (f" {STATED[0].upper()}{STATED[1:]}." if stated_passed else "") + (WAIT_NOTE if waiting else "")}
 
@@ -788,7 +941,7 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
         raise ValueError(f"request for {agency_id} was answered ({answer['kind']} on {answer.get('on')}); "
                          "no follow-up drafted")
     row = next((r for r in due(root, day.isoformat(), law_base=law_base)["open"]
-                if (r["agency_id"], r["request"]) == (agency_id, "main")), None)
+                if (r["agency_id"], r["request"]) == (agency_id, "main") and r.get("kind") != "download"), None)
     if row is None or row["state"] == "no_law_package":
         raise ValueError("no law package: dates cannot be computed")
     if row["state"] == "producing":

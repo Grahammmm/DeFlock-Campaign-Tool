@@ -26,7 +26,7 @@ except ImportError:  # Windows
 from . import content, publication_gate
 from .content import FINDING_KEYS
 from .evidence import PREFIX, _ledger_hashes, _object_present
-from .review import CLASSIFICATIONS, ROLES, _who, content_hash, review_blockers
+from .review import CLASSIFICATIONS, EDIT_MARKER, ROLES, _who, content_hash, review_blockers
 from .sources_cmd import PREFIX as HEX_PREFIX, _known_agencies, _library
 
 PUBLICATION_FIELDS = ("state", "published_at", "updated_at", "corrections")
@@ -795,6 +795,13 @@ def _write_draft(root, draft):
     raise ValueError(f"{folders[1]}: {DRAFT_ATTEMPTS} generated ids already exist; nothing written")
 
 
+def _known_for(root, document):
+    """DF1952-07: ids of the campaign's agencies when ``document`` uses also_agency_ids, else None (no lookup)."""
+    if isinstance(document, dict) and "also_agency_ids" in document:
+        return {agency["agency_id"] for agency in _known_agencies(root)}
+    return None
+
+
 def publish(root, draft_path, approved_by, now=None):
     """Write content/findings/<slug>.json as published and log it privately; never builds or deploys."""
     draft = load_draft(draft_path)
@@ -808,7 +815,7 @@ def publish(root, draft_path, approved_by, now=None):
         raise ValueError("the author cannot approve publication of their own finding")
     when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     document = dict(reviewed_view(draft), state="published", published_at=when, corrections=[])
-    finding = content.load_finding(document, str(draft_path))
+    finding = content.load_finding(document, str(draft_path), known_agency_ids=_known_for(root, document))
     if not _real_dir(root / "content"):
         raise ValueError(f"{root / 'content'}: no content/ directory in this campaign")
     if not _real_dir(root / "private"):
@@ -1045,7 +1052,8 @@ def _correct_locked(root, finding_id, date, note, from_draft, moment, approved_b
         if blockers:
             raise ValueError(f"review blockers: {blockers}")
         document = dict(reviewed_view(draft), **kept)
-    finding = content.load_finding(document, f"content/findings/{target.name}")
+    finding = content.load_finding(document, f"content/findings/{target.name}",
+                                   known_agency_ids=_known_for(root, document))
     if from_draft is not None:
         problems = cited_problems(root, finding)
         if problems:
@@ -1103,3 +1111,166 @@ def _withdraw_locked(root, finding_id, reason, when):
     finally:
         os.close(log_fd)
     return {"withdrawn": slug, "path": f"private/withdrawn/{target.name}"}
+
+
+# --- agency right of reply (DF1103-08) -----------------------------------------------------------------------
+# Preparing a request for comment is NOT evidence that anyone was asked: the organizer attests the manual ask with
+# --asked-on. agency_response stays inside reviewed_view, so every change makes earlier review receipts stale.
+
+_FULL_HEX = re.compile(r"[0-9a-fA-F]{40,}")
+
+
+def _reply_draft_path(root, draft_path):
+    """The absolute DRAFT path, which must lie in this campaign's private/drafts with no symlink on the way."""
+    path = Path(os.path.abspath(Path(draft_path).expanduser()))
+    for base in dict.fromkeys((Path(os.path.abspath(root)), Path(os.path.realpath(root)))):
+        try:
+            parts = path.relative_to(base / "private" / "drafts").parts
+        except ValueError:
+            continue
+        walk = base
+        for part in ("private", "drafts", *parts):
+            walk = walk / part
+            if os.path.islink(walk):
+                raise _PathError(f"{walk}: is a symlink; refusing to follow it")
+        if parts:
+            return path
+    raise ValueError("DRAFT must be a file inside this campaign's private/drafts folder")
+
+
+def _reply_context(root, draft_path):
+    """(path, draft, agency) of a draft that may take a reply: state draft or ready, agency known to the campaign."""
+    path = _reply_draft_path(root, draft_path)
+    draft = load_draft(path)
+    if draft.get("state") not in ("draft", "ready"):
+        raise ValueError("the draft's state must be draft or ready (not published or withdrawn)")
+    agency = next((a for a in _known_agencies(root) if a["agency_id"] == draft.get("agency_id")), None)
+    if agency is None:
+        raise ValueError("the draft's agency_id is not one of the campaign's agencies")
+    return path, draft, agency
+
+
+def _cited_hashes(draft):
+    sources = draft.get("sources")
+    return {s["sha256"] for s in sources if isinstance(s, dict) and isinstance(s.get("sha256"), str)} \
+        if isinstance(sources, list) else set()
+
+
+def _create_text(path, text):
+    """Create ``path`` (0600, O_EXCL, no symlink followed) holding ``text``; never overwrites."""
+    if os.path.islink(path):
+        raise _PathError(f"{path}: is a symlink; refusing to follow it")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except FileExistsError:
+        raise ValueError("reply request already exists; keep the original draft") from None
+    except OSError as exc:
+        raise ValueError(f"{path}: cannot create the reply request ({exc.strerror})") from None
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            if hasattr(os, "fchmod"):
+                os.fchmod(out.fileno(), 0o600)  # whatever the umask
+            out.write(text)
+            out.flush()
+            os.fsync(out.fileno())
+    except BaseException:
+        os.unlink(path)
+        raise
+
+
+def _reply_request_text(draft, agency, today, deadline):
+    for name in ("title", "summary"):
+        value = draft.get(name)
+        if not isinstance(value, str) or not value.strip() or EDIT_MARKER.search(value) or _FULL_HEX.search(value):
+            raise ValueError(f"the draft {name} must be finished text, without [EDIT ME] markers or full hashes, "
+                             "before a request for comment is prepared")
+    prefixes = list(dict.fromkeys(sha[:PREFIX] for sha in sorted(_cited_hashes(draft))))
+    if any(not content.SHA256.fullmatch(sha) for sha in _cited_hashes(draft)):
+        raise ValueError("the draft's sources must each hold a 64-character lowercase sha256")
+    cited = "".join(f"- {prefix}\n" for prefix in prefixes) or "- (none cited yet)\n"
+    return (f"# Request for comment: {draft['title']}\n\nDraft only. Nothing was sent.\n\n"
+            f"Agency: {agency['name']}\nComment requested by: {deadline}\nPrepared on: {today}\n\n"
+            f"Finding: {draft['title']}\n\nSummary: {draft['summary']}\n\n"
+            f"Records cited (the first {PREFIX} characters of each record's SHA-256 fingerprint):\n{cited}\n"
+            f"We may publish the finding summarized above. Before we do, we invite {agency['name']} to comment on it, "
+            f"including any correction or added context, by {deadline}. A reply received will be recorded as "
+            "written. This is a request for comment only.\n")
+
+
+def reply_request(root, draft_path, by, today=None):
+    """Write the private, never-sent kit/replies/<id>.md asking the draft's agency for comment by ``by`` and store
+    ``agency_response: {status: pending, prepared_on, reply_by}`` on the draft. Sends nothing; pending is not 'asked'."""
+    root, today = Path(root), today or date.today()
+    deadline = content.reply_day(by)
+    if deadline is None or deadline < today:
+        raise ValueError("--by: invalid date or date order")
+    pending = {"status": "pending", "prepared_on": str(today), "reply_by": str(deadline)}
+    _reply_draft_path(root, draft_path)
+    with _locked(root / "private", ".publish.lock"):
+        path, draft, agency = _reply_context(root, draft_path)  # re-read under the lock
+        if "agency_response" in draft:
+            raise ValueError("reply request already exists; keep the original draft")
+        text = _reply_request_text(draft, agency, today, deadline)
+        folders = (root / "kit", root / "kit" / "replies")
+        for folder in folders:
+            _real_dir(folder)  # a symlink or a file refuses before anything is written
+        for folder in folders:
+            if not os.path.lexists(folder):
+                folder.mkdir(mode=0o700)
+                os.chmod(folder, 0o700)
+        target = folders[1] / (draft["id"] + ".md")
+        _create_text(target, text)
+        try:
+            _write_private(path, dict(sorted({**draft, "agency_response": pending}.items())), ".reply-")
+        except (OSError, ValueError):
+            raise ValueError("reply request template saved but draft update failed; remove or retain the "
+                             "template manually") from None
+    return {"id": draft["id"], "status": "pending", "written": str(target)}
+
+
+def record_reply(root, draft_path, status, on, asked_on, text=None, record=None, today=None):
+    """Record the agency's reply (or silence) on the prepared draft; only the draft is rewritten, atomically.
+    ``asked_on`` attests that the organizer really asked; ``record``: a library prefix of the record received."""
+    root, today = Path(root), today or date.today()
+    if status not in content.REPLY_STATUSES:
+        raise ValueError("--status must be one of: " + ", ".join(content.REPLY_STATUSES))
+    when, asked = content.reply_day(on), content.reply_day(asked_on)
+    if when is None or when > today:
+        raise ValueError("--on: invalid date or date order")
+    if asked is None or asked > when:
+        raise ValueError("--asked-on: invalid date or date order")
+    if record is not None and status != "received":
+        raise ValueError("--record is only for --status received")
+    _reply_draft_path(root, draft_path)
+    with _locked(root / "private", ".publish.lock"):
+        path, draft, _ = _reply_context(root, draft_path)
+        if "agency_response" not in draft:
+            raise ValueError("prepare a reply request first")
+        prepared = content._agency_response(draft["agency_response"], "agency_response", _cited_hashes(draft), today)
+        if not content.reply_day(prepared["prepared_on"]) <= asked <= content.reply_day(prepared["reply_by"]):
+            raise ValueError("--asked-on: invalid date or date order")
+        if status == "no_response" and when < content.reply_day(prepared["reply_by"]):
+            raise ValueError("no_response requires --on on or after the reply deadline")
+        reply = {"status": status, "prepared_on": prepared["prepared_on"], "reply_by": prepared["reply_by"],
+                 "asked_on": asked_on, "on": on}
+        if text is not None:
+            reply["text"] = text
+        sources = draft.get("sources")
+        if record is not None:
+            try:
+                [entry] = _resolve_sources(root, [record])
+            except ValueError as exc:
+                raise ValueError(str(exc).replace("--source ", "--record ")) from None
+            problems = cited_problems(root, {"sources": [{"sha256": entry["sha256"]}]})
+            if problems:
+                raise ValueError(f"--record {record}: the record is not registered and stored: {problems}")
+            reply["record_sha256"] = entry["sha256"]
+            if not isinstance(sources, list):
+                raise ValueError("the draft's sources must be a list")
+            if entry["sha256"] not in _cited_hashes(draft):
+                sources = sources + [{"sha256": entry["sha256"], "title": entry["title"],
+                                      "locator": f"Agency response received {on}"}]
+        reply = content._agency_response(reply, "agency_response", _cited_hashes({"sources": sources}), today)
+        updated = {**draft, "agency_response": reply, **({"sources": sources} if record is not None else {})}
+        _write_private(path, dict(sorted(updated.items())), ".reply-")
+    return {"id": draft["id"], "status": status}
