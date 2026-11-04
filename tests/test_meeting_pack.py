@@ -356,6 +356,15 @@ class MeetingPackTests(unittest.TestCase):
         self.assertIn('<p>Se han solicitado registros; aún no se ha publicado nada.</p>', self.html())
         self.assertNotIn('Records are requested', self.html())
 
+    def test_missing_received_date_label_is_escaped_once(self):
+        self.rich()
+        self.labels({**self.ES, 'handout.not_recorded': 'sin fecha "A & B"'})
+        self.pack()
+        page = self.html()
+        self.assertIn('Fuente: Source 7, recibida sin fecha &quot;A &amp; B&quot;, registro ', page)
+        self.assertNotIn('&amp;amp;', page)
+        self.assertNotIn('&amp;quot;', page)
+
     def test_spanish_language_without_labels_keeps_english_text(self):
         english = self.handouts()
         self.site['language'] = 'es'

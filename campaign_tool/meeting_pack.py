@@ -57,7 +57,7 @@ def _handout(name, meeting, findings, library, site, truncated, labels):
         for source in finding["sources"]:
             entry = library.get(source["sha256"], {})
             parts.append('<p>' + t('handout.source_line', title=e(source['title']),
-                                   date=e(entry.get('received_at', t('handout.not_recorded'))),
+                                   date=e(entry.get('received_at', labels['handout.not_recorded'])),
                                    record=source['sha256'][:12]) + '</p>')
         if base:
             url = base + '/findings/' + finding['slug'] + '.html'
