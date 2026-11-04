@@ -79,6 +79,15 @@ class FindingDiffTests(unittest.TestCase):
         self.assertEqual(self.cli("syn-diff-1", "--from", self.draft(), "--json", returncode=0).stdout,
                          "[]\nno differences\n")
 
+    def test_updates_only_difference_is_ignored(self):
+        # DF0022-06: a published finding's dated updates are publication data, not part of the diffed FIELDS.
+        self.assertNotIn("updates", finding_diff.FIELDS)
+        self.write(self.root / "content" / "findings" / "free-form-name.json",
+                   published(updates=[{"date": "2026-01-06", "note": "the agency answered."}]))
+        self.assertEqual(self.cli("syn-diff-1", "--from", self.draft(), returncode=0).stdout, "no differences\n")
+        path = self.draft(updates=[{"date": "2026-01-07", "note": "a different history."}])
+        self.assertEqual(self.cli("syn-diff-1", "--from", path, returncode=0).stdout, "no differences\n")
+
     def test_only_summary_changed(self):
         path = self.draft(summary="New summary.")
         self.assertEqual(self.cli("syn-diff-1", "--from", path, returncode=3).stdout,

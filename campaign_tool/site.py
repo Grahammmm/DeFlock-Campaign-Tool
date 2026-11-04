@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
-from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
+from . import agency_cards, camera_counts, finding_law, finding_updates, image_meta, law, map_controller
 from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, PRE_MEETING_RULE_ID, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
@@ -204,6 +204,7 @@ PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classific
                          "counterevidence", "corrections", "url", "citation", "also_agency_ids", "agency_response")
 PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page", "quote")
 PUBLIC_CORRECTION_FIELDS = ("date", "note")
+PUBLIC_UPDATE_FIELDS = ("date", "note")  # DF0022-06: optional "updates" key of a finding; not a CSV column, so no-update bytes are unchanged
 # DF1103-08: only a received, declined or no_response reply is public; pending never is.
 PUBLIC_RESPONSE_FIELDS = ("status", "asked_on", "reply_by", "on", "text", "record_sha256_prefix")
 PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
@@ -448,10 +449,11 @@ def _day(value):
 
 
 def finding_updated(finding):
-    """Latest of updated_at, published_at and each correction date (a date read as midnight UTC), as the winner's
-    own string; a tie keeps that order."""
+    """Latest of updated_at, published_at, each correction date and each update date (a date read as midnight UTC), as
+    the winner's own string; a tie keeps that order."""
     candidates = [finding["updated_at"], finding["published_at"]]
     candidates += [_day(c["date"]) + "T00:00:00+00:00" for c in finding["corrections"]]
+    candidates += [_day(u["date"]) + "T00:00:00+00:00" for u in finding.get("updates", ())]
     return max((value for value in candidates if value), key=utc_moment)
 
 
@@ -1515,6 +1517,16 @@ class Site:
         return (f'<blockquote class="source-quote"><p>{e(quote)}</p></blockquote>'
                 f'<p class="source-quote-note">{self.t("finding.quote_transcribed")}{shown}</p>')
 
+    def updates_html(self, finding):
+        """DF0022-06: ``Updates`` under the body, newest date first (ties: newest entry first), each note as escaped literal
+        text. Empty without updates; never a correction badge, correction row or corrected feed lead."""
+        items = finding_updates.newest_first(finding.get("updates", ()))
+        if not items:
+            return ""
+        label = self.t("finding.update")
+        rows = "".join(f'<li>{label} · <time datetime="{e(u["date"])}">{e(u["date"])}</time>: {e(u["note"])}</li>' for u in items)
+        return f'<h3 id="updates">{self.t("finding.updates")}</h3><ul>{rows}</ul>'
+
     def finding_html(self, finding):
         sources = []
         for source in finding["sources"]:
@@ -1552,6 +1564,7 @@ class Site:
                 f'<p><a href="{e(finding_path(finding))}">Share this finding</a></p>'
                 + self.cite_html(finding)
                 + (self.md(finding["body_md"]) if finding["body_md"] else "")
+                + self.updates_html(finding)
                 + f'<h3>{self.t("finding.sources")}</h3><ul class="source-table">{"".join(sources)}</ul>'
                 + f'<p class="provenance-note">{e(EXPLAINER)}</p>' + self.legal_basis(finding)
                 + f'<h3>{self.t("finding.limitations")}</h3><ul>{limits}</ul><h3>{self.t("finding.counterevidence")}</h3><ul>{counter}</ul>'
@@ -2292,6 +2305,8 @@ class Site:
                              **({"quote": s["quote"]} if s.get("quote") else {})}  # DF1952-08: optional, absent stays absent
                             for s in finding["sources"]]
         value["corrections"] = [{"date": c["date"], "note": c["note"]} for c in finding["corrections"]]
+        if "updates" in finding:  # DF0022-06: optional, copied through an explicit allowlist; absent stays absent
+            value["updates"] = [{key: u[key] for key in PUBLIC_UPDATE_FIELDS} for u in finding["updates"]]
         value["url"] = f'{self.base}/findings/{finding["slug"]}.html'
         value["citation"] = citation(finding, self.cfg["name"], self.base)
         reply = finding.get("agency_response")
@@ -2314,8 +2329,9 @@ class Site:
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/findings",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "findings": [self._public_finding(f) for f in self.model["findings"]]}
-        finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {}),
-                                           "agency_response": (PUBLIC_RESPONSE_FIELDS, {})})
+        finding = (PUBLIC_FINDING_FIELDS + ("updates",),
+                   {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {}),
+                    "updates": (PUBLIC_UPDATE_FIELDS, {}), "agency_response": (PUBLIC_RESPONSE_FIELDS, {})})
         _assert_public(doc, "data/findings.json", PUBLIC_TOP_LEVEL_FIELDS + self.license_top(), {"findings": finding})
         return self.stamp_license(doc)
 

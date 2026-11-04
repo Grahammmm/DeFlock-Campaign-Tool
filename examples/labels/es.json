@@ -138,6 +138,8 @@
     "finding.updated": "Actualizado el {date}",
     "finding.quote_transcribed": "Transcrito por la campaña; no se ha comparado con el texto del registro.",
     "finding.quote_page": "Página {page}",
+    "finding.updates": "Actualizaciones",
+    "finding.update": "Actualización",
     "finding.sources": "Fuentes",
     "finding.limitations": "Limitaciones",
     "finding.none_stated": "Ninguna indicada.",

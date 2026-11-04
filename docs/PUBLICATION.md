@@ -84,7 +84,7 @@ are **self-asserted**: offline
 there is no identity check, unlike the hosted flow, where the identity is the Access JWT email.
 The tool only refuses a reviewer whose name matches the draft `author` (case and spacing
 ignored) and a duplicate receipt. Each receipt is bound to the hash of the draft without its
-publication fields (`state`, `published_at`, `updated_at`, `corrections`), so changing those
+publication fields (`state`, `published_at`, `updated_at`, `corrections`, `updates`), so changing those
 keeps it bound, while any edit to a reviewed field (for example `summary`) unbinds every earlier
 receipt. `finding review-status` is read-only and prints the receipts for the current content,
 the stale ones and the `review_blockers` list (two independent approvals covering factual, legal
@@ -159,7 +159,27 @@ the same review blockers and cited-record check as `publish`; `id`, `slug`, `pub
 corrections are kept. One `{at, action: "correct", id, slug, date, content_sha256, text_changed}` line is logged.
 A finding about several agencies (`also_agency_ids`, see SITE-CONTENT.md) is hashed with that list as entered, so adding,
 removing or reordering an agency on a published finding needs a correction from a freshly reviewed draft; `publish` and
-`correct` refuse an unknown agency id before anything is written.
+`correct` refuse an unknown agency id before anything is written. `correct` keeps a finding's stored `updates` on
+both paths; a `--from` draft that carries a different `updates` list is refused (`update history cannot be replaced by
+finding correct`), and `publish` refuses a draft with a nonempty `updates` (`updates require an already published finding`).
+
+    python3 -m campaign_tool finding update ID --directory D --on YYYY-MM-DD --note TEXT --approved-by NAME
+
+`finding update` (DF0022-06) appends one `{date, note}` to the published finding's optional `updates` list for new
+information that does not change what the finding says (the agency answered, a meeting was held, records arrived).
+It is append-only and offline, takes no `--from`, text or source option, and never builds or deploys. Anything that
+changes the title, summary, body or sources still needs `finding correct`. The date is a real `YYYY-MM-DD`, not before
+the `published_at` date and not after today (UTC); same-day and out-of-order entries are kept in the order given. The
+note is 1-400 characters of plain text, kept exactly as typed (no angle brackets, no control characters or line breaks).
+It passes the same publication gate as `correct`: `--approved-by` names the person approving this exact update (the
+gate seals the action, id, date, note and the file before and after, so a note or a changed file cannot reuse another
+approval), and a withdrawn or unpublished finding is refused. `updates` is outside the reviewed hash, so review
+receipts stay bound; it also sets `updated_at`. One `{at, action: "update", id, slug, date, content_sha256, updates}`
+line is logged (the count, never the note). The privacy lint is bounded pattern detection, not a claim to recognise
+every personal name: a note is refused when the redactor finds a plate, email, phone, address, SSN, date of birth or
+ranked or labelled name, or when two title-cased words stand side by side (which also refuses a capitalised institution
+name; write impersonal lower-case wording, there is no override). The legal-claim wording check runs on the note and prints
+`review-required` notes (rule names only) to stderr; it is alert-only and does not refuse.
 
     python3 -m campaign_tool finding withdraw ID --directory D --reason TEXT
 
@@ -324,8 +344,8 @@ Both require an authenticated identity and a non-empty reason; both are visible 
 Approvals list as the rebuild they trigger.
 
 In `feed.xml` (and each per-agency feed) a corrected finding's entry `updated` is the latest of
-`published_at`, `updated_at` and its correction dates (a date counts as midnight UTC) and its summary
-starts `Corrected YYYY-MM-DD.` with the newest correction date, so feed readers show it again. The build
+`published_at`, `updated_at`, its correction dates and its update dates (a date counts as midnight UTC) and its summary
+starts `Corrected YYYY-MM-DD.` with the newest correction date (an update never starts it), so feed readers show it again. The build
 refuses a correction dated before the calendar date of `published_at` and an `updated_at` earlier than it.
 
 ## Social drafts (never posted)
