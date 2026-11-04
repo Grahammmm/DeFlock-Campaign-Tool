@@ -159,6 +159,11 @@ class DiscoveryTests(unittest.TestCase):
         table = [n for fips, _d, n in build_agency_seed.CCD_POLICE if fips == "06037"]
         self.assertEqual(self.names("Los Angeles County", ("ccd_police",)), table)
 
+    def test_coast_is_not_suggested_by_include_ccd_police(self):
+        orange = self.names("Orange County", ("ccd_police",))
+        self.assertEqual(orange, ["South Orange County Community College District Campus Police Departments"])
+        self.assertEqual([n for n in orange if "Coast" in n], [])
+
     def test_unknown_kind_typo_names_allowed_kinds(self):
         location = discovery.locate("Alameda County", "CA", self.seed)
         for typo in ("ccd", "CCD_Police", "ccd-police"):

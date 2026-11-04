@@ -322,7 +322,6 @@ CCD_POLICE = [
     ("06007", "Butte-Glenn Community College District", "Butte-Glenn Community College District Police Department"),
     ("06037", "Cerritos Community College District", "Cerritos Community College District Police Department"),
     ("06071", "Chaffey Community College District", "Chaffey Community College District Police Department"),
-
     ("06037", "Compton Community College District", "Compton Community College District Police Department"),
     ("06013", "Contra Costa Community College District", "Contra Costa Community College District Police Department"),
     ("06037", "El Camino Community College District", "El Camino Community College District Police Department"),
