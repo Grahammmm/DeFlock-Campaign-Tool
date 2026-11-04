@@ -44,7 +44,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "newsletters"}  # DF1952-04, DF1952-09
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters"}  # DF1952-04 / DF2207-13 / DF1952-09: reserved even without content
 
 
 class ContentError(ValueError):
@@ -907,6 +907,62 @@ def _contract(value, label):
     return contract
 
 
+FUNDING_KINDS = ("grant", "general_fund", "asset_forfeiture", "donation", "other")
+FUNDING_REQUIRED = {"kind", "name", "as_stated_in", "source_url", "checked_on"}
+FUNDING_KEYS = FUNDING_REQUIRED | {"amount_usd", "period", "fiscal_year"}
+FUNDING_YEAR = re.compile(r"[1-9][0-9]{3}")
+FUNDING_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _funding(value, label, today=None):
+    """``profile.funding`` (DF2207-02): how an agency says it is paid for, as an organizer transcribed it from a document.
+
+    Entries keep their input order and are never summed, sorted or merged. An error names the entry and the rule it
+    broke, never the value submitted (a donor name, an unknown key). Nothing is fetched.
+    """
+    if not isinstance(value, list) or not 1 <= len(value) <= 10:
+        raise ContentError(f"{label}: must be a list of 1 to 10 funding entries")
+    build_day, result = today or date.today(), []
+    for index, entry in enumerate(value):
+        item = f"{label}[{index}]"
+        if not isinstance(entry, dict):
+            raise ContentError(f"{item}: expected an object")
+        if not FUNDING_REQUIRED <= set(entry) or set(entry) - FUNDING_KEYS:
+            raise ContentError(f"{item}: needs kind, name, as_stated_in, source_url and checked_on, and may add only "
+                               "amount_usd with period, and fiscal_year")
+        if entry["kind"] not in FUNDING_KINDS:
+            raise ContentError(f"{item}.kind: choose one of {list(FUNDING_KINDS)}")
+        name = entry["name"]
+        if not (isinstance(name, str) and 1 <= len(name) <= 120 and name == name.strip() and plain_text(name)
+                and not any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in name)):
+            raise ContentError(f"{item}.name: plain program or donor organization name of 1 to 120 characters")
+        if ("amount_usd" in entry) != ("period" in entry):
+            raise ContentError(f"{item}: amount_usd and period go together")
+        # DF1103-07's own validator checks the amount, period and document title (a placeholder pair when none is given)
+        cost = _contract_cost({"amount_usd": entry.get("amount_usd", "0"), "period": entry.get("period", "annual"),
+                               "as_stated_in": entry["as_stated_in"]}, item)
+        year = entry.get("fiscal_year")
+        if "fiscal_year" in entry and not (isinstance(year, str) and FUNDING_YEAR.fullmatch(year)):
+            raise ContentError(f"{item}.fiscal_year: four digits as the document states it, e.g. 2026")
+        checked = entry["checked_on"]
+        try:
+            if not (isinstance(checked, str) and FUNDING_DAY.fullmatch(checked)):
+                raise ValueError
+            day = date.fromisoformat(checked)
+        except ValueError:
+            raise ContentError(f"{item}.checked_on: must be a YYYY-MM-DD date not after the build date") from None
+        if day > build_day:
+            raise ContentError(f"{item}.checked_on: must be a YYYY-MM-DD date not after the build date")
+        clean = {"kind": entry["kind"], "name": name, "as_stated_in": cost["as_stated_in"],
+                 "source_url": _https(entry["source_url"], f"{item}.source_url"), "checked_on": checked}
+        if "amount_usd" in entry:
+            clean.update(amount_usd=cost["amount_usd"], period=cost["period"])
+        if "fiscal_year" in entry:
+            clean["fiscal_year"] = year
+        result.append(clean)
+    return result
+
+
 ALPR_POLICY_KEYS = {"url", "source_url", "checked_on"}
 
 
@@ -1039,7 +1095,7 @@ def load_agencies(document, label, today=None):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy", "transparency"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy", "transparency", "funding"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -1073,6 +1129,8 @@ def load_agencies(document, label, today=None):
                 "flags": _text_list(profile, "flags", f"{item}.profile"),
             },
         })
+        if "funding" in profile:  # DF2207-02: only when the organizer recorded it, so other profiles keep their shape
+            agencies[-1]["funding"] = _funding(profile["funding"], f"{item}.profile.funding", today)
     return agencies
 
 
@@ -1935,6 +1993,8 @@ def load_content(root, today=None):
 
     pages = load_pages(content_dir, slugs)
     topics = load_topics(content_dir, findings, pages)
+    from .supporters import load_supporters  # local: supporters imports this module
+    supporters = load_supporters(root, today=today)  # DF2207-13: None without content/supporters.json
     model = {
         "site": site,
         "findings": findings,
@@ -1958,4 +2018,6 @@ def load_content(root, today=None):
     # checked (and refused) by site against the pages it writes; without the file there is no key.
     if redirects_path.is_file() or redirects_path.is_symlink():
         model["redirects"] = _read_json(redirects_path)
+    if supporters is not None:  # DF2207-13: public rows only (never the private consent records)
+        model["supporters"] = supporters
     return model

@@ -37,13 +37,15 @@ from .provenance_text import EXPLAINER, source_line
 from .redirects import load_redirects
 from .review import ROLES
 
+from .supporters import KINDS as SUPPORTER_KINDS
+
 ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "search.html", "search.js", "newsletters.html", "newsletters"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
@@ -221,10 +223,12 @@ SOURCES_CSV_COLUMNS = tuple(c for key in PUBLIC_LIBRARY_FIELDS
 # data/agencies.json (DF1422-12): what each agency card and page already show; never contacts, kit data or notes.
 PUBLIC_AGENCY_TOP_LEVEL = {"schema_version", "campaign", "generated_from", "base_url", "url_kind", "agencies"}
 PUBLIC_AGENCY_FIELDS = ("agency_id", "name", "kind", "url", "asked", "alpr_policy", "contract", "transparency", "camera_count")
+PUBLIC_AGENCY_OPTIONAL = ("funding",)  # DF2207-02: present only when the organizer recorded it
 PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
 PUBLIC_POLICY_FIELDS = ("url", "checked_on")
 PUBLIC_CONTRACT_FIELDS = ("vendor", "start", "end", "source_url", "checked_on")  # never renewal_note
 PUBLIC_COST_FIELDS = ("amount_usd", "period", "as_stated_in")  # contract.cost (DF1103-07): exactly these, when present
+PUBLIC_FUNDING_FIELDS = ("kind", "name", "as_stated_in", "source_url", "checked_on", "amount_usd", "period", "fiscal_year")  # DF2207-02
 PUBLIC_TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts",
                               "shared_with_agencies", "source_url", "checked_on")
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
@@ -538,6 +542,7 @@ class Site:
         self.glossary = model.get("glossary") if (model.get("glossary") or {}).get("terms") else None
         # DF1952-06: curated topics (slug order); each finding id -> the topics listing it. No topics key = none.
         self.topics = model.get("topics", [])
+        self.supporters = model.get("supporters") or []  # DF2207-13: validated public rows; [] = no page, no link
         self.finding_by_id = {f["id"]: f for f in model["findings"]}
         self.topics_of = {}
         for topic in self.topics:
@@ -615,6 +620,8 @@ class Site:
         parts.append(f'<p>{e(self.site["not_legal_advice"])}</p>')
         if self.topics:  # DF1952-06
             parts.append(f'<p><a href="/topics/">{self.t("nav.topics")}</a></p>')
+        if self.supporters:  # DF2207-13
+            parts.append(f'<p><a href="/supporters.html">{self.t("supporters.title")}</a></p>')
         parts.append(f'<p><a href="/privacy.html">{self.t("footer.privacy")}</a>'
                      + (f' · <a href="/glossary.html">{self.t("footer.glossary")}</a>' if self.glossary else "") + '</p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
@@ -839,6 +846,26 @@ class Site:
                   f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>'
                 + (self.contract_cost_line(contract) if contract.get("cost") else ""))
 
+    def funding_block(self, agency):
+        """DF2207-02: how the agency says it is paid for, one entry per document; "" when none was recorded.
+
+        Every entry carries its own document, source link and checked date; entries stay in the order recorded and
+        nothing is added up, ranked or explained beyond the name the document uses.
+        """
+        items = []
+        for entry in agency.get("funding", []):
+            parts = [f'<span class="funding-kind">{self.t("agency.funding_kind_" + entry["kind"])}</span>',
+                     f'<strong class="funding-name">{e(entry["name"])}</strong>']
+            if "amount_usd" in entry:
+                parts.append(e(self.contract_cost_amount(entry)) + " " + self.t("agency.cost_" + entry["period"]))
+            if "fiscal_year" in entry:
+                parts.append(self.t("agency.funding_fiscal_year", year=e(entry["fiscal_year"])))
+            source = f'<a href="{e(entry["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>'
+            provenance = self.t("agency.funding_provenance", document=e(entry["as_stated_in"]), source=source,
+                                date=time_tag(entry["checked_on"]))
+            items.append(f'<li>{" · ".join(parts)}. <span class="funding-provenance">{provenance}</span></li>')
+        return f'<ul class="agency-funding">{"".join(items)}</ul>' if items else ""
+
     def transparency_block(self, agency, heading="h4"):
         """Newest organizer-transcribed portal snapshot, as the vendor reported it, with change since the previous one."""
         snapshots = agency.get("transparency")
@@ -991,7 +1018,7 @@ class Site:
                     + (f'<p>{self.t("agency.findings", count=len(findings))} ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
-                    + self.contract_line(agency["contract"]) + self.transparency_block(agency)
+                    + self.contract_line(agency["contract"]) + self.funding_block(agency) + self.transparency_block(agency)
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
@@ -1069,7 +1096,7 @@ class Site:
                    if profile["flags"] else "")
                 + (f'<p>{" · ".join(links)}</p>' if links else "")
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
-                + self.transparency_block(agency, "h3") + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
+                + self.funding_block(agency) + self.transparency_block(agency, "h3") + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
@@ -1145,6 +1172,25 @@ class Site:
                 + (f'<ol>{contents}</ol>{"".join(articles)}' if findings else f'<p>{self.t("notice.no_findings")}</p>')
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", "Findings packet", "Every published finding on one printable page", "/findings/packet-all.html", main)
+
+    def supporters_html(self):
+        """/supporters.html (DF2207-13): consented organizations by kind (enum order), then name, with the joined date.
+        Only the public rows are rendered; the fixed intro says a listing is not a legal endorsement."""
+        groups = []
+        for kind in SUPPORTER_KINDS:
+            rows = sorted((row for row in self.supporters if row["kind"] == kind), key=lambda r: (r["name"].casefold(), r["id"]))
+            if not rows:
+                continue
+            items = "".join(
+                "<li>" + (f'<a href="{e(row["url"])}" rel="noopener noreferrer">{e(row["name"])}</a>' if row["url"]
+                          else e(row["name"]))
+                + f' · {self.t("supporters.joined", date=time_tag(row["joined_on"]))}</li>' for row in rows)
+            groups.append(f'<h3>{self.t("supporters.kind." + kind)}</h3><ul>{items}</ul>')
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div>'
+                f'<h2>{self.t("supporters.title")}</h2></div></div><p>{self.t("supporters.description")}</p>'
+                f'{"".join(groups)}<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("supporters", self.labels["supporters.title"], self.labels["supporters.description"],
+                         "/supporters.html", main)
 
     def topics_index_html(self):
         """/topics/ (DF1952-06): every topic in slug order, each title linked once."""
@@ -1790,6 +1836,7 @@ class Site:
         if self.topics:  # DF1952-06: the index file topics/index.html is served at /topics/
             paths += ["/topics/"] + [f'/topics/{t["slug"]}.html' for t in self.topics]
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
+        paths += ["/supporters.html"] if self.supporters else []  # DF2207-13
         if self.model.get("newsletters"):  # DF1952-09: only with public issues
             paths += ["/newsletters.html"] + [f'/newsletters/{i["sent_on"]}.html' for i in reversed(self.model["newsletters"])]
         paths += list(self.agency_pages().values())
@@ -1955,6 +2002,8 @@ class Site:
                              if contract else None),
                 "transparency": ({k: newest[k] for k in PUBLIC_TRANSPARENCY_FIELDS if newest.get(k) is not None}
                                  if newest else None),
+                **({"funding": [{k: f[k] for k in PUBLIC_FUNDING_FIELDS if k in f} for f in agency["funding"]]}
+                   if agency.get("funding") else {}),  # DF2207-02: only when the organizer recorded it
                 "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
 
     def agencies_json(self):
@@ -1966,9 +2015,11 @@ class Site:
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "agencies": [self._public_agency(a, cities) for a in listed]}
         _assert_public(doc, "data/agencies.json", PUBLIC_AGENCY_TOP_LEVEL,
-                       {"agencies": (PUBLIC_AGENCY_FIELDS, {"asked": (PUBLIC_ASKED_FIELDS, {}),
+                       {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL,
+                                     {"asked": (PUBLIC_ASKED_FIELDS, {}),
                                                             "alpr_policy": (PUBLIC_POLICY_FIELDS, {}),
                                                             "contract": (PUBLIC_CONTRACT_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
+                                                            "funding": (PUBLIC_FUNDING_FIELDS, {}),
                                                             "transparency": (PUBLIC_TRANSPARENCY_FIELDS, {})})})
         return json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
@@ -2100,6 +2151,8 @@ def _plan_site(root, today=None, notes=None):
         pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
     for page in model["pages"]:
         pages[f'{page["slug"]}.html'] = site.content_page_html(page)
+    if site.supporters:  # DF2207-13: no rows, no page
+        pages["supporters.html"] = site.supporters_html()
     if site.glossary:  # DF1952-04: the slug is reserved, so no content page can already hold this name
         pages["glossary.html"] = site.glossary_html()
 
