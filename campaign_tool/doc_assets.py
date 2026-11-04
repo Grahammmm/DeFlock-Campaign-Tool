@@ -8,7 +8,7 @@ than Flate-only or image-only, is ``unreadable PDF`` / ``unreadable SVG`` and is
 read as a PDF reader sees it once a ``/DecodeParms`` PNG or TIFF predictor is undone (at most ``MAX_PREDICT_TOTAL``
 bytes in all); a ``/DecodeParms`` that is not direct, any other predictor, or a predictor followed by anything but
 the rest of a stream dictionary (a string or comment could hold a decoy ``stream``) is unreadable. Only kind names
-leave this module.
+leave this module. The SVG profile (including why any ``xml:base`` is refused) is in docs/SVG-ASSETS.md.
 """
 import bisect
 import re
@@ -306,6 +306,9 @@ def pdf_kinds(data):
     return sorted(kinds)
 
 
+XML_BASE = "{http://www.w3.org/XML/1998/namespace}base"  # the exact expanded name; plain or custom "base" is not it
+
+
 def _local(name):
     return name.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
 
@@ -345,6 +348,8 @@ def svg_kinds(data):
             kinds.add("external reference")
         for key, value in element.attrib.items():
             name = _local(key).lower()
+            if key == XML_BASE:  # any xml:base re-points every #fragment; the supported profile has none
+                kinds.add("external reference")
             if name.startswith("on"):
                 kinds.add("event handler")
             elif name == "href" and not value.strip().startswith("#"):

@@ -141,8 +141,19 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image",
-             "comment_asks"}
+             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image", "license", "comment_asks"}
+# DF1422-13: the open-data licences an organizer may pick: id -> (name, deed URL). Nothing else is accepted.
+LICENSES = {
+    "CC-BY-4.0": ("Creative Commons Attribution 4.0 International (CC BY 4.0)", "https://creativecommons.org/licenses/by/4.0/"),
+    "CC-BY-SA-4.0": ("Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)",
+                     "https://creativecommons.org/licenses/by-sa/4.0/"),
+    "CC0-1.0": ("CC0 1.0 Universal (Public Domain Dedication)", "https://creativecommons.org/publicdomain/zero/1.0/"),
+}
+LICENSE_KEYS = {"id", "attribution"}
+MAX_LICENSE_ATTRIBUTION = 200
+# Camera points come from OpenStreetMap, so they carry ODbL whatever licence the campaign picks (a fixed fact, not a choice).
+ODBL = {"id": "ODbL-1.0", "name": "Open Database License (ODbL) 1.0", "url": "https://opendatacommons.org/licenses/odbl/1-0/",
+        "attribution": "\u00a9 OpenStreetMap contributors", "attribution_url": "https://www.openstreetmap.org/copyright"}
 MAX_COMMENT_ASKS, MAX_ASK_CHARS = 3, 200
 SHARE_IMAGE_KEYS = {"path", "alt"}
 SHARE_RATIO, SHARE_RATIO_TOLERANCE = 1.905, 0.02  # 1200x630
@@ -253,6 +264,24 @@ def load_share_image(value, assets_dir=None):
     return {"path": value["path"], "alt": alt, "size": size}
 
 
+def load_license(value):
+    """site.json.license: ``{"id": <LICENSES key>, "attribution": <optional plain text, one line, 1-200 characters>}``."""
+    label = "site.json.license"
+    _require_keys(value, LICENSE_KEYS, {"id"}, label)
+    if not isinstance(value["id"], str) or value["id"] not in LICENSES:
+        raise ContentError(f"{label}.id: choose one of {list(LICENSES)}")
+    name, url = LICENSES[value["id"]]
+    found = {"id": value["id"], "name": name, "url": url}
+    if "attribution" in value:
+        text = value["attribution"]
+        if (not isinstance(text, str) or not plain_text(text) or not text.strip() or len(text) > MAX_LICENSE_ATTRIBUTION
+                or any(ord(char) < 32 or ord(char) == 127 for char in text) or CONTACT_LIKE.search(text)):
+            raise ContentError(f"{label}.attribution: must be plain text on one line of 1-{MAX_LICENSE_ATTRIBUTION} characters, "
+                               "without angle brackets, an address or a phone-like number")
+        found["attribution"] = text
+    return found
+
+
 def load_comment_asks(value, label):
     """DF2207-07: the campaign's own public-comment asks, 1-3 plain-text strings of 1-200 characters.
 
@@ -344,6 +373,7 @@ def load_site(document, assets_dir=None):
            if "comment_asks" in document else {}),
         **({"brand": load_brand(document["brand"], assets_dir)} if "brand" in document else {}),
         **({"share_image": load_share_image(document["share_image"], assets_dir)} if "share_image" in document else {}),
+        **({"license": load_license(document["license"])} if "license" in document else {}),
     }
 
 
@@ -587,8 +617,9 @@ MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 CONTINUATION_KEYS = ("continued_to", "continued_to_date")  # DF0022-07: where the official source says an item went
+DIRECTION_KEYS = ("direction", "return_by", "direction_source")  # DF0022-08: a staff direction the source states, as a trio
 OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes", "recording_url",
-                "recording_start", "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS}
+                "recording_start", "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS, *DIRECTION_KEYS}
 RECORDING_START = re.compile(r"([0-9]{1,2}):([0-5][0-9]):([0-5][0-9])")
 VOTE_VALUES = ("yes", "no", "abstain", "absent", "recused")
 PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
@@ -636,7 +667,8 @@ def load_outcome(value, starts_at, status, label, today=None):
     if status == "cancelled":
         raise ContentError(f"{label}: a cancelled meeting has no outcome")
     _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes", "recording_url", "recording_start",
-                                                       "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS}, label)
+                                                       "minutes_url", "minutes_approved_on", *CONTINUATION_KEYS,
+                                                       *DIRECTION_KEYS}, label)
     if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
         raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
     held, now = starts_at[:10], (today or date.today()).isoformat()
@@ -676,12 +708,44 @@ def load_outcome(value, starts_at, status, label, today=None):
             raise ContentError(f"{label}.recording_start: use H:MM:SS, at most 12:00:00")
     minutes = _load_minutes(value, held, now, label)  # DF2207-05: the body's approved minutes, always as a pair
     continued = _load_continuation(value, held, label)  # DF0022-07: where a continued item went, as the source states
+    direction = _load_direction(value, held, label)  # DF0022-08: what the body told its staff, as the source states
     return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
             "verified_by": value["verified_by"], "verified_at": value["verified_at"],
             **({"vote": value["vote"]} if "vote" in value else {}),
             **({"votes": [{"name": v["name"], "vote": v["vote"]} for v in votes]} if "votes" in value else {}),
             **({"recording_url": recording} if "recording_url" in value else {}),
-            **({"recording_start": start} if "recording_start" in value else {}), **minutes, **continued}
+            **({"recording_start": start} if "recording_start" in value else {}), **minutes, **continued, **direction}
+
+
+def direction_text_ok(value):
+    """DF0022-08: a literal one-line plain-text string of 1 to 200 characters with no edge whitespace."""
+    return (isinstance(value, str) and 1 <= len(value) <= 200 and plain_text(value) and value == value.strip()
+            and not any(char in value for char in "\r\n\t"))
+
+
+def _load_direction(value, held, label):
+    """``{direction, return_by, direction_source}`` or ``{}``. All three or none; a null, an empty or a partial group is
+    refused by field name. ``return_by`` is the date the official source states (a real ASCII calendar day on or after the
+    meeting's own date; it may be long past or far ahead), never a legal deadline."""
+    present = [key for key in DIRECTION_KEYS if key in value]
+    if not present:
+        return {}
+    for key in DIRECTION_KEYS:
+        if key not in value:
+            raise ContentError(f"{label}.{key}: needed together with {present[0]}")
+    text, day, source = (value[key] for key in DIRECTION_KEYS)
+    if not direction_text_ok(text):
+        raise ContentError(f"{label}.direction: must be 1 to 200 characters of plain text on one line")
+    try:
+        real = isinstance(day, str) and day.isascii() and _calendar_day(day, label) is not None
+    except ContentError:
+        real = False
+    if not real or day < held:
+        raise ContentError(f"{label}.return_by: must be a YYYY-MM-DD date on or after the meeting")
+    if isinstance(source, str) and len(source) > 500:
+        raise ContentError(f"{label}.direction_source: at most 500 characters")
+    _https(source, f"{label}.direction_source")
+    return {"direction": text, "return_by": day, "direction_source": source}
 
 
 def _load_continuation(value, held, label):
@@ -1146,6 +1210,135 @@ def _policy_check(value, label, alpr_policy, today=None):
     return {"checked_on": value["checked_on"], "policy_url": value["policy_url"], "elements": elements}
 
 
+CONTRACT_CHECKLIST_PATH = Path(__file__).resolve().parent / "_resources" / "checklists" / "contract-checklist.json"
+CONTRACT_CHECKLIST_NAME, MAX_CONTRACT_CHECKLIST_BYTES = "checklists/contract-checklist.json", 64 * 1024
+CONTRACT_CHECK_IDS = ("term_renewal", "price_changes", "data_ownership", "retention", "sharing_network",
+                      "vendor_data_use", "audit_search_logs", "termination_data_exit")
+CONTRACT_CHECK_KEYS = {"checked_on", "contract_url", "elements"}
+CONTRACT_STATUSES = ("addressed", "not_found", "unclear")
+
+
+def load_contract_checklist():
+    """DF2207-03: the draft list of terms an ALPR vendor agreement may set, read from the packaged resource only.
+
+    Tool-wide, not part of any law package. Every failure is a ContentError naming the resource, never a path."""
+    path, name = CONTRACT_CHECKLIST_PATH, CONTRACT_CHECKLIST_NAME
+
+    def refuse(reason):
+        return ContentError(f"contract checklist {name}: {reason}")
+    try:
+        for part in (path, path.parent, path.parents[1]):  # the file, its folder and the _resources folder
+            if part.is_symlink():
+                raise refuse("a symbolic link is not read")
+        if not path.is_file():
+            raise refuse("missing or not a file")
+        if path.stat().st_size > MAX_CONTRACT_CHECKLIST_BYTES:
+            raise refuse("larger than 64 KiB")
+        data = path.read_bytes()
+    except OSError as exc:
+        raise refuse(f"unreadable ({exc.strerror or type(exc).__name__})") from None
+    if len(data) > MAX_CONTRACT_CHECKLIST_BYTES:
+        raise refuse("larger than 64 KiB")
+    try:
+        document = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise refuse("not valid UTF-8 JSON") from None
+    if not isinstance(document, dict) or set(document) != {"schema_version", "status", "elements"}:
+        raise refuse("must be an object with exactly schema_version, status and elements")
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        raise refuse("schema_version must be the integer 1")
+    if document["status"] != "draft":
+        raise refuse("status must be draft")
+    elements = document["elements"]
+    if not isinstance(elements, list) or not all(isinstance(item, dict) and set(item) == {"id", "label"} for item in elements):
+        raise refuse("elements must be a list of {id, label} objects")
+    ids = [item["id"] for item in elements]
+    if len(set(map(str, ids))) != len(ids):
+        raise refuse("an element id is listed twice")
+    if ids != list(CONTRACT_CHECK_IDS):
+        raise refuse("element ids must be exactly " + ", ".join(CONTRACT_CHECK_IDS) + " in that order")
+    for item in elements:
+        label = item["label"]
+        if (not isinstance(label, str) or not label.strip() or len(label) > 120 or not plain_text(label)
+                or any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in label)):
+            raise refuse(f"label of {item['id']} must be plain text of 1 to 120 characters")
+    return {"status": "draft", "elements": [{"id": item["id"], "label": item["label"]} for item in elements]}
+
+
+def _contract_check(value, contract, label, today=None, problems=None):
+    """DF2207-03: an organizer's reading of the linked contract (``profile.contract_check``); never fetched or judged.
+
+    ``contract`` is the agency's already validated ``profile.contract`` (or None). Every problem names its field; they
+    go to ``problems`` (content-check), else the first is raised. Returns ``{"checked_on", "contract_url", "elements":
+    [{"id", "label", "status", "page"?, "note"?}]}`` in checklist order, or None when absent or refused."""
+    if value is None:
+        return None
+    issues, elements, shaped = [], [], isinstance(value, dict)
+    if not shaped:
+        issues.append(f"{label}: must be an object")
+        value = {}
+    issues += [f"{label}: unknown field {str(key)[:40]!r}" for key in sorted(set(value) - CONTRACT_CHECK_KEYS, key=str)]
+    issues += [f"{label}.{key}: required" for key in ("checked_on", "contract_url", "elements") if shaped and key not in value]
+    if "contract_url" in value:
+        try:
+            _https(value["contract_url"], f"{label}.contract_url")
+            if contract is None:
+                issues.append(f"{label}.contract_url: needs a valid profile.contract for the same agency")
+            elif value["contract_url"] != contract["source_url"]:
+                issues.append(f"{label}.contract_url: must equal profile.contract.source_url")
+        except ContentError as exc:
+            issues.append(str(exc))
+    if "checked_on" in value:
+        try:
+            checked, read = _calendar_day(value["checked_on"], f"{label}.checked_on"), None
+            if contract is not None:
+                read = _calendar_day(contract["checked_on"], "contract.checked_on")
+            if checked > (today or date.today()):
+                issues.append(f"{label}.checked_on: must not be after the build date")
+            elif read and checked < read:
+                issues.append(f"{label}.checked_on: must not be before profile.contract.checked_on")
+        except ContentError as exc:
+            issues.append(str(exc))
+    if "elements" in value:
+        try:
+            checklist = load_contract_checklist()["elements"]
+        except ContentError as exc:
+            checklist = []
+            issues.append(f"{label}.elements: the contract checklist could not be loaded ({exc})")
+        given = value["elements"]
+        if not isinstance(given, dict) or not given:
+            issues.append(f"{label}.elements: must be a non-empty object keyed by element id")
+            given = {}
+        known = {element["id"] for element in checklist}
+        issues += [f"{label}.elements.{str(key)[:40]}: unknown element" for key in sorted(set(given) - known, key=str)]
+        for element in checklist if given else []:
+            where, entry = f"{label}.elements.{element['id']}", given.get(element["id"])
+            if element["id"] not in given:
+                issues.append(f"{where}: missing")
+                continue
+            if not isinstance(entry, dict):
+                issues.append(f"{where}: must be an object with status, optional page and optional note")
+                continue
+            issues += [f"{where}: unknown field {str(key)[:40]!r}" for key in sorted(set(entry) - {"status", "page", "note"}, key=str)]
+            status, bad = entry.get("status"), len(issues)
+            if not isinstance(status, str) or status not in CONTRACT_STATUSES:
+                issues.append(f"{where}.status: choose one of {list(CONTRACT_STATUSES)}")
+            page, note = entry.get("page"), entry.get("note")
+            if "page" in entry and (type(page) is not int or not 1 <= page <= 9999):
+                issues.append(f"{where}.page: must be a whole number from 1 to 9999")
+            if "note" in entry and (not isinstance(note, str) or not note.strip() or len(note) > 200 or not plain_text(note)
+                                    or any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in note)):
+                issues.append(f"{where}.note: plain text of 1 to 200 characters (no angle brackets or control characters)")
+            if len(issues) == bad:
+                elements.append({"id": element["id"], "label": element["label"], "status": status,
+                                 **({"page": page} if "page" in entry else {}), **({"note": note} if "note" in entry else {})})
+    if problems is not None:
+        problems.extend(issues)
+    elif issues:
+        raise ContentError(issues[0])
+    return None if issues else {"checked_on": value["checked_on"], "contract_url": value["contract_url"], "elements": elements}
+
+
 TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts", "shared_with_agencies")
 
 
@@ -1258,7 +1451,7 @@ def load_agencies(document, label, today=None):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "alpr_policy", "policy_check", "transparency", "funding"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -1278,7 +1471,8 @@ def load_agencies(document, label, today=None):
             "verification": _verification(entry, item),
             "asked": _asked(entry, f"{item}.asked", today) if label == "content/agencies.json" else [],
             "flock_transparency_url": _flock_url(entry, item),
-            "contract": _contract(profile.get("contract"), f"{item}.profile.contract"),  # kept out of card JS
+            "contract": (contract := _contract(profile.get("contract"), f"{item}.profile.contract")),  # kept out of card JS
+            "contract_check": _contract_check(profile.get("contract_check"), contract, f"{item}.profile.contract_check", today),  # likewise
             "alpr_policy": (alpr_policy := _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy")),  # likewise
             "policy_check": _policy_check(profile.get("policy_check"), f"{item}.profile.policy_check", alpr_policy, today),  # likewise
             "transparency": _transparency(profile.get("transparency"), f"{item}.profile.transparency",  # likewise
