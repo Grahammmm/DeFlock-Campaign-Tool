@@ -271,6 +271,18 @@ ignored, symlinks and folders are refused, at most 50 files. Slugs that are star
 published finding slug are refused, as is a `public-assets/<slug>.html` entry. Every page is listed in
 `sitemap.xml`; `nav: true` (strictly a boolean, at most 3 pages) adds the title to the header nav after About.
 
+### Newsletter archive (`content/newsletters/<YYYY-MM-DD>.json`, optional)
+
+Written by `newsletter archive --date D --publish` (see NEWSLETTER.md); exactly `{"schema_version": 1, "sent_on", "title",
+"body_md"}`. The file name is the sent day and must match `sent_on`; `title` is 1-200 characters, `body_md` non-blank and at
+most 256 KiB, the file at most 512 KiB, at most 1000 issues. Raw HTML, non-https links, email addresses, phone numbers,
+64-hex hash runs, control characters (other than newline and tab), duplicate JSON keys, unsubscribe wording and template
+markers are refused naming the file. `build` and `content-check` use the same validator, and a refusal leaves the previous
+`public/` untouched. With at least one issue the build writes `newsletters.html` (newest first) and
+`newsletters/<D>.html` (the Markdown through `markdown_lite`, a backlink, no signup or consent text), adds a footer link and
+the sitemap entries; with none, output is unchanged. `newsletters` is a reserved page and finding slug, and
+`newsletters.html`/`newsletters/` cannot be `public-assets` names. The loader never reads `kit/`.
+
 ### Topic pages (`content/topics/<slug>.json`, optional)
 
 An organizer groups an ordered series of already-published findings into a stable page. Each file becomes

@@ -39,7 +39,7 @@ VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies",
-                       "_redirects", "methods.html", "privacy.html", "search.html", "search.js"}
+                       "_redirects", "methods.html", "privacy.html", "search.html", "search.js", "newsletters.html", "newsletters"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
@@ -585,7 +585,8 @@ class Site:
             parts.append(f'<p><a href="/topics/">{self.t("nav.topics")}</a></p>')
         parts.append(f'<p><a href="/privacy.html">{self.t("footer.privacy")}</a></p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
-        parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a> · <a href="/search.html">{self.t("footer.search")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}'
+        archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
+        parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a> · <a href="/search.html">{self.t("footer.search")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}{archive}'
                      ' · <a href="/methods.html">How to read our findings</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
@@ -1320,6 +1321,25 @@ class Site:
         return self.page(f'page:{page["slug"]}', page["title"], page["description"] or page["title"],
                          f'/{page["slug"]}.html', main)
 
+    def newsletters_html(self):
+        """/newsletters.html (DF1952-09): public issues from content/newsletters/, newest first; no signup or footer text."""
+        rows = "".join(f'<li><a href="/newsletters/{issue["sent_on"]}.html">{e(issue["title"])}</a> '
+                       f'<time datetime="{issue["sent_on"]}">{issue["sent_on"]}</time></li>'
+                       for issue in reversed(self.model["newsletters"]))
+        main = ('    <section class="section finding-body" id="content"><h2>Newsletter archive</h2>'
+                f'<p>Past issues of our email newsletter, as sent.</p><ul>{rows}</ul>'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("newsletters", "Newsletter archive", "Past issues of our email newsletter", "/newsletters.html", main)
+
+    def newsletter_html(self, issue):
+        """/newsletters/<day>.html (DF1952-09): one issue's public Markdown through markdown_lite."""
+        day = issue["sent_on"]
+        main = (f'    <article class="section finding-body" id="content"><h2>{e(issue["title"])}</h2>'
+                f'<p>Sent <time datetime="{day}">{day}</time></p>{self.md(issue["body_md"])}'
+                f'<p><a href="/newsletters.html">All newsletter issues</a></p>'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
+        return self.page("newsletters", issue["title"], f"Newsletter issue sent {day}", f"/newsletters/{day}.html", main)
+
     def methods_html(self):
         """/methods.html (DF2037-14): label definitions from the badge tables, the record-number explainer and the
         review gate from review.ROLES. Generated only; no organizer content."""
@@ -1614,6 +1634,8 @@ class Site:
         if self.topics:  # DF1952-06: the index file topics/index.html is served at /topics/
             paths += ["/topics/"] + [f'/topics/{t["slug"]}.html' for t in self.topics]
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
+        if self.model.get("newsletters"):  # DF1952-09: only with public issues
+            paths += ["/newsletters.html"] + [f'/newsletters/{i["sent_on"]}.html' for i in reversed(self.model["newsletters"])]
         paths += list(self.agency_pages().values())
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
         paths += [f'/meetings/{m["id"]}.html' for m in self.model["meetings"]]
@@ -1855,6 +1877,10 @@ def _plan_site(root, today=None, notes=None):
         pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
     for page in model["pages"]:
         pages[f'{page["slug"]}.html'] = site.content_page_html(page)
+    if model["newsletters"]:  # DF1952-09: newest first; the slug is reserved, so nothing else can own these paths
+        pages["newsletters.html"] = site.newsletters_html()
+        for issue in model["newsletters"]:
+            pages[f'newsletters/{issue["sent_on"]}.html'] = site.newsletter_html(issue)
     if site.topics:  # DF1952-06
         pages["topics/index.html"] = site.topics_index_html()
         for topic in site.topics:

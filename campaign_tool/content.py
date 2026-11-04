@@ -41,7 +41,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about"}
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "newsletters"}  # newsletters: DF1952-09
 
 
 class ContentError(ValueError):
@@ -1296,6 +1296,17 @@ def load_pages(content_dir, finding_slugs):
     return pages
 
 
+def load_newsletters(content_dir):
+    """Public newsletter issues of ``content/newsletters/<day>.json`` (DF1952-09), oldest first; ``[]`` without any.
+
+    Read through the one validator ``content-check`` also uses; never reads ``kit/``."""
+    from .newsletter.archive import load_public_issues  # local: the newsletter package imports this module
+    try:
+        return load_public_issues(content_dir)
+    except ValueError as exc:
+        raise ContentError(str(exc)) from None
+
+
 # --- topic pages (DF1952-06): content/topics/<slug>.json -> /topics/<slug>.html -------------------
 TOPIC_KEYS, MAX_TOPICS, MAX_TOPIC_FINDINGS = {"title", "intro_md", "finding_ids"}, 30, 100
 TOPIC_RESERVED = {"index", "topics", "timeline", "cameras"}  # generated names the page list does not reserve
@@ -1518,6 +1529,7 @@ def load_content(root, today=None):
     model = {
         "site": site,
         "findings": findings,
+        "newsletters": load_newsletters(content_dir),
         "pages": pages,
         "topics": topics,
         "meetings": meetings,
