@@ -1,4 +1,5 @@
 """Synthetic offline meeting-pack acceptance and refusal paths."""
+import copy
 import csv
 import hashlib
 import io
@@ -14,10 +15,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from campaign_tool.labels import DEFAULTS
 from campaign_tool.meeting_pack import build
 
 REPO = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 11, 1, tzinfo=timezone.utc)
+ES_ENGLISH_KEYS = ('handout.title', 'handout.what_we_found', 'handout.agenda', 'handout.nothing_published',
+                   'handout.not_recorded', 'handout.record_explainer', 'classification.documented_fact',
+                   'confidence.verified')
 
 
 class MeetingPackTests(unittest.TestCase):
@@ -263,3 +268,152 @@ class MeetingPackTests(unittest.TestCase):
         result = self.cli()
         self.assertEqual(result.returncode, 1)
         self.assertIn('--replace', result.stderr)
+
+    # DF0137-17: the handout follows site.json.language and content/labels.json.
+    def rich(self):
+        """Findings 1..7 (two cut off), a correction, a source missing from the library, a base url."""
+        for number in range(3, 8):
+            self.finding(number)
+        self.finding(7, corrections=[{'date': '2026-02-03', 'note': 'Synthetic correction'}])
+        self.meeting['comment_kit_md'] = '/findings/finding-7.html (corrected 2026-02-03;'
+        self.stage()
+        self.write('sources.json', self.library[:-1])  # finding 7's source has no received date
+
+    def handouts(self):
+        """Handout bytes: plain, rich (corrected, cut off, base url, no received date), rich without base, empty."""
+        memory = copy.deepcopy((self.meeting, self.site, self.library))
+        backup = self.root.parent / 'content-backup'
+        shutil.copytree(self.content, backup)
+        shutil.rmtree(self.root / 'kit', ignore_errors=True)
+        out = {}
+        self.pack()
+        out['plain'] = (self.folder / 'handout.html').read_bytes()
+        self.rich()
+        self.pack(replace=True)
+        out['rich'] = (self.folder / 'handout.html').read_bytes()
+        self.site['base_url'] = None
+        self.write('site.json', self.site)
+        self.pack(replace=True)
+        out['rich-no-base'] = (self.folder / 'handout.html').read_bytes()
+        self.meeting['agency_id'] = 'ca-other-police'
+        self.stage()
+        self.pack(replace=True)
+        out['empty'] = (self.folder / 'handout.html').read_bytes()
+        shutil.rmtree(self.content)
+        shutil.move(backup, self.content)
+        shutil.rmtree(self.root / 'kit')
+        self.meeting, self.site, self.library = memory
+        return out
+
+    ES = {'handout.title': 'Hoja informativa', 'handout.what_we_found': 'Lo que encontramos', 'handout.agenda': 'Orden del día',
+          'handout.nothing_published': 'Se han solicitado registros; aún no se ha publicado nada.',
+          'handout.source_line': 'Fuente: {title}, recibida {date}, registro {record}', 'handout.not_recorded': 'sin registrar',
+          'handout.corrected': 'corregido {date}', 'handout.more_on_site': '{count} más en el sitio',
+          'handout.record_explainer': 'El número de registro son los primeros 12 caracteres de la huella SHA-256 del archivo.',
+          'classification.documented_fact': 'Hecho documentado', 'confidence.verified': 'Verificado con el registro'}
+
+    def labels(self, labels):
+        self.write('labels.json', {'schema_version': 1, 'labels': labels})
+
+    def test_no_labels_english_handout_is_byte_identical_to_main(self):
+        # sha256 of handout.html as built by origin/main f38ae765 (before DF0137-17) for the same four fixtures.
+        expected = {  # Public handout fixture digests, not credentials.
+            'plain': '30de2c2520239b2f2e02c6b7a94ca46fe09f59d9e74f339b974a6ef47e444515',  # pragma: allowlist secret
+            'rich': '82dc65aaeda7a782d66308cab2af059fc575b93f6f1ba0ff6bcccfb0acf1f1ef',  # pragma: allowlist secret
+            'rich-no-base': '0fb688d3bd7ea920843e0e3157a57105625a2cab4ada289959341e1653089c9f',  # pragma: allowlist secret
+            'empty': 'edf0c2a136c29211f08a65f88bd95dcb1441da6edf92bc7dd7b811054af72ced',  # pragma: allowlist secret
+        }
+        for case, data in self.handouts().items():
+            with self.subTest(case=case):
+                self.assertEqual(hashlib.sha256(data).hexdigest(), expected[case])
+                self.assertIn(b'<html lang="en">', data)
+
+    def test_default_labels_file_and_explicit_en_change_nothing(self):
+        plain = self.handouts()
+        self.labels({})
+        self.assertEqual(self.handouts(), plain)
+        self.site.pop('language', None)
+        self.write('site.json', self.site)
+        self.assertEqual(self.handouts(), plain)
+
+    def test_spanish_campaign_gets_spanish_handout_with_no_english_fixed_text(self):
+        self.rich()
+        self.site['language'] = 'es'
+        self.write('site.json', self.site)
+        self.labels(self.ES)
+        self.pack()
+        page = self.html()
+        self.assertIn('<html lang="es"><meta charset="utf-8"><title>Hoja informativa</title>', page)
+        for spanish in ('Lo que encontramos', 'Orden del día', 'Fuente: Source 6, recibida 2026-02-06T12:00:00Z, registro ',
+                        'Fuente: Source 7, recibida sin registrar, registro ', '<p>corregido 2026-02-03</p>', '<p>2 más en el sitio: https://synthetic.invalid</p>',
+                        'Hecho documentado; Verificado con el registro', 'El número de registro son'):
+            self.assertIn(spanish, page)
+        for key in ES_ENGLISH_KEYS:  # every default without a placeholder, as written in DEFAULTS
+            self.assertNotIn(DEFAULTS[key], page, key)
+        for english in ('Source:', ', received ', ', record ', 'corrected 2026', 'more on the site', '>Agenda<'):
+            self.assertNotIn(english, page)
+        self.meeting['agency_id'] = 'ca-other-police'
+        self.stage()
+        self.pack(replace=True)
+        self.assertIn('<p>Se han solicitado registros; aún no se ha publicado nada.</p>', self.html())
+        self.assertNotIn('Records are requested', self.html())
+
+    def test_missing_received_date_label_is_escaped_once(self):
+        self.rich()
+        self.labels({**self.ES, 'handout.not_recorded': 'sin fecha "A & B"'})
+        self.pack()
+        page = self.html()
+        self.assertIn('Fuente: Source 7, recibida sin fecha &quot;A &amp; B&quot;, registro ', page)
+        self.assertNotIn('&amp;amp;', page)
+        self.assertNotIn('&amp;quot;', page)
+
+    def test_spanish_language_without_labels_keeps_english_text(self):
+        english = self.handouts()
+        self.site['language'] = 'es'
+        self.write('site.json', self.site)
+        spanish = self.handouts()
+        self.assertEqual(spanish, {case: data.replace(b'<html lang="en">', b'<html lang="es">') for case, data in english.items()})
+
+    def test_labels_with_unknown_key_or_foreign_placeholder_refuse_and_write_nothing(self):
+        for labels, text in (({'handout.nope': 'x'}, 'handout.nope'), ({'handout.title': 'Hoja {title}'}, r'handout\.title.*\{title\}'),
+                             ({'handout.corrected': 'corregido {record}'}, r'handout\.corrected.*\{record\}'),
+                             ({'handout.agenda': 'Orden {count}'}, r'handout\.agenda.*\{count\}'),
+                             ({'handout.source_line': 'Fuente {name}'}, r'handout\.source_line.*\{name\}'),
+                             ({'handout.agenda': 'Orden <b>'}, r'handout\.agenda'), ({'handout.agenda': 'Orden {title'}, r'handout\.agenda')):
+            with self.subTest(labels=labels):
+                self.labels(labels)
+                with self.assertRaisesRegex(ValueError, text):
+                    self.pack()
+                self.assertFalse((self.root / 'kit').exists())
+
+    def test_symlinked_labels_refused_and_braces_in_titles_print_literally(self):
+        outside = self.root.parent / 'labels-elsewhere.json'
+        outside.write_text(json.dumps({'schema_version': 1, 'labels': self.ES}))
+        (self.content / 'labels.json').symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, 'labels.json: symlinks are not read'):
+            self.pack()
+        (self.content / 'labels.json').unlink()
+        (self.content / 'labels.json').symlink_to(self.root.parent / 'missing-labels.json')  # dangling
+        with self.assertRaisesRegex(ValueError, 'symlink'):
+            self.pack()
+        self.assertFalse((self.root / 'kit').exists())
+        (self.content / 'labels.json').unlink()
+        self.labels(self.ES)
+        one = self.finding(1)
+        self.finding(1, title='Costs {count} {date}', sources=[{**one['sources'][0], 'title': 'Source {record} {title}'}])
+        self.pack()
+        page = self.html()
+        self.assertIn('<strong>Costs {count} {date}</strong>', page)
+        self.assertIn('Fuente: Source {record} {title}, recibida 2026-02-01T12:00:00Z, registro ', page)
+
+    def test_labels_never_change_comment_or_sources_and_cannot_smuggle_a_full_hash(self):
+        self.rich()
+        self.pack()
+        before = {name: (self.folder / name).read_bytes() for name in ('comment.md', 'sources.csv')}
+        self.labels(self.ES)
+        self.pack(replace=True)
+        self.assertEqual({name: (self.folder / name).read_bytes() for name in before}, before)
+        self.assertTrue(before['sources.csv'].startswith(b'title,record_prefix,received,locator,public_copy,cited_by'))
+        self.labels({**self.ES, 'handout.agenda': 'Orden ' + 'b' * 64})
+        with self.assertRaisesRegex(ValueError, 'full hash'):
+            self.pack(replace=True)

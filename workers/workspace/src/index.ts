@@ -328,7 +328,7 @@ app.post("/approvals/:id/execute", async (c) => {
 
 // Publish ---------------------------------------------------------------------------
 app.get("/publish", async (c) =>
-  render(c, "Publish", V.publish(await c.var.repo.publications(), await c.var.repo.setting<string>("site_version"), await c.var.repo.setting<string>("site_version_previous"), await c.var.repo.campaign())),
+  render(c, "Publish", V.publish(await c.var.repo.publications(), await c.var.repo.setting<string>("site_version"), await c.var.repo.setting<string>("site_version_previous"), await c.var.repo.campaign(), (await c.var.repo.jobsByKind("build_site"))[0] ?? null)),
 );
 
 app.get("/api/manifest.json", async (c) => c.json(await assembleManifest(c.var.repo)));

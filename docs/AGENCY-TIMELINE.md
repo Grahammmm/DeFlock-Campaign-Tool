@@ -190,6 +190,18 @@ confirmations: `kit-sent --correspondence PREFIX` (the sent message or portal co
 --correspondence PREFIX` on any kind, produced included. Both take >= 12 hex of an ingested hash, repeatable; a hash
 linked once (either way) is refused. `kit-status` lists `correspondence_prefixes`; the `records` counts never include them.
 
+## Withheld basis (kit requests)
+
+`kit-response --kind denied|produced --withheld-basis TEXT` (repeatable, at most 5 per step) records the reason or code
+section the agency itself gave for withholding, as written: 1-200 characters after stripping, no control characters, no
+duplicate within a step, refused on any other kind. Quote the agency; never put record contents in it. It is stored on
+the step as `withheld_basis`; `kit-status` lists each one (`on`, `kind`, `basis`) and `kit-denial-reply` quotes each
+under "The agency stated these reasons, as written:" and asks only for any withheld record or category those reasons do
+not cover. `kit-withheld --directory D [--json]` lists every recorded basis across agencies, grouped by each Gov. Code
+section number found in the agency's own text (`Gov. Code § 7923.600`, `Government Code section 7927.705(a)`,
+`GC 7922.000`; a basis naming two sections appears under both; none: `no section number stated`). It is read-only and
+adds no legal reading. Older `kit/sent.json` files with no `withheld_basis` read unchanged.
+
 ## Private calendar (kit-calendar)
 
 `kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import

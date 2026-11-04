@@ -304,6 +304,14 @@ configured), `received_at`, `public_url` or null, `pages` or null and
 never count). It never includes `note`, `fragment` or the full hash; the build
 refuses with `data/sources.json: ...` and writes nothing on any other key or a
 40+ hex string. The starter build (no `content/`) writes no `data/sources.json`.
+`data/meetings.json` is the staged meetings as open data (`schemas/meetings-open-data.schema.json`), linked from
+`meetings.html` and `about.html`, newest `starts_at` first, cancelled ones included (`"meetings": []` with none):
+top level `schema_version`, `generated_at` (the build date at 00:00 UTC) and `meetings`; per meeting `id`, `body`,
+`agency_id` or null, `starts_at`, `status`, `agenda_url` or null, `url` (the page path `/meetings/<id>.html`) and, for a
+held non-cancelled meeting with a recorded outcome, `outcome` (`result`, `on`, `source_url`, `vote` and the per-member
+`votes` as `{name, vote}` in stored order, each only when recorded). It never includes the comment kit, `participation`,
+contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other key; the build refuses with
+`data/meetings.json: non-public key ...` and writes nothing.
 `public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan
@@ -416,16 +424,25 @@ every page is byte-identical to the English defaults in `campaign_tool/labels.py
 ```
 Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descriptions), `eyebrow.*`, `heading.*`,
 `intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
-`signup.*`, `js.*` (scripts, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
+`signup.*`, `js.*` (scripts, below), `handout.*` (the private meeting-pack handout, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
 keeps its English default.
 A complete Spanish draft of every key is in [`examples/labels/es.json`](../examples/labels/es.json) ([README](../examples/labels/README.md)).
 Machine-made draft. A fluent Spanish reader must check every line before a campaign uses it; nothing here is reviewed.
 Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds
 `<`, `>` or a control character; a `{placeholder}` the key's default does not use (only `{name}`, `{county}`,
 `{state}`, `{count}`, `{date}` exist, plus `{shown}`/`{total}` in `js.filter_count` and `{evidence}`/`{source}` in
-`js.map_failed`/`js.data_failed`) or an unpaired brace; another top-level field, `schema_version` other than 1, a
+`js.map_failed`/`js.data_failed`, and `{title}`/`{record}` in `handout.source_line`) or an unpaired brace; another top-level field, `schema_version` other than 1, a
 file over 64 KiB or a symlink. `content-check` names the same refusals, with the build's text, beside every other
 problem. Text is HTML-escaped once (`&`, `"`); `lang` still comes only from `site.json.language`.
+Meeting-pack handout (`handout.*`): `meeting-pack` (`docs/MEETINGS.md`) reads the same `labels.json` and writes
+`handout.html` with `<html lang>` taken from `site.json.language`. Keys: `handout.title` (page title), `handout.what_we_found`,
+`handout.agenda` (agenda link text), `handout.nothing_published` (no published finding), `handout.source_line`
+("Source: {title}, received {date}, record {record}"; `{title}` is the source title, `{record}` the 12-character
+prefix), `handout.not_recorded` (stands for `{date}` when the library has no received date), `handout.corrected`
+("corrected {date}"), `handout.more_on_site` ("{count} more on the site") and `handout.record_explainer`; finding
+classification and confidence use `classification.<code>` and `confidence.<code>`. Placeholder values are escaped
+once and filled into the label only: a title that contains `{count}` prints as written. `comment.md` and
+`sources.csv` do not change with the labels.
 Scripts (`js.*`): the fixed text the generated JavaScript writes into the page. Defaults are the English the scripts
 always used. While every `js.*` label equals its default every script file is byte-identical; once one differs,
 `site-data.js` gains one line `var LABELS={...}` holding every `js.*` key (unset keys keep English), the findings index

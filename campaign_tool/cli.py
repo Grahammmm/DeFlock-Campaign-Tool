@@ -987,6 +987,9 @@ def main():
     response_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     response_p.add_argument("--partial", action="store_true", help="produced only: part of the records; the request "
                             "stays open (--expected-on: the agency's next installment date)")
+    response_p.add_argument("--withheld-basis", action="append", default=[], metavar="TEXT",
+                            help="denied or produced only, repeatable (at most 5): the agency's own stated reason or "
+                            "code section, as written (1-200 chars, no control characters; never record contents)")
     muckrock_p = commands.add_parser("kit-muckrock-import", help="Propose the kit-response step a MuckRock request JSON you "
                                      "saved by hand implies; fetches and sends nothing")
     for flag in ("--directory", "--agency", "--from-json"):
@@ -1005,6 +1008,10 @@ def main():
     denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
                           help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
     denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
+    withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
+                                     "section number in the agency's own words (read-only)")
+    withheld_p.add_argument("--directory", required=True)
+    withheld_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -1143,6 +1150,15 @@ def main():
                          "ending within N days, default 90; ended in the last 30 days are always listed")
     today_p.add_argument("--review-days", type=review_days, default=REVIEW_DAYS, metavar="N", help="Assigned finding "
                          "reviews with no receipt after N days, default 7")
+    recent_p = commands.add_parser("recent", help="Private what-changed report for a period: requests, records, findings, "
+                                   "meetings (read-only; --md writes one new file)")
+    recent_p.add_argument("--directory", required=True)
+    recent_p.add_argument("--since", required=True, metavar="YYYY-MM-DD", help="First day of the period")
+    recent_p.add_argument("--until", metavar="YYYY-MM-DD", help="Last day, not after today (default today)")
+    recent_p.add_argument("--md", metavar="FILE", help="Also write the report as Markdown to this new 0600 file "
+                          "(refused inside public/ or content/; never overwrites)")
+    recent_p.add_argument("--json", dest="as_json", action="store_true", help="Print the events as JSON")
+
     law_packet = commands.add_parser("law", help="Law package tools; nothing here marks a package reviewed"
                                      ).add_subparsers(dest="law_command", required=True).add_parser(
         "review-packet", help="Private packet for a human law reviewer in a new --out folder; reviews nothing")
@@ -1503,6 +1519,13 @@ def main():
             from .today import run_cli as today_cli
             read_config(root)  # not a campaign folder: Stopped, before any source is read
             print(today_cli(root, args.as_of, args.as_json, args.contract_days, args.review_days))
+        elif args.command == "recent":
+            from .recent import run_cli as recent_cli
+            read_config(root)
+            code = recent_cli(root, args.since, args.until, args.md, args.as_json)
+            if code:
+                sys.exit(code)
+
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
             report = kit_track_due(root, args.as_of, request=args.request)
@@ -1521,9 +1544,15 @@ def main():
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
                                          reference=args.reference, replace_reference=args.replace_reference,
-                                         partial=args.partial, correspondence=args.correspondence),
+                                         partial=args.partial, correspondence=args.correspondence,
+                                         withheld_basis=args.withheld_basis),
                              indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-withheld":
+            from .kit_track import format_withheld, withheld
+            report = withheld(root)
+            print(json.dumps(report, indent=2) if args.as_json else format_withheld(report), end="\n" if args.as_json else "")
+            print(report["note"], file=sys.stderr)
         elif args.command == "status" and (args.list or args.not_in_sources or (args.source_id, args.since) != (None, None)):
             read_config(root)
             from .ledger_list import run_cli as list_cli
