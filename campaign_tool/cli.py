@@ -832,6 +832,13 @@ def main():
     outcome_p.add_argument("--vote", help="Vote as stated by the official record, e.g. 4-1")
     outcome_p.add_argument("--votes", metavar="FILE", help="name,vote CSV (yes|no|abstain|absent|recused) read from the --source record")
     outcome_p.add_argument("--replace", action="store_true", help="Overwrite an existing outcome")
+    sent_p = commands.add_parser("meetings-comment-sent", help="Record a comment you submitted by hand on a staged "
+                                 "meeting in kit/comments-sent.json; sends nothing")
+    for flag in ("--directory", "--id", "--on"):
+        sent_p.add_argument(flag, required=True)
+    sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail", "in_person"))
+    sent_p.add_argument("--file", help="The letter you sent: only its SHA-256 and size are kept, never its text or path")
+    sent_p.add_argument("--replace", action="store_true", help="Overwrite an existing record for this meeting")
     content_check_p = commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)")
     content_check_p.add_argument("--directory", required=True)
     content_check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
@@ -1156,11 +1163,19 @@ def main():
             report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
                                     max_findings=args.max_findings, replace=args.replace)
             print(json.dumps(report, indent=2))
+            for built in report["built"]:
+                if built["comment_sent"]:
+                    print(f"{built['id']}: Comment recorded as submitted on {built['comment_sent']['on']} "
+                          f"({built['comment_sent']['channel']}).")
             sys.exit(3 if report["skipped"] else 0)
         elif args.command == "meeting-pack":
             from .meeting_pack import build as pack_build
-            print(json.dumps(pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
-                                        replace=args.replace, allow_past=args.allow_past)))
+            report = pack_build(Path(args.directory).expanduser(), args.id, args.max_findings,
+                                replace=args.replace, allow_past=args.allow_past)
+            print(json.dumps(report))
+            if report["comment_sent"]:
+                print(f"Comment recorded as submitted on {report['comment_sent']['on']} "
+                      f"({report['comment_sent']['channel']}).")
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
         elif args.command == "meetings-outcome":
@@ -1170,6 +1185,13 @@ def main():
             if args.replace and args.votes is None:  # the new outcome replaced the old one whole
                 print("votes: none")
             print("Recorded only. Nothing was published.")
+        elif args.command == "meetings-comment-sent":
+            from .meeting_comments import record
+            entry = record(root, args.id, args.on, args.channel, args.file, args.replace)
+            shown = {"id": args.id, **{k: v for k, v in entry.items() if k != "letter_sha256"},
+                     **({"letter_sha256_prefix": entry["letter_sha256"][:12]} if "letter_sha256" in entry else {})}
+            print(json.dumps(shown, indent=2))
+            print("Recorded only. Nothing was sent.")
         elif args.command == "sources" and args.sources_command == "add":
             from .sources_cmd import add_source
             print(json.dumps(add_source(root, sha=args.sha256, title=args.title, agency_id=args.agency_id,
