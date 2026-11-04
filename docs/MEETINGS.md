@@ -116,6 +116,23 @@ would push it over 400 words, the section keeps `Send by:` and `How:` and says t
 hand instead. The tool never adds a recipient, email or postal
 address (any named in `how` appears only on the `How:` line) and never sends the letter.
 
+### The one keyword list
+
+The four keyword alternatives live only in `data/meeting-keywords.json`
+(`{"schema_version": 1, "flags": "i", "alternatives": [...]}`). `campaign_tool/meetings.py` builds
+`KEYWORDS` from it at import (joined with `|`, case-insensitive); a missing or malformed file raises
+`MeetingsError` naming the file, with no built-in fallback. `workers/scripts/sync-data.mjs` generates
+`workers/shared/src/generated/meeting-keywords.ts` (`MEETING_KEYWORDS_SOURCE`, `MEETING_KEYWORDS`,
+`matchesMeetingKeywords`) for the Workers; nothing imports it yet.
+
+To change a keyword: edit the JSON, run `npm run sync` in `workers/`, commit both files, and add the
+new case to `tests/fixtures/meeting-keyword-parity.json`. `npm run sync:check` fails naming
+`meeting-keywords.ts` while they disagree. Alternatives may use only literal text, `[ -]`-style classes
+of literals, `\b` and `?`; the generator refuses anything else (`(?i)`, groups, `\p{..}`, backreferences)
+by name and writes nothing. The generated matcher spells out Python's Unicode `\b` and its `i`/`İ`/`ı`
+case rule so both sides give the same verdict (`tests/test_meeting_keywords.py`,
+`workers/shared/test/meeting-keywords.test.ts`).
+
 ## Workspace Meetings screen
 
 `POST /meetings` adds a meeting manually: `body_name`, `starts_at` (ISO-8601), optional
