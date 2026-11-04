@@ -448,6 +448,16 @@ class Site:
         for finding in model["findings"]:
             for sha in dict.fromkeys(s["sha256"] for s in finding["sources"]):
                 self.cited_by.setdefault(sha, []).append(finding)
+        # DF2207-06: published finding id -> staged meetings whose kit stored it as cited_findings, newest first.
+        # Only ids of findings in the validated public model count; a withdrawn or unknown id lists nothing.
+        public_ids = {f["id"] for f in model["findings"]}
+        self.meetings_by_finding = {}
+        for meeting in sorted(model["meetings"], key=lambda m: m["id"]):  # stable id order, then newest moment first
+            for finding_id in meeting.get("cited_findings", ()):
+                if finding_id in public_ids:
+                    self.meetings_by_finding.setdefault(finding_id, []).append(meeting)
+        for listed in self.meetings_by_finding.values():
+            listed.sort(key=lambda m: utc_moment(m["starts_at"]), reverse=True)
         self.city_agencies = [a for a in model["agencies"] if a["kind"] in CITY_KINDS]
         self.map = model["map"]
         self.maplibre = "maplibre-gl.js" in model["vendor"]
@@ -1059,6 +1069,24 @@ class Site:
                 parts.append(f'<p class="notice">Law package status: {e(self.law_status)}.</p>')
         return "".join(parts) + "</section>"
 
+    def finding_meetings_html(self, finding):
+        """DF2207-06: the staged meetings whose comment kit cites this finding, newest first; "" with none.
+
+        A staged citation is not proof of attendance, speaking, adoption or endorsement."""
+        items = []
+        for meeting in self.meetings_by_finding.get(finding["id"], ()):
+            moment = datetime.fromisoformat(meeting["starts_at"].replace("Z", "+00:00"))
+            offset = int(moment.utcoffset().total_seconds()) // 60
+            shown = (f'{moment:%Y-%m-%d %H:%M} (UTC{"-" if offset < 0 else "+"}{abs(offset) // 60:02d}:{abs(offset) % 60:02d})')
+            cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
+            agenda = f' · {self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}' if meeting["agenda_item"] else ""
+            outcome = meeting.get("outcome")
+            result = f' · Outcome: {e(OUTCOME_LABELS[outcome["result"]])}' if outcome else ""
+            items.append(f'<li><time datetime="{e(meeting["starts_at"])}">{e(shown)}</time> · '
+                         f'<a href="/meetings/{e(meeting["id"])}.html">{cancelled}{e(meeting["body"])}</a>{agenda}{result}</li>')
+        return (f'<h3 id="discussed-at-public-meetings">Discussed at public meetings</h3><ul>{"".join(items)}</ul>'
+                if items else "")
+
     def finding_html(self, finding):
         sources = []
         for source in finding["sources"]:
@@ -1103,6 +1131,7 @@ class Site:
                 + f'<h3 id="corrections">{self.t("finding.corrections")}</h3><ul>{corrections}</ul>'
                 + f'<p><a href="/corrections.html">{self.t("finding.all_corrections")}</a></p>'
                 + f'<p><a href="/corrections.html#request">{self.t("finding.ask_correction")}</a></p>'
+                + self.finding_meetings_html(finding)
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         return self.page("findings", finding["title"], finding["summary"], finding_path(finding), main,
                          scripts=["/findings/cite.js"],

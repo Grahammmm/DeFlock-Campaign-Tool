@@ -45,7 +45,7 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 | --- | --- | --- |
 | `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below) |
 | `content/findings/*.json` | no | one published finding per file (schema below) |
-| `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id` |
+| `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id`, optional `cited_findings` (1 to 3 unique finding ids, written by `meetings-stage`) |
 | `content/sources.json` | no | source-library entries: `sha256`, `title`, `agency_id`, `received_at`, `public_url` or null, `fragment`, `pages`, `note` |
 | `content/agencies.json` | no | override list; default is the selected entries of `kit/agencies.json` plus `kit/governing-bodies.json` |
 | `content/map/map-config.json` | no | controller settings (`schemas/map-controller.schema.json` keys) plus `county_bounds`, `style_url`, `tile_hosts`, `group_label`, `attribution` |
@@ -112,6 +112,14 @@ first (same date: by finding slug, then the order in the finding), each linking
 to the finding's `#corrections` section. The footer and each finding page link
 to it, and finding lists mark a corrected finding with a "Corrected" pill
 showing its latest correction date. The starter preview has no such page.
+
+A finding page also lists, under **Discussed at public meetings**, the staged meetings whose
+`cited_findings` include its id (DF2207-06): newest first, each linking `meetings/<id>.html` with the body,
+the recorded date and time in its own UTC offset, the agenda item and the recorded outcome result when any.
+Cancelled and future staged meetings are listed. It records that a staged comment kit cites the finding, not
+attendance, speaking, adoption or endorsement. Meetings without `cited_findings` (staged earlier, or whose kit
+cited nothing) are never inferred from their kit text; a cited id that is not a published finding renders
+nothing and never fails the build. A finding with no such meetings renders unchanged.
 
 Share previews: every page carries `og:*` and `twitter:card` `summary` tags from its own title and description
 (a finding page: its title and summary, `og:type` `article` with its published/updated times); `og:url` only
