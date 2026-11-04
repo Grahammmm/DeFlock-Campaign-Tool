@@ -24,7 +24,8 @@ ROW = re.compile(r'<tr><th scope="row" data-label="([^"]*)"><a href="([^"]*)">(.
                  r'<td data-label="([^"]*)">(.*?)</td><td data-label="([^"]*)"><time datetime="([^"]*)">\7</time></td>'
                  r'<td data-label="([^"]*)">(.*?)</td><td data-label="([^"]*)">(.*?)</td></tr>', re.S)
 LEAD = re.compile(r"<p>(\d+) requests listed\. By state: (.*?)</p>")
-FEED_TO_CORRECTIONS = re.compile(r'<a href="/feed\.xml">Findings feed</a> · <a href="/search\.html">Search</a> · '
+FEED_TO_CORRECTIONS = re.compile(r'<a href="/feed\.xml">Findings feed</a> · <a href="/meetings\.xml">Meetings feed</a> · '
+                                 r'<a href="/search\.html">Search</a> · '
                                  r'<a href="/requests\.html">What we have asked for</a> · <a href="/corrections\.html">')
 
 
