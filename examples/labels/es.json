@@ -245,6 +245,21 @@
     "kind.district_attorney": "Fiscalía de distrito",
     "kind.county_board": "Junta del condado",
     "kind.city_council": "Concejo municipal",
-    "kind.other": "Otro organismo público"
+    "kind.other": "Otro organismo público",
+    "agency.votes_heading": "Cómo votaron los miembros",
+    "agency.votes_none": "No hay voto registrado",
+    "agency.votes_source": "Registro oficial",
+    "agency.votes_more": "… y {count} votos anteriores en las páginas de las reuniones",
+    "footer.privacy": "Privacidad",
+    "privacy.title": "Privacidad",
+    "privacy.signup_policy": "Lea la política de privacidad del proveedor",
+    "privacy.lead": "Qué carga este sitio, si almacena algo en su dispositivo y adónde se envían los datos de suscripción.",
+    "privacy.scripts": "Los scripts, las hojas de estilo y las fuentes se sirven únicamente desde este sitio. Este sitio no carga scripts de terceros.",
+    "privacy.cookies": "Este sitio no establece cookies ni ejecuta scripts de análisis o seguimiento.",
+    "privacy.map": "El mapa interactivo carga su estilo y sus mosaicos de mapa desde estos hosts, con los que su navegador se comunica al abrirlo: {hosts}.",
+    "privacy.signup": "Su dirección de correo electrónico se envía a {host} al enviar el formulario de suscripción; este sitio nunca la recibe.",
+    "privacy.contact": "Contacto de privacidad:",
+    "privacy.no_contact": "Esta campaña no ha publicado un contacto de privacidad.",
+    "privacy.notice": "Esta página se genera a partir de la configuración de compilación del sitio. No es asesoramiento legal ni una política de privacidad revisada."
   }
 }
