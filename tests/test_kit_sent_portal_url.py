@@ -15,25 +15,25 @@ sys.path.insert(0, str(REPO_ROOT))
 from campaign_tool import cli, kit_track  # noqa: E402
 from tests.test_kit_check import ready_drafts  # noqa: E402
 
-PORTAL = "https://cityx.nextrequest.com/"
-URL = "https://cityx.nextrequest.com/requests/24-118"
+PORTAL = "https://cityx.portal.example/"
+URL = "https://cityx.portal.example/requests/24-118"
 SENT_ON = "2026-03-02"
 LINE = "Portal request: " + URL
 REFUSED = (  # (url, the words of its own message)
-    ("https://other.nextrequest.com/requests/1", "host other.nextrequest.com is not the agency's verified portal host "
-                                                  "cityx.nextrequest.com"),
-    ("http://cityx.nextrequest.com/requests/1", "must start with https://"),
-    ("https://u@cityx.nextrequest.com/requests/1", "must not include a login"),
-    ("https://u:p@cityx.nextrequest.com/requests/1", "must not include a login"),
-    ("https://cityx.nextrequest.com:8443/requests/1", "must not include a port"),
-    ("https://cityx.nextrequest.com/requests/1?id=1", "must not include a query"),
-    ("https://cityx.nextrequest.com/requests/1#top", "must not include a fragment"),
-    ("https://cityx.nextrequest.com/" + "a" * (301 - len(PORTAL)), "at most 300 characters"),
-    ("https://cityx.nextrequest.com/requests/ 1", "must not contain spaces or control characters"),
-    ("https://cityx.nextrequest.com/requests/1\n", "must not contain spaces or control characters"),
-    ("ftp://cityx.nextrequest.com/requests/1", "must start with https://"),
-    ("https://cityx.nextrequest.com.evil.example/requests/1", "is not the agency's verified portal host"),
-    ("https://evil.example/https://cityx.nextrequest.com/", "is not the agency's verified portal host"),
+    ("https://other.portal.example/requests/1", "host other.portal.example is not the agency's verified portal host "
+                                                  "cityx.portal.example"),
+    ("http://cityx.portal.example/requests/1", "must start with https://"),
+    ("https://u@cityx.portal.example/requests/1", "must not include a login"),
+    ("https://u:p@cityx.portal.example/requests/1", "must not include a login"),
+    ("https://cityx.portal.example:8443/requests/1", "must not include a port"),
+    ("https://cityx.portal.example/requests/1?id=1", "must not include a query"),
+    ("https://cityx.portal.example/requests/1#top", "must not include a fragment"),
+    ("https://cityx.portal.example/" + "a" * (301 - len(PORTAL)), "at most 300 characters"),
+    ("https://cityx.portal.example/requests/ 1", "must not contain spaces or control characters"),
+    ("https://cityx.portal.example/requests/1\n", "must not contain spaces or control characters"),
+    ("ftp://cityx.portal.example/requests/1", "must start with https://"),
+    ("https://cityx.portal.example.evil.example/requests/1", "is not the agency's verified portal host"),
+    ("https://evil.example/https://cityx.portal.example/", "is not the agency's verified portal host"),
 )
 
 
@@ -173,14 +173,14 @@ class KitSentPortalUrlTests(unittest.TestCase):
 
     # 5. host compared lower-cased
     def test_upper_case_host_is_accepted(self):
-        url = "https://CITYX.NextRequest.com/requests/24-118"
+        url = "https://CITYX.Portal.Example/requests/24-118"
         self.ok(self.a, "portal", url)
         self.assertEqual(self.entry()["request_url"], url)
 
     def test_path_is_free_but_a_trailing_dot_host_is_not_the_portal_host(self):
-        self.ok(self.a, "portal", "https://cityx.nextrequest.com")
-        self.assertEqual(self.entry()["request_url"], "https://cityx.nextrequest.com")
-        self.refused("is not the agency's verified portal host", self.a, "portal", "https://cityx.nextrequest.com./x",
+        self.ok(self.a, "portal", "https://cityx.portal.example")
+        self.assertEqual(self.entry()["request_url"], "https://cityx.portal.example")
+        self.refused("is not the agency's verified portal host", self.a, "portal", "https://cityx.portal.example./x",
                      "--replace")
 
     # 6. --replace
@@ -189,11 +189,11 @@ class KitSentPortalUrlTests(unittest.TestCase):
         self.ok(self.a, "portal", None, "--replace")
         self.assertEqual(self.entry()["request_url"], URL)
         self.assertEqual(self.entry()["reference"], "24-118")
-        new = "https://cityx.nextrequest.com/requests/24-119"
+        new = "https://cityx.portal.example/requests/24-119"
         self.ok(self.a, "portal", new, "--replace")
         self.assertEqual(self.entry()["request_url"], new)
         self.refused("is not the agency's verified portal host", self.a, "portal",
-                     "https://other.nextrequest.com/requests/1", "--replace")
+                     "https://other.portal.example/requests/1", "--replace")
         self.assertEqual(self.entry()["request_url"], new)
 
     def test_replace_to_another_channel_drops_the_link_and_the_file_stays_readable(self):
@@ -229,7 +229,7 @@ class KitSentPortalUrlTests(unittest.TestCase):
         self.ok()
         document = json.loads(self.sent.read_text(encoding="utf-8"))
         good = document["requests"][self.a]
-        for change in ({"request_url": "http://cityx.nextrequest.com/r/1"}, {"request_url": "https://u@x.example/r"},
+        for change in ({"request_url": "http://cityx.portal.example/r/1"}, {"request_url": "https://u@x.example/r"},
                        {"request_url": "https://x.example:8443/r"}, {"request_url": URL + "?a=1"},
                        {"request_url": "https://x.example/" + "a" * 300}, {"request_url": 7},
                        {"channel": "email"}, {"channel": "mail"}):
@@ -243,7 +243,7 @@ class KitSentPortalUrlTests(unittest.TestCase):
     # 8. never fetched
     def test_urlopen_is_never_called(self):
         self.ok()
-        self.refused("is not the agency's verified portal host", self.a, "portal", "https://other.nextrequest.com/r/1",
+        self.refused("is not the agency's verified portal host", self.a, "portal", "https://other.portal.example/r/1",
                      "--replace")
         run("kit-status", "--directory", self.root)
         run("kit-due", "--directory", self.root, "--as-of", "2026-03-03")
