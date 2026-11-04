@@ -1174,6 +1174,40 @@ class Site:
                 + self.t("officials.listed", source=source, date=f'<time>{e(newest["checked_on"])}</time>')
                 + '</p></section>')
 
+    def local_rules_section(self, agency):
+        """DF1952-02: the validated organizer-transcribed local rules whose ``agency_ids`` name ``agency`` (exact id, every
+        dated version), each under its own heading and classified against the build date; "" when none.
+
+        Reads only ``self.local_rules`` (the dependency-validated model snapshot). A transcription is not a finding
+        about the agency and says nothing about its conduct; the duty is shown as written, escaped, never restated."""
+        aid = agency["agency_id"]
+        scoped = sorted((rule for rule in self.local_rules if aid in rule["agency_ids"]),
+                        key=lambda rule: (rule["rule_id"], rule["effective_from"]))
+        if not scoped:
+            return ""
+        today = self.today.isoformat()
+        items = []
+        for rule in scoped:
+            end = rule["effective_to"]
+            if end is not None and end < today:
+                state = "Past — not in force on build date"
+            elif rule["effective_from"] > today:
+                state = "Not yet in force on build date"
+            else:
+                state = "In force on build date"
+            items.append(
+                f'<article class="local-rule"><h4>{e(rule["citation"])}</h4>'
+                f'<p><span class="status-pill">{e(state)}</span> <span class="status-pill">{e(law.LOCAL_RULE_LABEL)}</span></p>'
+                f'<p>Rule: <code>{e(rule["rule_id"])}</code></p>'
+                f'<p>Duty as written: {e(rule["duty"])}</p>'
+                f'<p>Effective from {time_tag(rule["effective_from"])} to '
+                f'{time_tag(end) if end is not None else "open"}</p>'
+                f'<p><a href="{e(rule["source_url"])}" rel="noopener noreferrer">Official source (organizer-recorded)</a>'
+                f' · checked {time_tag(rule["checked_on"])}</p></article>')
+        return ('<section class="local-rules"><h3>Local rules on record</h3>'
+                "<p>These are organizer transcriptions of local ordinances, not a determination about the agency's "
+                "conduct.</p>" + "".join(items) + "</section>")
+
     def agency_html(self, agency):
         """``agencies/<slug>.html`` (DF2237-08): one agency's card facts, findings, source records and upcoming meetings."""
         aid, profile = agency["agency_id"], agency["profile"]
@@ -1197,6 +1231,7 @@ class Site:
                 + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency)
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
                 + self.funding_block(agency) + self.transparency_block(agency, "h3") + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
+                + self.local_rules_section(agency)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
                    if findings else "")
