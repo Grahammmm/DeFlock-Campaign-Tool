@@ -502,7 +502,7 @@ def _site_claim_notes(root):
     return site_notes(root)
 
 
-def build(root, check=False, budget=None):
+def build(root, check=False, budget=None, weights_out=None, weights_baseline=None):
     from .site import build_site
     public = root / "public"
     notes = []
@@ -544,21 +544,24 @@ def build(root, check=False, budget=None):
             raise ValueError(f"public tree check found {len(broken)} broken link(s); fix content and rebuild")
         print("Public tree check passed (pattern scan, internal links and accessibility pattern lint; "
               "not an accessibility audit; human review still required).")
-    return 0 if budget is None else weight_budget(public, budget)
+    return 0 if budget is None else weight_budget(public, budget, weights_out, weights_baseline)
 
 
-def weight_budget(public, budget):
-    from .site_check import page_weights
+def weight_budget(public, budget, weights_out=None, weights_baseline=None):
+    from .site_check import page_weights, read_weights, weight_changes, weights_record, write_weights
     rows = page_weights(public)
+    base = None if weights_baseline is None else read_weights(weights_baseline)  # read first: a bad file prints nothing
     print("Page weight (first-party: html + referenced site-local css/js/images, uncompressed):")
-    for row in rows:
-        print(f"  {row['page']} {row['total']} bytes")
+    for line in [f"  {row['page']} {row['total']} bytes" for row in rows] if base is None else weight_changes(rows, base):
+        print(line)
     over = [row for row in rows if row["total"] > budget * 1024]
     for row in over:
         named = ", ".join(f"{p} {n}" for p, n in sorted(row["assets"], key=lambda a: (-a[1], a[0]))[:3])
         print(f"over budget: {row['page']} {row['total']} bytes > {budget} KB; largest: {named or '(no assets)'}")
     if not over:
         print(f"Page weight within {budget} KB (first-party, uncompressed).")
+    if weights_out is not None:  # last: the record is private and never changes the exit code
+        print(f"Page weights written to {write_weights(public.parent, weights_out, weights_record(rows, budget))} (private).")
     return 3 if over else 0
 
 
@@ -789,6 +792,10 @@ def main():
                               help="List files a rebuild would add, remove or change in public/; writes nothing")
             cmd.add_argument("--budget", type=_positive_kb, metavar="KB", help="Print each page's first-party "
                              "weight (html + referenced css/js/images, uncompressed); exit 3 when a page exceeds KB")
+            cmd.add_argument("--weights-out", metavar="FILE", help="With --budget: save the per-page weights to a new "
+                             "private page-weights-v1 JSON file (not inside public/ or content/)")
+            cmd.add_argument("--weights-baseline", metavar="FILE", help="With --budget: print each page's growth "
+                             "against a saved page-weights-v1 file")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
             cmd.add_argument("--fix-modes", action="store_true",
@@ -1224,6 +1231,8 @@ def main():
         parser.error("--within-days must be 1 to 60")
     if args.command == "build" and args.preview and args.budget is not None:
         parser.error("--budget measures a written build; it cannot be combined with --preview")
+    if args.command == "build" and args.budget is None and (args.weights_out is not None or args.weights_baseline is not None):
+        parser.error("--weights-out and --weights-baseline need --budget")
     if args.command == "sources" and args.sources_command == "add-batch":
         given = {"--source-id": args.source_id, "--agency-id": args.agency_id, "--received-at": args.received_at}
         if args.from_request is not None:
@@ -1284,7 +1293,8 @@ def main():
             print("Preview only; public/ was not changed.")
             sys.exit(3 if report["added"] or report["removed"] or report["changed"] else 0)
         elif args.command == "build":
-            code = build(root, check=args.check, budget=args.budget)
+            code = build(root, check=args.check, budget=args.budget, weights_out=args.weights_out,
+                         weights_baseline=args.weights_baseline)
             if code:
                 sys.exit(code)
         elif args.command == "backup":
