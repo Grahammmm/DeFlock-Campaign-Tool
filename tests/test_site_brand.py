@@ -277,6 +277,33 @@ class BrandSite(unittest.TestCase):
         os.symlink(self.assets / "edge.svg", self.assets / "link.svg")
         self.assertIn("symlink", self.refused({"favicon": "link.svg"}, ".favicon"))
 
+    # RF0220-2: logo and favicon share the gate: any xml:base is refused by field; clean fragment-only SVG still builds
+    def test_xml_base_logo_and_favicon_share_gate(self):
+        url = "https://" + HIDDEN_NAME + ".invalid/base/"
+        sized = " width='10' height='10'"
+        variants = {"root": (sized + f" xml:base='{url}'", "<use href='#a'/>"),
+                    "nested": (sized, f"<g xml:base='{url}'><use href='#a'/></g>"),
+                    "empty override": (sized + " xml:base=''", "<rect width='4' height='4'/>"),
+                    "nested empty under ancestor": (sized + f" xml:base='{url}'", "<g xml:base=''/>")}
+        for name, (attrs, body) in variants.items():
+            self.svg_file("based.svg", attrs, body)
+            for field, brand in ((".logo", {"logo": "based.svg", "logo_alt": "Logo"}), (".favicon", {"favicon": "based.svg"})):
+                with self.subTest(name=name, field=field):
+                    self.assertEqual(self.refused(brand, field), f"site.json.brand{field}: SVG (external reference)")
+        # a clean fragment-only file with the same sizes: copied byte for byte, same dimensions, CSP unchanged
+        (self.assets / "based.svg").unlink()  # every file under public-assets is checked by a build
+        clean = self.svg_file("clean.svg", " width='240' height='80'",
+                              "<defs><linearGradient id='g'/></defs><rect fill='url(#g)' width='4' height='4'/>"
+                              "<use href='#g'/><use xmlns:xlink='http://www.w3.org/1999/xlink' xlink:href='#g'/>"
+                              "<style>rect{fill:url(#g)}</style>")
+        built = self.build({"logo": "clean.svg", "logo_alt": "Clean", "favicon": "clean.svg"})
+        self.assertEqual(built["clean.svg"], clean)
+        self.assertIn(b'src="/clean.svg" alt="Clean" width="240" height="80">', built["index.html"])
+        self.assertEqual(built["_headers"], self.build(None)["_headers"])
+        # an ordinary or custom-namespace "base" is not XML Base
+        self.svg_file("plain.svg", " width='10' height='10' base='x' xmlns:q='urn:s' q:base='y'", "<use href='#a'/>")
+        self.assertIn(b'src="/plain.svg"', self.build({"logo": "plain.svg", "logo_alt": "Plain"})["index.html"])
+
     # 3/7 for the favicon: missing, wrong suffix, metadata, unreadable
     def test_favicon_refusals(self):
         self.assertIn(b'<link rel="icon" href="/logo.png">', self.build({"favicon": "logo.png"})["404.html"])

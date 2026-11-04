@@ -3,6 +3,7 @@
 Every PDF and SVG is built here from bytes. A script body, URL or author name must never be printed.
 """
 import re
+import json
 import shutil
 import subprocess
 import sys
@@ -317,6 +318,57 @@ class SvgKindsTests(unittest.TestCase):
         self.assertIsNone(doc_assets.svg_size(b"<svg width='4' height='4'><rect></svg>"))
         self.assertEqual(doc_assets.svg_size(b'<s:svg xmlns:s="http://www.w3.org/2000/svg" width="4" height="5"/>'), (4, 5))
 
+    # RF0220-2: any xml:base (exact namespace) on the root or a descendant is an external reference, whatever the value
+    def test_xml_base_refused_on_root_and_descendants(self):
+        values = (b"https://synthetic.invalid/private-base/sprite.svg", b"//synthetic.invalid/sprite.svg", b"sub/dir/",
+                  b"/path/only.svg", b"?query-only", b"#fragment-only", b"", b"   ")
+        uses = b'<use href="#grad1"/><use xlink:href="#grad1"/><rect fill="url(#grad1)"/><style>rect{fill:url(#grad1)}</style>'
+        with mock.patch("socket.socket", side_effect=AssertionError("network")), \
+                mock.patch("urllib.request.urlopen", side_effect=AssertionError("network")):
+            for value in values:
+                base = b' xml:base="%s"' % value
+                cases = {"root": svg(uses, base), "g": svg(b"<g%s>%s</g>" % (base, uses)),
+                         "defs": svg(b"<defs%s><linearGradient id=\"grad1\"/></defs>%s" % (base, uses)),
+                         "use": svg(b'<defs><linearGradient id="grad1"/></defs><use href="#grad1"%s/>' % base),
+                         "no visible reference": svg(b"<rect/>", base)}
+                for where, data in cases.items():
+                    self.assertEqual(svg_kinds(data), ["external reference"], (where, value))
+                    self.assertNotIn(value or b"\0", b"".join(k.encode() for k in svg_kinds(data)))
+        self.assertEqual(svg_kinds(svg(uses)), [])  # the same fragments without a base stay clean
+
+    # RF0220-2: only the exact namespace counts; an ancestor's base is not cancelled by a nested empty/local one
+    def test_xml_base_namespace_and_inheritance(self):
+        clean = {"plain base": svg(b'<use href="#a"/>', b' base="https://x.invalid/"'),
+                 "custom namespace": svg(b'<use href="#a"/>', b' xmlns:q="urn:synthetic" q:base="https://x.invalid/"'),
+                 "uppercase": svg(b'<use href="#a"/>', b' xml:Base="https://x.invalid/"'),
+                 "comment": svg(b"<!-- xml:base=\"https://x.invalid/\" --><text>xml:base</text>"),
+                 "other xml attribute": svg(b'<use href="#a"/>', b' xml:space="preserve" xml:lang="en"')}
+        for name, data in clean.items():
+            self.assertEqual(svg_kinds(data), [], name)
+        self.assertEqual(svg_kinds(svg(b'<g xml:base=""><use href="#a"/></g>', b' xml:base="https://x.invalid/"')),
+                         ["external reference"])
+        self.assertEqual(svg_kinds(svg(b'<g xml:base="#a"><g xml:base=""/></g>')), ["external reference"])
+        escaped = svg(b'<use href="#a"/>', b' xml:base="&#104;ttps://x.invalid/&amp;a"')  # entity-escaped value
+        self.assertEqual(svg_kinds(escaped), ["external reference"])
+        for data in (svg(b"", b' xmlns:xml="urn:wrong" xml:base="x"'), svg(b"", b' xml:base="a" xml:base="b"')):
+            self.assertEqual(svg_kinds(data), [SVG_UNREADABLE])  # malformed namespace binding / duplicate stays unreadable
+        self.assertEqual(svg_kinds(svg(b"", b' xmlns:xml="http://www.w3.org/XML/1998/namespace" xml:base=""')),
+                         ["external reference"])
+
+    # RF0220-2: composes with the other kinds as a sorted union; DOCTYPE, malformed and oversize keep their precedence
+    def test_xml_base_composes_with_existing_kinds(self):
+        value = b"https://synthetic.invalid/private-base/"
+        mixed = svg(b'<script>x()</script><rect onload="y()"/>', b' xml:base="%s"' % value)
+        self.assertEqual(svg_kinds(mixed), ["event handler", "external reference", "script"])
+        self.assertEqual(svg_kinds(svg(b'<image href="%s"/>' % value, b' xml:base="%s"' % value)), ["external reference"])
+        for kind in svg_kinds(mixed):
+            self.assertNotIn("synthetic", kind)
+        doctype = b'<!DOCTYPE svg [<!ENTITY a "x">]>' + svg(b"", b' xml:base="%s"' % value)
+        self.assertEqual(svg_kinds(doctype), ["DOCTYPE"])
+        self.assertEqual(svg_kinds(b'<svg xml:base="%s"><rect></svg>' % value), [SVG_UNREADABLE])
+        self.assertEqual(svg_kinds(svg(b"\xff\xfe", b' xml:base="x"')), [SVG_UNREADABLE])
+        self.assertEqual(svg_kinds(svg(b"", b' xml:base="x"') + bytes(ASSET_MAX_BYTES)), [SVG_UNREADABLE])
+
 
 class Campaign(unittest.TestCase):
     def setUp(self):
@@ -333,6 +385,10 @@ class Campaign(unittest.TestCase):
 
     def tree(self):
         return {p.relative_to(self.root).as_posix(): p.read_bytes() for p in sorted(self.root.rglob("*")) if p.is_file()}
+
+    def snapshot(self):
+        return {p.relative_to(self.root).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode)
+                for p in sorted(self.root.rglob("*")) if p.is_file()}
 
     def dirty(self):
         catalog = b"<< /Type /Catalog /Pages 2 0 R /OpenAction << /S /JavaScript /JS (%s) >> >>" % JS_TEXT
@@ -371,8 +427,71 @@ class BuildGateTests(Campaign):
             self.assertNotIn(secret, result.stdout + result.stderr)
         self.assertFalse((self.root / "public").exists())
 
+    # RF0220-2: an xml:base refusal happens before any public replacement, fresh or over an existing public tree
+    def test_xml_base_build_refuses_before_public_replacement(self):
+        base = b"https://synthetic.invalid/private-base/sprite.svg"
+        variants = {"root-base-href": svg(b'<defs><linearGradient id="grad1"/></defs><use href="#grad1"/>',
+                                          b' xml:base="%s"' % base),
+                    "nested css": svg(b'<g xml:base=""><rect fill="url(#grad1)"/></g>', b' xml:base="%s"' % base)}
+        message = b"public-assets/mark.svg: SVG (external reference)"
+        for name, data in variants.items():
+            with self.subTest(name=name, existing=False):
+                (self.assets / "mark.svg").write_bytes(data)
+                result = self.cli("build", "--directory", str(self.root))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn(base, result.stdout + result.stderr)
+                self.assertFalse((self.root / "public").exists())
+                self.assertEqual([p.name for p in self.root.iterdir() if p.name.startswith(".public")], [])
+        (self.assets / "mark.svg").write_bytes(CLEAN_SVG)
+        build_site(self.root)
+        before = self.snapshot()
+        for name, data in variants.items():
+            with self.subTest(name=name, existing=True):
+                (self.assets / "mark.svg").write_bytes(data)
+                source = self.snapshot()["content/public-assets/mark.svg"]
+                result = self.cli("build", "--directory", str(self.root))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn(base, result.stdout + result.stderr)
+                after = self.snapshot()
+                self.assertEqual(after.pop("content/public-assets/mark.svg"), source)  # the input is never edited
+                expected = dict(before)
+                expected.pop("content/public-assets/mark.svg")
+                self.assertEqual(after, expected)  # public/ bytes, mtimes and modes unchanged
+        self.assertEqual((self.root / "public" / "mark.svg").read_bytes(), CLEAN_SVG)
+
 
 class ContentCheckTests(Campaign):
+    # RF0220-2: content-check text and --json agree, exit 3 beside another error, read-only, no value or target shown
+    def test_xml_base_check_text_json_parity_and_no_write(self):
+        base = b"https://synthetic.invalid/private-base/sprite.svg"
+        bad = svg(b'<use href="#a"/>', b' xml:base="%s"' % base)
+        (self.assets / "mark.svg").write_bytes(bad)
+        (self.assets / "ok.svg").write_bytes(CLEAN_SVG)
+        (self.root / "content" / "findings" / "broken.json").write_text("{}", encoding="utf-8")
+        site = self.root / "content" / "site.json"
+        document = json.loads(site.read_text(encoding="utf-8"))
+        (self.assets / "logo.svg").write_bytes(svg(b"", b' width="4" height="4" xml:base=""'))
+        site.write_text(json.dumps({**document, "brand": {"logo": "logo.svg", "logo_alt": "Logo"}}), encoding="utf-8")
+        before = self.snapshot()
+        lines = ("public-assets/mark.svg: SVG (external reference)", "site.json.brand.logo: SVG (external reference)")
+        text = self.cli("content-check", "--directory", str(self.root))
+        as_json = self.cli("content-check", "--directory", str(self.root), "--json")
+        for result in (text, as_json):
+            self.assertEqual(result.returncode, 3, result.stderr)
+            self.assertNotIn(base, result.stdout + result.stderr)
+            self.assertNotIn(b"synthetic.invalid", result.stdout + result.stderr)
+        document = json.loads(as_json.stdout)
+        messages = [p["message"] if p["file"] is None else p["file"] + ": " + p["message"] for p in document["problems"]]
+        for line in lines:
+            self.assertIn(line, messages)
+            self.assertIn(line.encode(), text.stdout)
+        self.assertTrue(any(m.startswith("findings/broken.json") for m in messages), messages)
+        self.assertFalse(any("ok.svg" in m for m in messages), messages)
+        self.assertEqual(self.snapshot(), before)  # bytes, mtimes and modes unchanged; no public/ written
+        self.assertFalse((self.root / "public").exists())
+
     # 9. content-check lists the PDF/SVG problems with the others, exits 3, nothing written, no value shown
     def test_listed_with_other_problems_exit_3(self):
         self.dirty()
