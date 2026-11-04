@@ -229,6 +229,20 @@ edited draft is kept and the fresh one goes to `kit/social.suggested/`; drafts f
 longer published are listed as `stale`, never deleted. Nothing is posted and nothing goes
 under `public/`; posting stays an organizer decision outside this tool.
 
+## Campaign flyer (never printed or posted)
+
+`python3 -m campaign_tool flyer --directory D [--max-findings N] [--replace]` writes a private one-page
+flyer to `kit/flyer/flyer.html` and a plain `flyer.txt` twin (folder 0700, files 0600): the `site.json`
+logo (copied beside it as `logo.<ext>`), campaign name, tagline, county and state, up to N (1-6, default 3)
+published findings newest `published_at` first with their classification and confidence labels and public
+URL from `base_url`, "N more on the site" when cut, a "Get involved" link to `base_url`, and the
+not-legal-advice line. With no published finding it says records are requested and nothing is published
+yet; without `base_url` it prints no links. Draft, withdrawn and challenged findings never appear. The
+HTML has one inline `<style>`, no script and no external load; its only links are the campaign's own
+`base_url`. An existing flyer is refused without `--replace`; a symlinked folder or file, or a logo
+named in `site.json` but missing, is refused. Nothing is printed, sent or published and nothing is
+written under `public/` or `content/`; printing and handing it out stay an organizer decision.
+
 ## Reviewer roster (role assignment, not authentication)
 
 `finding reviewers add --directory D --name N --role R [--role R]` (R: factual, legal, privacy) merges

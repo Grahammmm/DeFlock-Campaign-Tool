@@ -221,6 +221,22 @@ without `agency_id` it is state-only. A finding page lists each cited local rule
 "local rule, organizer-transcribed, not legally reviewed"; the state package, its review status and its citations
 are unchanged. Validation proves shape only, never that the text is official, current, applicable or reviewed.
 
+## Support matrix
+
+[`docs/LAW-SUPPORT.md`](LAW-SUPPORT.md) lists, for every shipped jurisdiction package, each rule's id, citation,
+effective window, review label and the request scopes that use it, plus the package status, recorded review
+metadata and the `records_law` determination data. It is generated from the packages, never typed by hand. After
+changing a package, regenerate it at the repository root:
+
+    python3 -m campaign_tool.law support-matrix --md > docs/LAW-SUPPORT.md
+
+`tests.test_law_support_matrix` fails when the committed file differs from a fresh render. The command writes
+nothing itself; without `--md` it prints the same data as one JSON document, and `--base DIR` reads another
+jurisdictions directory. The matrix restates package data: a rule row's label and the package status stay
+separate, author review labels are not independent legal acceptance, and a listed jurisdiction is not all-state
+support.
+
+
 ## Current state
 
 `us-ca` is a draft authored from leginfo.legislature.ca.gov and the California

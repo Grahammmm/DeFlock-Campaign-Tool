@@ -326,6 +326,7 @@ keeps the date, channel and SHA-256 of `requests/<agency_id>.md`. A second recor
 one with no steps. `kit-status --directory D` lists each request with `determination_due` and `with_extension` from
 the law package (`null` when it is missing) and flags drafts edited since sending. Dates are provisional reminders:
 the period runs from the agency's receipt and holidays are not modelled. `kit` re-runs never touch `sent.json`.
+The JSON it prints is described by `schemas/kit-status.schema.json`; `tests/test_kit_json_contracts.py` fails when the keys drift.
 
 ### Several requests to one agency
 
@@ -354,11 +355,19 @@ latest estimate (latest date, then the later recorded step) as `fee_estimate`, a
 the cap also prints `<agency>: fee estimate $245.50 is over your fee cap: decide before paying` on stderr. The check is
 a reminder, not advice: the tool never pays, replies to or contacts the agency.
 
+`kit-fees --directory D [--csv FILE]` is the one read-only fee report over every recorded request: only requests with a
+recorded estimate appear (latest estimate, `fee_state` `unpaid`, `paid` or `waived`, `fee_paid` when the payment step
+carried an amount, `over_fee_cap`), unpaid first, plus exact-cents totals (`quoted`, `paid`, `unpaid` and a `counts`
+object), taken from the stored `amount_cents` with the same rules `kit-status` uses. `--csv` writes the rows and a final
+`TOTAL` row to a new private file (0600, never overwritten, refused inside `public/` or `content/`, spreadsheet-formula
+safe). The amounts are what the organizer recorded: not an invoice, not legal advice, and nothing is paid or sent.
+
 `kit-due --directory D [--as-of YYYY-MM-DD]` (default today) lists requests still waiting on the agency under `open`,
 sorted by provisional `due` date (extended when recorded), with `days` left (negative once past) and `state`
 `past_due`, `due_today` or `upcoming`. Requests with a `determination`, `produced` or `denied` step appear under
 `answered`; closed requests are left out. Without a law package `state` is `no_law_package`. It exits 3 when any
 request is past due, else 0. These are reminders, not lateness conclusions.
+The JSON it prints is described by `schemas/kit-due.schema.json`; `tests/test_kit_json_contracts.py` fails when the keys or `state` values drift.
 
 `kit-followup --directory D --agency ID [--as-of YYYY-MM-DD] [--replace]` (as-of not after today) writes a private
 draft `kit/followups/<agency_id>-<as_of>.md` (0600, folder 0700) for a request that `kit-due` lists as `past_due`. It

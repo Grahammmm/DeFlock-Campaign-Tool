@@ -502,7 +502,7 @@ def _site_claim_notes(root):
     return site_notes(root)
 
 
-def build(root, check=False, budget=None):
+def build(root, check=False, budget=None, weights_out=None, weights_baseline=None):
     from .site import build_site
     public = root / "public"
     notes = []
@@ -544,21 +544,24 @@ def build(root, check=False, budget=None):
             raise ValueError(f"public tree check found {len(broken)} broken link(s); fix content and rebuild")
         print("Public tree check passed (pattern scan, internal links and accessibility pattern lint; "
               "not an accessibility audit; human review still required).")
-    return 0 if budget is None else weight_budget(public, budget)
+    return 0 if budget is None else weight_budget(public, budget, weights_out, weights_baseline)
 
 
-def weight_budget(public, budget):
-    from .site_check import page_weights
+def weight_budget(public, budget, weights_out=None, weights_baseline=None):
+    from .site_check import page_weights, read_weights, weight_changes, weights_record, write_weights
     rows = page_weights(public)
+    base = None if weights_baseline is None else read_weights(weights_baseline)  # read first: a bad file prints nothing
     print("Page weight (first-party: html + referenced site-local css/js/images, uncompressed):")
-    for row in rows:
-        print(f"  {row['page']} {row['total']} bytes")
+    for line in [f"  {row['page']} {row['total']} bytes" for row in rows] if base is None else weight_changes(rows, base):
+        print(line)
     over = [row for row in rows if row["total"] > budget * 1024]
     for row in over:
         named = ", ".join(f"{p} {n}" for p, n in sorted(row["assets"], key=lambda a: (-a[1], a[0]))[:3])
         print(f"over budget: {row['page']} {row['total']} bytes > {budget} KB; largest: {named or '(no assets)'}")
     if not over:
         print(f"Page weight within {budget} KB (first-party, uncompressed).")
+    if weights_out is not None:  # last: the record is private and never changes the exit code
+        print(f"Page weights written to {write_weights(public.parent, weights_out, weights_record(rows, budget))} (private).")
     return 3 if over else 0
 
 
@@ -789,6 +792,10 @@ def main():
                               help="List files a rebuild would add, remove or change in public/; writes nothing")
             cmd.add_argument("--budget", type=_positive_kb, metavar="KB", help="Print each page's first-party "
                              "weight (html + referenced css/js/images, uncompressed); exit 3 when a page exceeds KB")
+            cmd.add_argument("--weights-out", metavar="FILE", help="With --budget: save the per-page weights to a new "
+                             "private page-weights-v1 JSON file (not inside public/ or content/)")
+            cmd.add_argument("--weights-baseline", metavar="FILE", help="With --budget: print each page's growth "
+                             "against a saved page-weights-v1 file")
         if name == "status":
             cmd.add_argument("--check", action="store_true", help="Re-hash private/objects against the ledger (read-only)")
             cmd.add_argument("--fix-modes", action="store_true",
@@ -934,8 +941,9 @@ def main():
     for flag in ("--directory", "--agency", "--date"):
         sent_p.add_argument(flag, required=True)
     sent_p.add_argument("--channel", required=True, choices=kit_track_channels)
-    sent_p.add_argument("--request-url", metavar="URL", help="With --channel muckrock only: the https://www.muckrock.com/foi/ "
-                        "page of the request you filed there (recorded, never fetched)")
+    sent_p.add_argument("--request-url", metavar="URL", help="With --channel portal: the https:// page of the request you "
+                        "filed there, on the agency's verified portal host (kit-verify-agency --portal); with --channel "
+                        "muckrock: the https://www.muckrock.com/foi/ page. Recorded, never fetched")
     sent_p.add_argument("--replace", action="store_true", help="Correct an entry that has no recorded steps")
     sent_p.add_argument("--request", default="main", help="Name of a further request to this agency, drafted in "
                         "kit/requests/<agency>--<name>.md (default main: kit/requests/<agency>.md)")
@@ -947,6 +955,10 @@ def main():
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
     status_p.add_argument("--csv", metavar="FILE", help="Write a new private .csv tracker (0600) outside public/ and content/")
+    fees_p = commands.add_parser("kit-fees", help="Fee estimates, payments and waivers across every recorded request, "
+                                 "with exact totals (read-only)")
+    fees_p.add_argument("--directory", required=True)
+    fees_p.add_argument("--csv", metavar="FILE", help="Write a new private .csv (0600) outside public/ and content/")
     check_p = commands.add_parser("kit-check", help="Unfilled [placeholders] and unverified recipients in each "
                                   "selected agency's draft (read-only; exit 3)")
     check_p.add_argument("--directory", required=True)
@@ -1183,6 +1195,10 @@ def main():
     pack.add_argument("--max-findings", type=int, choices=range(1, 11), default=5)
     pack.add_argument("--replace", action="store_true")
     pack.add_argument("--allow-past", action="store_true")
+    flyer = commands.add_parser("flyer", help="Write a private printable one-page campaign flyer; prints and publishes nothing")
+    flyer.add_argument("--directory", required=True)
+    flyer.add_argument("--max-findings", type=int, choices=range(1, 7), default=3)
+    flyer.add_argument("--replace", action="store_true")
     _campaign_option(parser)
     campaigns = commands.add_parser("campaigns", help="A named register of campaign directories; names and paths only"
                                     ).add_subparsers(dest="campaigns_command", required=True)
@@ -1220,6 +1236,8 @@ def main():
         parser.error("--within-days must be 1 to 60")
     if args.command == "build" and args.preview and args.budget is not None:
         parser.error("--budget measures a written build; it cannot be combined with --preview")
+    if args.command == "build" and args.budget is None and (args.weights_out is not None or args.weights_baseline is not None):
+        parser.error("--weights-out and --weights-baseline need --budget")
     if args.command == "sources" and args.sources_command == "add-batch":
         given = {"--source-id": args.source_id, "--agency-id": args.agency_id, "--received-at": args.received_at}
         if args.from_request is not None:
@@ -1280,7 +1298,8 @@ def main():
             print("Preview only; public/ was not changed.")
             sys.exit(3 if report["added"] or report["removed"] or report["changed"] else 0)
         elif args.command == "build":
-            code = build(root, check=args.check, budget=args.budget)
+            code = build(root, check=args.check, budget=args.budget, weights_out=args.weights_out,
+                         weights_baseline=args.weights_baseline)
             if code:
                 sys.exit(code)
         elif args.command == "backup":
@@ -1291,6 +1310,10 @@ def main():
             backup_diff_cmd(args, root)
         elif args.command == "meetings":
             meetings_cmd(args, root)
+        elif args.command == "flyer":
+            from .flyer import build as flyer_build
+            print(json.dumps(flyer_build(Path(args.directory).expanduser(), args.max_findings, replace=args.replace)))
+            print("Private file; nothing was printed, sent or published.")
         elif args.command == "meeting-pack" and args.upcoming:
             from .meeting_pack import build_upcoming
             report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
@@ -1526,6 +1549,14 @@ def main():
                     print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
                 if row["fee_state"] == "unpaid":
                     print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
+                if row["channel"] == "portal" and row.get("request_url"):
+                    print(f"{label}: Portal request: {row['request_url']}", file=sys.stderr)
+        elif args.command == "kit-fees":
+            from . import kit_fees
+            report = kit_fees.fees(root)
+            print(json.dumps(kit_fees.write_csv(root, args.csv, report) if args.csv else report, indent=2))
+            print("Private file; nothing was sent or published." if args.csv else "Read-only. Nothing was sent.",
+                  file=sys.stdout if args.csv else sys.stderr)
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))

@@ -25,7 +25,7 @@ EXTRA = [("synthetic-two", POLICE, "apparent_conflict", "2025-06-01"),
          ("synthetic-four", SHERIFF, "documented_fact", "2025-11-20"),
          ("synthetic-five", None, "apparent_conflict", "2026-04-01"),
          ("synthetic-six", SHERIFF, "information_gap", "2025-02-02")]
-SCRIPT_TAG = re.compile(r'^<script defer src="/(?:vendor/maplibre-gl|site-data|agency-cards|app|findings/filter|findings/cite)\.js"></script>$')
+SCRIPT_TAG = re.compile(r'^<script defer src="/(?:vendor/maplibre-gl|site-data|agency-cards|app|findings/filter|findings/cite|search)\.js"></script>$')
 
 
 class FindingsFilterTests(unittest.TestCase):

@@ -56,6 +56,8 @@ def enrich(root, maplibre=False):
     police["profile"]["contract"] = contract
     agencies[0]["profile"]["contract"] = dict(contract, end="2026-01-01")
     _write(content / "agencies.json", agencies)
+    _write(content / "topics" / "zq-topic.json", {"title": "Zq topic", "intro_md": "Zq intro.",
+                                                  "finding_ids": ["fnd_0000000000000002", "fnd_0000000000000003"]})
     _write(content / "meetings" / "zq-cancelled.json", {
         "id": "zq-cancelled", "body": "Zq board", "starts_at": "2026-09-01T18:00:00-07:00", "status": "cancelled"})
     if maplibre:
@@ -299,7 +301,7 @@ class ScriptLabelsTest(unittest.TestCase):
         self.assertNotIn("innerHTML", app)
         self.assertEqual(files["_headers"], plain["_headers"])  # CSP unchanged: no inline script, same origins
         changed = sorted(p for p in plain if plain[p] != files[p])
-        self.assertEqual(changed, ["agency-cards.js", "app.js", "findings/filter.js", "findings/index.html", "site-data.js"])
+        self.assertEqual(changed, ["agency-cards.js", "app.js", "findings/filter.js", "findings/index.html", "search.html", "site-data.js"])
         cards = files["agency-cards.js"].decode()
         for english in ('"no published findings yet"', '" published finding"'):
             self.assertNotIn(english, cards)
