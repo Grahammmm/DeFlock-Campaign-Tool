@@ -64,6 +64,9 @@ def enrich(root, maplibre=False):
         "terms": [{"term": "Zq title", "aliases": ["Zq alias"], "definition_md": "Zq definition.",
                    "rule_id": "ca-civ-1798.90.5-definitions",
                    "source_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."}]})
+    _write(content / "faq.json", {  # DF0022-01: reaches every faq label (a cited finding, a law reference, a glossary term in the question)
+        "schema_version": 1, "entries": [{"question": "Zq title question?", "answer_md": "Zq answer.",
+                                          "finding_ids": ["fnd_0000000000000002"], "rule_id": "ca-civ-1798.90.5-definitions"}]})
     _write(content / "meetings" / "zq-cancelled.json", {
         "id": "zq-cancelled", "body": "Zq board", "starts_at": "2026-09-01T18:00:00-07:00", "status": "cancelled"})
     if maplibre:
