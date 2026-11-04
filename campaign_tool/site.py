@@ -480,6 +480,13 @@ class Site:
         self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
                               for a in model["agencies"] if a["agency_id"] in qualifying}
         self.timeline = timeline_events(model, self.today, self._agency_pages)
+        # DF1952-06: curated topics (slug order); each finding id -> the topics listing it. No topics key = none.
+        self.topics = model.get("topics", [])
+        self.finding_by_id = {f["id"]: f for f in model["findings"]}
+        self.topics_of = {}
+        for topic in self.topics:
+            for finding_id in topic["finding_ids"]:
+                self.topics_of.setdefault(finding_id, []).append(topic)
 
     def agency_pages(self):
         """``{agency_id: "/agencies/<slug>.html"}`` for agencies with findings or sources, model order."""
@@ -511,6 +518,9 @@ class Site:
             f'<a href="/{page["slug"]}.html"' + (' aria-current="page"' if current == "page:" + page["slug"] else "")
             + f'>{e(page["title"])}</a>' for page in self.model.get("pages", []) if page["nav"])
         links += '<a href="/timeline.html"' + (' aria-current="page"' if current == "timeline" else "") + ">Timeline</a>"
+        if self.topics:  # DF1952-06: after every fixed item
+            links += ('<a href="/topics/"' + (' aria-current="page"' if current == "topics" else "")
+                      + f'>{self.t("nav.topics")}</a>')
         return f'<nav class="site-nav" aria-label="{self.t("nav.label")}">{links}</nav>'
 
     def header(self, current):
@@ -537,6 +547,8 @@ class Site:
         if self.map:
             parts.append(f'<p>{e(self.map["attribution"])} · <a href="/cameras.html">Mapped points</a></p>')
         parts.append(f'<p>{e(self.site["not_legal_advice"])}</p>')
+        if self.topics:  # DF1952-06
+            parts.append(f'<p><a href="/topics/">{self.t("nav.topics")}</a></p>')
         parts.append(f'<p><a href="/privacy.html">{self.t("footer.privacy")}</a></p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a> · <a href="/search.html">{self.t("footer.search")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}'
@@ -1021,6 +1033,31 @@ class Site:
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", "Findings packet", "Every published finding on one printable page", "/findings/packet-all.html", main)
 
+    def topics_index_html(self):
+        """/topics/ (DF1952-06): every topic in slug order, each title linked once."""
+        items = "".join(f'<li><a href="/topics/{e(topic["slug"])}.html">{e(topic["title"])}</a></li>'
+                        for topic in self.topics)
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div>'
+                f'<p class="eyebrow">{self.t("nav.topics")}</p><h2>{self.t("heading.topics")}</h2></div></div>'
+                f'<ul>{items}</ul><p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("topics", self.labels["title.topics"], self.labels["title.topics_description"], "/topics/", main)
+
+    def topic_html(self, topic):
+        """/topics/<slug>.html (DF1952-06): the intro, then the findings in the topic's own order via findings_list."""
+        listed = self.findings_list([self.finding_by_id[finding_id] for finding_id in topic["finding_ids"]])
+        intro = self.md(topic["intro_md"]) if topic["intro_md"].strip() else ""
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div>'
+                f'<p class="eyebrow">{self.t("nav.topics")}</p><h2>{e(topic["title"])}</h2></div></div>{intro}{listed}'
+                f'<p><a href="/topics/">{self.t("heading.topics")}</a></p>'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("topics", topic["title"], topic["title"], f'/topics/{topic["slug"]}.html', main)
+
+    def part_of_html(self, finding):
+        """``Part of: <links>`` to the topics listing this finding (slug order, each once); "" when none."""
+        links = [f'<a href="/topics/{e(topic["slug"])}.html">{e(topic["title"])}</a>'
+                 for topic in self.topics_of.get(finding["id"], [])]
+        return f'<p>{self.t("finding.part_of", topic=", ".join(links))}</p>' if links else ""
+
     def related_findings(self, finding, limit=5):
         """Up to `limit` other published findings with the same (non-empty) agency_id or a shared cited sha256, as
         (other, shared_count, same_agency): most shared records, then same agency, then newest published_at, then slug."""
@@ -1093,7 +1130,7 @@ class Site:
                 f'<span>{self.t("finding.confidence")} {self.confidence_link(finding["confidence"])}</span>'
                 f'<span>{self.t("finding.event_date", date=when(finding))}</span>'
                 f'<span>{self.t("finding.published", date=date_label(finding["published_at"]))}{updated}</span></div>'
-                f'<h2>{e(finding["title"])}</h2><p><strong>{e(finding["summary"])}</strong></p>{agency_line}'
+                f'<h2>{e(finding["title"])}</h2><p><strong>{e(finding["summary"])}</strong></p>{agency_line}{self.part_of_html(finding)}'
                 f'<p><a href="{e(finding_path(finding))}">Share this finding</a></p>'
                 + self.cite_html(finding)
                 + (self.md(finding["body_md"]) if finding["body_md"] else "")
@@ -1537,6 +1574,8 @@ class Site:
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
                  "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html"]
         paths += ["/cameras.html"] if self.map else []
+        if self.topics:  # DF1952-06: the index file topics/index.html is served at /topics/
+            paths += ["/topics/"] + [f'/topics/{t["slug"]}.html' for t in self.topics]
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
         paths += list(self.agency_pages().values())
         paths += [f'/findings/{f["slug"]}.html' for f in self.model["findings"]]
@@ -1713,7 +1752,8 @@ def _asset_plan(model):
                                f"({', '.join(sorted(ASSET_EXTENSIONS))})")
         if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}", part) for part in relative.parts):
             raise ContentError(f"public-assets/{relative}: use plain file and folder names")
-        if relative.parts[0] in GENERATED_TOP_LEVEL or relative.parts[0] in page_files:
+        if (relative.parts[0] in GENERATED_TOP_LEVEL or relative.parts[0] in page_files
+                or (model.get("topics") and relative.parts[0] == "topics")):  # DF1952-06: reserved only with topics
             raise ContentError(f"public-assets/{relative}: collides with a generated path")
         check_asset(source, relative, ASSET_MAX_BYTES)
         check_doc_asset(source, relative, ASSET_MAX_BYTES)  # PDF/SVG: active content, revisions, author fields
@@ -1745,6 +1785,10 @@ def _plan_site(root, today=None, notes=None):
         pages[f'meetings/{meeting["id"]}.html'] = site.meeting_html(meeting)
     for page in model["pages"]:
         pages[f'{page["slug"]}.html'] = site.content_page_html(page)
+    if site.topics:  # DF1952-06
+        pages["topics/index.html"] = site.topics_index_html()
+        for topic in site.topics:
+            pages[f'topics/{topic["slug"]}.html'] = site.topic_html(topic)
     for agency in model["agencies"]:
         if agency["agency_id"] in site.agency_pages():
             pages[site.agency_pages()[agency["agency_id"]][1:]] = site.agency_html(agency)
