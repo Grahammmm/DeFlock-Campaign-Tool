@@ -204,7 +204,7 @@ class SourcesJsonTests(unittest.TestCase):
         doc = self.data()
         entry = SCHEMA["$defs"]["source"]
         self.assertEqual(set(entry["properties"]), set(PUBLIC_LIBRARY_FIELDS))
-        self.assertEqual(set(SCHEMA["properties"]), set(PUBLIC_LIBRARY_TOP_LEVEL))
+        self.assertEqual(set(SCHEMA["properties"]), set(PUBLIC_LIBRARY_TOP_LEVEL) | {"license", "license_url"})
         for where in (SCHEMA, entry):
             self.assertIs(where["additionalProperties"], False)
         bad = [lambda d: d.update(extra=1), lambda d: d["sources"][0].update(note="n"),

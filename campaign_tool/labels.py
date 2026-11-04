@@ -21,6 +21,9 @@ DEFAULTS = {
     "nav.home_page": "Home page", "nav.topics": "Topics", "header.skip": "Skip to content", "header.attend": "Attend a meeting",
     "footer.credit": "{name} is an independent local initiative. Built with DeFlock Campaign Tool.",
     "footer.contact": "Contact:", "footer.feed": "Findings feed", "footer.sitemap": "Sitemap", "footer.search": "Search",
+    "footer.license": "Data and text:", "license.csv_note": "(license: {name})",
+    "license.about": "Text and data on this site are published under {license}.",
+    "license.about_camera": "Camera points: \u00a9 {osm}, {odbl}.",
     "search.title": "Search", "search.description": "Search the published findings and the source library",
     "search.label": "Search findings and sources",
     "search.intro": ("Looks through the titles, summaries and agency names of published findings and the titles of the "
@@ -116,6 +119,7 @@ DEFAULTS = {
     "meeting.minutes_confirmed": "Confirmed in the minutes approved on {date}",
     "meeting.minutes_pending": "Recorded by the campaign; minutes not yet approved", "agency.past_meetings": "Past meetings",
     "meeting.continued_to": "Continued to {date}", "meeting.continued_from": "Continued from {date}",
+    "meeting.staff_direction": "Staff were directed to: {direction} (by {date}, as stated in {source})",
     "vote.absent": "Absent", "vote.recused": "Recused",
     "agency.votes_heading": "How members voted", "agency.votes_none": "No recorded vote",
     "agency.votes_source": "Official record", "agency.votes_more": "\u2026 and {count} earlier votes on the meeting pages",
