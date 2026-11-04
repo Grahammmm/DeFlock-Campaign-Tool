@@ -267,15 +267,22 @@ def copy_status(source):
     return f' · <span class="copy-check">Public copy checked {time_tag(check["checked_on"])}: {verdict}</span>'
 
 
-def meeting_outcome_html(meeting):
-    """The organizer-verified outcome line (DF2237-11); "" when none was recorded."""
+def meeting_outcome_html(meeting, t=None):
+    """The organizer-verified outcome line (DF2237-11); "" when none was recorded. ``t`` is ``Site.t`` (labels);
+    the optional official recording (DF1422-10) is a plain link, never embedded, fetched or rewritten."""
     outcome = meeting.get("outcome")
     if not outcome:
         return ""
+    t = t or (lambda key, **values: html_text(DEFAULTS[key]).format(**values))
     vote = f' ({e(outcome["vote"])})' if outcome.get("vote") else ""
+    recording = ""
+    if outcome.get("recording_url"):
+        start = f' {t("meeting.recording_from", start=e(outcome["recording_start"]))}' if outcome.get("recording_start") else ""
+        recording = (f' · <a href="{e(outcome["recording_url"])}" rel="noopener noreferrer">{t("meeting.recording")}</a>'
+                     + start)
     return (f'<p class="meeting-outcome">Outcome: {e(OUTCOME_LABELS[outcome["result"]])} on {time_tag(outcome["on"])}{vote}'
             f' · <a href="{e(outcome["source_url"])}" rel="noopener noreferrer">Official record</a>'
-            f' · verified by {e(outcome["verified_by"])}</p>')
+            f' · verified by {e(outcome["verified_by"])}{recording}</p>')
 
 
 def _day(value):
@@ -538,7 +545,7 @@ class Site:
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a>'
                   if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">{self.t("meeting.page")}</a>'
         item = f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
-        item += meeting_outcome_html(meeting) if meeting["starts_at"][:10] < self.today.isoformat() else ""
+        item += meeting_outcome_html(meeting, self.t) if meeting["starts_at"][:10] < self.today.isoformat() else ""
         item += self._written_deadline(meeting)
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
@@ -1029,7 +1036,7 @@ class Site:
                 + (f'<p>{e(meeting["location"])}</p>' if meeting["location"] else "")
                 + (f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else "") + agenda
                 + self.who_decides(meeting.get("agency_id"))
-                + (meeting_outcome_html(meeting) + self.recorded_votes(meeting)
+                + (meeting_outcome_html(meeting, self.t) + self.recorded_votes(meeting)
                    if meeting["starts_at"][:10] < self.today.isoformat() else "")
                 + self._written_deadline(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")

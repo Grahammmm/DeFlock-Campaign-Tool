@@ -229,6 +229,7 @@ class LabelsTest(unittest.TestCase):
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
+                  "meeting.recording", "meeting.recording_from",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
                   "officials.heading", "officials.listed", "officials.source",
                   "vote.absent", "vote.abstain", "vote.no", "vote.recused", "vote.yes"]

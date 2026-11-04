@@ -429,7 +429,9 @@ MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment
                 "status", "participation", "outcome"}
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
-OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes"}
+OUTCOME_KEYS = {"result", "on", "source_url", "verified_by", "verified_at", "vote", "votes", "recording_url",
+                "recording_start"}
+RECORDING_START = re.compile(r"([0-9]{1,2}):([0-5][0-9]):([0-5][0-9])")
 VOTE_VALUES = ("yes", "no", "abstain", "absent", "recused")
 PARTICIPATION_KEYS = {"in_person", "remote", "written_comment", "speaker_minutes", "source_url", "verified_by",
                       "verified_at"}
@@ -475,7 +477,7 @@ def load_outcome(value, starts_at, status, label, today=None):
     """Organizer-verified result of a past meeting (DF2237-11), read from an official https record."""
     if status == "cancelled":
         raise ContentError(f"{label}: a cancelled meeting has no outcome")
-    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes"}, label)
+    _require_keys(value, OUTCOME_KEYS, OUTCOME_KEYS - {"vote", "votes", "recording_url", "recording_start"}, label)
     if not isinstance(value["result"], str) or value["result"] not in OUTCOME_RESULTS:
         raise ContentError(f"{label}.result: must be one of {', '.join(OUTCOME_RESULTS)}")
     held, now = starts_at[:10], (today or date.today()).isoformat()
@@ -502,10 +504,23 @@ def load_outcome(value, starts_at, status, label, today=None):
             raise ContentError(f"{where}.name: listed twice")
         if not isinstance(item["vote"], str) or item["vote"] not in VOTE_VALUES:
             raise ContentError(f"{where}.vote: must be one of {', '.join(VOTE_VALUES)}")
+    recording, start = value.get("recording_url"), value.get("recording_start")  # DF1422-10: the body's own recording
+    if "recording_url" in value:
+        if isinstance(recording, str) and len(recording) > 500:
+            raise ContentError(f"{label}.recording_url: at most 500 characters")
+        _https(recording, f"{label}.recording_url")
+    if "recording_start" in value:
+        match = RECORDING_START.fullmatch(start) if isinstance(start, str) else None
+        if "recording_url" not in value:
+            raise ContentError(f"{label}.recording_start: needs recording_url")
+        if not match or (int(match[1]), int(match[2]), int(match[3])) > (12, 0, 0):
+            raise ContentError(f"{label}.recording_start: use H:MM:SS, at most 12:00:00")
     return {"result": value["result"], "on": value["on"], "source_url": _https(value["source_url"], f"{label}.source_url"),
             "verified_by": value["verified_by"], "verified_at": value["verified_at"],
             **({"vote": value["vote"]} if "vote" in value else {}),
-            **({"votes": [{"name": v["name"], "vote": v["vote"]} for v in votes]} if "votes" in value else {})}
+            **({"votes": [{"name": v["name"], "vote": v["vote"]} for v in votes]} if "votes" in value else {}),
+            **({"recording_url": recording} if "recording_url" in value else {}),
+            **({"recording_start": start} if "recording_start" in value else {})}
 
 
 def load_meeting(document, label, today=None):

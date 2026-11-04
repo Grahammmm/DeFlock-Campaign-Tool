@@ -218,6 +218,17 @@ spaces collapsed). Problems are listed together by file row (the header is row 1
 and nothing is written. Votes are never inferred from `--vote`. Changing votes needs `--replace`, and
 `--replace` without `--votes` drops them (`votes: none`). The meeting page shows a "Recorded votes" table.
 
+`--recording-url URL [--recording-start H:MM:SS]` adds the body's own official https video or audio of the meeting,
+which the organizer has checked, to the same outcome. It is only ever a link: the tool never fetches, embeds,
+downloads or rewrites it (the start time is shown as text, not added to the URL). There is no recording-only
+command; a recording goes in with the outcome, or with `--replace` (which drops the old recording unless it is
+given again). The URL must be https with no user name or password, at most 500 characters; the start is
+`H:MM:SS` (minutes and seconds two digits) and at most `12:00:00`, and needs a URL
+(`recording_start needs recording_url`). Bad values are refused naming `recording_url` or `recording_start`,
+and `content-check` and `build` refuse the same mistakes in a hand-edited file. Past meetings in the meetings
+list and the meeting page then end the outcome line with `Watch the discussion (from H:MM:SS)`; the wording
+comes from the `meeting.recording` and `meeting.recording_from` labels. Outcomes without a recording render as before.
+
 ## Not done
 
 No automatic Legistar polling from the Worker, no RSVP collection (the `rsvp_count` column is
