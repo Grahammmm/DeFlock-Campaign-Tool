@@ -39,7 +39,7 @@ VENDOR_MAX_BYTES = 4 * 1024 * 1024
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies",
-                       "_redirects", "methods.html", "privacy.html", "search.html", "search.js"}
+                       "_redirects", "methods.html", "privacy.html", "search.html", "search.js", "meetings.xml"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
@@ -337,6 +337,7 @@ def asked_sentence(item, today):
     return ASKED_SENTENCES[item["state"]].format(day=day, on=on)
 
 
+ATOM_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})")
 OUTCOME_LABELS = {"approved": "Approved", "denied": "Denied", "continued": "Continued to a later meeting",
                   "amended": "Approved with amendments", "no_action": "No action taken",
                   "informational": "Informational item only"}
@@ -539,7 +540,8 @@ class Site:
         parts.append(f'<p>{e(self.site["not_legal_advice"])}</p>')
         parts.append(f'<p><a href="/privacy.html">{self.t("footer.privacy")}</a></p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
-        parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a> · <a href="/search.html">{self.t("footer.search")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}'
+        meetings_feed = f' · <a href="/meetings.xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else ""  # DF1103-10
+        parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a>{meetings_feed} · <a href="/search.html">{self.t("footer.search")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}'
                      ' · <a href="/methods.html">How to read our findings</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
@@ -586,6 +588,8 @@ class Site:
                 + f'  <title>{e(title)} | {self.name}</title>\n'
                 '  <link rel="stylesheet" href="/style.css">\n' + icon
                 + f'  <link rel="alternate" type="application/atom+xml" title="{self.t("title.feed")}" href="/feed.xml">\n'
+                + (f'  <link rel="alternate" type="application/atom+xml" title="{self.t("title.meetings_feed")}" href="/meetings.xml">\n'
+                   if self.model["meetings"] and (path == "/meetings.html" or path.startswith("/meetings/")) else "")
                 + canonical + extra)
 
     def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
@@ -1183,7 +1187,9 @@ class Site:
     def meetings_html(self):
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p>'
                 f'<h2>{self.t("heading.meetings")}</h2></div><p>{self.t("intro.meetings")} '
-                f'<a href="/data/meetings.json" type="application/json">{self.t("intro.meetings_open_data")}</a>.</p></div>'
+                f'<a href="/data/meetings.json" type="application/json">{self.t("intro.meetings_open_data")}</a>.'
+                + (f' <a href="/meetings.xml" type="application/atom+xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else "")
+                + '</p></div>'
                 '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
                 + '</div></section>\n')
         if self.past:
@@ -1597,6 +1603,62 @@ class Site:
             ET.SubElement(entry, f"{{{ns}}}category", term=finding["classification"])
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(feed, encoding="unicode") + "\n"
 
+    def meetings_feed_entries(self):
+        """DF1103-10: the staged meetings the feed lists, newest ``updated`` first, one per id, as plain dicts.
+
+        Scheduled meetings on or after the build day, every cancelled meeting, and every meeting with a recorded
+        outcome. Only public staged fields are read; ``updated`` is the outcome date or the stored start, never a clock."""
+        today, seen, entries = self.today.isoformat(), set(), []
+        for meeting in self.model["meetings"]:
+            outcome = meeting.get("outcome")
+            cancelled = meeting.get("status") == "cancelled"
+            if meeting["id"] in seen or not (cancelled or outcome or meeting["starts_at"][:10] >= today):
+                continue
+            seen.add(meeting["id"])
+            title = meeting["body"] + (f': {meeting["agenda_item"]}' if meeting["agenda_item"] else "")
+            summary = f'Starts: {meeting["starts_at"]}. Body: {meeting["body"]}.'
+            summary += f' Agenda item: {meeting["agenda_item"]}.' if meeting["agenda_item"] else ""
+            summary += " Cancelled." if cancelled else ""
+            summary += f' Agenda: {meeting["agenda_url"]}.' if meeting["agenda_url"] else ""
+            if outcome:
+                summary += f' Outcome: {OUTCOME_LABELS[outcome["result"]]} on {outcome["on"]}.'
+                summary += f' Vote: {outcome["vote"]}.' if outcome.get("vote") else ""
+            updated = outcome["on"] + "T00:00:00+00:00" if outcome else meeting["starts_at"]
+            if not ATOM_TIMESTAMP.fullmatch(updated):  # a stored start without seconds is still a valid instant
+                updated = utc_moment(updated).isoformat()
+            entries.append({"id": "urn:deflock-meeting:" + meeting["id"], "title": ("Cancelled: " if cancelled else "") + title,
+                            "path": f'/meetings/{meeting["id"]}.html', "agenda_url": meeting["agenda_url"],
+                            "source_url": outcome["source_url"] if outcome else None, "summary": summary,
+                            "updated": updated, "key": meeting["id"]})
+        entries.sort(key=lambda entry: (-utc_moment(entry["updated"]).timestamp(), entry["key"]))
+        return entries
+
+    def meetings_feed_xml(self):
+        """``meetings.xml`` (DF1103-10): Atom for the staged meetings; English like the other non-page outputs."""
+        ns = "http://www.w3.org/2005/Atom"
+        ET.register_namespace("", ns)
+        entries = self.meetings_feed_entries()
+        feed = ET.Element(f"{{{ns}}}feed")
+        ET.SubElement(feed, f"{{{ns}}}title").text = self.cfg["name"] + " meetings"
+        campaign_urn = "urn:deflock-campaign:" + re.sub(r"[^a-z0-9]+", "-", self.cfg["name"].lower())
+        ET.SubElement(feed, f"{{{ns}}}id").text = (self.base + "/meetings.xml") if self.base else campaign_urn + ":meetings"
+        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + "/meetings.xml", rel="self")
+        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + "/meetings.html", rel="alternate")
+        latest = max((utc_moment(entry["updated"]) for entry in entries), default=datetime(2000, 1, 1, tzinfo=timezone.utc))
+        ET.SubElement(feed, f"{{{ns}}}updated").text = latest.astimezone(timezone.utc).isoformat()
+        ET.SubElement(ET.SubElement(feed, f"{{{ns}}}author"), f"{{{ns}}}name").text = self.cfg["name"]
+        for item in entries:
+            entry = ET.SubElement(feed, f"{{{ns}}}entry")
+            ET.SubElement(entry, f"{{{ns}}}title").text = item["title"]
+            ET.SubElement(entry, f"{{{ns}}}id").text = item["id"]
+            ET.SubElement(entry, f"{{{ns}}}link", href=self.base + item["path"], rel="alternate")
+            for url in (item["agenda_url"], item["source_url"]):
+                if url:
+                    ET.SubElement(entry, f"{{{ns}}}link", href=url, rel="related")
+            ET.SubElement(entry, f"{{{ns}}}updated").text = item["updated"]
+            ET.SubElement(entry, f"{{{ns}}}summary", type="text").text = item["summary"]
+        return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(feed, encoding="unicode") + "\n"
+
     def robots_txt(self):
         return "User-agent: *\nAllow: /\n" + (f"Sitemap: {self.base}/sitemap.xml\n" if self.base else "")
 
@@ -1775,6 +1837,8 @@ def _plan_site(root, today=None, notes=None):
     if model["findings"]:  # written only when a finding page loads it
         files["findings/cite.js"] = CITE_JS
     files.update(site.agency_feeds())
+    if model["meetings"]:  # DF1103-10: no staged meetings, no feed (the tree swap drops a stale one)
+        files["meetings.xml"] = site.meetings_feed_xml()
     plan = []
     if model["map"]:
         found = model["map"]
