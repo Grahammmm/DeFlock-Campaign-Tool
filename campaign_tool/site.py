@@ -23,7 +23,7 @@ from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
 from .content import (CITY_KINDS, MAX_GEOJSON_BYTES, POINT_CHECK_STATUSES, TRANSPARENCY_FIELDS,
-                      ContentError, _read_json, load_content, utc_moment)
+                      ContentError, _read_json, check_finding_agencies, finding_agency_ids, load_content, utc_moment)
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
@@ -116,11 +116,23 @@ for(i=0;i<buttons.length;i++)wire(buttons[i]);})();
 FILTER_COUNT_JS = 'count.textContent="Showing "+shown+" of "+items.length;'
 
 
-def filter_js(relabel=False):
-    """findings/filter.js: today's FILTER_JS, or with ``relabel`` the count read from ``LABELS["js.filter_count"]``."""
+# DF1952-07: used only when a finding names extra agencies. A row with data-agencies matches the agency select by exact
+# space-delimited token; a row without it keeps today's scalar data-agency comparison. Classification and year unchanged.
+FILTER_PICK = 'function pick(k){return document.getElementById("filter-"+k);}\n'
+FILTER_MATCH = ('function match(li,k,v){var m=k==="agency"?li.getAttribute("data-agencies"):null;'
+                'if(m!==null)return(" "+m+" ").indexOf(" "+v+" ")>=0;return li.getAttribute("data-"+k)===v;}\n')
+FILTER_COMPARE = 'items[i].getAttribute("data-"+keys[j])!==s.value'
+
+
+def filter_js(relabel=False, multi=False):
+    """findings/filter.js: today's FILTER_JS, or with ``relabel`` the count read from ``LABELS["js.filter_count"]``;
+    ``multi`` (some finding names extra agencies) adds exact token membership for the agency select."""
+    script = FILTER_JS
+    if multi:
+        script = script.replace(FILTER_PICK, FILTER_PICK + FILTER_MATCH).replace(FILTER_COMPARE, "!match(items[i],keys[j],s.value)")
     if not relabel:
-        return FILTER_JS
-    return FILTER_JS.replace(FILTER_COUNT_JS, 'count.textContent=String(LABELS["js.filter_count"]).replace(/\\{(shown|total)\\}/g,'
+        return script
+    return script.replace(FILTER_COUNT_JS, 'count.textContent=String(LABELS["js.filter_count"]).replace(/\\{(shown|total)\\}/g,'
                              'function(m,k){return k==="shown"?shown:items.length;});')
 # search.js (DF1207-15): ES5, no dependency, same-origin under script-src 'self'. Reads only the already-published
 # data/findings.json and data/sources.json; every result is written with createElement/textContent. Fixed texts are
@@ -182,7 +194,7 @@ def search_js():
 # data/findings.json emits only these keys, built field by field (DF2237-09); anything else refuses the build.
 PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
                          "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
-                         "counterevidence", "corrections", "url", "citation", "agency_response")
+                         "counterevidence", "corrections", "url", "citation", "also_agency_ids", "agency_response")
 PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page")
 PUBLIC_CORRECTION_FIELDS = ("date", "note")
 # DF1103-08: only a received, declined or no_response reply is public; pending never is.
@@ -486,7 +498,11 @@ class Site:
                 self.law_status = ("reviewed on " + package["reviewed_at"] if package["status"] == "reviewed"
                                    else "draft, not legally reviewed")
         # DF2237-08: agencies with a published finding or a sources.json entry get /agencies/<slug>.html.
-        qualifying = {f["agency_id"] for f in model["findings"]} | {s["agency_id"] for s in model["sources"]}
+        for finding in model["findings"]:  # DF1952-07: a preview model's extra agencies must be this campaign's agencies
+            check_finding_agencies(finding, self.agencies_by_id, f'findings/{finding["slug"]}.json')
+        self.multi_agency = any(f.get("also_agency_ids") for f in model["findings"])
+        qualifying = ({aid for f in model["findings"] for aid in finding_agency_ids(f)}
+                      | {s["agency_id"] for s in model["sources"]})
         self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
                               for a in model["agencies"] if a["agency_id"] in qualifying}
         self.timeline = timeline_events(model, self.today, self._agency_pages)
@@ -501,6 +517,16 @@ class Site:
     def agency_pages(self):
         """``{agency_id: "/agencies/<slug>.html"}`` for agencies with findings or sources, model order."""
         return self._agency_pages
+
+    def findings_for(self, agency_id):
+        """Published findings about ``agency_id`` (primary or an also_agency_ids member), model order, each once."""
+        return [f for f in self.model["findings"] if agency_id in finding_agency_ids(f)]
+
+    def agency_links(self, finding):
+        """The finding's agencies as links (primary first, then extras as entered); unknown agencies are skipped."""
+        return ", ".join(
+            f'<a href="{e(self.agency_pages().get(a["agency_id"], "/agencies.html#" + a["slug"]))}">{e(a["name"])}</a>'
+            for a in (self.agencies_by_id.get(aid) for aid in finding_agency_ids(finding)) if a)
 
     def t(self, key, **values):
         """Label ``key`` escaped once; ``values`` are HTML the page already escaped (a name, a <time> tag, a count)."""
@@ -635,6 +661,8 @@ class Site:
                      if latest else "")
         attrs = (f' data-agency="{e(finding["agency_id"] or "none")}" data-classification="{e(finding["classification"])}"'
                  f' data-year="{e(finding["event_date"][:4])}"' if filter_attrs else "")
+        if filter_attrs and finding.get("also_agency_ids"):  # only multi-agency rows; legacy rows keep today's markup
+            attrs += f' data-agencies="{e(" ".join(finding_agency_ids(finding)))}"'
         return (f'<li{attrs}><div class="finding-meta">{self.pill(finding["classification"])}'
                 f'<span>{self.confidence_link(finding["confidence"])}</span><span>{self.t("finding.event_date", date=date_label(finding["event_date"]))}</span>{corrected}</div>'
                 f'<h3><a href="{e(finding_path(finding))}">{e(finding["title"])}</a></h3><p>{e(finding["summary"])}</p></li>')
@@ -652,9 +680,9 @@ class Site:
         if len(findings) < 4:
             return ""
         names = {a["agency_id"]: a["name"] for a in self.model["agencies"]}
-        ids = sorted({f["agency_id"] for f in findings if f["agency_id"]}, key=lambda a: (names.get(a, a).casefold(), a))
+        ids = sorted({a for f in findings for a in finding_agency_ids(f)}, key=lambda a: (names.get(a, a).casefold(), a))
         agencies = [(a, names.get(a, a)) for a in ids] + (
-            [("none", self.labels["finding.filter_no_agency"])] if any(not f["agency_id"] for f in findings) else [])
+            [("none", self.labels["finding.filter_no_agency"])] if any(not finding_agency_ids(f) for f in findings) else [])
         codes = {f["classification"] for f in findings}
         classifications = [(code, self.labels["classification." + code]) for code in CLASSIFICATION_LABELS if code in codes]
         years = [(y, y) for y in sorted({f["event_date"][:4] for f in findings}, reverse=True)]
@@ -878,7 +906,7 @@ class Site:
     def agencies_html(self):
         articles = []
         for agency in self.model["agencies"]:
-            findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
+            findings = self.findings_for(agency["agency_id"])
             sources = [s for s in self.model["sources"] if s["agency_id"] == agency["agency_id"]]
             links = self.official_links(agency)
             if sources:
@@ -953,7 +981,7 @@ class Site:
     def agency_html(self, agency):
         """``agencies/<slug>.html`` (DF2237-08): one agency's card facts, findings, source records and upcoming meetings."""
         aid, profile = agency["agency_id"], agency["profile"]
-        findings = [f for f in self.model["findings"] if f["agency_id"] == aid]
+        findings = self.findings_for(aid)
         records = "".join(
             f'<li><p>{e(s["title"])}</p><p class="record-no">sha256 <code>{e(short_hash(s["sha256"]))}</code> · '
             f'{self.t("agency.received", date=date_label(s["received_at"]))} · '
@@ -1026,8 +1054,8 @@ class Site:
                     title = f'<a href="/sources.html#{e(fragment)}">{title}</a>'
                 rule = f' · rule {e(source["rule_id"])}' if source.get("rule_id") else ''
                 sources.append(f'<li>{title} · sha256 {e(short_hash(source["sha256"]))} · {e(source["locator"])}{rule}</li>')
-            agency = self.agencies_by_id.get(f["agency_id"])
-            agency_line = (f'<p>Agency: <a href="{e(self.agency_pages().get(agency["agency_id"], "/agencies.html#" + agency["slug"]))}">{e(agency["name"])}</a></p>' if agency else '')
+            links = self.agency_links(f)
+            agency_line = f'<p>Agency: {links}</p>' if links else ''  # DF1952-07: primary first, then each extra agency
             limits = ''.join(f'<li>{e(item)}</li>' for item in f["limitations"]) or '<li>None stated.</li>'
             corrections = ''.join(f'<li>{time_tag(c["date"])}: {e(c["note"])}</li>' for c in sorted(f["corrections"], key=lambda c: c["date"]))
             corrections = f'<ul>{corrections}</ul>' if corrections else f'<p>{self.t("notice.no_corrections")}</p>'
@@ -1070,7 +1098,7 @@ class Site:
         return f'<p>{self.t("finding.part_of", topic=", ".join(links))}</p>' if links else ""
 
     def related_findings(self, finding, limit=5):
-        """Up to `limit` other published findings with the same (non-empty) agency_id or a shared cited sha256, as
+        """Up to `limit` other published findings sharing an agency (primary or also_agency_ids) or a cited sha256, as
         (other, shared_count, same_agency): most shared records, then same agency, then newest published_at, then slug."""
         own = {source["sha256"] for source in finding["sources"]}
         related = []
@@ -1078,7 +1106,7 @@ class Site:
             if other["id"] == finding["id"]:
                 continue
             shared = len(own & {source["sha256"] for source in other["sources"]})
-            same_agency = bool(finding["agency_id"]) and other["agency_id"] == finding["agency_id"]
+            same_agency = bool(set(finding_agency_ids(finding)) & set(finding_agency_ids(other)))  # DF1952-07: any shared agency
             if shared or same_agency:
                 related.append((other, shared, same_agency))
         related.sort(key=lambda r: (-r[1], not r[2], -utc_moment(r[0]["published_at"]).timestamp(), r[0]["slug"]))
@@ -1120,9 +1148,8 @@ class Site:
                            f'<p class="record-no">{number}{copy_status(entry)}</p></li>')
         corrections = ("".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time>: {e(c["note"])}</li>' for c in finding["corrections"])
                        or f'<li>{self.t("notice.no_corrections")}</li>')
-        agency = self.agencies_by_id.get(finding["agency_id"])
-        agency_line = (f'<p>{self.t("finding.agency")} <a href="{e(self.agency_pages().get(agency["agency_id"], "/agencies.html#" + agency["slug"]))}">'
-                       f'{e(agency["name"])}</a></p>' if agency else "")
+        links = self.agency_links(finding)
+        agency_line = f'<p>{self.t("finding.agency")} {links}</p>' if links else ""
         limits = ("".join(f'<li>{e(item)}</li>' for item in finding["limitations"]) or f'<li>{self.t("finding.none_stated")}</li>')
         counter = ("".join(f'<li>{e(item)}</li>' for item in finding["counterevidence"]) or f'<li>{self.t("finding.none_identified")}</li>')
         updated = f' · {self.t("finding.updated", date=date_label(finding["updated_at"]))}' if finding["updated_at"] else ""
@@ -1525,11 +1552,11 @@ class Site:
                 n = counts[entry["name"]]
                 entry["cameraCount"] = self.labels["js.city_points_one" if n == 1 else "js.city_points_many"].format(count=n)
             if not entry["facts"]:
-                findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
+                findings = self.findings_for(agency["agency_id"])
                 entry["facts"] = [f["title"] for f in findings] or [self.labels["js.city_no_findings"]]
             if agency["agency_id"] in self.agency_pages():
                 entry["agencyPage"] = self.agency_pages()[agency["agency_id"]]
-                entry["findingCount"] = sum(f["agency_id"] == agency["agency_id"] for f in self.model["findings"])
+                entry["findingCount"] = len(self.findings_for(agency["agency_id"]))
             cities[agency["slug"]] = entry
         if self.map:
             slug, label = self.map["controller"]["group_slug"], self.labels.__getitem__
@@ -1636,7 +1663,7 @@ class Site:
         """``{"findings/agency/<slug>.xml": atom}`` for each agency with a published finding, model order."""
         feeds = {}
         for agency in self.model["agencies"]:
-            findings = [f for f in self.model["findings"] if f["agency_id"] == agency["agency_id"]]
+            findings = self.findings_for(agency["agency_id"])
             if findings:
                 slug = agency["slug"]
                 feeds[f"findings/agency/{slug}.xml"] = self._atom(
@@ -1676,7 +1703,9 @@ class Site:
     def _public_finding(self, finding):
         """One published finding, copied key by key from the allowlists (never a dict copy)."""
         value = {key: finding[key] for key in PUBLIC_FINDING_FIELDS
-                 if key not in ("sources", "corrections", "url", "citation", "agency_response")}
+                 if key not in ("sources", "corrections", "url", "citation", "also_agency_ids", "agency_response")}
+        if finding.get("also_agency_ids") is not None:  # DF1952-07: optional; omitted entirely when absent
+            value["also_agency_ids"] = list(finding["also_agency_ids"])
         value["limitations"], value["counterevidence"] = list(finding["limitations"]), list(finding["counterevidence"])
         value["sources"] = [{"sha256_prefix": short_hash(s["sha256"]), "title": s["title"], "locator": s["locator"],
                              "rule_id": s["rule_id"], **({"page": s["page"]} if s.get("page") is not None else {})}
@@ -1888,7 +1917,7 @@ def _plan_site(root, today=None, notes=None):
         "data/agencies.json": site.agencies_json(),
     })
     if site.finding_filter():  # written only when the findings index loads it
-        files["findings/filter.js"] = filter_js(bool(site.js_labels))
+        files["findings/filter.js"] = filter_js(bool(site.js_labels), site.multi_agency)
     if model["findings"]:  # written only when a finding page loads it
         files["findings/cite.js"] = CITE_JS
     files.update(site.agency_feeds())

@@ -325,7 +325,7 @@ def load_site(document, assets_dir=None):
 FINDING_KEYS = {"id", "title", "slug", "summary", "body_md", "classification", "confidence",
                 "event_date", "sources", "published_at", "updated_at", "corrections", "state",
                 "author", "limitations", "counterevidence", "agency_id", "rule_version",
-                "duty", "exceptions", "rule_ids", "agency_response"}
+                "duty", "exceptions", "rule_ids", "also_agency_ids", "agency_response"}
 FINDING_REQUIRED = {"id", "title", "slug", "summary", "classification", "confidence",
                     "event_date", "sources", "published_at", "corrections", "state",
                     "author", "limitations", "counterevidence"}
@@ -402,7 +402,53 @@ def _agency_response(value, where, cited=None, today=None):
     return {key: value[key] for key in sorted(value)}
 
 
-def load_finding(document, label, today=None):
+MAX_ALSO_AGENCIES = 10
+
+
+def _also_agency_ids(document, agency_id, label):
+    """DF1952-07: the optional ``also_agency_ids``: 1-10 distinct agency ids besides the primary ``agency_id``, in the
+    order entered. None when the key is absent; every refusal names the field and the index."""
+    if "also_agency_ids" not in document:
+        return None
+    field, value = f"{label}.also_agency_ids", document["also_agency_ids"]
+    if not agency_id:
+        raise ContentError(f"{field}: needs a non-empty primary agency_id")
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_ALSO_AGENCIES:
+        raise ContentError(f"{field}: must be a list of 1 to {MAX_ALSO_AGENCIES} agency identifiers")
+    seen = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not AGENCY_ID.fullmatch(item):
+            raise ContentError(f"{field}[{index}]: invalid agency identifier")
+        if item == agency_id:
+            raise ContentError(f"{field}[{index}]: {item!r} is already the primary agency_id")
+        if item in seen:
+            raise ContentError(f"{field}[{index}]: duplicate agency identifier {item!r}")
+        seen.add(item)
+    return list(value)
+
+
+def finding_agency_ids(finding):
+    """Every agency a loaded finding is about, primary first then the extras as entered; a legacy finding with no
+    primary agency has none. One helper for every public surface (pages, feeds, counts, filter, related)."""
+    ids = [finding["agency_id"]] if finding.get("agency_id") else []
+    return ids + [item for item in finding.get("also_agency_ids") or () if item not in ids]
+
+
+def check_finding_agencies(finding, known_agency_ids, label):
+    """A finding that uses ``also_agency_ids`` may only name known agencies, primary included; a legacy primary-only
+    finding is never rejected here. Raises ContentError naming the field and index."""
+    if finding.get("also_agency_ids") is None:
+        return finding
+    known = set(known_agency_ids)
+    if finding["agency_id"] not in known:
+        raise ContentError(f"{label}.agency_id: unknown agency {finding['agency_id']!r}")
+    for index, item in enumerate(finding["also_agency_ids"]):
+        if item not in known:
+            raise ContentError(f"{label}.also_agency_ids[{index}]: unknown agency {item!r}")
+    return finding
+
+
+def load_finding(document, label, *, known_agency_ids=None, today=None):
     _require_keys(document, FINDING_KEYS, FINDING_REQUIRED, label)
     if document["state"] != "published":
         raise ContentError(f"{label}: state is {document['state']!r}; only published findings are rendered")
@@ -452,6 +498,7 @@ def load_finding(document, label, today=None):
     agency_id = document.get("agency_id")
     if agency_id is not None and (not isinstance(agency_id, str) or not AGENCY_ID.fullmatch(agency_id)):
         raise ContentError(f"{label}.agency_id: invalid agency identifier")
+    also_agency_ids = _also_agency_ids(document, agency_id, label)
     rule_ids = _text_list(document, "rule_ids", label)
     if any(not item.strip() or len(item) > 120 for item in rule_ids):
         raise ContentError(f"{label}.rule_ids: each rule id must be a non-empty string of at most 120 characters")
@@ -460,8 +507,7 @@ def load_finding(document, label, today=None):
     response = ({"agency_response": _agency_response(document["agency_response"], f"{label}.agency_response",
                                                       {s["sha256"] for s in sources}, today)}
                 if "agency_response" in document else {})
-    return {
-        **response,
+    loaded = {
         "id": finding_id,
         "title": _text(document, "title", label, allow_empty=False),
         "slug": slug,
@@ -484,6 +530,12 @@ def load_finding(document, label, today=None):
         "exceptions": (_text_list(document, "exceptions", label) if isinstance(document.get("exceptions"), list)
                        else _text(document, "exceptions", label, required=False, default=None)),
     }
+    if also_agency_ids is not None:  # absent stays absent: a primary-only finding keeps its exact shape
+        loaded["also_agency_ids"] = also_agency_ids
+    loaded.update(response)  # absent stays absent, like also_agency_ids: a finding with no reply keeps its exact shape
+    if known_agency_ids is not None:
+        check_finding_agencies(loaded, known_agency_ids, label)
+    return loaded
 
 
 def load_finding_preview(document, label, now=None):
@@ -1457,13 +1509,14 @@ def load_content(root, today=None):
         raise ContentError("content/site.json is required when content/ exists")
     site = load_site(_read_json(site_path), content_dir / "public-assets")
 
-    findings, slugs, ids = [], set(), set()
+    findings, slugs, ids, finding_files = [], set(), set(), {}
     for path in sorted((content_dir / "findings").glob("*.json")) if (content_dir / "findings").is_dir() else []:
         finding = load_finding(_read_json(path), "findings/" + path.name)
         if finding["slug"] in slugs or finding["id"] in ids:
             raise ContentError(f"findings/{path.name}: duplicate finding slug or id")
         slugs.add(finding["slug"])
         ids.add(finding["id"])
+        finding_files[finding["id"]] = "findings/" + path.name
         findings.append(finding)
     from .finding_law import check_findings  # local: finding_law imports this module
     law_problems = check_findings(root, findings)
@@ -1493,6 +1546,9 @@ def load_content(root, today=None):
         agencies = load_agencies(_read_json(agencies_path), "content/agencies.json", today)
     else:
         agencies = default_agencies(root)
+    known_agencies = {agency["agency_id"] for agency in agencies}
+    for finding in findings:  # DF1952-07: extra agencies of a multi-agency finding must be known agencies
+        check_finding_agencies(finding, known_agencies, finding_files[finding["id"]])
 
     map_config = load_map(content_dir, sources, today)
     if map_config:

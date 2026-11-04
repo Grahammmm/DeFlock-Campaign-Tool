@@ -34,6 +34,8 @@
         "published_at": {"type": "string"},
         "updated_at": {"type": ["string", "null"]},
         "agency_id": {"type": ["string", "null"]},
+        "also_agency_ids": {"type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true,
+                            "items": {"type": "string", "pattern": "^[a-z]{2}-[a-z0-9-]{1,80}$"}},
         "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
         "limitations": {"type": "array", "items": {"type": "string"}},
         "counterevidence": {"type": "array", "items": {"type": "string"}},
