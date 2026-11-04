@@ -72,8 +72,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         fixture = self.server.fixture
         path = urlsplit(self.path).path
         with fixture.lock:
-            fixture.active += 1
-            fixture.max_active = max(fixture.max_active,fixture.active)
             fixture.calls.append((self.headers.get('Host'),path))
             route = fixture.routes.get(path,{})
             sequence = route.get('sequence')
@@ -106,10 +104,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError,ConnectionResetError,OSError):
             pass
         finally:
-            with fixture.lock:
-                fixture.active -= 1
-                fixture.lock.notify_all()
             self.close_connection = True
+
+
+class TrackedSocket:
+    """Count client-owned connections, not asynchronously finishing handlers."""
+    def __init__(self, sock, fixture):
+        self.sock = sock
+        self.fixture = fixture
+        self.closed = False
+        with fixture.lock:
+            fixture.active += 1
+            fixture.max_active = max(fixture.max_active, fixture.active)
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+    def close(self):
+        with self.fixture.lock:
+            if not self.closed:
+                self.closed = True
+                try:
+                    self.sock.close()
+                finally:
+                    self.fixture.active -= 1
 
 
 class Server(socketserver.ThreadingMixIn,socketserver.TCPServer):
@@ -124,7 +142,7 @@ class Fixture:
     def __init__(self):
         self.routes = {}
         self.calls = []
-        self.lock = threading.Condition()
+        self.lock = threading.Lock()
         self.active = self.max_active = 0
         self.server = Server(('127.0.0.1',0),Handler)
         self.server.fixture = self
@@ -138,7 +156,7 @@ class Fixture:
         sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         sock.settimeout(timeout)
         sock.connect(('127.0.0.1',self.server.server_address[1]))
-        return sock
+        return TrackedSocket(sock, self)
     def transport(self,**kwargs):
         # Actual production HTTP parser/stream/deadline machinery. The only seam
         # maps a validated public numeric fixture address to this loopback server.
@@ -164,16 +182,9 @@ class World:
         return self.queue.inventory(host,'mail:'+source[:32],item_id or path.rsplit('/',1)[-1],
                                     'https://'+host+path+'?signed=private-fixture-token',source)
     def fetch(self,**kwargs):
-        result = run_download(self.queue,self.processing,apply=True,approval_loader=kwargs.pop('approval_loader',approval),
+        return run_download(self.queue,self.processing,apply=True,approval_loader=kwargs.pop('approval_loader',approval),
                             egress_loader=kwargs.pop('egress_loader',egress),
                             transport=kwargs.pop('transport',self.fixture.transport(max_bytes=kwargs.get('limits',engine.Limits()).max_bytes)),**kwargs)
-        # A client can finish reading before the handler's finally block runs.
-        # Drain that cleanup before a separate, sequential fetch starts; retain
-        # max_active so concurrent requests within a fetch still fail the oracle.
-        with self.fixture.lock:
-            if not self.fixture.lock.wait_for(lambda: self.fixture.active == 0, timeout=5):
-                raise AssertionError('fixture_response_cleanup_timeout')
-        return result
     def item_state(self,key):
         return dict(self.queue.db.execute('SELECT * FROM portal_items WHERE id=?',(key,)).fetchone())
     def canonical_counts(self):
