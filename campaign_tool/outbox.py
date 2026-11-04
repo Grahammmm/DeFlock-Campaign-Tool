@@ -50,6 +50,7 @@ STATES = ("proposed", "approved", "sending", "sent", "failed", "blocked")
 KINDS = ("send_request", "send_followup")
 CHANNELS = ("email", "muckrock")
 DAILY_AGENCY_CAP = 1
+MAX_FEE_CENTS = 9223372036854775807  # largest SQLite signed INTEGER
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS outbox (
   idempotency_key TEXT PRIMARY KEY,
@@ -107,6 +108,27 @@ class AmbiguousFailure(OutboxError):
 
 def now_iso():
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _validated_fee_cents(value, field):
+    """Exact integer cents only: no bool, float, string, null, negative or out-of-range value, never converted."""
+    if type(value) is not int or not 0 <= value <= MAX_FEE_CENTS:
+        raise OutboxError(f"{field} must be an integer between 0 and {MAX_FEE_CENTS}")
+    return value
+
+
+def _fee_cents_arg(text):
+    """argparse adapter for --fee-cap-cents: ASCII decimal digits only; the input is never echoed."""
+    message = f"campaign fee cap must be an integer between 0 and {MAX_FEE_CENTS}"
+    if not text or not text.isascii() or not text.isdigit():
+        raise argparse.ArgumentTypeError(message)
+    try:
+        value = int(text)
+    except ValueError:  # beyond the interpreter's digit-count limit
+        raise argparse.ArgumentTypeError(message) from None
+    if value > MAX_FEE_CENTS:
+        raise argparse.ArgumentTypeError(message)
+    return value
 
 
 def idempotency_key(kind, request_id, scope_version, intent_id=""):
@@ -280,6 +302,9 @@ def preview(draft_json):
 
 class Outbox:
     def __init__(self, path, campaign_fee_cap_cents=0, daily_agency_cap=DAILY_AGENCY_CAP, clock=None, attestor=None):
+        # Validate before any directory, chmod or SQLite effect; explicit None is the only unlimited setting.
+        if campaign_fee_cap_cents is not None:
+            _validated_fee_cents(campaign_fee_cap_cents, "campaign_fee_cap_cents")
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.path.parent, 0o700)
@@ -292,7 +317,7 @@ class Outbox:
             self.db.execute("ALTER TABLE outbox ADD COLUMN approval_evidence TEXT")
         if not existed or (os.stat(self.path).st_mode & 0o777) != 0o600:
             os.chmod(self.path, 0o600)
-        self.campaign_fee_cap_cents = None if campaign_fee_cap_cents is None else int(campaign_fee_cap_cents)
+        self.campaign_fee_cap_cents = campaign_fee_cap_cents
         self.daily_agency_cap = int(daily_agency_cap)
         self.clock = clock or now_iso
         # Only the hosted gateway passes an attestor (its signed approval frames); the CLI never does.
@@ -317,6 +342,7 @@ class Outbox:
         """Insert a ``proposed`` row; idempotent on the key (returns the existing row)."""
         if draft.channel not in CHANNELS:
             raise ValueError("channel must be one of " + "|".join(CHANNELS))
+        fee = _validated_fee_cents(draft.fee_cap_cents, "fee_cap_cents")  # before any lookup or insert
         key = idempotency_key(draft.kind, draft.request_id, draft.scope_version, draft.intent_id)
         existing = self.row(key)
         if existing:
@@ -325,7 +351,7 @@ class Outbox:
         self.db.execute(
             "INSERT INTO outbox (idempotency_key, kind, request_id, agency_id, scope_version, channel, draft_json, fee_cap_cents, state, created_at, updated_at) "
             "VALUES (?,?,?,?,?,?,?,?,'proposed',?,?)",
-            (key, draft.kind, draft.request_id, draft.agency_id, int(draft.scope_version), draft.channel, draft.to_json(), int(draft.fee_cap_cents), stamp, stamp))
+            (key, draft.kind, draft.request_id, draft.agency_id, int(draft.scope_version), draft.channel, draft.to_json(), fee, stamp, stamp))
         return self.row(key)
 
     # -- approval ------------------------------------------------------------
@@ -439,6 +465,14 @@ class Outbox:
                 raise OutboxError("approver mismatch")
         except (OutboxError, ValueError) as exc:
             raise Blocked("not_approved", "approval evidence does not verify for this draft") from exc
+        # The fee that was signed (draft_json) and the fee the cap reads (SQLite column) must be the
+        # same exact integer cents. Nothing is rewritten or repaired; a legacy malformed row stays refused.
+        try:
+            draft_fee = _validated_fee_cents(RequestDraft.from_json(row["draft_json"]).fee_cap_cents, "fee_cap_cents")
+            if _validated_fee_cents(row["fee_cap_cents"], "fee_cap_cents") != draft_fee:
+                raise OutboxError("fee mismatch")
+        except (OutboxError, TypeError, ValueError):
+            raise Blocked("invalid_fee_cap", "stored fee must be valid integer cents matching the approved draft") from None
         unresolved = self.db.execute(
             "SELECT count(*) FROM outbox WHERE request_id=? AND state='sending' AND idempotency_key<>?",
             (row["request_id"], row["idempotency_key"])).fetchone()[0]
@@ -450,8 +484,8 @@ class Outbox:
                 raise Blocked("legacy_followup_intent_unresolved", "legacy follow-up has no trustworthy intent mapping; inspect before migration")
         # A cap of 0 (the default) blocks any draft that offers a fee; only an explicit
         # None lifts the gate, so forgetting --fee-cap-cents can never allow a fee.
-        if self.campaign_fee_cap_cents is not None and row["fee_cap_cents"] > self.campaign_fee_cap_cents:
-            raise Blocked("fee_cap_exceeded", f"{row['fee_cap_cents']} > campaign cap {self.campaign_fee_cap_cents}")
+        if self.campaign_fee_cap_cents is not None and draft_fee > self.campaign_fee_cap_cents:
+            raise Blocked("fee_cap_exceeded", f"{draft_fee} > campaign cap {self.campaign_fee_cap_cents}")
         today = self.clock()[:10]
         sent_today = self.db.execute(
             "SELECT count(*) FROM outbox WHERE agency_id=? AND state IN ('sent','sending') AND substr(coalesce(sent_at, sending_at),1,10)=?",
@@ -535,7 +569,7 @@ class Outbox:
 def main(argv=None):
     p = argparse.ArgumentParser(description="Local outbox journal for records requests; never sends without an approved row.")
     p.add_argument("--journal", required=True, help="path to outbox.sqlite (private directory)")
-    p.add_argument("--fee-cap-cents", type=int, default=0, help="largest fee a draft may offer; 0 (default) blocks any fee")
+    p.add_argument("--fee-cap-cents", type=_fee_cents_arg, default=0, help="largest fee a draft may offer; 0 (default) blocks any fee")
     sub = p.add_subparsers(dest="command", required=True)
     pb = sub.add_parser("payload-batch"); pb.add_argument("--out", required=True)
     pb.add_argument("--agency", action="append")
@@ -561,7 +595,11 @@ def main(argv=None):
     try:
         if args.command == "propose":
             draft = RequestDraft(**json.loads(Path(args.draft_json).read_text(encoding="utf-8")))
-            row = box.propose(draft)
+            try:
+                row = box.propose(draft)
+            except OutboxError as exc:  # only proposal fee validation raises OutboxError here
+                print(json.dumps({"state": "refused", "reason": str(exc)}))
+                return 2
             print(json.dumps({"idempotency_key": row["idempotency_key"], "state": row["state"]}))
         elif args.command in ("payload-batch", "approve-batch"):
             from campaign_tool import outbox_batch
