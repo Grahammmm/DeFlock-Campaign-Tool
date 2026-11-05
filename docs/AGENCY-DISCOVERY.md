@@ -272,6 +272,9 @@ duplicates ignored) and lists only the rules they cite; `summary.json` reports `
 An unknown scope id, or `--scope` with no law package, stops `kit` before anything is written. Switching scopes
 refreshes unedited drafts; edited ones are kept, with the fresh draft in `requests.suggested/`.
 
+For a plain-language explanation of what each scope asks for, who may hold it and what to check in a response, see the
+[California records primer](RECORDS-PRIMER.md). It covers record types and response checks, not legal advice.
+
 ## What organizers must verify before sending
 
 The kit is a starting point, not a mailing list. Before any request leaves:
@@ -343,6 +346,28 @@ verified` (no `verified: true`; see `kit-verify-agency`), then `N of M drafts ne
 exits 3 when any draft needs attention. A Markdown link `[text](url)` is not a placeholder. `kit-sent` runs the same
 check for its agency and refuses a draft that still fails it.
 
+The draft's `To:` line follows a fixed order. A `records_email` is printed as is. Otherwise, for an agency with
+`verified: true`, the first route that qualifies: `To: records portal URL (VENDOR)` (a recorded `portal` with a
+supported vendor, `unknown` included, and an https URL), else `To: by post to the verified mailing address (kit-copy
+--for mail)` (a verified postal address with its source and checked date). After `kit-verify-agency`, run `kit` again
+to regenerate it; an unedited draft is refreshed, while an edited one is kept byte for byte and the new text goes to
+`kit/requests.suggested/`, as for any other change. An unverified agency, an agency with only a `records_url`, or a
+malformed portal or postal record keeps the `[official records custodian]` placeholder: a records page is not a
+portal. The no-law-package fallback draft does not use `records_email` in its `To:` line (a known limitation, not
+changed here), but does name a verified portal or postal route. Only the `To:` line changes; the other placeholders
+(fee cap, date range, requester) must still be filled, the postal address never appears in the draft, and approval
+and sending stay manual. Nothing is sent.
+
+When `kit` kept your edited draft it saved the fresh one as `kit/requests.suggested/<id>.md`. If that file differs from
+`kit/requests/<id>.md`, `kit-check` adds `edited draft differs from the fresh draft in requests.suggested/` to that
+agency's row, marks the row not ok (exit 3, as for a placeholder) and lists: `## ` scope headings only in the fresh
+draft or only in your edited draft, whether the date-range, fee-cap and law-package-status lines differ, and the
+rule-citation lines (`- <rule_id>: ...`) only in one of the two. `--json` adds a `suggested_differs` object to that row
+only. Compare with `diff -u -- kit/requests/<id>.md kit/requests.suggested/<id>.md` from the campaign directory
+(`kit-check` never runs it). This is a prompt to review, not a verdict that your edit is wrong; nothing is merged or
+overwritten. A suggestion that is a symlink, a directory or another non-regular file, or cannot be read, is named and
+never followed. Without a suggestion the output is unchanged. `kit-sent` and `kit-copy` gates were not expanded.
+
 To copy a draft out, `kit-copy --directory D --agency ID --for portal|email|mail [--json]` writes only the sendable part,
 the Subject line and the request text after it, to `kit/outgoing/ID.txt` (with its `characters` count, to compare a
 portal's limit) or an unsent `kit/outgoing/ID.eml` addressed to the verified `records_email` (no From or Date; your
@@ -356,7 +381,8 @@ verified postal address, then the `Subject:` line and the sendable text exactly 
 included (the repeated return address is intended). The HTML is inert escaped text with inline print styles: no
 scripts, links, images, forms or external loads, and nothing opens a print dialog. It needs `requester` in
 `kit/request-settings.json`, a verified postal address, and a draft that passes `kit-check` for that agency in full
-(including a hand-filled `To:` line and the parts left out of the copy); other agencies' drafts do not matter. Anything
+(including the `To:` line and the parts left out of the copy; a regenerated draft for a verified agency with a posted
+route already names it, see above); other agencies' drafts do not matter. Anything
 missing stops with exit 3 before a file is written. The two files are written one after the other, not as a pair: if
 the second write fails, the first may already be the new letter; the command says so, and running it again rewrites both.
 Review, print and post the letter yourself, then record it with the unchanged `kit-sent --channel mail`. Nothing is
@@ -512,3 +538,29 @@ The report has three sections, each headed by the notice above: seed agencies th
 Atlas rows that match no seed agency; and every selected agency in `kit/agencies.json`, organizer-added ones included,
 that no Atlas row matched. The last list is not a finding about use. `--json` prints the same report as JSON and
 nothing else. Use `kit-agency select` yourself if a lead is worth a request; this command never does.
+
+## Agencies that receive our agencies' data, as request leads (private, read-only)
+
+`kit-agency suggest --from-sharing --directory D` reads the recorded vendor-portal sharing lists
+(`content/agencies.json`, `profile.sharing`, see `content agency-sharing`) and lists the agencies they name as receivers
+as leads for requests of your own. **Receiving data is a reason to ask, not evidence of misuse**; it says nothing about
+access, transfer or compliance. Nothing is selected, written, fetched or sent.
+
+Matching: an in-state receiver is matched to the agency seed of the campaign's state (every county, not only yours) by
+name, equal after case, whitespace and one trailing period are normalized; accents, abbreviations, other punctuation and
+near spellings do not match. Exactly one seed agency makes a suggestion, with the seed name and id, the spellings the
+lists use and how many of the campaign's agencies list it (each counted once, not per list entry). Spellings that reach
+one seed agency are one suggestion. A name no seed agency has, or one that more than one seed agency has, is listed
+separately as written, with candidate ids and no recommendation. Federal (kind `federal` or state `US`), private and
+out-of-state listings are counted, not suggested or named; the counts are listings, not agencies.
+
+Each suggestion shows one of three states by agency id in `kit/agencies.json`: `selected`, `not selected`, or
+`not in kit`. `kit-agency select` only marks an agency already in the file, so a lead marked `not in kit` is added by a
+separate step you take yourself (`kit-agency add` or `import`); this command never adds or selects anything. The seed
+covers only the agencies it lists, so a receiver outside it appears under unmatched names. With no recorded sharing
+list the report says `No recorded sharing lists.`
+
+## Count a saved ALPR search log (private, read-only)
+
+`kit-search-log --csv FILE --agency ID` counts a locally saved agency search log by month, organization and purpose category,
+without printing any purpose text. See [SEARCH-LOG.md](SEARCH-LOG.md).

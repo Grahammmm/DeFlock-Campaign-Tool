@@ -201,13 +201,35 @@ def _clean_agency_name(name):
     return name.strip()
 
 
+def _non_email_recipient(agency):
+    """The To text for a verified agency with no records_email (portal, else verified post), or None."""
+    if agency.get("records_email") or agency.get("verified") is not True:
+        return None
+    from .content import PORTAL_VENDORS
+    portal = agency.get("portal")
+    if isinstance(portal, dict) and portal.get("vendor") in PORTAL_VENDORS and isinstance(portal.get("url"), str):
+        url = portal["url"]
+        try:
+            _https_url(url, "portal")
+        except ValueError:
+            url = None
+        if url and not any(c in "<>[]" or unicodedata.category(c) in ("Cc", "Cf", "Cs", "Zl", "Zp") for c in url):
+            return f"records portal {url} ({portal['vendor']})"
+    try:
+        postal_proof(agency)
+    except ValueError:
+        return None
+    return "by post to the verified mailing address (kit-copy --for mail)"
+
+
 def render_combined_request(package, agency, requester_block=DEFAULT_REQUESTER,
                             fee_cap=DEFAULT_FEE_CAP, date_range="[date range, e.g. 2023-01-01 through today]",
                             scopes=None):
     """One draft covering every request scope in the law package, or only ``scopes`` (package order)."""
     name = _clean_agency_name(agency["name"])
     chosen = [scope for scope in package["request_scopes"] if scopes is None or scope["scope_id"] in scopes]
-    custodian = agency.get("records_email") or "[official records custodian - verify on the agency's website]"
+    custodian = (agency.get("records_email") or _non_email_recipient(agency)
+                 or "[official records custodian - verify on the agency's website]")
     law_info = package["records_law"]
     rules = {rule["rule_id"]: rule for rule in package["rules"]}
     lines = [
@@ -269,6 +291,10 @@ def render_template_request(agency, template_path=TEMPLATE_PATH, requester_block
     name = _clean_agency_name(agency["name"])
     template = Path(template_path).read_text(encoding="utf-8")
     body = template.replace("[agency]", name)
+    route = _non_email_recipient(agency)
+    if route:
+        head, sep, rest = body.partition("\nSubject:")
+        body = head.replace("\nTo: [official records custodian]", "\nTo: " + route, 1) + sep + rest
     for slot, value in (("[date range]", date_range), ("[narrow date range]", date_range),
                         ("[explicit approved cap]", fee_cap), ("[requester-approved contact details]", requester_block)):
         body = body.replace(slot, value) if value is not None else body

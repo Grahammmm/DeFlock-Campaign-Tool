@@ -31,11 +31,15 @@ CLAIM_WORDING_BLOCKERS = {"campaign_tool/review.py", "tools/flock_dashboard.py",
 # Modules the walk below flags that were read and emit nothing a member of the public could read (reason each).
 REVIEWED_NOT_PUBLISHING = {
     "campaign_tool/content.py": "loads and validates content; its only writes are the scaffold helpers",
+    "campaign_tool/content_events.py": "validates content/events.json (shared privacy lint on every text field); it writes nothing",
     "campaign_tool/content_init.py": "writes the starter content/ templates for the organizer to edit",
+    "campaign_tool/content_statements.py": "reads and validates content/statements.json (its lint runs in the build); it writes nothing",
     "campaign_tool/finding_packet.py": "private reviewer packet; refuses to write inside public/ or content/",
     "campaign_tool/image_meta.py": "reads image metadata; the writer is the copy step in site.py",
     "campaign_tool/kit_calendar.py": "private .ics under kit/, refused inside public/",
     "campaign_tool/recent.py": "private recent-activity report under kit/",
+    "campaign_tool/finding_search_log.py": "composes a private draft from a verified summary; the only write is findings._write_draft into private/drafts",
+    "campaign_tool/search_log.py": "read-only private stdout aggregates of a local search log; writes nothing",
     "campaign_tool/setup_cmd.py": "writes the starter config",
     "campaign_tool/site_check.py": "reads the built tree",
     "campaign_tool/correction_requests.py": "private log; the site build never reads it",
@@ -65,8 +69,10 @@ MARK = re.compile(r"^(public|feed\.xml|agency-cards\.js|social|briefs|cards)$|^(
 USES = ("privacy_patterns", "flock_privacy")
 SKIP = re.compile(r"tools/(accept_|fc\d)|^campaign_tool/records/|^campaign_tool/(privacy_patterns|publish_paths)\.py$|^tools/(check_public_tree|ci_affected)")
 # What each site-driven entry is fed: the published field that reaches its artefact.
-PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name"), "atom-feed": ("finding.summary",),
-          "agency-feeds": ("finding.summary",), "corrections-feed": ("finding.summary",), "open-graph-meta": ("finding.title",),
+PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name", "statement.quote", "statement.context_note",
+                          "elsewhere.place", "elsewhere.body", "elsewhere.as_stated",
+                          "event.title", "event.venue", "event.description_md", "event.accessibility_note"), "atom-feed": ("finding.summary",),
+          "events-calendar": ("event.title", "event.venue"), "agency-feeds": ("finding.summary",), "agency-meetings-calendars": ("agency.name",), "corrections-feed": ("finding.summary",), "open-graph-meta": ("finding.title",),
           "agency-cards": ("site.county_profile.summary", "agency.profile.summary"), "data-exports": ("source.title", "agency.name"),
           "map-geojson": ("map.cameras.geojson", "map.city-boundaries.geojson", "map.county.geojson")}
 TEXT_ONLY = {"flock-page", "flock-publish-brief", "flock-publish-stage"}  # these tools refuse without printing the category per value
@@ -257,6 +263,30 @@ class Drivers:
             document["features"][0].setdefault("properties", {})["how"] = value
             path.write_text(json.dumps(document), encoding="utf-8")
             return
+        if kind == "elsewhere":  # DF1107-04: a one-entry content/elsewhere.json whose one field holds the value
+            entry = {"place": "Fictional City", "state": "ZZ", "body": "Fictional City Council", "decided_on": "2026-01-02",
+                     "kind": "paused", "as_stated": "Fictional statement.", "source_url": "https://records.example.test/item",
+                     "checked_on": "2026-01-03", key: "Text %s end (fictional)" % value}
+            (root / "content" / "elsewhere.json").write_text(json.dumps([entry]), encoding="utf-8")
+            return
+        if kind == "statement":  # DF1107-07: a roster body plus one statement whose public field carries the value
+            from datetime import date
+            day = date.today().isoformat()
+            row = {"agency_id": "ca-cedar-city-council", "official": "Rowan Example", "said_on": day, "quote": "Plain words.",
+                   "context": "meeting", "source_url": "https://cedar.example/minutes", "checked_on": day}
+            row[key] = "Text %s end" % value
+            (root / "content" / "officials.json").write_text(json.dumps({"schema_version": 1, "bodies": [{
+                "agency_id": "ca-cedar-city-council", "officials": [{
+                    "name": "Rowan Example", "role": "Member", "source_url": "https://cedar.example/council", "checked_on": day}]}]}),
+                encoding="utf-8")
+            (root / "content" / "statements.json").write_text(json.dumps([row]), encoding="utf-8")
+            return
+        if kind == "event":  # DF1107-08: one synthetic campaign event with the probed field replaced
+            event = {"id": "forum", "title": "Teach-in", "starts_at": "2026-10-10T18:00:00Z", "ends_at": "2026-10-10T19:00:00Z",
+                     "venue": "Cedar Library", "description_md": "A synthetic gathering."}
+            event[key] = "Text %s end (fictional)" % value
+            (root / "content" / "events.json").write_text(json.dumps([event]), encoding="utf-8")
+            return
         path = {"finding": next((root / "content" / "findings").glob("*.json")), "site": root / "content" / "site.json",
                 "source": root / "content" / "sources.json", "agency": root / "content" / "agencies.json"}[kind]
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -344,6 +374,40 @@ class Drivers:
         case.approve(module.A, "N1", ref="ask " + value)
         code, out = case.brief()
         return out if code == 1 and not case.brief_md.exists() else None
+
+    def drive_agency_brief(self, entry, value, probe):
+        from datetime import datetime, timezone
+        from campaign_tool.agency_brief import build_brief
+        root = self.campaign()
+        path = root / "content" / "agencies.json"
+        agencies = json.loads(path.read_text(encoding="utf-8"))
+        agencies[1].update(verified=True, verification={"source_url": "https://example.invalid/verified", "checked_on": "2026-10-30"})
+        agencies[1]["profile"]["contract"] = {"vendor": "Synthetic vendor", "start": "2026-01-01", "end": "2027-01-01",
+                                              "renewal_note": "Note %s end" % value, "source_url": "https://example.invalid/c",
+                                              "checked_on": "2026-10-30"}
+        path.write_text(json.dumps(agencies), encoding="utf-8")
+        try:
+            build_brief(root, agencies[1]["agency_id"], now=datetime(2026, 11, 4, tzinfo=timezone.utc))
+        finally:
+            self.case.assertFalse((root / "kit").exists(), "a refused brief must write nothing")
+
+    def drive_meeting_comment(self, entry, value, probe):
+        """DF1407-06: the SAME tainted file's runtime digest is recorded first, so only the lint can refuse it."""
+        from datetime import date
+        from campaign_tool import meeting_comment_publish, meeting_comments
+        root = self.campaign()
+        folder = root / "content" / "meetings"
+        (folder / "2026-10-cedar-council.json").rename(path := folder / "cedar-council-2026-10.json")
+        letter = root.parent / "letter.txt"
+        letter.write_text("Please note %s end" % value, encoding="utf-8")
+        day = date(2026, 10, 20)
+        meeting_comments.record(root, "cedar-council-2026-10", "2026-10-10", "email", letter, today=day)
+        before = path.read_bytes()
+        try:
+            meeting_comment_publish.publish(root, "cedar-council-2026-10", letter, signer_public=True, today=day)
+        except ValueError:
+            self.case.assertEqual(path.read_bytes(), before, "a refused comment must write nothing")
+            raise
 
     def drive_email(self, entry, value, probe):
         case = self.borrowed("test_email_lint", "EmailLintTests", "test_private_patterns_named_never_printed")
@@ -490,7 +554,8 @@ class RegistryTests(unittest.TestCase):
                                       ({"site": {"tagline": value}}, None, "site.tagline"),
                                       ({"site": {"county_profile": {"summary": value}}}, None, "site.county_profile.summary"),
                                       ({}, {"name": value}, "campaign.name"),
-                                      ({"supporters": [{"name": value}]}, None, "supporters[0].name")]:
+                                      ({"supporters": [{"name": value}]}, None, "supporters[0].name"),
+                                      ({"events": [{"venue": value}]}, None, "events[0].venue")]:
                 with self.assertRaises(ContentError) as raised:
                     _privacy_gate(model, cfg)
                 self.assertEqual(str(raised.exception), "privacy lint: %s: %s" % (where, category))
@@ -540,6 +605,16 @@ class SeededFailureControls(unittest.TestCase):
         stripped = copy.deepcopy(entries[0])
         stripped["marker"] = "no_such_lint_call("
         self.assertIn("lost its lint call", source_problem(stripped))
+
+    def test_control_1a_the_meeting_comment_path_without_its_lint_fails_a_naming_it(self):
+        from campaign_tool import meeting_comment_publish
+        entries = [e for e in publish_paths.PUBLISH_PATHS if e["id"] == "meeting-comment-publish"]
+        self.assertEqual(lint_problems(Drivers(self), entries), [])
+        from campaign_tool import content  # the loader re-checks the staged file, so both copies of the call are disabled
+        with mock.patch.object(meeting_comment_publish, "comment_text_problems", lambda text: []), \
+                mock.patch.object(content, "comment_text_problems", lambda text: []):
+            problems = lint_problems(Drivers(self), entries)
+        self.assertTrue(len(problems) >= 3 and all(p.startswith("meeting-comment-publish (campaign_tool/meeting_comment_publish.py)") for p in problems), problems)
 
     def test_control_1b_removing_one_category_check_from_a_tool_fails_a_naming_it(self):
         entry = next(e for e in publish_paths.PUBLISH_PATHS if e["id"] == "flock-publish-brief")

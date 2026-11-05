@@ -16,11 +16,13 @@ from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES,
                       default_agencies,
                       history_present, load_agencies, load_finding, load_history, load_map, load_meeting, load_pages, load_site,
                       load_snapshot, load_sources, load_topic, plain_text, point_check_problems, point_nodes, topic_paths, read_coverage, read_faq, read_glossary,
-                      topics_namespace_problem)
+                      load_officials, topics_namespace_problem)
 from .finding_law import check as check_law, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
-from .legal_claims import faq_notes
+from .content_elsewhere import read_elsewhere
+from .meeting_elsewhere import reference_problems
+from .legal_claims import elsewhere_notes, faq_notes, statement_notes
 from .labels import MAX_LABELS_BYTES, load_labels
 from .newsletter.archive import FOLDER as NEWSLETTERS, issue_paths, load_public_issue
 from .redirects import check_file as check_redirects
@@ -190,10 +192,12 @@ def _asked_links(problems, root, document):
             problems.append(f"{label}: older than its request's latest step ({latest[0]} on {latest[1]}); run kit-asked")
 
 
-def content_problems(root, limit=LIMIT, faq_out=None):
+def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today=None, elsewhere_out=None):
     """Sorted, de-duplicated problem lines for ``root/content``; None when there is no content/.
 
-    ``faq_out``: a list that receives the validated FAQ entries when content/faq.json is present and valid."""
+    ``faq_out``: a list that receives the validated FAQ entries when content/faq.json is present and valid.
+    ``statements_out``: likewise for content/statements.json (DF1107-07). ``elsewhere_out``: the same for
+    content/elsewhere.json (DF1107-04). ``today``: the build day (default: today)."""
     root = Path(root)
     content_dir = root / "content"
     if not content_dir.is_dir():
@@ -219,7 +223,7 @@ def content_problems(root, limit=LIMIT, faq_out=None):
         findings.append(finding)
     findings_intact = len(findings) == len(_files(content_dir, "findings"))
 
-    meeting_ids, loaded_meetings = set(), []
+    meeting_ids, loaded_meetings, labelled_meetings = set(), [], []
     for path in _files(content_dir, "meetings"):
         label = "meetings/" + path.name
         meeting = _attempt(problems, label, lambda: _meeting(path, label))
@@ -229,6 +233,7 @@ def content_problems(root, limit=LIMIT, faq_out=None):
             problems.append(f"meetings/{path.name}: duplicate meeting id")
         meeting_ids.add(meeting["id"])
         loaded_meetings.append(meeting)
+        labelled_meetings.append((label, meeting))
     problems.extend(continuation_problems(loaded_meetings))  # DF0022-07: the same cross-record rule build enforces
     problems.extend(cosign_problems(root, loaded_meetings))  # DF2207-14: every staged meeting naming a stale co-signer
 
@@ -251,6 +256,13 @@ def content_problems(root, limit=LIMIT, faq_out=None):
     faq = read_faq(root, findings if findings_intact else None, problems)
     if faq_out is not None and faq is not None:
         faq_out.extend(faq)
+    elsewhere = read_elsewhere(root, today, problems)  # DF1107-04: the build's own reader; names every independent problem
+    if elsewhere_out is not None and elsewhere is not None:
+        elsewhere_out.extend(elsewhere)
+    if elsewhere is not None or not os.path.lexists(content_dir / "elsewhere.json"):  # DF1107-06: an unreadable file is already named
+        problems.extend(reference_problems(labelled_meetings, elsewhere))
+    from .content_events import read_events  # local: content_events imports content
+    read_events(root, problems)  # DF1107-08: the build's own reader and privacy lint; it names every independent problem itself
     # DF0022-03: the build's own reader and refusal text; with a refused finding file ids are not matched (already named)
     _attempt(problems, "coverage.json", lambda: read_coverage(root, findings if findings_intact else None))
 
@@ -289,6 +301,7 @@ def content_problems(root, limit=LIMIT, faq_out=None):
 
     from .agency_actions import action_problems  # local: agency_actions imports content
     problems.extend(action_problems(root, agencies))  # DF0237-01: the build's own reader; None agencies skips only the id check
+    _statements(problems, root, agencies, statements_out, today or date.today())  # DF1107-07
 
     # DF1952-01: the law check follows agency loading so a local overlay's agency_ids are judged against loaded agencies
     # (None, when agencies are themselves refused and named, skips only that scope check).
@@ -315,10 +328,29 @@ def content_problems(root, limit=LIMIT, faq_out=None):
     return _cap(sorted(set(problems)), limit)
 
 
+def _statements(problems, root, agencies, out, today):
+    """DF1107-07: content/statements.json with the build's own reader. Its roster is content/officials.json, loaded with the
+    build's validator and reported here only when statements exist; a roster that failed (named once) or agencies that
+    failed skip only the impossible membership check, never the independent structural checks."""
+    from .content_statements import FILE, read_statements
+    if not os.path.lexists(root / "content" / FILE):
+        return
+    officials = None
+    officials_path = root / "content" / "officials.json"
+    if agencies is not None:
+        if officials_path.is_file() or officials_path.is_symlink():
+            officials = _attempt(problems, "officials.json", lambda: load_officials(_read_json(officials_path), agencies, today))
+        else:
+            officials = {}
+    rows = read_statements(root, officials, today, problems)
+    if out is not None and rows:
+        out.extend(rows)
+
+
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
 FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "pages/", "topics/", "kit/", "law/", "newsletters/",
                  "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json",
-                 "faq.json", "coverage.json", "body-schedules.json")
+                 "faq.json", "coverage.json", "body-schedules.json", "statements.json", "officials.json", "elsewhere.json", "events.json")
 
 
 def problem_record(line):
@@ -343,8 +375,8 @@ def _law_package(root):
 
 def run_cli(root, as_json=False):
     """Print ``content/: N problem(s)`` and one line each (or one ``content-check-v1`` JSON line); exit 3 when any."""
-    faq = []
-    problems = content_problems(root, limit=None, faq_out=faq)
+    faq, statements, elsewhere = [], [], []
+    problems = content_problems(root, limit=None, faq_out=faq, statements_out=statements, elsewhere_out=elsewhere)
     if problems is None:
         if as_json:
             print(json.dumps({"schema": SCHEMA, "count": 0, "problems": [], "truncated": False,
@@ -364,7 +396,9 @@ def run_cli(root, as_json=False):
             print(package)
         for line in _cap(problems, LIMIT):
             print(line)
-    for note in faq_notes(faq):  # DF0022-01: stderr only, advisory; the stdout schema, count and exit code are unchanged
+    for note in dict.fromkeys(faq_notes(faq) + statement_notes(statements)):  # DF0022-01 / DF1107-07: stderr only, advisory; the stdout schema, count and exit code are unchanged
+        print(note, file=sys.stderr)
+    for note in elsewhere_notes(elsewhere):  # DF1107-04: stderr only, advisory, like the FAQ notes above
         print(note, file=sys.stderr)
     if problems:
         raise SystemExit(3)

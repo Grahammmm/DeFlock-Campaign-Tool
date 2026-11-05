@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deflock-campaign-tool.invalid/schemas/officials-open-data.schema.json",
+  "title": "Officials open data (public/data/officials.json)",
+  "description": "The organizer-checked public roster of who decides for each body, with its official source. Never records contacts, notes, votes or any other key.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "campaign", "generated_from", "base_url", "url_kind", "bodies"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "license": {"enum": ["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"]},
+    "license_url": {"type": "string", "pattern": "^https://creativecommons.org/"},
+    "campaign": {"type": "string", "minLength": 1},
+    "generated_from": {"const": "content/officials.json"},
+    "base_url": {"type": ["string", "null"]},
+    "url_kind": {"enum": ["absolute", "relative"]},
+    "bodies": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/body"}}
+  },
+  "$defs": {
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agency_id", "name", "officials"],
+      "properties": {
+        "agency_id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "officials": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/official"}}
+      }
+    },
+    "official": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "role", "profile_url", "source_url", "checked_on"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "role": {"type": "string", "minLength": 1},
+        "profile_url": {"type": ["string", "null"], "pattern": "^https://"},
+        "source_url": {"type": "string", "pattern": "^https://"},
+        "checked_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
+      }
+    }
+  }
+}

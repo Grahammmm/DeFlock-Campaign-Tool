@@ -107,7 +107,7 @@ class ContentPagesTests(unittest.TestCase):
     def test_reserved_and_finding_slugs_refused_and_public_unchanged(self):
         build_site(self.root)
         before = self.snapshot()
-        for slug in ("about", "404", "feed", "meetings", "corrections", "sitemap", "style", "index", "supporters", "sharing", "press", FINDING_SLUG):
+        for slug in ("about", "404", "feed", "meetings", "corrections", "sitemap", "style", "index", "supporters", "sharing", "press", "elsewhere", "events", FINDING_SLUG):
             with self.subTest(slug=slug):
                 path = self.page(f"{slug}.json")
                 self.assert_refused(rf"^pages/{slug}\.json: slug {slug} is reserved$")
@@ -213,7 +213,7 @@ class ContentPagesTests(unittest.TestCase):
         without = self.snapshot()
         top = {n for n in without if n.endswith(".html") and "/" not in n}
         self.assertEqual(top, {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html",
-                               "corrections.html", "404.html", "cameras.html", "methods.html", "privacy.html", "search.html", "timeline.html", "requests.html"})
+                               "corrections.html", "404.html", "cameras.html", "methods.html", "privacy.html", "search.html", "timeline.html", "requests.html", "data.html"})
         self.page("README.md", "Pages go here.")
         build_site(self.root)
         self.assertTrue(self.snapshot() == without, "an ignored file in pages/ changed the output")

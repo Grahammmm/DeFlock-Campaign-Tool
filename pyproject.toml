@@ -31,6 +31,7 @@ campaign_tool = ["assets/*.tmpl",
                  "_resources/templates/records-request.md",
                  "_resources/checklists/contract-checklist.json",
                  "_resources/examples/faq.json",
+                 "_resources/examples/pages/background.json",
                  "_resources/examples/pages/help-map.json"]
 "campaign_tool.records" = ["_release_manifest.json", "_release_dependencies.txt"]
 "campaign_tool.records.runner" = ["templates/*.in"]
