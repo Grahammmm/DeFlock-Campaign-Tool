@@ -5,6 +5,7 @@ with one explicit off-by-default exception: site.json corrections.show_request_c
 import json
 import os
 import re
+import stat
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -230,3 +231,123 @@ def quarterly_counts(root, today=None):
     return [{"quarter": quarter, "received": row["received"], "accepted": row["accepted"],
              "declined": row["declined"], "still_open": row["open"]}
             for quarter, row in sorted(cohorts.items(), reverse=True)]
+
+
+# DF1952-13: private, never-sent reply drafts from the recorded disposition.
+REPLY_DIR = ("kit", "corrections", "replies")
+REPLY_BANNER = "DRAFT — NOT SENT. Review and edit before sending it yourself."
+_LOG_REFUSAL = f"private/{NAME} is missing, unreadable or invalid; no draft was written"
+_CONTENT_REFUSAL = "public content is unreadable; no draft was written (run content-check)"
+
+
+def _reply_request(root, request_id):
+    if type(request_id) is not int or request_id < 1:
+        raise ValueError("--id must be a positive whole number")
+    private = Path(root) / "private"
+    try:
+        path = private / NAME
+        if os.path.islink(private) or not private.is_dir() or not _exists(path):
+            raise ValueError
+        document = _validate_document(_read_json(path, 4 * 1024 * 1024, "correction request log"))
+    except Exception:  # fixed text only: no path, key or private value from the log
+        raise ValueError(_LOG_REFUSAL) from None
+    for item in document["requests"]:
+        if item["id"] == request_id:
+            return item
+    raise ValueError(f"no correction request {request_id}")
+
+
+def _reply_finding(root, finding_id):
+    """(finding or None, base_url or None). Missing content is absence; present but invalid content refuses."""
+    try:
+        model = load_content(root)
+    except Exception:
+        raise ValueError(_CONTENT_REFUSAL) from None
+    if not model:
+        return None, None
+    found = next((f for f in model["findings"] if f["id"] == finding_id), None)
+    return found, model["site"].get("base_url")
+
+
+def _quote(note):
+    return "\n".join("> " + line for line in (note.splitlines() or [""]))
+
+
+def _render_reply(request, finding, base):
+    state, subject = request["state"], request["finding_id"]
+    url = (base.rstrip("/") + "/findings/" + finding["slug"] + ".html") if finding and base else None
+    lines = [f"# Draft reply to correction request {request['id']}", "", REPLY_BANNER, "",
+             "[EDIT ME: add greeting outside this repository]", "", f"Subject: finding {subject}", ""]
+    if state == "open":
+        lines += [f"We received your correction request about this finding on {request['received_on']}. "
+                  "It is being reviewed, and we will write again when a decision has been recorded."]
+    elif state == "accepted":
+        matches = [c["date"] for c in finding["corrections"]
+                   if request["received_on"] <= c["date"] <= request["decided_on"]] if finding else []
+        lines += ["We accepted your correction request about this finding.", "",
+                  f"Received on: {request['received_on']}", f"Decision date: {request['decided_on']}",
+                  "Correction date: " + (matches[0] if len(matches) == 1 else "[EDIT ME: confirm the correction date]"),
+                  "", "Recorded decision note:", _quote(request["note"]), "",
+                  "[EDIT ME: confirm the correction addressed this request]"]
+    else:
+        lines += ["We reviewed your correction request about this finding and did not accept it.", "",
+                  f"Received on: {request['received_on']}", f"Decision date: {request['decided_on']}", "",
+                  "Reason recorded:", _quote(request["note"])]
+    lines += ["", "Finding: " + (url or "[EDIT ME: add the finding URL]"), "", "[EDIT ME: sign-off]", ""]
+    return "\n".join(lines)
+
+
+def _reply_target(root, request_id):
+    """Preflight every component without creating anything; returns the target path."""
+    current, missing = Path(root), 0
+    for part in REPLY_DIR + (f"{request_id}.md",):
+        current = current / part
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            missing += 1
+            continue
+        if missing or stat.S_ISLNK(mode) or (part != f"{request_id}.md" and not stat.S_ISDIR(mode)):
+            raise ValueError(f"kit/corrections/replies/{request_id}.md: path has a link or non-directory, or the draft already exists; "
+                             "nothing was written")
+        if part == f"{request_id}.md":
+            raise ValueError(f"kit/corrections/replies/{request_id}.md already exists; edit it by hand "
+                             "(an existing draft is never replaced)")
+    return current
+
+
+def reply(root, request_id):
+    """Write kit/corrections/replies/<id>.md from the recorded disposition; never overwrites, never sends."""
+    request = _reply_request(root, request_id)
+    finding, base = _reply_finding(root, request["finding_id"])
+    text = _render_reply(request, finding, base)
+    target = _reply_target(root, request_id)
+    rel = f"kit/corrections/replies/{request_id}.md"
+    root = Path(root)
+    made = []
+    try:
+        current = root
+        for part in REPLY_DIR:
+            current = current / part
+            if not _exists(current):
+                os.mkdir(current, 0o700)
+                os.chmod(current, 0o700)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        made.append(target)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as out:
+            os.fchmod(out.fileno(), 0o600)
+            out.write(text)
+            out.flush()
+            os.fsync(out.fileno())
+        made.clear()
+    except FileExistsError:
+        raise ValueError(f"{rel} already exists; edit it by hand (an existing draft is never replaced)") from None
+    except OSError:
+        raise ValueError(f"{rel} could not be written safely; nothing was sent") from None
+    finally:
+        for partial in made:
+            try:
+                os.unlink(partial)
+            except OSError:
+                pass
+    return {"written": rel, "id": request_id, "state": request["state"]}
