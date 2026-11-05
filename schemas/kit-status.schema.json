@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://deflock-campaign-tool.invalid/schemas/kit-status.schema.json",
   "title": "kit-status",
-  "description": "Printed by `kit-status` (campaign_tool.kit_track.status): one JSON document on stdout, read-only. requests has one row per recorded hand-sent request, in sent_on then agency_id then request order. received_on, receipt_evidence and note appear together only for a request whose agency receipt was recorded (kit-received); determination_due and with_extension are then counted from received_on, and note reads 'counted from receipt D (KIND)'. Dates are provisional reminders, not legal due dates. more, correspondence, correspondence_prefixes and correspondence_more are conditional: correspondence and correspondence_prefixes appear together only when the request has correspondence records; more and correspondence_more appear only when the list holds more than 50 entries (the prefixes then stop at 50). Nothing is sent or published.",
+  "description": "Printed by `kit-status` (campaign_tool.kit_track.status): one JSON document on stdout, read-only. requests has one row per recorded hand-sent request, in sent_on then agency_id then request order. received_on, receipt_evidence and note appear together only for a request whose agency receipt was recorded (kit-received); determination_due and with_extension are then counted from received_on, and note reads 'counted from receipt D (KIND)'. Dates are provisional reminders, not legal due dates. more, correspondence, correspondence_prefixes and correspondence_more are conditional: correspondence and correspondence_prefixes appear together only when the request has correspondence records; more and correspondence_more appear only when the list holds more than 50 entries (the prefixes then stop at 50). extension_expected_on, extension_reason and extension_note are conditional: the first two appear only when the request's extension step recorded the agency's own stated determination dispatch date or reason (kept apart from stated_production_date and next_installment); extension_note appears only when that stated date is later than with_extension. Nothing is sent or published.",
   "type": "object",
   "additionalProperties": false,
   "required": ["requests", "law_package_status", "note"],
@@ -32,6 +32,9 @@
           "with_extension": {"$ref": "#/$defs/date_or_null"},
           "steps": {"type": "integer", "minimum": 0},
           "extended": {"type": "boolean"},
+          "extension_expected_on": {"$ref": "#/$defs/date"},
+          "extension_reason": {"type": "string", "minLength": 1, "maxLength": 200},
+          "extension_note": {"type": "string", "minLength": 1},
           "closed": {"type": "boolean"},
           "last_step": {
             "type": ["object", "null"],

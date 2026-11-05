@@ -108,7 +108,7 @@ class ExpectedOnTests(unittest.TestCase):
     def test_refused_on_kinds_that_do_not_state_a_date(self):
         flag = ("--expected-on", "2026-04-01")
         self.refused_untouched(("2026-03-03", "acknowledged", *flag), RULE)
-        self.refused_untouched(("2026-03-03", "extension", *flag), RULE)
+        self.ok("2026-03-03", "extension", *flag)  # DF1407-02: an extension keeps its own stated date, not a production one
         self.refused_untouched(("2026-03-03", "fee_estimate", "--amount", "5", *flag), RULE)  # before any determination
         self.ok("2026-03-03", "fee_estimate", "--amount", "5")
         self.refused_untouched(("2026-03-04", "fee_estimate", "--amount", "5", *flag), RULE)  # still none

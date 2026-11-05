@@ -14,7 +14,7 @@ from .body_schedules import read_body_schedules
 from .content import CONTINUATION_KEYS, _read_json, continuation_issues, continuation_targets, load_agencies, load_meeting
 
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
-         "request_installment_due", "request_download_pending", "request_download_expired", "finding_ready",
+         "request_installment_due", "request_stated_extension_date_passed", "request_download_pending", "request_download_expired", "finding_ready",
          "finding_blocked",
          "contract_ending", "minutes_pending", "continued_pending", "direction_pending", "stale_comment_kit", "stale_contact", "review_waiting",
          "stale_body_schedule", "expected_regular_meeting", "unreadable")
@@ -162,6 +162,11 @@ def _requests(root, as_of, directory, law_base, owner=None):
         elif row["state"] == "producing" and row["days"] == 0:
             what, row = (f"Check on {name}: the next installment the agency stated for {row['due']} is due today",
                          {**row, "state": "installment_due"})
+        elif row["state"] == "stated_extension_date_passed":  # the agency's own notice date; not a legal finding
+            later = f"; provisional extended date {row['with_extension']}" if row.get("with_extension") else ""
+            what = (f"Check on {name}: {kit_track.EXTENSION_PASSED} {row['due']}{later}"
+                    + (f" ({kit_track.EXTENSION_LATER})" if kit_track.EXTENSION_LATER in row["note"] else "")
+                    + "; no determination, production or denial is recorded")
         elif row["state"] == "download_pending":  # an expiring link: its own agency-stated date, days left
             n = row["days"]
             what = f"Download records from {name} before {row['due']} ({n} day{'' if n == 1 else 's'} left)"
@@ -175,7 +180,7 @@ def _requests(root, as_of, directory, law_base, owner=None):
         if extra:  # counted from the recorded agency receipt: say so, never as a legal deadline
             what += f" ({kit_track.receipt_note(row['received_on'], row['receipt_evidence'])})"
         item = _item("request_" + row["state"], what, command, row["due"],
-                     row["agency_id"] + (row["request"] if row.get("kind") == "download"
+                     row["agency_id"] + (row["request"] if row.get("kind") in ("download", "extension")
                                          else "" if row["request"] == "main" else "#" + row["request"]))
         items.append({**item, **extra})
     return items
