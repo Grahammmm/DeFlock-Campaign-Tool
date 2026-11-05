@@ -40,6 +40,7 @@ from .privacy_patterns import refusal
 from .shell import render
 from .provenance_text import EXPLAINER, source_line
 from .redirects import load_redirects
+from .site_data_catalogue import DATASETS, DESCRIPTOR, PAGE, datapackage_json, resource_records
 from .review import ROLES
 
 from .sharing_summary import GROUPS as SHARING_GROUPS, summarize_sharing
@@ -51,12 +52,12 @@ VENDOR_MAX_BYTES = 4 * 1024 * 1024
 SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmpl"  # DF1103-12
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
-                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
+                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "data.html", "vendor", "meetings", "agencies", "sources",
                        "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html", "elsewhere.html", "events.html", "events.ics"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
-    "data/cameras.geojson",)
+    "data/cameras.geojson", DESCRIPTOR)
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
 CLASSIFICATION_DEFINITIONS = {
@@ -777,6 +778,34 @@ class Site:
                "attribution": ODBL["attribution"], "attribution_url": ODBL["attribution_url"]}
         return json.dumps(doc, ensure_ascii=False, separators=(",", ":")) + "\n"
 
+    def data_html(self, records):
+        """/data.html (DF2207-12): one row per open-data file with its size and full SHA-256, schema link and licence.
+        The fixed data-* attributes on each row are what ``build --check`` compares with the Data Package."""
+        rows = []
+        for record in records:
+            path, csv_file = record["path"], record["mediatype"] == "text/csv"
+            schema_label = self.t("data.schema_csv") if csv_file else e(record["schema_url"].rsplit("/", 1)[-1])
+            licence = "; ".join(f'<a href="{e(item["path"])}" rel="noopener noreferrer">{e(item["name"])}</a>'
+                                for item in record["licenses"]) or self.t("data.license_unstated")
+            if record["attribution"]:
+                licence += f' · {e(record["attribution"])}'
+            rows.append(
+                f'<tr data-path="{e(path)}" data-bytes="{record["bytes"]}" data-sha256="{record["sha256"]}">'
+                f'<th scope="row"><a href="/{e(path)}" download>{e(path.rsplit("/", 1)[-1])}</a></th>'
+                f'<td>{e(record["description"])}</td><td class="bytes">{record["bytes"]}</td>'
+                f'<td class="sha256"><code>{record["sha256"]}</code></td>'
+                f'<td><a href="{e(record["schema_url"])}" rel="noopener noreferrer">{schema_label}</a></td>'
+                f'<td>{licence}</td></tr>')
+        head = "".join(f'<th scope="col">{self.t(key)}</th>' for key in (
+            "data.download", "data.description", "data.bytes", "data.sha256", "data.schema", "data.license"))
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div>'
+                f'<h2>{self.t("data.title")}</h2></div></div><p>{self.t("data.intro")}</p><p>{self.t("data.csv_note")}</p>'
+                f'<p><a href="/data/datapackage.json">{self.t("data.package")}</a></p>'
+                f'<table><caption>{self.t("data.title")}</caption><thead><tr>{head}</tr></thead>'
+                f'<tbody>{"".join(rows)}</tbody></table>'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("data", self.labels["data.title"], self.labels["data.intro"], "/data.html", main)
+
     def md(self, text):
         """``markdown_lite`` with this site's public-asset image sizes (own-line ``![alt](/path)`` images render)."""
         return markdown(text, images=self.image_sizes) if self.image_sizes else markdown(text)
@@ -839,6 +868,7 @@ class Site:
             parts.append(f'<p><a href="/press.html">{self.t("footer.press")}</a></p>')
         parts.append(f'<p><a href="/privacy.html">{self.t("footer.privacy")}</a>'
                      + (f' · <a href="/glossary.html">{self.t("footer.glossary")}</a>' if self.glossary else "") + '</p>')
+        parts.append(f'<p><a href="/data.html">{self.t("footer.data")}</a></p>')  # DF2207-12: before the final links paragraph
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         meetings_feed = f' · <a href="/meetings.xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else ""  # DF1103-10
         meetings_feed += f' · <a href="/events.ics">{self.t("footer.events_calendar")}</a>' if self.events else ""  # DF1107-10
@@ -2709,7 +2739,7 @@ class Site:
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
                  "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html",
-                 "/requests.html"]  # DF1103-13
+                 "/requests.html", "/data.html"]  # DF1103-13; DF2207-12
         paths += ["/cameras.html"] if self.map else []
         paths += ["/glossary.html"] if self.glossary else []
         paths += ["/faq.html"] if self.faq else []  # DF0022-01
@@ -3145,7 +3175,7 @@ def _assert_public(doc, name, top, nested):
 
 def _write(path, text, written):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    path.write_bytes(text.encode("utf-8"))  # exact UTF-8 bytes (CRLF kept) so the catalogue hashes match the file
     written.append(path)
 
 
@@ -3232,6 +3262,26 @@ def _privacy_gate(model, cfg=None):
 
 def _plan_site(root, today=None, notes=None):
     """Render every page and check every copy without writing: ``(files, copies)``, or None without content/."""
+    planned = _plan(root, today, notes)
+    return None if planned is None else planned[:2]
+
+
+def _catalogue_payloads(files, plan, city, read):
+    """``{public path: bytes}`` of the registered open-data files only (planned texts and data/ copies), read via
+    ``read(copy source or None, public path)``."""
+    sources = {Path(relative).as_posix(): source for source, relative, _ in plan}
+    paths = [path for path in DATASETS if path in files] + [path for path in sources if path in DATASETS or path == city]
+    return {path: read(sources.get(path), path) for path in paths}
+
+
+def _render_catalogue(site, payloads):
+    """``(data.html, data/datapackage.json)`` text from the exact bytes of the listed files."""
+    records = resource_records(payloads, {"campaign": site.license, "city_boundary": site.city_path})
+    return site.data_html(records)["html"], datapackage_json(records, site.cfg["name"])
+
+
+def _plan(root, today=None, notes=None):
+    """``(files, copies, site)`` as ``_plan_site`` plus the Site that rendered them, or None without content/."""
     from .cli import read_config
     root = Path(root)
     cfg = read_config(root)
@@ -3343,6 +3393,10 @@ def _plan_site(root, today=None, notes=None):
     plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
     for source, _, limit in plan:  # every copy is checked before the filesystem changes
         _check_copy(source, limit)
+    # DF2207-12: the catalogue is calculated from the exact bytes planned above, so it joins the redirect and privacy checks
+    site.city_path = Path(model["map"]["controller"]["city_boundaries_url"]).as_posix() if model["map"] else None
+    payloads = _catalogue_payloads(files, plan, site.city_path, lambda source, path: Path(source).read_bytes() if source else files[path].encode("utf-8"))
+    files[PAGE], files[DESCRIPTOR] = _render_catalogue(site, payloads)
     if model["site"].get("press"):  # DF2207-10: links only the open data this build writes, never a scan of public/
         files["press.html"] = site.press_html(sorted({name for name in PRESS_DATA_FILES if name in files} | set(map_data)))["html"]
     if "redirects" in model:  # DF2037-16: any present file, even JSON null, is checked against every path written
@@ -3354,7 +3408,7 @@ def _plan_site(root, today=None, notes=None):
     site.check_privacy([*files, *(Path(relative).as_posix() for _, relative, _ in plan)], files)  # before anything is written
     if isinstance(notes, list):
         notes.extend(site.camera_notes())
-    return files, plan
+    return files, plan, site
 
 
 def build_site(root, today=None, notes=None):
@@ -3371,18 +3425,25 @@ def build_site(root, today=None, notes=None):
     from .cli import read_config
     root = Path(root)
     public = root / "public"
-    planned = _plan_site(root, today, notes)
+    planned = _plan(root, today, notes)
     if planned is None:
         return build_starter(read_config(root), public)
-    files, plan = planned
+    files, plan, site = planned
     staging = Path(tempfile.mkdtemp(dir=root, prefix=".public.new-"))  # swapped in only when complete
     new, written = staging / "public", []
     try:
         new.mkdir()
         for name, text in files.items():
-            _write(new / name, text, written)
+            if name not in (PAGE, DESCRIPTOR):  # DF2207-12: the catalogue is rendered last, from the staged bytes
+                _write(new / name, text, written)
         for source, relative, limit in plan:
             _copy(source, new / relative, written, limit)
+        staged = _catalogue_payloads(files, plan, site.city_path, lambda _, path: (new / path).read_bytes())
+        again = _render_catalogue(site, staged)
+        if again != (files[PAGE], files[DESCRIPTOR]):  # a copy changed after it was planned: nothing is swapped in
+            raise ContentError("data catalogue: an open-data file changed while the site was built; build again")
+        _write(new / PAGE, again[0], written)
+        _write(new / DESCRIPTOR, again[1], written)
         if public.exists():
             old = public.rename(root / f".public.old-{datetime.now(timezone.utc):%Y%m%dT%H%M%S%fZ}")
             try:

@@ -537,6 +537,9 @@ def _site_claim_notes(root):
 def build(root, check=False, budget=None, weights_out=None, weights_baseline=None):
     from .site import build_site
     public = root / "public"
+    if check and any(os.path.lexists(public / name) for name in ("data.html", "data/datapackage.json")):
+        from .site_check import check_data_catalogue  # DF2207-12: refuse an already-missing or changed listed file first
+        check_data_catalogue(public)
     notes = []
     written = build_site(root, notes=notes)
     for note in notes:  # informational: the exit code is unchanged
@@ -553,7 +556,9 @@ def build(root, check=False, budget=None, weights_out=None, weights_baseline=Non
     for note in _site_claim_notes(root):  # DF-4 alert-only: notes for the publish gate, never an error or an exit code
         print(note)
     if check:
-        from .site_check import check_accessibility, check_links
+        from .site_check import check_accessibility, check_data_catalogue, check_links
+        if content_mode:
+            check_data_catalogue(public)  # DF2207-12: the fresh output, before any success line
         hits = check_public_tree(public)
         for path, line, label in hits:
             print(f"public/{path}:{line}: {label}", file=sys.stderr)
@@ -972,6 +977,9 @@ def main():
     supporters_remove = supporters.add_parser("remove", help="Drop one organization's public entry and private record")
     supporters_remove.add_argument("--directory", required=True)
     supporters_remove.add_argument("--id", required=True)
+    press_check = press_commands.add_parser("check", help="Check private press drafts and letters against current findings and meetings; read-only")
+    press_check.add_argument("--directory", required=True)
+    press_check.add_argument("--json", action="store_true", dest="as_json", help="Print JSON only")
     press_letter = press_commands.add_parser("letter", help="Draft a private letter to the editor; sends nothing")
     press_letter.add_argument("--directory", required=True)
     press_letter.add_argument("--finding", action="append", default=[], help="Published finding id (repeat for 1 to 3)")
@@ -1760,6 +1768,11 @@ def main():
             social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days, args.outcomes,
                        args.finding[0] if args.thread else None, args.events)
         elif args.command == "press":
+            if args.press_command == "check":
+                from .press_check import check_press, format_text
+                report = check_press(root)
+                print(json.dumps(report, indent=2, ensure_ascii=False) if args.as_json else format_text(report))
+                sys.exit(3 if report["problems"] else 0)
             if args.press_command == "letter":
                 from .press import build_letter
                 result = build_letter(root, args.finding, args.date, words=args.words, outlet=args.outlet)

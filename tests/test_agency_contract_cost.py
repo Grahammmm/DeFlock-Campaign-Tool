@@ -248,7 +248,7 @@ class ContractCostTests(unittest.TestCase):
         self.assertEqual(none["agencies/cedar.html"], page_with_term_only)  # a no-cost page is byte-identical, as before
         self.assertIn('data-label="Contract cost as stated">not checked</td>', self.glance_row())
         self.assertIn('data-label="Contract ends">not checked</td>', self.glance_row())
-        self.assertEqual({k for k in old if old[k] != none[k]}, {"agencies.html", "data/agencies.json", "data/agencies.csv", "index.html"} & set(old))
+        self.assertEqual({k for k in old if old[k] != none[k]}, {"agencies.html", "data/agencies.json", "data/agencies.csv", "index.html", "data.html", "data/datapackage.json"} & set(old))
         # a cost on a contract with the optional renewal_note omitted is valid, and the private note never leaves
         self.contract(COST, renewal_note="")
         no_note = {k: v for k, v in self.agencies[CEDAR]["profile"]["contract"].items() if k != "renewal_note"}
