@@ -139,7 +139,7 @@ class RenderTests(Case):
         self.assertIn('href="https://news.example.test/story?id=6"', page)
         self.assertIn('href="https://records.example.test/minutes/6"', page)
         self.assertEqual(page.count("Checked <time datetime=\"2026-09-15\">2026-09-15</time>"), len(rows))
-        self.assertIn('Decided <time datetime="2026-03-10">2026-03-10</time>', page)
+        self.assertIn('Decided <time datetime="2026-04-01">2026-04-01</time>', page)
         main = page.split('id="content"')[1].split("</section>")[0]
         self.assertNotRegex(main, r"(?i)\b\d+\s+(cities|places|decisions|jurisdictions)\b|\brank|\bscore|\btotal")
         self.assertEqual(re.findall(r"<h1", main), [])
