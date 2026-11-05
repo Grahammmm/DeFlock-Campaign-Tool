@@ -977,6 +977,9 @@ def main():
     supporters_remove = supporters.add_parser("remove", help="Drop one organization's public entry and private record")
     supporters_remove.add_argument("--directory", required=True)
     supporters_remove.add_argument("--id", required=True)
+    press_check = press_commands.add_parser("check", help="Check private press drafts and letters against current findings and meetings; read-only")
+    press_check.add_argument("--directory", required=True)
+    press_check.add_argument("--json", action="store_true", dest="as_json", help="Print JSON only")
     press_letter = press_commands.add_parser("letter", help="Draft a private letter to the editor; sends nothing")
     press_letter.add_argument("--directory", required=True)
     press_letter.add_argument("--finding", action="append", default=[], help="Published finding id (repeat for 1 to 3)")
@@ -1386,6 +1389,10 @@ def main():
     )
     content_init.add_argument("--directory", required=True)
     content_init.add_argument("--from", dest="source_campaign")
+    content_plain_p = content_cmds.add_parser("check-plain", help="Advisory plain-language check of content/pages, faq.json and "
+                                              "glossary.json (read-only, never a gate; exit 0 with suggestions)")
+    content_plain_p.add_argument("--directory", required=True)
+    content_plain_p.add_argument("--json", dest="as_json", action="store_true", help="Print the report as one JSON object")
     strip_p = content_cmds.add_parser("strip-metadata", help="Write <name>.clean<ext> beside a JPEG/PNG/WebP without "
                                       "its EXIF, GPS, XMP, IPTC, comment or text metadata (no re-encode)")
     strip_p.add_argument("file")
@@ -1765,6 +1772,11 @@ def main():
             social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days, args.outcomes,
                        args.finding[0] if args.thread else None, args.events)
         elif args.command == "press":
+            if args.press_command == "check":
+                from .press_check import check_press, format_text
+                report = check_press(root)
+                print(json.dumps(report, indent=2, ensure_ascii=False) if args.as_json else format_text(report))
+                sys.exit(3 if report["problems"] else 0)
             if args.press_command == "letter":
                 from .press import build_letter
                 result = build_letter(root, args.finding, args.date, words=args.words, outlet=args.outlet)
@@ -2070,6 +2082,10 @@ def main():
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal, mailing_address=args.mailing_address), indent=2))
             print("Nothing was sent.")
+        elif args.command == "content" and args.content_command == "check-plain":
+            from .content_plain import run_cli as content_plain_cli
+            read_config(root)
+            content_plain_cli(root, args.as_json)
         elif args.command == "content" and args.content_command == "strip-metadata":
             from .image_meta import strip_file
             print(json.dumps(strip_file(args.file, args.out), indent=2))
