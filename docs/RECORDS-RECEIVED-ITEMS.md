@@ -24,9 +24,9 @@ the us-ca law package is draft and each finding says so.
   exact source line). Negation, questions, quoted/forwarded history and bare words never qualify;
   two different specific kinds give `other` with `mixed_kind_candidates`; text without a real page
   gives `other` with `page_locator_unavailable`. A mail body or MIME part (locator `{mime, part}`, no page)
-  is cited as page 1, and an HTML body is first rendered to one text line per block, so the quote is a
-  line of the rendered body (the Caltrans portal wording "exercising its authority under Government Code
-  section 7922.535, to extend the time" is an `extension` phrase). `kit_equivalent` is a read-only crosswalk to
+  is not given an invented page: it stays `other` with `page_locator_unavailable` until a mail-body
+  locator contract exists. Only originals whose admission resolves (`effective_original`) are read;
+  an unresolved binding omits the original unread. `kit_equivalent` is a read-only crosswalk to
   `kit_track` kinds (extension, denied, fee_estimate, produced; response maps to acknowledged or determination).
 - `deadlines`: dates the item states for a response, extension or production ("by November 30"),
   with page and quote. A date without a year takes the year of `received_at` (`year_inferred: true`).
@@ -45,7 +45,11 @@ the item and the row's `evidence` uses the admitted reference form:
 {"source_id": "<64 hex original sha256>"  /* or "sha256:<digest>" */, "locator": "page 3"}
 ```
 
-The quote is the first non-empty line of that page. Aliases, section names and other locators
+The quote is the first non-empty line of that page, and only when exactly one current unit carries
+that page (several units on one page are ambiguous and give `comparison_evidence_unresolved`).
+`policy_ref` is set only for written-policy fields whose citations all resolve to one source whose
+opening title names a policy; otherwise it is null with the diagnostic `policy_source_unestablished`
+(access logs and meeting minutes are evidence, never the policy). Aliases, section names and other locators
 produce the report diagnostic `comparison_evidence_unresolved`; `*_practice` rows produce
 `practice_policy_citation_missing` (no separate policy citation exists to bind). Without coordinator
 input (`agency-fact-sheets.json`) every row is `unknown` without evidence, so items show

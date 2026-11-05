@@ -148,25 +148,61 @@ class ReceivedItemsTests(unittest.TestCase):
         self.assertIn("current_extraction_unavailable", missing["diagnostics"])
         self.assertIn("received_at_unavailable", missing["diagnostics"])
 
-    def test_html_mail_body_is_rendered_and_cited_as_page_one(self):
-        # Shape of the live Caltrans portal mail: one HTML block, locator {"mime","part"}, no page.
-        body = ("<html><body><div>RE: Request R054203-091026<div>&nbsp;</div><div>Dear Records,</div>"
-                "<div>Consequently, Caltrans is exercising its authority under Government Code section "
-                "7922.535, to extend the time to reply to a Public Records Act request.  You will receive "
-                "a further, more complete response no later than November 30, 2026</div>"
-                "<div>Sincerely,<br>Coordinator</div></div></body></html>")
-        plain = ri._plain(body)
-        self.assertNotIn("<", plain)
-        self.assertEqual(ri._plain("Plain text\nstays"), "Plain text\nstays")
-        units = [(1, 1, "u1", plain)]
-        kind, basis, _, _ = ri.classify(units)
-        self.assertEqual((kind, basis["page"]), ("extension", 1))
-        self.assertIn("7922.535", basis["quote"])
-        found = ri.deadlines(units, None)
-        self.assertEqual([(d["date"], d["page"]) for d in found], [("2026-11-30", 1)])
-        # A negated or quoted history line must still not classify.
-        self.assertEqual(ri.classify([(1, 1, "u", ri._plain("<div>If Caltrans is exercising its authority under "
-                                                           "Government Code section 7922.535 to extend the time</div>"))])[0], "other")
+    def test_unpaginated_mail_body_is_not_given_an_invented_page(self):
+        # Live Caltrans mail shape: one HTML block, locator {"mime","part"}, no page number.
+        body = ("<div>Caltrans is exercising its authority under Government Code section 7922.535 "
+                "to extend the time. You will receive a response no later than November 30, 2026</div>")
+        sha, _ = self.document([body], "caltrans", locator={"mime": "text/html", "part": "1"})
+        item = self.item(self.collect(), sha)
+        self.assertEqual((item["kind"], item["kind_basis"]), ("other", {"page": None, "quote": None}))
+        self.assertIn("page_locator_unavailable", item["diagnostics"])
+        self.assertEqual(item["deadlines"], [])
+
+    def test_admission_that_cannot_be_resolved_omits_the_original_unread(self):
+        sha, _ = self.document(CALTRANS, "caltrans")
+        with patch.object(ri.store, "effective_original", side_effect=ValueError("bad_binding")), \
+                patch.object(ri, "_current_units", side_effect=AssertionError("text was read")):
+            report = self.collect()
+        self.assertEqual(report["items"], [])
+        self.assertIn("effective_original_unavailable", report["diagnostics"])
+
+    def test_reply_and_forward_history_never_yields_a_deadline(self):
+        history = "Thanks.\n-----Original Message-----\nWe will respond by November 30, 2026."
+        self.assertEqual(ri.deadlines([(1, 1, "u1", history)], None), [])
+        # The block runs on into later units of the same message.
+        spanning = [(1, 1, "u1", "Thanks.\nOn Mon, Nov 2, 2026 at 9:00 AM Clerk <c@example.test> wrote:"),
+                    (2, 2, "u2", "We will respond by November 30, 2026.")]
+        self.assertEqual(ri.deadlines(spanning, None), [])
+        current = [(1, 1, "u1", "We will respond by November 30, 2026.\n-----Original Message-----\n"
+                                "We will respond by December 5, 2026.")]
+        self.assertEqual([d["date"] for d in ri.deadlines(current, None)], ["2026-11-30"])
+
+    def test_ambiguous_page_evidence_is_refused_not_first_unit(self):
+        def unit(uid, text):
+            return {"page": 1, "ordinal": 1, "unit_id": uid, "text": text, "text_sha256": "t", "payload_sha256": "p"}
+        digest = "b" * 64
+        entry = {"source_id": digest, "locator": "page 1"}
+        one = {digest: {"units": [unit("u1", "Only line")]}}
+        two = {digest: {"units": [unit("u1", "First line"), unit("u2", "Second line")]}}
+        self.assertEqual(ri._resolve_evidence(entry, one)[2], "Only line")
+        self.assertIsNone(ri._resolve_evidence(entry, two))
+
+    def test_policy_ref_only_from_a_uniquely_established_policy_source(self):
+        policy, _ = self.document(["Retention Policy\nRecords are kept 30 days."], "caltrans")
+        minutes, _ = self.document(["Council Minutes\nPublic comment was heard."], "caltrans")
+        rows = [self.row("caltrans", policy, "page 1", field="retention"),
+                self.row("caltrans", minutes, "page 1", field="public_comment"),
+                self.row("caltrans", policy, "page 1", field="access_logs"),
+                self.row("caltrans", minutes, "page 1", field="safeguards")]
+        rows[0]["evidence"].append({"source_id": minutes, "locator": "page 1"})  # two sources: not unique
+        rows.append(self.row("caltrans", policy, "page 1", field="audit_process"))
+        report = self.collect(self.comparison(rows))
+        refs = {f["comparison_ref"]["field"]: f["policy_ref"]
+                for i in report["items"] for f in i["findings"]}
+        self.assertEqual(refs["audit_process"]["document_sha256"], policy)
+        for field in ("public_comment", "access_logs", "safeguards"):
+            self.assertIsNone(refs[field], field)
+        self.assertIn("policy_source_unestablished", report["diagnostics"])
 
     def test_inventory_identity_exclusion_and_ambiguous_joins(self):
         kept, _ = self.document(["We deny your request."], "caltrans")

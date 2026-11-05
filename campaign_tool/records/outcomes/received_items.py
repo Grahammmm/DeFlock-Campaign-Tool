@@ -10,7 +10,6 @@ extraction membership with the same hash bindings as factsheets.collect.
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 import os
 from pathlib import Path
@@ -38,9 +37,11 @@ KIT_CROSSWALK = {"extension": "extension", "denial": "denied", "fee": "fee_estim
 DISCLAIMER = ("Private documentary screening; REVIEW REQUIRED, not a legal conclusion. The us-ca law "
               "package is draft and unreviewed. A rating is the existing comparison row status and "
               "never a finding of compliance or violation. Not for publication.")
+# Fields whose supplied citation can be the agency's own written policy. access_logs and
+# public_comment cite logs/minutes, which are evidence, never the policy itself.
 POLICY_FIELDS = frozenset({"usage_policy_published", "authorized_purposes", "authorized_users_training",
-                           "retention", "sharing_limits", "audit_process", "access_logs", "custodian",
-                           "accuracy_correction", "safeguards", "public_comment"})
+                           "retention", "sharing_limits", "audit_process", "custodian",
+                           "accuracy_correction", "safeguards"})
 ADMITTED_ROLES = frozenset({"agency_original", "container_child", "original"})
 
 _I = re.I
@@ -87,21 +88,6 @@ def _rows(db, query, args=()):
     rows = db.execute(query, args).fetchmany(MAX_ROWS + 1)
     _need(len(rows) <= MAX_ROWS, "received_items_metadata_bound")
     return rows
-
-
-MAIL_TEXT_KINDS = frozenset({"email_body", "mime_part"})
-_BREAKS = re.compile(r"<\s*(?:br\s*/?|/div|/p|/tr|/li|/h[1-6])\s*>", _I)
-_TAGS = re.compile(r"<[^>]{0,2000}>")
-
-
-def _plain(text):
-    """Rendered text of an HTML mail body (one block per line); plain text is unchanged."""
-    if not re.match(r"\s*<(?:!doctype|html|div|body|p|br|table)\b", text[:200], _I):
-        return text
-    text = re.sub(r"(?is)<(?:script|style)\b.*?</(?:script|style)\s*>", "", text)
-    text = _TAGS.sub("", _BREAKS.sub("\n", text))
-    text = html.unescape(text).replace("\xa0", " ")
-    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
 
 def _canon(value):
@@ -152,8 +138,8 @@ def _quoted(line, start):
 def _candidates(units):
     """units: [(page, ordinal, unit_id, text)] -> [{kind, page, quote, ...}] in source order."""
     found = []
+    skip_rest = False  # a reply/forward block runs to the end of the message, across units
     for page, ordinal, unit_id, text in units:
-        skip_rest = False
         for number, raw in enumerate(text.splitlines()):
             line = raw.strip()
             if not line or len(line) > MAX_LINE:
@@ -195,10 +181,15 @@ def deadlines(units, received_at):
     """Dates an item states for a response/extension/production. Quoted, not computed."""
     anchor = received_at
     out = []
+    skip_rest = False
     for page, ordinal, unit_id, text in units:
         for number, raw in enumerate(text.splitlines()):
             line = raw.strip()
-            if not line or len(line) > MAX_LINE or line.startswith(">") or "?" in line:
+            if not line or len(line) > MAX_LINE:
+                continue
+            if HISTORY.match(line):
+                skip_rest = True
+            if skip_rest or line.startswith(">") or "?" in line:
                 continue
             for hit in DEADLINE.finditer(line):
                 if not DEADLINE_CONTEXT.search(line) or _quoted(line, hit.start()):
@@ -259,12 +250,6 @@ def _current_units(db, processing, subject):
         locator = payload["locator"]
         text = payload["text"]
         pages = [locator[k] for k in ("page", "page_no") if k in locator]
-        if not pages and payload["kind"] in MAIL_TEXT_KINDS and set(locator) <= {"mime", "part"}:
-            # A mail body is one unpaginated part: cite it as page 1 of the message body
-            # (quote = a line of its rendered text), without a manifest page check.
-            units.append({"page": 1, "ordinal": ordinal, "unit_id": unit["id"], "text": _plain(text),
-                          "text_sha256": unit["text_sha256"], "payload_sha256": digest})
-            continue
         if not pages or any(type(p) is not int or p < 1 for p in pages) or len(set(pages)) != 1:
             if "page_locator_unavailable" not in diagnostics and payload["kind"] != "email_headers":
                 diagnostics.append("page_locator_unavailable")
@@ -286,12 +271,27 @@ def _resolve_evidence(entry, by_original):
     page = re.fullmatch(r"page ([1-9][0-9]*)", locator)
     if page is None or re.fullmatch(r"[a-f0-9]{64}", digest) is None or digest not in by_original:
         return None
-    for unit in by_original[digest]["units"]:
-        if unit["page"] == int(page.group(1)):
-            for line in unit["text"].splitlines():
-                if line.strip() and len(line.strip()) <= MAX_LINE:
-                    return digest, unit, line.strip()
+    matches = [u for u in by_original[digest]["units"] if u["page"] == int(page.group(1))]
+    if len(matches) != 1:  # none, or several current units on one page: never pick one
+        return None
+    for line in matches[0]["text"].splitlines():
+        if line.strip() and len(line.strip()) <= MAX_LINE:
+            return digest, matches[0], line.strip()
     return None
+
+
+def _policy_established(evidence, by_original, item):
+    """True only when every supplied citation resolves to ONE source whose opening
+    title names a policy (the classifier's own opening_title evidence)."""
+    digests = set()
+    for entry in evidence:
+        resolved = _resolve_evidence(entry, by_original) if isinstance(entry, dict) else None
+        if resolved is None:
+            return False
+        digests.add(resolved[0])
+    return len(digests) == 1 and any(
+        c.get("basis") == "opening_title" and re.search(r"\bpolicy\b", c["quote"], _I)
+        for c in item["candidates"])
 
 
 def _load_comparison(path, run_id):
@@ -354,8 +354,11 @@ def collect(db, processing, comparison_report, *, run_id, comparison_sha256=None
             original = store.effective_original(db, subject)
         except ValueError:
             original = None
-            diagnostics.append("effective_original_unavailable")
-        if original is not None and (scope_excluded(original) or original["role"] not in ADMITTED_ROLES):
+        # Fail closed: an original whose admission cannot be demonstrated is omitted
+        # without reading or projecting any of its text.
+        if original is None or scope_excluded(original) or original["role"] not in ADMITTED_ROLES:
+            if original is None:
+                report["diagnostics"].append("effective_original_unavailable")
             continue
         # Identity: only unambiguous typed joins consistent with request ownership.
         agencies = {j["agency_id"] for j in joins.get(subject, [])}
@@ -448,8 +451,12 @@ def _project(report, comparison, by_original):
                     "text_sha256": unit["text_sha256"], "payload_sha256": unit["payload_sha256"]}
             observed = row.get("observed") if isinstance(row.get("observed"), dict) else {}
             policy = None
-            if field in POLICY_FIELDS:
-                policy = dict(cite)
+            if field in POLICY_FIELDS or field in ("access_logs", "public_comment"):
+                if field in POLICY_FIELDS and _policy_established(evidence, by_original, item):
+                    policy = dict(cite)
+                else:
+                    report["diagnostics"].append("policy_source_unestablished")
+            if policy is not None:
                 for key in ("policy_version", "policy_modality"):
                     if isinstance(observed.get(key), str):
                         policy[key] = observed[key]
