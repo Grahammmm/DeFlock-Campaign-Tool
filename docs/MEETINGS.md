@@ -636,3 +636,13 @@ sends nothing and changes no staging, request owner (`kit-assign`) or other stor
 campaign_tool meetings-speakers --directory campaign --id council-2099-01-05 --add "Volunteer A" --point ask:1
 campaign_tool meetings-speakers --directory campaign --id council-2099-01-05 --list
 ```
+
+## Several governing bodies
+
+A county campaign can follow the county board and city councils in one run. List them in `campaign.json` (1-12 entries, Legistar only; `label` is plain text up to 80 characters and optional):
+
+```
+"meeting_sources": [{"platform": "legistar", "client": "examplecity", "label": "Example City Council"}]
+```
+
+`python3 -m campaign_tool meetings --directory D (--online | --from-json F) [--since YYYY-MM-DD]` (no `--client`) scans every entry into one `kit/meetings.json`: `client` is `multi`, `clients` lists the slugs, each meeting carries `client` and `source_label`, `sources` gives each body's `ok` or `failed` status, and `changes` is keyed by client. A body that fails (network, bad JSON) is named with its error, keeps its previous meetings marked `stale: true`, and the run exits 3 after writing; the other bodies are unaffected. A previous single-client file for a listed client is compared, not treated as another client. A bad `meeting_sources` entry stops the run naming its index. `--client X` keeps the single-body behaviour unchanged.

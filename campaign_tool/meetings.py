@@ -611,7 +611,74 @@ def compare_meetings(previous_doc, meetings, client, since):
     }
 
 
-def write_meetings(root, meetings, client_name, changes=None, zone=None, source="legistar"):
+MAX_SOURCES = 12
+SOURCE_KEYS = {"platform", "client", "label"}
+
+
+def load_sources(cfg):
+    """DF1507-08: validated ``campaign.json`` ``meeting_sources`` (1-12 Legistar bodies); [] when absent. ValueError names the index."""
+    raw = cfg.get("meeting_sources")
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_SOURCES:
+        raise ValueError(f"meeting_sources: give 1 to {MAX_SOURCES} entries")
+    out, seen = [], set()
+    for i, entry in enumerate(raw):
+        where = f"meeting_sources[{i}]"
+        if not isinstance(entry, dict) or set(entry) - SOURCE_KEYS or not {"platform", "client"} <= set(entry):
+            raise ValueError(f"{where}: use only platform, client and label")
+        client, label = entry["client"], entry.get("label", entry["client"])
+        if entry["platform"] != "legistar":
+            raise ValueError(f"{where}: platform must be legistar")
+        if not isinstance(client, str) or not CLIENT.fullmatch(client):
+            raise ValueError(f"{where}: client must be a short lowercase slug")
+        if client in seen:
+            raise ValueError(f"{where}: duplicate client {client}")
+        if not isinstance(label, str) or not label.strip() or len(label) > 80 or _plain(label) != label:
+            raise ValueError(f"{where}: label must be plain text of 1 to 80 characters (no < or >)")
+        seen.add(client)
+        out.append({"platform": "legistar", "client": client, "label": label.strip()})
+    return out
+
+
+def _previous_subset(previous, client):
+    """The previous document's meetings for ``client`` as a single-client document; None when it did not cover that client."""
+    if not isinstance(previous, dict) or not isinstance(previous.get("meetings"), list):
+        return previous  # None / "unreadable" / malformed: compare_meetings names it
+    prior_client = previous.get("client")
+    if prior_client == client:
+        return previous
+    if prior_client != "multi" or client not in (previous.get("clients") or []):
+        return None
+    return dict(previous, client=client,
+                meetings=[m for m in previous["meetings"] if isinstance(m, dict) and m.get("client") == client])
+
+
+def scan_sources(sources, opener_for, since, zone, previous=None):
+    """Scan every source on its own: ``(meetings, report, changes)``. A failing source keeps its previous meetings
+    (marked ``stale``) and is named in ``report``; ``changes`` covers the sources that succeeded."""
+    since = since or date.today()
+    meetings, report, changes = [], [], {}
+    for source in sources:
+        client, label = source["client"], source["label"]
+        subset = _previous_subset(previous, client)
+        try:
+            found = relevant_events(LegistarClient(client, opener=opener_for(client)), since=since, zone=zone)
+        except Exception as exc:  # network, JSON, a missing recorded response: this source only
+            old = subset.get("meetings") if isinstance(subset, dict) and subset.get("schema_version") == 1 else None
+            kept = [dict(m, client=client, source_label=label, stale=True) for m in old or [] if isinstance(m, dict)]
+            report.append({"client": client, "label": label, "status": "failed", "kept_previous_meetings": len(kept),
+                           "error": f"{type(exc).__name__}: {exc}"[:120]})
+            meetings.extend(kept)
+            continue
+        changes[client] = compare_meetings(subset, found, client, since)
+        report.append({"client": client, "label": label, "status": "ok", "meetings": len(found)})
+        meetings.extend(dict(m, client=client, source_label=label) for m in found)
+    meetings.sort(key=lambda m: (str(m.get("starts_at")), str(m.get("id"))))
+    return meetings, report, changes
+
+
+def write_meetings(root, meetings, client_name, changes=None, zone=None, source="legistar", extra=None):
     kit = root / "kit"
     _kit_folder(kit, mode=0o700)
     target = kit / "meetings.json"
@@ -623,6 +690,7 @@ def write_meetings(root, meetings, client_name, changes=None, zone=None, source=
                         "Verify the posted agenda before publishing a meeting."}
     if changes is not None:
         document["changes"] = changes
+    document.update(extra or {})
     _write_text(target, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
     return target
 

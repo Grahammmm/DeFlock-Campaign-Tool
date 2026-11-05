@@ -678,7 +678,9 @@ def meetings_cmd(args, root):
     if zone is None:
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
         raise SystemExit(2)
-    read_config(root)
+    cfg = read_config(root)
+    if args.client is None:
+        return _meetings_multi(args, root, cfg, zone)
     if args.from_json:
         opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
     elif args.online:
@@ -707,6 +709,33 @@ def meetings_cmd(args, root):
     if "added" in changes:
         report["changes"] = {k: len(changes[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
     print(json.dumps(dict(report, note="keyword hits only; verify the posted agenda before publishing"), indent=2))
+
+
+def _meetings_multi(args, root, cfg, zone):
+    """DF1507-08: no --client scans every campaign.json meeting_sources entry into one kit/meetings.json; exit 3 if any failed."""
+    from datetime import date
+    from .meetings import default_opener, fixture_opener, load_sources, scan_sources, write_meetings
+    if args.platform != "legistar" or args.matters or args.from_xml or args.view_id is not None or args.all_events:
+        raise ValueError("without --client only the Legistar events in meeting_sources are scanned; pass --client for other options")
+    sources = load_sources(cfg)
+    if not sources:
+        raise ValueError("add meeting_sources to campaign.json or pass --client")
+    if not (args.from_json or args.online):
+        raise ValueError("meetings needs --online to query the agenda platform, or a recorded response (--from-json)")
+    opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8"))) if args.from_json else default_opener
+    since = date.fromisoformat(args.since) if args.since else None
+    previous = _read_previous(root / "kit" / "meetings.json")
+    meetings, sources_report, changes = scan_sources(sources, lambda client: opener, since, zone, previous)
+    target = write_meetings(root, meetings, "multi", changes, zone=zone, source="legistar",
+                            extra={"clients": sorted(s["client"] for s in sources), "sources": sources_report})
+    counts = {c: ({k: len(v[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
+                  if "added" in v else {"previous": v["previous"]}) for c, v in changes.items()}
+    failed = [s["client"] for s in sources_report if s["status"] == "failed"]
+    print(json.dumps({"client": "multi", "platform": "legistar", "matched_meetings": len(meetings), "written": str(target),
+                      "sources": sources_report, "changes": counts, "failed_sources": failed,
+                      "note": "keyword hits only; verify the posted agenda before publishing"}, indent=2))
+    if failed:
+        sys.exit(3)
 
 
 def _read_previous(path):
@@ -965,7 +994,7 @@ def main():
         list_p.add_argument(flag, type=keep_count(KEEP_LIMITS[key]), help=f"Newest per {period}, most recent N (0-{KEEP_LIMITS[key]})")
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
-    meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/); the <name>.granicus.com host for granicus; the AgendaCenter host for agendacenter")
+    meetings_p.add_argument("--client", help="Legistar client slug (the part after webapi.legistar.com/v1/); the <name>.granicus.com host for granicus; the AgendaCenter host for agendacenter; omit to scan every campaign.json meeting_sources entry")
     meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus", "agendacenter"), default="legistar", help="Agenda platform (default legistar)")
     meetings_p.add_argument("--matters", action="store_true", help="List ALPR keyword matters (legislation, contracts) instead of events; writes kit/matters.json (Legistar only)")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
