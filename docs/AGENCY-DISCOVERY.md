@@ -399,6 +399,29 @@ the law package (`null` when it is missing) and flags drafts edited since sendin
 the period runs from the agency's receipt and holidays are not modelled. `kit` re-runs never touch `sent.json`.
 The JSON it prints is described by `schemas/kit-status.schema.json`; `tests/test_kit_json_contracts.py` fails when the keys drift.
 
+### Recording the day the agency received the request
+
+By default the provisional determination and extended dates count from the day you sent the request. When you have
+evidence of the day the agency actually received it, record that day and the evidence, as a pair:
+
+    python3 -m campaign_tool kit-sent ... --received-on 2026-10-03 --receipt-evidence portal
+    python3 -m campaign_tool kit-received --directory ../my-campaign --agency ca-example-police --on 2026-10-03 --evidence portal
+
+`kit-received` works on a request already recorded (including one from `kit-sent-import`) and takes `--request NAME`
+(default `main`) and `--replace`. The evidence is exactly one of `portal` (a portal receipt or timestamp, whatever
+channel the request used), `acknowledgement` (the agency's own written acknowledgement), `return_receipt` (a mail or
+courier delivery receipt) or `other`. You state it; the tool never checks it. The date may equal the sent day or today
+but not come before the sent day or after today. One value is kept: a second needs `--replace`, even when identical.
+`kit-sent --replace` keeps a stored receipt and refuses a corrected sent day later than it; give both receipt flags to
+correct them together. There is no way to delete a receipt.
+
+Only a request WITH a receipt changes: `kit-status`, `kit-due`, `kit-followup`, `kit-calendar` and `today` count its
+dates from the receipt and add the note `counted from receipt D (KIND)` to its rows, reminders, calendar events and
+follow-up draft (JSON adds `received_on` and `receipt_evidence` for that request only). A request without a receipt
+prints exactly what it did before. An agency's own stated production date, next installment and download expiry are
+never moved. Recording `kit-response --kind acknowledged` is a response step and never sets the receipt. `kit-timing`
+is unchanged. All of these dates stay provisional reminders, never legal deadlines; nothing is sent.
+
 ### Several requests to one agency
 
 A second or narrowed request to an agency you already recorded gets its own name: draft it yourself in
@@ -472,6 +495,18 @@ refused when no clarification is open (never asked, or already clarified, closed
 kept unless `--replace`; symlinks and non-file targets are refused. The draft ends with the `kit-response ... --kind
 clarified` command: run it only after you have sent the reply yourself, with `--date` set to the day you sent it.
 Nothing is sent, and `sent.json`, the recorded scopes and the original draft hash are not changed.
+
+`kit-scope-reply --directory D --agency ID [--request NAME] [--replace]` (default request `main`) writes a private draft
+`kit/followups/<stem>-scopes-<today>.md` (0600, folder 0700; `<stem>` is the agency id, or `<agency>--<name>` for a named
+request) for a request with recorded scopes. One numbered paragraph per asked scope, named by its law-package title and in
+asked order: a scope whose latest recorded answer is `no_records_stated` (asks which offices, systems and accounts were
+searched, including any kept for the agency by a contractor or vendor, and whether such records existed earlier and under
+which retention schedule they were removed), and a scope with no recorded answer once a `produced` or `determination`
+step exists (asks whether records exist and when they will be produced). Scopes last answered `produced`,
+`partly_produced` or `withheld` are only listed as answered. The questions never say a search was inadequate. Refused,
+with nothing written: scopes not recorded, no scope with a gap, no law package, or an unknown request. An existing draft is
+kept unless `--replace`; symlinks are refused. Nothing is sent and `sent.json` is not changed. Review and edit it yourself;
+it is not legal advice.
 
 On a `produced` step, link the ingested records the agency sent with `--record PREFIX` (repeatable, at most 200):
 at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every prefix must match exactly one

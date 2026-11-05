@@ -1172,6 +1172,19 @@ def main():
     sent_p.add_argument("--covers-through", metavar="D", help="YYYY-MM-DD: the last day of records this request asked "
                         "for, when the draft's 'The date range for this request is FROM through TO.' line is missing "
                         "or edited (not after --date); kit-repeat starts the follow-on the day after")
+    from .kit_track import RECEIPT_EVIDENCE as receipt_evidence
+    sent_p.add_argument("--received-on", metavar="D", help="YYYY-MM-DD: the day the agency received the request, as your "
+                        "evidence shows it (with --receipt-evidence; not before --date, not in the future). The "
+                        "provisional dates are then counted from it. Provisional, not a legal deadline")
+    sent_p.add_argument("--receipt-evidence", choices=receipt_evidence, help="What shows that day: portal, "
+                        "acknowledgement, return_receipt or other. Recorded as you state it, never verified")
+    received_p = commands.add_parser("kit-received", help="Record the day the agency received an already recorded sent "
+                                     "request (private; sends nothing)")
+    for flag in ("--directory", "--agency", "--on"):
+        received_p.add_argument(flag, required=True)
+    received_p.add_argument("--evidence", required=True, choices=receipt_evidence)
+    received_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    received_p.add_argument("--replace", action="store_true", help="Correct a receipt already recorded")
     repeat_p = commands.add_parser("kit-repeat", help="Draft a follow-on request for the records created since an "
                                    "earlier sent request (private, unsent; nothing is sent)")
     for flag in ("--directory", "--agency", "--request", "--as"):
@@ -1328,6 +1341,11 @@ def main():
                            "request asked for (default all of them); every scope left out is listed as no longer requested")
     clarify_p.add_argument("--date-range", metavar="FROM:TO", help="Two real YYYY-MM-DD dates, not after today")
     clarify_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
+    scope_p = commands.add_parser("kit-scope-reply", help="Private draft asking about recorded per-scope gaps; never sent")
+    for flag in ("--directory", "--agency"):
+        scope_p.add_argument(flag, required=True)
+    scope_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    scope_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft written the same day")
     asked_p = commands.add_parser("kit-asked", help="Propose content/agencies.json 'asked' items from kit/sent.json "
                                   "(dry run by default); nothing is sent or published")
     asked_p.add_argument("--directory", required=True)
@@ -2156,7 +2174,13 @@ def main():
                                          replace=args.replace, reference=args.reference,
                                          replace_reference=args.replace_reference,
                                          correspondence=args.correspondence, request_url=args.request_url,
-                                         covers_through=args.covers_through), indent=2))
+                                         covers_through=args.covers_through, received_on=args.received_on,
+                                         receipt_evidence=args.receipt_evidence), indent=2))
+            print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-received":
+            from .kit_track import record_received
+            print(json.dumps(record_received(root, args.agency, args.on, args.evidence, request=args.request,
+                                             replace=args.replace), indent=2))
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-repeat":
             from .kit_repeat import repeat_request
@@ -2200,18 +2224,19 @@ def main():
             print(json.dumps(report, indent=2))
             for row in report["requests"]:  # a reminder on stderr; stdout stays one JSON document
                 label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
+                tail = f" ({row['note']})" if "received_on" in row else ""  # provenance of the counted dates
                 if "withdrawn_on" in row:  # ended by us: history stays in the JSON, but no reminder is actionable
-                    print(f"{label}: withdrawn by us on {row['withdrawn_on']}", file=sys.stderr)
+                    print(f"{label}: withdrawn by us on {row['withdrawn_on']}{tail}", file=sys.stderr)
                 if row["over_fee_cap"] and "withdrawn_on" not in row:
-                    print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}", file=sys.stderr)
+                    print(f"{label}: fee estimate {row['fee_estimate']} is {OVER_CAP}{tail}", file=sys.stderr)
                 if row["fee_state"] == "unpaid" and "withdrawn_on" not in row:
-                    print(f"{label}: fee estimate {row['fee_estimate']} is unpaid", file=sys.stderr)
+                    print(f"{label}: fee estimate {row['fee_estimate']} is unpaid{tail}", file=sys.stderr)
                 if row.get("undone_steps"):
-                    print(f"{label}: {row['undone_steps']} step(s) undone", file=sys.stderr)
+                    print(f"{label}: {row['undone_steps']} step(s) undone{tail}", file=sys.stderr)
                 for item in row.get("downloads_pending", ()):
-                    print(f"{label}: {item['line']}", file=sys.stderr)
+                    print(f"{label}: {item['line']}{tail}", file=sys.stderr)
                 if row["channel"] == "portal" and row.get("request_url"):
-                    print(f"{label}: Portal request: {row['request_url']}", file=sys.stderr)
+                    print(f"{label}: Portal request: {row['request_url']}{tail}", file=sys.stderr)
         elif args.command == "kit-fees":
             from . import kit_fees
             report = kit_fees.fees(root)
@@ -2318,6 +2343,10 @@ def main():
             print(json.dumps(clarify_reply(root, args.agency, request=args.request, scopes=chosen,
                                            date_range=args.date_range, replace=args.replace), indent=2))
             print("Draft only. Nothing was sent or recorded.")
+        elif args.command == "kit-scope-reply":
+            from .kit_track import scope_reply
+            print(json.dumps(scope_reply(root, args.agency, request=args.request, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent.")
         elif args.command == "readiness":
             readiness(root, args.campaign_id, args.out, args.contact_max_age_days, args.stale_days)
         elif args.command == "doctor" and args.checklist:

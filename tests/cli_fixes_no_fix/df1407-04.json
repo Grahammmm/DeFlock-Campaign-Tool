@@ -1,0 +1,7 @@
+{
+  "no scopes recorded for 5; nothing to ask about": "kit-scope-reply refusal that already names the request and the reason; not in the table",
+  "kit/sent.json unreadable: malformed scopes for 5": "kit-scope-reply refusal that already names the file and the request; not in the table",
+  "scope 5 is not in the law package; its title cannot be named": "kit-scope-reply refusal that already names the scope and the reason; not in the table",
+  "no scope gap to ask about for 5": "kit-scope-reply refusal that already names the request and the reason; not in the table",
+  "no law package: scope titles cannot be named": "kit-scope-reply refusal that already names the missing law package; not in the table"
+}
