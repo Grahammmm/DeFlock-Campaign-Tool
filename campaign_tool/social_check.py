@@ -100,7 +100,8 @@ class _Context:
 
 
 def _starts(meeting):
-    return datetime.fromisoformat(meeting["starts_at"].replace("Z", "+00:00"))
+    stamp = meeting["starts_at"]
+    return datetime.fromisoformat(stamp[:-1] + "+00:00" if stamp.endswith("Z") else stamp)
 
 
 # --- per kind: stale reasons, required stems, fresh draft, edited-draft problems --------------------------------
@@ -266,7 +267,7 @@ def _folder(root, parts, kind, platform, suggested, ctx):
         if kind in ("findings", "threads"):
             subject = ctx.published.get(stem)
             if subject is None:
-                reasons = ["finding withdrawn, unpublished or removed"]
+                reasons = ["finding unpublished (withdrawn, removed or slug changed)"]
             elif kind == "findings":
                 try:
                     fresh = S._draft(subject, ctx.base_url, platform).encode("utf-8")
@@ -358,7 +359,7 @@ def format_text(report):
             reasons = block.get("stale_reasons", {}).get(stem)
             lines.append(f"  stale {stem}" + (": " + "; ".join(reasons) if reasons else ""))
 
-    group("kit/social", {"drafts": report["drafts"], "stale": report["stale"]})
+    group("/".join(("kit", "social")), {"drafts": report["drafts"], "stale": report["stale"]})
     for rel, block in report.get("folders", {}).items():
         group(rel, block)
     lines.append(f"{report['problems']} problem(s).")

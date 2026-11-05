@@ -234,19 +234,20 @@ def build_social(root, platforms=None):
                           for p in platforms}}
 
 
-def _write_meta(primary, suggested, provenance, drafts, written, kept, stale):
-    """Private provenance next to ``.written.json``: written drafts get fresh entries, kept/stale ones keep theirs."""
+def _meta_documents(primary, suggested, provenance, drafts, written, kept, stale):
+    """Private provenance next to ``.written.json``, as ``(path, document)``: written drafts get fresh entries, kept/stale ones keep theirs."""
     old, _ = _read_state(primary / ".check.json", "meta")
     entries = {s: old[s] for s in (*kept, *stale) if s in old}
     for slug in written:
         entries[slug] = {"sha256": _sha(drafts[slug].encode("utf-8")), **provenance[slug]}
-    _write_json(primary / ".check.json", {"schema_version": 1, "drafts": dict(sorted(entries.items()))})
+    documents = [(primary / ".check.json", {"schema_version": 1, "drafts": dict(sorted(entries.items()))})]
     if kept:  # a fresh suggestion's provenance describes the suggested bytes
         old, _ = _read_state(suggested / ".check.json", "meta")
         entries = {s: e for s, e in old.items() if s not in kept}
         for slug in kept:
             entries[slug] = {"sha256": _sha(drafts[slug].encode("utf-8")), **provenance[slug]}
-        _write_json(suggested / ".check.json", {"schema_version": 1, "drafts": dict(sorted(entries.items()))})
+        documents.append((suggested / ".check.json", {"schema_version": 1, "drafts": dict(sorted(entries.items()))}))
+    return documents
 
 
 def _write_drafts(social_dir, suggested_dir, drafts, provenance=None):
@@ -279,7 +280,8 @@ def _write_drafts(social_dir, suggested_dir, drafts, provenance=None):
     new_record.update({slug: record[slug] for slug in stale if slug in record})
     _write_json(record_path, dict(sorted(new_record.items())))
     if provenance is not None:
-        _write_meta(social_dir, suggested_dir, provenance, drafts, written, kept, stale)
+        for path, document in _meta_documents(social_dir, suggested_dir, provenance, drafts, written, kept, stale):
+            _write_json(path, document)
     return {"written": written, "kept_edited": kept, "suggested": len(kept), "stale": stale, "posted": False}
 
 
