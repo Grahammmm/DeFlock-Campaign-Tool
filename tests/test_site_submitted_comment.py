@@ -58,7 +58,9 @@ class SubmittedCommentSiteTests(unittest.TestCase):
         changed = sorted(name for name in before if before[name] != shown[name])
         self.assertIn("data/meetings.json", changed)
         self.assertIn("meetings/cedar-council-2026-10.html", changed)
-        self.assertTrue(all(n in ("data/meetings.json", "meetings/cedar-council-2026-10.html") or n.startswith("agencies/")
+        # data.html and data/datapackage.json legitimately change: they list data/meetings.json with its hash and size
+        self.assertTrue(all(n in ("data/meetings.json", "meetings/cedar-council-2026-10.html", "data.html", "data/datapackage.json")
+                            or n.startswith("agencies/")
                             for n in changed), changed)
         self.assertTrue(all(b"submitted-comment" not in data and b"Our submitted comment" not in data for data in before.values()))
         self.assertNotIn("submitted_comment", json.dumps(json.loads(before["data/meetings.json"])))
@@ -108,7 +110,14 @@ class SubmittedCommentSiteTests(unittest.TestCase):
                                      "agency_id": "ca-cedar-police", "submitted_comment": comment()}), encoding="utf-8")
         shown = self.build()
         self.assertNotIn("#submitted-comment", "".join(data.decode("utf-8") for n, data in shown.items() if n.startswith("agencies/")))
-        self.assertEqual(set(shown), before)  # no agency page was invented for a meeting
+        # the page-owning police agency now also owns a calendar for the moved meeting (DF1622-10), nothing else is new
+        self.assertEqual(set(shown) - before, {"agencies/cedar.ics"})
+        self.assertEqual(before - set(shown), set())
+        self.assertFalse(any(n.endswith(".html") for n in set(shown) - before))  # no HTML agency page was invented
+        calendar = shown["agencies/cedar.ics"].decode("utf-8")
+        self.assertIn("Future board (fictional)", calendar)
+        self.assertNotIn(TEXT, calendar)
+        self.assertNotIn(comment()["sha256"], calendar)
 
     def test_json_carries_only_when_and_how_and_csv_is_unchanged(self):
         before = self.build()

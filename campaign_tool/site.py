@@ -50,14 +50,18 @@ ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmpl"  # DF1103-12
-GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
+REQUESTS_FILTER_ASSET = Path(__file__).parent / "assets" / "requests-filter.js.tmpl"  # DF1622-08
+# Appended to style.css only with the requests filter: the mobile table rule makes rows display:block, so [hidden] needs help.
+REQUESTS_FILTER_CSS = ("#requests-table tbody tr[hidden]{display:none}\n"
+                       "@media print{#requests-table tbody tr[hidden]{display:table-row!important}}\n")
+GENERATED_TOP_LEVEL = {"requests", "index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "data.html", "vendor", "meetings", "agencies", "sources",
                        "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html", "elsewhere.html", "events.html", "events.ics"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
-    "data/cameras.geojson", DESCRIPTOR)
+    "data/cameras.geojson", "data/officials.json", "data/officials.csv", DESCRIPTOR)  # DF1622-11: the roster exports, only when emitted
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
 CLASSIFICATION_DEFINITIONS = {
@@ -243,6 +247,10 @@ PUBLIC_AGENCY_OPTIONAL = ("funding",)  # DF2207-02: present only when the organi
 # that tuple also names the data/agencies.csv columns, whose header is pinned and must not change with the data.
 PUBLIC_AGENCY_ACTIONS = ("actions",)
 PUBLIC_ACTION_FIELDS = ("on", "kind", "as_stated", "source_url", "checked_on")
+PUBLIC_OFFICIALS_TOP_LEVEL = {"schema_version", "campaign", "generated_from", "base_url", "url_kind", "bodies"}  # DF1622-11
+PUBLIC_OFFICIALS_BODY_FIELDS = ("agency_id", "name", "officials")
+PUBLIC_OFFICIAL_FIELDS = ("name", "role", "profile_url", "source_url", "checked_on")
+OFFICIALS_CSV_COLUMNS = ("agency_id", "agency_name", "name", "role", "profile_url", "source_url", "checked_on")
 PUBLIC_AGENCY_JSON_ONLY = ("reports",)  # DF0237-02: recorded reports go to data/agencies.json only; the CSV header is unchanged
 PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
 PUBLIC_POLICY_FIELDS = ("url", "checked_on")
@@ -684,6 +692,12 @@ class Site:
         """``{agency_id: "/agencies/<slug>.html"}`` for agencies with findings or sources, model order."""
         return self._agency_pages
 
+    def agency_calendar_paths(self):
+        """DF1622-10: ``{agency_id: "/agencies/<slug>.ics"}`` for agencies with a page and at least one staged meeting, model order."""
+        staged = {m.get("agency_id") for m in self.model["meetings"]}
+        return {a["agency_id"]: f'/agencies/{a["slug"]}.ics' for a in self.model["agencies"]
+                if a["agency_id"] in self._agency_pages and a["agency_id"] in staged}
+
     @staticmethod
     def _catalogue_record_pages(sources):
         """``{sha256: "/sources/<12-hex prefix>.html"}``; any two library entries sharing a prefix (a prefix
@@ -1014,11 +1028,56 @@ class Site:
         if due <= datetime(self.today.year, self.today.month, self.today.day, tzinfo=timezone.utc):
             text = "Written comment period closed"
         else:
-            offset = int(due.utcoffset().total_seconds()) // 60
-            text = (f'Written comments due {WEEKDAYS[due.weekday()]}, {MONTHS[due.month - 1]} {due.day}, {due.year}, '
-                    f'{(due.hour - 1) % 12 + 1}:{due.minute:02d} {"AM" if due.hour < 12 else "PM"} '
-                    f'(UTC{"-" if offset < 0 else "+"}{abs(offset) // 60:02d}:{abs(offset) % 60:02d})')
+            text = "Written comments due " + self._deadline_when(due)
         return f'<p class="comment-deadline"><time datetime="{e(written["deadline"])}">{text}</time></p>'
+
+    @staticmethod
+    def _deadline_when(due):
+        """The date, time and explicit original UTC offset of a deadline (shared by the meeting line and the home strip)."""
+        offset = int(due.utcoffset().total_seconds()) // 60
+        return (f'{WEEKDAYS[due.weekday()]}, {MONTHS[due.month - 1]} {due.day}, {due.year}, '
+                f'{(due.hour - 1) % 12 + 1}:{due.minute:02d} {"AM" if due.hour < 12 else "PM"} '
+                f'(UTC{"-" if offset < 0 else "+"}{abs(offset) // 60:02d}:{abs(offset) % 60:02d})')
+
+    def next_written_deadline(self):
+        """DF1952-10: ``(meeting, deadline text)`` for the earliest verified written-comment deadline strictly after the build
+        instant (``self.today`` at 00:00 UTC) among all noncancelled upcoming meetings, ties by meeting id; None without one."""
+        midnight = datetime(self.today.year, self.today.month, self.today.day, tzinfo=timezone.utc)
+        found = []
+        for meeting in self.upcoming:
+            written = (meeting.get("participation") or {}).get("written_comment") or {}
+            if written.get("deadline") and utc_moment(written["deadline"]) > midnight:
+                found.append((utc_moment(written["deadline"]), meeting["id"], meeting, written["deadline"]))
+        if not found:
+            return None
+        _, _, meeting, raw = min(found, key=lambda row: row[:2])
+        return meeting, raw
+
+    def standings_section(self):
+        """DF1952-10: "Where things stand", five counts from assembled public content and the configured public map only."""
+        agencies = self.model["agencies"]
+        asked = [item for agency in agencies for item in agency.get("asked", [])]
+        if not hasattr(self, "_map_docs"):
+            self.mapped_counts()
+        docs = getattr(self, "_map_docs", None)  # absent when mapped_counts is replaced (tests) or the map is off
+        points = len((docs[0] if docs else {}).get("features") or [])
+        metrics = (("agencies", sum(1 for agency in agencies if agency.get("asked")), "/requests.html"),
+                   ("answered", sum(1 for item in asked if item["state"] in ("answered", "partly_answered")), "/requests.html"),
+                   ("records", len(self.model["sources"]), "/sources.html"),
+                   ("findings", len(self.model["findings"]), "/findings/"),
+                   ("cameras", points, "/cameras.html"))
+        rows = "".join(f'<li><a href="{href}">{self.t("standings." + key)}</a>: '
+                       + (f"<strong>{count}</strong>" if count else f'<strong>{self.t("standings.none_yet")}</strong>') + "</li>"
+                       for key, count, href in metrics)
+        deadline = self.next_written_deadline()
+        line = ""
+        if deadline:
+            meeting, raw = deadline
+            line = (f'<p class="comment-deadline">{self.t("standings.deadline")}: '
+                    f'<a href="/meetings/{e(meeting["id"])}.html">{e(meeting["body"])}</a>, '
+                    f'<time datetime="{e(raw)}">{e(self._deadline_when(datetime.fromisoformat(raw.replace("Z", "+00:00"))))}</time></p>')
+        return (f'    <section class="section" id="standings"><div class="section-heading"><div>'
+                f'<h2>{self.t("standings.heading")}</h2></div></div><ul>{rows}</ul>{line}</section>\n')
 
     def submitted_comment_html(self, meeting):
         """DF1407-06: the comment the campaign submitted, as escaped plain text in a <pre>; "" without one."""
@@ -1337,7 +1396,7 @@ class Site:
         meetings = (f'    <section class="section" id="meetings"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p><h2>{self.t("heading.meetings_home")}</h2></div>'
                     f'<p><a href="/meetings.html">{self.t("intro.all_meetings")}</a></p></div><div class="meeting-list">'
                     + ("".join(self.meeting_item(m) for m in self.upcoming[:3]) or empty) + '</div></section>\n')
-        main = (self.map_section() + cards + self.contracts_section()
+        main = (self.map_section() + self.standings_section() + cards + self.contracts_section()
                 + f'    <section class="section" id="mission"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.mission")}</p>'
                   f'<h2>{e(self.site["tagline"])}</h2></div></div>{mission}</section>\n'
                 + f'    <section class="section" id="findings"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.latest_findings")}</p><h2>{self.t("heading.findings_home")}</h2></div>'
@@ -1435,7 +1494,9 @@ class Site:
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
                 f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")} '
                 f'<a href="/data/agencies.json" type="application/json">{self.t("intro.agencies_open_data")}</a> · '
-                f'{self.csv_link("/data/agencies.csv")}.</p></div>'
+                f'{self.csv_link("/data/agencies.csv")}.</p>'
+                + (f'<p><a href="/data/officials.json" type="application/json">{self.t("intro.officials_open_data")}</a> · '
+                   f'{self.csv_link("/data/officials.csv")}.</p>' if self.officials_exported() else "") + '</div>'
                 + ('<div class="agency-list">' + self.glance_section() + "".join(articles) + '</div>' if articles
                    else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
@@ -1450,9 +1511,38 @@ class Site:
         rows.sort(key=lambda row: row[3]["asked_on"], reverse=True)  # stable: equal days keep (agency_id, index) order
         return [(agency, item) for _, _, agency, item in rows]
 
+    def requests_filter_enabled(self, rows=None):
+        """DF1622-08: True when the shown request rows span 2+ agencies or 2+ request states (zero-row agencies never count)."""
+        rows = self.request_rows() if rows is None else rows
+        return len({a["agency_id"] for a, _ in rows}) >= 2 or len({i["state"] for _, i in rows}) >= 2
+
+    def requests_filter_form(self, rows):
+        """DF1622-08: the hidden agency/state form over the requests table; requests/filter.js reveals and wires it."""
+        agencies = {a["slug"]: a["name"] for a, _ in rows}
+        seen = {i["state"] for _, i in rows}
+
+        def select(key, first, options):
+            return (f'<div><label for="requests-filter-{key}">{self.t("js.requests_" + key)}</label>'
+                    f'<select id="requests-filter-{key}" name="{key}"><option value="*">{self.t(first)}</option>'
+                    + "".join(f'<option value="{e(v)}">{e(t)}</option>' for v, t in options) + '</select></div>')
+        ordered = sorted(agencies.items(), key=lambda kv: (kv[1].casefold(), kv[0]))
+        template = html_text(self.labels["js.requests_count"])
+        return (f'<form class="sources-filter" id="requests-filter" aria-label="{self.t("js.requests_label")}" '
+                f'data-count-template="{template}" hidden>'
+                + select("agency", "js.requests_all_agencies", ordered)
+                + select("state", "js.requests_all_states",
+                         [(s, self.labels["requests.state_" + s]) for s in ASKED_STATES if s in seen])
+                + f'<p class="sources-filter-count" id="requests-filter-count" aria-live="polite">'
+                  f'{self.t("js.requests_count", shown=len(rows), total=len(rows))}</p></form>')
+
+    def requests_filter_js(self):
+        """requests/filter.js: the packaged template, read only when the filter is enabled."""
+        return REQUESTS_FILTER_ASSET.read_text(encoding="utf-8")
+
     def requests_html(self):
         """/requests.html (DF1103-13): one table of every public asked item across agencies; the lead counts the same rows."""
         rows = self.request_rows()
+        filtered = self.requests_filter_enabled(rows)
         states = [item["state"] for _, item in rows]
         counts = " · ".join(self.t("requests.count", state=self.t("requests.state_" + state), count=states.count(state))
                             for state in ASKED_STATES)
@@ -1464,14 +1554,20 @@ class Site:
             cells = [f'<a href="{e(page)}">{e(agency["name"])}</a>', e(item["topic"]), time_tag(item["asked_on"]),
                      e(asked_sentence(item, self.today)),
                      time_tag(item["updated_on"]) if item.get("updated_on") else self.t("requests.not_recorded")]
-            body.append(f'<tr><th scope="row" data-label="{heads[0]}">{cells[0]}</th>'
+            hooks = f' data-agency="{e(agency["slug"])}" data-state="{e(item["state"])}"' if filtered else ""
+            body.append(f'<tr{hooks}><th scope="row" data-label="{heads[0]}">{cells[0]}</th>'
                         + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
-        table = ((f'<table class="glance-table"><caption>{self.t("requests.caption")}</caption><thead><tr>'
+        table_id = ' id="requests-table"' if filtered else ""
+        table = ((f'<table class="glance-table"{table_id}><caption>{self.t("requests.caption")}</caption><thead><tr>'
                   + "".join(f'<th scope="col">{head}</th>' for head in heads) + "</tr></thead><tbody>" + "".join(body)
                   + "</tbody></table>") if rows else f'<p>{self.t("requests.empty")}</p>')
         main = (f'    <section class="section" id="content"><div class="section-heading"><div>'
-                f'<h2>{self.t("requests.title")}</h2></div></div>{lead}<p>{self.t("requests.note")}</p>{table}</section>\n')
-        return self.page("agencies", self.labels["requests.title"], self.labels["requests.description"], "/requests.html", main)
+                f'<h2>{self.t("requests.title")}</h2></div></div>{lead}<p>{self.t("requests.note")}</p>'
+                + (self.requests_filter_form(rows) if filtered else "") + table
+                + (f'<p class="sources-filter-empty" id="requests-filter-empty" hidden>{self.t("js.requests_empty")}</p>'
+                   if filtered else "") + '</section>\n')
+        return self.page("agencies", self.labels["requests.title"], self.labels["requests.description"], "/requests.html", main,
+                         ["/requests/filter.js"] if filtered else [])
 
     @staticmethod
     def _official_name(person):
@@ -1607,6 +1703,8 @@ class Site:
                 + (f'<ul class="source-table">{records}</ul>' if records else f'<p>{self.t("notice.no_sources")}</p>')
                 + f'<h3>{self.t("agency.upcoming")}</h3>'
                 + f'<div class="meeting-list">{meetings or "<p>" + self.t("agency.no_upcoming") + "</p>"}</div>'
+                + (f'<p><a href="{e(self.agency_calendar_paths()[aid])}" type="text/calendar">{self.t("agency.meetings_calendar")}</a></p>'
+                   if aid in self.agency_calendar_paths() else "")
                 + (f'<h3>{self.t("agency.past_meetings")}</h3><div class="meeting-list">{past}</div>' if past else "")
                 + ('' if agency["verified"] else f'<p class="archive-hint">{self.t("agency.unverified")}</p>')
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
@@ -2528,6 +2626,13 @@ class Site:
     def cameras_html(self):
         """No-JS list of mapped points (DF1507-13): each point in the first picker city (by name) whose boundary holds it,
         by the counts' own half-open test, else in the group section. Over 2 000 points: 500 rows per section."""
+        if not self.map:  # DF1952-10: the strip's link target; the same disclaimer, no points
+            main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Mapped points</p>'
+                    '<h2>Community-mapped points; ownership unconfirmed.</h2></div>'
+                    '<p>Points are community reports from OpenStreetMap, not confirmed agency ownership.</p></div>'
+                    f'<p>{self.t("standings.none_yet").capitalize()}. {self.t("cameras.empty")}</p></section>\n')
+            return self.page("cameras", "Mapped points", "List of community-mapped points by city; ownership unconfirmed",
+                             "/cameras.html", main)
         self.mapped_counts()
         cameras, boundaries = self._map_docs
         picker = {agency["slug"] for agency in self.picker_cities()}
@@ -2740,7 +2845,7 @@ class Site:
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
                  "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html",
                  "/requests.html", "/data.html"]  # DF1103-13; DF2207-12
-        paths += ["/cameras.html"] if self.map else []
+        paths += ["/cameras.html"]  # DF1952-10: always, an empty page without a map
         paths += ["/glossary.html"] if self.glossary else []
         paths += ["/faq.html"] if self.faq else []  # DF0022-01
         paths += ["/events.html"] if self.events else []  # DF1107-08: the page only, never its fragment anchors
@@ -2829,13 +2934,24 @@ class Site:
         lines.append("END:VCALENDAR")
         return "".join(ics_fold(line) + "\r\n" for line in lines)
 
-    def meetings_ics(self):
-        """Upcoming (not cancelled) meetings as an RFC 5545 calendar; deterministic for one build day."""
+    def agency_meetings_ics(self):
+        """DF1622-10: ``{"agencies/<slug>.ics": calendar}``, the meetings.ics writer limited to one agency_id (same UIDs and event bytes)."""
+        files = {}
+        for agency in self.model["agencies"]:
+            if agency["agency_id"] in self.agency_calendar_paths():
+                own = [m for m in self.upcoming if m.get("agency_id") == agency["agency_id"]]
+                files[f'agencies/{agency["slug"]}.ics'] = self.meetings_ics(own, self.cfg["name"] + " - " + agency["name"] + " meetings")
+        return files
+
+    def meetings_ics(self, meetings=None, calendar_name=None):
+        """Upcoming (not cancelled) meetings as an RFC 5545 calendar; deterministic for one build day.
+        ``meetings``/``calendar_name`` (DF1622-10, per agency): None keeps the campaign calendar; an empty list stays empty."""
+        meetings = self.upcoming if meetings is None else meetings
         host = urlsplit(self.base).hostname if self.base else "deflock-campaign.invalid"
         stamp = self.today.strftime("%Y%m%d") + "T000000Z"
         lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DeFlock Campaign Tool//meetings//EN", "CALSCALE:GREGORIAN",
-                 "X-WR-CALNAME:" + ics_text(self.cfg["name"] + " meetings")]
-        for meeting in self.upcoming:
+                 "X-WR-CALNAME:" + ics_text(calendar_name or self.cfg["name"] + " meetings")]
+        for meeting in meetings:
             start = datetime.fromisoformat(meeting["starts_at"].replace("Z", "+00:00")).astimezone(timezone.utc)
             lines += ["BEGIN:VEVENT", f'UID:meeting-{meeting["id"]}@{host}', "DTSTAMP:" + stamp,
                       "DTSTART:" + start.strftime("%Y%m%dT%H%M%SZ"), "SUMMARY:" + ics_text(meeting["body"])]
@@ -3064,6 +3180,10 @@ class Site:
                    if agency.get("reports") else {}),  # DF0237-02: same order as the page, only when recorded
                 "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
 
+    def officials_exported(self):
+        """Whether data/officials.json is built (DF1622-11): someone is listed on the validated roster."""
+        return any((self.model.get("officials") or {}).values())
+
     def agencies_json(self):
         """``data/agencies.json`` (DF1422-12): agencies with a public page as open data; refuses any other key."""
         cities = self.cities()
@@ -3082,6 +3202,31 @@ class Site:
                                                             "reports": (PUBLIC_REPORT_FIELDS + PUBLIC_ARCHIVE_FIELDS, {}),
                                                             "transparency": (PUBLIC_TRANSPARENCY_FIELDS + PUBLIC_ARCHIVE_FIELDS, {})})})
         return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+    def officials_json(self):
+        """``data/officials.json`` (DF1622-11): the checked roster as open data, or ``None`` when it lists nobody.
+
+        Every loaded body with people, sorted by name then id; each official keeps the loaded order and exactly five keys."""
+        roster = self.model.get("officials") or {}
+        names = {a["agency_id"]: a["name"] for a in self.model["agencies"]}
+        listed = sorted(((names[agency_id], agency_id) for agency_id, people in roster.items() if people))
+        if not listed:
+            return None
+        doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/officials.json",
+               "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
+               "bodies": [{"agency_id": agency_id, "name": name,
+                           "officials": [{key: person.get(key) for key in PUBLIC_OFFICIAL_FIELDS} for person in roster[agency_id]]}
+                          for name, agency_id in listed]}
+        _assert_public(doc, "data/officials.json", PUBLIC_OFFICIALS_TOP_LEVEL | set(self.license_top()),
+                       {"bodies": (PUBLIC_OFFICIALS_BODY_FIELDS, {"officials": (PUBLIC_OFFICIAL_FIELDS, {})})})
+        return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def officials_csv(json_text):
+    """CSV text (DF1622-11) flattened from the checked ``data/officials.json`` text: one row per official, shared formula guard."""
+    rows = [{"agency_id": body["agency_id"], "agency_name": body["name"], **official}
+            for body in json.loads(json_text)["bodies"] for official in body["officials"]]
+    return _csv_text(OFFICIALS_CSV_COLUMNS, [{column: _record_cell(row[column]) for column in OFFICIALS_CSV_COLUMNS} for row in rows])
 
 
 def _text(value):
@@ -3337,10 +3482,9 @@ def _plan(root, today=None, notes=None):
     for agency in model["agencies"]:
         if agency["agency_id"] in site.agency_pages():
             pages[site.agency_pages()[agency["agency_id"]][1:]] = site.agency_html(agency)
-    if site.map:
-        if "cameras.html" in pages:  # content/pages/cameras.json would otherwise be silently replaced
-            raise ContentError("content/pages/cameras.json: collides with the generated cameras.html (the map's point list)")
-        pages["cameras.html"] = site.cameras_html()
+    if "cameras.html" in pages:  # content/pages/cameras.json would otherwise be silently replaced
+        raise ContentError("content/pages/cameras.json: collides with the generated cameras.html (the map's point list)")
+    pages["cameras.html"] = site.cameras_html()
     for source in model["sources"]:  # DF1103-11: one page per library entry; the prefixes were checked in Site()
         pages[site.record_pages()[source["sha256"]][1:]] = site.record_html(source)
     for finding in model["findings"]:
@@ -3352,7 +3496,8 @@ def _plan(root, today=None, notes=None):
     colours = ";".join(f"--{var}:{brand[key]}" for key, var in (("accent", "coral"), ("ink", "ink")) if key in brand)
     css = (pages["index.html"]["css"] + EXTRA_CSS + (f":root{{{colours}}}\n" if colours else "")
            + (".brand-logo{max-height:48px;width:auto;height:auto}\n" if "logo" in brand else "")
-           + (".statement-quote{white-space:pre-wrap}\n" if model.get("statements") else ""))
+           + (".statement-quote{white-space:pre-wrap}\n" if model.get("statements") else "")
+           + (REQUESTS_FILTER_CSS if site.requests_filter_enabled() else ""))
     files = {name: page["html"] for name, page in pages.items()}
     agencies_text, meetings_text = site.agencies_json(), site.meetings_json()  # each rendered once; its CSV is read back from it
     files.update({
@@ -3366,13 +3511,19 @@ def _plan(root, today=None, notes=None):
         "data/meetings.csv": public_records_csv(meetings_text, "meetings", PUBLIC_MEETING_FIELDS),
         "data/agencies.csv": public_records_csv(agencies_text, "agencies", PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL),
     })
+    officials_text = site.officials_json()  # DF1622-11: None without anyone on content/officials.json; its CSV is read back from it
+    if officials_text is not None:
+        files.update({"data/officials.json": officials_text, "data/officials.csv": officials_csv(officials_text)})
     if site.finding_filter():  # written only when the findings index loads it
         files["findings/filter.js"] = filter_js(bool(site.js_labels), site.multi_agency)
     if model["findings"]:  # written only when a finding page loads it
         files["findings/cite.js"] = CITE_JS
     if site.sources_filter():  # DF1103-12: written only when sources.html loads it; an empty library leaves no stale asset
         files["sources/filter.js"] = site.sources_filter_js()
+    if site.requests_filter_enabled():  # DF1622-08: written only when requests.html loads it; below threshold leaves no stale asset
+        files["requests/filter.js"] = site.requests_filter_js()
     files.update(site.agency_feeds())
+    files.update(site.agency_meetings_ics())  # DF1622-10: only agencies with a page and a staged meeting; none, no file
     if site.events:  # DF1107-10: no events file or [] means no calendar (the tree swap drops a stale one)
         files["events.ics"] = site.events_ics()
     if model["meetings"]:  # DF1103-10: no staged meetings, no feed (the tree swap drops a stale one)
