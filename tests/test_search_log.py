@@ -309,6 +309,18 @@ class SearchLogTests(unittest.TestCase):
         os.symlink(self.files / "bad.json", self.files / "cats-link.json")
         self.refused("--csv", self.csv(), "--agency", AID, "--categories", self.files / "cats-link.json", words=("symlink",))
 
+    def test_long_fields_and_deeply_nested_categories(self):
+        big = "x" * (300 * 1024)  # above csv's default 128 KiB field limit, far below 100 MiB
+        before = search_log.csv.field_size_limit()
+        row = f"2026-01-05 10:00:00,U,C,P,{big},Alpha PD,CA"  # long purpose; the long cells are only counted
+        summary = self.report(self.csv(log_bytes(rows=[row, row.replace("Alpha", big)]), "long.csv"))
+        self.assertEqual(summary["rows"]["read"], 2)
+        self.assertEqual(search_log.csv.field_size_limit(), before)  # restored
+        nested = self.files / "nested.json"
+        nested.write_text("[" * 60000)
+        err = self.refused("--csv", self.csv(), "--agency", AID, "--categories", nested, words=("valid UTF-8 JSON",))
+        self.assertNotIn("Traceback", err)
+
     def test_known_agency_and_campaign_scope(self):
         path = self.csv()
         self.refused("--csv", path, "--agency", "ca-nope", words=("--agency",))

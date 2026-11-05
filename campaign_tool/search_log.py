@@ -123,6 +123,8 @@ def load_terms(categories_path=None):
         if str(exc) == "--categories file has a duplicate key":
             raise
         raise ValueError("--categories file is not valid UTF-8 JSON") from None
+    except RecursionError:
+        raise ValueError("--categories file is not valid UTF-8 JSON") from None
     if not isinstance(obj, dict) or set(obj) != set(DEFAULT_TERMS):
         raise ValueError("--categories file must be an object with exactly the keys blank_or_na, vague, immigration_related")
     for key, terms in obj.items():
@@ -238,6 +240,15 @@ def _check_label(value, row, what):
 
 
 def summarize_csv(csv_path, agency, *, columns=None, categories_path=None):
+    """Wrapper: csv's default 128 KiB field limit would refuse valid files under MAX_BYTES, so raise it for the call."""
+    previous = csv.field_size_limit(MAX_BYTES)
+    try:
+        return _summarize_csv(csv_path, agency, columns=columns, categories_path=categories_path)
+    finally:
+        csv.field_size_limit(previous)
+
+
+def _summarize_csv(csv_path, agency, *, columns=None, categories_path=None):
     """The v1 summary object (see docs/SEARCH-LOG.md) for the CSV at csv_path; ValueError with fixed text on any refusal."""
     terms, categories_sha = load_terms(categories_path)
     classify = _classifier(terms)
