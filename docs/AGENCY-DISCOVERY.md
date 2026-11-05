@@ -373,6 +373,29 @@ the law package (`null` when it is missing) and flags drafts edited since sendin
 the period runs from the agency's receipt and holidays are not modelled. `kit` re-runs never touch `sent.json`.
 The JSON it prints is described by `schemas/kit-status.schema.json`; `tests/test_kit_json_contracts.py` fails when the keys drift.
 
+### Recording the day the agency received the request
+
+By default the provisional determination and extended dates count from the day you sent the request. When you have
+evidence of the day the agency actually received it, record that day and the evidence, as a pair:
+
+    python3 -m campaign_tool kit-sent ... --received-on 2026-10-03 --receipt-evidence portal
+    python3 -m campaign_tool kit-received --directory ../my-campaign --agency ca-example-police --on 2026-10-03 --evidence portal
+
+`kit-received` works on a request already recorded (including one from `kit-sent-import`) and takes `--request NAME`
+(default `main`) and `--replace`. The evidence is exactly one of `portal` (a portal receipt or timestamp, whatever
+channel the request used), `acknowledgement` (the agency's own written acknowledgement), `return_receipt` (a mail or
+courier delivery receipt) or `other`. You state it; the tool never checks it. The date may equal the sent day or today
+but not come before the sent day or after today. One value is kept: a second needs `--replace`, even when identical.
+`kit-sent --replace` keeps a stored receipt and refuses a corrected sent day later than it; give both receipt flags to
+correct them together. There is no way to delete a receipt.
+
+Only a request WITH a receipt changes: `kit-status`, `kit-due`, `kit-followup`, `kit-calendar` and `today` count its
+dates from the receipt and add the note `counted from receipt D (KIND)` to its rows, reminders, calendar events and
+follow-up draft (JSON adds `received_on` and `receipt_evidence` for that request only). A request without a receipt
+prints exactly what it did before. An agency's own stated production date, next installment and download expiry are
+never moved. Recording `kit-response --kind acknowledged` is a response step and never sets the receipt. `kit-timing`
+is unchanged. All of these dates stay provisional reminders, never legal deadlines; nothing is sent.
+
 ### Several requests to one agency
 
 A second or narrowed request to an agency you already recorded gets its own name: draft it yourself in
