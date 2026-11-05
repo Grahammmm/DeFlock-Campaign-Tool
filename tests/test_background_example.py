@@ -64,12 +64,13 @@ def starter():
 def entries(document):
     """Parse the page into (group, title, fields) with the same strictness the roster test asserts."""
     found, group = [], None
-    for block in re.split(r"\n(?=#{2,3} )", document["body_md"]):
-        if block.startswith("## "):
-            group = block[3:].split("\n")[0].strip()
-        elif block.startswith("### "):
+    for part in re.split(r"(?m)^(?=## )", document["body_md"]):
+        if not part.startswith("## "):
+            continue
+        group = part[3:].split("\n")[0].strip()
+        for block in re.split(r"\n(?=\*\*[^\n]+\*\*\n)", part)[1:]:
             lines = [line for line in block.split("\n") if line.strip()]
-            found.append((group, lines[0][4:].strip(), lines[1:]))
+            found.append((group, lines[0][2:-2].strip(), lines[1:]))
     return found
 
 
