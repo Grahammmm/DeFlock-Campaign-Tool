@@ -24,6 +24,29 @@ rule names are printed to stderr as `review-required` notes and nothing is block
 fresh version goes to `kit/press/letters.suggested/`. The letter record is `kit/press/letters/.written.json`, separate
 from the release draft's. Nothing is sent or published; the release `press draft` is unchanged.
 
+### Check existing press drafts
+
+`python3 -m campaign_tool press check --directory D [--json]` is a read-only, offline freshness check. It reads the
+direct `.md` files of exactly four folders: `kit/press`, `kit/press.suggested`, `kit/press/letters` and
+`kit/press/letters.suggested` (originals and organizer-edited twins alike; a missing folder is empty). It never
+regenerates, rewrites, sends or publishes, and it reads no `.written.json` record.
+
+Finding ids come only from the draft's own first line, `<!-- DRAFT: not sent. Review before any use. findings ID, ID -->`,
+and the file name must begin with a real `YYYY-MM-DD-`. A draft is `stale` when a cited finding is withdrawn
+(`private/withdrawn/` wins over a leftover public copy), is not published, or gained a correction dated AFTER the date
+in the file name (the dates are shown; the comparison is by date only, not by the correction text). A letter is also
+`stale` when the meeting named in its generated closing (`/meetings/ID.html`) is cancelled (`meeting_cancelled`), has
+started before now (`meeting_past`) or no longer exists (`meeting_missing`); the signup closing needs no meeting.
+A draft without that header line, with an unrecognized letter closing, or whose finding or meeting files cannot be
+trusted is `not checked`. A symlink, special file or unreadable/oversized file is named as `not regular` or `unreadable`
+and never followed. Content files that could not be indexed appear as extra `input` rows after the drafts.
+
+Text prints `PATH: ok` or `PATH: STATUS: reasons`; `--json` prints `{"drafts": [...], "problems": N}` alone (N counts
+non-ok rows). With nothing to check it prints `No private press drafts found.` The exit status is 0 when every row is
+`ok` and 3 otherwise (1 for a folder that is not a campaign). `ok` means only these checks passed: it does not detect a
+rescheduled meeting, a changed summary or a newly published finding the draft does not cite, and it is not factual or
+legal review. After a problem, review the draft by hand or delete it and run `press draft` or `press letter` again.
+
 How a finding goes from draft to the public site in the workspace Worker, and how it is
 corrected or withdrawn afterwards. Code: `workers/workspace/src/review_state.ts`,
 `publication.ts`, `manifest.ts`, `executors/publish_finding.ts`, `executors/deploy_site.ts`.
@@ -490,7 +513,7 @@ link, Mastodon 500 code points with 23-character links. Only the title is shorte
 every chosen platform is made before anything is written, so one that cannot fit stops the run with
 the platform named. Each folder keeps its own `.written.json`, kept edits go to
 `kit/social/<P>.suggested/` and stale slugs are listed per platform. Without `--platform` the run is
-unchanged (`len()` within 280 into `kit/social/`); `--check` reads that folder only.
+unchanged (`len()` within 280 into `kit/social/`); `--check` reads every draft folder (see Checking every draft folder).
 
 ### Social drafts for meetings (never posted)
 
@@ -503,8 +526,8 @@ the date and time in the meeting's own UTC offset (as the meeting page prints it
 the verified written-comment deadline and how, how to attend, and `<base_url>/meetings/<id>.html`
 when `base_url` is set. Only the agenda item is shortened. Cancelled, past, later-than-window and
 unverified meetings get no draft and are counted under `skipped`; an unreadable meeting file is
-counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts and
-`--check` are unchanged. Nothing is posted.
+counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts are
+unchanged. Nothing is posted.
 
 ### Social drafts for outcomes (never posted)
 
@@ -580,7 +603,26 @@ findings in the same folder are left alone and are not reported as stale, while 
 no longer published is listed as `stale`, never deleted. The command prints the report
 (`finding`, `posts`, `threads`, `posted: false`) and `Drafts written to kit/social/threads. Nothing was
 posted.`; wording the legal-claim guard flags is noted on stderr only, per post, and is never an approval.
-Finding drafts, meeting drafts and `--check` are unchanged. Nothing goes to `content/` or `public/`.
+Finding and meeting drafts are unchanged. Nothing goes to `content/` or `public/`.
+
+### Checking every draft folder (read-only)
+
+`social --check [--text]` names each draft's state in every private folder it finds: `kit/social/` (as always),
+`kit/social/<x|bluesky|mastodon>/`, `kit/social/{meetings,outcomes,threads}/` and their `<platform>/` sub-folders, and each
+`.suggested` sibling (including `kit/social.suggested/`). Absent folders are skipped; a link or non-folder in that list is
+named as a folder problem and never entered. States are `ok`, `missing`, `outdated`, `edited` and `not_regular`, each
+folder using its own length rule (a thread is checked post by post, `(n/N)` counters included). A valid edit is not a
+problem. A draft is listed as **stale**, with a reason and once, when its finding is no longer published, its meeting is
+cancelled, rescheduled (stored `starts_at` differs from the one drafted), past or no longer verified, or its recorded
+outcome changed or left its original N-day window. Default output stays JSON (a campaign with only `kit/social/*.md`
+drafts prints exactly what it always did); other folders add one key per folder under `folders`. `--text` prints the
+same result grouped by folder. Exit 3 on any problem. Nothing is written or posted.
+
+Meeting and outcome drafts keep a private `kit/social/<kind>/.check.json` next to `.written.json` (the source
+`starts_at`, or the whole recorded outcome, plus the window; no draft text). Drafts made before it existed have no
+original value to compare: they are checked against a fresh 14-day draft and, when different, reported `outdated` with the
+command to rebuild them. A kept organizer edit keeps its original entry; the fresh suggestion gets its own.
+
 
 ## Posting one approved social draft (Worker `post_social`)
 

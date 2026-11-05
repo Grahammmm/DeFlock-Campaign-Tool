@@ -537,6 +537,9 @@ def _site_claim_notes(root):
 def build(root, check=False, budget=None, weights_out=None, weights_baseline=None):
     from .site import build_site
     public = root / "public"
+    if check and any(os.path.lexists(public / name) for name in ("data.html", "data/datapackage.json")):
+        from .site_check import check_data_catalogue  # DF2207-12: refuse an already-missing or changed listed file first
+        check_data_catalogue(public)
     notes = []
     written = build_site(root, notes=notes)
     for note in notes:  # informational: the exit code is unchanged
@@ -553,7 +556,9 @@ def build(root, check=False, budget=None, weights_out=None, weights_baseline=Non
     for note in _site_claim_notes(root):  # DF-4 alert-only: notes for the publish gate, never an error or an exit code
         print(note)
     if check:
-        from .site_check import check_accessibility, check_links
+        from .site_check import check_accessibility, check_data_catalogue, check_links
+        if content_mode:
+            check_data_catalogue(public)  # DF2207-12: the fresh output, before any success line
         hits = check_public_tree(public)
         for path, line, label in hits:
             print(f"public/{path}:{line}: {label}", file=sys.stderr)
@@ -920,6 +925,7 @@ def main():
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
     social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
+    social_p.add_argument("--text", action="store_true", help="With --check: print the report as text grouped by folder instead of JSON")
     social_p.add_argument("--platform", action="append", choices=["x", "bluesky", "mastodon"],
                           help="Draft for this platform's own length rule into kit/social/<platform> (repeatable)")
     social_p.add_argument("--meetings", action="store_true",
@@ -971,6 +977,9 @@ def main():
     supporters_remove = supporters.add_parser("remove", help="Drop one organization's public entry and private record")
     supporters_remove.add_argument("--directory", required=True)
     supporters_remove.add_argument("--id", required=True)
+    press_check = press_commands.add_parser("check", help="Check private press drafts and letters against current findings and meetings; read-only")
+    press_check.add_argument("--directory", required=True)
+    press_check.add_argument("--json", action="store_true", dest="as_json", help="Print JSON only")
     press_letter = press_commands.add_parser("letter", help="Draft a private letter to the editor; sends nothing")
     press_letter.add_argument("--directory", required=True)
     press_letter.add_argument("--finding", action="append", default=[], help="Published finding id (repeat for 1 to 3)")
@@ -1081,6 +1090,12 @@ def main():
     sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail", "in_person"))
     sent_p.add_argument("--file", help="The letter you sent: only its SHA-256 and size are kept, never its text or path")
     sent_p.add_argument("--replace", action="store_true", help="Overwrite an existing record for this meeting")
+    publish_p = commands.add_parser("meetings-comment-publish", help="Stage the exact comment you recorded as submitted as the "
+                                    "public copy on its meeting page (content/meetings/<id>.json); sends nothing")
+    for flag in ("--directory", "--id", "--file"):
+        publish_p.add_argument(flag, required=True)
+    publish_p.add_argument("--signer-public", action="store_true", help="Confirm that whoever signed the comment agreed to be named publicly")
+    publish_p.add_argument("--replace", action="store_true", help="Overwrite an already staged submitted comment")
     speakers_p = commands.add_parser("meetings-speakers", help="Private plan: which volunteer label covers which point of a "
                                      "staged meeting's comment kit (kit/meetings/speakers/<id>.json); sends nothing")
     speakers_p.add_argument("--directory", required=True)
@@ -1651,11 +1666,13 @@ def main():
     if getattr(args, "json", False) and not args.checklist:
         parser.error("--json requires --checklist")
     if args.command == "social" and args.check and args.platform:
-        parser.error("--check reads kit/social only; it cannot be combined with --platform")
+        parser.error("--check reads every draft folder itself; it cannot be combined with --platform")
     if args.command == "social" and args.meetings and args.check:
-        parser.error("--check reads finding drafts only; it cannot be combined with --meetings")
+        parser.error("--check reads every draft folder itself; it cannot be combined with --meetings")
     if args.command == "social" and args.outcomes and (args.meetings or args.check):
-        parser.error("--outcomes cannot be combined with " + ("--meetings" if args.meetings else "--check (--check reads finding drafts only)"))
+        parser.error("--outcomes cannot be combined with " + ("--meetings" if args.meetings else "--check (--check reads every draft folder itself)"))
+    if args.command == "social" and args.text and not args.check:
+        parser.error("--text needs --check")
     if args.command == "social" and args.events and (args.meetings or args.outcomes or args.check or args.thread):
         parser.error("--events cannot be combined with --meetings, --outcomes, --check or --thread")
     if args.command == "social" and args.finding is not None and not args.thread:
@@ -1741,12 +1758,21 @@ def main():
         elif args.command == "social" and args.check:
             from .social import check_social
             report = check_social(root)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
+            if args.text:
+                from .social_check import format_text
+                sys.stdout.write(format_text(report))
+            else:
+                print(json.dumps(report, indent=2, ensure_ascii=False))
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
             social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days, args.outcomes,
                        args.finding[0] if args.thread else None, args.events)
         elif args.command == "press":
+            if args.press_command == "check":
+                from .press_check import check_press, format_text
+                report = check_press(root)
+                print(json.dumps(report, indent=2, ensure_ascii=False) if args.as_json else format_text(report))
+                sys.exit(3 if report["problems"] else 0)
             if args.press_command == "letter":
                 from .press import build_letter
                 result = build_letter(root, args.finding, args.date, words=args.words, outlet=args.outlet)
@@ -1833,6 +1859,13 @@ def main():
                      **({"letter_sha256_prefix": entry["letter_sha256"][:12]} if "letter_sha256" in entry else {})}
             print(json.dumps(shown, indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "meetings-comment-publish":
+            from .meeting_comment_publish import publish
+            comment, notes = publish(root, args.id, args.file, signer_public=args.signer_public, replace=args.replace)
+            print(json.dumps({"id": args.id, "on": comment["on"], "channel": comment["channel"], "bytes": len(comment["text"].encode("utf-8"))}, indent=2))
+            for note in notes:
+                print(note, file=sys.stderr)
+            print("Staged only: a later site build shows it. Nothing was sent or published; a clean lint is not privacy clearance.")
         elif args.command == "meetings-speakers":
             from .meeting_speakers import list_plan, update_plan
             # The guards must see the unresolved directory so a campaign-root or ancestor symlink is refused.

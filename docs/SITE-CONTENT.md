@@ -1050,6 +1050,15 @@ person. The two files are replaced one after the other with a rollback on an ord
 until the saved pair of files is restored. There is no crash-atomic transaction and no concurrent writer support; run
 one writer. Evidence originals are never deleted.
 
+Staged meetings may carry `submitted_comment` `{on, channel, text, sha256}`, written by `meetings-comment-publish` (see
+`docs/MEETINGS.md`). `on` is a real date that is not in the future, `channel` one of `email|portal|mail|in_person`, `text`
+1 to 16384 UTF-8 bytes with no placeholder or email, phone or plate pattern, and `sha256` the digest of the text's UTF-8 bytes
+(the build recomputes it; no private ledger is read). The meeting page shows it as escaped plain text under
+`Our submitted comment (CHANNEL, DATE)` (labels `meeting.submitted_comment` with `{channel}` and `{date}`, and
+`meeting.submitted_comment_link`; Spanish drafts in `examples/labels/es.json`); an existing agency page links its past
+meeting to `#submitted-comment`; `data/meetings.json` gains `submitted_comment: {on, channel}` only (never the text or digest,
+and no CSV column).
+
 ### Campaign events (`content/events.json`, optional)
 
 The campaign's own forums, teach-ins and other public gatherings become `/events.html`. They are **not** governing-body
@@ -1251,6 +1260,26 @@ object (`asked` or `funding` items, `alpr_policy`, `contract`, `transparency`, a
 JSON (`{"checked_on":"2026-10-20","url":"..."}`), never spread over more columns. Encoding and the formula guard are those of
 `findings.csv`: UTF-8 without a byte-order mark, CRLF line ends, standard quoting, and a cell that begins with `=`, `+`, `-`, `@`,
 a tab or a carriage return is written with a leading `'` (interior characters are not touched; the JSON is not changed).
+`data.html` and `data/datapackage.json` (DF2207-12) are the open-data catalogue: the page lists, for each file the build
+wrote among the four JSON and four CSV documents, `data/cameras.geojson`, `data/county.geojson` and the city-boundary copy
+(files the build did not write are not listed; vendor files, assets, schemas and the two catalogue files never are), a fixed one-line
+description, the byte length, all 64 characters of the SHA-256 of the final written bytes, a schema link and the licence; the
+descriptor is a generic Frictionless Data Package (`profile: data-package`, name `campaign-open-data`, each resource with
+`path` relative to `data/`, `mediatype`, `bytes`, `hash: sha256:<hex>`, `schema` and `licenses`). Both are rendered last, from
+the staged bytes of every listed file, and compared with the preflight calculation before `public/` is swapped, so the hashes
+match what was written; `build --preview` calculates them from the planned bytes. JSON files link the raw
+`schemas/<name>-open-data.schema.json` URL; a CSV resource carries an inline Table Schema of its actual header (every column
+is text) and its page row links the JSON schema as the source-record schema; GeoJSON links the GeoJSON schema. `site.json.license`
+applies to the campaign JSON and CSV only. `cameras.geojson` is always ODbL-1.0 with the OpenStreetMap contributors attribution.
+A boundary file keeps only a licence its own top-level `license` member states (a known id); otherwise it says
+`licence not stated` (`licenses: []`). No package-wide licence is written. `build --check` first checks a catalogue already in
+`public/` (when `data.html` or `data/datapackage.json` exists) and refuses a listed file that is missing, changed (size or
+SHA-256), symlinked or outside `data/`, a malformed or duplicate-key descriptor, or a `data.html` row that differs, naming each
+path, before anything is rebuilt; it checks the fresh output again before it prints success. An ordinary build repairs old
+output. `data.html` is linked from the footer (its own paragraph before the final links paragraph) and, with a `base_url`,
+listed in `sitemap.xml`; `data.html` is a reserved name. Labels: `data.title`, `data.intro`, `data.csv_note`, `data.download`,
+`data.description`, `data.bytes`, `data.sha256`, `data.schema`, `data.schema_csv`, `data.license`, `data.license_unstated`,
+`data.package` and `footer.data`; the descriptions in the catalogue are fixed English like the other non-page outputs.
 `public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan

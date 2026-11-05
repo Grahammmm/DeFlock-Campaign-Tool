@@ -359,6 +359,15 @@ class FundingTests(unittest.TestCase):
         for name, data in plain.items():
             self.assertNotIn(b"agency-funding", data, name)
             self.assertNotIn(b"How it is paid for", data, name)
+            if name == "data/datapackage.json":
+                document = json.loads(data)
+                for resource in document["resources"]:
+                    if resource["name"] == "agencies-csv":
+                        fields = resource["schema"]["fields"]
+                        field = {"name": "funding", "type": "string"}
+                        self.assertEqual(fields.count(field), 1)
+                        fields.remove(field)  # schema column metadata, not an exported funding value
+                data = json.dumps(document).encode()
             self.assertNotIn(b'"funding"', data, name)
         entries = [{**ENTRY, "amount_usd": "10", "period": "annual", "fiscal_year": "2025"},
                    {**ENTRY, "kind": "donation", "name": "Synthetic Giving Org"}]
@@ -386,6 +395,9 @@ class FundingTests(unittest.TestCase):
         for name, data in funded.items():
             if name not in shown:
                 self.assertNotIn(b"Synthetic Giving Org", data, name)  # not in feeds, scripts, search, maps or other pages
+                if name in ("data.html", "data/datapackage.json"):
+                    self.assertNotEqual(data, plain[name], name)  # checksums follow the changed agencies bytes
+                    continue
                 self.assertEqual(data, plain[name], name)  # every other file is byte for byte what it was
         page = self.read("agencies/cedar.html").lower()
         for implied in ("funded by", "sponsor", "influence", "donor", "total funding", "largest", "ranked"):

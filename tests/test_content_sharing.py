@@ -312,7 +312,7 @@ class SharingTests(unittest.TestCase):
                                    "cameras.html", "corrections.html", "findings/cedar-policy-posted.html", "findings/index.html",
                                    "findings/packet-all.html", "index.html", "meetings.html", "meetings/cedar-council-2026-10.html",
                                    "methods.html", "privacy.html", "search.html", "sources.html", "sources/beefbeefbeef.html",
-                                   "sources/cafecafecafe.html", "timeline.html", "requests.html"})
+                                   "sources/cafecafecafe.html", "timeline.html", "requests.html", "data.html"})  # data.html: DF2207-12 page carries the footer too
         rows = "name,state,kind\n" + "".join(f"Out Of State Agency {i:03d},NV,local\n" for i in range(150))
         self.importing(rows, replace=True)
         self.build()

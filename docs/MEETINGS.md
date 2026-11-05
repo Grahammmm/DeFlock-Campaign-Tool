@@ -361,6 +361,29 @@ no longer lists its `comment_deadline` item, and `meeting-pack` returns `"commen
 unchanged. A malformed `kit/comments-sent.json` shows in `today` as one `unreadable` item (every deadline is
 still listed), `meeting-pack` treats it as no record, and `meetings-comment-sent` refuses until it is fixed.
 
+## Publishing the comment you submitted
+
+`python3 -m campaign_tool meetings-comment-publish --directory D --id M --file LETTER --signer-public [--replace]`
+stages the text you already submitted by hand as the public copy on the meeting's page. It sends and builds nothing: it
+writes `submitted_comment` into `content/meetings/<M>.json`, and the next normal `build` renders it.
+
+* `LETTER` must be byte for byte the file `meetings-comment-sent --file` recorded for this meeting: its SHA-256 and size
+  must equal the recorded `letter_sha256` and `letter_bytes`. A meeting recorded without `--file` cannot be published. Changing
+  even a newline makes it a different file. Nothing is normalized, redacted or filled in.
+* UTF-8 plain text of 1 to 16384 bytes (CRLF and non-ASCII allowed; no byte-order mark, NUL or other control characters),
+  with no unfilled `[name]`, `[city]` or `[EDIT ME]` placeholder. Other bracketed prose is fine.
+* The shared privacy lint (email, phone, plate) runs line by line; a hit refuses and names the line number and category only.
+  A clean result is not privacy clearance: the patterns have known blind spots. The legal-claim guard only prints
+  `review-required` notes (rule names) and never refuses.
+* `--signer-public` is your confirmation that whoever signed the comment agreed to be named publicly. The tool cannot check it.
+* The date and channel come from the private record, never from a flag. An existing public comment is kept unless `--replace`;
+  the private record is never changed.
+
+The meeting page then shows `Our submitted comment (CHANNEL, DATE)` as escaped plain text (anchor `#submitted-comment`),
+an existing agency page's past meeting links to it, and `data/meetings.json` carries only `submitted_comment: {on, channel}`
+(JSON only; no text, digest or CSV column). This is a recorded submission, not proof of delivery or a legal finding. Without
+the field every page and export is unchanged.
+
 ## Recording an outcome
 
 After a staged meeting has happened, an organizer who read the result on the agency's own record

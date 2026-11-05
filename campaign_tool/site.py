@@ -40,6 +40,7 @@ from .privacy_patterns import refusal
 from .shell import render
 from .provenance_text import EXPLAINER, source_line
 from .redirects import load_redirects
+from .site_data_catalogue import DATASETS, DESCRIPTOR, PAGE, datapackage_json, resource_records
 from .review import ROLES
 
 from .sharing_summary import GROUPS as SHARING_GROUPS, summarize_sharing
@@ -52,12 +53,12 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 MEETINGS_FILTER_ASSET = Path(__file__).parent / "assets" / "meetings-filter.js.tmpl"  # DF1622-09
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
-                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
+                       "site-data.js", "agency-cards.js", "app.js", "findings", "data", "data.html", "vendor", "meetings", "agencies", "sources",
                        "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html", "elsewhere.html", "events.html", "events.ics"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
-    "data/cameras.geojson",)
+    "data/cameras.geojson", DESCRIPTOR)
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
 CLASSIFICATION_DEFINITIONS = {
@@ -225,6 +226,7 @@ PUBLIC_COPY_FIELDS = ("matches", "checked_on", "reason")
 PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "sources")
 PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0137-09: meetings open data
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
+PUBLIC_MEETING_OPTIONAL = ("submitted_comment",)  # DF1407-06: JSON only ({on, channel}); never a CSV column
 PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes", "minutes_url", "minutes_approved_on",
                          "continued_to", "continued_to_date", "direction", "return_by",
                          "direction_source", "spoke", "written", "comment_source_url")  # never verified_by / verified_at
@@ -777,6 +779,34 @@ class Site:
                "attribution": ODBL["attribution"], "attribution_url": ODBL["attribution_url"]}
         return json.dumps(doc, ensure_ascii=False, separators=(",", ":")) + "\n"
 
+    def data_html(self, records):
+        """/data.html (DF2207-12): one row per open-data file with its size and full SHA-256, schema link and licence.
+        The fixed data-* attributes on each row are what ``build --check`` compares with the Data Package."""
+        rows = []
+        for record in records:
+            path, csv_file = record["path"], record["mediatype"] == "text/csv"
+            schema_label = self.t("data.schema_csv") if csv_file else e(record["schema_url"].rsplit("/", 1)[-1])
+            licence = "; ".join(f'<a href="{e(item["path"])}" rel="noopener noreferrer">{e(item["name"])}</a>'
+                                for item in record["licenses"]) or self.t("data.license_unstated")
+            if record["attribution"]:
+                licence += f' · {e(record["attribution"])}'
+            rows.append(
+                f'<tr data-path="{e(path)}" data-bytes="{record["bytes"]}" data-sha256="{record["sha256"]}">'
+                f'<th scope="row"><a href="/{e(path)}" download>{e(path.rsplit("/", 1)[-1])}</a></th>'
+                f'<td>{e(record["description"])}</td><td class="bytes">{record["bytes"]}</td>'
+                f'<td class="sha256"><code>{record["sha256"]}</code></td>'
+                f'<td><a href="{e(record["schema_url"])}" rel="noopener noreferrer">{schema_label}</a></td>'
+                f'<td>{licence}</td></tr>')
+        head = "".join(f'<th scope="col">{self.t(key)}</th>' for key in (
+            "data.download", "data.description", "data.bytes", "data.sha256", "data.schema", "data.license"))
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div>'
+                f'<h2>{self.t("data.title")}</h2></div></div><p>{self.t("data.intro")}</p><p>{self.t("data.csv_note")}</p>'
+                f'<p><a href="/data/datapackage.json">{self.t("data.package")}</a></p>'
+                f'<table><caption>{self.t("data.title")}</caption><thead><tr>{head}</tr></thead>'
+                f'<tbody>{"".join(rows)}</tbody></table>'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("data", self.labels["data.title"], self.labels["data.intro"], "/data.html", main)
+
     def md(self, text):
         """``markdown_lite`` with this site's public-asset image sizes (own-line ``![alt](/path)`` images render)."""
         return markdown(text, images=self.image_sizes) if self.image_sizes else markdown(text)
@@ -839,6 +869,7 @@ class Site:
             parts.append(f'<p><a href="/press.html">{self.t("footer.press")}</a></p>')
         parts.append(f'<p><a href="/privacy.html">{self.t("footer.privacy")}</a>'
                      + (f' · <a href="/glossary.html">{self.t("footer.glossary")}</a>' if self.glossary else "") + '</p>')
+        parts.append(f'<p><a href="/data.html">{self.t("footer.data")}</a></p>')  # DF2207-12: before the final links paragraph
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         meetings_feed = f' · <a href="/meetings.xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else ""  # DF1103-10
         meetings_feed += f' · <a href="/events.ics">{self.t("footer.events_calendar")}</a>' if self.events else ""  # DF1107-10
@@ -990,12 +1021,23 @@ class Site:
                     f'(UTC{"-" if offset < 0 else "+"}{abs(offset) // 60:02d}:{abs(offset) % 60:02d})')
         return f'<p class="comment-deadline"><time datetime="{e(written["deadline"])}">{text}</time></p>'
 
-    def meeting_item(self, meeting):
+    def submitted_comment_html(self, meeting):
+        """DF1407-06: the comment the campaign submitted, as escaped plain text in a <pre>; "" without one."""
+        comment = meeting.get("submitted_comment")
+        if not comment:
+            return ""
+        heading = self.t("meeting.submitted_comment", channel=comment["channel"], date=comment["on"])
+        return f'<section id="submitted-comment"><h3>{heading}</h3><pre class="submitted-comment">{e(comment["text"])}</pre></section>'
+
+    def meeting_item(self, meeting, comment_link=False):
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a>'
                   if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">{self.t("meeting.page")}</a>'
         item = f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
         item += meeting_outcome_html(meeting, self.t) if meeting["starts_at"][:10] < self.today.isoformat() else ""
         item += self._written_deadline(meeting)
+        if comment_link and meeting.get("submitted_comment"):  # DF1407-06: an agency page's past meeting
+            item += (f'<p><a href="/meetings/{e(meeting["id"])}.html#submitted-comment">'
+                     f'{self.t("meeting.submitted_comment_link")}</a></p>')
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
         kit = (f'<details><summary>{self.t("meeting.kit")}</summary>' + self.md(meeting["comment_kit_md"]) + '</details>'
@@ -1542,7 +1584,7 @@ class Site:
             f'<a href="/sources.html#{e(s["fragment"])}">{self.t("agency.in_library")}</a></p></li>'
             for s in self.model["sources"] if s["agency_id"] == aid)
         meetings = "".join(self.meeting_item(m) for m in self.upcoming if m.get("agency_id") == aid)
-        past = "".join(self.meeting_item(m) for m in self.past if m.get("agency_id") == aid)  # DF2207-05
+        past = "".join(self.meeting_item(m, comment_link=True) for m in self.past if m.get("agency_id") == aid)  # DF2207-05
         links = self.official_links(agency)
         main = (f'    <article class="section finding-body" id="content"><p class="eyebrow">{self.t("kind." + agency["kind"])}</p>'
                 f'<h2>{e(agency["name"])}</h2><p>{e(agency["jurisdiction_name"])}</p>'
@@ -2381,6 +2423,7 @@ class Site:
                 + self.public_comment_counts(meeting)
                 + self._written_deadline(meeting)
                 + self._cosigned(meeting)
+                + self.submitted_comment_html(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
                 f'<p><a href="/meetings.html">{self.t("meeting.all")}</a></p></article>\n')
@@ -2745,7 +2788,7 @@ class Site:
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
                  "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html",
-                 "/requests.html"]  # DF1103-13
+                 "/requests.html", "/data.html"]  # DF1103-13; DF2207-12
         paths += ["/cameras.html"] if self.map else []
         paths += ["/glossary.html"] if self.glossary else []
         paths += ["/faq.html"] if self.faq else []  # DF0022-01
@@ -3031,6 +3074,8 @@ class Site:
                                                               "comment_source_url") if key in outcome}
             if "votes" in outcome:  # DF0137-07 per-member votes, in stored order
                 value["outcome"]["votes"] = [{"name": v["name"], "vote": v["vote"]} for v in outcome["votes"]]
+        if meeting.get("submitted_comment"):  # DF1407-06: when and how only, never the text or its digest
+            value["submitted_comment"] = {key: meeting["submitted_comment"][key] for key in ("on", "channel")}
         return value
 
     def meetings_json(self):
@@ -3040,7 +3085,9 @@ class Site:
                "meetings": [self._public_meeting(m) for m in ordered]}
         vote = (PUBLIC_VOTE_FIELDS, {})
         _assert_public(doc, "data/meetings.json", PUBLIC_MEETING_TOP_LEVEL | set(self.license_top()),
-                       {"meetings": (PUBLIC_MEETING_FIELDS, {"outcome": (PUBLIC_OUTCOME_FIELDS, {"votes": vote})})})
+                       {"meetings": ((*PUBLIC_MEETING_FIELDS, *PUBLIC_MEETING_OPTIONAL),
+                                     {"outcome": (PUBLIC_OUTCOME_FIELDS, {"votes": vote}),
+                                      "submitted_comment": (("on", "channel"), {})})})
         return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
@@ -3177,7 +3224,7 @@ def _assert_public(doc, name, top, nested):
 
 def _write(path, text, written):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    path.write_bytes(text.encode("utf-8"))  # exact UTF-8 bytes (CRLF kept) so the catalogue hashes match the file
     written.append(path)
 
 
@@ -3264,6 +3311,26 @@ def _privacy_gate(model, cfg=None):
 
 def _plan_site(root, today=None, notes=None):
     """Render every page and check every copy without writing: ``(files, copies)``, or None without content/."""
+    planned = _plan(root, today, notes)
+    return None if planned is None else planned[:2]
+
+
+def _catalogue_payloads(files, plan, city, read):
+    """``{public path: bytes}`` of the registered open-data files only (planned texts and data/ copies), read via
+    ``read(copy source or None, public path)``."""
+    sources = {Path(relative).as_posix(): source for source, relative, _ in plan}
+    paths = [path for path in DATASETS if path in files] + [path for path in sources if path in DATASETS or path == city]
+    return {path: read(sources.get(path), path) for path in paths}
+
+
+def _render_catalogue(site, payloads):
+    """``(data.html, data/datapackage.json)`` text from the exact bytes of the listed files."""
+    records = resource_records(payloads, {"campaign": site.license, "city_boundary": site.city_path})
+    return site.data_html(records)["html"], datapackage_json(records, site.cfg["name"])
+
+
+def _plan(root, today=None, notes=None):
+    """``(files, copies, site)`` as ``_plan_site`` plus the Site that rendered them, or None without content/."""
     from .cli import read_config
     root = Path(root)
     cfg = read_config(root)
@@ -3377,6 +3444,10 @@ def _plan_site(root, today=None, notes=None):
     plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
     for source, _, limit in plan:  # every copy is checked before the filesystem changes
         _check_copy(source, limit)
+    # DF2207-12: the catalogue is calculated from the exact bytes planned above, so it joins the redirect and privacy checks
+    site.city_path = Path(model["map"]["controller"]["city_boundaries_url"]).as_posix() if model["map"] else None
+    payloads = _catalogue_payloads(files, plan, site.city_path, lambda source, path: Path(source).read_bytes() if source else files[path].encode("utf-8"))
+    files[PAGE], files[DESCRIPTOR] = _render_catalogue(site, payloads)
     if model["site"].get("press"):  # DF2207-10: links only the open data this build writes, never a scan of public/
         files["press.html"] = site.press_html(sorted({name for name in PRESS_DATA_FILES if name in files} | set(map_data)))["html"]
     if "redirects" in model:  # DF2037-16: any present file, even JSON null, is checked against every path written
@@ -3388,7 +3459,7 @@ def _plan_site(root, today=None, notes=None):
     site.check_privacy([*files, *(Path(relative).as_posix() for _, relative, _ in plan)], files)  # before anything is written
     if isinstance(notes, list):
         notes.extend(site.camera_notes())
-    return files, plan
+    return files, plan, site
 
 
 def build_site(root, today=None, notes=None):
@@ -3405,18 +3476,25 @@ def build_site(root, today=None, notes=None):
     from .cli import read_config
     root = Path(root)
     public = root / "public"
-    planned = _plan_site(root, today, notes)
+    planned = _plan(root, today, notes)
     if planned is None:
         return build_starter(read_config(root), public)
-    files, plan = planned
+    files, plan, site = planned
     staging = Path(tempfile.mkdtemp(dir=root, prefix=".public.new-"))  # swapped in only when complete
     new, written = staging / "public", []
     try:
         new.mkdir()
         for name, text in files.items():
-            _write(new / name, text, written)
+            if name not in (PAGE, DESCRIPTOR):  # DF2207-12: the catalogue is rendered last, from the staged bytes
+                _write(new / name, text, written)
         for source, relative, limit in plan:
             _copy(source, new / relative, written, limit)
+        staged = _catalogue_payloads(files, plan, site.city_path, lambda _, path: (new / path).read_bytes())
+        again = _render_catalogue(site, staged)
+        if again != (files[PAGE], files[DESCRIPTOR]):  # a copy changed after it was planned: nothing is swapped in
+            raise ContentError("data catalogue: an open-data file changed while the site was built; build again")
+        _write(new / PAGE, again[0], written)
+        _write(new / DESCRIPTOR, again[1], written)
         if public.exists():
             old = public.rename(root / f".public.old-{datetime.now(timezone.utc):%Y%m%dT%H%M%S%fZ}")
             try:
