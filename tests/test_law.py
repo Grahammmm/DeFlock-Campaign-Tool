@@ -328,7 +328,7 @@ class LawCliTests(unittest.TestCase):
         result = self.run_python("-m", "campaign_tool.law", "show", "us-ca")
         summary = json.loads(result.stdout)
         self.assertEqual(summary["status"], "draft")
-        self.assertEqual(summary["rule_count"], 12)
+        self.assertEqual(summary["rule_count"], 18)
         self.assertEqual(summary["records_law"]["determination_days"], 10)
         self.assertIn("holidays are not modeled", summary["note"])
         missing = self.run_python("-m", "campaign_tool.law", "show", "us-zz", returncode=1)
