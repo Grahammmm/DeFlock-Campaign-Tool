@@ -175,7 +175,10 @@ class RecordsFromContentTests(unittest.TestCase):
 
     def test_note_and_full_hash_never_reach_the_manifest_or_the_draft(self):
         value, draft = self.draft(None)
-        for blob in (json.dumps(value), draft["text"], draft["html"], json.dumps(draft)):
+        # DF1622-13: findings and meetings now carry their content ids (identity only, never rendered); the hash scan skips those id keys
+        public = {**value, "findings": [{k: v for k, v in f.items() if k != "id"} for f in value["findings"]],
+                  "meetings": [{k: v for k, v in m.items() if k != "id"} for m in value["meetings"]]}
+        for blob in (json.dumps(public), draft["text"], draft["html"], json.dumps(draft)):
             self.assertNotIn("Organizer note", blob)
             self.assertNotIn("someone@example.invalid", blob)
             self.assertIsNone(re.search(r"[0-9a-f]{13,}", blob))

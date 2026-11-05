@@ -59,7 +59,7 @@ BASELINE = {
     "findings/cite.js": "13f4d137f53aaa98bcc1cf1662769871f5629dda97e5700cf97727fca110cb47",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/index.html": "5dff2951d17bcc8171f862bcbbccd3daf4de76c7fb8cabe7e97795806c82a4c0",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/packet-all.html": "25922bcff4bccdd5e43bef55461532405d75f085e3db230b6abe6d7e03909213",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "index.html": "d36f1e6b0e357daf00d37ff5c2bfb5982a56dc63d6ba42ab05fe4e2f6c959be9",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "index.html": "5df3c0d3753e73bf86ccfca4bf5cd094da08a5d285840c1036b4cd0d279c0327",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.html": "c5697f650fe1b440c257c90cf0ea3e55ed288cceb89cc65995d57d0a8750037c",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.ics": "dd19281997628992288aaccd1a377c0b0b41c72d2110b15a641cd7a813191ae5",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.xml": "2af1fa8b795edc83edc9c854e689411875b401b940c3cc99569311f182b41e5e",  # pragma: allowlist secret -- public rendered-file SHA-256
