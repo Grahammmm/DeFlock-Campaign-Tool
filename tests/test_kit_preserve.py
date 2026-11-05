@@ -105,7 +105,7 @@ class PreserveTests(unittest.TestCase):
         self.send(A, "second-ask", "2026-04-01", "R9-2")
         self.send(A, "third", "2026-05-01")
         result = self.make()
-        self.assertEqual(result, {"written": f"kit/preservation/{A}.md", "agency_id": A, "request": "main",
+        self.assertEqual(result, {"written": f"kit/preservation/{A}--main.md", "agency_id": A, "request": "main",
                                   "note": "Draft only. Nothing was sent."})
         main = self.letter(result)
         self.assertIn("2026-03-02", main)
@@ -121,7 +121,7 @@ class PreserveTests(unittest.TestCase):
         self.assertNotIn("reference", self.letter(self.make(A, "third")))  # no reference recorded, none copied
         folder = self.root / "kit" / "preservation"
         self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
-        self.assertEqual(stat.S_IMODE((folder / f"{A}.md").stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE((folder / f"{A}--main.md").stat().st_mode), 0o600)
         self.refuses("no hand-sent request", A, "missing")  # exact identity: no parent or main fallback
         self.send(B, "main", "2026-03-03")
         self.assertIn("2026-03-03", self.letter(self.make(B)))
@@ -132,7 +132,7 @@ class PreserveTests(unittest.TestCase):
                                       "Only sharing logs.\n", "agreements only\n", "# Hand edited\n\nanything\n")):
             self.send(A, "main", "2026-03-02", "R0123-110125", text=body)
             letters.append(self.letter(self.make()))
-            (self.root / "kit" / "preservation" / f"{A}.md").unlink()
+            (self.root / "kit" / "preservation" / f"{A}--main.md").unlink()
         self.assertEqual(len(set(letters)), 1)  # nothing from the original is copied or widened
         text = letters[0]
         self.assertIn(kit_preserve.ASK, text)
@@ -164,7 +164,7 @@ class PreserveTests(unittest.TestCase):
                       and self.unlink(B) else "")
 
     def unlink(self, agency=A):
-        path = self.root / "kit" / "preservation" / f"{agency}.md"
+        path = self.root / "kit" / "preservation" / f"{agency}--main.md"
         if path.exists():
             path.unlink()
         return True
@@ -255,7 +255,7 @@ class PreserveTests(unittest.TestCase):
                 with self.assertRaises(ValueError, msg=phrase):
                     self.make()
                 self.assertEqual(snapshot(self.root), before)
-                self.assertFalse((self.root / "kit" / "preservation" / f"{A}.md").exists())
+                self.assertFalse((self.root / "kit" / "preservation" / f"{A}--main.md").exists())
         self.agencies[0]["name"] = "Spoliation Police"  # dynamic text is checked as rendered
         self.write_agencies()
         self.refuses("legal duty", A)
@@ -350,11 +350,11 @@ class PreserveTests(unittest.TestCase):
         code, out, err = run("kit-preserve", "--directory", self.root, "--agency", A)
         self.assertEqual(code, 0, err)
         self.assertTrue(out.endswith("Draft only. Nothing was sent.\n"))
-        self.assertEqual(json.loads(out.rsplit("Draft only", 1)[0])["written"], f"kit/preservation/{A}.md")
+        self.assertEqual(json.loads(out.rsplit("Draft only", 1)[0])["written"], f"kit/preservation/{A}--main.md")
         after = snapshot(self.root)
         for name in ("sent.json", "agencies.json", f"requests/{A}.md"):
             self.assertEqual(after[f"kit/{name}"], before[f"kit/{name}"])  # bytes and mtime unchanged
-        self.assertEqual(set(after) - set(before), {f"kit/preservation/{A}.md"})
+        self.assertEqual(set(after) - set(before), {f"kit/preservation/{A}--main.md"})
         for forbidden in ("repeat-drafts.json", "drafts-written.json"):
             self.assertFalse((self.root / "kit" / forbidden).exists())
         code, _, err = run("kit-preserve", "--directory", self.root, "--agency", A)  # rerun refuses, nothing sent
@@ -366,6 +366,20 @@ class PreserveTests(unittest.TestCase):
         with mock.patch("socket.socket", side_effect=AssertionError("socket used")):
             self.unlink()
             self.assertTrue(self.make()["written"])
+
+    def test_symlinked_campaign_root_refused(self):
+        link = self.root.parent / "campaign-link"
+        link.symlink_to(self.root, target_is_directory=True)
+        before = snapshot(self.root)
+        with self.assertRaises(ValueError) as caught:  # callable API
+            kit_preserve.preserve_request(link, A, today=TODAY)
+        self.assertIn("campaign folder", str(caught.exception))
+        code, out, err = run("kit-preserve", "--directory", link, "--agency", A)  # CLI keeps the link visible
+        self.assertNotEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertIn("campaign folder", err)
+        self.assertEqual(snapshot(self.root), before)
+        self.assertFalse((self.root / "kit" / "preservation").exists())
 
 
 if __name__ == "__main__":

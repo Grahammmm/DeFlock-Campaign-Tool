@@ -1996,7 +1996,7 @@ def main():
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-preserve":
             from .kit_preserve import preserve_request
-            print(json.dumps(preserve_request(root, args.agency, request=args.request), indent=2))
+            print(json.dumps(preserve_request(Path(args.directory).expanduser(), args.agency, request=args.request), indent=2))
             print("Draft only. Nothing was sent.")
         elif args.command == "kit-denial-reply":
             from .kit_track import denial_reply

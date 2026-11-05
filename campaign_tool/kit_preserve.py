@@ -151,8 +151,8 @@ def preserve_request(root, agency_id, *, request="main", today=None):
     request = kit_track._request(request)
     if not isinstance(agency_id, str) or not kit.AGENCY_ID.fullmatch(agency_id):
         raise ValueError("--agency must look like ca-example-police")
-    for part in ("kit", "kit/requests", "content", "kit/preservation"):  # no link or non-folder anywhere on the path
-        _folder_ok(root / part, part)
+    for part in (".", "kit", "kit/requests", "content", "kit/preservation"):  # no link or non-folder on the path
+        _folder_ok(root / part if part != "." else root, "the campaign folder" if part == "." else part)
     agency = _agency(root, agency_id)
     entry, label = _sent_entry(root, agency_id, request)
     _verify_draft(root, agency_id, request, entry, label)
@@ -167,7 +167,7 @@ def preserve_request(root, agency_id, *, request="main", today=None):
     for note in legal_notes([("kit/preservation draft", text)]):  # alert-only, like every other draft
         print(note, file=sys.stderr)
     folder = root / "kit" / "preservation"
-    target = folder / f"{kit_track._stem(agency_id, request)}.md"
+    target = folder / f"{agency_id}--{request}.md"  # its own naming: main is --main, never the requests stem
     relative = f"kit/preservation/{target.name}"
     if os.path.lexists(folder):
         if stat.S_IMODE(folder.stat().st_mode) & 0o077:
