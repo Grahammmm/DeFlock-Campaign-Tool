@@ -238,6 +238,7 @@ class LabelsTest(unittest.TestCase):
         # map.history_*: the fixture has no map/history.json (tests/test_site_cameras_page.py covers those labels).
         # press.logo, press.download_logo: the fixture has no brand logo (tests/test_site_press_page.py covers those labels).
         # map.check_*: the fixture has no map/point-checks.json (tests/test_map_point_checks.py covers those labels).
+        # map.direction_line: the fixture has no facing tag (tests/test_camera_direction.py covers that label).
         # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
         # agency.mapped_reported_*: the fixture has no transparency snapshot (tests/test_agency_mapped_reported.py covers those).
         # schedule.*: the fixture has no body-schedules.json (tests/test_body_schedules.py covers those labels).
@@ -270,6 +271,7 @@ class LabelsTest(unittest.TestCase):
                   "license.about", "license.about_camera", "license.csv_note",
                   "map.check_duplicate", "map.check_earlier", "map.check_heading",
                   "map.check_in_agency_record", "map.check_not_found_on_site", "map.check_seen_in_person",
+                  "map.direction_line",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
                   "meeting.comments_both", "meeting.comments_spoke", "meeting.comments_written",
