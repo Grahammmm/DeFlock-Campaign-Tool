@@ -447,7 +447,7 @@ class DoctorStaleTests(unittest.TestCase):
     def test_unreadable_or_malformed_file_is_one_bounded_unknown(self):
         (self.root / "content").mkdir(exist_ok=True)
         path = self.root / "content" / "agencies.json"
-        secret = "SECRET-LEAK"
+        leak_marker = "LEAK-MARKER"
         for case in ("bytes", "text", "oversize", "dir", "dangling", "fifo", "wrongtype", "badid", "badshape", "null"):
             with self.subTest(case=case):
                 if path.is_dir() and not path.is_symlink():
@@ -455,23 +455,23 @@ class DoctorStaleTests(unittest.TestCase):
                 elif path.exists() or path.is_symlink():
                     path.unlink()
                 if case == "bytes":
-                    path.write_bytes(b"\xff\xfe" + secret.encode())
+                    path.write_bytes(b"\xff\xfe" + leak_marker.encode())
                 elif case == "text":
-                    path.write_text("{" + secret, encoding="utf-8")
+                    path.write_text("{" + leak_marker, encoding="utf-8")
                 elif case == "oversize":
                     path.write_text('["' + "a" * (2 * 1024 * 1024) + '"]', encoding="utf-8")
                 elif case == "dir":
                     path.mkdir()
                 elif case == "dangling":
-                    os.symlink(self.root / secret, path)
+                    os.symlink(self.root / leak_marker, path)
                 elif case == "fifo":
                     os.mkfifo(path)
                 elif case == "null":  # a JSON null document is present-but-invalid, not a missing file
                     path.write_text("null", encoding="utf-8")
                 elif case == "wrongtype":
-                    path.write_text(json.dumps({"agency_id": secret}), encoding="utf-8")
+                    path.write_text(json.dumps({"agency_id": leak_marker}), encoding="utf-8")
                 elif case == "badid":
-                    path.write_text(json.dumps([{"agency_id": secret, "profile": {}}]), encoding="utf-8")
+                    path.write_text(json.dumps([{"agency_id": leak_marker, "profile": {}}]), encoding="utf-8")
                 else:
                     path.write_text(json.dumps([{"agency_id": "ex-city", "profile": {
                         "funding": [{"checked_on": ago(300)}, "x"], "contract": [1]}}]), encoding="utf-8")
@@ -479,7 +479,7 @@ class DoctorStaleTests(unittest.TestCase):
                 entry = found["content/agencies.json"]
                 self.assertEqual((entry["status"], entry["date"], entry["refresh"]),
                                  ("unknown", None, "recheck the source and update checked_on"))
-                self.assertNotIn(secret, json.dumps(self.report()))
+                self.assertNotIn(leak_marker, json.dumps(self.report()))
                 if case == "badshape":  # the valid sibling is still diagnosed
                     self.assertEqual(found[self.PREFIX + "funding[0]"]["status"], "stale")
 
