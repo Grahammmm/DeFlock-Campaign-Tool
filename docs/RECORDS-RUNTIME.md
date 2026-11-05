@@ -42,3 +42,29 @@ supported validation path when developing on macOS. CI does not read a live
 campaign or reuse development/production services. The runner container is a
 separate scheduler runtime; building it alone is not validation of full records
 intake.
+
+## Pipeline health watch
+
+`records pipeline-health --runtime-dir ABS --target NAME --root RECORDS_ROOT [--mail-store DIR] [--now ISO] [--json] [--record-alerts]`
+reads the existing state files and prints one line, `Run health: <state> - <reason>`, for the console, the run summary or a
+Telegram line elsewhere. It never runs, retries, restarts, notifies or clears anything, and reads no credentials. **This unit
+installs no timer or service**; wiring it to one is a separate deploy step. Exit codes: `ok` 0, `warn` 1, `unknown` 2, `stop` 3
+(a bad `--target` or `--now` also exits 2 with a fixed refusal). Unknown is never reported as ok. The only write is
+`--record-alerts`: one `alerts/health-<check>-<reason>.json` per open problem (mode 0600, `count` and `last_seen` updated on each pass,
+so a frequent timer does not flood), renamed to `.cleared.json` once the problem is gone. Alert files written by the run wrapper
+are never touched; a symlinked or foreign-owned alert directory or file is refused (`alerts_unsafe`).
+
+| Reason code | State | What to check |
+| --- | --- | --- |
+| `arrival_not_consumed` | stop | A mail or drop-folder arrival stamp has waited over 30 min: is a run being started on arrival (`records arrival`)? |
+| `arrival_unreadable` | unknown | The `arrival/` state is malformed or unsafe: inspect it; do not delete stamps. |
+| `mail_poll_stale` | warn over 6 h, stop over 24 h | `mail-poll/state.json` has not advanced: check the poll job and mailbox login. |
+| `mail_poll_never`, `mail_poll_unreadable`, `mail_poll_not_configured` | unknown | No poll state to judge (or no `--mail-store` given). |
+| `no_recent_run` | stop | The latest run report finished over 26 h ago. |
+| `run_report_invalid` | stop | `run-report.json` fails the run-report schema. |
+| `run_report_missing` | unknown | No run report yet. |
+| `repeated_failures` | stop | The last 3 run reports all ended `fail`. `latest_run_failed` (warn): only the latest did. |
+| `notify_failed` | warn | A `notify-failed-*` alert is newer than the last successful report. |
+| `schedule_missed`, `schedule_failed`, `schedule_stalled`, `schedule_gaps`, `schedule_held` | stop | The slot health from `records health`; `schedule_degraded` is warn, `schedule_never` unknown. |
+
+Limits are in `pipeline_health.LIMITS`. A machine-valid report is review-required, not semantic acceptance of the run.
