@@ -869,12 +869,16 @@ def record_contact(root, agency_id, on, channel, role, note, *, request="main", 
             "contact": {k: contact[k] for k in ("on", "channel", "role")}}
 
 
-def status(root, today=None, law_base=None, *, request=None):
-    """Every recorded request (or only those named ``request``) with provisional determination dates (read-only)."""
+def status(root, today=None, law_base=None, *, request=None, owner=None):
+    """Every recorded request (or only those named ``request`` and/or owned by ``owner``) with provisional
+    determination dates (read-only). A row carries ``owner`` only when kit/assignments.json names one."""
+    from . import kit_assign  # local import: kit_assign imports this module
     from .cli import read_config  # local import: cli imports this module lazily
     root = Path(root)
     request = None if request is None else _request(request)
+    owner = None if owner is None else kit_assign.owner_label(owner, "--owner")
     requests = read_sent(root)
+    owners = kit_assign.read_assignments(root)  # a bad store stops here, before any row is built
     path = root / "kit" / "agencies.json"
     names = {entry["agency_id"]: entry["name"] for entry in kit._load_existing(path)} \
         if requests and path.is_file() and not path.is_symlink() else {}
@@ -887,6 +891,9 @@ def status(root, today=None, law_base=None, *, request=None):
     for (agency_id, name), entry in sorted(((_split(key), entry) for key, entry in requests.items()),
                                            key=lambda item: (item[1]["sent_on"], *item[0])):
         if request is not None and name != request:
+            continue
+        label = owners.get(_key(agency_id, name))  # the request's own owner; a named request never inherits main's
+        if owner is not None and label != owner:
             continue
         steps = [s for s in entry["steps"] if isinstance(s, dict)]
         kinds = [s.get("kind") for s in steps]
@@ -911,6 +918,7 @@ def status(root, today=None, law_base=None, *, request=None):
             if package else None
         last_contact = _latest_contact(entry)
         rows.append({"agency_id": agency_id, "request": name, "name": names.get(agency_id),
+                     **({"owner": label} if label else {}),
                      "sent_on": entry["sent_on"], "channel": entry["channel"],
                      "draft_changed_since_sent": None if entry.get("imported") is True  # no draft was ever checked
                      else _draft(root, agency_id, name) != entry["draft_sha256"],
@@ -941,7 +949,7 @@ def status(root, today=None, law_base=None, *, request=None):
 
 ANSWERED = {"determination", "produced", "denied"}
 CSV_HEADER = ("agency_id", "name", "drafted", "sent_on", "channel", "last_step_on", "last_step_kind", "records",
-              "sources", "findings", "fee", "scopes")
+              "sources", "findings", "fee", "scopes", "request", "owner")
 
 
 def _scope_summary(entry, steps):  # None before a request is sent; "not recorded"; else "k/n answered"
@@ -952,7 +960,10 @@ def _scope_summary(entry, steps):  # None before a request is sent; "not recorde
 
 
 def coverage(root):
-    """One row per selected kit agency from draft to published finding; read-only, unsent requests first."""
+    """One row per selected kit agency's main request plus one per recorded named request, from draft to published
+    finding; read-only. Unassigned requests come first, then unsent ones. Totals count each agency once; sources and
+    findings are agency-level and repeat on each of that agency's rows."""
+    from . import kit_assign
     from .content import load_content
     root = Path(root)
     path = root / "kit" / "agencies.json"
@@ -963,37 +974,54 @@ def coverage(root):
         if entry.get("selected") is True:
             selected.setdefault(entry["agency_id"], entry["name"])
     requests = read_sent(root)
+    owners = kit_assign.read_assignments(root)
     model = load_content(root)
     sources = [s["agency_id"] for s in model["sources"]] if model else []
     findings = [f["agency_id"] for f in model["findings"]] if model else []
+    named = {}  # selected agency -> its recorded named requests
+    for parts in filter(None, map(_split, requests)):
+        if parts[0] in selected and parts[1] != "main":
+            named.setdefault(parts[0], []).append(parts[1])
     rows = []
     for agency_id, name in selected.items():
-        entry = requests.get(agency_id) or {}
-        steps = [s for s in entry.get("steps", []) if isinstance(s, dict)]
-        draft = root / "kit" / "requests" / (agency_id + ".md")
-        rows.append({"agency_id": agency_id, "name": name, "drafted": draft.is_file() and not draft.is_symlink(),
-                     "sent_on": entry.get("sent_on"), "channel": entry.get("channel"),
-                     "last_step": {"on": steps[-1].get("on"), "kind": steps[-1].get("kind")} if steps else None,
-                     "records": len({h for s in steps if s.get("kind") == "produced" for h in _step_records(s)}),
-                     "sources": sources.count(agency_id), "findings": findings.count(agency_id),
-                     "fee_state": _fee_state(steps), "scopes": _scope_summary(entry, steps),
-                     "answered": bool(ANSWERED & {s.get("kind") for s in steps})})
-    rows.sort(key=lambda row: (row["sent_on"] is not None, row["agency_id"]))
-    totals = {"selected": len(rows), "drafted": sum(r["drafted"] for r in rows),
-              "sent": sum(r["sent_on"] is not None for r in rows), "answered": sum(r.pop("answered") for r in rows),
-              "with_records": sum(r["records"] > 0 for r in rows), "with_findings": sum(r["findings"] > 0 for r in rows),
+        for request in ["main", *sorted(named.get(agency_id, ()))]:
+            key = _key(agency_id, request)
+            entry = requests.get(key) or {}
+            steps = [s for s in entry.get("steps", []) if isinstance(s, dict)]
+            draft = root / "kit" / "requests" / (_stem(agency_id, request) + ".md")
+            rows.append({"agency_id": agency_id, "request": request, "owner": owners.get(key) if entry else None,
+                         "name": name, "drafted": draft.is_file() and not draft.is_symlink(),
+                         "sent_on": entry.get("sent_on"), "channel": entry.get("channel"),
+                         "last_step": {"on": steps[-1].get("on"), "kind": steps[-1].get("kind")} if steps else None,
+                         "records": len({h for s in steps if s.get("kind") == "produced" for h in _step_records(s)}),
+                         "sources": sources.count(agency_id), "findings": findings.count(agency_id),
+                         "fee_state": _fee_state(steps), "scopes": _scope_summary(entry, steps),
+                         "answered": bool(ANSWERED & {s.get("kind") for s in steps})})
+    rows.sort(key=lambda row: (row["owner"] is not None, row["sent_on"] is not None, row["agency_id"], row["request"]))
+
+    def agencies(test):  # unique agencies with at least one matching row
+        return len({r["agency_id"] for r in rows if test(r)})
+    totals = {"selected": len(selected), "drafted": agencies(lambda r: r["drafted"]),
+              "sent": agencies(lambda r: r["sent_on"] is not None), "answered": agencies(lambda r: r["answered"]),
+              "with_records": agencies(lambda r: r["records"] > 0), "with_findings": agencies(lambda r: r["findings"] > 0),
               "unselected_with_requests": len({parts[0] for parts in map(_split, requests)
                                                if parts and parts[0] not in selected}),
-              "fee_unpaid": sum(r["fee_state"] == "unpaid" for r in rows)}
+              "fee_unpaid": agencies(lambda r: r["fee_state"] == "unpaid"),
+              "requests": len(rows), "unassigned_requests": sum(r["owner"] is None for r in rows)}
+    for row in rows:
+        del row["answered"]
     note = ("Read-only counts from kit/ and content/." if model else
-            "No content/ folder: sources and findings are 0.") + " Agencies with no sent request come first."
+            "No content/ folder: sources and findings are 0.") + (
+        " Unassigned requests come first, then unsent ones. Agency totals count each agency once; requests and "
+        "unassigned_requests count rows; sources and findings are per agency and repeat on each of its rows.")
     return {"rows": rows, "totals": totals, "note": note}
 
 
 def _cells(row):
     step = row["last_step"] or {}
     return [row["agency_id"], row["name"], row["drafted"], row["sent_on"], row["channel"], step.get("on"),
-            step.get("kind"), row["records"], row["sources"], row["findings"], row["fee_state"], row["scopes"]]
+            step.get("kind"), row["records"], row["sources"], row["findings"], row["fee_state"], row["scopes"],
+            row["request"], row["owner"]]
 
 
 def _csv_cell(value):
@@ -1012,25 +1040,28 @@ def format_coverage(report, as_csv=False):
         for row in report["rows"]:
             writer.writerow([_csv_cell(c) for c in _cells(row)])
         return out.getvalue()
-    line = "{:<36} {:<40} {:<7} {:<10} {:<9} {:<10} {:<13} {:>7} {:>7} {:>8} {:<7} {}"
+    line = "{:<36} {:<40} {:<7} {:<10} {:<9} {:<10} {:<13} {:>7} {:>7} {:>8} {:<7} {:<14} {:<20} {}"
     lines = [line.format("agency_id", "name", "drafted", "sent_on", "channel", "last_on", "last_kind", "records",
-                         "sources", "findings", "fee", "scopes")]
+                         "sources", "findings", "fee", "scopes", "request", "owner")]
     for row in report["rows"]:
         cells = _cells(row)
         cells[1] = "".join(c if c.isprintable() else " " for c in cells[1])[:40]
         cells[2] = "yes" if cells[2] else "no"
-        lines.append(line.format(*("-" if c is None else c for c in cells)))
+        lines.append(line.format(*(("-" if c is None else c) for c in cells)))
     lines.append("totals: " + ", ".join(f"{k} {v}" for k, v in report["totals"].items()))
     return "\n".join(lines + [report["note"]]) + "\n"
 
 
-def due(root, as_of=None, *, today=None, law_base=None, request=None):
-    """Open (not answered, closed or withdrawn) requests with days to or past the provisional determination date."""
+def due(root, as_of=None, *, today=None, law_base=None, request=None, owner=None):
+    """Open (not answered, closed or withdrawn) requests with days to or past the provisional determination date.
+
+    ``owner`` keeps only that teammate's requests before anything is counted; ``request`` is checked first."""
     day = _day(as_of) if as_of is not None else (today or date.today())
     if day is None:
         raise ValueError("--as-of must be a real YYYY-MM-DD date")
-    report = status(root, law_base=law_base, request=request)
-    if request is not None and not report["requests"]:
+    report = status(root, law_base=law_base, request=request, owner=owner)
+    if request is not None and not report["requests"] \
+            and not any(parts and parts[1] == request for parts in map(_split, read_sent(root))):
         raise ValueError(f"no sent request */{request}: no agency has a request recorded under that name")
     entries = {_split(key): [s for s in entry["steps"] if isinstance(s, dict)] for key, entry in read_sent(root).items()}
     open_rows, answered, stated_passed = [], [], []
@@ -1038,6 +1069,7 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None):
         if row["closed"] or "withdrawn_on" in row:  # the agency's or the campaign's own end: no work follows
             continue
         base = {"agency_id": row["agency_id"], "request": row["request"], "name": row["name"],
+                **({"owner": row["owner"]} if "owner" in row else {}),
                 "sent_on": row["sent_on"], "reference": row["reference"],
                 **({"request_url": row["request_url"]} if "request_url" in row else {})}
         steps = entries.get((row["agency_id"], row["request"]), [])

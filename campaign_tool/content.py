@@ -44,7 +44,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01: reserved even without content
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq", "sharing"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01 / DF0237-04: reserved even without content
 
 
 class ContentError(ValueError):
@@ -2072,7 +2072,7 @@ def load_map(content_dir, sources=None, today=None):
 PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
 RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
                                        "agency-cards", "app", "data", "vendor", "meetings", "methods", "privacy", "search",
-                                       "press", "news"}  # generated top-level names (press: DF2207-10, news: DF0022-03; reserved even when disabled)
+                                       "press", "news", "requests"}  # generated top-level names (press: DF2207-10, news: DF0022-03, reserved even when disabled)
 
 
 def _page_string(document, key, label, limit, required):

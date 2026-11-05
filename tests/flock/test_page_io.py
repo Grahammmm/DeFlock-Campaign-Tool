@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TOOL, FIX = ROOT / "tools" / "flock_page.py", ROOT / "tests" / "fixtures" / "flock" / "page"
 HAPPY = "cards=3 admissions=2 sources=3 records_messages=2 dropped_outreach=1 errors=0"
 LINE = re.compile(r"^(cards|sources|location|thread|story|out|lint) 0: (missing|unreadable|not JSON|not an object|not a list|"
-                  r"is a link; refused|folder missing|refused inside the repository|shape [A-Za-z]+)$")
+                  r"is a link; refused|folder missing|refused inside the repository|shape [A-Za-z]+|R7 invalid source number)$")
 BUILD = ("cards", "sources", "location", "thread")
 
 
@@ -145,7 +145,7 @@ class FlockPageIoTest(unittest.TestCase):
         cards = json.loads((FIX / "cards.json").read_text(encoding="utf-8"))
         cards["admissions"] = "a string"
         self.assert_refused(self.build(cards=self.write("shape.json", cards)), "cards 0: shape AttributeError")
-        self.assert_refused(self.build(sources=self.write("rows.json", ["row"])), "cards 0: shape TypeError")
+        self.assert_refused(self.build(sources=self.write("rows.json", ["row"])), "sources 0: R7 invalid source number")
         self.assert_refused(self.build(thread=self.write("nothread.json", {})), "lint 0: shape KeyError")
         self.assert_empty_outdir()
         self.assertEqual(self.build()[1], [HAPPY])
