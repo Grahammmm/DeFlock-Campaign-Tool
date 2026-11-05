@@ -1566,7 +1566,9 @@ def main():
     pack.add_argument("--allow-past", action="store_true")
     flyer = commands.add_parser("flyer", help="Write a private printable one-page campaign flyer; prints and publishes nothing")
     flyer.add_argument("--directory", required=True)
-    flyer.add_argument("--max-findings", type=int, choices=range(1, 7), default=3)
+    flyer_mode = flyer.add_mutually_exclusive_group()
+    flyer_mode.add_argument("--max-findings", type=int, choices=range(1, 7), default=None)
+    flyer_mode.add_argument("--event", help="Write the flyer for one upcoming content/events.json event instead of the campaign flyer")
     flyer.add_argument("--replace", action="store_true")
     map_p = commands.add_parser("map", help="Private camera field survey: a printable sheet and a sourced re-import")
     map_cmds = map_p.add_subparsers(dest="map_command", required=True)
@@ -1763,8 +1765,12 @@ def main():
         elif args.command == "meetings":
             meetings_cmd(args, root)
         elif args.command == "flyer":
-            from .flyer import build as flyer_build
-            print(json.dumps(flyer_build(Path(args.directory).expanduser(), args.max_findings, replace=args.replace)))
+            from .flyer import build as flyer_build, build_event as flyer_event
+            if args.event is not None:
+                report = flyer_event(Path(args.directory).expanduser(), args.event, replace=args.replace)
+            else:
+                report = flyer_build(Path(args.directory).expanduser(), 3 if args.max_findings is None else args.max_findings, replace=args.replace)
+            print(json.dumps(report))
             print("Private file; nothing was printed, sent or published.")
         elif args.command == "map":
             from . import map_survey

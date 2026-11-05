@@ -380,6 +380,21 @@ URL printed beside them, nothing shortened or tracked; the printed URL stays the
 earlier flyer is left as it was. Without `base_url` there is no QR code and both `flyer.html` and `flyer.txt` are
 byte-identical to what they were before this feature; `flyer.txt` never carries a QR code.
 
+### Event flyer
+
+`python3 -m campaign_tool flyer --directory D --event ID [--replace]` (not combinable with `--max-findings`)
+writes a private `kit/flyer/event-<id>.html` and `.txt` twin for one upcoming event of `content/events.json`,
+read and validated by the same reader as the events page. Upcoming is the events page rule: the event
+`starts_at` is on or after 00:00:00 UTC of the current UTC day; an unknown, missing or past event is refused
+by name before anything is written. Both twins carry the title, the start and end exactly as supplied
+(date, time and UTC offset; `Z` is shown as UTC, nothing is converted), the venue or `Online`, the
+accessibility note only when given, the full description as escaped plain text with its line breaks, and the
+events-page reference `events.html#event-<id>` (absolute with `base_url`, otherwise the site-relative
+`/events.html#event-<id>`, which is not a working file:// link). No findings, scripts or external loads. The
+site logo is copied as `event-<id>-logo.<ext>`, so event flyers and the campaign flyer coexist; an existing
+twin or same-id logo is refused without `--replace`, which touches only that event. The report is
+`{"written": [...], "event": "<id>"}`. Nothing is printed, sent or published.
+
 ## Reviewer roster (role assignment, not authentication)
 
 `finding reviewers add --directory D --name N --role R [--role R]` (R: factual, legal, privacy) merges
