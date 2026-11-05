@@ -689,7 +689,7 @@ def load_finding_preview(document, label, now=None):
 
 FINDING_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # public finding ids; distinct from a slug
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
-                "status", "participation", "outcome", "cited_findings", "cosigners"}
+                "status", "participation", "outcome", "cited_findings", "cosigners", "cited_elsewhere"}
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 CONTINUATION_KEYS = ("continued_to", "continued_to_date")  # DF0022-07: where the official source says an item went
@@ -976,6 +976,11 @@ def load_cosigners(value, label):
     return list(value)
 
 
+def _load_cited_elsewhere(value, label, today):
+    from .meeting_elsewhere import load_cited_elsewhere  # local: meeting_elsewhere imports this module
+    return load_cited_elsewhere(value, label, today)
+
+
 def load_meeting(document, label, today=None):
     _require_keys(document, MEETING_KEYS, {"body", "starts_at"}, label)
     agency_id = document.get("agency_id")
@@ -1005,6 +1010,8 @@ def load_meeting(document, label, today=None):
            if "cited_findings" in document else {}),
         **({"cosigners": load_cosigners(document["cosigners"], f"{label}.cosigners")}
            if "cosigners" in document else {}),
+        **({"cited_elsewhere": _load_cited_elsewhere(document["cited_elsewhere"], f"{label}.cited_elsewhere", today)}
+           if "cited_elsewhere" in document else {}),  # DF1107-06
     }
 
 
@@ -1227,6 +1234,65 @@ def _funding(value, label, today=None):
             clean["fiscal_year"] = year
         result.append(clean)
     return result
+
+
+REPORT_KINDS = ("annual_report", "audit_summary", "usage_statistics", "surveillance_report", "other")
+REPORT_REQUIRED = {"title", "kind", "period_start", "period_end", "source_url", "checked_on"}
+REPORT_KEYS = REPORT_REQUIRED | {"published_on"}
+REPORT_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _report_day(entry, key, item):
+    """One real canonical ASCII YYYY-MM-DD day of a report entry; the error names the field, never the value."""
+    value = entry[key]
+    try:
+        if not (isinstance(value, str) and REPORT_DAY.fullmatch(value)):
+            raise ValueError
+        return date.fromisoformat(value)
+    except ValueError:
+        raise ContentError(f"{item}.{key}: must be a real YYYY-MM-DD calendar date") from None
+
+
+def _reports(value, label, today=None):
+    """``profile.reports`` (DF0237-02): ALPR usage reports an agency published, as an organizer transcribed them.
+
+    Returned newest reporting period first (period_end, then period_start, descending; then title and source_url
+    ascending; exact ties keep input order). Nothing is deduplicated, merged, fetched or inferred. An error names the
+    entry and the rule it broke, never the value submitted.
+    """
+    if not isinstance(value, list) or not 1 <= len(value) <= 20:
+        raise ContentError(f"{label}: must be a list of 1 to 20 report entries")
+    build_day, result = today or date.today(), []
+    for index, entry in enumerate(value):
+        item = f"{label}[{index}]"
+        if not isinstance(entry, dict):
+            raise ContentError(f"{item}: expected an object")
+        if not REPORT_REQUIRED <= set(entry) or set(entry) - REPORT_KEYS:
+            raise ContentError(f"{item}: needs title, kind, period_start, period_end, source_url and checked_on, "
+                               "and may add only published_on")
+        if not (isinstance(entry["kind"], str) and entry["kind"] in REPORT_KINDS):
+            raise ContentError(f"{item}.kind: choose one of {list(REPORT_KINDS)}")
+        title = entry["title"]
+        if not (isinstance(title, str) and 1 <= len(title) <= 160 and title == title.strip() and plain_text(title)
+                and not any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in title)):
+            raise ContentError(f"{item}.title: plain title as published, 1 to 160 characters without markup or control characters")
+        start, end = _report_day(entry, "period_start", item), _report_day(entry, "period_end", item)
+        if not start < end:
+            raise ContentError(f"{item}.period_end: must be after period_start")
+        checked = _report_day(entry, "checked_on", item)
+        if checked > build_day:
+            raise ContentError(f"{item}.checked_on: must not be after the build date")
+        clean = {"title": title, "kind": entry["kind"], "period_start": entry["period_start"],
+                 "period_end": entry["period_end"], "source_url": _https(entry["source_url"], f"{item}.source_url"),
+                 "checked_on": entry["checked_on"]}
+        if "published_on" in entry:
+            if _report_day(entry, "published_on", item) > checked:
+                raise ContentError(f"{item}.published_on: must not be after checked_on")
+            clean["published_on"] = entry["published_on"]
+        result.append(clean)
+    # Two stable passes: title and source_url ascending first, then the period descending (reverse keeps ties in order).
+    by_text = sorted(result, key=lambda r: (r["title"], r["source_url"]))
+    return sorted(by_text, key=lambda r: (r["period_end"], r["period_start"]), reverse=True)
 
 
 ALPR_POLICY_KEYS = {"url", "source_url", "checked_on"}
@@ -1701,7 +1767,7 @@ def load_agencies(document, label, today=None):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding", "pre_implementation_meeting", "sharing"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding", "reports", "pre_implementation_meeting", "sharing"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -1741,6 +1807,8 @@ def load_agencies(document, label, today=None):
         })
         if "funding" in profile:  # DF2207-02: only when the organizer recorded it, so other profiles keep their shape
             agencies[-1]["funding"] = _funding(profile["funding"], f"{item}.profile.funding", today)
+        if "reports" in profile:  # DF0237-02: likewise only when recorded
+            agencies[-1]["reports"] = _reports(profile["reports"], f"{item}.profile.reports", today)
         if profile.get("sharing") is not None:  # DF1207-08: likewise only when recorded, so other agencies keep their shape
             agencies[-1]["sharing"] = _sharing(profile["sharing"], f"{item}.profile.sharing", today)
     return agencies
@@ -2944,6 +3012,10 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
     elsewhere = read_elsewhere(root, today)  # DF1107-04: optional; None without the file, entries in stored order
     if elsewhere is not None:
         model["elsewhere"] = elsewhere
+    from .meeting_elsewhere import reference_problems  # local: meeting_elsewhere imports this module
+    cited = reference_problems([(f"meetings/{meeting_ids[m['id']]}", m) for m in meetings], elsewhere, _replacing_cosign_id)
+    if cited:  # DF1107-06: a staged kit's cited decision must still be in elsewhere.json (target-only skip on --replace)
+        raise ContentError(cited[0])
     if supporters is not None:  # DF2207-13: public rows only (never the private consent records)
         model["supporters"] = supporters
     from .content_statements import read_statements  # local: content_statements imports this module

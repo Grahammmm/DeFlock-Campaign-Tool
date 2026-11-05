@@ -242,11 +242,13 @@ PUBLIC_AGENCY_OPTIONAL = ("funding",)  # DF2207-02: present only when the organi
 # that tuple also names the data/agencies.csv columns, whose header is pinned and must not change with the data.
 PUBLIC_AGENCY_ACTIONS = ("actions",)
 PUBLIC_ACTION_FIELDS = ("on", "kind", "as_stated", "source_url", "checked_on")
+PUBLIC_AGENCY_JSON_ONLY = ("reports",)  # DF0237-02: recorded reports go to data/agencies.json only; the CSV header is unchanged
 PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
 PUBLIC_POLICY_FIELDS = ("url", "checked_on")
 PUBLIC_CONTRACT_FIELDS = ("vendor", "start", "end", "source_url", "checked_on")  # never renewal_note
 PUBLIC_COST_FIELDS = ("amount_usd", "period", "as_stated_in")  # contract.cost (DF1103-07): exactly these, when present
 PUBLIC_FUNDING_FIELDS = ("kind", "name", "as_stated_in", "source_url", "checked_on", "amount_usd", "period", "fiscal_year")  # DF2207-02
+PUBLIC_REPORT_FIELDS = ("title", "kind", "period_start", "period_end", "published_on", "source_url", "checked_on")  # DF0237-02
 PUBLIC_TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts",
                               "shared_with_agencies", "source_url", "checked_on")
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
@@ -1115,6 +1117,26 @@ class Site:
             return ""
         return f'<h3>{self.t("agency.actions_heading")}</h3><ul class="agency-actions">{"".join(items)}</ul>'
 
+    def reports_block(self, agency, heading="h3"):
+        """DF0237-02: the ALPR usage reports the agency itself published, newest reporting period first; "" when none.
+
+        The list is the validated order of ``profile.reports``. Each entry links its own source and shows its own checked
+        date; nothing here says a report is required, late or missing.
+        """
+        items = []
+        for entry in agency.get("reports", []):
+            parts = [f'<a href="{e(entry["source_url"])}" rel="noopener noreferrer">{e(entry["title"])}</a>',
+                     self.t("agency.report_kind_" + entry["kind"]),
+                     self.t("agency.report_period", start=time_tag(entry["period_start"]), end=time_tag(entry["period_end"]))]
+            if "published_on" in entry:
+                parts.append(self.t("agency.report_published", date=time_tag(entry["published_on"])))
+            parts.append(self.t("agency.report_checked", date=time_tag(entry["checked_on"])))
+            items.append(f'<li>{" · ".join(parts)}</li>')
+        if not items:
+            return ""
+        return (f'<section class="agency-reports"><{heading}>{self.t("agency.reports_heading")}</{heading}>'
+                f'<ul>{"".join(items)}</ul></section>')
+
     def policy_check_section(self, agency):
         """DF1207-06: the organizer's reading of which listed elements a posted policy addresses; fixed wording, no judgement."""
         check = agency.get("policy_check")
@@ -1308,7 +1330,7 @@ class Site:
         """DF0137-12: every agency side by side in model order (never sorted by a number); each cell links its source."""
         unchecked, rows = self.t("agencies.glance_not_checked"), []
         heads = [self.t(f"agencies.glance_{key}") for key in ("agency", "cameras", "searches_last_30_days",
-                                                               "retention_days", "policy", "contract", "cost", "asked")]
+                                                               "retention_days", "policy", "contract", "cost", "asked", "report")]
 
         def sourced(url, text, checked_on):
             return (f'<a href="{e(url)}" rel="noopener noreferrer">{text}</a> '
@@ -1316,6 +1338,7 @@ class Site:
         for agency in self.model["agencies"]:
             newest, policy, contract = (agency.get("transparency") or [{}])[0], agency.get("alpr_policy"), agency["contract"]
             asked, page = len(agency.get("asked", [])), self.agency_pages().get(agency["agency_id"], f'#{agency["slug"]}')
+            latest = (agency.get("reports") or [None])[0]  # DF0237-02: newest reporting period, as validated
             cells = [f'<a href="{e(page)}">{e(agency["name"])}</a>'] + [
                 sourced(newest["source_url"], e(newest[key]), newest["checked_on"]) if newest.get(key) is not None
                 else unchecked for key in ("cameras", "searches_last_30_days", "retention_days")]
@@ -1324,7 +1347,9 @@ class Site:
                       sourced(contract["source_url"], e(self.contract_cost_amount(contract["cost"])) + " "
                               + self.t("agency.cost_" + contract["cost"]["period"]), contract["checked_on"])
                       if contract and contract.get("cost") else unchecked,
-                      f'<a href="#{e(agency["slug"])}-asked">{asked}</a>' if asked else "0"]
+                      f'<a href="#{e(agency["slug"])}-asked">{asked}</a>' if asked else "0",
+                      sourced(latest["source_url"], e(latest["period_end"][:4]), latest["checked_on"]) if latest
+                      else self.t("agencies.glance_no_report")]
             rows.append('<tr><th scope="row" data-label="' + heads[0] + f'">{cells[0]}</th>'
                         + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
         return (f'<section class="at-a-glance" id="at-a-glance"><h3>{self.t("agencies.glance_heading")}</h3>'
@@ -1353,7 +1378,7 @@ class Site:
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
                     + self.policy_check_section(agency)
                     + self.pre_meeting_section(agency)
-                    + self.contract_line(agency["contract"]) + self.contract_check_block(agency) + self.funding_block(agency) + self.transparency_block(agency) + self.sharing_section(agency)
+                    + self.contract_line(agency["contract"]) + self.contract_check_block(agency) + self.funding_block(agency) + self.reports_block(agency, "h4") + self.transparency_block(agency) + self.sharing_section(agency)
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
@@ -1523,7 +1548,7 @@ class Site:
                 + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency) + self.pre_meeting_section(agency)
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
                 + self.contract_check_block(agency, "h3")
-                + self.funding_block(agency) + self.actions_section(agency) + self.transparency_block(agency, "h3") + self.sharing_section(agency) + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
+                + self.funding_block(agency) + self.actions_section(agency) + self.reports_block(agency) + self.transparency_block(agency, "h3") + self.sharing_section(agency) + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
                 + self.statements_section(aid)
                 + self.local_rules_section(agency)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
@@ -2999,6 +3024,8 @@ class Site:
                    if agency.get("funding") else {}),  # DF2207-02: only when the organizer recorded it
                 **({"actions": [{k: a[k] for k in PUBLIC_ACTION_FIELDS} for a in self.newest_actions(agency)]}
                    if agency.get("actions") else {}),  # DF0237-01: likewise, the page's order
+                **({"reports": [{k: r[k] for k in PUBLIC_REPORT_FIELDS if k in r} for r in agency["reports"]]}
+                   if agency.get("reports") else {}),  # DF0237-02: same order as the page, only when recorded
                 "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
 
     def agencies_json(self):
@@ -3010,12 +3037,13 @@ class Site:
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "agencies": [self._public_agency(a, cities) for a in listed]}
         _assert_public(doc, "data/agencies.json", PUBLIC_AGENCY_TOP_LEVEL | set(self.license_top()),
-                       {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL + PUBLIC_AGENCY_ACTIONS,
+                       {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL + PUBLIC_AGENCY_ACTIONS + PUBLIC_AGENCY_JSON_ONLY,
                                      {"actions": (PUBLIC_ACTION_FIELDS, {}),
                                                             "asked": (PUBLIC_ASKED_FIELDS, {}),
                                                             "alpr_policy": (PUBLIC_POLICY_FIELDS, {}),
                                                             "contract": (PUBLIC_CONTRACT_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
                                                             "funding": (PUBLIC_FUNDING_FIELDS, {}),
+                                                            "reports": (PUBLIC_REPORT_FIELDS, {}),
                                                             "transparency": (PUBLIC_TRANSPARENCY_FIELDS, {})})})
         return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 

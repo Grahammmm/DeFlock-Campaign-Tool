@@ -80,7 +80,7 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 | --- | --- | --- |
 | `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), `license` (below), optional `press` (below), optional `corrections` (`{"show_request_counts": true|false}`, default off: publishes per-quarter correction-request counts only, see [CORRECTIONS-PROCESS.md](CORRECTIONS-PROCESS.md); a build with it on reads `private/correction-requests.json`, `content-check` never does), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
 | `content/findings/*.json` | no | one published finding per file (schema below) |
-| `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id`, optional `cited_findings` (1 to 3 unique finding ids, written by `meetings-stage`) |
+| `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id`, optional `cited_findings` (1 to 3 unique finding ids, written by `meetings-stage`), optional `cited_elsewhere` (1 to 3 full `elsewhere.json` entries, written by `meetings-stage --elsewhere`; each must still match an entry of `content/elsewhere.json` by place, body, `decided_on` and kind, with the same state, `as_stated` and `source_url`, or build and content-check refuse; never exported) |
 | `content/sources.json` | no | source-library entries: `sha256`, `title`, `agency_id`, `received_at`, `public_url` or null, `fragment`, `pages`, `note` |
 | `content/agencies.json` | no | override list; default is the selected entries of `kit/agencies.json` plus `kit/governing-bodies.json` |
 | `content/map/map-config.json` | no | controller settings (`schemas/map-controller.schema.json` keys) plus `county_bounds`, `style_url`, `tile_hosts`, `group_label`, `attribution` |
@@ -407,7 +407,8 @@ the list's own order, never sorted by any number, with no ranking, score or "bes
 searches in the last 30 days and retention days from the newest `profile.transparency` snapshot (each linked to its
 `source_url`, checked date shown), the posted `alpr_policy` ("posted", linked to the policy), `contract.end` linked
 to the contract source, `contract.cost` as stated (`$12,345.60 per year`, linked to the contract source with its checked
-date; "not checked" without a cost) and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0").
+date; "not checked" without a cost) and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0"),
+then "Latest report" (DF0237-02, see `profile.reports`).
 A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
 No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
 
@@ -516,6 +517,34 @@ a change. An alert-only legal-claim check runs on each statement: `add` prints a
 rule names, never the text) and still succeeds, and the build's review notes cover hand-edited rows the same way. The note is
 for a human at the publish gate and is never an error. Meeting decisions stay separate (`meetings/*.json` outcomes); nothing is
 merged with, or removed because of, a meeting.
+
+### Reports the agency has published about its ALPR use (`profile.reports`)
+
+An optional `profile.reports` is a list of 1 to 20 entries (`null`, `[]`, a single object and 21 entries are refused). The
+organizer reads each report on the agency's own site and transcribes it: `title` (as published, 1 to 160 characters, already
+trimmed, no angle brackets, control or invisible characters; Markdown and HTML are shown literally), `kind`
+(`annual_report`, `audit_summary`, `usage_statistics`, `surveillance_report` or `other`), `period_start` and `period_end`
+(real `YYYY-MM-DD` days, start strictly before end), `source_url` (https, never fetched), `checked_on` (a real day not
+after the build date) and optionally `published_on` (a real day not after `checked_on`; never inferred, `null` is
+refused). The software does not fetch or authenticate a report; the organizer verifies that the agency itself published
+it. Every entry carries its own link and checked date. Entries are shown newest reporting period first (`period_end`,
+then `period_start`, descending; then title and source URL ascending; exact ties keep the written order) and are never
+merged, deduplicated or compared, even when periods overlap or a URL repeats. The agency card and an existing agency page
+list them under `Reports this agency has published about its ALPR use`; reports alone do not create a page.
+
+The "At a glance" table gains a last column, `Latest report`, after "Records items asked": the four-digit year of the
+newest entry's `period_end`, linked to that entry's source with its checked date, or `none on record` when the profile has
+no reports. That phrase describes what is recorded here only; it never says a report is required, late or missing, and
+no deadline, timeline or today entry is added. `data/agencies.json` carries an optional `reports` array (`title`, `kind`,
+`period_start`, `period_end`, `source_url`, `checked_on` and, when given, `published_on`; omitted when none, in the page's
+order); `data/agencies.csv` is unchanged. Profiles without `reports` read, export and render their detail pages exactly as
+before; only `agencies.html` differs, by the new column. A bad entry stops `build` (exit 1) and is listed by
+`content-check` (exit 3) with the entry's path and rule, e.g. `content/agencies.json[1].profile.reports[0].kind: choose
+one of [...]`; the supplied title or key is never echoed. The schema checks the shape; the date order, the build-date
+limit and the title text rules are build checks. Labels: `agency.reports_heading`, `agency.report_period`,
+`agency.report_published`, `agency.report_checked`, `agency.report_kind_annual_report`, `agency.report_kind_audit_summary`,
+`agency.report_kind_usage_statistics`, `agency.report_kind_surveillance_report`, `agency.report_kind_other`,
+`agencies.glance_report`, `agencies.glance_no_report`.
 
 ### Local rules on record (agency page, from `law/local-rules.json`)
 
@@ -1164,7 +1193,8 @@ has one, `cost`: `amount_usd`, `period`, `as_stated_in`) or null, `transparency`
 (the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, an optional
 `funding` array (only when recorded: `kind`, `name`, `as_stated_in`, `source_url`, `checked_on` and, when given,
 `amount_usd` with `period`, and `fiscal_year`), an optional `actions` array (only when recorded, DF0237-01: `on`, `kind`,
-`as_stated`, `source_url`, `checked_on`, newest first; see "Agency actions outside a meeting"), and `camera_count`
+`as_stated`, `source_url`, `checked_on`, newest first; see "Agency actions outside a meeting"), an optional `reports` array
+(only when recorded; JSON only, see `profile.reports`), and `camera_count`
 (the card's camera-count sentence) or null. It never includes `records_email`, `records_url`, `portal`, the asked-item
 `note`, the contract `renewal_note`, kit files, notes or any other key; the build refuses with
 `data/agencies.json: non-public key ...` and writes nothing.
