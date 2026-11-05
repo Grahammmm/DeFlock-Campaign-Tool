@@ -110,7 +110,7 @@ class ExtensionNoticeTests(unittest.TestCase):
 
     def test_bad_reasons_refused_by_name_and_write_nothing(self):
         base = ("--date", "2026-03-04", "--kind", "extension")
-        for bad in ("", "   ", "é" * 201, "a<b", "a>b", "line\nbreak", "tab\there", "nul\x00"):
+        for bad in ("", "   ", "é" * 201, "a<b", "a>b", "line\nbreak", "tab\there", "nul\x00", "a\u2028b", "a\u2029b"):
             with self.subTest(reason=repr(bad)[:20]):
                 self.refused("--reason", *base, "--reason", bad)
         for kind in ("acknowledged", "determination", "closed"):
@@ -142,7 +142,7 @@ class ExtensionNoticeTests(unittest.TestCase):
         self.assertNotIn("extension_expected_on", self.row())
         self.extend("--expected-on", "2026-03-20", "--reason", "why")
         original = self.sent.read_text(encoding="utf-8")
-        for key, value in (("extension_reason", 5), ("extension_reason", "a<b"), ("extension_expected_on", "2026-03-01"),
+        for key, value in (("extension_reason", 5), ("extension_reason", "a<b"), ("extension_reason", "a\u2028b"), ("extension_expected_on", "2026-03-01"),
                            ("extension_expected_on", "nope")):
             document = json.loads(original)
             document["requests"][self.a]["steps"][0][key] = value

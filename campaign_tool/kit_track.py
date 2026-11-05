@@ -763,7 +763,8 @@ REASON_CHARS = 200
 
 def _clean_reason(reason):  # --reason on an extension: the agency's words kept exactly as given, or refused
     if (not isinstance(reason, str) or not reason.strip() or len(reason) > REASON_CHARS
-            or any(c in "<>" or unicodedata.category(c).startswith("C") for c in reason)):
+            or any(c in "<>" or unicodedata.category(c)[0] == "C" or unicodedata.category(c) in ("Zl", "Zp")
+                   for c in reason)):
         raise ValueError(f"--reason must be 1-{REASON_CHARS} characters of plain text (not blank; no <, > or "
                          "control characters or line breaks)")
     return reason
