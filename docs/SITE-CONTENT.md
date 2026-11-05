@@ -26,7 +26,22 @@ when a line names no file, and the same exit codes, so an editor or CI step can 
 
 ## Content directory
 
-`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, a draft `pages/help-map.json`, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+
+### Help-map page starter
+
+A fresh `content init` also writes `content/pages/help-map.json`, the page `/help-map.html` titled "Help map the cameras":
+six short sections on recognizing a possible plate reader, staying on public property and never photographing people or
+plates, adding a missing camera or correcting an existing point on OpenStreetMap or the DeFlock reporting page (with the
+tags `man_made=surveillance` and `surveillance:type=ALPR` that the map fetcher reads, linked to the OpenStreetMap wiki),
+what "ownership unconfirmed" means, and what the four point-check codes mean. It is read from the packaged copy of
+`examples/pages/help-map.json`, so it works from an installed wheel. Every section starts `[EDIT ME: verify for this
+campaign]`: the marker stays visible on the page until you replace it and is not an approval gate. The page uses one of
+the three `nav` slots; set `"nav": false` or delete `content/pages/help-map.json` to publish no such page. It names
+`methods.html` in words because Markdown links must be absolute `https://` URLs, and it links to no map page since a
+fresh tree has none. `content init --from OLD` copies a source campaign's own pages as before and never adds this
+starter. Before publishing run `content-check` and `build --check` offline; the legal-claim guard stays advisory and
+does not scan page copy, so read the page yourself. The report's `placeholders` count includes this page's markers.
 
 ### Draft FAQ starter
 
@@ -152,6 +167,14 @@ first (same date: by finding slug, then the order in the finding), each linking
 to the finding's `#corrections` section. The footer and each finding page link
 to it, and finding lists mark a corrected finding with a "Corrected" pill
 showing its latest correction date. The starter preview has no such page.
+
+`/corrections.xml` is an Atom feed of corrections alone, written only when at least one published finding has a correction
+(no correction, no file, and no discovery link or footer entry). It holds one entry per correction, newest first (same date:
+finding slug, then stored index), at most 50 across all findings. An entry id is `urn:deflock-correction:<finding id>:<stored
+index>` (the zero-based position in the finding's `corrections` array, so it survives newer corrections), its title is
+`Correction: <finding title>`, its summary is the correction note as plain text, and `updated` is the correction date at
+midnight UTC (never a build time). `updates` never appear in it. `/corrections.html` and each corrected finding page carry a
+`rel=alternate` link to it, and the footer names it (label `corrections.feed`).
 
 A finding with `updates` (`finding update`, see PUBLICATION.md) shows an **Updates** section (`#updates`) under its body,
 before the sources: each entry is the label `Update`, its date and its note as escaped literal text, newest date first
