@@ -359,7 +359,11 @@ class SocialOutcomeTests(unittest.TestCase):
         self.assertEqual({str(p): p.read_bytes() for p in social.glob("meetings*/**/*") if p.is_file()}, meetings_before)
         self.assertEqual({str(p): p.read_bytes() for p in (self.root / "content").rglob("*") if p.is_file()}, content_before)
         check_after = self.cli("--check")
-        self.assertEqual((check_after.returncode, check_after.stdout), (check_before.returncode, check_before.stdout))
+        report_before, report_after = json.loads(check_before.stdout), json.loads(check_after.stdout)
+        folders_after = report_after.pop("folders")  # the outcome folders are now named; everything else is unchanged
+        folders_before = report_before.pop("folders")
+        self.assertEqual((check_after.returncode, report_after), (check_before.returncode, report_before))
+        self.assertEqual(sorted(set(folders_after) - set(folders_before)), ["kit/social/outcomes", "kit/social/outcomes/x"])
         self.assertEqual(check_social(self.root)["stale"], [])
         self.assertFalse((self.root / "public").exists())
         self.assertEqual(sorted(build_social(self.root)), ["kept_edited", "posted", "stale", "suggested", "written"])

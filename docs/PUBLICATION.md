@@ -490,7 +490,7 @@ link, Mastodon 500 code points with 23-character links. Only the title is shorte
 every chosen platform is made before anything is written, so one that cannot fit stops the run with
 the platform named. Each folder keeps its own `.written.json`, kept edits go to
 `kit/social/<P>.suggested/` and stale slugs are listed per platform. Without `--platform` the run is
-unchanged (`len()` within 280 into `kit/social/`); `--check` reads that folder only.
+unchanged (`len()` within 280 into `kit/social/`); `--check` reads every draft folder (see Checking every draft folder).
 
 ### Social drafts for meetings (never posted)
 
@@ -503,8 +503,8 @@ the date and time in the meeting's own UTC offset (as the meeting page prints it
 the verified written-comment deadline and how, how to attend, and `<base_url>/meetings/<id>.html`
 when `base_url` is set. Only the agenda item is shortened. Cancelled, past, later-than-window and
 unverified meetings get no draft and are counted under `skipped`; an unreadable meeting file is
-counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts and
-`--check` are unchanged. Nothing is posted.
+counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts are
+unchanged. Nothing is posted.
 
 ### Social drafts for outcomes (never posted)
 
@@ -580,7 +580,26 @@ findings in the same folder are left alone and are not reported as stale, while 
 no longer published is listed as `stale`, never deleted. The command prints the report
 (`finding`, `posts`, `threads`, `posted: false`) and `Drafts written to kit/social/threads. Nothing was
 posted.`; wording the legal-claim guard flags is noted on stderr only, per post, and is never an approval.
-Finding drafts, meeting drafts and `--check` are unchanged. Nothing goes to `content/` or `public/`.
+Finding and meeting drafts are unchanged. Nothing goes to `content/` or `public/`.
+
+### Checking every draft folder (read-only)
+
+`social --check [--text]` names each draft's state in every private folder it finds: `kit/social/` (as always),
+`kit/social/<x|bluesky|mastodon>/`, `kit/social/{meetings,outcomes,threads}/` and their `<platform>/` sub-folders, and each
+`.suggested` sibling (including `kit/social.suggested/`). Absent folders are skipped; a link or non-folder in that list is
+named as a folder problem and never entered. States are `ok`, `missing`, `outdated`, `edited` and `not_regular`, each
+folder using its own length rule (a thread is checked post by post, `(n/N)` counters included). A valid edit is not a
+problem. A draft is listed as **stale**, with a reason and once, when its finding is no longer published, its meeting is
+cancelled, rescheduled (stored `starts_at` differs from the one drafted), past or no longer verified, or its recorded
+outcome changed or left its original N-day window. Default output stays JSON (a campaign with only `kit/social/*.md`
+drafts prints exactly what it always did); other folders add one key per folder under `folders`. `--text` prints the
+same result grouped by folder. Exit 3 on any problem. Nothing is written or posted.
+
+Meeting and outcome drafts keep a private `kit/social/<kind>/.check.json` next to `.written.json` (the source
+`starts_at`, or the whole recorded outcome, plus the window; no draft text). Drafts made before it existed have no
+original value to compare: they are checked against a fresh 14-day draft and, when different, reported `outdated` with the
+command to rebuild them. A kept organizer edit keeps its original entry; the fresh suggestion gets its own.
+
 
 ## Posting one approved social draft (Worker `post_social`)
 
