@@ -244,6 +244,15 @@ class CorrectionCountsTests(unittest.TestCase):
         with mock.patch("campaign_tool.correction_requests._read_json", side_effect=PermissionError(13, SENTINEL, str(outside))):
             self.refuse_all()
 
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores directory permissions")
+    def test_unsearchable_private_directory_is_refused_not_empty(self):
+        self.enable()
+        self.write_log([request(1, "2026-01-05")])
+        private = self.root / "private"
+        private.chmod(0o600)
+        self.addCleanup(private.chmod, 0o700)
+        self.refuse_all()
+
     def refuse_all(self):
         with self.assertRaises(ContentError) as caught:
             build_site(self.root, today=TODAY)

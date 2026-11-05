@@ -183,15 +183,24 @@ def open_overdue(root, today, days=14):
 COUNTS_REFUSAL = f"private/{NAME}: cannot publish correction request counts; check the private log"
 
 
+def _exists(path):
+    """False only when the path is genuinely absent (ENOENT); permission and other I/O errors propagate."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    return True
+
+
 def _counts_path(root):
     """The log path, or None when the private directory or the log is absent; links and non-directories are refused."""
     private = Path(root) / "private"
-    if not os.path.lexists(private):
+    if not _exists(private):
         return None
     if os.path.islink(private) or not private.is_dir():
         raise ValueError("private")
     path = private / NAME
-    if not os.path.lexists(path):
+    if not _exists(path):
         return None
     if os.path.islink(path):
         raise ValueError("log")
