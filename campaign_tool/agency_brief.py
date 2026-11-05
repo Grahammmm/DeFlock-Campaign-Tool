@@ -140,7 +140,7 @@ def _finding_rows(model, aid, base):
     for finding in model["findings"]:
         if aid not in finding_agency_ids(finding):
             continue
-        parts = [f"{finding['title']}: {finding['summary']}",
+        parts = [f"{finding['title']} - {finding['summary']}",
                  f"Classification: {labels.CLASSIFICATION_LABELS.get(finding['classification'], finding['classification'])}",
                  f"confidence: {finding['confidence']}", f"event date {finding['event_date']}"]
         if finding.get("limitations"):
@@ -148,7 +148,7 @@ def _finding_rows(model, aid, base):
         for correction in finding.get("corrections", []):
             parts.append(f"correction {correction['date']}: {correction['note']}")
         when = f"published {finding['published_at']}" + (f"; updated {finding['updated_at']}" if finding.get("updated_at") else "")
-        rows.append(_row("Published findings", f"findings/{finding['slug']}", "; ".join(parts),
+        rows.append(_row("Published findings", f"findings/{finding['slug']}", " | ".join(parts),
                          [_link(base, f"/findings/{finding['slug']}.html")], when))
     return rows or [_row("Published findings", "findings", f"{NOT_RECORDED}: no published finding names this agency",
                          ["content/findings"])]
@@ -163,8 +163,8 @@ def _local_rule_rows(model, aid, day):
         state = ("past, not in force on the prepared date" if end is not None and end < day
                  else "not yet in force on the prepared date" if rule["effective_from"] > day else "in force on the prepared date")
         rows.append(_row("Local rules on record", f"local_rules/{rule['rule_id']}",
-                         f"{rule['citation']} ({rule['rule_id']}): duty as written: {rule['duty']}. Effective "
-                         f"{rule['effective_from']} to {end or 'open'}; {state}. {LOCAL_RULE_LABEL}; an organizer transcription, "
+                         f"{rule['citation']} ({rule['rule_id']}) | duty as written: {rule['duty']} | effective "
+                         f"{rule['effective_from']} to {end or 'open'}; {state} | {LOCAL_RULE_LABEL}; an organizer transcription, "
                          "not a determination about agency conduct.", [rule["source_url"]], f"checked {rule['checked_on']}"))
     return rows or [_row("Local rules on record", "local_rules", f"{NOT_RECORDED}: no local rule names this agency",
                          ["law/local-rules.json"])]

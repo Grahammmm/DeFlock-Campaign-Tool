@@ -1342,6 +1342,43 @@ the static fallback and the picker still drives the agency cards. The map style
 and attribution are the campaign's responsibility, and the CSP names only the
 hosts you declare in `style_url` and `tile_hosts`.
 
+## Private agency meeting brief (`agency-brief`)
+
+`python3 -m campaign_tool agency-brief --agency ID --directory D [--replace]` writes a private, printable handout for a
+meeting with officials: `kit/briefs/<agency-slug>-<YYYY-MM-DD>.html` and its `.txt` twin (the UTC date of the run). It
+sends, publishes, builds and fetches nothing.
+
+- **Inputs are the organizer's published `content/` only.** `content/agencies.json` must be a real file (a missing one
+  refuses; `kit/agencies.json` is never a fallback) and the agency must be selected and organizer-verified there; an
+  unknown or unverified ID is refused by name before anything is written. "Published" means the organizer's content
+  inputs (including staged meetings), not that the website is deployed, and the brief does not authenticate private
+  review receipts. No draft, request, sent record, note or private file is read for it, and `asked[].request`, contact
+  emails and the free-text profile summary, facts and flags are never copied.
+- **Every line names its source.** A factual row shows a public URL and/or a `content/<file>:<field>` locator, and the
+  date recorded with it (`checked`, `asked`, `published`, `starts`); a missing record prints `Not recorded` with its
+  locator, which is not a claim that nothing exists. The preparation date is shown once and is never used as a checked
+  date. Costs and funding keep their stated amount and period (nothing is added up or annualised); a zero stays `0` and a
+  missing portal number stays `not recorded`.
+- **Sections:** agency; profile facts (policy link and checklist, contract term and cost, funding, newest portal
+  numbers, transcribed sharing count); requests the campaign made and their recorded state; published findings (the
+  agency as primary or `also_agency_ids`, linked absolute with `base_url`, root-relative without); local rules and recorded
+  actions; the governing body with its recorded votes and upcoming staged meetings; the campaign's own asks
+  (`site.json` `comment_asks`, shown as the campaign's asks, never agency statements; `Campaign asks not recorded`
+  without them) and limitations.
+- **The governing body is never guessed.** A `city_council` or `county_board` is its own body. For any other agency the body
+  is the one named in a `found` `pre_implementation_meeting.body` with an official source, matched literally to exactly one
+  council or board of the same `jurisdiction_name`. Otherwise the brief says `Governing body not established by published
+  content` and lists only staged meetings tagged directly with the agency ID, labelled as such. Cancelled meetings are
+  omitted; a meeting at or after the run instant is upcoming.
+- **Privacy and wording gates.** Every row and both finished files are checked with the shared email, phone and plate lint
+  before anything is written (a hit refuses, naming the row and category, never the value). Legal-claim wording is an
+  alert only: it prints `review-required` notes on stderr and does not change or block the brief.
+- **Safe files.** The HTML is inert (escaped text, no script, form, external load; CSP `default-src 'none'`). An existing
+  `.html` or `.txt` keeps both unchanged unless `--replace`; a symlink, hard link, FIFO, directory or unsafe `kit/` or
+  `kit/briefs/` refuses even with `--replace`. Directories are created `0700` and files `0600`. The two files are replaced
+  one after the other, not as a transaction: after an I/O failure the first file can already be new, the command says so
+  and exits 1, and running it again with `--replace` repairs the pair.
+
 ## What is never rendered
 
 - Findings that are not `state: published`, carry `needs_attorney_review`, or
