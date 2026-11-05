@@ -28,6 +28,7 @@ SLOTS = [(f, None) for f in SCALARS] + [(f, 0) for f in LISTS] + [("source_link_
 ANNOTATIONS = {"$ref", "description", "title", "$comment"}
 VALIDATING = {"type", "pattern", "minLength", "maxLength"}
 EMPTY_SOCKET = socket.socket
+EMPTY_CREATE_CONNECTION = socket.create_connection
 
 
 def setUpModule():
@@ -39,6 +40,7 @@ def setUpModule():
 
 def tearDownModule():
     socket.socket = EMPTY_SOCKET
+    socket.create_connection = EMPTY_CREATE_CONNECTION
 
 
 @functools.lru_cache(maxsize=None)
