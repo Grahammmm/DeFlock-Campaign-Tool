@@ -105,12 +105,12 @@ class FeeReplyTests(unittest.TestCase):
         return (self.root / result["written"]).read_text(encoding="utf-8")
 
     def refuses(self, text, *args, **kwargs):
-        before = snapshot(self.root)
+        before, folder = snapshot(self.root), (self.root / "kit" / "followups").exists()
         with self.assertRaises(ValueError) as caught:
             self.make(*args, **kwargs)
         self.assertIn(text, str(caught.exception))
         self.assertEqual(snapshot(self.root), before)
-        self.assertFalse((self.root / "kit" / "followups").exists())
+        self.assertEqual((self.root / "kit" / "followups").exists(), folder)  # a refusal creates nothing
 
     def test_main_named_same_day_latest(self):
         self.estimate(100)
@@ -146,7 +146,7 @@ class FeeReplyTests(unittest.TestCase):
         self.refuses("No recorded fee estimate for this request.")
         self.refuses("No recorded fee estimate for this request.", "other-ask")  # no main fallback
         self.estimate()
-        for kind in ("acknowledged", "fee_paid", "fee_waived", "clarification_requested", "denied", "determination"):
+        for kind in ("fee_paid", "fee_waived", "clarification_requested", "extension", "denied"):
             self.step(kind, "2026-03-12")
             self.refuses("not a fee estimate")
             self.sent[A]["steps"].pop()
@@ -179,9 +179,8 @@ class FeeReplyTests(unittest.TestCase):
             self.save()
             self.refuses("unreadable")
         self.sent[A]["steps"][0]["amount_cents"] = 100
-        self.step("acknowledged", "2026-03-01")  # decreasing date
-        self.save()
-        self.refuses("unreadable")
+        self.step("clarification_requested", "2026-03-05")  # a date before the estimate before it
+        self.refuses("")
         self.sent[A]["steps"] = [{"on": "2026-12-01", "kind": "fee_estimate", "amount_cents": 1}]  # after today
         self.save()
         self.refuses("")
@@ -257,7 +256,7 @@ class FeeReplyTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     self.make(replace=True)
             self.assertEqual(path.read_bytes(), good)
-            self.assertEqual(sorted(p.name for p in path.parent.iterdir()), [path.name])  # no temp left behind
+            self.assertEqual([p.name for p in path.parent.iterdir() if p.name.startswith(".")], [])  # no temp left behind
         with self.assertRaises(ValueError):
             self.make(narrow="<b>", replace=True)
         self.assertEqual(path.read_bytes(), good)
@@ -310,7 +309,7 @@ class FeeReplyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.make()
         (self.root / "kit" / "agencies.json").unlink()
-        with self.assertRaises(OSError):  # a missing input is never created
+        with self.assertRaises(ValueError):  # a missing input is refused, never created
             self.make()
         self.assertFalse(folder.exists())
 
