@@ -62,7 +62,7 @@ class Import(unittest.TestCase):
     def test_request_url_filter_and_top(self):
         urls = []
         run(recorded(), urls=urls)
-        self.assertEqual(len(urls), 1)
+        self.assertEqual(len(urls), 3)  # the matters list, then attachments for each of the two matched matters
         parts = urllib.parse.urlsplit(urls[0])
         self.assertEqual(parts.path, "/v1/examplecity/matters")
         query = urllib.parse.parse_qs(parts.query)

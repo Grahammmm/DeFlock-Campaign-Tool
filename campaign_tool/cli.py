@@ -467,6 +467,16 @@ def readiness(root, campaign_id=None, out=None, contact_max_age_days=None, stale
 
 
 def kit(args, root):
+    if args.kit_action == "fee-reply":  # DF0237-07: the raw (unresolved) folder keeps symlink evidence for the writer
+        from .kit_fee_reply import NOTE, fee_reply
+        result = fee_reply(Path(args.directory).expanduser(), args.agency, request=args.request or "main",
+                           narrow=args.narrow, replace=args.replace)
+        flags = result.pop("review_flags")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(NOTE)
+        for note in flags:
+            print(note, file=sys.stderr)
+        return
     from .kit import build_kit
     summary = build_kit(root, online=args.online, include=args.include, scopes=args.scope)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
@@ -850,7 +860,15 @@ def main():
     readiness_p.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified contacts checked over N days ago (at least 1)")
     readiness_p.add_argument("--stale-days", type=int, metavar="N", help="Name inputs dated over N days ago (1-3650)")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
+    kit_cmd.add_argument("kit_action", nargs="?", choices=["fee-reply"],
+                         help="fee-reply: a private never-sent reply draft to the newest recorded fee estimate "
+                              "(needs --agency; optional --request, --narrow, --replace)")
     kit_cmd.add_argument("--directory", required=True)
+    kit_cmd.add_argument("--agency", default=None, help="With fee-reply: the agency id")
+    kit_cmd.add_argument("--request", default=None, help="With fee-reply: which sent request (default main)")
+    kit_cmd.add_argument("--narrow", default=None, metavar="T",
+                         help="With fee-reply: ask whether this narrower scope (1-300 plain-text characters) would change the estimate")
+    kit_cmd.add_argument("--replace", action="store_true", help="With fee-reply: rewrite an existing draft")
     kit_cmd.add_argument("--online", action="store_true",
                          help="Fall back to the Census geocoder when the seed cannot resolve the location")
     kit_cmd.add_argument("--include", action="append",
@@ -1096,6 +1114,11 @@ def main():
         copy_p.add_argument(flag, required=True)
     copy_p.add_argument("--for", dest="copy_for", required=True, choices=("portal", "email", "mail"))
     copy_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
+    brief_p = commands.add_parser("agency-brief", help="Private printable meeting brief for one agency from published content "
+                                  "only: kit/briefs/<agency-slug>-<date>.html and .txt; sends and publishes nothing")
+    brief_p.add_argument("--directory", required=True)
+    brief_p.add_argument("--agency", required=True)
+    brief_p.add_argument("--replace", action="store_true", help="Overwrite an existing brief pair (regular files only)")
     coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
                                      "records, sources, findings (read-only)")
     coverage_p.add_argument("--directory", required=True)
@@ -1521,6 +1544,16 @@ def main():
             new_p.error("the following arguments are required: " + ", ".join(
                 flag for flag, value in (("--agency", args.agency), ("--title", args.title)) if value is None)
                 + " (or --gap AGENCY)")
+    if args.command == "kit":
+        fee_only = [f for f, v in (("--agency", args.agency), ("--request", args.request), ("--narrow", args.narrow),
+                                   ("--replace", args.replace)) if v not in (None, False)]
+        if args.kit_action == "fee-reply":
+            if args.agency is None:
+                kit_cmd.error("fee-reply requires --agency")
+            if args.online or args.include or args.scope:
+                kit_cmd.error("fee-reply cannot be combined with --online, --include or --scope")
+        elif fee_only:
+            kit_cmd.error(", ".join(fee_only) + " only work with fee-reply")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
     if getattr(args, "stale_days", None) is not None and not 1 <= args.stale_days <= 3650:
@@ -1960,6 +1993,9 @@ def main():
             print(render(result))
             print("Recorded only. Nothing was fetched or sent." if result["applied"] else
                   "Checked only; nothing was written, fetched or sent.")
+        elif args.command == "agency-brief":
+            from .agency_brief import run_cli as agency_brief_cli
+            agency_brief_cli(root, args.agency, replace=args.replace)
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
             kit_check_cli(root, as_json=args.as_json)
