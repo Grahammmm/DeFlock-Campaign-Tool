@@ -1420,6 +1420,9 @@ def main():
     new_p.add_argument("--title", help="Required unless --gap")
     new_p.add_argument("--source", action="append", default=[], metavar="PREFIX", help="12-64 hex of a library sha256; repeatable")
     new_p.add_argument("--author")
+    new_p.add_argument("--search-log", metavar="SUMMARY.json", help="With --agency: a private draft of the counts in a "
+                       "kit-search-log --json summary, after the ingested, registered record is re-read and every count "
+                       "matches")
     new_p.add_argument("--gap", metavar="AGENCY", help="Draft an information_gap from this agency's denied or closed request "
                        "that produced no records (dates, stated basis and library correspondence prefilled)")
     new_p.add_argument("--request", help="With --gap: the request name (default main)")
@@ -1516,11 +1519,18 @@ def main():
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
         diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "finding_command", None) == "new":
-        if args.gap is not None and (args.agency is not None or args.source):
+        if args.search_log is not None:
+            clash = [flag for flag, given in (("--gap", args.gap is not None), ("--request", args.request is not None),
+                                              ("--source", bool(args.source)), ("--title", args.title is not None)) if given]
+            if clash:
+                new_p.error(f"--search-log cannot be combined with {clash[0]}")
+            if args.agency is None:
+                new_p.error("--search-log requires --agency")
+        elif args.gap is not None and (args.agency is not None or args.source):
             new_p.error("--gap takes the agency from the request; it cannot be combined with --agency or --source")
-        if args.gap is None and args.request is not None:
+        if args.gap is None and args.request is not None and args.search_log is None:
             new_p.error("--request is only for --gap")
-        if args.gap is None and (args.agency is None or args.title is None):
+        if args.gap is None and args.search_log is None and (args.agency is None or args.title is None):
             new_p.error("the following arguments are required: " + ", ".join(
                 flag for flag, value in (("--agency", args.agency), ("--title", args.title)) if value is None)
                 + " (or --gap AGENCY)")
@@ -1778,7 +1788,15 @@ def main():
         elif args.command == "finding" and args.finding_command == "new":
             from . import findings
             read_config(root)
-            if args.gap is not None:
+            if args.search_log is not None:
+                from .finding_search_log import draft_from_summary
+                try:
+                    result = draft_from_summary(root, args.agency, args.search_log, author=args.author)
+                except (OSError, ValueError) as exc:
+                    sys.exit(fixes.emit(exc) or 2)
+                print(json.dumps({key: value for key, value in result.items() if key != "source"}))
+                print(f"cited: Search log {result['source']}")
+            elif args.gap is not None:
                 result = findings.new_gap_draft(root, args.gap, args.request or "main", args.title, author=args.author)
                 print(json.dumps({key: value for key, value in result.items() if key != "blockers"}))
                 for prefix in result["blockers"]:
