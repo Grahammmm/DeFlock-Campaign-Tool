@@ -1,0 +1,3 @@
+{
+  "--covers-through must be a real YYYY-MM-DD date from 2000-01-01 to the --date sent day": "kit-sent --covers-through message that names the flag and the allowed range; not in the table"
+}
