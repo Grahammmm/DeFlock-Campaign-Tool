@@ -29,6 +29,7 @@ CONTRACT = {"vendor": "Zq vendor", "start": "2024-01-01", "end": "2025-12-31", "
 ASKED = [{"topic": "Zq retention", "asked_on": "2025-05-01", "state": "awaiting_response"},
          {"topic": "Zq audits", "asked_on": "2025-04-01", "state": "answered", "updated_on": "2025-05-02"}]
 NOT_CHECKED = "not checked"
+NONE_ON_RECORD = "none on record"  # DF0237-02: the ninth column when no report is recorded
 # agencies.html #content for an empty agency list, captured from main ccd09bfe before this change.
 EMPTY_MAIN = ('<section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Agencies</p>'
               '<h2>Public bodies in Cedar County (fictional).</h2></div><p>Listing an agency here says only that we asked or'
@@ -140,11 +141,11 @@ class AgencyCompareTests(unittest.TestCase):
         self.assertEqual([cell[:2] for cell in rows[0][1:]], [
             (NOT_CHECKED, []), (NOT_CHECKED, []), (NOT_CHECKED, []),
             ("posted checked 2026-10-30", [self.base[0]["profile"]["alpr_policy"]["url"]]),
-            ("2025-12-31 checked 2025-08-01", [CONTRACT["source_url"]]), (NOT_CHECKED, []), ("2", [f"#{sheriff}-asked"])])
+            ("2025-12-31 checked 2025-08-01", [CONTRACT["source_url"]]), (NOT_CHECKED, []), ("2", [f"#{sheriff}-asked"]), (NONE_ON_RECORD, [])])
         # Newest snapshot only: cameras/retention null there stay "not checked", never the older 4236 / 30.
         self.assertEqual([cell[:2] for cell in rows[1][1:]], [
             (NOT_CHECKED, []), ("9100 checked 2025-09-01", [PORTAL]), (NOT_CHECKED, []),
-            (NOT_CHECKED, []), (NOT_CHECKED, []), (NOT_CHECKED, []), ("0", [])])
+            (NOT_CHECKED, []), (NOT_CHECKED, []), (NOT_CHECKED, []), ("0", []), (NONE_ON_RECORD, [])])
         self.assertIn('<a href="' + PORTAL + '" rel="noopener noreferrer">9100</a> <small>checked '
                       '<time datetime="2025-09-01">2025-09-01</time></small>', self.glance(page))
         self.assertIn(f'<section class="agency-block"><h4 id="{sheriff}-asked">What we asked</h4>', page)
@@ -155,7 +156,7 @@ class AgencyCompareTests(unittest.TestCase):
     def test_agency_with_nothing_is_not_checked_six_times_and_zero(self):
         self.full()
         rows = self.table(self.build()).rows[1:]
-        self.assertEqual([cell[0] for cell in rows[2][1:]], [NOT_CHECKED] * 6 + ["0"])
+        self.assertEqual([cell[0] for cell in rows[2][1:]], [NOT_CHECKED] * 6 + ["0", NONE_ON_RECORD])
         self.assertEqual([href for cell in rows[2][1:] for href in cell[1]], [])
 
     def test_no_agencies_no_section_and_one_agency_still_a_table(self):
@@ -194,7 +195,7 @@ class AgencyCompareTests(unittest.TestCase):
         head = parser.rows[0]
         self.assertEqual([cell[0] for cell in head], ["Agency", "Cameras (portal)", "Searches last 30 days (portal)",
                                                       "Retention days (portal)", "ALPR policy", "Contract ends",
-                                                      "Contract cost as stated", "Records items asked"])
+                                                      "Contract cost as stated", "Records items asked", "Latest report"])
         self.assertTrue(all(cell[2] == "th" and cell[3] == {"scope": "col"} for cell in head))
         for row in parser.rows[1:]:
             self.assertEqual((row[0][2], row[0][3]["scope"]), ("th", "row"))
@@ -203,7 +204,7 @@ class AgencyCompareTests(unittest.TestCase):
     def test_no_ranking_or_score_wording(self):
         banned = re.compile(r"best|worst|rank|score", re.I)
         keys = [key for key in DEFAULTS if key.startswith("agencies.glance_")]
-        self.assertEqual(len(keys), 14)
+        self.assertEqual(len(keys), 16)
         self.assertEqual([key for key in keys if key != "agencies.glance_note" and banned.search(DEFAULTS[key])], [])
         # The note's only such word is the disclaimer itself.
         self.assertEqual(DEFAULTS["agencies.glance_note"], "Numbers are as each source reported them on the date "
