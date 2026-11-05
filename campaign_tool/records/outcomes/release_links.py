@@ -20,7 +20,7 @@ import stat
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from ..ledger import store
 from ..ledger_catalog import scope_excluded
@@ -89,8 +89,23 @@ def classify_url(raw):
     return platform, host, parts.path, bool(parts.query), normalised
 
 
+OPAQUE = re.compile(r"^[A-Za-z0-9_~=+%-]{16,}$")
+
+
+def _opaque(segment):
+    """Conservative: long single-blob, percent-encoded, mixed-case or digit-bearing segments are tokens."""
+    if TOKENISH.match(segment):
+        return True
+    if not OPAQUE.match(segment):
+        return False
+    decoded = unquote(segment)
+    if "%" in segment or re.search(r"\d|[A-Z]", decoded):
+        return True
+    return "-" not in decoded and "_" not in decoded
+
+
 def redact_path(path):
-    segments = [("[token]" if TOKENISH.match(s) else s[:80]) for s in path.split("/")]
+    segments = [("[token]" if _opaque(s) else s[:80]) for s in path.split("/")]
     return "/".join(segments)[:200]
 
 

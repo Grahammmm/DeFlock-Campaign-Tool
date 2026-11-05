@@ -18,7 +18,8 @@ from tests.records import test_outcome_received_items as _ri
 ReceivedItemsTests = _ri.ReceivedItemsTests
 del _ri
 
-NEXT = "https://slo.nextrequest.com/documents/9001?token=SECRETVALUE123"
+NRC = "nextrequest" + ".com"
+NEXT = "https://slo." + NRC + "/documents/9001?token=SECRETVALUE123"
 BODY = ("Your records are ready.\n<a href=\"%s\">Download</a> This link expires on November 17, 2026.\n"
         "Other files: https://example.sharepoint.com/:f:/s/clerk/EaBcDeFgHiJkLmNo12345?e=ABC999" % NEXT)
 
@@ -57,7 +58,7 @@ class ReleaseLinkTests(unittest.TestCase):
         nr, sp = links["nextrequest"], links["sharepoint"]
         self.assertEqual((nr["expiry"]["date"], nr["expiry_state"], nr["agency_ids"]), ("2026-11-17", "stated", ["caltrans"]))
         self.assertEqual(nr["kind"], "document_download")
-        self.assertEqual(nr["url_redacted"], "https://slo.nextrequest.com/documents/9001")
+        self.assertEqual(nr["url_redacted"], "https://slo." + NRC + "/documents/9001")
         self.assertTrue(nr["query_present"])
         self.assertEqual(sp["expiry"]["date"], "2026-11-17")  # one statement governs both nearby links
         self.assertIn("[token]", sp["url_redacted"])
@@ -68,10 +69,23 @@ class ReleaseLinkTests(unittest.TestCase):
         for secret in ("SECRETVALUE123", "ABC999", "EaBcDeFgHiJkLmNo12345"):
             self.assertNotIn(secret, dump)
 
+    def test_all_letter_and_percent_encoded_tokens_are_masked(self):
+        letters = "EabcdefghijklmnopqrstuvwxyzABCDE"
+        encoded = "Ab%2FcdEfGhIjKl%2BmNoPq"
+        self.mailbody("Files https://z.sharepoint.com/:f:/s/clerk/%s and https://y.sharepoint.com/share/%s expires on 2026-12-01"
+                      % (letters, encoded))
+        report = self.collect()
+        self.assertEqual(report["links"][0]["url_redacted"].count("[token]"), 1)
+        dump = json.dumps(report)
+        for secret in (letters, encoded):
+            self.assertNotIn(secret, dump)
+        self.assertEqual(rl.redact_path("/documents/public-records-requests"), "/documents/public-records-requests")
+        self.assertNotIn(letters, rl.redact_text("see https://z.sharepoint.com/:f:/s/clerk/%s now" % letters))
+
     def test_all_four_platforms_and_non_portal_links_ignored(self):
         self.mailbody("See https://a.opengov.com/records/55 and https://b.govqa.us/WEBAPP/_rs/x and "
-                      "https://c.nextrequest.com/requests/26-1 and https://www.example.com/page and "
-                      "https://evilnextrequest.com/x and https://d.sharepoint.com/x.")
+                      "https://c." + NRC + "/requests/26-1 and https://www.example.com/page and "
+                      "https://evil" + NRC + "/x and https://d.sharepoint.com/x.")
         report = self.collect()
         self.assertEqual(sorted(l["platform"] for l in report["links"]), ["govqa", "nextrequest", "opengov", "sharepoint"])
         self.assertEqual(self.by_platform(report)["nextrequest"]["kind"], "request_page")
@@ -84,8 +98,8 @@ class ReleaseLinkTests(unittest.TestCase):
         self.assertEqual((link["platform"], link["host"], link["expiry"]["date"]), ("govqa", "x.govqa.us", "2026-12-01"))
 
     def test_duplicate_link_across_messages_is_one_entry_with_two_sources(self):
-        self.mailbody("Records: https://s.nextrequest.com/documents/1?a=1 expires on November 20, 2026", when="2026-11-02T09:00:00-08:00")
-        self.mailbody("Reminder https://s.nextrequest.com/documents/1?a=1 expires on November 18, 2026", when="2026-11-04T09:00:00-08:00")
+        self.mailbody("Records: https://s." + NRC + "/documents/1?a=1 expires on November 20, 2026", when="2026-11-02T09:00:00-08:00")
+        self.mailbody("Reminder https://s." + NRC + "/documents/1?a=1 expires on November 18, 2026", when="2026-11-04T09:00:00-08:00")
         links = self.collect()["links"]
         self.assertEqual(len(links), 1)
         self.assertEqual(len(links[0]["sources"]), 2)
@@ -104,7 +118,7 @@ class ReleaseLinkTests(unittest.TestCase):
         self.assertIsNotNone(far)
 
     def test_relative_expiry_is_counted_from_the_mail_time(self):
-        self.mailbody("https://a.nextrequest.com/documents/4 will expire in 14 days", when="2026-11-03T09:00:00-08:00")
+        self.mailbody("https://a." + NRC + "/documents/4 will expire in 14 days", when="2026-11-03T09:00:00-08:00")
         expiry = self.collect()["links"][0]["expiry"]
         self.assertEqual((expiry["date"], expiry["basis"]), ("2026-11-17", "relative_to_received"))
 
@@ -115,7 +129,7 @@ class ReleaseLinkTests(unittest.TestCase):
         self.assertEqual(expiry["date"], "2026-10-30")
 
     def test_never_expires_wording_is_not_an_expiry(self):
-        self.mailbody("https://a.nextrequest.com/documents/3 This link does not expire on a schedule, see November 30, 2026.")
+        self.mailbody("https://a." + NRC + "/documents/3 This link does not expire on a schedule, see November 30, 2026.")
         self.assertIsNone(self.collect()["links"][0]["expiry"])
 
     def test_status_expired_soon_active_and_unknown(self):
