@@ -147,6 +147,33 @@ class QueueTests(Base):
             aq.queue_received_items(self.root, "run-2", self.write(received([changed], "run-2"), "run-2"))
         self.assertEqual(caught.exception.code, "source_conflict")
 
+    def test_run_provenance_in_comparison_ref_is_not_evidence(self):
+        def real(n, run, index, **kw):
+            f = finding(n, **kw)
+            f["comparison_ref"] = {"report_sha256": f"{hash((run, n)) & 0xfffffff:064x}", "row_index": index,
+                                   "field": "audit_logs"}
+            return f
+        first = item(4, "response", [real(40, "run-1", 0)])
+        aq.queue_received_items(self.root, "run-1", self.write(received([first])))
+        original = aq.load_queue(self.root)[0]
+        aq.edit(self.root, original["id"], "G", "My edited body")
+        again = item(4, "response", [real(40, "run-2", 7)])
+        new = item(5, "response", [real(50, "run-2", 8, quote="Exhibit C is missing.")])
+        summary = aq.queue_received_items(self.root, "run-2", self.write(received([again, new], "run-2"), "run-2"))
+        self.assertEqual((summary["created"], summary["existing"]), (1, 1))
+        rows = {r["id"]: r for r in aq.load_queue(self.root)}
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[original["id"]]["body"], "My edited body")
+        self.assertEqual(rows[original["id"]]["evidence"]["findings"][0]["comparison_ref"]["row_index"], 0)
+        changed = item(4, "response", [real(40, "run-3", 0, quote="Different quote.")])
+        with self.assertRaises(aq.ApprovalQueueError) as caught:
+            aq.queue_received_items(self.root, "run-3", self.write(received([changed], "run-3"), "run-3"))
+        self.assertEqual(caught.exception.code, "source_conflict")
+        other_field = item(4, "response", [real(40, "run-3", 0)])
+        other_field["findings"][0]["comparison_ref"]["field"] = "other"
+        with self.assertRaises(aq.ApprovalQueueError):
+            aq.queue_received_items(self.root, "run-3", self.write(received([other_field], "run-3"), "run-3"))
+
     def test_invalid_source_appends_nothing(self):
         bad = item(4, "response", [finding(40, page=0)])
         with self.assertRaises(aq.ApprovalQueueError) as caught:

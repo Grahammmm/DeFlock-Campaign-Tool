@@ -329,9 +329,17 @@ def _check_draft(item_id, kind, agency_id, request_id, body, evidence, source_ru
         raise ApprovalQueueError("invalid_draft") from error
 
 
+RUN_PROVENANCE = ("report_sha256", "row_index")  # comparison_ref keys that change every run
+
+
 def _norm(evidence):
+    """Compare stable evidence only; run provenance in comparison_ref is not evidence identity."""
     ev = json.loads(_canon(evidence))
     if isinstance(ev.get("findings"), list):
+        for f in ev["findings"]:
+            ref = f.get("comparison_ref") if isinstance(f, dict) else None
+            if isinstance(ref, dict):
+                f["comparison_ref"] = {k: v for k, v in ref.items() if k not in RUN_PROVENANCE}
         ev["findings"] = sorted(ev["findings"], key=_canon)
     if isinstance(ev.get("deadlines"), list):
         ev["deadlines"] = sorted(ev["deadlines"], key=_canon)
