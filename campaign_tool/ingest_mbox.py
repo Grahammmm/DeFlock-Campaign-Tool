@@ -3,7 +3,7 @@
 The mailbox bytes are read once (no link followed), stored first as `--zip` stores its archive, and split in
 memory (never with `mailbox.mbox`, which opens by path). A message starts at a line beginning `From ` at offset 0
 or right after `\\n`; that separator line is not stored and the message runs to the byte before the next separator
-(one trailing `\\n` dropped). `>From ` lines are kept as they are (no mboxrd unescape). Each kept message `n` gets a
+(one framing line ending dropped: a complete CRLF, else one LF, else nothing; see docs/INGEST-MBOX.md). `>From ` lines are kept as they are (no mboxrd unescape). Each kept message `n` gets a
 receipt `<mailbox>/message-<n>.eml` and a `contains` row to the mailbox; its attachments are linked to it as with
 `--eml`. Every message is checked before anything is written. No header value is printed, logged or named.
 
@@ -53,8 +53,10 @@ def _split(data, name):
         end = starts[index + 1] if index + 1 < len(starts) else len(data)
         line_end = data.find(b"\n", start, end)
         body = end if line_end == -1 else line_end + 1  # separator line is never stored
-        if end > body and data[end - 1:end] == b"\n":
-            end -= 1  # one trailing newline belongs to the separator that follows
+        if end - body >= 2 and data[end - 2:end] == b"\r\n":
+            end -= 2  # one complete CRLF framing line ending
+        elif end > body and data[end - 1:end] == b"\n":
+            end -= 1  # one LF framing line ending; a bare CR is never removed
         spans.append((body, end))
     return spans
 
