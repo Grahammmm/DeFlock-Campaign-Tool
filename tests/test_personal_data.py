@@ -509,6 +509,7 @@ FUNCTION_UNKNOWN = {
     "findings._write_private": "shared private-file helper; each catalog caller is pinned above",
     **{f"kit.{name}": "generated drafts and the agency list; request-settings.json has no writer"
        for name in ("_write_json", "_write_readme", "_write_text", "build_kit", "verify_agencies_csv", "verify_agency")},
+    "correction_requests.reply": "unsent reply draft: ids, dates and the recorded note, no requester contact; listed unknown at runtime",
     **{f"kit_track.{name}": "unsent draft text, no personal-data store" for name in (
         "denial_reply", "followup", "format_coverage")},
 }
@@ -584,7 +585,7 @@ MODULE_FUNCTIONS = {
     'meeting_outcome': ('record_comment_counts', 'record_direction', 'record_minutes', 'record_outcome',),
     'meeting_pack': ('_commit_pack', '_discard', '_write_member', 'build',),
     'meeting_stage': ('stage',),
-    'meetings': ('write_meetings',),
+    'meetings': ('write_matters', 'write_meetings',),
     'newsletter.__main__': ('main',),
     'newsletter.archive': ('publish_issue',),
     'newsletter.draft': ('write_draft',),
