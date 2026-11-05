@@ -1,0 +1,16 @@
+[Unit]
+Description=Records arrival trigger (drop folder and arrival stamps)
+# Candidate only: rendered into the private output; installing and enabling it
+# is a separate attended cutover step. Events that do not change the pending
+# state are no-ops: the service exits 0 without Docker, report or notify.
+
+[Path]
+# Close-after-write, create and rename sensitive. Not DirectoryNotEmpty: the
+# drop folder keeps its originals forever, and a persistent glob on unconsumed
+# stamps would hot-loop while the records lock is busy.
+PathChanged=@RECORDS_DROP_DIR@
+PathChanged=@RUNTIME_DIR@/arrival
+Unit=records-arrival.service
+
+[Install]
+WantedBy=default.target

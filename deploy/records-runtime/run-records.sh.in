@@ -3,7 +3,7 @@
 # with render.py before installing. The rendered file belongs in the private
 # runtime, never in this repository.
 #
-# Usage: run-records.sh [--target NAME] [--dry-run] [--scheduled]
+# Usage: run-records.sh [--target NAME] [--dry-run] [--scheduled | --arrival]
 #   --target NAME  stage plan RUNTIME_DIR/targets/NAME.json (default
 #                  @DEFAULT_TARGET@); receipts go to RUNTIME_DIR/NAME/
 #   --dry-run      print the preflight steps and every stage, then exit;
@@ -11,12 +11,23 @@
 #   --scheduled    set by the systemd unit; report mode "scheduled"
 #                  (a target whose stage plan says mode "test" always
 #                  reports mode "test")
+#   --arrival      set by records-arrival.service (REC-AUTO-1). Always uses
+#                  the SCHEDULED_TARGET plan (a conflicting --target or
+#                  --scheduled is a usage error), stamps new files at the
+#                  drop folder, and runs the normal incremental stages when
+#                  an arrival stamp is pending. No pending work: exit 0
+#                  with nothing attempted. Lock busy: write arrival.pending
+#                  and exit 0 (not 73); the lock holder drains it with at
+#                  most one follow-up arrival run inside the same invocation
+#                  deadline. Report mode "arrival".
 #
 # Exit codes:
 #   0      every work stage ok, warn or skipped
 #   10-16  first failed work stage: 10 sync, 11 delta, 12 adoption,
 #          13 portal, 14 extract, 15 digest_gates, 16 outputs
 #   64     usage error
+#   (arrival)  0 also means: nothing pending, or the lock was busy and the
+#          wake is queued in arrival.pending for the holder to drain
 #   70     internal orchestrator error
 #   73     another run holds the overlap lock; this slot was skipped
 #          (nothing attempted, skip receipt written, no queueing)
@@ -54,6 +65,16 @@ NOTIFY_TIMEOUT=@NOTIFY_TIMEOUT@
 RUN_BUDGET_SECONDS=@RUN_BUDGET_SECONDS@
 MIN_FREE_BYTES=@MIN_FREE_BYTES@
 TARGET=@DEFAULT_TARGET@
+SCHEDULED_TARGET=@SCHEDULED_TARGET@
+RECORDS_DROP_DIR=@RECORDS_DROP_DIR@
+# Arrival coalescing: wait for a quiet moment, but never longer than the
+# maximum, so a continuous burst cannot push a start past the 2 minute window.
+# The two variables are test seams; the cap below bounds any override.
+ARRIVAL_QUIET=${ARRIVAL_QUIET_SECONDS:-3}
+ARRIVAL_MAX_WAIT=${ARRIVAL_MAX_WAIT_SECONDS:-30}
+# Internal follow-up guard (never a public mode): set only by this script.
+FOLLOWUP=${RECORDS_ARRIVAL_FOLLOWUP:-0}
+INVOCATION_DEADLINE=${RECORDS_INVOCATION_DEADLINE:-0}
 # Grace between TERM and KILL for a timed-out command.
 KILL_AFTER=2
 # Deadline for the free-space probe (df), so a hung filesystem cannot stall.
@@ -63,21 +84,30 @@ DF_TIMEOUT=10
 BACKSTOP_GRACE=15
 
 usage() {
-  printf '%s\n' "usage: run-records.sh [--target NAME] [--dry-run] [--scheduled]" >&2
+  printf '%s\n' "usage: run-records.sh [--target NAME] [--dry-run] [--scheduled | --arrival]" >&2
   exit 64
 }
 
 DRY_RUN=0
 SCHEDULED=0
+ARRIVAL=0
+TARGET_EXPLICIT=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --target) [ $# -ge 2 ] || usage; TARGET=$2; shift 2;;
-    --target=*) TARGET=${1#--target=}; shift;;
+    --target) [ $# -ge 2 ] || usage; TARGET=$2; TARGET_EXPLICIT=1; shift 2;;
+    --target=*) TARGET=${1#--target=}; TARGET_EXPLICIT=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
     --scheduled) SCHEDULED=1; shift;;
+    --arrival) ARRIVAL=1; shift;;
     *) usage;;
   esac
 done
+if [ "$ARRIVAL" -eq 1 ]; then
+  [ "$SCHEDULED" -eq 0 ] || usage
+  [ "$TARGET_EXPLICIT" -eq 0 ] || [ "$TARGET" = "$SCHEDULED_TARGET" ] || usage
+  TARGET=$SCHEDULED_TARGET
+fi
+[ "$ARRIVAL" -eq 1 ] || [ "$FOLLOWUP" -eq 0 ] || usage
 case "$TARGET" in ""|[!A-Z]*|*[!A-Z0-9_]*) usage;; esac
 [ "${#TARGET}" -le 32 ] || usage
 
@@ -111,11 +141,21 @@ case "$MIN_FREE_BYTES" in 0*) refuse NUMBER_INVALID;; esac
 [ -x "$FLOCK" ] || refuse FLOCK_MISSING
 [ -x "$HOST_PYTHON" ] || refuse HOST_PYTHON_MISSING
 [ -f "$ENGINE_DIR/campaign_tool/records/run_orchestrator.py" ] || refuse ENGINE_DIR_INVALID
+case "$RECORDS_DROP_DIR" in /*) ;; *) refuse DROP_DIR_INVALID;; esac
+for n in "$ARRIVAL_QUIET" "$ARRIVAL_MAX_WAIT" "$INVOCATION_DEADLINE"; do
+  case "$n" in *[!0-9]*|"") refuse NUMBER_INVALID;; esac
+done
+case "$FOLLOWUP" in 0) ;; 1) [ "$INVOCATION_DEADLINE" -gt 0 ] || refuse NUMBER_INVALID;; *) refuse NUMBER_INVALID;; esac
+[ "$ARRIVAL_MAX_WAIT" -le 60 ] || ARRIVAL_MAX_WAIT=60
 TARGET_CONFIG="$RUNTIME_DIR/targets/$TARGET.json"
 [ -f "$TARGET_CONFIG" ] || refuse TARGET_CONFIG_MISSING
 
 orch() {
   PYTHONPATH="$ENGINE_DIR" "$HOST_PYTHON" -B -m campaign_tool.records.run_orchestrator "$@"
+}
+
+arr() {
+  PYTHONPATH="$ENGINE_DIR" "$HOST_PYTHON" -B -m campaign_tool.records.arrival "$@" </dev/null 9>&-
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -125,11 +165,25 @@ if [ "$DRY_RUN" -eq 1 ]; then
   printf '%s\n' "preflight 3 docker: wait up to $DOCKER_WAIT_ATTEMPTS attempts / ${DOCKER_WAIT_DEADLINE}s for daemon and container (else exit 75)"
   printf '%s\n' "preflight 4 image: container image must equal the pinned image (else exit 78)"
   printf '%s\n' "budget: ${RUN_BUDGET_SECONDS}s from start for all work stages; notify ${NOTIFY_TIMEOUT}s"
+  if [ "$ARRIVAL" -eq 1 ]; then
+    printf '%s\n' "arrival: target $TARGET (SCHEDULED_TARGET); watched: drop folder $RECORDS_DROP_DIR and $RUNTIME_DIR/arrival/"
+    printf '%s\n' "arrival: no pending stamps and no drop change: exit 0 without docker, report or notify"
+    printf '%s\n' "arrival: lock busy: write $RUNTIME_DIR/arrival.pending, exit 0 (not 73), never interrupt the holder"
+    printf '%s\n' "arrival: the finishing holder drains pending with at most one follow-up arrival run inside the same invocation deadline"
+  fi
   orch plan --target-config "$TARGET_CONFIG"
   exit $?
 fi
 
 START_EPOCH=$(date +%s)
+# One absolute deadline per systemd invocation, shared by the first run and
+# its single follow-up, so the follow-up can never double the unit timeout.
+INVOCATION_DEADLINE_USE=$((START_EPOCH + RUN_BUDGET_SECONDS))
+if [ "$FOLLOWUP" -eq 1 ] && [ "$INVOCATION_DEADLINE" -lt "$INVOCATION_DEADLINE_USE" ]; then
+  INVOCATION_DEADLINE_USE=$INVOCATION_DEADLINE
+fi
+# A follow-up must fit the worst-case docker readiness plus a minute of work.
+FOLLOWUP_MIN_SECONDS=$((DF_TIMEOUT + KILL_AFTER + DOCKER_WAIT_DEADLINE + 3 * (DOCKER_CMD_TIMEOUT + KILL_AFTER) + 60))
 STARTED_AT=$(date -u -d "@$START_EPOCH" +%Y-%m-%dT%H:%M:%SZ)
 RUN_ID="run_$(date -u -d "@$START_EPOCH" +%Y%m%dT%H%M%SZ)_$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 TARGET_DIR="$RUNTIME_DIR/$TARGET"
@@ -138,6 +192,8 @@ LOG="$TARGET_DIR/run-records.log"
 REPORT="$TARGET_DIR/reports/$RUN_ID.json"
 SCHED_FLAG=
 [ "$SCHEDULED" -eq 0 ] || SCHED_FLAG=--scheduled
+[ "$ARRIVAL" -eq 0 ] || SCHED_FLAG=--arrival
+ARRIVALS_FILE=
 
 log() {
   # The file append is never fatal: on a full disk it can fail, and the run
@@ -147,11 +203,47 @@ log() {
   printf '%s\n' "$line" >&2
 }
 
+# Arrival prelude (REC-AUTO-1). Stamp completed files at the drop folder,
+# then do nothing at all when no stamp is pending. Coalesce a burst with a
+# bounded quiet wait; the cap keeps every start inside the 2 minute window.
+if [ "$ARRIVAL" -eq 1 ] && [ "$FOLLOWUP" -eq 0 ]; then
+  if ! arr scan-drop --runtime-dir "$RUNTIME_DIR" --drop-dir "$RECORDS_DROP_DIR"; then
+    refuse ARRIVAL_SCAN_FAILED
+  fi
+  set +e
+  arr has-work --stamps-only --runtime-dir "$RUNTIME_DIR"
+  hw=$?
+  set -e
+  [ "$hw" -ne 2 ] || refuse ARRIVAL_STATE_INVALID
+  [ "$hw" -eq 0 ] || exit 0
+  waited=0
+  sig=$(arr list --runtime-dir "$RUNTIME_DIR") || refuse ARRIVAL_STATE_INVALID
+  while [ "$ARRIVAL_QUIET" -gt 0 ] && [ "$waited" -lt "$ARRIVAL_MAX_WAIT" ]; do
+    sleep "$ARRIVAL_QUIET"
+    waited=$((waited + ARRIVAL_QUIET))
+    now_sig=$(arr list --runtime-dir "$RUNTIME_DIR") || refuse ARRIVAL_STATE_INVALID
+    [ "$now_sig" != "$sig" ] || break
+    sig=$now_sig
+  done
+fi
+
 # Overlap lock (plan T11): one records run at a time per runtime, across all
-# targets. A slot that finds the lock held is skipped, not queued; the
-# running run is never interrupted. flock releases on process exit.
-exec 9>>"$RUNTIME_DIR/run-records.lock"
+# targets and triggers. A scheduled or manual slot that finds the lock held is
+# skipped, not queued. An arrival that finds it held writes arrival.pending
+# for the holder to drain and exits 0. The running run is never interrupted.
+# flock releases on process exit. The one follow-up run inherits fd 9: flock
+# on the same open file description succeeds, so the lock is never released
+# between the two runs and a second open file description is never created.
+[ "$FOLLOWUP" -eq 1 ] || exec 9>>"$RUNTIME_DIR/run-records.lock"
 if ! "$FLOCK" -n 9; then
+  if [ "$ARRIVAL" -eq 1 ]; then
+    if arr mark-pending --runtime-dir "$RUNTIME_DIR"; then
+      log "arrival queued: another records run holds the lock; pending marker written"
+      exit 0
+    fi
+    log "ERROR: arrival could not record its pending marker"
+    exit 78
+  fi
   log "skipped: another records run holds the lock; nothing attempted"
   skip="$TARGET_DIR/alerts/run-skipped-$RUN_ID.json"
   printf '{"schema":"records-run-skipped-v1","kind":"lock_held","run_id":"%s","target":"%s","at":"%s"}\n' \
@@ -231,7 +323,8 @@ abort_report() {
   # $1 reason code. Writes a schema-valid report: sync failed with the code,
   # every later stage skipped, a blocking needs-G item.
   orch abort --run-id "$RUN_ID" --started-at "$STARTED_AT" \
-    --target-config "$TARGET_CONFIG" $SCHED_FLAG --reason "$1" --report "$REPORT" ||
+    --target-config "$TARGET_CONFIG" $SCHED_FLAG ${ARRIVALS_FILE:+--arrivals-file "$ARRIVALS_FILE"} \
+    --reason "$1" --report "$REPORT" ||
     log "could not write abort report"
 }
 
@@ -266,7 +359,7 @@ notify() {
   PYTHONPATH="$ENGINE_DIR" "$TIMEOUT" -k "$KILL_AFTER" "$NOTIFY_TIMEOUT" \
     "$HOST_PYTHON" -B "$NOTIFY" --report "$REPORT" --alerts-dir "$TARGET_DIR/alerts" \
     --exit-code "$RUN_EXIT" --log "$LOG" --env-file "$NOTIFY_ENV_FILE" \
-    --label "$NOTIFY_LABEL" </dev/null
+    --label "$NOTIFY_LABEL" </dev/null 9>&-
   nrc=$?
   if [ "$nrc" -eq 124 ] || [ "$nrc" -eq 137 ]; then
     notify_fallback helper_timeout
@@ -283,11 +376,54 @@ notify() {
   return 0
 }
 
+# Drain (REC-AUTO-1). Runs after this run's own report and notify are final,
+# while fd 9 still holds the records lock. A stamp that arrived at any point
+# before this check is pending and is claimed by the one follow-up; a stamp
+# that arrives after it stays pending and wakes the path unit afresh, so a
+# merged systemd activation cannot lose it. Only a run that attempted its
+# work drains (no retry loop after a preflight failure), and the follow-up
+# never drains again.
+drain() {
+  [ "$FOLLOWUP" -eq 0 ] || return 0
+  case "$1" in 0|1[0-6]) ;; *) return 0;; esac
+  set +e
+  arr scan-drop --runtime-dir "$RUNTIME_DIR" --drop-dir "$RECORDS_DROP_DIR"
+  arr has-work --stamps-only --runtime-dir "$RUNTIME_DIR"
+  hw=$?
+  set -e
+  [ "$hw" -eq 0 ] || return 0
+  left=$((INVOCATION_DEADLINE_USE - $(date +%s)))
+  if [ "$left" -lt "$FOLLOWUP_MIN_SECONDS" ]; then
+    log "ARRIVAL_FOLLOWUP_DEFERRED: ${left}s left of the invocation deadline; arrivals stay pending"
+    return 0
+  fi
+  # Clear the marker before the follow-up so later events are never erased.
+  set +e
+  arr take-pending --runtime-dir "$RUNTIME_DIR"
+  log "starting one arrival follow-up run"
+  RECORDS_ARRIVAL_FOLLOWUP=1 RECORDS_INVOCATION_DEADLINE="$INVOCATION_DEADLINE_USE" \
+    /bin/sh "$0" --arrival </dev/null
+  frc=$?
+  [ "$frc" -eq 0 ] || log "arrival follow-up exited rc=$frc; this run's exit status is unchanged"
+  set -e
+  return 0
+}
+
 finish() {
   # $1 exit code
   RUN_EXIT=$1
   log "finished exit=$1"
   notify
+  if [ "$ARRIVAL" -eq 1 ]; then
+    case "$1" in
+      0|1[0-6]) ;;
+      *) # abnormal end: keep the queued wake visible, never consume
+        set +e
+        arr has-work --stamps-only --runtime-dir "$RUNTIME_DIR" && arr mark-pending --runtime-dir "$RUNTIME_DIR"
+        set -e;;
+    esac
+  fi
+  drain "$1"
   exit "$1"
 }
 
@@ -336,12 +472,33 @@ if [ "$image" != "$EXPECTED_IMAGE" ]; then
   finish 78
 fi
 
+# Arrival batch: claimed only now, after the lock, plan, disk and image
+# preflights, so an early abort never consumes a stamp. The same immutable
+# batch then goes to the normal, failure and notify-fallback reports.
+if [ "$ARRIVAL" -eq 1 ]; then
+  set +e
+  arr has-work --stamps-only --runtime-dir "$RUNTIME_DIR"
+  hw=$?
+  set -e
+  if [ "$hw" -eq 1 ]; then
+    log "arrival: nothing pending any more; nothing attempted"
+    exit 0
+  fi
+  ARRIVALS_FILE="$TARGET_DIR/work/arrivals-$RUN_ID.json"
+  if ! arr claim --runtime-dir "$RUNTIME_DIR" --run-id "$RUN_ID" --out "$ARRIVALS_FILE"; then
+    ARRIVALS_FILE=
+    log "ERROR: arrival batch could not be claimed; no records work was attempted"
+    abort_report ARRIVAL_STATE_INVALID
+    finish 78
+  fi
+fi
+
 # Work stages. The orchestrator owns per-stage timeouts and the overall
 # deadline (RUN_BUDGET_SECONDS from START_EPOCH, so the Docker wait counts).
 # GNU timeout is only a backstop: on its TERM the orchestrator records
 # RUN_INTERRUPTED and still writes the report. Stage stdout/stderr never
 # reach this log.
-DEADLINE_EPOCH=$((START_EPOCH + RUN_BUDGET_SECONDS))
+DEADLINE_EPOCH=$INVOCATION_DEADLINE_USE
 BACKSTOP=$((DEADLINE_EPOCH - $(date +%s) + BACKSTOP_GRACE))
 [ "$BACKSTOP" -ge 1 ] || BACKSTOP=1
 set +e
@@ -349,7 +506,7 @@ set +e
   "$HOST_PYTHON" -B -m campaign_tool.records.run_orchestrator run \
   --target-config "$TARGET_CONFIG" --expect-target "$TARGET" --run-id "$RUN_ID" \
   --started-at "$STARTED_AT" --deadline-epoch "$DEADLINE_EPOCH" --report "$REPORT" \
-  --work-dir "$TARGET_DIR/work" $SCHED_FLAG </dev/null
+  --work-dir "$TARGET_DIR/work" $SCHED_FLAG ${ARRIVALS_FILE:+--arrivals-file "$ARRIVALS_FILE"} </dev/null 9>&-
 rc=$?
 set -e
 if [ ! -f "$REPORT" ]; then

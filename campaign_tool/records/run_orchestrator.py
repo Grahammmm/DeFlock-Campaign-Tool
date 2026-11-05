@@ -377,7 +377,8 @@ def _elapsed(started_at, finished_at):
     return int((parse(finished_at) - parse(started_at)).total_seconds())
 
 
-def build_report(run_id, mode, started_at, stages, new_data, review_required, needs_g, *, ocr=None, refusals=None):
+def build_report(run_id, mode, started_at, stages, new_data, review_required, needs_g, *, ocr=None, refusals=None,
+                 trigger=None, arrivals=None):
     finished_at = utc_now()
     report = {
         "schema_version": 1,
@@ -395,6 +396,9 @@ def build_report(run_id, mode, started_at, stages, new_data, review_required, ne
         "needs_g": needs_g,
     }
     report.update({k: dict(v) for k, v in (("ocr", ocr), ("refusals", refusals)) if v is not None})
+    if trigger is not None:
+        report["trigger"] = trigger
+        report["arrivals"] = [dict(item) for item in (arrivals or [])]
     run_report.validate_run_report(report)
     return report
 
@@ -410,10 +414,29 @@ def scheduled_invocation(flag, environ):
     return flag and bool(environ.get("INVOCATION_ID"))
 
 
-def report_mode(config, scheduled):
+def report_mode(config, scheduled, arrival=False):
+    if arrival:  # explicit --arrival wins over TEST mode; stub markers stay in the plan
+        return "arrival"
     if config["mode"] == "test":
         return "test"
     return "scheduled" if scheduled else "manual"
+
+
+def report_trigger(mode, scheduled):
+    if mode == "arrival":
+        return "arrival"
+    return "scheduled" if scheduled else "manual"
+
+
+def load_arrivals(path):
+    """Read the claimed batch written by ``arrival claim``; validated, never trusted."""
+    if not path:
+        return []
+    from . import arrival
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, list) or len(data) > arrival.MAX_STAMPS:
+        raise ValueError("arrivals: expected a bounded list")
+    return [arrival.validate_stamp(item) for item in data]
 
 
 def first_failed_exit(stages):
@@ -424,7 +447,7 @@ def first_failed_exit(stages):
 
 
 def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_dir,
-            env=None):
+            env=None, trigger=None, arrivals=None):
     """Run every work stage and write the report. Return the run exit code."""
     schema = load_stage_result_schema()
     env = dict(os.environ if env is None else env)
@@ -476,12 +499,12 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
             blocked_by = "UPSTREAM_FAILED"
     stages.append(pending_notify())
     report = build_report(run_id, mode, started_at, stages, new_data, review_required,
-                          list(needs_g.values()), **extract_blocks)
+                          list(needs_g.values()), trigger=trigger, arrivals=arrivals, **extract_blocks)
     atomic_write_json(report_path, report)
     return first_failed_exit(stages)
 
 
-def abort_report(run_id, mode, started_at, reason, stage="sync"):
+def abort_report(run_id, mode, started_at, reason, stage="sync", trigger=None, arrivals=None):
     """Report for a run stopped before or outside stage execution."""
     started_seconds = run_report._parse_utc(started_at).timestamp()
     stages = []
@@ -495,7 +518,7 @@ def abort_report(run_id, mode, started_at, reason, stage="sync"):
             stages.append(stage_entry(name, "skipped", code="UPSTREAM_FAILED"))
     stages.append(pending_notify())
     needs_g = [{"code": reason, "stage": stage, "severity": "blocking", "count": 1}]
-    return build_report(run_id, mode, started_at, stages, {}, 0, needs_g)
+    return build_report(run_id, mode, started_at, stages, {}, 0, needs_g, trigger=trigger, arrivals=arrivals)
 
 
 # --- notify outcome ---------------------------------------------------------
@@ -892,22 +915,26 @@ def cmd_run(args):
     config = load_target_config(args.target_config)
     if args.expect_target and args.expect_target != config["target"]:
         raise TargetConfigError("target config names a different target")
-    mode = report_mode(config, scheduled_invocation(args.scheduled, os.environ))
+    scheduled = scheduled_invocation(args.scheduled, os.environ)
+    mode = report_mode(config, scheduled, args.arrival)
+    arrivals = load_arrivals(args.arrivals_file)
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
     return execute(config, args.run_id, mode, args.started_at, args.deadline_epoch,
-                   args.report, args.work_dir)
+                   args.report, args.work_dir, trigger=report_trigger(mode, scheduled), arrivals=arrivals)
 
 
 def cmd_abort(args):
     _check_run_id(args.run_id)
     if not CODE_RE.match(args.reason):
         raise SystemExit("run_orchestrator: invalid reason code")
+    scheduled = scheduled_invocation(args.scheduled, os.environ)
     try:
-        mode = report_mode(load_target_config(args.target_config), scheduled_invocation(args.scheduled, os.environ))
+        mode = report_mode(load_target_config(args.target_config), scheduled, args.arrival)
     except TargetConfigError:
-        mode = "scheduled" if scheduled_invocation(args.scheduled, os.environ) else "manual"
-    report = abort_report(args.run_id, mode, args.started_at, args.reason, args.stage)
+        mode = "arrival" if args.arrival else "scheduled" if scheduled else "manual"
+    report = abort_report(args.run_id, mode, args.started_at, args.reason, args.stage,
+                          trigger=report_trigger(mode, scheduled), arrivals=load_arrivals(args.arrivals_file))
     atomic_write_json(args.report, report)
     return 0
 
@@ -949,6 +976,8 @@ def build_parser():
     run.add_argument("--report", required=True)
     run.add_argument("--work-dir", required=True)
     run.add_argument("--scheduled", action="store_true")
+    run.add_argument("--arrival", action="store_true")
+    run.add_argument("--arrivals-file")
     run.set_defaults(func=cmd_run)
 
     abort = sub.add_parser("abort", help="write a report for a run stopped before its stages")
@@ -956,6 +985,8 @@ def build_parser():
     abort.add_argument("--started-at", required=True)
     abort.add_argument("--target-config", required=True)
     abort.add_argument("--scheduled", action="store_true")
+    abort.add_argument("--arrival", action="store_true")
+    abort.add_argument("--arrivals-file")
     abort.add_argument("--reason", required=True)
     abort.add_argument("--stage", choices=WORK_STAGES, default="sync")
     abort.add_argument("--report", required=True)
