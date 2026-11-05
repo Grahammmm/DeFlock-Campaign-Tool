@@ -118,6 +118,7 @@ DEFAULTS = {
     "events.none_upcoming": "No upcoming events are listed.", "events.none_past": "No past events are listed.",
     "events.when": "{start} to {end}", "events.online": "Online", "events.where": "Where",
     "events.link": "Details and registration", "events.accessibility": "Accessibility",
+    "events.subscribe": "Subscribe to the campaign events calendar (.ics)", "footer.events_calendar": "Campaign events calendar (.ics)",
     "events.next": "Next campaign event", "events.all": "All campaign events",
     "finding.shares_one": "Shares {count} source record", "finding.shares_many": "Shares {count} source records",
     "finding.filter_label": "Filter findings", "finding.filter_agency": "Agency",
