@@ -3,6 +3,7 @@
 Find upcoming public meetings with license plate reader agenda items, record them, and build
 a public-comment kit from published findings. Code: `campaign_tool/meetings.py`,
 `workers/workspace/src/comment_kit.ts`, the Meetings screen in `views/screens.ts`.
+For the task order (find, stage, verify, comment, record, outcome) see the [meetings guide](MEETINGS-GUIDE.md); this file stays the reference.
 
 ## Legistar import (CLI)
 
@@ -325,6 +326,14 @@ through the same checks as `--id`. It prints `{window, built, skipped}`; each sk
 reason (cancelled, stale kit, pack exists, invalid id, symlinked or unreadable file). Meetings outside
 the window are not listed. Exit 0 when nothing was skipped, 3 when something needs attention.
 `--allow-past` is refused with `--upcoming`. Nothing is sent or published.
+
+## Social drafts (never posted)
+
+Meeting announcements and outcome posts are private drafts written by `social --meetings` and `social --outcomes`; nothing
+is posted. Their rules (windows, platform lengths, kept edits, skipped counts) are in
+[PUBLICATION.md](PUBLICATION.md#social-drafts-for-meetings-never-posted) for meetings and
+[PUBLICATION.md](PUBLICATION.md#social-drafts-for-outcomes-never-posted) for outcomes, and stay there. The task order is in
+the [meetings guide](MEETINGS-GUIDE.md#6-draft-the-announcement-never-posted).
 
 ## Recording a comment you submitted
 
