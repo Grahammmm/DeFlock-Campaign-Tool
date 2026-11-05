@@ -332,14 +332,16 @@ class OutputsSeamTests(StageTestCase):
             (self.processing / "runs").mkdir(mode=0o700)
             (self.processing / "runs" / "extract-run-1.json").write_text(json.dumps(
                 {"schema": "records-extract-outcomes-v1", "run_id": "run-1", "documents": []}))
-        from campaign_tool.records.outcomes import received_items
+        from campaign_tool.records.outcomes import received_items, response_items
 
         def fake(project, run_id):
             target = Path(project) / "run-outputs" / run_id / "outcomes"
             target.mkdir(parents=True, mode=0o700, exist_ok=True)
             if doc is not None:
                 (target / "received-items.json").write_text(json.dumps(doc), encoding="utf-8")
-        with mock.patch.object(received_items, "write_run_received_items", fake):
+        # Response ratings are their own outputs writer with their own tests; keep this seam about drafts only.
+        with mock.patch.object(received_items, "write_run_received_items", fake), \
+                mock.patch.object(response_items, "write_run_response_items", lambda project, run_id: None):
             return self.stage("outputs")
 
     def test_outputs_stage_queues_pending_drafts_once(self):
