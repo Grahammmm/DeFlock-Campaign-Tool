@@ -1264,7 +1264,11 @@ def main():
                             help="any kind, repeatable: >= 12 hex of an ingested letter or confirmation; not records")
     response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     response_p.add_argument("--expected-on", metavar="YYYY-MM-DD", help="determination or a later step: the agency's "
-                            "own stated production date (provisional, not a legal deadline)")
+                            "own stated production date (provisional, not a legal deadline); on an "
+                            "extension: the day its written notice says the determination will be dispatched (kept "
+                            "apart from production dates)")
+    response_p.add_argument("--reason", metavar="TEXT", help="extension only: the reason as the agency's written "
+                            "notice states it (1-200 plain-text characters; kept exactly as given)")
     response_p.add_argument("--reference", metavar="REF", help="The agency's own request number, stored once")
     response_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     response_p.add_argument("--partial", action="store_true", help="produced only: part of the records; the request "
@@ -2272,7 +2276,7 @@ def main():
             report = kit_track_due(root, args.as_of, request=args.request, owner=args.owner)
             print(json.dumps(report, indent=2))
             if report["past_due"] + report["stated_date_passed"] + report["installment_passed"] \
-                    + report.get("download_expired", 0):
+                    + report.get("download_expired", 0) + report.get("extension_date_passed", 0):
                 sys.exit(3)
         elif args.command == "kit-assign":
             from .kit_assign import assign
@@ -2288,13 +2292,17 @@ def main():
                 sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step
+            from .legal_claims import legal_notes
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
                                          reference=args.reference, replace_reference=args.replace_reference,
                                          partial=args.partial, correspondence=args.correspondence,
                                          withheld_basis=args.withheld_basis, scope_ids=args.scope,
-                                         disposition=args.disposition, download_expires_on=args.download_expires_on),
+                                         disposition=args.disposition, download_expires_on=args.download_expires_on,
+                                         reason=args.reason),
                              indent=2))
+            for line in legal_notes([("--reason (extension notice)", args.reason)] if args.reason else []):
+                print(line, file=sys.stderr)  # alert-only: rule names, never the reason text
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-response-undo":
             from .kit_undo import undo_step

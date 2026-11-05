@@ -684,6 +684,8 @@ def _dollars(cents):
 
 
 NOT_STATED = ("produced", "denied", "closed", "withdrawn")  # kinds that never carry the agency's stated production date
+EXTENSION_PASSED = "stated extension date passed"
+EXTENSION_LATER = "the agency's date is later than the provisional extended date; provisional, not a legal finding"
 STATED = "stated date passed — the agency's own date; provisional, not a legal deadline"
 
 
@@ -756,10 +758,40 @@ def _next_installment(steps):  # the latest expected_on on or after the latest p
                                           None)
 
 
+REASON_CHARS = 200
+
+
+def _clean_reason(reason):  # --reason on an extension: the agency's words kept exactly as given, or refused
+    if (not isinstance(reason, str) or not reason.strip() or len(reason) > REASON_CHARS
+            or any(c in "<>" or unicodedata.category(c)[0] == "C" or unicodedata.category(c) in ("Zl", "Zp")
+                   for c in reason)):
+        raise ValueError(f"--reason must be 1-{REASON_CHARS} characters of plain text (not blank; no <, > or "
+                         "control characters or line breaks)")
+    return reason
+
+
+def _extension_ok(step):  # extension_expected_on / extension_reason: only on an extension; a real day not before it
+    if "extension_expected_on" in step and not (
+            step.get("kind") == "extension" and _day(step["extension_expected_on"]) is not None
+            and _day(step.get("on")) is not None and step["extension_expected_on"] >= step["on"]):
+        return False
+    if "extension_reason" in step:
+        try:
+            return step.get("kind") == "extension" and _clean_reason(step["extension_reason"]) is not None
+        except ValueError:
+            return False
+    return True
+
+
+def _extension_step(steps):  # the one extension step with a stated date or reason, else None (tolerant)
+    return next((s for s in steps if s.get("kind") == "extension"
+                 and ("extension_expected_on" in s or "extension_reason" in s)), None)
+
+
 def _step_shape_ok(entry, s):  # a known kind, a real date and well-formed optional fields
     return (isinstance(s, dict) and s.get("kind") in KINDS and _day(s.get("on")) and _amount_ok(s)
             and _step_records(s) == s.get("records", []) and _steps_corr_ok(s) and _basis_ok(s)
-            and _answers_ok(s, entry) and _download_ok(s))
+            and _answers_ok(s, entry) and _download_ok(s) and _extension_ok(s))
 
 
 def _steps_ok(entry, steps):
@@ -767,7 +799,8 @@ def _steps_ok(entry, steps):
 
 
 def _check_step(entry, steps, label, on, kind, *, today=None, partial=False, expected_on=None, amount=None,
-                download_expires_on=None, scope_ids=(), note=None):
+                download_expires_on=None, scope_ids=(), note=None, extension_expected_on=None,
+                extension_reason=None):
     """The kit-response rules for adding one step after ``steps`` (pure: reads and writes nothing).
 
     Shared by ``record_step`` and ``validate_steps`` (kit-response-undo), so there is a single ruleset."""
@@ -779,6 +812,17 @@ def _check_step(entry, steps, label, on, kind, *, today=None, partial=False, exp
     day = _day(on)
     if day is None:
         raise ValueError("--date must be a real YYYY-MM-DD date")
+    if extension_reason is not None:
+        if kind != "extension":
+            raise ValueError("--reason is only for extension steps")
+        _clean_reason(extension_reason)
+    if extension_expected_on is not None:
+        if kind != "extension":
+            raise ValueError("--expected-on on an extension step is only for extension steps")
+        if _day(extension_expected_on) is None:
+            raise ValueError("--expected-on must be a real YYYY-MM-DD date")
+        if _day(extension_expected_on) < day:
+            raise ValueError(f"--expected-on {extension_expected_on} is before the extension step on {on}")
     if download_expires_on is not None and _day(download_expires_on) < day:
         raise ValueError(f"--download-expires-on {download_expires_on} is before the produced step on {on}")
     if day < _day(entry["sent_on"]):
@@ -832,7 +876,8 @@ def _check_step(entry, steps, label, on, kind, *, today=None, partial=False, exp
 
 
 STEP_KEYS = {"on", "kind", "partial", "expected_on", "download_expires_on", "amount_cents", "note", "records",
-             "correspondence", "withheld_basis", "scope_answers", "recorded_at"}  # what record_step can store
+             "correspondence", "withheld_basis", "scope_answers", "recorded_at", "extension_expected_on",
+             "extension_reason"}  # what record_step can store
 
 
 def _note_ok(note):  # a stored note is already in _clean_note's normalized form
@@ -868,13 +913,18 @@ def validate_steps(entry, label, *, today=None):
         _check_step(entry, steps[:number], label, step["on"], step["kind"], today=today, partial=_partial(step),
                     expected_on=step.get("expected_on"), amount=step.get("amount_cents"),
                     download_expires_on=step.get("download_expires_on"), scope_ids=list(step.get("scope_answers", ())),
-                    note=step.get("note"))
+                    note=step.get("note"), extension_expected_on=step.get("extension_expected_on"),
+                    extension_reason=step.get("extension_reason"))
 
 
 def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(), request="main", amount=None,
                 expected_on=None, reference=None, replace_reference=False, partial=False, correspondence=(),
-                dry_run=False, withheld_basis=(), download_expires_on=None, scope_ids=(), disposition=None):
+                dry_run=False, withheld_basis=(), download_expires_on=None, scope_ids=(), disposition=None,
+                reason=None):
     """Append one dated agency response step (``dry_run``: check and return it, write nothing).
+
+    On an extension, ``expected_on`` is the agency's stated determination dispatch date (stored as
+    ``extension_expected_on``, never as a production date) and ``reason`` its stated reason (extension only).
 
     ``download_expires_on``: the agency's stated expiry of a download link (produced only). Only the date is stored."""
 
@@ -883,6 +933,11 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     if kind not in KINDS:
         raise ValueError("--kind must be one of " + ", ".join(KINDS))
     scope_ids, disposition = _clean_scopes(kind, scope_ids, disposition)
+    if reason is not None and kind != "extension":
+        raise ValueError("--reason is only for extension steps")
+    extension_expected_on = None
+    if kind == "extension":  # the notice's own dispatch date: kept apart from the production expected_on
+        extension_expected_on, expected_on = expected_on, None
     if partial and kind != "produced":
         raise ValueError("--partial is only for produced steps")
     if download_expires_on is not None and kind != "produced":
@@ -908,7 +963,8 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     if not _steps_ok(entry, steps):
         raise ValueError(f"kit/sent.json unreadable: malformed steps for {label!r}")
     _check_step(entry, steps, label, on, kind, today=today, partial=partial, expected_on=expected_on, amount=amount,
-                download_expires_on=download_expires_on, scope_ids=scope_ids, note=note)
+                download_expires_on=download_expires_on, scope_ids=scope_ids, note=note,
+                extension_expected_on=extension_expected_on, extension_reason=reason)
     cents = None if amount is None else _amount_cents(amount)  # every refusal above and here writes nothing
     linked = {h: f"{entry['sent_on']} as correspondence" for h in entry.get("correspondence", [])}
     for s in steps:
@@ -921,6 +977,8 @@ def record_step(root, agency_id, on, kind, *, note=None, today=None, records=(),
     step = {"on": on, "kind": kind, **({"partial": True} if partial else {}),
             **({"expected_on": expected_on} if expected_on is not None else {}),
             **({"download_expires_on": download_expires_on} if download_expires_on is not None else {}),
+            **({"extension_expected_on": extension_expected_on} if extension_expected_on is not None else {}),
+            **({"extension_reason": reason} if reason is not None else {}),
             **({"amount_cents": cents} if cents is not None else {}),
             **({"note": note} if note else {}), **({"records": hashes} if hashes else {}),
             **({"correspondence": corr} if corr else {}), **({"withheld_basis": stated_bases} if stated_bases else {}),
@@ -1028,7 +1086,7 @@ def status(root, today=None, law_base=None, *, request=None, owner=None):
         if not all(_amount_ok(s) and _day(on) for on, _, s in fees) or not _expected_ok(steps) \
                 or not all(map(_steps_corr_ok, steps)) \
                 or not all(map(_basis_ok, steps)) or not _scopes_ok(entry) \
-                or not all(_answers_ok(s, entry) and _download_ok(s) for s in steps):
+                or not all(_answers_ok(s, entry) and _download_ok(s) and _extension_ok(s) for s in steps):
             raise ValueError(f"kit/sent.json unreadable: malformed steps for {_label(agency_id, name)!r}")
         last, settled = _fee(steps)  # the latest estimate: latest date, then the later recorded step
         estimate = None if last is None else steps[last]["amount_cents"]
@@ -1045,6 +1103,8 @@ def status(root, today=None, law_base=None, *, request=None, owner=None):
         due = (extended if "extension" in kinds else law.deadline(package, start).isoformat()) \
             if package else None
         last_contact = _latest_contact(entry)
+        notice = _extension_step(steps) or {}  # the agency's own words about its extension; absent keys stay absent
+        stated_ext = notice.get("extension_expected_on")
         rows.append({"agency_id": agency_id, "request": name, "name": names.get(agency_id),
                      **({"owner": label} if label else {}),
                      "sent_on": entry["sent_on"], "channel": entry["channel"],
@@ -1056,6 +1116,10 @@ def status(root, today=None, law_base=None, *, request=None, owner=None):
                      **({"imported": True} if entry.get("imported") is True else {}),
                      "determination_due": due, "with_extension": extended, "steps": len(entry["steps"]),
                      "extended": "extension" in kinds, "closed": "closed" in kinds,
+                     **({"extension_expected_on": stated_ext} if stated_ext else {}),
+                     **({"extension_reason": notice["extension_reason"]} if "extension_reason" in notice else {}),
+                     **({"extension_note": EXTENSION_LATER} if stated_ext and extended and stated_ext > extended
+                        else {}),
                      "last_step": {"on": steps[-1].get("on"), "kind": kinds[-1]} if steps else None,
                      **({"withdrawn_on": _withdrawn_on(steps)} if "withdrawn" in kinds else {}),
                      "records": len(linked), "record_prefixes": [h[:12] for h in linked[:PREFIXES_MAX]],
@@ -1249,6 +1313,13 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None, owner=None
             days = (date.fromisoformat(row["determination_due"]) - day).days
             open_rows.append({**base, "due": row["determination_due"], "days": days,
                               "state": "past_due" if days < 0 else "due_today" if days == 0 else "upcoming"})
+        stated_ext = row.get("extension_expected_on")  # the agency's own dispatch date for its determination
+        if stated_ext and day > date.fromisoformat(stated_ext) and not {s.get("kind") for s in steps} & ANSWERED:
+            open_rows.append({**base, "due": stated_ext, "days": -(day - date.fromisoformat(stated_ext)).days,
+                              "kind": "extension", "state": "stated_extension_date_passed",
+                              **({"with_extension": row["with_extension"]} if row["with_extension"] else {}),
+                              "note": EXTENSION_PASSED + (f"; {row['extension_note']}" if "extension_note" in row
+                                                          else "")})
         for item in _downloads(steps, day):  # one row per pending download link; the link itself is never kept
             open_rows.append({**base, "due": item["expires_on"], "days": item["days_left"], "kind": "download",
                               "state": "download_" + item["state"], "produced_on": item["produced_on"],
@@ -1262,12 +1333,15 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None, owner=None
     expired = sum(row["state"] == "download_expired" for row in open_rows)  # counts for exit 3 like past_due
     stated_passed.sort(key=lambda row: (row["stated"], row["agency_id"], row["request"]))
     missing = report["law_package_status"] == "missing"
+    cues = sum(row.get("kind") == "extension" for row in open_rows)  # never past_due; counts for exit 3 on its own
     return {"as_of": day.isoformat(), "law_package_status": report["law_package_status"], "open": open_rows,
             "answered": answered, "past_due": sum(row["state"] == "past_due" for row in open_rows),
             "stated_passed": stated_passed, "stated_date_passed": len(stated_passed),
             "installment_passed": sum(row["state"] == "installment_passed" for row in open_rows),
             "waiting_on_you": waiting,
             **({"download_expired": expired} if any(r.get("kind") == "download" for r in open_rows) else {}),
+            **({"extension_date_passed": cues} if any("extension_expected_on" in r for r in report["requests"])
+               else {}),
             "note": ("No law package: determination dates cannot be computed. " if missing else "") + NOTE
             + (f" {STATED[0].upper()}{STATED[1:]}." if stated_passed else "") + (WAIT_NOTE if waiting else "")}
 
@@ -1311,7 +1385,7 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
         raise ValueError(f"request for {label} was answered ({answer['kind']} on {answer.get('on')}); "
                          "no follow-up drafted")
     row = next((r for r in due(root, day.isoformat(), law_base=law_base)["open"]
-                if (r["agency_id"], r["request"]) == (agency_id, request) and r.get("kind") != "download"), None)
+                if (r["agency_id"], r["request"]) == (agency_id, request) and r.get("kind") not in ("download", "extension")), None)
     if row is None or row["state"] == "no_law_package":
         raise ValueError("no law package: dates cannot be computed")
     if row["state"] == "producing":

@@ -178,7 +178,9 @@ def run_timed(suite, shard, stream=None):
 # run 41255540962: campaign_tool/__pycache__/law.*.pyc).
 # test_fa24_notice_href: its whole-repo byte snapshot saw a sibling chunk's build/outcome-comparison/ writes
 # (run 41399248333, shard 0: tearDownModule A6).
-SERIAL = frozenset({'tests.test_fa21_report_finite', 'tests.test_fa24_notice_href'})
+# tests.records.test_host_check: NoMutation.test_real_host_class_runs_only_fixed_readonly_commands snapshots the whole
+# repo and saw a sibling chunk's build/outcome-comparison/ writes (PR #1035, 'affected (4)', head 25b3b925).
+SERIAL = frozenset({'tests.test_fa21_report_finite', 'tests.test_fa24_notice_href', 'tests.records.test_host_check'})
 RESULT = 'CI_CHUNK_RESULT '
 
 

@@ -441,6 +441,20 @@ is once only and not after `determination`, `produced` or `denied`. `determinati
 control characters, at most 200 characters); never paste record contents. `kit-status` then shows `extended`,
 `closed` and `last_step`, and `determination_due` uses the extension once one is recorded.
 
+An agency's written extension notice may state the day it will dispatch its determination and why. Record them on the
+extension step with `--expected-on YYYY-MM-DD` (not before the extension step's date; a future date is fine) and
+`--reason TEXT` (1 to 200 plain-text characters as the notice states it, kept exactly as given; no `<`, `>`, control
+characters or line breaks; extension steps only). Either may be given alone. They are the agency's own words, stored
+as `extension_expected_on` and `extension_reason` on that step, apart from `stated_production_date` and
+`next_installment` (which stay about production). `kit-status` shows them beside `with_extension`; when the stated
+date is later than that provisional date it also shows `extension_note`: "the agency's date is later than the
+provisional extended date; provisional, not a legal finding". `kit-due` and `today` list a "stated extension date
+passed" cue (`kind` `extension`, `state` `stated_extension_date_passed`; `extension_date_passed` counts them and makes
+`kit-due` exit 3) once the day after the stated date arrives while no determination, produced or denied step is
+recorded and the request is not closed or withdrawn. An advisory note (rule names only, never the text) appears if the
+reason uses legal-violation wording; it never blocks the record. These dates are provisional reminders, not a legal
+finding of lateness or a deadline; nothing is sent. An extension recorded without them reads and prints as before.
+
 When the agency quotes a fee, record it with `--kind fee_estimate --amount USD` (for example `245.50`: digits with
 at most two decimals, 0 to 100000; no sign, commas or exponent). `--amount` is required for `fee_estimate` and refused
 for any other kind; it is stored as whole `amount_cents`, and estimates may repeat. `kit-status` shows each request's

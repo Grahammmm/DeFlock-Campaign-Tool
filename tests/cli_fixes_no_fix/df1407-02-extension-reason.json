@@ -1,0 +1,6 @@
+{
+  "--reason must be 1-5 characters of plain text (not blank; no <, > or control characters or line breaks)": "kit-response/kit-track --reason message that already names the option, the length limit and the rule; not in the table",
+  "--reason is only for extension steps": "kit-track --reason message that already names the option and the one step kind it applies to; not in the table",
+  "--expected-on on an extension step is only for extension steps": "kit-track --expected-on message that already names the option and the one step kind it applies to; not in the table",
+  "--expected-on 5 is before the extension step on 5": "kit-track --expected-on message that already names the option and both dates; not in the table"
+}
