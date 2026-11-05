@@ -20,6 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from campaign_tool import finding_updates, findings, law, publication_gate  # noqa: E402
 from campaign_tool.content import ContentError, load_content, load_finding_preview  # noqa: E402
 from campaign_tool.site import PUBLIC_FINDING_FIELDS, build_site  # noqa: E402
+from campaign_tool.site_data_catalogue import verify_data_package  # noqa: E402
 from tests import test_findings_publish as publish_tests  # noqa: E402  (module import: not re-collected here)
 
 NOW, RECORDS, draft, sha = publish_tests.NOW, publish_tests.RECORDS, publish_tests.draft, publish_tests.sha
@@ -449,7 +450,9 @@ class UpdateSiteTests(unittest.TestCase):
         self.edit(updates=[])  # a present empty list changes nothing but its own key in the JSON
         again = self.build()
         self.assertEqual(sorted(again), sorted(plain))
-        self.assertEqual([k for k in plain if plain[k] != again[k]], ["data/findings.json"])
+        # DF2207-12: the open-data catalogue restates findings.json's size and SHA-256, so exactly its two files follow it
+        self.assertEqual(sorted(k for k in plain if plain[k] != again[k]), ["data.html", "data/datapackage.json", "data/findings.json"])
+        self.assertEqual(verify_data_package(self.public), [])  # and they agree with the bytes just written
         old, new = json.loads(plain["data/findings.json"]), json.loads(again["data/findings.json"])
         self.assertEqual(new["findings"][0].pop("updates"), [])
         self.assertEqual(old, new)
