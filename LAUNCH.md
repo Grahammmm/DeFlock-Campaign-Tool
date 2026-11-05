@@ -40,6 +40,14 @@ days): it shows a negative `age_days` and a refresh text that begins "Check the 
 because a wrong clock or a mistyped date is the likely cause. The generic "Refresh stale inputs" action and the
 readiness `stale_inputs` count include these date anomalies. A `future` row is not a legal conclusion. It only
 reads; nothing is refreshed.
+With `--stale-days`, `stale_inputs` also names each dated object in the public `content/agencies.json` (never the
+private `kit/agencies.json`) as `content/agencies.json:<agency_id>.<field>`: `alpr_policy`, `contract`,
+`policy_check`, `contract_check`, `pre_implementation_meeting`, `sharing`, each `funding[i]` and only the newest
+`transparency[i]` snapshot (zero-based stored index). Stale means `checked_on` is strictly more than N days before
+today (exactly N is fresh); a later date is `future`; a present object without a valid `checked_on` is `unknown`.
+An unreadable or malformed file is one `unknown` entry named `content/agencies.json`. The refresh is always
+"recheck the source and update checked_on", done by an organizer; nothing is fetched or changed. Readiness counts
+these entries inside `stale_inputs` and still lists none of them.
 Add `content/` (see `docs/SITE-CONTENT.md` and `examples/fictional-campaign/content/`) to turn
 the starter into a real site.
 `python3 -m campaign_tool content init --directory ../my-campaign` writes a minimal valid `content/`

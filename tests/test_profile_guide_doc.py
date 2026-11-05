@@ -189,7 +189,7 @@ class GuideTests(unittest.TestCase):
             for needle in required.get(int(number), []):
                 self.assertIn(needle, body, f"task {number}")
         for phrase in ("fetches no source", "never fetches", "legal conclusion", "official source", "`checked_on` means",
-                       "nothing here is legal advice", "does **not** read a", "absent"):
+                       "nothing here is legal advice", "each dated object in the public", "absent"):
             self.assertIn(phrase.lower(), text.lower(), phrase)
 
     def test_every_documented_command_and_the_fixture_pass_offline(self):
@@ -249,8 +249,10 @@ class GuideTests(unittest.TestCase):
             agency["profile"]["alpr_policy"].pop(key)
         self.install(agency)
         code, out, err = run("doctor", "--directory", self.root, "--stale-days", 1)
-        self.assertNotIn(AGENCY, out + err)  # the baseline's freshness enumerator excludes profile dates, as the guide says
-        self.assertIn("does **not** read a", self.guide)
+        # doctor now names each dated profile object as content/agencies.json:<agency_id>.<field>, as the guide says
+        self.assertIn(f"content/agencies.json:{AGENCY}.alpr_policy", out + err)
+        self.assertIn(f"content/agencies.json:{AGENCY}.policy_check", out + err)
+        self.assertIn("each dated object in the public", self.guide)
         # a transparency number the portal did not show stays out of the record instead of becoming 0
         snapshot = self.profile_from(self.guide)["profile"]["transparency"][0]
         self.assertNotIn("hotlist_alerts", snapshot)
