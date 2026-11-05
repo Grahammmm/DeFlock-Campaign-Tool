@@ -307,7 +307,12 @@ class SharingTests(unittest.TestCase):
         self.build()
         after = self.snapshot()
         changed = {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
-        self.assertEqual(changed, {"agencies.html", "agencies/cedar.html"})  # not in card JS, open data, feeds or other pages
+        # DF0237-04: the new /sharing.html, the sitemap entry and the footer link on every page; still not in card JS, open data or feeds
+        self.assertEqual(changed, {"agencies.html", "agencies/cedar.html", "sharing.html", "sitemap.xml", "404.html", "about.html",
+                                   "cameras.html", "corrections.html", "findings/cedar-policy-posted.html", "findings/index.html",
+                                   "findings/packet-all.html", "index.html", "meetings.html", "meetings/cedar-council-2026-10.html",
+                                   "methods.html", "privacy.html", "search.html", "sources.html", "sources/beefbeefbeef.html",
+                                   "sources/cafecafecafe.html", "timeline.html", "requests.html"})
         rows = "name,state,kind\n" + "".join(f"Out Of State Agency {i:03d},NV,local\n" for i in range(150))
         self.importing(rows, replace=True)
         self.build()

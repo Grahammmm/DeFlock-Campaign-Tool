@@ -129,6 +129,13 @@ def site_notes(root):
             direction = (meeting.get("outcome") or {}).get("direction")
             if direction is not None:
                 found += legal_notes([(f"meetings/{meeting.get('id', '?')}.outcome.direction", direction)])
+        if any(a.get("sharing") for a in (model or {}).get("agencies", [])):  # DF0237-04: the generated /sharing.html wording, scanned only when the page exists
+            try:
+                from .cli import read_config
+                from .site import Site
+                found += legal_notes([("sharing.html", Site(root, read_config(root), model).sharing_plaintext())])
+            except Exception:  # noqa: BLE001 - alert-only, like the rest: a page that cannot be read is a flag, never a failure
+                found.append("review-required: sharing.html: legal-claim wording (guard-error)")
         return notes + list(dict.fromkeys(found))
     except Exception:  # noqa: BLE001 - alert-only: a scan that cannot run is itself a flag, never a failure
         return ["review-required: legal-claim wording (site content could not be scanned; read the findings before publishing)"]

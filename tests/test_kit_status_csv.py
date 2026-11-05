@@ -18,7 +18,7 @@ from tests.test_kit_check import ready_drafts  # noqa: E402
 
 HEADER = ["agency_id", "name", "sent_on", "channel", "provisional_determination_due", "provisional_with_extension",
           "extended", "closed", "steps", "last_step_on", "last_step_kind", "linked_records", "draft_changed_since_sent",
-          "fee_estimate", "fee_state", "fee_paid", "request_url"]
+          "fee_estimate", "fee_state", "fee_paid", "request_url", "owner"]
 TRAILER = "Private file; nothing was sent or published.\n"
 
 
@@ -116,7 +116,7 @@ class KitStatusCsvTests(unittest.TestCase):
             self.assertEqual(row[1:4], [source["name"], source["sent_on"], "email"])
             self.assertEqual(row[4:6], [source["determination_due"], source["with_extension"]])
             self.assertEqual(row[8:], [str(source["steps"]), source["last_step"]["on"], source["last_step"]["kind"],
-                                       "0", "no", "", "", "", ""])
+                                       "0", "no", "", "", "", "", ""])
         self.assertEqual(rows[0][4], rows[0][5])  # extended: due is the extended date
         self.assertEqual([row[6:8] for row in rows], [["yes", "no"], ["no", "yes"]])
         self.assertNotIn("record_prefixes", out.read_text(encoding="utf-8"))

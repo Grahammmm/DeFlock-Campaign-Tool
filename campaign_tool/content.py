@@ -44,7 +44,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01: reserved even without content
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq", "sharing"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01 / DF0237-04: reserved even without content
 
 
 class ContentError(ValueError):

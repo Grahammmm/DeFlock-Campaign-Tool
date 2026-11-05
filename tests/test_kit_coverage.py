@@ -100,7 +100,7 @@ class KitCoverageTests(unittest.TestCase):
         none, drafted, ack, produced = report["rows"]
         self.assertEqual(none, {"agency_id": "ca-b-none", "name": "=HYPERLINK(\"x\")", "drafted": False,
                                 "sent_on": None, "channel": None, "last_step": None, "records": 0, "sources": 0,
-                                "findings": 0, "fee_state": None, "scopes": None})
+                                "findings": 0, "fee_state": None, "scopes": None, "request": "main", "owner": None})
         self.assertEqual((drafted["drafted"], drafted["sent_on"], drafted["last_step"]), (True, None, None))
         self.assertEqual((ack["sent_on"], ack["channel"], ack["last_step"], ack["records"]),
                          ("2026-03-02", "email", {"on": "2026-03-04", "kind": "acknowledged"}, 0))
@@ -108,7 +108,7 @@ class KitCoverageTests(unittest.TestCase):
         self.assertEqual((produced["records"], produced["sources"], produced["findings"]), (2, 1, 1))
         self.assertEqual(report["totals"], {"selected": 4, "drafted": 3, "sent": 2, "answered": 1,
                                             "with_records": 1, "with_findings": 1, "unselected_with_requests": 1,
-                                            "fee_unpaid": 0})
+                                            "fee_unpaid": 0, "requests": 4, "unassigned_requests": 4})
         self.assertNotIn("ca-e-dropped", json.dumps(report["rows"]))
 
     def test_unselected_agency_with_several_requests_counts_once(self):
@@ -124,7 +124,7 @@ class KitCoverageTests(unittest.TestCase):
         lines = out.splitlines()
         self.assertTrue(lines[0].startswith("agency_id"))
         self.assertTrue(lines[1].startswith("ca-b-none"))
-        self.assertEqual(lines[1].split()[-10:], ["no", "-", "-", "-", "-", "0", "0", "0", "-", "-"])
+        self.assertEqual(lines[1].split()[-12:], ["no", "-", "-", "-", "-", "0", "0", "0", "-", "-", "main", "-"])
         self.assertIn(LONG[:40], out)
         self.assertNotIn(LONG[:41], out)
         self.assertIn("unselected_with_requests 1", out)
@@ -163,10 +163,11 @@ class KitCoverageTests(unittest.TestCase):
         self.assertIn('"Bravo, ""B"" Police"', out)
         rows = list(csv.reader(io.StringIO(out)))
         self.assertEqual(rows[0], list(kit_track.CSV_HEADER))
-        self.assertEqual(rows[1], ["ca-b-none", "'=HYPERLINK(\"x\")", "false", "", "", "", "", "0", "0", "0", "", ""])
+        self.assertEqual(rows[1], ["ca-b-none", "'=HYPERLINK(\"x\")", "false", "", "", "", "", "0", "0", "0", "", "",
+                                   "main", ""])
         self.assertEqual(rows[2][1], "Bravo, \"B\" Police")
         self.assertEqual(rows[4], ["ca-d-produced", LONG, "true", "2026-03-01", "email", "2026-03-12", "produced",
-                                   "2", "1", "1", "", "not recorded"])
+                                   "2", "1", "1", "", "not recorded", "main", ""])
         self.assertEqual(len(rows), 5)
         for cell in ("=1+1", "+1", "-1", "@SUM(A1)"):
             self.assertEqual(kit_track._csv_cell(cell), "'" + cell)

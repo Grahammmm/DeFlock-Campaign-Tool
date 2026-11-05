@@ -91,8 +91,8 @@ class ScopeAnswerTests(unittest.TestCase):
         code, out, err = run("kit-coverage", "--directory", self.root, "--csv")
         self.assertEqual(code, 0, err)
         rows = list(csv.reader(io.StringIO(out)))
-        self.assertEqual(rows[0][-1], "scopes")
-        self.assertEqual(rows[0][:-1], list(kit_track.CSV_HEADER[:-1]))
+        self.assertEqual(rows[0][-3:], ["scopes", "request", "owner"])
+        self.assertEqual(rows[0][:-3], list(kit_track.CSV_HEADER[:-3]))
         return next(dict(zip(rows[0], r)) for r in rows[1:] if r[0] == self.agency)
 
     def edit(self, change):
@@ -243,7 +243,7 @@ class ScopeAnswerTests(unittest.TestCase):
         self.sent_ok(A, B)
         code, table, err = run("kit-coverage", "--directory", self.root)
         self.assertEqual(code, 0, err)
-        self.assertIn("scopes", table.splitlines()[0].split()[-1])
+        self.assertEqual(table.splitlines()[0].split()[-3:], ["scopes", "request", "owner"])
         self.assertIn("0/2 answered", table)
         self.ok("determination", "--scope", A, "--disposition", "no_records_stated")
         self.assertEqual(self.coverage_row()["scopes"], "1/2 answered")
