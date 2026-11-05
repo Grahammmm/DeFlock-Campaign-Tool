@@ -37,4 +37,18 @@ and later `decide --id N accepted|declined --on D --note T`; only `private/corre
 is refused until the finding has a correction dated on or after the request (`finding correct`);
 `doctor` names requests open over 14 days. Reply by hand; the tool sends and publishes nothing.
 
+### Optional: publish quarterly counts
+
+Off by default: the site build never opens the private log. To publish totals, set `content/site.json`
+`"corrections": {"show_request_counts": true}` (omitted, `{}` or false mean off; anything else is refused by field name).
+`corrections.html` then gains "Correction requests we received": one row per calendar quarter in which a request was
+received, newest first, with Received, Accepted, Declined and Still open. Requests are counted in the quarter they were
+received and by their current state, so a later decision changes the original quarter's row; these are not quarter-end
+totals. Only these counts leave the log: no summaries, notes, dates, finding or request ids, or anything about who asked.
+A missing log shows "No correction requests have been logged yet." A malformed, symlinked or unreadable log stops the build
+with `private/correction-requests.json: cannot publish correction request counts; check the private log` and no value.
+`content-check` validates the setting only and never reads the log; a build or preview with the flag on also validates it.
+Small counts can reveal that a request exists; you choose whether to publish, and there is no anonymity guarantee or
+minimum count.
+
 Out of scope: a web form, automatic replies, automatic retraction, legal obligations.
