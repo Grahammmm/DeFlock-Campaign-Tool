@@ -26,8 +26,8 @@
       "determination_extension_days": 14,
       "day_type": "calendar"
     },
-    "rule_count": 12,
-    "review_counts": {"verified": 8, "likely": 1, "needs_attorney_review": 3},
+    "rule_count": 18,
+    "review_counts": {"verified": 8, "likely": 1, "needs_attorney_review": 9},
     "rule_ids": [
       "ca-civ-1798.90.5-definitions",
       "ca-civ-1798.90.51-security-procedures",
@@ -40,11 +40,19 @@
       "ca-veh-2413-chp-lpr-retention-and-sharing",
       "ca-gov-7284.6-values-act-immigration-enforcement-limits",
       "ca-oag-2023-dle-06-out-of-state-sharing-guidance",
-      "ca-gov-7922.535-determination-and-extension-2026"
+      "ca-gov-7922.535-determination-and-extension-2026",
+      "ca-gov-7922.600-duty-to-assist",
+      "ca-gov-7922.540-written-denial",
+      "ca-gov-7922.525-segregability",
+      "ca-gov-7922.570-electronic-format",
+      "ca-gov-7922.575-electronic-copy-cost",
+      "ca-gov-7923.600-investigatory-records"
     ],
     "rule_reviews": [
       "needs_attorney_review", "verified", "verified", "verified", "verified", "verified",
-      "verified", "verified", "verified", "needs_attorney_review", "likely", "needs_attorney_review"
+      "verified", "verified", "verified", "needs_attorney_review", "likely", "needs_attorney_review",
+      "needs_attorney_review", "needs_attorney_review", "needs_attorney_review",
+      "needs_attorney_review", "needs_attorney_review", "needs_attorney_review"
     ],
     "rule_keys": ["rule_id", "citation", "effective_from", "effective_to", "review"],
     "request_scopes": ["agreements", "policies", "sharing", "audit-logs", "compliance", "hearing-records"],
