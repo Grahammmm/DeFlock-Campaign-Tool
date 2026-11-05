@@ -681,6 +681,10 @@ def meetings_cmd(args, root):
     read_config(root)
     if args.from_json:
         opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
+    elif args.platform == "ics":
+        if args.online == bool(args.from_ics):
+            raise ValueError("--platform ics needs exactly one of --online (one GET of the feed) or --from-ics FILE")
+        opener = default_opener if args.online else feed_opener(args.from_ics)
     elif args.online:
         opener = default_opener
     elif args.from_xml:
@@ -688,6 +692,7 @@ def meetings_cmd(args, root):
     else:
         raise ValueError("meetings needs --online to query the agenda platform, or a recorded response (--from-json; --from-xml for Granicus)")
     client = make_client(args, opener)
+    name = client.body if args.platform == "ics" else args.client
     since = date.fromisoformat(args.since) if args.since else None
     if args.matters:
         from .meetings import relevant_matters, write_matters
@@ -699,9 +704,9 @@ def meetings_cmd(args, root):
     meetings = relevant_events(client, since=since, zone=zone, all_events=args.all_events)
     previous = _read_previous(root / "kit" / "meetings.json")
     changes = ({"previous": previous} if previous == "unreadable"
-               else compare_meetings(previous, meetings, args.client, since or date.today()))
-    target = write_meetings(root, meetings, args.client, None if previous is None else changes, zone=zone, source=client.source)
-    report = {"client": args.client, "platform": client.source, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
+               else compare_meetings(previous, meetings, name, since or date.today()))
+    target = write_meetings(root, meetings, name, None if previous is None else changes, zone=zone, source=client.source)
+    report = {"client": name, "platform": client.source, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
               "cancelled_meetings": sum(m["status"] == "cancelled" for m in meetings)}
     report.update(getattr(client, "report_extra", lambda m: {})(meetings))
     if "added" in changes:
@@ -965,14 +970,17 @@ def main():
         list_p.add_argument(flag, type=keep_count(KEEP_LIMITS[key]), help=f"Newest per {period}, most recent N (0-{KEEP_LIMITS[key]})")
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
-    meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/); the <name>.granicus.com host for granicus; the AgendaCenter host for agendacenter")
-    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus", "agendacenter"), default="legistar", help="Agenda platform (default legistar)")
+    meetings_p.add_argument("--client", help="Legistar client slug (the part after webapi.legistar.com/v1/); the <name>.granicus.com host for granicus; the AgendaCenter host for agendacenter")
+    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus", "agendacenter", "ics"), default="legistar", help="Agenda platform (default legistar)")
     meetings_p.add_argument("--matters", action="store_true", help="List ALPR keyword matters (legislation, contracts) instead of events; writes kit/matters.json (Legistar only)")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--view-id", type=int, help="Granicus view_id (--platform granicus; --client is then the <name>.granicus.com host)")
     meetings_p.add_argument("--from-xml", help="Saved Granicus or AgendaCenter agenda RSS feed (offline)")
     meetings_p.add_argument("--all-events", action="store_true", help="Also keep Granicus/AgendaCenter events with no text to scan, marked not_scanned")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
+    meetings_p.add_argument("--feed-url", help="--platform ics: the governing body's public iCalendar agenda feed (https URL)")
+    meetings_p.add_argument("--body", help="--platform ics: the governing body's name (plain text; the feed's own calendar name is not trusted)")
+    meetings_p.add_argument("--from-ics", help="--platform ics: saved iCalendar feed (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
     meetings_p.add_argument("--tz", default="America/Los_Angeles", help="IANA time zone for starts_at (default America/Los_Angeles)")
     stage_p = commands.add_parser("meetings-stage", help="Write content/meetings/<id>.json from one kit/meetings.json entry")
@@ -1531,6 +1539,12 @@ def main():
     if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
         if not args.upcoming or args.allow_past or args.within_days not in (None, *range(1, 91)):
             pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
+    if args.command == "meetings":
+        if args.platform == "ics":
+            if args.client or not args.feed_url or not args.body:
+                meetings_p.error("--platform ics needs --feed-url and --body and does not use --client")
+        elif not args.client:
+            meetings_p.error("the following arguments are required: --client")
     if args.command == "meetings-speakers" and (args.add is None) != (args.point is None):
         speakers_p.error("--point is required with --add and only allowed with --add")
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
