@@ -724,7 +724,7 @@ def _read_previous(path):
 def meeting_stage_cmd(args, root):
     from .meeting_stage import stage
     report = stage(root, args.id, args.agency_id, args.location, args.replace, args.participation,
-                   finding_ids=args.finding, asks=args.ask, cosign_ids=args.cosign)
+                   finding_ids=args.finding, asks=args.ask, cosign_ids=args.cosign, elsewhere_indices=args.elsewhere)
     print(json.dumps(report, indent=2))
     for note in report.get("review_flags", []):  # DF2207-07: advisory legal-claim notes, positions only
         print(note, file=sys.stderr)
@@ -987,6 +987,9 @@ def main():
     stage_p.add_argument("--cosign", action="append", metavar="SUPPORTER_ID", default=None,
                          help="Name a consenting supporting organization under this meeting's written comment "
                               "(repeatable, max 30; needs --participation with a written_comment; sends nothing)")
+    stage_p.add_argument("--elsewhere", action="append", type=int, metavar="N", default=None,
+                         help="Cite decision N of content/elsewhere.json (1-based, stored order; repeatable, max 3; "
+                              "cites other governments' decisions, sends nothing)")
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
