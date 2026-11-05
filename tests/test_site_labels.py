@@ -297,6 +297,7 @@ class LabelsTest(unittest.TestCase):
                   "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.statements_heading",
                   "handout.statements_note", "handout.title",
                   "handout.what_we_found",
+                  "intro.officials_open_data",
                   "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
                   "license.about", "license.about_camera", "license.csv_note",
                   "map.check_duplicate", "map.check_earlier", "map.check_heading",

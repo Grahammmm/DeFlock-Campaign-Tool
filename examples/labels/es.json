@@ -123,6 +123,7 @@
     "intro.meetings_calendar": "Suscribirse al calendario de reuniones (.ics)",
     "intro.meetings_open_data_about": "Reuniones con sus resultados registrados, votos y fuentes oficiales:",
     "intro.agencies_open_data": "Agencias como datos abiertos (JSON)",
+    "intro.officials_open_data": "Funcionarios como datos abiertos (JSON)",
     "intro.agencies_open_data_about": "Agencias con sus solicitudes, política publicada, fin de contrato y cifras del portal, según cada fuente:",
     "notice.no_findings": "Todavía no se ha publicado ningún hallazgo.",
     "notice.no_upcoming": "No hay reuniones próximas en la lista.",

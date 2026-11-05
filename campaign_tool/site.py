@@ -57,7 +57,7 @@ GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
-    "data/cameras.geojson", DESCRIPTOR)
+    "data/cameras.geojson", "data/officials.json", "data/officials.csv", DESCRIPTOR)  # DF1622-11: the roster exports, only when emitted
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
 CLASSIFICATION_DEFINITIONS = {
@@ -243,6 +243,10 @@ PUBLIC_AGENCY_OPTIONAL = ("funding",)  # DF2207-02: present only when the organi
 # that tuple also names the data/agencies.csv columns, whose header is pinned and must not change with the data.
 PUBLIC_AGENCY_ACTIONS = ("actions",)
 PUBLIC_ACTION_FIELDS = ("on", "kind", "as_stated", "source_url", "checked_on")
+PUBLIC_OFFICIALS_TOP_LEVEL = {"schema_version", "campaign", "generated_from", "base_url", "url_kind", "bodies"}  # DF1622-11
+PUBLIC_OFFICIALS_BODY_FIELDS = ("agency_id", "name", "officials")
+PUBLIC_OFFICIAL_FIELDS = ("name", "role", "profile_url", "source_url", "checked_on")
+OFFICIALS_CSV_COLUMNS = ("agency_id", "agency_name", "name", "role", "profile_url", "source_url", "checked_on")
 PUBLIC_AGENCY_JSON_ONLY = ("reports",)  # DF0237-02: recorded reports go to data/agencies.json only; the CSV header is unchanged
 PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
 PUBLIC_POLICY_FIELDS = ("url", "checked_on")
@@ -1480,7 +1484,9 @@ class Site:
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.agencies")}</p>'
                 f'<h2>{self.t("heading.agencies", county=self.county)}</h2></div><p>{self.t("intro.agencies")} '
                 f'<a href="/data/agencies.json" type="application/json">{self.t("intro.agencies_open_data")}</a> · '
-                f'{self.csv_link("/data/agencies.csv")}.</p></div>'
+                f'{self.csv_link("/data/agencies.csv")}.</p>'
+                + (f'<p><a href="/data/officials.json" type="application/json">{self.t("intro.officials_open_data")}</a> · '
+                   f'{self.csv_link("/data/officials.csv")}.</p>' if self.officials_exported() else "") + '</div>'
                 + ('<div class="agency-list">' + self.glance_section() + "".join(articles) + '</div>' if articles
                    else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
@@ -3116,6 +3122,10 @@ class Site:
                    if agency.get("reports") else {}),  # DF0237-02: same order as the page, only when recorded
                 "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
 
+    def officials_exported(self):
+        """Whether data/officials.json is built (DF1622-11): someone is listed on the validated roster."""
+        return any((self.model.get("officials") or {}).values())
+
     def agencies_json(self):
         """``data/agencies.json`` (DF1422-12): agencies with a public page as open data; refuses any other key."""
         cities = self.cities()
@@ -3134,6 +3144,31 @@ class Site:
                                                             "reports": (PUBLIC_REPORT_FIELDS + PUBLIC_ARCHIVE_FIELDS, {}),
                                                             "transparency": (PUBLIC_TRANSPARENCY_FIELDS + PUBLIC_ARCHIVE_FIELDS, {})})})
         return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+    def officials_json(self):
+        """``data/officials.json`` (DF1622-11): the checked roster as open data, or ``None`` when it lists nobody.
+
+        Every loaded body with people, sorted by name then id; each official keeps the loaded order and exactly five keys."""
+        roster = self.model.get("officials") or {}
+        names = {a["agency_id"]: a["name"] for a in self.model["agencies"]}
+        listed = sorted(((names[agency_id], agency_id) for agency_id, people in roster.items() if people))
+        if not listed:
+            return None
+        doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/officials.json",
+               "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
+               "bodies": [{"agency_id": agency_id, "name": name,
+                           "officials": [{key: person.get(key) for key in PUBLIC_OFFICIAL_FIELDS} for person in roster[agency_id]]}
+                          for name, agency_id in listed]}
+        _assert_public(doc, "data/officials.json", PUBLIC_OFFICIALS_TOP_LEVEL | set(self.license_top()),
+                       {"bodies": (PUBLIC_OFFICIALS_BODY_FIELDS, {"officials": (PUBLIC_OFFICIAL_FIELDS, {})})})
+        return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def officials_csv(json_text):
+    """CSV text (DF1622-11) flattened from the checked ``data/officials.json`` text: one row per official, shared formula guard."""
+    rows = [{"agency_id": body["agency_id"], "agency_name": body["name"], **official}
+            for body in json.loads(json_text)["bodies"] for official in body["officials"]]
+    return _csv_text(OFFICIALS_CSV_COLUMNS, [{column: _record_cell(row[column]) for column in OFFICIALS_CSV_COLUMNS} for row in rows])
 
 
 def _text(value):
@@ -3417,6 +3452,9 @@ def _plan(root, today=None, notes=None):
         "data/meetings.csv": public_records_csv(meetings_text, "meetings", PUBLIC_MEETING_FIELDS),
         "data/agencies.csv": public_records_csv(agencies_text, "agencies", PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL),
     })
+    officials_text = site.officials_json()  # DF1622-11: None without anyone on content/officials.json; its CSV is read back from it
+    if officials_text is not None:
+        files.update({"data/officials.json": officials_text, "data/officials.csv": officials_csv(officials_text)})
     if site.finding_filter():  # written only when the findings index loads it
         files["findings/filter.js"] = filter_js(bool(site.js_labels), site.multi_agency)
     if model["findings"]:  # written only when a finding page loads it

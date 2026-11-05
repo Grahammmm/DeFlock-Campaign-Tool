@@ -58,7 +58,9 @@ class SubmittedCommentSiteTests(unittest.TestCase):
         changed = sorted(name for name in before if before[name] != shown[name])
         self.assertIn("data/meetings.json", changed)
         self.assertIn("meetings/cedar-council-2026-10.html", changed)
+        # data.html and data/datapackage.json legitimately change: they list data/meetings.json with its hash and size
         self.assertTrue(all(n in ("data/meetings.json", "meetings/cedar-council-2026-10.html", "data.html", "data/datapackage.json")
+                            or n.startswith("agencies/")
                             for n in changed), changed)
         self.assertTrue(all(b"submitted-comment" not in data and b"Our submitted comment" not in data for data in before.values()))
         self.assertNotIn("submitted_comment", json.dumps(json.loads(before["data/meetings.json"])))

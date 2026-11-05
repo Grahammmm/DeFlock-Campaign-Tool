@@ -81,6 +81,7 @@ DEFAULTS = {
     "intro.meetings_calendar": "Subscribe to the meetings calendar (.ics)",
     "intro.meetings_open_data_about": "Meetings with their recorded outcomes, votes and official sources:",
     "intro.agencies_open_data": "Agencies as open data (JSON)",
+    "intro.officials_open_data": "Officials as open data (JSON)",
     "intro.agencies_open_data_about": "Agencies with their asked items, posted policy, contract end and portal numbers, as each source reported them:",
     "notice.no_findings": "No findings have been published yet.", "notice.no_upcoming": "No upcoming meetings are listed.",
     "notice.past_meetings_link": "Past meetings and their comment kits", "notice.no_meetings": "No meetings are listed yet.",
