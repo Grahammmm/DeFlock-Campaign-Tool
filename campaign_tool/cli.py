@@ -1215,6 +1215,10 @@ def main():
                                   "(dry run by default); nothing is sent or published")
     asked_p.add_argument("--directory", required=True)
     asked_p.add_argument("--apply", action="store_true", help="Write the proposal (validated, one atomic write)")
+    personal_p = commands.add_parser("personal-data", help="List the private files that can hold a person's name, email, "
+                                     "phone or address: counts and dates only, never values (read-only)")
+    personal_p.add_argument("--directory", required=True)
+    personal_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
                                      "section number in the agency's own words (read-only)")
     withheld_p.add_argument("--directory", required=True)
@@ -1559,6 +1563,15 @@ def main():
     if args.command == "law":
         from .law_packet import main as law_packet_main
         sys.exit(law_packet_main(args))
+    if args.command == "personal-data":  # the folder is not resolved: the register refuses a symlinked root itself
+        from .personal_data import PersonalDataError, exit_code, personal_data_register, render_text
+        try:
+            report = personal_data_register(Path(args.directory).expanduser())
+        except PersonalDataError as exc:
+            print("Stopped: " + str(exc), file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
+        sys.exit(exit_code(report))
     root = Path(args.directory).expanduser().resolve()
     try:
         if args.command == "init":
