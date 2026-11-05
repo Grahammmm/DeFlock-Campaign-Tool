@@ -1421,10 +1421,25 @@ written and every page is byte-identical to before.
 - `isBasedOn` lists only the `public_url` of source records this finding cites (first citation first, each URL once);
   `[]` when none has one. No digests, local paths or uncited library entries.
 - Organization and WebSite carry only `@type`, the campaign name and `base_url`.
-- Drafts, previews, withdrawn findings, packets, lists, agency, source and meeting pages and `404.html` carry none.
+- Drafts, previews, withdrawn findings, packets, lists, agency and source pages, `meetings.html` and `404.html` carry none.
+  Meeting detail pages carry an `Event` block (below).
 - Keys are sorted and `<`, `>` and `&` are written as `\u003c`, `\u003e` and `\u0026`, so no value can end the element. The
   block is data, not script: `script-src 'self'` and the whole Content-Security-Policy are unchanged.
 - There is deliberately no `ClaimReview`, rating or fact-check type: the site publishes cited records, not verdicts.
+
+#### Meeting `Event` data (DF1407-09)
+
+With `base_url` set, each `meetings/<id>.html` page carries exactly one `Event` block through the same serializer,
+for upcoming, past and cancelled meetings alike. Keys: `name` (`body`, then ` \u2014 ` and the agenda item when there is
+one), `startDate` (`starts_at` exactly as stored, offset or `Z` kept), `eventStatus` (`EventCancelled` for a cancelled
+meeting, otherwise `EventScheduled`, also once the meeting is past), `location` (the stored location text, empty when
+none), `url` (`base_url` plus the meeting page path) and `organizer` (the body, as plain text).
+
+`eventAttendanceMode` appears only when the verified `participation` says so: `in_person: true` and
+`remote.available: true` is `MixedEventAttendanceMode`, either alone `OfflineEventAttendanceMode` or
+`OnlineEventAttendanceMode`. False, null, unstated or absent participation omits the key; location and agenda text are
+never evidence. The comment kit, outcome, votes, verifier, participation instructions and contacts, source URLs and
+cosigners never enter the block. It makes no promise about search-result display. Without `base_url` nothing is written.
 
 ### Search page
 `search.html` and `search.js` are always generated and are not editable (DF1207-15). The page has a search box, a result
