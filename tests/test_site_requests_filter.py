@@ -73,14 +73,14 @@ class RequestsFilterTests(unittest.TestCase):
         self.assertIn('<script defer src="/requests/filter.js"></script>', page)
         agencies = re.search(r'<select id="requests-filter-agency".*?</select>', page, re.S).group(0)
         states = re.search(r'<select id="requests-filter-state".*?</select>', page, re.S).group(0)
-        self.assertEqual(re.findall(r'<option value="([^"]*)"', agencies)[0], "all")
+        self.assertEqual(re.findall(r'<option value="([^"]*)"', agencies)[0], "*")
         self.assertEqual(len(re.findall(r"<option", agencies)), 4)  # all + the 3 observed agencies
         slugs = set(re.findall(r'<tr data-agency="([^"]+)"', page))
         self.assertEqual(len(slugs), 3)
-        self.assertEqual(set(re.findall(r'<option value="([^"]*)"', agencies)) - {"all"}, slugs)
+        self.assertEqual(set(re.findall(r'<option value="([^"]*)"', agencies)) - {"*"}, slugs)
         self.assertFalse(slugs & set(MIXED))  # values are the agency slug, not the agency_id
         self.assertEqual(re.findall(r'<option value="([^"]*)"', states),
-                         ["all", "awaiting_response", "acknowledged", "partly_answered", "answered", "withdrawn"])
+                         ["*", "awaiting_response", "acknowledged", "partly_answered", "answered", "withdrawn"])
         self.assertTrue(FORM.search(page).group(0).endswith(" hidden>"))
         self.assertIn("Showing 6 of 6", page)
         self.assertRegex(page, r'<p class="sources-filter-empty" id="requests-filter-empty" hidden>No public request matches these filters\.</p>')

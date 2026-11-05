@@ -17,7 +17,8 @@ const agencies=JSON.parse(fs.readFileSync(file,'utf8'));
 const asked={[SHERIFF]:[it('Zeta','2026-09-01','answered'),it('Dup','2026-10-01')],
   [POLICE]:[it('Dup','2026-10-01','acknowledged'),it('Dup','2026-10-01','acknowledged'),it('Newest','2026-10-20','withdrawn')],
   [COUNCIL]:[it('Mid','2026-09-15','partly_answered')]};
-for(const a of agencies){delete a.asked;if(asked[a.agency_id])a.asked=asked[a.agency_id];}
+for(const a of agencies){delete a.asked;if(asked[a.agency_id])a.asked=asked[a.agency_id];
+  if(a.agency_id===COUNCIL)a.slug='all';}  // a real agency whose slug equals the old wildcard word
 fs.writeFileSync(file,JSON.stringify(agencies));
 const built=spawnSync('python3',['-B','-m','campaign_tool','build','--directory',root],{encoding:'utf8'});
 if(built.status!==0)throw Error(built.stderr);
@@ -40,7 +41,7 @@ function setup({hash='',history=true,drop=null}={}){
     'requests-filter-empty':strict({hidden:true}),
     'requests-table':strict({querySelectorAll(sel){if(sel!=='tbody > tr')throw Error(`unexpected query: ${sel}`);return rows;}})};
   for(const m of html.matchAll(/<select id="(requests-filter-[a-z]+)"[^>]*>(.*?)<\/select>/gs))
-    nodes[m[1]]=strict({value:'all',options:[...m[2].matchAll(/<option value="([^"]*)"/g)].map(o=>({value:o[1]}))});
+    nodes[m[1]]=strict({value:'*',options:[...m[2].matchAll(/<option value="([^"]*)"/g)].map(o=>({value:o[1]}))});
   if(drop)delete nodes[drop];
   const replaced=[],windowHandlers={},location={hash,pathname:'/requests.html',search:'?lang=en'};
   const context={document:{getElementById:id=>nodes[id]||null,get cookie(){throw Error('cookie access');}},
@@ -78,15 +79,15 @@ test('combined_filters_count_empty_reset',()=>{
   assert.equal(count(s),'Showing 6 of 6');
   assert.equal(s.nodes['requests-filter-empty'].hidden,true);
   const police=slugs.find(x=>s.rows.some(r=>r.attrs['data-agency']===x&&r.attrs['data-state']==='withdrawn'));
-  s.set(police,'all');
+  s.set(police,'*');
   assert.equal(s.visible().length,3);assert.equal(count(s),'Showing 3 of 6');  // duplicates counted separately
-  s.set('all','acknowledged');
+  s.set('*','acknowledged');
   assert.equal(s.visible().length,2);assert.equal(count(s),'Showing 2 of 6');
   s.set(police,'answered');  // conjunction with no row
   assert.equal(s.visible().length,0);assert.equal(count(s),'Showing 0 of 6');assert.equal(s.nodes['requests-filter-empty'].hidden,false);
-  s.set(police,'all');  // clearing one dimension keeps the other
+  s.set(police,'*');  // clearing one dimension keeps the other
   assert.equal(s.visible().length,3);assert.equal(s.nodes['requests-filter-empty'].hidden,true);
-  s.set('all','all');
+  s.set('*','*');
   assert.equal(s.visible().length,6);assert.equal(count(s),'Showing 6 of 6');
   assert.equal(s.replaced.at(-1),'/requests.html?lang=en');  // reset keeps the query, drops the hash
   assert.equal(s.head.hidden,false);assert.equal(s.other.hidden,false);
@@ -102,21 +103,35 @@ test('hash_roundtrip_validation_and_back_forward',()=>{
   assert.deepEqual(roundtrip.sel(),[a,'withdrawn']);
   assert.equal(roundtrip.replaced.at(-1),`#agency=${encodeURIComponent(a)}&state=withdrawn`);  // normalised
   for(const h of ['#bogus=1','#agency','#state','#agency=nope','#state=nope&agency=%E0%A4%A','#content']){
-    const t=setup({hash:h});assert.deepEqual(t.sel(),['all','all'],h);assert.equal(count(t),'Showing 6 of 6',h);
+    const t=setup({hash:h});assert.deepEqual(t.sel(),['*','*'],h);assert.equal(count(t),'Showing 6 of 6',h);
     if(h==='#bogus=1'||h==='#content')assert.equal(t.replaced.length,0,h);  // unknown keys/anchors are left alone
   }
   assert.equal(setup({hash:'#state=nope'}).replaced.at(-1),'/requests.html?lang=en');  // recognised key, invalid value
-  assert.deepEqual(setup({hash:`#state=nope&state=answered&state=zzz`}).sel(),['all','answered']);  // last valid wins
-  assert.deepEqual(setup({hash:'#state=all&agency=all'}).sel(),['all','all']);
+  assert.deepEqual(setup({hash:`#state=nope&state=answered&state=zzz`}).sel(),['*','answered']);  // last valid wins
+  assert.deepEqual(setup({hash:'#state=all&agency=none'}).sel(),['*','*']);  // 'all' is no longer a wildcard: state=all is invalid; agency=all would select the real agency
   const h=setup({hash:`#agency=${a}`});
   h.hashchange('#state=withdrawn');  // fresh defaults on every hash load
-  assert.deepEqual(h.sel(),['all','withdrawn']);
+  assert.deepEqual(h.sel(),['*','withdrawn']);
   h.hashchange('');
-  assert.deepEqual(h.sel(),['all','all']);assert.equal(count(h),'Showing 6 of 6');
+  assert.deepEqual(h.sel(),['*','*']);assert.equal(count(h),'Showing 6 of 6');
   const noHistory=setup({history:false});
-  noHistory.set('all','answered');
+  noHistory.set('*','answered');
   assert.equal(noHistory.visible().length,1);assert.equal(noHistory.replaced.length,0);
   for(const drop of ['requests-filter','requests-filter-count','requests-filter-empty','requests-table','requests-filter-state']){
     const t=setup({drop});assert.equal(t.error,null,drop);assert.equal(t.visible().length,6,drop);  // missing node: no-op
   }
+});
+
+test('agency_slug_all_is_selectable_and_roundtrips_in_the_hash',()=>{
+  const s=setup();
+  assert.ok(slugs.includes('all'));
+  s.set('all','*');
+  assert.deepEqual(s.visible().length,1);assert.equal(count(s),'Showing 1 of 6');  // only the council row, not everything
+  assert.equal(s.replaced.at(-1),'#agency=all');
+  const back=setup({hash:'#agency=all'});
+  assert.deepEqual(back.sel(),['all','*']);assert.equal(count(back),'Showing 1 of 6');
+  assert.equal(back.replaced.at(-1),'#agency=all');
+  s.set('*','*');
+  assert.equal(count(s),'Showing 6 of 6');assert.equal(s.replaced.at(-1),'/requests.html?lang=en');
+  assert.deepEqual(setup({hash:'#agency=*'}).sel(),['*','*']);
 });

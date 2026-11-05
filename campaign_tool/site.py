@@ -1424,7 +1424,7 @@ class Site:
 
         def select(key, first, options):
             return (f'<div><label for="requests-filter-{key}">{self.t("js.requests_" + key)}</label>'
-                    f'<select id="requests-filter-{key}" name="{key}"><option value="all">{self.t(first)}</option>'
+                    f'<select id="requests-filter-{key}" name="{key}"><option value="*">{self.t(first)}</option>'
                     + "".join(f'<option value="{e(v)}">{e(t)}</option>' for v, t in options) + '</select></div>')
         ordered = sorted(agencies.items(), key=lambda kv: (kv[1].casefold(), kv[0]))
         template = html_text(self.labels["js.requests_count"])
