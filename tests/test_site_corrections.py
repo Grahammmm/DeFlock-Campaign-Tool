@@ -23,6 +23,7 @@ ROWS = re.compile(r'<li><time datetime="([^"]+)">\1</time> · <a href="/findings
 PILL = re.compile(r'<span class="status-pill">Corrected <time datetime="([^"]+)">\1</time></span>')
 FOOTER_LINKS = ('<p><a href="/feed.xml">Findings feed</a> · <a href="/meetings.xml">Meetings feed</a> · <a href="/search.html">Search</a> · <a href="/requests.html">What we have asked for</a> · <a href="/corrections.html">Corrections</a> · '
                 '<a href="/sitemap.xml">Sitemap</a> · <a href="/methods.html">How to read our findings</a></p>')
+FOOTER_LINKS_WITH_FEED = FOOTER_LINKS.replace('Corrections</a> · ', 'Corrections</a> · <a href="/corrections.xml">Corrections feed</a> · ', 1)  # DF0237-09
 
 
 class SiteCorrectionsTests(unittest.TestCase):
@@ -135,8 +136,8 @@ class SiteCorrectionsTests(unittest.TestCase):
         self.assertIn(self.public / "corrections.html", pages)
         for path in pages:
             html = path.read_text(encoding="utf-8")
-            self.assertEqual(html.count(FOOTER_LINKS), 1, path.name)
-            self.assertIn(FOOTER_LINKS + "</footer>", html, path.name)
+            self.assertEqual(html.count(FOOTER_LINKS_WITH_FEED), 1, path.name)  # this fixture has a correction
+            self.assertIn(FOOTER_LINKS_WITH_FEED + "</footer>", html, path.name)
         for slug in ("alpha", "beta"):
             self.assertIn('<p><a href="/corrections.html">All corrections</a></p>', self.read(f"findings/{slug}.html"))
         locs = re.findall(r"<loc>([^<]+)</loc>", self.read("sitemap.xml"))
