@@ -600,8 +600,6 @@ item `category`, else the title before ` - `. Ids are `agendacenter-<first host 
 link when there is none). An item with no description is dropped unless `--all-events`, which keeps it as `not_scanned: true`. Cancelled
 and changes rules, the 60-event cap and the keyword-lead, verify-by-hand rule are the same as for Legistar.
 
-## Calendar feed
-
 ## iCalendar agenda feed import (CLI)
 
 ```
