@@ -13,6 +13,7 @@ from .content import (_read_json, load_comment_asks, load_content, load_finding,
                       load_participation)
 from .kit import _kit_folder, _write_json
 from .legal_claims import legal_notes
+from .meeting_elsewhere import choose
 from .meetings import _clean, comment_kit_md, manual_note
 from .meetings_manual import ManualMeetingError, read_meetings
 from .supporters import MAX_COSIGNERS, cosign_problems, resolve_cosigners
@@ -72,7 +73,7 @@ def _chosen_cosigners(cosign_ids):
 
 
 def stage(root, meeting_id, agency_id=None, location=None, replace=False, participation=None, today=None,
-          finding_ids=None, asks=None, cosign_ids=None):
+          finding_ids=None, asks=None, cosign_ids=None, elsewhere_indices=None):
     override = load_comment_asks(asks, "--ask") if asks is not None else None  # DF2207-07: before anything is read or written
     cosign_ids = _chosen_cosigners(cosign_ids) if cosign_ids is not None else None
     cfg = read_config(root)
@@ -97,6 +98,12 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     custom = override if override is not None else site_asks
     findings = (_chosen_findings(model["findings"], list(finding_ids)) if finding_ids is not None
                 else _default_findings(model["findings"], agency_id))
+    snapshots = []
+    if elsewhere_indices is not None:  # DF1107-06: stored order of content/elsewhere.json, never the page's sorting
+        try:
+            snapshots = choose(model.get("elsewhere"), elsewhere_indices)
+        except ValueError as exc:
+            raise MeetingStageError(str(exc)) from None
     cited = [{**f, "path": f"/findings/{f['slug']}.html"} for f in findings]
     entry = {**meeting, "body": _clean(meeting.get("body")), "agenda_item": _clean(meeting.get("agenda_item"))}
     if participation is not None:  # organizer-verified JSON; validated before anything is written
@@ -123,7 +130,7 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
         "starts_at": meeting.get("starts_at"),
         "agenda_item": entry["agenda_item"],
         "comment_kit_md": comment_kit_md(entry, cited, cfg["name"], base_url=model["site"].get("base_url"),
-                                    asks=custom, **({"cosign_names": [row["name"] for row in cosigners]} if cosigners else {})),
+                                    asks=custom, **({"elsewhere": snapshots} if snapshots else {}), **({"cosign_names": [row["name"] for row in cosigners]} if cosigners else {})),
     }
     if isinstance(meeting.get("agenda_url"), str):
         document["agenda_url"] = meeting["agenda_url"]
@@ -136,6 +143,8 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
         document["cosigners"] = list(cosign_ids)
     if cited:  # DF2207-06: the exact ids the kit cites, once; a kit citing none omits the field
         document["cited_findings"] = [f["id"] for f in cited]
+    if snapshots:  # full snapshots, flag order: a later reorder of elsewhere.json cannot change this kit
+        document["cited_elsewhere"] = snapshots
     kept = root / "content" / "meetings" / f"{meeting_id}.json"  # an organizer-verified outcome survives --replace
     try:
         old = _read_json(kept) if replace and kept.is_file() and not os.path.islink(kept) else {}
@@ -169,6 +178,9 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     if cosigners:
         report["cosigners"] = list(cosign_ids)
     flags = _ask_notes(custom, "--ask" if override is not None else "site.json.comment_asks")
+    if snapshots:  # raw as_stated scanned; positions and rules only
+        report["elsewhere"] = [{key: s[key] for key in ("place", "body", "decided_on")} for s in snapshots]
+        flags += legal_notes((f"--elsewhere[{n}]", s["as_stated"]) for n, s in enumerate(snapshots, 1))
     if flags:  # advisory only: positions and rule names, never the text; the kit is written either way
         report["review_flags"] = flags
     return report

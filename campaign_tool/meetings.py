@@ -398,6 +398,15 @@ def feed_opener(path):
 
 def make_client(args, opener):
     """The agenda-platform client for the ``meetings`` command; refuses flags that belong to another platform."""
+    if args.platform == "ics":  # DF1422-09: one public iCalendar feed; --client, --from-json, --from-xml and the Granicus flags do not apply
+        if args.client or args.from_json or args.from_xml or args.view_id is not None or args.all_events or args.matters:
+            raise MeetingsError("--platform ics takes --feed-url and --body with --online or --from-ics; not --client, --from-json, --from-xml, --view-id, --all-events or --matters")
+        if not getattr(args, "feed_url", None) or not getattr(args, "body", None):
+            raise MeetingsError("--platform ics needs --feed-url and --body")
+        from .meetings_ics import IcsClient
+        return IcsClient(args.feed_url, args.body, opener=opener, label=getattr(args, "from_ics", None) or "feed")
+    if getattr(args, "feed_url", None) or getattr(args, "body", None) or getattr(args, "from_ics", None):
+        raise MeetingsError("--feed-url, --body and --from-ics go with --platform ics")
     granicus, center = args.platform == "granicus", args.platform == "agendacenter"
     feed = granicus or center
     if (feed and (args.from_json or (args.online and args.from_xml))
@@ -526,6 +535,8 @@ def event_status(event):
 
 def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_events=False):
     """Upcoming events with at least one ALPR-related agenda item, as meeting dicts."""
+    if hasattr(client, "relevant"):  # a platform that reads whole documents (iCalendar) builds its own meeting dicts
+        return client.relevant(since=since, zone=zone)
     meetings = []
     for event in client.events(since=since, top=max_events)[:max_events]:
         if not isinstance(event, dict) or type(event.get("EventId")) is not int:
@@ -792,7 +803,22 @@ def default_asks(meeting):
             "Answer in writing which agencies can query this data today and under what written agreement."]
 
 
-def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None, cosign_names=None):
+def elsewhere_block(entries):
+    """DF1107-06: the plain ``Elsewhere:`` paragraph, one ``PLACE, STATE: BODY, DECIDED_ON: as_stated (source)`` line per
+    stored snapshot, in the order given. Markup characters are backslash-escaped so the text shows literally."""
+    if not (isinstance(entries, (list, tuple)) and 1 <= len(entries) <= 3 and all(isinstance(e, dict) for e in entries)):
+        raise MeetingsError("--elsewhere: give 1 to 3 elsewhere entries")
+    rows = ["Elsewhere:"]
+    for entry in entries:
+        row = _MARKUP.sub(r"\\\1", f"{entry['place']}, {entry['state']}: {entry['body']}, {entry['decided_on']}: "
+                                      f"{entry['as_stated']} ({entry['source_url']})")
+        if row.startswith("- "):
+            raise MeetingsError("--elsewhere: a citation line must not start with '- ' (it would read as a finding bullet)")
+        rows.append(row)
+    return rows
+
+
+def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None, cosign_names=None, elsewhere=None):
     """Markdown comment kit; ``findings`` are published finding dicts with title, summary,
     classification, confidence, path and sources[{title, locator, sha256}].
 
@@ -802,7 +828,11 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
     ``cosign_names`` (DF2207-14): 1-30 consenting organization names, rendered by ``cosign_block_md`` after the
     signature of the written letter only. The roster is a separate bounded block: it is not counted in the 400-word
     letter body and never displaces a finding bullet. Without a real letter (no written comment, or the over-cap
-    advisory) the call raises MeetingsError rather than claim a co-signed letter. None leaves the kit unchanged."""
+    advisory) the call raises MeetingsError rather than claim a co-signed letter. None leaves the kit unchanged.
+
+    ``elsewhere`` (DF1107-06): 1-3 stored snapshots of decisions by other governments, cited in an ``Elsewhere:`` paragraph
+    after the findings in the two-minute, spoken and written bodies. The lines are never dropped or cut: a budget they do
+    not fit raises MeetingsError. None leaves the kit byte-identical."""
     if cosign_names is not None and not (isinstance(cosign_names, (list, tuple)) and 1 <= len(cosign_names) <= 30
                                          and all(isinstance(name, str) and name.strip() for name in cosign_names)):
         raise MeetingsError("co-signers: give 1 to 30 organization names")
@@ -810,6 +840,7 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
         from .content import load_comment_asks
         asks = load_comment_asks(asks, "asks")
     resolved = list(asks) if asks is not None else default_asks(meeting)
+    cited = elsewhere_block(elsewhere) if elsewhere is not None else []
     def fixed(finding):  # latest correction date; "" when the finding was never corrected
         dates = [str(c.get("date") or "") for c in finding.get("corrections") or [] if isinstance(c, dict)]
         return _clean(max(dates, default=""))
@@ -838,6 +869,7 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
     else:
         lines.append("We have requested the policy, the vendor agreement and the sharing records and will "
                      "publish what we receive with source hashes.")
+    lines.extend(cited)
     lines.append("We are not asking you to take our word for it. Every claim links to the record it came "
                  "from. Please read them before this item moves forward.")
     lines.append("")
@@ -849,6 +881,8 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
         words = lambda rows: sum(len(row.split()) for row in rows)  # noqa: E731
         while words(body) > budget and any(row.startswith("- ") for row in body):  # whole bullets, from the end
             del body[max(i for i, row in enumerate(body) if row.startswith("- "))]
+        if cited and words(body) > budget:
+            raise MeetingsError(f"--elsewhere: the {minutes}-minute spoken comment ({budget} words) cannot hold the citations")
         lines.append(f"## Spoken comment ({minutes} minute{'' if minutes == 1 else 's'}, about {budget} words)")
         if words(body) > budget:
             lines.append("The speaker limit is too short for this kit; use the first sentence and one ask.")
@@ -885,12 +919,15 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
             title, note = _clean(finding.get("title")), fixed(finding)
             letter.append(f"- {title + ': ' if title else ''}{_clean(finding.get('summary'))}"
                           + (f" ({refs})" if refs else "") + (f" (corrected {note})" if note else ""))
+        letter.extend(cited)
         letter.append("I ask you to:")
         letter.extend(f"{n}. {ask}" for n, ask in enumerate(resolved, 1))
         letter.extend(["Sincerely,", "[name]", "[city]"])
         words = lambda rows: sum(len(row.split()) for row in rows)  # noqa: E731
         while words(letter) > 400 and any(row.startswith("- ") for row in letter):  # whole bullets, from the end
             del letter[max(i for i, row in enumerate(letter) if row.startswith("- "))]
+        if cited and words(letter) > 400:
+            raise MeetingsError("--elsewhere: the 400-word written comment cannot hold the citations")
         if words(letter) > 400:  # body, agenda item or campaign name alone over the cap: no letter, say so
             letter = letter[:2] + ["The letter would be over 400 words for this meeting; write a short one by "
                                    f"hand from {ASKS_ABOVE[len(resolved)] if asks is not None else 'the three asks'} above."]

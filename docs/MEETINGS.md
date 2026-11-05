@@ -80,7 +80,7 @@ are keyword leads, not confirmation of ALPR use: verify on the official Legistar
 The CLI does not write to the hosted workspace. Organizers add the meetings they verified
 on the Meetings screen, or stage one verified entry for the offline site build
 ([SITE-CONTENT.md](SITE-CONTENT.md)) with
-`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--finding ID ...] [--location TEXT] [--participation FILE] [--ask T ...] [--replace]`,
+`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--finding ID ...] [--location TEXT] [--participation FILE] [--ask T ...] [--elsewhere N ...] [--replace]`,
 which writes `content/meetings/<id>.json` with a comment kit that cites published findings only;
 nothing is fetched, and `--replace` regenerates an existing file.
 
@@ -98,6 +98,19 @@ position (`--ask[2]`, `site.json.comment_asks[2]`), before anything is written. 
 anywhere but the staged kit: `--replace` without `--ask` returns to `comment_asks` or the defaults. Legal-claim
 wording in your asks is flagged as an advisory `review_flags` note (printed on stderr, positions and rule names
 only); the kit is still written ([LEGAL-CLAIM-GUARD.md](LEGAL-CLAIM-GUARD.md)).
+
+**Decisions elsewhere in the kit (DF1107-06).** `meetings-stage --elsewhere N` (repeatable, at most 3, distinct) cites
+decision N of `content/elsewhere.json`, counted 1-based in the file's STORED order (never the page's kind/date sorting).
+An index of zero, below zero, past the end or given twice is refused by flag and value; with no `content/elsewhere.json`
+the flag is refused. The kit gets a plain `Elsewhere:` paragraph after the cited findings in the two-minute, spoken and
+written versions (a spoken or written version still needs its verified participation), one line each in the order
+given: `PLACE, STATE: BODY, DECIDED_ON: as_stated (official source URL)`. The lines are never shortened or dropped: if
+they do not fit the spoken or written word budget, staging is refused. The meeting stores full snapshots as
+`cited_elsewhere`, so reordering `elsewhere.json` cannot change a staged kit. `build` and `content-check` find each
+snapshot by place, body, `decided_on` and kind, and name one that no longer exists, or whose state, `as_stated` or
+source URL changed (a new `checked_on` or `news_url` alone is fine); restage with `--replace`, which repairs only its own
+meeting. `--replace` without `--elsewhere` removes the paragraph. These are decisions of other governments, not of this
+campaign's agencies; the tool sends nothing. Without `--elsewhere` the kit and the report are byte-identical to before.
 
 **Co-signed written comments (DF2207-14).** `meetings-stage --cosign SUPPORTER_ID` (repeatable, 1 to 30 unique ids, in
 the order given) adds a bold `Co-signed by` line and one bullet per organization name after `[city]` in the
@@ -599,6 +612,25 @@ DOCTYPE/ENTITY refusal as Granicus. **Only the feed text (title, category, descr
 item `category`, else the title before ` - `. Ids are `agendacenter-<first host label>-<number at the end of the link>` (a hash of the
 link when there is none). An item with no description is dropped unless `--all-events`, which keeps it as `not_scanned: true`. Cancelled
 and changes rules, the 60-event cap and the keyword-lead, verify-by-hand rule are the same as for Legistar.
+
+## iCalendar agenda feed import (CLI)
+
+```
+python3 -m campaign_tool meetings --directory D --platform ics --feed-url https://... --body "City Council" (--online | --from-ics FILE) [--since YYYY-MM-DD] [--tz ZONE]
+```
+
+For a body that publishes only an `.ics` feed. `--feed-url` is an https URL (no user or password, at most 500 characters) and
+`--body` is the governing body's name (plain text, at most 120; the feed's own calendar name is not trusted). `--client` is not
+used and is refused. `--online` makes **one GET of the feed** and nothing else (at most 2 MiB); `--from-ics` reads a saved copy offline.
+Output has the Legistar shape with `source: "ics"`, `id` `ics-<body slug>-<12 hex of sha256(UID)>` and `event_id` the UID.
+
+Only `VEVENT`s are read (more than 2 000 refuse the run and write nothing). Times: `TZID=<IANA zone>` is kept in that zone, `...Z`
+is converted to `--tz`, `VALUE=DATE` is date-only (`time_known: false`); in a repeated DST hour the first occurrence is used. A
+floating time (no zone), an unknown `TZID`, a UID over 200 characters, a missing UID and an unreadable start are skipped and counted.
+**Recurring events (`RRULE`, `RDATE`, `RECURRENCE-ID`) are skipped and counted, not expanded.** The report prints
+`skipped` with each count. Only `SUMMARY` and `DESCRIPTION` are scanned for the ALPR keywords; `STATUS:CANCELLED` sets
+`status: "cancelled"`. `agenda_url` is the `URL` property if `https://`, else the first `https://` `ATTACH`; attachment links are
+recorded and **never fetched**. Changes (new, moved, cancelled) and the keyword-lead rule are the same as for Legistar.
 
 ## Calendar feed
 
