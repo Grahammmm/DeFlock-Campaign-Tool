@@ -812,6 +812,8 @@ def stage_extract(args):
             return result("warn", {"skipped": 1}, "EXTRACT_ROOT_LOCKED",
                           needs_g=needs(("EXTRACT_ROOT_LOCKED", "info", 1))), 0
         return result("fail", {"failed": 1}, "EXTRACT_RUN_FAILED"), 1
+    except ne.ManifestWriteError:
+        return result("fail", {"failed": 1}, "EXTRACT_FAILURE_MANIFEST_UNWRITABLE"), 1
     except (sqlite3.Error, ValueError, OSError):
         return result("fail", {"failed": 1}, "EXTRACT_LEDGER_UNREADABLE"), 1
     stage, code = extract_result(summary)
