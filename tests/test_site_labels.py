@@ -256,6 +256,7 @@ class LabelsTest(unittest.TestCase):
         # correction_counts.*: only a site that sets corrections.show_request_counts renders these (tests/test_site_correction_counts.py).
         # events.*, footer.events: the fixture has no events.json (tests/test_site_events.py covers those labels).
         # agency.funding_*: the fixture records no funding (tests/test_agency_funding.py covers those).
+        # statements.*: the fixture has no statements.json (tests/test_site_statements.py covers those labels).
         # agency.action*: the fixture records no agency actions (test_agency_actions_labels_replace_every_fixed_string below).
         absent = ["agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",
                   "agency.action_kind_contract_ended", "agency.action_kind_contract_paused",
@@ -313,6 +314,10 @@ class LabelsTest(unittest.TestCase):
                   "sharing.kind", "sharing.kind_federal", "sharing.kind_local", "sharing.kind_private", "sharing.kind_state",
                   "sharing.kind_unknown", "sharing.law_status", "sharing.lead", "sharing.out_of_state", "sharing.receiver",
                   "sharing.source_list", "sharing.sources", "sharing.state", "sharing.title",
+                  "statements.campaign_context", "statements.checked", "statements.context_interview",
+                  "statements.context_meeting", "statements.context_newsletter", "statements.context_other",
+                  "statements.context_press_release", "statements.heading", "statements.line", "statements.quote",
+                  "statements.recording", "statements.source",
                   "supporters.description", "supporters.joined", "supporters.kind.business",
                   "supporters.kind.civil_liberties", "supporters.kind.community", "supporters.kind.faith",
                   "supporters.kind.labor", "supporters.kind.neighborhood", "supporters.kind.other", "supporters.title",

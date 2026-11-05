@@ -2942,6 +2942,10 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
         model["redirects"] = _read_json(redirects_path)
     if supporters is not None:  # DF2207-13: public rows only (never the private consent records)
         model["supporters"] = supporters
+    from .content_statements import read_statements  # local: content_statements imports this module
+    statements = read_statements(root, officials, today or date.today())  # DF1107-07: None without the file
+    if statements:  # the key exists only with rows, so no file and [] leave every page byte-identical
+        model["statements"] = statements
     from .body_schedules import read_body_schedules  # local: body_schedules imports this module
     schedules = read_body_schedules(root, today=today)  # DF0022-10: optional; the key exists only with rows
     if schedules:
