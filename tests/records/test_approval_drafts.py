@@ -147,6 +147,33 @@ class QueueTests(Base):
             aq.queue_received_items(self.root, "run-2", self.write(received([changed], "run-2"), "run-2"))
         self.assertEqual(caught.exception.code, "source_conflict")
 
+    def test_reattributed_item_conflicts_and_preserves_edits_and_approval(self):
+        for kind in ("extension", "fee"):
+            for field, value in (("agency", "agency-b"), ("request", "req-2")):
+                with self.subTest(kind=kind, field=field):
+                    root = self.root.parent / f"project-{kind}-{field}"
+                    root.mkdir(mode=0o700)
+                    n = 7 if kind == "extension" else 8
+                    path = root / "received-run-1.json"
+                    path.write_text(json.dumps(received([item(n, kind)])), encoding="utf-8")
+                    aq.queue_received_items(root, "run-1", path)
+                    row = aq.load_queue(root)[0]
+                    aq.edit(root, row["id"], "G", "My edited body")
+                    moved = path.parent / "received-run-2.json"
+                    moved.write_text(json.dumps(received([item(n, kind, **{field: value})], "run-2")), encoding="utf-8")
+                    with self.assertRaises(aq.ApprovalQueueError) as caught:
+                        aq.queue_received_items(root, "run-2", moved)
+                    self.assertEqual(caught.exception.code, "source_conflict")
+                    with self.assertRaises(aq.ApprovalQueueError) as caught:
+                        aq.add_draft(root, item_id=sha(n), kind=row["kind"], agency_id=value if field == "agency" else "agency-a",
+                                     request_id=value if field == "request" else "req-1", body=row["body"],
+                                     evidence=row["evidence"], source_run_id="run-2")
+                    self.assertEqual(caught.exception.code, "source_conflict")
+                    now = aq.load_queue(root)[0]
+                    self.assertEqual((now["agency_id"], now["request_id"], now["body"], now["status"]),
+                                     ("agency-a", "req-1", "My edited body", "pending"))
+                    self.assertEqual(len(aq.load_queue(root)), 1)
+
     def test_run_provenance_in_comparison_ref_is_not_evidence(self):
         def real(n, run, index, **kw):
             f = finding(n, **kw)

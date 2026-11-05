@@ -2512,7 +2512,30 @@ class Site:
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
                 f'<p><a href="/meetings.html">{self.t("meeting.all")}</a></p></article>\n')
         return self.page("meetings", f'{meeting["body"]}, {meeting["starts_at"][:10]}',
-                         meeting["agenda_item"] or self.labels["title.meeting_description"], f'/meetings/{meeting["id"]}.html', main)
+                         meeting["agenda_item"] or self.labels["title.meeting_description"], f'/meetings/{meeting["id"]}.html', main,
+                         structured=self.meeting_structured(meeting) if self.base else None)
+
+    def meeting_structured(self, meeting):
+        """DF1407-09: the allowlisted schema.org Event for one meeting page (raw text; json_ld escapes it once).
+
+        Only body, agenda item, start, status, location, page URL and positively verified attendance enter it.
+        """
+        event = {
+            "@context": "https://schema.org", "@type": "Event",
+            "name": meeting["body"] + (" \u2014 " + meeting["agenda_item"] if meeting["agenda_item"] else ""),
+            "startDate": meeting["starts_at"],
+            "eventStatus": "https://schema.org/" + ("EventCancelled" if meeting.get("status") == "cancelled" else "EventScheduled"),
+            "location": meeting["location"],
+            "url": f'{self.base}/meetings/{meeting["id"]}.html',
+            "organizer": meeting["body"]}
+        participation = meeting.get("participation") or {}
+        in_person = participation.get("in_person") is True
+        remote = (participation.get("remote") or {}).get("available") is True
+        if in_person or remote:
+            event["eventAttendanceMode"] = "https://schema.org/" + (
+                "MixedEventAttendanceMode" if in_person and remote
+                else "OfflineEventAttendanceMode" if in_person else "OnlineEventAttendanceMode")
+        return event
 
     def about_html(self):
         contact = (f'<p>{self.t("footer.contact")} <a href="mailto:{e(self.site["contact_email"])}">{e(self.site["contact_email"])}</a></p>'

@@ -346,11 +346,17 @@ def _norm(evidence):
     return _canon(ev)
 
 
+def _same_source(row, draft):
+    """Existing draft matches only on normalized evidence AND the immutable original attribution."""
+    return (_norm(row["origin_evidence"]) == _norm(draft["evidence"])
+            and row["agency_id"] == draft["agency_id"] and row["request_id"] == draft["request_id"])
+
+
 def _add(root, store, rows, draft):
     """Append-or-return one draft under the writer lock; returns (row, created)."""
     ident = draft_id(draft["item_id"], draft["kind"])
     if ident in rows:
-        _need(_norm(rows[ident]["origin_evidence"]) == _norm(draft["evidence"]), "source_conflict")
+        _need(_same_source(rows[ident], draft), "source_conflict")
         return rows[ident], False
     store.append([_event("draft", ident, 0, PIPELINE_ACTOR, snapshot=draft)])
     rows.update(_fold(root, store.raw(), verify=False))
@@ -461,7 +467,7 @@ def queue_received_items(root, run_id, received_path):
         new = []
         for ident, draft in wanted.items():
             if ident in rows:
-                _need(_norm(rows[ident]["origin_evidence"]) == _norm(draft["evidence"]), "source_conflict")
+                _need(_same_source(rows[ident], draft), "source_conflict")
                 existing += 1
             else:
                 new.append(_event("draft", ident, 0, PIPELINE_ACTOR, snapshot=draft))

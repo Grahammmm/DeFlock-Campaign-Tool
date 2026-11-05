@@ -992,6 +992,14 @@ def stage_outputs(args):
         raise  # Preserve the run's hard deadline, not a recoverable register warning.
     except Exception:  # noqa: BLE001 - isolate register errors; never expose private exception text
         warning = warning or "OUTPUTS_REGISTER_UNAVAILABLE"
+    # Private gap/misuse proposals (REC-AUTO-9): own try, own code; never suppresses earlier outputs.
+    try:
+        from .outcomes.gap_proposals import write_run_gap_proposals
+        write_run_gap_proposals(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - isolate proposal errors; never expose private exception text
+        warning = warning or "OUTPUTS_GAP_PROPOSALS_UNAVAILABLE"
     # Additive per-record text state (DOC-2): its own code; never suppresses the snapshot, register or digest.
     try:
         from .outcomes.textstate import write_run_textstate
