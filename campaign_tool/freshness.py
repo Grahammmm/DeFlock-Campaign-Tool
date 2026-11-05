@@ -99,13 +99,14 @@ def _law(jurisdiction, stale_days, today):
 
 
 PROFILE_FILE = "content/agencies.json"
+_MISSING = object()  # no content/agencies.json at all (distinct from a file holding JSON null)
 PROFILE_REFRESH = "recheck the source and update checked_on"
 PROFILE_SINGLETONS = ("alpr_policy", "contract", "policy_check", "contract_check", "pre_implementation_meeting",
                       "sharing")
 
 
 def _profile_document(root):
-    """The parsed public content/agencies.json: None when absent, "bad" when unreadable (never echoed)."""
+    """The parsed public content/agencies.json: _MISSING when absent (a JSON null file is a document), "bad" when unreadable (never echoed)."""
     import json
     import os
     import stat
@@ -120,7 +121,7 @@ def _profile_document(root):
             data = handle.read(MAX_JSON_BYTES + 1)
         return json.loads(data.decode("utf-8")) if len(data) <= MAX_JSON_BYTES else "bad"
     except FileNotFoundError:
-        return None
+        return _MISSING
     except (OSError, ValueError, RecursionError):
         return "bad"
 
@@ -140,7 +141,7 @@ def _profiles(root, stale_days, today):
     """One entry per dated profile object in content/agencies.json (public file only; no private fallback)."""
     from .content import AGENCY_ID
     document = _profile_document(root)
-    if document is None:
+    if document is _MISSING:
         return []
     found, bad = [], document == "bad" or not isinstance(document, list)
 

@@ -448,7 +448,7 @@ class DoctorStaleTests(unittest.TestCase):
         (self.root / "content").mkdir(exist_ok=True)
         path = self.root / "content" / "agencies.json"
         secret = "SECRET-LEAK"
-        for case in ("bytes", "text", "oversize", "dir", "dangling", "fifo", "wrongtype", "badid", "badshape"):
+        for case in ("bytes", "text", "oversize", "dir", "dangling", "fifo", "wrongtype", "badid", "badshape", "null"):
             with self.subTest(case=case):
                 if path.is_dir() and not path.is_symlink():
                     path.rmdir()
@@ -466,6 +466,8 @@ class DoctorStaleTests(unittest.TestCase):
                     os.symlink(self.root / secret, path)
                 elif case == "fifo":
                     os.mkfifo(path)
+                elif case == "null":  # a JSON null document is present-but-invalid, not a missing file
+                    path.write_text("null", encoding="utf-8")
                 elif case == "wrongtype":
                     path.write_text(json.dumps({"agency_id": secret}), encoding="utf-8")
                 elif case == "badid":
