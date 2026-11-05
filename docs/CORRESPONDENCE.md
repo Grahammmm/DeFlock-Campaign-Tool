@@ -8,6 +8,9 @@ delivery duplicates, evidence gaps, and optional reviewer proposals for outstand
 items and follow-up dates. It introduces no schema migration, mailbox service,
 second request registry, dashboard, or scheduler.
 
+Per-asked-item response ratings (`response-items.json`) are reviewed with
+[`RESPONSE-REVIEW-CHECKLIST.md`](RESPONSE-REVIEW-CHECKLIST.md) before any follow-up.
+
 ## Run the offline report
 
 ```sh

@@ -1,0 +1,11 @@
+{
+  "requests": [
+    {
+      "agency_key": "agency-a",
+      "asked": "1. ALPR search audit logs for 2025; 2. ALPR usage policy; 3. Vendor contracts for the cameras",
+      "ledger_request_id": "req-1",
+      "request_id": "SYN-001"
+    }
+  ],
+  "schema": "records-request-register-v1"
+}
