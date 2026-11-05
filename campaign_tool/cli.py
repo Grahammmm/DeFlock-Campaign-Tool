@@ -1032,6 +1032,17 @@ def main():
     sent_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     sent_p.add_argument("--correspondence", action="append", default=[], metavar="PREFIX",
                         help="Repeatable: >= 12 hex of the ingested sent message or confirmation; not records")
+    sent_p.add_argument("--covers-through", metavar="D", help="YYYY-MM-DD: the last day of records this request asked "
+                        "for, when the draft's 'The date range for this request is FROM through TO.' line is missing "
+                        "or edited (not after --date); kit-repeat starts the follow-on the day after")
+    repeat_p = commands.add_parser("kit-repeat", help="Draft a follow-on request for the records created since an "
+                                   "earlier sent request (private, unsent; nothing is sent)")
+    for flag in ("--directory", "--agency", "--request", "--as"):
+        repeat_p.add_argument(flag, required=True, dest="new_request" if flag == "--as" else None,
+                              help="Name of the new request" if flag == "--as" else None)
+    repeat_p.add_argument("--through", metavar="D", help="YYYY-MM-DD last day to ask for (default today, written as a date)")
+    repeat_p.add_argument("--from", dest="date_from", metavar="D", help="YYYY-MM-DD first day, required when the "
+                          "earlier request has no recorded coverage end (sent before this feature, imported or unknown)")
     status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
@@ -1760,8 +1771,14 @@ def main():
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
                                          replace=args.replace, reference=args.reference,
                                          replace_reference=args.replace_reference,
-                                         correspondence=args.correspondence, request_url=args.request_url), indent=2))
+                                         correspondence=args.correspondence, request_url=args.request_url,
+                                         covers_through=args.covers_through), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-repeat":
+            from .kit_repeat import repeat_request
+            print(json.dumps(repeat_request(root, args.agency, args.request, args.new_request, through=args.through,
+                                            date_from=args.date_from), indent=2))
+            print("Unsent draft written. Review it, then kit-check and kit-sent. Nothing was sent.")
         elif args.command == "kit-sent-import":
             from .kit_import_sent import import_sent
             print(json.dumps(import_sent(root, Path(args.csv).expanduser(), apply=args.apply), indent=2))
