@@ -339,6 +339,133 @@
         }
       ],
       "review": "needs_attorney_review"
+    },
+    {
+      "rule_id": "ca-gov-7922.600-duty-to-assist",
+      "citation": "Gov. Code § 7922.600",
+      "actor": "Public agency receiving a request to inspect or copy a public record",
+      "activity": "assist the requester in making a focused and effective request",
+      "duty": "To the extent reasonable under the circumstances, the agency shall (1) assist the requester to identify records and information responsive to the request or its stated purpose; (2) describe the information technology and physical location in which the records exist; and (3) provide suggestions for overcoming any practical basis for denying access. These duties are in addition to those in Articles 1 and 2 of Chapter 1. Encoded from the leginfo text fetched on 2026-11-05; application to a specific ALPR request is not a legal conclusion and requires qualified human legal review.",
+      "exceptions": [
+        "Paragraph (1) is deemed satisfied if the agency cannot identify the requested information after a reasonable effort to elicit clarifying information from the requester (§ 7922.600(b))."
+      ],
+      "remedy": "Enforcement by court proceeding under Gov. Code § 7923.000; remedies and their application need qualified human legal review.",
+      "effective_from": "2023-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Gov. Code § 7922.600 (AB 473; operative 2023-01-01; duty to assist)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.600.",
+          "accessed": "2026-11-05"
+        }
+      ],
+      "review": "needs_attorney_review"
+    },
+    {
+      "rule_id": "ca-gov-7922.540-written-denial",
+      "citation": "Gov. Code § 7922.540(a)-(c)",
+      "actor": "Public agency denying a written request for inspection or copies, in whole or in part",
+      "activity": "respond to a written request with a denial",
+      "duty": "A response to a written request that includes a determination that the request is denied, in whole or in part, shall be in writing. The notification of denial shall set forth the names and titles or positions of each person responsible for the denial. The agency shall justify withholding any record by complying with Gov. Code § 7922.000. Encoded from the leginfo text fetched on 2026-11-05; application to a specific ALPR request is not a legal conclusion and requires qualified human legal review.",
+      "exceptions": [
+        "Applies to written requests; the section does not itself define which withholdings are justified (see § 7922.000 and the exemption provisions)."
+      ],
+      "remedy": "Enforcement by court proceeding under Gov. Code § 7923.000; remedies and their application need qualified human legal review.",
+      "effective_from": "2023-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Gov. Code § 7922.540 (AB 473; operative 2023-01-01; written denial)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.540.",
+          "accessed": "2026-11-05"
+        }
+      ],
+      "review": "needs_attorney_review"
+    },
+    {
+      "rule_id": "ca-gov-7922.525-segregability",
+      "citation": "Gov. Code § 7922.525(a)-(b)",
+      "actor": "State or local agency holding a public record that contains some exempt content",
+      "activity": "make non-exempt portions of a record available for inspection",
+      "duty": "Public records are open to inspection during office hours and every person has a right to inspect any public record except as otherwise provided. Any reasonably segregable portion of a record shall be available for inspection by any person requesting the record after deletion of the portions that are exempted by law. Encoded from the leginfo text fetched on 2026-11-05; application to a specific ALPR request is not a legal conclusion and requires qualified human legal review.",
+      "exceptions": [
+        "Portions exempted by law may be deleted; what is reasonably segregable is fact-specific."
+      ],
+      "remedy": "Enforcement by court proceeding under Gov. Code § 7923.000; remedies and their application need qualified human legal review.",
+      "effective_from": "2023-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Gov. Code § 7922.525 (as amended by Stats. 2024, ch. 80, § 54 (SB 1525), effective 2025-01-01; original operative 2023-01-01)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.525.",
+          "accessed": "2026-11-05"
+        }
+      ],
+      "review": "needs_attorney_review"
+    },
+    {
+      "rule_id": "ca-gov-7922.570-electronic-format",
+      "citation": "Gov. Code § 7922.570(a)-(c)",
+      "actor": "Agency holding an identifiable, non-exempt public record in electronic format",
+      "activity": "provide a requested record in electronic format",
+      "duty": "Unless otherwise prohibited by law, the agency shall make that information available in an electronic format when requested by any person. When applicable, the agency shall make it available in any electronic format in which it holds the information, and shall provide a copy in the requested format if the agency has used that format to create copies for its own use or for provision to other agencies. If a request is for non-electronic format and the information is also held electronically, the agency may inform the requester of that. Encoded from the leginfo text fetched on 2026-11-05; application to a specific ALPR request is not a legal conclusion and requires qualified human legal review.",
+      "exceptions": [
+        "Prohibition by law; subdivision (b) duties apply only 'when applicable'."
+      ],
+      "remedy": "Enforcement by court proceeding under Gov. Code § 7923.000; remedies and their application need qualified human legal review.",
+      "effective_from": "2023-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Gov. Code § 7922.570 (AB 473; operative 2023-01-01; electronic format)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.570.",
+          "accessed": "2026-11-05"
+        }
+      ],
+      "review": "needs_attorney_review"
+    },
+    {
+      "rule_id": "ca-gov-7922.575-electronic-copy-cost",
+      "citation": "Gov. Code § 7922.575(a)-(b)",
+      "actor": "Agency providing an electronic copy under § 7922.570(b)(2)",
+      "activity": "charge for duplication of an electronic record",
+      "duty": "The cost of duplicating an electronic record under § 7922.570(b)(2) is limited to the direct cost of producing a copy in electronic format. The requester bears the cost of producing the copy, including the cost to construct a record and the cost of programming and computer services, when (1) the record is produced only at otherwise regularly scheduled intervals, or (2) the request would require data compilation, extraction or programming to produce the record. Encoded from the leginfo text fetched on 2026-11-05; application to a specific ALPR request is not a legal conclusion and requires qualified human legal review.",
+      "exceptions": [
+        "Subdivision (b) shifts cost to the requester only in the two enumerated cases."
+      ],
+      "remedy": "Enforcement by court proceeding under Gov. Code § 7923.000; remedies and their application need qualified human legal review.",
+      "effective_from": "2023-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Gov. Code § 7922.575 (AB 473; operative 2023-01-01; electronic copy cost)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7922.575.",
+          "accessed": "2026-11-05"
+        }
+      ],
+      "review": "needs_attorney_review"
+    },
+    {
+      "rule_id": "ca-gov-7923.600-investigatory-records",
+      "citation": "Gov. Code § 7923.600(a)-(b)",
+      "actor": "State or local police agency, the Attorney General, DOJ, Office of Emergency Services, or another state or local agency compiling investigatory or security files for correctional, law-enforcement or licensing purposes",
+      "activity": "withhold records of complaints, investigations, intelligence information or security procedures",
+      "duty": "Except as provided in Gov. Code §§ 7924.510, 7924.700 and 7929.610, the division does not require disclosure of records of complaints to, or investigations conducted by, or records of intelligence information or security procedures of, the listed agencies, or investigatory or security files compiled by any state or local police agency or other state or local agency for correctional, law enforcement or licensing purposes. A customer list an alarm or security company provides to a police agency at its request is a record subject to the article. Whether an ALPR record, access log or policy falls within this text is not decided here. Encoded from the leginfo text fetched on 2026-11-05; application to a specific ALPR request is not a legal conclusion and requires qualified human legal review.",
+      "exceptions": [
+        "Cross-referenced provisions (§§ 7924.510, 7924.700, 7929.610) are not encoded in this package.",
+        "Not a statement that any ALPR record is or is not an investigatory file; agency justification still follows § 7922.540(c) and § 7922.000."
+      ],
+      "remedy": "Not a remedy provision; an agency's use of this exemption is reviewable in a § 7923.000 proceeding. Application needs qualified human legal review.",
+      "effective_from": "2023-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Gov. Code § 7923.600 (AB 473; operative 2023-01-01; investigatory and security records)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=7923.600.",
+          "accessed": "2026-11-05"
+        }
+      ],
+      "review": "needs_attorney_review"
     }
   ],
   "request_scopes": [

@@ -527,7 +527,7 @@ _MODULES = {
         records.ledger.reconcile records.ledger.store records.ledger_catalog records.ledger_catalog_acceptance
         records.legacy_adoption records.mail_adoption records.mail_poll records.mail_resolution_census
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
-        records.outcomes.comparison records.outcomes.received_items records.outcomes.response_items records.outcomes.factsheets records.outcomes.reading records.outcomes.register
+        records.outcomes.comparison records.outcomes.received_items records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register
         records.outcomes.textstate records.pipeline_health records.portal.download records.portal.engine records.portal.ledger_adapter
         records.portal.store records.publish records.queue_runtime records.recovery.backup
         records.recovery.backup_v2 records.recovery.publication records.review_bundle records.review_retirement
@@ -658,6 +658,7 @@ MODULE_FUNCTIONS = {
     'records.outcomes.received_items': ('write_run_received_items',),
     'records.outcomes.response_items': ('write_run_response_items',),
     'records.outcomes.factsheets': ('write_run_factsheets',),
+    'records.outcomes.gap_proposals': ('write_run_gap_proposals',),
     'records.outcomes.reading': ('main',),
     'records.outcomes.register': ('write_for_run',),
     'records.outcomes.textstate': ('write_run_textstate',),
