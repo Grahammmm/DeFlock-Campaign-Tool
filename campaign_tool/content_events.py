@@ -43,9 +43,11 @@ def parse_moment(value):
         if minutes > 59 or hours > MAX_OFFSET_HOURS or (hours == MAX_OFFSET_HOURS and minutes):
             return None
     try:
-        return datetime.fromisoformat(match.group(1) + ("+00:00" if zone == "Z" else zone))
-    except ValueError:
+        moment = datetime.fromisoformat(match.group(1) + ("+00:00" if zone == "Z" else zone))
+        moment.astimezone(timezone.utc)  # refuse instants outside the UTC range: partition converts every start
+    except (ValueError, OverflowError):
         return None
+    return moment
 
 
 def _line(value, limit):
@@ -124,7 +126,7 @@ def load_events(document, problems=None):
             if key in event:
                 moments[key] = parse_moment(event[key])
                 if moments[key] is None:
-                    refuse(f"{base}.{key}", "must be YYYY-MM-DDTHH:MM:SS followed by Z or a zone offset such as -07:00 (at most 14:00)")
+                    refuse(f"{base}.{key}", "must be YYYY-MM-DDTHH:MM:SS followed by Z or a zone offset such as -07:00 (at most 14:00) and be representable in UTC")
                     bad.add(key)
         if len(moments) == 2 and None not in moments.values() and moments["ends_at"] < moments["starts_at"]:
             refuse(f"{base}.ends_at", "is before starts_at")
@@ -138,7 +140,8 @@ def load_events(document, problems=None):
             refuse(f"{base}.venue", "is required unless online is true")
         if "id" in event and "id" not in bad:
             if event["id"] in first_at:
-                refuse(f"{base}.id", f"duplicates events[{first_at[event['id']]}].id {event['id']!r}")
+                shown = "" if categories(event["id"]) else f" {event['id']!r}"  # lint before interpolating
+                refuse(f"{base}.id", f"duplicates events[{first_at[event['id']]}].id{shown}")
             else:
                 first_at[event["id"]] = index
         for key in ("id", "title", "venue", "description_md", "accessibility_note", "url"):

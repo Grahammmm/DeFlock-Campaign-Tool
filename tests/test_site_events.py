@@ -224,6 +224,26 @@ class RefusalTests(EventsCase):
         message = self.refused([event(1), event(2), event(3, id="forum-1")], r"events\.json\[2\]\.id: duplicates events\[0\]\.id 'forum-1'")
         self.assertIn("forum-1", message)
 
+    def test_duplicate_private_id_never_echoes_the_matched_text(self):
+        rows = [event(1, id="forum-805-555-1234"), event(2, id="forum-805-555-1234")]
+        self.put(rows)
+        message = "\n".join(content_problems(self.root))
+        self.assertIn("events.json[1].id: duplicates events[0].id", message)
+        self.assertNotIn("805", message)
+        lines = [line for line in content_problems(self.root) if "events.json" in line]
+        self.assertTrue(any("privacy lint: phone" in line for line in lines))
+        self.assertFalse(any("805-555-1234" in line for line in lines))
+
+    def test_timestamps_outside_the_utc_range_are_refused_not_crashed(self):
+        low = "0001-01-01T00:00:00+14:00"
+        high = "9999-12-31T23:59:59-14:00"
+        self.assertIsNone(parse_moment(low))
+        self.assertIsNone(parse_moment(high))
+        self.refused([event(1, starts_at=low, ends_at=low)], r"events\.json\[0\]\.starts_at: .*representable in UTC")
+        self.refused([event(1, starts_at=high, ends_at=high)], r"events\.json\[0\]\.starts_at: .*representable in UTC")
+        self.assertIsNotNone(parse_moment("0001-01-01T14:00:00+14:00"))
+        self.assertIsNotNone(parse_moment("9999-12-31T09:59:59-14:00"))
+
     def test_ends_before_starts_is_refused_by_instant_not_text(self):
         self.refused([event(1, starts_at="2026-10-10T09:00:00+09:00", ends_at="2026-10-09T23:30:00Z")], r"events\.json\[0\]\.ends_at: is before starts_at")
         # lexically later text but an earlier instant is also refused; the reverse order of text and instant is accepted
