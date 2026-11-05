@@ -659,6 +659,9 @@ def backup_diff_cmd(args, root):
 def meetings_cmd(args, root):
     from datetime import date
     from .meetings import CivicClerkClient, LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
+    if args.matters and args.platform != "legistar":
+        print("Stopped: --matters is Legistar only", file=sys.stderr)
+        raise SystemExit(1)
     zone = resolve_zone(args.tz)
     if zone is None:
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
@@ -672,6 +675,13 @@ def meetings_cmd(args, root):
         raise ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response")
     client = (CivicClerkClient if args.platform == "civicclerk" else LegistarClient)(args.client, opener=opener)
     since = date.fromisoformat(args.since) if args.since else None
+    if args.matters:
+        from .meetings import relevant_matters, write_matters
+        matters = relevant_matters(client, since=since)
+        target = write_matters(root, matters, args.client, since=since)
+        print(json.dumps({"client": args.client, "matched_matters": len(matters), "written": str(target),
+                          "note": "keyword hits on matter titles; verify on the official Legistar page before citing"}, indent=2))
+        return
     meetings = relevant_events(client, since=since, zone=zone)
     previous = _read_previous(root / "kit" / "meetings.json")
     changes = ({"previous": previous} if previous == "unreadable"
@@ -934,6 +944,7 @@ def main():
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
     meetings_p.add_argument("--platform", choices=("legistar", "civicclerk"), default="legistar", help="Agenda platform (default legistar)")
+    meetings_p.add_argument("--matters", action="store_true", help="List ALPR keyword matters (legislation, contracts) instead of events; writes kit/matters.json (Legistar only)")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")

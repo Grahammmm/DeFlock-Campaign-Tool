@@ -57,6 +57,18 @@ cancelled meeting is never `agenda_changed`. `meetings-stage` refuses a cancelle
 writes nothing; a content meeting may set `status` (`scheduled` default, or `cancelled`), and the
 site never lists a cancelled meeting as upcoming: it stays under past meetings marked `Cancelled`.
 
+### Matters (`--matters`, Legistar only)
+
+`meetings --matters` lists contracts, ordinances and resolutions that may not be on an upcoming
+agenda yet. It runs **instead of** the events import and writes `kit/matters.json` (same
+`--online`/`--from-json` rule; `--platform civicclerk` stops with `--matters is Legistar only`).
+It reads `matters` filtered to `MatterLastModifiedUtc ge <--since>` (default today minus 365
+days, newest first, at most 100). Matters whose file number, name or title match the ALPR
+keywords are kept, newest `intro_date` first, with `id`, `file`, `title`, `type`, `status`,
+`body`, `intro_date`, `agenda_date`, `passed_date` (`YYYY-MM-DD` or `null`), `url` (the official
+`LegislationDetail.aspx` link, or `null` without a valid `MatterGuid`) and `matched_terms`. These
+are keyword leads, not confirmation of ALPR use: verify on the official Legistar page before citing.
+
 The CLI does not write to the hosted workspace. Organizers add the meetings they verified
 on the Meetings screen, or stage one verified entry for the offline site build
 ([SITE-CONTENT.md](SITE-CONTENT.md)) with
