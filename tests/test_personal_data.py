@@ -684,7 +684,7 @@ MODULE_FUNCTIONS = {
         'write_notify_alert'
     ),
     'records.run_stages': ('backup_adoption_dbs', 'stage_outputs',),
-    'records.pipeline_health': ('main', 'write_alerts',),
+    'records.pipeline_health': ('_put', 'main',),
     'records.runner.canonical_mail': ('CanonicalMailBackend._capture_verification',),
     'records.runner.core': ('journal', 'run', 'writer_lock',),
     'records.runner.export_proof': ('ExporterWrapper.prepare', 'export_lock',),
