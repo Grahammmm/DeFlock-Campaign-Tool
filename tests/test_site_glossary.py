@@ -114,6 +114,22 @@ class GlossaryCase(unittest.TestCase):
     def tree(self):
         return {p.relative_to(self.public).as_posix(): p.read_bytes() for p in sorted(self.public.rglob("*")) if p.is_file()}
 
+    def legacy(self, files=None):
+        """DF0237-09: the fixture has a correction, so assert the corrections-feed delta (the file, one footer anchor per
+        page, the head link on corrections.html and the corrected finding), then remove exactly it for the legacy pins."""
+        files = dict(files or self.tree())
+        self.assertIn("corrections.xml", files)
+        del files["corrections.xml"]
+        anchor = ' · <a href="/corrections.xml">Corrections feed</a>'
+        alternate = '  <link rel="alternate" type="application/atom+xml" title="Corrections feed" href="/corrections.xml">\n'
+        for name, data in files.items():
+            if name.endswith(".html"):
+                text = data.decode()
+                self.assertEqual(text.count(anchor), 1, name)
+                self.assertEqual(text.count(alternate), 1 if name in ("corrections.html", FINDING_PAGE) else 0, name)
+                files[name] = text.replace(anchor, "").replace(alternate, "").encode()
+        return files
+
     def digests(self, files=None):
         return {name: hashlib.sha256(data).hexdigest() for name, data in (files or self.tree()).items()}
 
@@ -458,14 +474,14 @@ class RefusalTests(GlossaryCase):
 class OffAndReservedTests(GlossaryCase):
     def test_absent_empty_and_legacy_are_byte_identical(self):
         files = self.build()
-        self.assertEqual(self.digests(files), BASELINE)  # the pinned pre-feature render, every file
+        self.assertEqual(self.digests(self.legacy(files)), BASELINE)  # the pinned pre-feature render, every file
         for off in (document(), document(notice_md="Not shown."), dict(document(), notice_md="")):
             with self.subTest(off):
                 self.put(off)
-                self.assertEqual(self.digests(self.build()), BASELINE)
+                self.assertEqual(self.digests(self.legacy(self.build())), BASELINE)
                 self.assertNotIn("glossary.html", self.tree())
         self.put(document(term("Zebra", ["zebra crossing"])))  # used by no page
-        on = self.build()
+        on = self.legacy(self.build())
         link = ' · <a href="/glossary.html">Glossary</a>'
         for name, data in on.items():  # with a glossary, every page differs from the baseline by its footer link alone
             if name == "glossary.html":
@@ -485,7 +501,7 @@ class OffAndReservedTests(GlossaryCase):
         self.assertIn("/glossary.html#term-alpr", (self.public / FINDING_PAGE).read_text(encoding="utf-8"))
         self.path.unlink()
         files = self.build()
-        self.assertEqual(self.digests(files), BASELINE)
+        self.assertEqual(self.digests(self.legacy(files)), BASELINE)
         self.assertFalse((self.public / "glossary.html").exists())
         self.put(document(term("ALPR", ["plate reader"])))
         self.build()

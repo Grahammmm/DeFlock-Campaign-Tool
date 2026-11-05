@@ -489,6 +489,30 @@ def build_kit(root, online=False, include=None, seed=None, law_base=None, scopes
 
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,24}")
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+RANGE_PREFIX = "The date range for this request is "
+RANGE_LINE = re.compile(r"The date range for this request is (\d{4}-\d\d-\d\d) through (\d{4}-\d\d-\d\d|today)\.", re.ASCII)
+
+
+def range_line_indexes(lines):
+    """Indexes of every line that starts the canonical range sentence (a rewrite must find exactly one)."""
+    return [i for i, line in enumerate(lines) if line.startswith(RANGE_PREFIX)]
+
+
+def draft_range(text):
+    """(FROM, TO) of the one whole line ``The date range for this request is FROM through TO.``; None (never guessed)
+    when the line is missing, repeated, edited or a placeholder. FROM must be a real ISO day; TO a real day or ``today``."""
+    lines = text.split("\n")
+    hits = range_line_indexes(lines)
+    match = RANGE_LINE.fullmatch(lines[hits[0]]) if len(hits) == 1 else None
+    if match is None:
+        return None
+    try:
+        date.fromisoformat(match.group(1))
+        if match.group(2) != "today":
+            date.fromisoformat(match.group(2))
+    except ValueError:
+        return None
+    return match.group(1), match.group(2)
 
 
 def _https_url(value, field):

@@ -12,11 +12,16 @@ workspace generator: a two-minute public comment, three asks and a source list
 built from published findings only, in the ``markdown_lite`` subset.
 """
 import json
+import os
 import re
+import stat
+import xml.etree.ElementTree as ET
+from xml.parsers import expat
+from email.utils import parsedate_to_datetime
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -28,8 +33,12 @@ API_BASE = "https://webapi.legistar.com/v1"
 KEYWORDS_FILE = Path(__file__).resolve().parents[1] / "data" / "meeting-keywords.json"
 CLIENT = re.compile(r"[a-z0-9-]{2,64}")
 MAX_EVENTS = 60
+MAX_MATTERS = 100
+GUID = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 MAX_BYTES = 4 * 1024 * 1024
 TIMEOUT = 20
+GRANICUS_HOST = re.compile(r"[a-z0-9-]{1,63}\.granicus\.com")
+MAX_FEED_BYTES = 2 * 1024 * 1024
 
 
 class MeetingsError(ValueError):
@@ -121,6 +130,15 @@ class LegistarClient:
             raise MeetingsError("event id must be an integer")
         return self._get(f"events/{event_id}/eventitems")
 
+    def matters(self, since=None, top=MAX_MATTERS):
+        """Matters modified on or after ``since`` (date, default today minus 365 days), newest first."""
+        since = since or date.today() - timedelta(days=365)
+        return self._get("matters", {
+            "$filter": f"MatterLastModifiedUtc ge datetime'{since.isoformat()}'",
+            "$orderby": "MatterLastModifiedUtc desc",
+            "$top": str(min(int(top), MAX_MATTERS)),
+        })
+
 
 class CivicClerkClient(LegistarClient):
     """CivicClerk public events API (``https://<client>.api.civicclerk.com/v1``), adapted to the Legistar-shaped keys."""
@@ -185,6 +203,116 @@ class CivicClerkClient(LegistarClient):
                 items.append({"EventItemTitle": re.sub(r"<[^>]*>", " ", str(item.get("agendaObjectItemName") or "")),
                               "EventItemMatterName": re.sub(r"<[^>]*>", " ", str(item.get("agendaObjectItemDescription") or ""))})
         return items
+
+
+def read_feed_file(path):
+    """Bytes of a saved Granicus feed: a regular file (not a symlink) of at most 2 MiB."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        raise MeetingsError(f"{path}: not a readable regular file (symlinks are refused)") from None
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise MeetingsError(f"{path}: not a regular file")
+    with os.fdopen(fd, "rb") as handle:
+        data = handle.read(MAX_FEED_BYTES + 1)
+    if len(data) > MAX_FEED_BYTES:
+        raise MeetingsError(f"{path}: larger than 2 MiB")
+    return data
+
+
+class GranicusClient:
+    """Granicus ViewPublisher agenda RSS (``https://<host>/ViewPublisherRSS.php?view_id=<n>&mode=agendas``), Legistar-shaped."""
+    source = "granicus"
+    TITLE_DATE = re.compile(r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? +(\d{1,2}),? +(\d{4})\b")
+
+    def __init__(self, host, view_id=None, opener=None, label="feed"):
+        if not isinstance(host, str) or not GRANICUS_HOST.fullmatch(host):
+            raise MeetingsError("Granicus host must look like <name>.granicus.com")
+        if type(view_id) is not int or not 1 <= view_id <= 9999:
+            raise MeetingsError("Granicus view_id must be a number from 1 to 9999")
+        self.host, self.view_id, self.label = host, view_id, label
+        self.client = host.split(".")[0]
+        self.opener = opener or default_opener
+        self.cut = 0
+        self._scanned = {}
+
+    def _date(self, title, pub):
+        try:
+            if pub:
+                return parsedate_to_datetime(pub).date().isoformat()
+        except (TypeError, ValueError, IndexError):
+            pass
+        m = self.TITLE_DATE.search(title)
+        if m:
+            try:
+                return datetime.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%b %d %Y").date().isoformat()
+            except ValueError:
+                pass
+        return None
+
+    def events(self, since=None, top=MAX_EVENTS):
+        url = f"https://{self.host}/ViewPublisherRSS.php?view_id={self.view_id}&mode=agendas"
+        since = since or date.today()
+        data = self.opener(url)
+
+        def refuse(*_):
+            raise MeetingsError(f"{self.label}: DOCTYPE and ENTITY declarations are refused")
+        # Pre-pass with expat in any encoding (UTF-16 included): a DTD or entity declaration is refused before ElementTree sees it.
+        scan = expat.ParserCreate()
+        scan.StartDoctypeDeclHandler = scan.EntityDeclHandler = refuse
+        try:
+            scan.Parse(data, True)
+            root = ET.fromstring(data)
+        except (expat.ExpatError, ET.ParseError) as exc:
+            raise MeetingsError(f"{self.label}: not well-formed XML ({exc})") from None
+        events = []
+        for item in root.iter("item"):
+            def field(name):
+                node = item.find(name)
+                return " ".join((node.text or "").split()) if node is not None else ""
+            title, link, guid = field("title"), field("link"), field("guid")
+            day = self._date(title, field("pubDate"))
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query)
+            ident = guid if guid.isdigit() else next((v[0] for k in ("clip_id", "event_id")
+                                                      for v in [query.get(k) or []] if v and v[0].isdigit()), None)
+            if not day or not ident or len(ident) > 12 or day < since.isoformat():
+                continue
+            parts = urllib.parse.urlsplit(link)
+            ok = parts.scheme == "https" and (parts.hostname or "").lower() == self.host and not parts.username
+            description = _clean(re.sub(r"<[^>]*>", " ", field("description")))
+            self._scanned[int(ident)] = bool(description)
+            events.append({"EventId": int(ident), "EventBodyName": title, "EventDate": day, "EventComment": title,
+                           "EventInSiteURL": link if ok else None, "_description": description})
+        events.sort(key=lambda e: (e["EventDate"], e["EventId"]))
+        self.cut = max(0, len(events) - min(top, MAX_EVENTS))
+        self._events = {e["EventId"]: e for e in events}
+        return events[:min(top, MAX_EVENTS)]
+
+    def event_items(self, event_id):
+        e = self._events.get(event_id, {})
+        if not e.get("_description"):
+            return []  # nothing but a title: not scanned, never a match
+        return [{"EventItemTitle": e.get("EventBodyName", ""), "EventItemMatterName": e["_description"]}]
+
+    def scanned(self, event_id):
+        return self._scanned.get(event_id, False)
+
+
+def feed_opener(path):
+    return lambda url: read_feed_file(path)
+
+
+def make_client(args, opener):
+    """The agenda-platform client for the ``meetings`` command; refuses flags that belong to another platform."""
+    granicus = args.platform == "granicus"
+    if granicus and (args.from_json or (args.online and args.from_xml)) or (args.from_xml or args.view_id is not None or args.all_events) and not granicus:
+        raise MeetingsError("--view-id, --from-xml and --all-events go with --platform granicus (which reads --online or --from-xml, not --from-json)")
+    if granicus:
+        client = GranicusClient(args.client, args.view_id, opener=opener, label=args.from_xml or "feed")
+        client.report_extra = lambda found: {"not_scanned": sum(bool(m.get("not_scanned")) for m in found), "cut_by_item_cap": client.cut}
+        return client
+    return (CivicClerkClient if args.platform == "civicclerk" else LegistarClient)(args.client, opener=opener)
 
 
 def resolve_zone(name):
@@ -259,14 +387,15 @@ def event_status(event):
     return "cancelled" if isinstance(comment, str) and CANCELLED_COMMENT.search(comment) else "scheduled"
 
 
-def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None):
+def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_events=False):
     """Upcoming events with at least one ALPR-related agenda item, as meeting dicts."""
     meetings = []
     for event in client.events(since=since, top=max_events)[:max_events]:
         if not isinstance(event, dict) or type(event.get("EventId")) is not int:
             continue
         hits = match_items(client.event_items(event["EventId"]))
-        if not hits:
+        unscanned = not hits and all_events and hasattr(client, "scanned") and not client.scanned(event["EventId"])
+        if not hits and not unscanned:
             continue
         starts = _starts_at(event, zone or ZoneInfo(DEFAULT_ZONE))
         if not starts:
@@ -275,7 +404,7 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None):
         agenda_url = event.get("EventInSiteURL") or event.get("EventAgendaFile")
         if not isinstance(agenda_url, str) or not agenda_url.startswith("https://"):
             agenda_url = None
-        item_text, terms = hits[0]
+        item_text, terms = hits[0] if hits else ("", [])
         meetings.append({
             "id": f"{client.source}-{client.client}-{event['EventId']}",
             "body": _plain(body),
@@ -289,6 +418,7 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None):
             "matched_terms": sorted({t for _, ts in hits for t in ts}),
             "matched_items": len(hits),
             "status": event_status(event),
+            **({"not_scanned": True, "relevance": "not_scanned"} if unscanned else {}),
         })
     meetings.sort(key=lambda m: m["starts_at"])
     return meetings
@@ -350,6 +480,55 @@ def write_meetings(root, meetings, client_name, changes=None, zone=None, source=
                         "Verify the posted agenda before publishing a meeting."}
     if changes is not None:
         document["changes"] = changes
+    _write_text(target, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
+    return target
+
+
+def _matter_date(value):
+    """YYYY-MM-DD from a Legistar date string, else None."""
+    try:
+        return date.fromisoformat(value[:10]).isoformat() if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def relevant_matters(client, since=None):
+    """Matters whose file number, name or title match the ALPR keywords, as keyword leads."""
+    out = []
+    for raw in client.matters(since=since)[:MAX_MATTERS]:
+        if not isinstance(raw, dict) or type(raw.get("MatterId")) is not int:
+            continue
+        fields = [raw.get(k) if isinstance(raw.get(k), str) else "" for k in ("MatterFile", "MatterName", "MatterTitle")]
+        text = " ".join(" ".join(fields).split())
+        terms = sorted({h.group(0).lower() for h in KEYWORDS.finditer(text)})
+        if not terms:
+            continue
+
+        def clean(key):
+            value = raw.get(key)
+            return _plain(" ".join(value.split()))[:300] if isinstance(value, str) else ""
+        guid = raw.get("MatterGuid")
+        url = (f"https://{client.client}.legistar.com/LegislationDetail.aspx?ID={raw['MatterId']}&GUID={guid}"
+               if isinstance(guid, str) and GUID.fullmatch(guid) else None)
+        out.append({"id": f"{client.source}-{client.client}-matter-{raw['MatterId']}",
+                    "file": clean("MatterFile"), "title": clean("MatterTitle") or clean("MatterName"),
+                    "type": clean("MatterTypeName"), "status": clean("MatterStatusName"), "body": clean("MatterBodyName"),
+                    "intro_date": _matter_date(raw.get("MatterIntroDate")), "agenda_date": _matter_date(raw.get("MatterAgendaDate")),
+                    "passed_date": _matter_date(raw.get("MatterPassedDate")), "url": url, "matched_terms": terms})
+    out.sort(key=lambda r: r["id"])
+    out.sort(key=lambda r: r["intro_date"] or "", reverse=True)
+    return out
+
+
+def write_matters(root, matters, client_name, since=None):
+    kit = root / "kit"
+    _kit_folder(kit, mode=0o700)
+    target = kit / "matters.json"
+    document = {"schema_version": 1, "source": "legistar", "client": client_name,
+                "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "keywords": KEYWORDS.pattern, "since": (since or date.today() - timedelta(days=365)).isoformat(),
+                "matters": matters,
+                "note": "Keyword hits on matter titles, not confirmation of ALPR use. Verify on the official Legistar page before citing."}
     _write_text(target, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
     return target
 
