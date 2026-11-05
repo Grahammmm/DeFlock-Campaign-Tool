@@ -83,6 +83,24 @@ class Case(unittest.TestCase):
     def digests(self, files):
         return {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
 
+    @staticmethod
+    def without_catalogue(files):
+        """DF2207-12 adds exactly two outputs, one footer paragraph and one sitemap URL; remove only those, keep every pinned digest."""
+        data_link = b'<p><a href="/data.html">Open data</a></p>'
+        data_url = b'<url><loc>https://cedar-records.example.invalid/data.html</loc></url>'
+        legacy = {}
+        for name, data in files.items():
+            if name in ("data.html", "data/datapackage.json"):
+                continue
+            if name.endswith(".html"):
+                assert data.count(data_link) == 1, name
+                data = data.replace(data_link, b"", 1)
+            if name == "sitemap.xml":
+                assert data.count(data_url) == 1
+                data = data.replace(data_url, b"", 1)
+            legacy[name] = data
+        return legacy
+
     def refused(self, value, pattern):
         """build refuses with ``pattern``; content-check lists build's own line and names elsewhere.json in the JSON record."""
         self.put(value)
@@ -156,13 +174,18 @@ class RenderTests(Case):
 
     def test_absent_is_byte_identical_and_toggle_adds_only_conditional_artifacts(self):
         absent = self.build()
-        self.assertEqual(self.digests(absent), BASELINE)  # independent pins: no file, no change
+        self.assertEqual(self.digests(self.without_catalogue(absent)), BASELINE)  # independent pins: no file, no change
         self.assertNotIn("elsewhere", load_content(self.root, BUILD_DAY))
         self.assertTrue(all(b"elsewhere" not in data for data in absent.values()))
         self.put([entry(1)])
         enabled = self.build()
         self.assertEqual(set(enabled) - set(absent), {"elsewhere.html"})
-        for name, data in enabled.items():
+        for name in ("data.html", "data/datapackage.json"):  # the catalogue lists no elsewhere data: its bytes stay as without the toggle
+            if name == "data/datapackage.json":
+                self.assertEqual(enabled[name], absent[name], name)
+            else:
+                self.assertEqual(enabled[name].decode().replace(FOOTER, "", 1), absent[name].decode(), name)
+        for name, data in self.without_catalogue(enabled).items():
             if name in ("elsewhere.html", "sitemap.xml"):
                 continue
             if name.endswith(".html"):

@@ -135,6 +135,7 @@ DEFAULTS = {
     "meeting.minutes_pending": "Recorded by the campaign; minutes not yet approved", "agency.past_meetings": "Past meetings",
     "meeting.continued_to": "Continued to {date}", "meeting.continued_from": "Continued from {date}",
     "meeting.cosigned_one": "Co-signed by {count} organization", "meeting.cosigned_many": "Co-signed by {count} organizations",
+    "meeting.submitted_comment": "Our submitted comment ({channel}, {date})", "meeting.submitted_comment_link": "Our submitted comment",
     "meeting.staff_direction": "Staff were directed to: {direction} (by {date}, as stated in {source})",
 
     "schedule.usually": "Usually meets: {rule} ({source}, checked {date})",
@@ -351,6 +352,20 @@ HANDOUT_DEFAULTS = {
                                 "file exactly as received. It shows the file has not changed since; it does not by "
                                 "itself prove who wrote it.",
 }
+# DF2207-12: data.html, the open-data catalogue.
+DATA_DEFAULTS = {
+    "data.title": "Open data",
+    "data.intro": ("Every open-data file this site publishes, with its size and SHA-256 checksum so you can confirm a "
+                   "download is complete and unchanged. The same list is available as a machine-readable Data Package."),
+    "data.csv_note": ("CSV files are flat copies of the JSON files: every cell is text, and lists or nested values are "
+                      "joined or written as compact JSON. The Data Package lists each CSV's columns; the schema linked "
+                      "from a CSV row describes the source JSON records, not the CSV."),
+    "data.download": "Download", "data.description": "Description", "data.bytes": "Bytes", "data.sha256": "SHA-256",
+    "data.schema": "Schema", "data.schema_csv": "Source-record schema (JSON)", "data.license": "Licence",
+    "data.license_unstated": "licence not stated", "data.package": "Data Package (datapackage.json)",
+    "footer.data": "Open data",
+}
+DEFAULTS.update(DATA_DEFAULTS)
 DEFAULTS.update(JS_DEFAULTS)
 DEFAULTS.update(HANDOUT_DEFAULTS)
 for _family, _labels in (("classification", CLASSIFICATION_LABELS), ("confidence", CONFIDENCE_LABELS), ("kind", KIND_LABELS)):

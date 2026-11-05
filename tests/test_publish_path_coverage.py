@@ -391,6 +391,24 @@ class Drivers:
         finally:
             self.case.assertFalse((root / "kit").exists(), "a refused brief must write nothing")
 
+    def drive_meeting_comment(self, entry, value, probe):
+        """DF1407-06: the SAME tainted file's runtime digest is recorded first, so only the lint can refuse it."""
+        from datetime import date
+        from campaign_tool import meeting_comment_publish, meeting_comments
+        root = self.campaign()
+        folder = root / "content" / "meetings"
+        (folder / "2026-10-cedar-council.json").rename(path := folder / "cedar-council-2026-10.json")
+        letter = root.parent / "letter.txt"
+        letter.write_text("Please note %s end" % value, encoding="utf-8")
+        day = date(2026, 10, 20)
+        meeting_comments.record(root, "cedar-council-2026-10", "2026-10-10", "email", letter, today=day)
+        before = path.read_bytes()
+        try:
+            meeting_comment_publish.publish(root, "cedar-council-2026-10", letter, signer_public=True, today=day)
+        except ValueError:
+            self.case.assertEqual(path.read_bytes(), before, "a refused comment must write nothing")
+            raise
+
     def drive_email(self, entry, value, probe):
         case = self.borrowed("test_email_lint", "EmailLintTests", "test_private_patterns_named_never_printed")
         case.edit("Please reference", value + " Please reference")
@@ -587,6 +605,16 @@ class SeededFailureControls(unittest.TestCase):
         stripped = copy.deepcopy(entries[0])
         stripped["marker"] = "no_such_lint_call("
         self.assertIn("lost its lint call", source_problem(stripped))
+
+    def test_control_1a_the_meeting_comment_path_without_its_lint_fails_a_naming_it(self):
+        from campaign_tool import meeting_comment_publish
+        entries = [e for e in publish_paths.PUBLISH_PATHS if e["id"] == "meeting-comment-publish"]
+        self.assertEqual(lint_problems(Drivers(self), entries), [])
+        from campaign_tool import content  # the loader re-checks the staged file, so both copies of the call are disabled
+        with mock.patch.object(meeting_comment_publish, "comment_text_problems", lambda text: []), \
+                mock.patch.object(content, "comment_text_problems", lambda text: []):
+            problems = lint_problems(Drivers(self), entries)
+        self.assertTrue(len(problems) >= 3 and all(p.startswith("meeting-comment-publish (campaign_tool/meeting_comment_publish.py)") for p in problems), problems)
 
     def test_control_1b_removing_one_category_check_from_a_tool_fails_a_naming_it(self):
         entry = next(e for e in publish_paths.PUBLISH_PATHS if e["id"] == "flock-publish-brief")
