@@ -1410,6 +1410,10 @@ def main():
     for flag in ("--on", "--note", "--directory"):
         cr_decide.add_argument(flag, required=True)
     cr_cmds.add_parser("list", help="Open requests first, with days_open").add_argument("--directory", required=True)
+    cr_reply = cr_cmds.add_parser("reply", help="Write a private, never-sent reply draft from the recorded decision "
+                                  "(kit/corrections/replies/N.md; an existing draft is never replaced)")
+    cr_reply.add_argument("--id", type=int, required=True)
+    cr_reply.add_argument("--directory", required=True)
     today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
@@ -1807,11 +1811,13 @@ def main():
             try:
                 result = (cr.add(root, args.finding, args.received, args.summary) if args.cr_command == "add" else
                           cr.decide(root, args.id, args.decision, args.on, args.note) if args.cr_command == "decide"
-                          else cr.list_requests(root))
+                          else cr.reply(root, args.id) if args.cr_command == "reply" else cr.list_requests(root))
             except ValueError as exc:
                 fixes.emit(exc)
                 sys.exit(3)
-            print(json.dumps(result, indent=2, ensure_ascii=False) + "\nPrivate log only; nothing was sent or published.")
+            print(json.dumps(result, indent=2, ensure_ascii=False) + (
+                "\nPrivate draft only; nothing was sent or published." if args.cr_command == "reply"
+                else "\nPrivate log only; nothing was sent or published."))
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root, as_json=args.as_json)
