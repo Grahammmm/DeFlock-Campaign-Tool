@@ -1503,6 +1503,82 @@ def denial_reply(root, agency_id, rules=(), *, replace=False, law_base=None):
     return {"written": f"kit/followups/{target.name}", "rules": rules, "law_package_status": status}
 
 
+EXTENSION_RULE = "ca-gov-7922.535-determination-and-extension-2026"
+EXTENSION_TEMPLATE = """# Extension reply draft: {name}{subject}
+
+DRAFT — NOT SENT. Review before sending it yourself.
+
+To: {name}, records custodian
+
+{first}On {sent_on} we sent a records request by {channel} to {name}. On {extension_on} we recorded the agency's extension notice.
+
+{stated}Please:
+1. Tell us which circumstance the agency relies on for the extension under the determination-and-extension rule, {citation} (law package status: {status}{review}).
+2. {second}
+3. Send any records that are ready now.
+
+Thank you,
+
+[name]
+
+---
+Draft only. Not legal advice. Nothing was sent or recorded.
+law package: {status}{not_reviewed}
+"""
+
+
+def extension_reply(root, agency_id, *, request="main", replace=False, law_base=None):
+    """Write a private, never-sent reply draft to kit/followups/ for a request whose answer step is an extension."""
+    from .cli import read_config  # local import: cli imports this module lazily
+    root, request = Path(root), _request(request)
+    label = _label(agency_id, request)
+    entry = read_sent(root).get(_key(agency_id, request)) if kit.AGENCY_ID.fullmatch(agency_id) else None
+    if entry is None:
+        raise ValueError(f"no hand-sent request recorded for {label}")
+    validate_steps(entry, label)  # malformed history is never filtered to get a draft
+    steps = entry["steps"]
+    if any(s["kind"] == "closed" for s in steps):
+        raise ValueError(f"request for {label} is closed; no extension reply drafted")
+    if any(s["kind"] == "withdrawn" for s in steps):
+        raise ValueError(f"request for {label} was withdrawn by us on {_withdrawn_on(steps)}; no extension reply drafted")
+    if _waiting_since(steps):
+        raise WaitingOnYou(f"waiting on you since {_waiting_since(steps)} — reply to the agency's clarification first")
+    answer = next((s for s in steps if s["kind"] in ANSWERED), None)
+    if answer:
+        raise ValueError(f"request for {label} was answered ({answer['kind']} on {answer['on']}); "
+                         "no extension reply drafted")
+    notice = next((s for s in steps if s["kind"] == "extension"), None)
+    if notice is None:
+        raise ValueError(f"no recorded extension for {label}")
+    try:
+        package = law.load_package(kit._jurisdiction(read_config(root)), law_base)
+    except ValueError:
+        raise ValueError("no law package: the extension rule cannot be cited") from None
+    rule = next((r for r in law.rules_in_force(package, notice["on"]) if r["rule_id"] == EXTENSION_RULE), None)
+    if rule is None:
+        raise ValueError(f"the law package has no determination-and-extension rule in force on {notice['on']}")
+    path = root / "kit" / "agencies.json"
+    agency = next((a for a in kit._load_existing(path) if a.get("agency_id") == agency_id), None) \
+        if path.is_file() and not path.is_symlink() else None
+    name = _clean_name(agency) if agency and "name" in agency else agency_id
+    subject, first = draft_lines(entry)
+    stated_on = notice.get("extension_expected_on")
+    second = (f"Your notice states {stated_on} for dispatch of the determination; please confirm." if stated_on
+              else "Tell us the date on which the determination will be dispatched.")
+    reason = notice.get("extension_reason")
+    stated = f"The agency stated this reason, as written:\n> {reason}\n\n" if reason is not None else ""
+    review = f"; rule review: {rule['review']}" if rule.get("review") else ""
+    target = _followup_target(root, f"{_stem(agency_id, request)}-extension-{notice['on']}.md", replace)
+    if os.path.lexists(target) and not target.is_file():
+        raise ValueError(f"kit/followups/{target.name} is not a regular file")
+    kit._write_text(target, EXTENSION_TEMPLATE.format(
+        name=name, subject=subject, first=first and first + "\n\n", sent_on=entry["sent_on"], channel=entry["channel"],
+        extension_on=notice["on"], stated=stated, citation=rule["citation"], status=package["status"], review=review,
+        second=second, not_reviewed="" if package["status"] == "reviewed" else " (not independently reviewed)"))
+    return {"written": f"kit/followups/{target.name}", "agency_id": agency_id, "request": request,
+            "extension_on": notice["on"], "law_package_status": package["status"]}
+
+
 def _range_arg(value, today):  # "FROM:TO": two real ISO days, FROM <= TO, neither after today; the range text, or None
     if value is None:
         return None

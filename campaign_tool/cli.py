@@ -1345,6 +1345,12 @@ def main():
                            "request asked for (default all of them); every scope left out is listed as no longer requested")
     clarify_p.add_argument("--date-range", metavar="FROM:TO", help="Two real YYYY-MM-DD dates, not after today")
     clarify_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
+    extension_p = commands.add_parser("kit-extension-reply", help="Private reply draft after a recorded extension notice; "
+                                      "never sent, records nothing")
+    for flag in ("--directory", "--agency"):
+        extension_p.add_argument(flag, required=True)
+    extension_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    extension_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same extension")
     scope_p = commands.add_parser("kit-scope-reply", help="Private draft asking about recorded per-scope gaps; never sent")
     for flag in ("--directory", "--agency"):
         scope_p.add_argument(flag, required=True)
@@ -2351,6 +2357,10 @@ def main():
             print(json.dumps(clarify_reply(root, args.agency, request=args.request, scopes=chosen,
                                            date_range=args.date_range, replace=args.replace), indent=2))
             print("Draft only. Nothing was sent or recorded.")
+        elif args.command == "kit-extension-reply":
+            from .kit_track import extension_reply
+            print(json.dumps(extension_reply(root, args.agency, request=args.request, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent.")
         elif args.command == "kit-scope-reply":
             from .kit_track import scope_reply
             print(json.dumps(scope_reply(root, args.agency, request=args.request, replace=args.replace), indent=2))
