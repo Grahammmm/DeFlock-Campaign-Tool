@@ -19,10 +19,12 @@ City policing values:
     None       arrangement not recorded; organizer must verify
 """
 import argparse
+import datetime
 import json
 import re
 import sys
 import unicodedata
+import urllib.parse
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -417,6 +419,28 @@ DISTRICT_POLICE = [
 DISTRICT_NOTE = ("special-district police department ({type}); serves {county} County; seeded from the "
                  "district's official page; submit to the district records office, verify")
 
+# California regional intelligence (fusion) centers (kind fusion_center, opt-in only). A center is
+# listed only when official pages state BOTH facts, each on a page of the center, its host agency or a
+# government site: the counties it serves (one official page, county_source_url) and its host or
+# governing agency (one official page, host_source_url). Each fact is cited by the page that states it
+# and nothing is inferred from a news story, a directory, a map or a similar center. One entry is
+# built per explicitly named county. Statewide centers (STAC) and centers whose pages lack either
+# fact are left out; docs/AGENCY-DISCOVERY.md names each omission and the missing fact.
+# The validator checks transcription structure only, never that a page says what the row claims.
+FUSION_CENTERS = [
+    {"name": "Orange County Intelligence Assessment Center",
+     "host": "Orange County Sheriff's Department",
+     "county_fips": ("06059",),
+     "county_source_url": "https://www.dhs.gov/see-something-say-something/reporting/california/ociac",
+     "host_source_url": "https://www.ocsheriff.gov/commands-divisions/investigations-special-operations-command/operations-support-intelligence-0",
+     "checked_on": "2026-11-04"},
+]
+FUSION_FIELDS = ("name", "host", "county_fips", "county_source_url", "host_source_url", "checked_on")
+FUSION_COUNTY_TITLE = ("Fusion center service area; serves {county} County; this official page states the "
+                       "county; verify the records custodian")
+FUSION_HOST_TITLE = ("Fusion center; host or governing agency: {host}; this official page states the host; "
+                     "verify the records custodian")
+
 
 def slugify(text):
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
@@ -507,6 +531,76 @@ def district_agencies(fips, reserved=()):
     return entries
 
 
+def fusion_id(row, county):
+    return f"{STATE}-{slugify(row['name'])}-fusion-center-{slugify(county)}"
+
+
+def fusion_agencies(fips, centers=None):
+    """Fusion centers serving county ``fips``, sorted by name then county page, one entry per county."""
+    county_names = {row[0]: row[1] for row in COUNTIES}
+    entries = []
+    for row in sorted(FUSION_CENTERS if centers is None else centers,
+                      key=lambda r: (r["name"], r["county_source_url"])):
+        if fips not in row["county_fips"]:
+            continue
+        county = county_names[fips]
+        sources = [{"title": FUSION_COUNTY_TITLE.format(county=county), "url": row["county_source_url"],
+                    "accessed": row["checked_on"], "checked_on": row["checked_on"]},
+                   {"title": FUSION_HOST_TITLE.format(host=row["host"]), "url": row["host_source_url"],
+                    "accessed": row["checked_on"], "checked_on": row["checked_on"]}]
+        entries.append(agency(fusion_id(row, county), row["name"], "fusion_center", row["name"],
+                              sources=sources))
+    return entries
+
+
+def _safe_text(value):
+    return isinstance(value, str) and value == value.strip() and 3 <= len(value) <= 160 and value.isprintable()
+
+
+def _official_https(value):
+    parts = urllib.parse.urlsplit(value) if isinstance(value, str) else None
+    return bool(parts and parts.scheme == "https" and parts.hostname and not parts.username
+                and not parts.password and " " not in value)
+
+
+def check_fusion_centers(rows, *, today=None):
+    """Reject a malformed FUSION_CENTERS table (structure only, never authenticity)."""
+    today = today or datetime.date.today()
+    counties = {row[0] for row in COUNTIES}
+    identities = set()
+    for row in rows:
+        label = row.get("name", "?") if isinstance(row, dict) else "?"
+        if not isinstance(row, dict) or set(row) != set(FUSION_FIELDS):
+            raise ValueError(f"fusion center {label}: fields must be exactly {', '.join(FUSION_FIELDS)}")
+        for field in ("name", "host"):
+            if not _safe_text(row[field]):
+                raise ValueError(f"fusion center {label}: {field} is blank or unsafe")
+        for field in ("county_source_url", "host_source_url"):
+            if not _official_https(row[field]):
+                raise ValueError(f"fusion center {label}: {field} is not an https page without credentials")
+        date = row["checked_on"]
+        try:
+            parsed = datetime.date.fromisoformat(date) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) else None
+        except (TypeError, ValueError):
+            parsed = None
+        if parsed is None:
+            raise ValueError(f"fusion center {label}: checked_on is not a real YYYY-MM-DD date")
+        if parsed > today:
+            raise ValueError(f"fusion center {label}: checked_on is in the future")
+        fips = row["county_fips"]
+        if not isinstance(fips, tuple) or not fips:
+            raise ValueError(f"fusion center {label}: county_fips must be a nonempty tuple")
+        if len(set(fips)) != len(fips):
+            raise ValueError(f"fusion center {label}: duplicate county fips")
+        for code in fips:
+            if code not in counties:
+                raise ValueError(f"fusion center {label}: {code} is not a county fips")
+        identity = slugify(row["name"])
+        if identity in identities:
+            raise ValueError(f"fusion center {label}: duplicate center")
+        identities.add(identity)
+
+
 def city_agencies(city, policing, overlay):
     slug = slugify(city)
     body = "Town" if city in TOWNS else "City"
@@ -533,7 +627,7 @@ def city_agencies(city, policing, overlay):
     return entries
 
 
-def build(overlay=None):
+def build(overlay=None, fusion=None):
     overlay = overlay or {}
     reserved = set()  # ids of every non-district entry, so a district id never repeats one
     for fips, name, _seat, cities in COUNTIES:
@@ -550,6 +644,7 @@ def build(overlay=None):
         agencies.extend(ccd_agencies(fips))
         agencies.extend(school_agencies(fips))
         agencies.extend(district_agencies(fips, reserved))
+        agencies.extend(fusion_agencies(fips, fusion))
         for city, policing in cities:
             agencies.extend(city_agencies(city, policing, overlay))
         counties.append({"county_fips": fips, "name": name, "seat": seat, "agencies": agencies})
@@ -596,6 +691,7 @@ def check_tables():
             raise ValueError(f"special district {district}: {fips} is not a county fips")
         if district_type not in DISTRICT_TYPES:
             raise ValueError(f"special district {district}: unknown district type {district_type!r}")
+    check_fusion_centers(FUSION_CENTERS)
     for county in build()["counties"]:
         for entry in county["agencies"]:
             if entry["agency_id"] in ids:

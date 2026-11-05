@@ -79,6 +79,7 @@
                     "ccd_police",
                     "school_police",
                     "district_police",
+                    "fusion_center",
                     "district_attorney",
                     "county_board",
                     "city_council",
@@ -156,7 +157,13 @@
                       "title",
                       "url",
                       "accessed"
-                    ]
+                    ],
+                    "properties": {
+                      "checked_on": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                      }
+                    }
                   }
                 }
               }
