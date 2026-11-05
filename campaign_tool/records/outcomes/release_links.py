@@ -50,10 +50,10 @@ TOKENISH = re.compile(r"^(?=.*\d)(?=.*[A-Za-z])[A-Za-z0-9_~=-]{16,}$")
 _I = re.I
 _DATE = (r"(?:(?:%s)\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})"
          % ri.MONTH_RE)
-LEAD = (r"(?:expires?|expiring|expiration(?:\s+date)?|available\s+(?:until|through|by)|"
-        r"valid\s+(?:until|through)|(?:removed|deleted|disabled|deactivated)\s+(?:on|after))")
+LEAD = (r"(?:expires?|expiring|expiration(?:\s+date)?|(?:active|available|accessible|valid|open)\s+(?:until|through|till|by)|"
+        r"(?:removed|deleted|disabled|deactivated)\s+(?:on|after))")
 EXPIRY_DATE = re.compile(r"\b" + LEAD + r"\b[^.\n]{0,40}?\b(?:on\s+|by\s+)?(" + _DATE + r")", _I)
-EXPIRY_REL = re.compile(r"\b(?:expires?|available|valid)\b[^.\n]{0,30}?\b(?:in|for|within|next)\s+(\d{1,3})\s+"
+EXPIRY_REL = re.compile(r"\b(?:expires?|active|available|accessible|valid)\b[^.\n]{0,30}?\b(?:in|for|within|next)\s+(\d{1,3})\s+"
                         r"(hour|day|week)s?\b", _I)
 NEGATED = re.compile(r"\b(?:does not|doesn't|never|no)\s+expire", _I)
 
@@ -232,7 +232,11 @@ def collect(db, processing, *, run_id):
             else:
                 acquired = [t for t in (ri._utc(o["acquired_at"]) for o in occurrences.get(subject, [])) if t]
                 received_at = sorted(acquired)[0] if acquired else None
-        units, diagnostics, _ = ri._current_units(db, processing, subject, paged=False)
+        try:
+            units, diagnostics, _ = ri._current_units(db, processing, subject, paged=False)
+        except ValueError as error:  # a corrupt binding omits this original's text, never the whole register
+            report["diagnostics"].append("text_binding_refused:" + str(error))
+            continue
         for unit in units:
             for found in scan_text(unit["text"], received_at):
                 digest = sha(found["normalised"].encode())

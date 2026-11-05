@@ -108,6 +108,12 @@ class ReleaseLinkTests(unittest.TestCase):
         expiry = self.collect()["links"][0]["expiry"]
         self.assertEqual((expiry["date"], expiry["basis"]), ("2026-11-17", "relative_to_received"))
 
+    def test_remain_active_until_wording_from_a_real_agency_message(self):
+        self.mailbody("Please note that this link will remain active until October 30, 2026. 07-30-2026 DeFlock PRA"
+                      "<https://cpslo-my.sharepoint.com/:f:/g/personal/pra_calpoly_edu/EaBcDeFgHiJkLmNo12345>")
+        expiry = self.collect()["links"][0]["expiry"]
+        self.assertEqual(expiry["date"], "2026-10-30")
+
     def test_never_expires_wording_is_not_an_expiry(self):
         self.mailbody("https://a.nextrequest.com/documents/3 This link does not expire on a schedule, see November 30, 2026.")
         self.assertIsNone(self.collect()["links"][0]["expiry"])
