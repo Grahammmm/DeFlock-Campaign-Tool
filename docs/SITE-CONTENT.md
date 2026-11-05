@@ -127,6 +127,12 @@ Review receipts are not evaluated by the build; the organizer's publication
 approval (see [CONTRACTS.md](CONTRACTS.md), approval card `publish_finding`)
 remains the gate that moves a finding into `content/findings/`.
 
+A private draft of search-log counts: `finding new --directory D --agency ID --search-log SUMMARY.json` (the `kit-search-log --json`
+output, see [SEARCH-LOG.md](SEARCH-LOG.md)) writes a `private/drafts/` skeleton only when the summary's input hash is an ingested
+record registered in `content/sources.json` for that agency and a fresh read of it reproduces every count; its table holds
+aggregates only and the title, summary, classification and confidence stay `[EDIT ME: ...]`. It passes the same review and
+publish gates as any draft ([FINDINGS-GUIDE.md](FINDINGS-GUIDE.md)).
+
 Optional `also_agency_ids` (DF1952-07): a list of 1 to 10 distinct agency ids, none equal to `agency_id`, for a finding that
 is about several agencies. It needs a non-empty primary `agency_id` and every id (primary included) must be one of the
 campaign's agencies, or `load_finding`, `build`, `content-check`, `finding publish` and `finding correct` refuse it by
