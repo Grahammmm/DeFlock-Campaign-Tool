@@ -528,3 +528,32 @@ upcoming, not cancelled meetings only (same split as the page: the build day cou
 omitted. Each event has `UID:meeting-<id>@<host of base_url>`, a UTC `DTSTART` converted from the meeting's offset, the
 agenda URL, location and agenda item when set, and a link back to the meeting on the page. The feed has no `DTEND`, and for
 one build day it is byte-identical. The `.ics` extension is on the runner's upload allowlist (`text/calendar`).
+
+## Private speaker plan
+
+`meetings-speakers --directory D --id ID (--add LABEL --point POINT | --remove LABEL | --list)` keeps a private plan of
+which volunteer label covers which point of a staged meeting's comment kit, in `kit/meetings/speakers/<id>.json` (mode 0600,
+folders 0700). It is never written to `content/` or `public/`, and never reaches the site, an export or a meeting pack. It
+sends nothing and changes no staging, request owner (`kit-assign`) or other store.
+
+- A **point** is `finding:ID` (an id the staged kit cites, taken from the staged `cited_findings`) or `ask:N` (the Nth
+  bullet of the kit's `One ask`/`Two asks`/`Three asks` section, counted from 1). Nothing else is accepted. A kit staged
+  before findings were recorded with it is refused: re-stage the meeting.
+- A **label** follows the `kit-assign` label rule: 1-40 characters, whitespace collapsed, case kept, no angle brackets,
+  control characters, `@` or phone-like numbers. It is a team alias, not a verified identity and not consent. Refusals name
+  the flag and never repeat the text.
+- Each `--add` records one label/point pair. Repeating an exact pair changes nothing. A label may cover several points
+  and several labels may cover one point (up to 200 pairs). `--remove LABEL` drops every pair of that label; an unknown
+  label changes nothing.
+- `--list` prints one JSON document: `id`, `speaker_minutes` (the organizer-verified per-speaker limit from the staged
+  `participation`, or `null` when unknown: nothing is assumed), `points` with their `speakers`, `uncovered` points and
+  `multiple_points` (labels on two or more points).
+- A cancelled meeting (staged or in `kit/meetings.json`), one that has started or is past, a symlink anywhere on the path
+  or an unknown point is refused.
+- The plan stores a SHA-256 of the staged kit text. If the meeting is re-staged with a different kit, `--list` and `--add`
+  refuse (`speaker plan is stale`) rather than silently re-map `ask:N`. Repair: `--remove` every label, then `--add` again.
+
+```
+campaign_tool meetings-speakers --directory campaign --id council-2099-01-05 --add "Volunteer A" --point ask:1
+campaign_tool meetings-speakers --directory campaign --id council-2099-01-05 --list
+```
