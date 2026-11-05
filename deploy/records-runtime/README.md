@@ -12,6 +12,9 @@ Files
   stage orchestrator, then notify.
 - `records-run.service.in`, `records-run.timer.in`: systemd user units. The
   timer fires at 07:00, 13:00 and 20:30 America/Los_Angeles.
+- `records-arrival.path.in`, `records-arrival.service.in`: the arrival trigger
+  (REC-AUTO-1, see "Arrival runs" below). Rendered, never enabled by the
+  renderer.
 - `notify.py`: non-fatal Telegram notifier. It writes the report's `notify`
   stage.
 - `targets/stub.json.in`: a stage plan that wires every work stage to the
@@ -50,6 +53,10 @@ renderer refuses:
   longer renders. Size it to at least twice the latest per-run ledger+intake
   backup plus headroom; 2147483648 (2 GiB) is a reasonable starting point.
 - a `DEFAULT_TARGET` or `SCHEDULED_TARGET` with no rendered plan
+- a missing, relative, non-normalised or runtime-overlapping `RECORDS_DROP_DIR`
+  (the drop folder must be separate from `RUNTIME_DIR`, which holds the
+  arrival, done, report and output trees, so the pipeline's own writes can
+  never re-trigger it)
 - an output directory that is non-empty or inside a Git checkout
 
 Install `DIR/run-records.sh` and `DIR/targets/NAME.json` as
@@ -432,3 +439,77 @@ scheduled runs; idle stages (no input) never alert. It also flags no scheduled r
 36 h, an invalid or unparseable newest report and duplicate run ids. Exit 3 alerts, 0 none,
 1 untrusted. It complements `records health`. Scheduling it and delivering its alerts beyond
 stdout or `--json-out` are separate operator decisions; it installs and sends nothing.
+
+## Arrival runs (REC-AUTO-1)
+
+A new message or a completed file at the records drop folder starts one
+incremental run through the same wrapper, stage plan, stage order, gates and
+notification as the three timer slots. The timer stays as the safety net.
+
+Placeholder `@RECORDS_DROP_DIR@`: absolute, normalised, separate from
+`@RUNTIME_DIR@`. The renderer writes `records-arrival.path` (watches the drop
+folder and `@RUNTIME_DIR@/arrival/`, change/close-write/rename sensitive; no
+`DirectoryNotEmpty` and no persistent glob, which would loop while the lock is
+busy) and `records-arrival.service` (owner-only oneshot, `--arrival`, same
+47 minute envelope). `[Install]` is inert text; nothing is enabled by render.
+
+Wrapper: `run-records.sh --arrival` always uses `SCHEDULED_TARGET` (a different
+`--target`, or `--scheduled`, is usage error 64) and reports mode `arrival`
+with trigger `arrival` and the claimed batch under `arrivals` (source, hashed
+ref, seen_at; nothing else). `--arrival --dry-run` prints the plan and writes
+nothing. Behaviour:
+
+- Nothing pending (no stamp, no new or changed drop file): exit 0 with no
+  Docker, report or notify.
+- Lock held by any run: write `RUNTIME_DIR/arrival.pending`, keep every stamp,
+  exit 0 (not 73). A marker that cannot be written exits 78. Scheduled and
+  manual runs still skip with 73.
+- Lock free: a short coalescing wait (3 s quiet, never more than 30 s, so a
+  continuous burst cannot extend the start), then the normal preflights; the
+  batch is claimed (moved to `arrival/done/<run_id>/`) only after the lock,
+  plan, disk and image checks pass. An early abort keeps every stamp and sets
+  the pending marker.
+- Drain: every holder (scheduled, manual or arrival) checks for pending stamps
+  after its own report and notify are final, while it still holds the lock. If
+  any exist and the shared invocation deadline has room (worst-case Docker
+  readiness plus a minute), it clears the marker and runs exactly one follow-up
+  arrival run with the lock fd inherited, so the lock is never released or
+  overlapped. The follow-up never drains again and shares the parent's absolute
+  deadline; otherwise stamps stay pending and a log line
+  `ARRIVAL_FOLLOWUP_DEFERRED` is written. A stamp that arrives after the final
+  check remains pending and wakes the path unit afresh, so a systemd activation
+  merged into a running oneshot cannot lose it. A run that failed preflight
+  (75, 78) or the orchestrator (70) never drains, so there is no retry loop.
+
+Two-minute promise: the arrival invocation starts or durably queues within
+the coalescing window (at most 30 s) of the watcher detecting an event. If the
+lock is held (for example a long OCR run) actual records work waits for the
+holder and its single follow-up; that, a Docker or configuration refusal, or an
+exhausted deadline is the stated exception to the work-start promise.
+
+Stamps: `python -m campaign_tool.records arrival stamp --runtime-dir DIR
+--source inbox-watch|drop-folder --ref SHA256HEX` writes
+`arrival/<utc>-<source>.json` (owner-only, atomic, fsynced) with exactly
+`source`, `ref`, `seen_at`. `arrival list --runtime-dir DIR` prints the
+pending stamps as JSON and creates nothing. No subject, address, path or
+Message-ID is ever stored.
+
+Drop-folder producers must write under a temporary name (leading `.` or a
+`.tmp`/`.part`/`.partial` suffix) and rename to the final name when complete.
+Only completed regular files at the folder root count (no symlinks, nothing
+younger than 2 s); a changed size or mtime is a new arrival, an unchanged
+retained folder is not. File contents are never read at trigger time.
+
+External inbox-watch hook (host operation, outside this repository): after a
+new message is durably observed, run the engine Python with
+`-m campaign_tool.records arrival stamp --runtime-dir <runtime> --source
+inbox-watch --ref <sha256-of-opaque-identity>`. Retry and report a failed stamp
+without advancing the watcher's own acknowledgement; never put message text or
+addresses in argv.
+
+Cutover and rollback (attended): render, install the two units and the new
+wrapper into the private runtime, `systemctl --user daemon-reload`, enable
+`records-arrival.path`, then wire the inbox-watch hook. Rollback: disable
+`records-arrival.path`; stamps and the timer are unaffected. This change
+installs and starts nothing, and live end-to-end timing is not claimed until
+that attended step.
