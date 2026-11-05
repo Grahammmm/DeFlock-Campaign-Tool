@@ -346,6 +346,18 @@ verified` (no `verified: true`; see `kit-verify-agency`), then `N of M drafts ne
 exits 3 when any draft needs attention. A Markdown link `[text](url)` is not a placeholder. `kit-sent` runs the same
 check for its agency and refuses a draft that still fails it.
 
+The draft's `To:` line follows a fixed order. A `records_email` is printed as is. Otherwise, for an agency with
+`verified: true`, the first route that qualifies: `To: records portal URL (VENDOR)` (a recorded `portal` with a
+supported vendor, `unknown` included, and an https URL), else `To: by post to the verified mailing address (kit-copy
+--for mail)` (a verified postal address with its source and checked date). After `kit-verify-agency`, run `kit` again
+to regenerate it; an unedited draft is refreshed, while an edited one is kept byte for byte and the new text goes to
+`kit/requests.suggested/`, as for any other change. An unverified agency, an agency with only a `records_url`, or a
+malformed portal or postal record keeps the `[official records custodian]` placeholder: a records page is not a
+portal. The no-law-package fallback draft does not use `records_email` in its `To:` line (a known limitation, not
+changed here), but does name a verified portal or postal route. Only the `To:` line changes; the other placeholders
+(fee cap, date range, requester) must still be filled, the postal address never appears in the draft, and approval
+and sending stay manual. Nothing is sent.
+
 When `kit` kept your edited draft it saved the fresh one as `kit/requests.suggested/<id>.md`. If that file differs from
 `kit/requests/<id>.md`, `kit-check` adds `edited draft differs from the fresh draft in requests.suggested/` to that
 agency's row, marks the row not ok (exit 3, as for a placeholder) and lists: `## ` scope headings only in the fresh
@@ -369,7 +381,8 @@ verified postal address, then the `Subject:` line and the sendable text exactly 
 included (the repeated return address is intended). The HTML is inert escaped text with inline print styles: no
 scripts, links, images, forms or external loads, and nothing opens a print dialog. It needs `requester` in
 `kit/request-settings.json`, a verified postal address, and a draft that passes `kit-check` for that agency in full
-(including a hand-filled `To:` line and the parts left out of the copy); other agencies' drafts do not matter. Anything
+(including the `To:` line and the parts left out of the copy; a regenerated draft for a verified agency with a posted
+route already names it, see above); other agencies' drafts do not matter. Anything
 missing stops with exit 3 before a file is written. The two files are written one after the other, not as a pair: if
 the second write fails, the first may already be the new letter; the command says so, and running it again rewrites both.
 Review, print and post the letter yourself, then record it with the unchanged `kit-sent --channel mail`. Nothing is
