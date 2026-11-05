@@ -13,7 +13,8 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 from .cli import read_config
-from .content import _read_json, load_finding, load_meeting, load_site, load_sources
+from .content import _read_json, load_campaign_agencies, load_finding, load_meeting, load_officials, load_site, load_sources
+from .content_statements import newest_first, read_statements
 from .labels import DEFAULTS, MAX_LABELS_BYTES, html_text, load_labels
 from . import meeting_comments
 from .meeting_stage import stale_kits
@@ -33,7 +34,7 @@ def _load_labels(content):
     return load_labels(_read_json(path, MAX_LABELS_BYTES)) if path.is_file() or path.is_symlink() else dict(DEFAULTS)
 
 
-def _handout(name, meeting, findings, library, site, truncated, labels):
+def _handout(name, meeting, findings, library, site, truncated, labels, statements=()):
     e = lambda value: html.escape(str(value), quote=True)
     # Label text is escaped once; values are filled in by format, never re-formatted (a title may hold braces).
     t = lambda key, **values: html_text(labels[key]).format(**values)
@@ -42,7 +43,7 @@ def _handout(name, meeting, findings, library, site, truncated, labels):
              '<style>@page { size: letter; margin: 0.6in } body { font: 10pt sans-serif; }',
              'h1 { font-size: 16pt } h2 { font-size: 12pt } p { margin: .3em 0 }',
              'article { break-inside: avoid; margin: .6em 0 } .summary { white-space: nowrap;',
-             'overflow: hidden; text-overflow: ellipsis } a { overflow-wrap: anywhere }' + (QR_CSS if base else ''),
+             'overflow: hidden; text-overflow: ellipsis } a { overflow-wrap: anywhere }' + (QR_CSS if base else '') + ('\n.quote { white-space: pre-wrap }' if statements else ''),
              '@media print { body { margin: 0 } }</style><body>',
              f'<h1>{e(name)}</h1><p>{e(meeting["body"])} — {e(meeting["starts_at"])}</p>',
              f'<p>{e(meeting["agenda_item"])} · {e(meeting["location"])}</p>']
@@ -71,6 +72,13 @@ def _handout(name, meeting, findings, library, site, truncated, labels):
         parts.append('<p>' + t('handout.more_on_site', count=truncated) + (f': {e(base)}' if base else '') + '</p>')
     if base:
         parts.append(f'<p><a href="{e(base)}">{e(base)}</a>{svg(base)}</p>')
+    if statements:  # DF1407-07: exact stored quotes only; the quote text is escaped once and never shortened or collapsed
+        parts.append('<h2>' + t('handout.statements_heading') + '</h2><p>' + t('handout.statements_note') + '</p>')
+        for person, row in statements:
+            parts.append('<article><p><strong>' + e(person) + '</strong>: <span class="quote">'
+                         + html_text(labels['statements.quote']).format(quote=e(row['quote'])) + '</span></p>'
+                         + '<p>' + e(row['said_on']) + ' (' + t('statements.context_' + row['context']) + ') <a href="'
+                         + e(row['source_url']) + '">' + t('statements.source') + '</a></p></article>')
     parts.extend(['<p>' + t('handout.record_explainer') + '</p>',
                   f'<p>{e(site["not_legal_advice"])}</p></body></html>'])
     return '\n'.join(parts)
@@ -160,6 +168,22 @@ def _commit_pack(folder, outputs, *, replace):
     return []
 
 
+def _statements(root, meeting, day):
+    """DF1407-07: [(official, statement)] for the meeting's body, roster order, two newest each; [] means the old pack."""
+    agency = meeting.get('agency_id')
+    first = read_statements(root, None, day) if agency else None  # a malformed present file refuses here
+    if not first or not any(row['agency_id'] == agency for row in first):
+        return []
+    path = root / 'content' / 'officials.json'
+    roster = load_officials(_read_json(path), load_campaign_agencies(root, day), day) if path.is_file() or path.is_symlink() else {}
+    rows = read_statements(root, roster, day)  # the roster check, strict this time
+    chosen = []
+    for person in roster.get(agency, []):
+        mine = [row for row in rows if row['agency_id'] == agency and row['official'] == person['name']]
+        chosen += [(person['name'], row) for row in newest_first(mine)[:2]]
+    return chosen
+
+
 def build(root, meeting_id, max_findings=5, today=None, *, replace=False, allow_past=False):
     if not isinstance(meeting_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", meeting_id) or meeting_id in ('.', '..'):
         raise ValueError("invalid meeting id; use 1–80 letters, digits, dots, underscores or hyphens")
@@ -195,6 +219,7 @@ def build(root, meeting_id, max_findings=5, today=None, *, replace=False, allow_
     library = load_sources(_read_json(content / 'sources.json')) if (content / 'sources.json').exists() else []
     library = {entry['sha256']: entry for entry in library}
     labels = _load_labels(content)
+    statements = _statements(root, meeting, current.date())
     findings = []
     for path in sorted((content / 'findings').glob('*.json')):
         document = _read_json(path)
@@ -222,10 +247,13 @@ def build(root, meeting_id, max_findings=5, today=None, *, replace=False, allow_
                 row[5].append(finding['slug'])
     sheet = io.StringIO(newline='')
     writer = csv.writer(sheet)
-    writer.writerow(['title', 'record_prefix', 'received', 'locator', 'public_copy', 'cited_by'])
+    extra = ['kind', 'said_on', 'source_url'] if statements else []
+    writer.writerow(['title', 'record_prefix', 'received', 'locator', 'public_copy', 'cited_by'] + extra)
     for row in rows.values():
-        writer.writerow([*row[:3], '; '.join(row[3]), row[4], '; '.join(row[5])])
-    outputs = {'handout.html': _handout(read_config(root)['name'], meeting, findings, library, site, truncated, labels),
+        writer.writerow([*row[:3], '; '.join(row[3]), row[4], '; '.join(row[5])] + (['source', '', ''] if statements else []))
+    for _person, row in statements:
+        writer.writerow([''] * 6 + ['statement', row['said_on'], row['source_url']])
+    outputs = {'handout.html': _handout(read_config(root)['name'], meeting, findings, library, site, truncated, labels, statements),
                'comment.md': raw.get('comment_kit_md', ''), 'sources.csv': sheet.getvalue()}
     if any(FULL_HASH.search(text) for text in outputs.values()):
         raise ValueError("pack contains a full hash; re-stage using 12-character record prefixes")

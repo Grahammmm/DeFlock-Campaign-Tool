@@ -7,6 +7,7 @@ python3 -B -m unittest tests.test_ingest_zip -v
 
 import bz2
 import hashlib
+import io
 import json
 import lzma
 import os
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 import zlib
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -38,18 +40,26 @@ def zip_lzma(data):
 
 def build_zip(entries):
     """Zip bytes from (name, data, options); options may set method, flags, mode, raw, size and crc
-    so headers can say what a hostile archive would say."""
+    so headers can say what a hostile archive would say. Local-only options (local_name, local_flags,
+    local_method, local_crc, local_csize, local_usize, extra, local_nlen, local_elen) change only the local
+    header; `encoding` is the name codec."""
     body, central = b"", b""
     for name, data, opt in entries:
-        encoded = name.encode("utf-8")
+        encoded = name.encode(opt.get("encoding", "utf-8"))
         method = opt.get("method", 8)
+        flags = opt.get("flags", 0x800)
         raw = opt.get("raw", deflate(data) if method == 8 else data)
-        common = struct.pack("<HHHHHIII", 20, opt.get("flags", 0x800), method, 0, 0x21,
-                             opt.get("crc", zlib.crc32(data)), len(raw), opt.get("size", len(data)))
+        crc, usize = opt.get("crc", zlib.crc32(data)), opt.get("size", len(data))
+        common = struct.pack("<HHHHHIII", 20, flags, method, 0, 0x21, crc, len(raw), usize)
+        local_name, extra = opt.get("local_name", encoded), opt.get("extra", b"")
+        local = struct.pack("<HHHHHIII", 20, opt.get("local_flags", flags), opt.get("local_method", method), 0, 0x21,
+                            opt.get("local_crc", crc), opt.get("local_csize", len(raw)), opt.get("local_usize", usize))
         offset = len(body)
-        body += b"PK\x03\x04" + common + struct.pack("<HH", len(encoded), 0) + encoded + raw
+        body += (b"PK\x03\x04" + local + struct.pack("<HH", opt.get("local_nlen", len(local_name)),
+                                                     opt.get("local_elen", len(extra))) + local_name + extra + raw)
         central += (b"PK\x01\x02" + struct.pack("<H", 0x0314) + common
-                    + struct.pack("<HHHHHII", len(encoded), 0, 0, 0, 0, opt.get("mode", 0o100644) << 16, offset)
+                    + struct.pack("<HHHHHII", len(encoded), 0, 0, 0, 0, opt.get("mode", 0o100644) << 16,
+                                  offset)
                     + encoded)
     end = b"PK\x05\x06" + struct.pack("<HHHHIIH", 0, 0, len(entries), len(entries), len(central), len(body), 0)
     return body + central + end
@@ -275,6 +285,145 @@ class IngestZipTests(unittest.TestCase):
         self.assertEqual([m["outcome"] for m in report["members"]], ["present", "would_store"])
         self.assertEqual((report["archive"]["outcome"], report["would_store"], report["present"]), ("would_store", 2, 1))
         self.assertEqual(self.rows("SELECT name FROM sqlite_master WHERE name = 'contains'"), [])
+
+    def unreadable(self, report):
+        return {p for p, code in self.skipped(report).items() if code == "unreadable"}
+
+    def test_local_identity_mismatch_skips_only_member(self):
+        bad = {"local-name.txt": {"local_name": b"other.txt"},
+               "local-case.txt": {"local_name": b"LOCAL-CASE.TXT"},
+               "local-utf8.txt": {"local_name": b"local-utf8.tx\xff"},
+               "local-method.txt": {"local_method": 0},
+               "local-flags.txt": {"local_flags": 0x802},
+               "local-encrypted.txt": {"local_flags": 0x801}}
+        entries = [(n, b"synthetic " + n.encode(), o) for n, o in bad.items()] + [("ok.txt", b"ok", {})]
+        path = self.archive(entries)
+        report = self.ingest(path)
+        self.assertEqual(self.skipped(report), {n: "unreadable" for n in bad})
+        self.assertEqual([m["path"] for m in report["members"]], ["ok.txt"])
+        self.assertEqual(self.rows("SELECT count(*) FROM objects"), [(2,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM contains"), [(1,)])
+        self.assertEqual(report["archive"]["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual((self.root / "private" / "objects" / report["archive"]["sha256"]).read_bytes(), path.read_bytes())
+
+    def test_local_crc_sizes_and_zip64_extra(self):
+        text = b"synthetic record\n" * 20
+        def zip64(*values):
+            body = b"".join(struct.pack("<Q", v) for v in values)
+            return struct.pack("<HH", 1, len(body)) + body
+        sentinel = {"local_usize": 0xFFFFFFFF, "local_csize": 0xFFFFFFFF}
+        packed = len(deflate(text))
+        bad = {"crc.txt": {"local_crc": 5}, "usize.txt": {"local_usize": 7}, "csize.txt": {"local_csize": 7},
+               "no-extra.txt": dict(sentinel),
+               "short-extra.txt": {**sentinel, "extra": zip64(len(text))},
+               "wrong-extra.txt": {**sentinel, "extra": zip64(len(text) + 1, packed)},
+               "cut-tlv.txt": {"extra": b"\x01\x00\x10"},
+               "overrun-tlv.txt": {"extra": struct.pack("<HH", 0x9999, 40) + b"x"},
+               "elen-past-end.txt": {"local_elen": 60000}}
+        good = {"plain.txt": {}, "zip64.txt": {**sentinel, "extra": zip64(len(text), packed)},
+                "other-tlv.txt": {"extra": struct.pack("<HH", 0x9999, 2) + b"xx"}}
+        entries = [(n, text, o) for n, o in {**bad, **good}.items()]
+        report = self.ingest(self.archive(entries))
+        self.assertEqual(self.skipped(report), {n: "unreadable" for n in bad})
+        digest = hashlib.sha256(text).hexdigest()
+        self.assertEqual([(m["path"], m["sha256"]) for m in report["members"]], [(n, digest) for n in good])
+        self.assertEqual((self.root / "private" / "objects" / digest).read_bytes(), text)
+
+    def test_force_zip64_small_members_all_methods(self):
+        text = b"synthetic forced zip64 line\n" * 30
+        names = {zipfile.ZIP_STORED: "s.txt", zipfile.ZIP_DEFLATED: "d.txt", zipfile.ZIP_BZIP2: "b.txt",
+                 zipfile.ZIP_LZMA: "l.txt"}
+        buffer = io.BytesIO()
+        for method, name in names.items():
+            with zipfile.ZipFile(buffer, "a", compression=method) as archive:
+                with archive.open(name, "w", force_zip64=True) as member:
+                    member.write(text)
+        path = self.inbox / "z64.zip"
+        path.write_bytes(buffer.getvalue())
+        report = self.ingest(path)
+        self.assertEqual((report["skipped"], [m["path"] for m in report["members"]]), ([], list(names.values())))
+        self.assertEqual({m["sha256"] for m in report["members"]}, {hashlib.sha256(text).hexdigest()})
+
+    def test_streaming_descriptor_and_unicode_compatibility(self):
+        class Unseekable:
+            def __init__(self):
+                self.parts = []
+            def write(self, data):
+                self.parts.append(bytes(data))
+                return len(data)
+            def flush(self):
+                pass
+        text = b"synthetic streamed\n" * 10
+        stream = Unseekable()
+        with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("streamed.txt", text)
+            archive.writestr("caf\u00e9.txt", text)
+        data = b"".join(stream.parts)
+        self.assertEqual(struct.unpack_from("<H", data, 6)[0] & 0x8, 0x8)
+        path = self.inbox / "stream.zip"
+        path.write_bytes(data)
+        report = self.ingest(path)
+        self.assertEqual(([m["path"] for m in report["members"]], report["skipped"]), (["streamed.txt", "caf\u00e9.txt"], []))
+        legacy = self.archive([("caf\u00e9-cp437.txt", b"cp437 body", {"flags": 0, "encoding": "cp437"}),
+                               ("utf8-\u00e9.txt", b"utf8 body", {}),
+                               ("placeholder.txt", b"ph", {"flags": 0x808, "local_crc": 0, "local_csize": 0, "local_usize": 0}),
+                               ("true-values.txt", b"tv", {"flags": 0x808}),
+                               ("wrong-crc.txt", b"wc", {"flags": 0x808, "local_crc": 99}),
+                               ("wrong-size.txt", b"ws", {"flags": 0x808, "local_usize": 99})], name="legacy.zip")
+        report = self.ingest(legacy, source_id="synthetic-2")
+        self.assertEqual(self.skipped(report), {"wrong-crc.txt": "unreadable", "wrong-size.txt": "unreadable"})
+        self.assertEqual([m["path"] for m in report["members"]],
+                         ["caf\u00e9-cp437.txt", "utf8-\u00e9.txt", "placeholder.txt", "true-values.txt"])
+        prefixed = self.inbox / "prefixed.zip"
+        prefixed.write_bytes(b"#!/bin/sh\n" * 7 + build_zip([("p.txt", b"prefixed", {}), ("q.txt", b"q", {"method": 0})]))
+        report = self.ingest(prefixed, source_id="synthetic-3")
+        self.assertEqual(([m["path"] for m in report["members"]], report["skipped"]), (["p.txt", "q.txt"], []))
+
+    def test_member_spans_do_not_cross_record_boundaries(self):
+        path = self.archive([("cross-next.txt", b"x" * 40, {"local_elen": 300}),
+                             ("ok.txt", b"ok body", {}),
+                             ("alias-1.txt", b"one", {}),
+                             ("alias-2.txt", b"two", {}),
+                             ("far.txt", b"far", {}),
+                             ("cross-central.txt", b"tail", {"local_nlen": 40, "local_elen": 4000})])
+        data = bytearray(path.read_bytes())
+        # alias-2 points at alias-1's local header: find that header by its name
+        one = data.index(b"alias-1.txt") - 30
+        central_two = data.index(b"alias-2.txt", data.index(b"PK\x01\x02")) - 46 + 42
+        struct.pack_into("<I", data, central_two, one)
+        central_far = data.index(b"far.txt", data.index(b"PK\x01\x02")) - 46 + 42
+        struct.pack_into("<I", data, central_far, 10_000_000)
+        path.write_bytes(bytes(data))
+        report = self.ingest(path)
+        self.assertEqual(self.skipped(report), {n: "unreadable" for n in
+                         ("cross-next.txt", "alias-1.txt", "alias-2.txt", "far.txt", "cross-central.txt")})
+        self.assertEqual([m["path"] for m in report["members"]], ["ok.txt"])
+        self.assertEqual(self.rows("SELECT count(*) FROM objects"), [(2,)])
+
+    def test_header_refusal_dry_run_and_replay(self):
+        path = self.archive([("bad.txt", b"bad", {"local_name": b"evil.txt"}), ("../x", b"x", {}),
+                             ("ok.txt", b"ok", {})])
+        before = self.files()
+        dry = self.ingest(path, dry=True)
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.skipped(dry), {"bad.txt": "unreadable", "../x": "unsafe_name"})
+        real = self.ingest(path)
+        self.assertEqual(self.skipped(real), self.skipped(dry))
+        self.assertEqual([m["path"] for m in real["members"]], [m["path"] for m in dry["members"]])
+        self.assertEqual(set(real), {"archive", "members", "skipped", "stored", "present"})
+        again = self.ingest(path)
+        self.assertEqual((again["stored"], again["present"], again["skipped"]), (0, 2, real["skipped"]))
+        self.assertEqual(self.rows("SELECT count(*) FROM contains"), [(1,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM receipts"), [(2,)])
+        self.assertEqual(real["archive"]["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+        self.cli("status", "--check")
+
+    def test_integrity_document_is_linked_and_states_its_limits(self):
+        document = REPO_ROOT / "docs" / "ZIP-INGEST-INTEGRITY.md"
+        self.assertIn("docs/ZIP-INGEST-INTEGRITY.md", (REPO_ROOT / "campaign_tool" / "ingest_zip.py").read_text())
+        text = document.read_text()
+        for phrase in ("structural", "descriptor", "ZIP64", "original archive"):
+            self.assertIn(phrase, text)
 
 
 if __name__ == "__main__":

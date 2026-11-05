@@ -31,7 +31,7 @@ from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
 from .content_statements import newest_first as newest_statements
-from .content_events import build_cutoff, partition as partition_events
+from .content_events import build_cutoff, parse_moment, partition as partition_events
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
@@ -52,7 +52,7 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html", "elsewhere.html", "events.html"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html", "elsewhere.html", "events.html", "events.ics"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
@@ -224,6 +224,7 @@ PUBLIC_COPY_FIELDS = ("matches", "checked_on", "reason")
 PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "sources")
 PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0137-09: meetings open data
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
+PUBLIC_MEETING_OPTIONAL = ("submitted_comment",)  # DF1407-06: JSON only ({on, channel}); never a CSV column
 PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes", "minutes_url", "minutes_approved_on",
                          "continued_to", "continued_to_date", "direction", "return_by",
                          "direction_source", "spoke", "written", "comment_source_url")  # never verified_by / verified_at
@@ -241,11 +242,14 @@ PUBLIC_AGENCY_OPTIONAL = ("funding",)  # DF2207-02: present only when the organi
 # that tuple also names the data/agencies.csv columns, whose header is pinned and must not change with the data.
 PUBLIC_AGENCY_ACTIONS = ("actions",)
 PUBLIC_ACTION_FIELDS = ("on", "kind", "as_stated", "source_url", "checked_on")
+PUBLIC_AGENCY_JSON_ONLY = ("reports",)  # DF0237-02: recorded reports go to data/agencies.json only; the CSV header is unchanged
 PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
 PUBLIC_POLICY_FIELDS = ("url", "checked_on")
 PUBLIC_CONTRACT_FIELDS = ("vendor", "start", "end", "source_url", "checked_on")  # never renewal_note
 PUBLIC_COST_FIELDS = ("amount_usd", "period", "as_stated_in")  # contract.cost (DF1103-07): exactly these, when present
 PUBLIC_FUNDING_FIELDS = ("kind", "name", "as_stated_in", "source_url", "checked_on", "amount_usd", "period", "fiscal_year")  # DF2207-02
+PUBLIC_ARCHIVE_FIELDS = ("archived_url", "archived_on")  # DF0237-03: optional organizer-recorded archive pair
+PUBLIC_REPORT_FIELDS = ("title", "kind", "period_start", "period_end", "published_on", "source_url", "checked_on")  # DF0237-02
 PUBLIC_TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts",
                               "shared_with_agencies", "source_url", "checked_on")
 FULL_HASH = re.compile(r"[0-9a-fA-F]{40,}")
@@ -372,10 +376,27 @@ def time_tag(value):
     return f'<time datetime="{e(value)}">{e(value)}</time>'
 
 
-def policy_line(policy):  # links a posted ALPR usage policy an organizer found; fixed wording only
+def _archived(entry):
+    """The archive pair keys a public object carries: both when recorded, none otherwise."""
+    return PUBLIC_ARCHIVE_FIELDS if "archived_url" in entry else ()
+
+
+def archive_copy(entry, template="archived copy ({date})"):
+    """DF0237-03: `` <a>archived copy (DATE)</a>`` for an organizer-recorded archive pair, escaped once; "" when absent.
+
+    Nothing is fetched or checked here; the link says only that the organizer saved or found this copy.
+    """
+    if not entry or "archived_url" not in entry:
+        return ""
+    label = html_text(template).format(date=e(entry["archived_on"]))
+    return f' <a href="{e(entry["archived_url"])}" rel="noopener noreferrer">{label}</a>'
+
+
+def policy_line(policy, archive_template="archived copy ({date})"):  # links a posted ALPR usage policy an organizer found; fixed wording only
     if not policy:
         return ""
-    return (f'<p class="policy-link"><a href="{e(policy["url"])}" rel="noopener noreferrer">Posted ALPR usage policy</a> '
+    return (f'<p class="policy-link"><a href="{e(policy["url"])}" rel="noopener noreferrer">Posted ALPR usage policy</a>'
+            f'{archive_copy(policy, archive_template)} '
             f'(checked {date_label(policy["checked_on"])}, <a href="{e(policy["source_url"])}" '
             'rel="noopener noreferrer">where we found it</a>)</p>')
 
@@ -820,6 +841,7 @@ class Site:
                      + (f' · <a href="/glossary.html">{self.t("footer.glossary")}</a>' if self.glossary else "") + '</p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         meetings_feed = f' · <a href="/meetings.xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else ""  # DF1103-10
+        meetings_feed += f' · <a href="/events.ics">{self.t("footer.events_calendar")}</a>' if self.events else ""  # DF1107-10
         corrections_feed = f' · <a href="/corrections.xml">{self.t("corrections.feed")}</a>' if self.correction_entries() else ""  # DF0237-09
         archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
         parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a>{meetings_feed} · <a href="/search.html">{self.t("footer.search")}</a>'
@@ -885,6 +907,8 @@ class Site:
                    if self.model["meetings"] and (path == "/meetings.html" or path.startswith("/meetings/")) else "")
                 + (f'  <link rel="alternate" type="application/atom+xml" title="{self.t("corrections.feed")}" href="/corrections.xml">\n'
                    if self.correction_entries() and (path == "/corrections.html" or path in self.corrected_paths()) else "")
+                + (f'  <link rel="alternate" type="text/calendar" title="{self.t("events.subscribe")}" href="/events.ics">\n'
+                   if self.events and path == "/events.html" else "")
                 + canonical + extra)
 
     def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
@@ -1011,12 +1035,23 @@ class Site:
         return (f'    <section class="section" id="standings"><div class="section-heading"><div>'
                 f'<h2>{self.t("standings.heading")}</h2></div></div><ul>{rows}</ul>{line}</section>\n')
 
-    def meeting_item(self, meeting):
+    def submitted_comment_html(self, meeting):
+        """DF1407-06: the comment the campaign submitted, as escaped plain text in a <pre>; "" without one."""
+        comment = meeting.get("submitted_comment")
+        if not comment:
+            return ""
+        heading = self.t("meeting.submitted_comment", channel=comment["channel"], date=comment["on"])
+        return f'<section id="submitted-comment"><h3>{heading}</h3><pre class="submitted-comment">{e(comment["text"])}</pre></section>'
+
+    def meeting_item(self, meeting, comment_link=False):
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a>'
                   if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">{self.t("meeting.page")}</a>'
         item = f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
         item += meeting_outcome_html(meeting, self.t) if meeting["starts_at"][:10] < self.today.isoformat() else ""
         item += self._written_deadline(meeting)
+        if comment_link and meeting.get("submitted_comment"):  # DF1407-06: an agency page's past meeting
+            item += (f'<p><a href="/meetings/{e(meeting["id"])}.html#submitted-comment">'
+                     f'{self.t("meeting.submitted_comment_link")}</a></p>')
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
         kit = (f'<details><summary>{self.t("meeting.kit")}</summary>' + self.md(meeting["comment_kit_md"]) + '</details>'
@@ -1085,10 +1120,14 @@ class Site:
         """``$12,345.60`` from the transcribed decimal string; exact, never float-converted."""
         return "$" + format(Decimal(cost["amount_usd"]), ",.2f")
 
+    def archive_suffix(self, entry):
+        return archive_copy(entry, self.labels["agency.archived_copy"])
+
     def contract_cost_line(self, contract):
         """DF1103-07: the cost exactly as the document states it, with the contract's own source and checked date."""
         cost = contract["cost"]
-        source = (f'<a href="{e(contract["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>')
+        source = (f'<a href="{e(contract["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>'
+                  + self.archive_suffix(contract))
         return ('<p class="contract-cost">' + self.t("agency.contract_cost", amount=e(self.contract_cost_amount(cost)),
                 period=self.t("agency.cost_" + cost["period"]), document=e(cost["as_stated_in"]), source=source,
                 date=date_label(contract["checked_on"])) + "</p>")
@@ -1100,7 +1139,7 @@ class Site:
                 f'{time_tag(contract["end"])}' + (", " + self.t("agency.contract_ended") if contract["end"] < self.today.isoformat() else "")
                 + (f'. {e(contract["renewal_note"])}' if contract["renewal_note"] else "")
                 + f' ({self.t("agency.checked", date=date_label(contract["checked_on"]))} <a href="{e(contract["source_url"])}" '
-                  f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>'
+                  f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>{self.archive_suffix(contract)}).</p>'
                 + (self.contract_cost_line(contract) if contract.get("cost") else ""))
 
     def funding_block(self, agency):
@@ -1117,7 +1156,8 @@ class Site:
                 parts.append(e(self.contract_cost_amount(entry)) + " " + self.t("agency.cost_" + entry["period"]))
             if "fiscal_year" in entry:
                 parts.append(self.t("agency.funding_fiscal_year", year=e(entry["fiscal_year"])))
-            source = f'<a href="{e(entry["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>'
+            source = (f'<a href="{e(entry["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>'
+                      + self.archive_suffix(entry))
             provenance = self.t("agency.funding_provenance", document=e(entry["as_stated_in"]), source=source,
                                 date=time_tag(entry["checked_on"]))
             items.append(f'<li>{" · ".join(parts)}. <span class="funding-provenance">{provenance}</span></li>')
@@ -1143,6 +1183,26 @@ class Site:
         if not items:
             return ""
         return f'<h3>{self.t("agency.actions_heading")}</h3><ul class="agency-actions">{"".join(items)}</ul>'
+
+    def reports_block(self, agency, heading="h3"):
+        """DF0237-02: the ALPR usage reports the agency itself published, newest reporting period first; "" when none.
+
+        The list is the validated order of ``profile.reports``. Each entry links its own source and shows its own checked
+        date; nothing here says a report is required, late or missing.
+        """
+        items = []
+        for entry in agency.get("reports", []):
+            parts = [f'<a href="{e(entry["source_url"])}" rel="noopener noreferrer">{e(entry["title"])}</a>' + self.archive_suffix(entry),
+                     self.t("agency.report_kind_" + entry["kind"]),
+                     self.t("agency.report_period", start=time_tag(entry["period_start"]), end=time_tag(entry["period_end"]))]
+            if "published_on" in entry:
+                parts.append(self.t("agency.report_published", date=time_tag(entry["published_on"])))
+            parts.append(self.t("agency.report_checked", date=time_tag(entry["checked_on"])))
+            items.append(f'<li>{" · ".join(parts)}</li>')
+        if not items:
+            return ""
+        return (f'<section class="agency-reports"><{heading}>{self.t("agency.reports_heading")}</{heading}>'
+                f'<ul>{"".join(items)}</ul></section>')
 
     def policy_check_section(self, agency):
         """DF1207-06: the organizer's reading of which listed elements a posted policy addresses; fixed wording, no judgement."""
@@ -1242,7 +1302,7 @@ class Site:
         return (f'<section class="agency-transparency"><{heading}>{self.t("agency.transparency_heading")}</{heading}>'
                 + (f'<ul>{"".join(lines)}</ul>' if lines else "")
                 + f'<p><a href="{e(newest["source_url"])}" rel="noopener noreferrer">'
-                + self.t("agency.transparency_checked", date=time_tag(newest["checked_on"])) + '</a></p></section>')
+                + self.t("agency.transparency_checked", date=time_tag(newest["checked_on"])) + '</a>' + self.archive_suffix(newest) + '</p></section>')
 
     def agency_mapped_reported_block(self, agency):
         """DF0022-13: the newest portal camera count beside the map's count for the same picker city, never compared.
@@ -1333,7 +1393,7 @@ class Site:
         """DF0137-12: every agency side by side in model order (never sorted by a number); each cell links its source."""
         unchecked, rows = self.t("agencies.glance_not_checked"), []
         heads = [self.t(f"agencies.glance_{key}") for key in ("agency", "cameras", "searches_last_30_days",
-                                                               "retention_days", "policy", "contract", "cost", "asked")]
+                                                               "retention_days", "policy", "contract", "cost", "asked", "report")]
 
         def sourced(url, text, checked_on):
             return (f'<a href="{e(url)}" rel="noopener noreferrer">{text}</a> '
@@ -1341,6 +1401,7 @@ class Site:
         for agency in self.model["agencies"]:
             newest, policy, contract = (agency.get("transparency") or [{}])[0], agency.get("alpr_policy"), agency["contract"]
             asked, page = len(agency.get("asked", [])), self.agency_pages().get(agency["agency_id"], f'#{agency["slug"]}')
+            latest = (agency.get("reports") or [None])[0]  # DF0237-02: newest reporting period, as validated
             cells = [f'<a href="{e(page)}">{e(agency["name"])}</a>'] + [
                 sourced(newest["source_url"], e(newest[key]), newest["checked_on"]) if newest.get(key) is not None
                 else unchecked for key in ("cameras", "searches_last_30_days", "retention_days")]
@@ -1349,7 +1410,9 @@ class Site:
                       sourced(contract["source_url"], e(self.contract_cost_amount(contract["cost"])) + " "
                               + self.t("agency.cost_" + contract["cost"]["period"]), contract["checked_on"])
                       if contract and contract.get("cost") else unchecked,
-                      f'<a href="#{e(agency["slug"])}-asked">{asked}</a>' if asked else "0"]
+                      f'<a href="#{e(agency["slug"])}-asked">{asked}</a>' if asked else "0",
+                      sourced(latest["source_url"], e(latest["period_end"][:4]), latest["checked_on"]) if latest
+                      else self.t("agencies.glance_no_report")]
             rows.append('<tr><th scope="row" data-label="' + heads[0] + f'">{cells[0]}</th>'
                         + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
         return (f'<section class="at-a-glance" id="at-a-glance"><h3>{self.t("agencies.glance_heading")}</h3>'
@@ -1375,10 +1438,10 @@ class Site:
                     + self.agency_blocks(agency, findings)
                     + (f'<p>{self.t("agency.findings", count=len(findings))} ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
-                    + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
+                    + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"), self.labels["agency.archived_copy"])
                     + self.policy_check_section(agency)
                     + self.pre_meeting_section(agency)
-                    + self.contract_line(agency["contract"]) + self.contract_check_block(agency) + self.funding_block(agency) + self.transparency_block(agency) + self.sharing_section(agency)
+                    + self.contract_line(agency["contract"]) + self.contract_check_block(agency) + self.funding_block(agency) + self.reports_block(agency, "h4") + self.transparency_block(agency) + self.sharing_section(agency)
                     + (f'<p class="contact-provenance">{self.t("agency.contact_checked", date=date_label(agency["verification"]["checked_on"]))} '
                        f'<a href="{e(agency["verification"]["source_url"])}" rel="noopener noreferrer">{self.t("agency.official_source")}</a>.</p>'
                        if agency["verified"] and agency["verification"] else "")
@@ -1535,7 +1598,7 @@ class Site:
             f'<a href="/sources.html#{e(s["fragment"])}">{self.t("agency.in_library")}</a></p></li>'
             for s in self.model["sources"] if s["agency_id"] == aid)
         meetings = "".join(self.meeting_item(m) for m in self.upcoming if m.get("agency_id") == aid)
-        past = "".join(self.meeting_item(m) for m in self.past if m.get("agency_id") == aid)  # DF2207-05
+        past = "".join(self.meeting_item(m, comment_link=True) for m in self.past if m.get("agency_id") == aid)  # DF2207-05
         links = self.official_links(agency)
         main = (f'    <article class="section finding-body" id="content"><p class="eyebrow">{self.t("kind." + agency["kind"])}</p>'
                 f'<h2>{e(agency["name"])}</h2><p>{e(agency["jurisdiction_name"])}</p>'
@@ -1546,9 +1609,10 @@ class Site:
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
                 + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency) + self.pre_meeting_section(agency)
-                + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
+                + (policy_line(agency["alpr_policy"], self.labels["agency.archived_copy"]) if (agency.get("alpr_policy") or {}).get("archived_url") else "")
+                + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") or (agency["contract"] or {}).get("archived_url") else "")
                 + self.contract_check_block(agency, "h3")
-                + self.funding_block(agency) + self.actions_section(agency) + self.transparency_block(agency, "h3") + self.sharing_section(agency) + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
+                + self.funding_block(agency) + self.actions_section(agency) + self.reports_block(agency) + self.transparency_block(agency, "h3") + self.sharing_section(agency) + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
                 + self.statements_section(aid)
                 + self.local_rules_section(agency)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
@@ -2045,6 +2109,7 @@ class Site:
                     + ("".join(self.event_html(event) for event in rows) or f'<p>{self.t(empty)}</p>') + '</section>')
         main = ('    <section class="section finding-body" id="content">'
                 f'<p>{self.t("events.lead")}</p><p>{self.t("events.as_of", date=e(self.today.isoformat()))}</p>'
+                f'<p><a href="/events.ics">{self.t("events.subscribe")}</a></p>'
                 + section("upcoming-events", "events.upcoming", self.events_upcoming, "events.none_upcoming")
                 + section("past-events", "events.past", self.events_past, "events.none_past") + '</section>\n')
         return self.page("events", self.labels["events.title"], self.labels["events.lead"], "/events.html", main)
@@ -2324,6 +2389,7 @@ class Site:
                 + self.public_comment_counts(meeting)
                 + self._written_deadline(meeting)
                 + self._cosigned(meeting)
+                + self.submitted_comment_html(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
                 f'<p><a href="/meetings.html">{self.t("meeting.all")}</a></p></article>\n')
@@ -2770,6 +2836,21 @@ class Site:
             ET.SubElement(entry, f"{{{ns}}}category", term=finding["classification"])
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(feed, encoding="unicode") + "\n"
 
+    def events_ics(self):
+        """DF1107-10: the campaign's upcoming events as an RFC 5545 calendar, same writer, escaping, folding and UTC rule as meetings.ics."""
+        host = urlsplit(self.base).hostname if self.base else "deflock-campaign.invalid"
+        stamp = self.today.strftime("%Y%m%d") + "T000000Z"
+        lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DeFlock Campaign Tool//events//EN", "CALSCALE:GREGORIAN",
+                 "X-WR-CALNAME:" + ics_text(self.cfg["name"] + " campaign events")]
+        for event in self.events_upcoming:
+            start, end = (parse_moment(event[key]).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ") for key in ("starts_at", "ends_at"))
+            lines += ["BEGIN:VEVENT", f'UID:event-{event["id"]}@{host}', "DTSTAMP:" + stamp, "DTSTART:" + start] + ([] if end == start else ["DTEND:" + end]) + [
+                      "SUMMARY:" + ics_text(event["title"]),
+                      "LOCATION:" + ("Online" if event.get("online") else ics_text(event["venue"])),
+                      "URL:" + f'{self.base}/events.html#event-{event["id"]}', "END:VEVENT"]
+        lines.append("END:VCALENDAR")
+        return "".join(ics_fold(line) + "\r\n" for line in lines)
+
     def meetings_ics(self):
         """Upcoming (not cancelled) meetings as an RFC 5545 calendar; deterministic for one build day."""
         host = urlsplit(self.base).hostname if self.base else "deflock-campaign.invalid"
@@ -2966,6 +3047,8 @@ class Site:
                                                               "comment_source_url") if key in outcome}
             if "votes" in outcome:  # DF0137-07 per-member votes, in stored order
                 value["outcome"]["votes"] = [{"name": v["name"], "vote": v["vote"]} for v in outcome["votes"]]
+        if meeting.get("submitted_comment"):  # DF1407-06: when and how only, never the text or its digest
+            value["submitted_comment"] = {key: meeting["submitted_comment"][key] for key in ("on", "channel")}
         return value
 
     def meetings_json(self):
@@ -2975,7 +3058,9 @@ class Site:
                "meetings": [self._public_meeting(m) for m in ordered]}
         vote = (PUBLIC_VOTE_FIELDS, {})
         _assert_public(doc, "data/meetings.json", PUBLIC_MEETING_TOP_LEVEL | set(self.license_top()),
-                       {"meetings": (PUBLIC_MEETING_FIELDS, {"outcome": (PUBLIC_OUTCOME_FIELDS, {"votes": vote})})})
+                       {"meetings": ((*PUBLIC_MEETING_FIELDS, *PUBLIC_MEETING_OPTIONAL),
+                                     {"outcome": (PUBLIC_OUTCOME_FIELDS, {"votes": vote}),
+                                      "submitted_comment": (("on", "channel"), {})})})
         return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
@@ -2987,16 +3072,18 @@ class Site:
                 "url": self.base + self.agency_pages()[agency["agency_id"]],
                 "asked": [{"topic": a["topic"], "state": a["state"], "asked_on": a["asked_on"],
                            "updated_on": a.get("updated_on")} for a in asked],
-                "alpr_policy": {k: policy[k] for k in PUBLIC_POLICY_FIELDS} if policy else None,
-                "contract": ({**{k: contract[k] for k in PUBLIC_CONTRACT_FIELDS},
+                "alpr_policy": {k: policy[k] for k in PUBLIC_POLICY_FIELDS + _archived(policy)} if policy else None,
+                "contract": ({**{k: contract[k] for k in PUBLIC_CONTRACT_FIELDS + _archived(contract)},
                               **({"cost": {k: contract["cost"][k] for k in PUBLIC_COST_FIELDS}} if contract.get("cost") else {})}
                              if contract else None),
-                "transparency": ({k: newest[k] for k in PUBLIC_TRANSPARENCY_FIELDS if newest.get(k) is not None}
+                "transparency": ({k: newest[k] for k in PUBLIC_TRANSPARENCY_FIELDS + _archived(newest) if newest.get(k) is not None}
                                  if newest else None),
-                **({"funding": [{k: f[k] for k in PUBLIC_FUNDING_FIELDS if k in f} for f in agency["funding"]]}
+                **({"funding": [{k: f[k] for k in PUBLIC_FUNDING_FIELDS + PUBLIC_ARCHIVE_FIELDS if k in f} for f in agency["funding"]]}
                    if agency.get("funding") else {}),  # DF2207-02: only when the organizer recorded it
                 **({"actions": [{k: a[k] for k in PUBLIC_ACTION_FIELDS} for a in self.newest_actions(agency)]}
                    if agency.get("actions") else {}),  # DF0237-01: likewise, the page's order
+                **({"reports": [{k: r[k] for k in PUBLIC_REPORT_FIELDS + PUBLIC_ARCHIVE_FIELDS if k in r} for r in agency["reports"]]}
+                   if agency.get("reports") else {}),  # DF0237-02: same order as the page, only when recorded
                 "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
 
     def agencies_json(self):
@@ -3008,13 +3095,14 @@ class Site:
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "agencies": [self._public_agency(a, cities) for a in listed]}
         _assert_public(doc, "data/agencies.json", PUBLIC_AGENCY_TOP_LEVEL | set(self.license_top()),
-                       {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL + PUBLIC_AGENCY_ACTIONS,
+                       {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL + PUBLIC_AGENCY_ACTIONS + PUBLIC_AGENCY_JSON_ONLY,
                                      {"actions": (PUBLIC_ACTION_FIELDS, {}),
                                                             "asked": (PUBLIC_ASKED_FIELDS, {}),
-                                                            "alpr_policy": (PUBLIC_POLICY_FIELDS, {}),
-                                                            "contract": (PUBLIC_CONTRACT_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
-                                                            "funding": (PUBLIC_FUNDING_FIELDS, {}),
-                                                            "transparency": (PUBLIC_TRANSPARENCY_FIELDS, {})})})
+                                                            "alpr_policy": (PUBLIC_POLICY_FIELDS + PUBLIC_ARCHIVE_FIELDS, {}),
+                                                            "contract": (PUBLIC_CONTRACT_FIELDS + PUBLIC_ARCHIVE_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
+                                                            "funding": (PUBLIC_FUNDING_FIELDS + PUBLIC_ARCHIVE_FIELDS, {}),
+                                                            "reports": (PUBLIC_REPORT_FIELDS + PUBLIC_ARCHIVE_FIELDS, {}),
+                                                            "transparency": (PUBLIC_TRANSPARENCY_FIELDS + PUBLIC_ARCHIVE_FIELDS, {})})})
         return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
@@ -3286,6 +3374,8 @@ def _plan_site(root, today=None, notes=None):
     if site.sources_filter():  # DF1103-12: written only when sources.html loads it; an empty library leaves no stale asset
         files["sources/filter.js"] = site.sources_filter_js()
     files.update(site.agency_feeds())
+    if site.events:  # DF1107-10: no events file or [] means no calendar (the tree swap drops a stale one)
+        files["events.ics"] = site.events_ics()
     if model["meetings"]:  # DF1103-10: no staged meetings, no feed (the tree swap drops a stale one)
         files["meetings.xml"] = site.meetings_feed_xml()
     corrections_text = site.corrections_feed_xml()  # DF0237-09: no correction, no file (the tree swap drops a stale one)

@@ -380,6 +380,21 @@ URL printed beside them, nothing shortened or tracked; the printed URL stays the
 earlier flyer is left as it was. Without `base_url` there is no QR code and both `flyer.html` and `flyer.txt` are
 byte-identical to what they were before this feature; `flyer.txt` never carries a QR code.
 
+### Event flyer
+
+`python3 -m campaign_tool flyer --directory D --event ID [--replace]` (not combinable with `--max-findings`)
+writes a private `kit/flyer/event-<id>.html` and `.txt` twin for one upcoming event of `content/events.json`,
+read and validated by the same reader as the events page. Upcoming is the events page rule: the event
+`starts_at` is on or after 00:00:00 UTC of the current UTC day; an unknown, missing or past event is refused
+by name before anything is written. Both twins carry the title, the start and end exactly as supplied
+(date, time and UTC offset; `Z` is shown as UTC, nothing is converted), the venue or `Online`, the
+accessibility note only when given, the full description as escaped plain text with its line breaks, and the
+events-page reference `events.html#event-<id>` (absolute with `base_url`, otherwise the site-relative
+`/events.html#event-<id>`, which is not a working file:// link). No findings, scripts or external loads. The
+site logo is copied as `event-<id>-logo.<ext>`, so event flyers and the campaign flyer coexist; an existing
+twin or same-id logo is refused without `--replace`, which touches only that event. The report is
+`{"written": [...], "event": "<id>"}`. Nothing is printed, sent or published.
+
 ## Reviewer roster (role assignment, not authentication)
 
 `finding reviewers add --directory D --name N --role R [--role R]` (R: factual, legal, privacy) merges
@@ -475,7 +490,7 @@ link, Mastodon 500 code points with 23-character links. Only the title is shorte
 every chosen platform is made before anything is written, so one that cannot fit stops the run with
 the platform named. Each folder keeps its own `.written.json`, kept edits go to
 `kit/social/<P>.suggested/` and stale slugs are listed per platform. Without `--platform` the run is
-unchanged (`len()` within 280 into `kit/social/`); `--check` reads that folder only.
+unchanged (`len()` within 280 into `kit/social/`); `--check` reads every draft folder (see Checking every draft folder).
 
 ### Social drafts for meetings (never posted)
 
@@ -488,8 +503,8 @@ the date and time in the meeting's own UTC offset (as the meeting page prints it
 the verified written-comment deadline and how, how to attend, and `<base_url>/meetings/<id>.html`
 when `base_url` is set. Only the agenda item is shortened. Cancelled, past, later-than-window and
 unverified meetings get no draft and are counted under `skipped`; an unreadable meeting file is
-counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts and
-`--check` are unchanged. Nothing is posted.
+counted and named, never fatal. `--meetings` cannot be combined with `--check`; finding drafts are
+unchanged. Nothing is posted.
 
 ### Social drafts for outcomes (never posted)
 
@@ -511,6 +526,24 @@ you edited is kept (the fresh text goes to the suggestions folder); a corrected 
 untouched drafts; drafts that left the window are listed as `stale`, never removed. `--outcomes` cannot
 be combined with `--meetings` or `--check`. Nothing is posted.
 
+### Social drafts for campaign events (never posted)
+
+`social --directory D --events [--within-days N] [--platform P ...]` (N from 1 to 60, default 14) writes
+one private draft per event in `content/events.json` that starts between now and N days ahead, both ends
+included, to `kit/social/events/<id>.md` (or `kit/social/events/<P>/<id>.md` sized by that platform's rule;
+kept edits go to `kit/social/events.suggested/` or `kit/social/events/<P>.suggested/`). The post reads
+`<title> — <weekday month day, year, time UTC±HH:MM>. <venue or Online>. <base_url>/events.html#event-<id>`:
+the date, time and offset are the stored start's own, never the host's zone. `content/site.json` `base_url`
+is required even when there are no events. An event that already started is past, even if it has not ended,
+and gets no draft; past and later events are counted under `skipped` (`past`, `outside_window`). A missing
+events file or `[]` writes nothing; an invalid events file refuses the whole run before any write. Only the
+title is shortened (with an ellipsis); if the date, offset, place and link alone cannot fit a platform's limit
+the run is refused, naming the event and platform, before any file is written. Description, registration URL
+and accessibility note are never used. Kept edits, regenerated untouched drafts and `stale` drafts behave as
+for meetings (a draft you edited is kept and the fresh text goes to the suggestions folder; nothing is
+removed). `--events` cannot be combined with `--meetings`, `--outcomes`, `--check` or `--thread`.
+Nothing is posted.
+
 ### Social threads for findings (never posted)
 
 `social --directory D --thread --finding ID [--platform P ...]` writes one private numbered thread draft
@@ -518,7 +551,7 @@ for one already published finding to `kit/social/threads/<slug>.md` (or `kit/soc
 counted by that platform's rule; kept edits go to `kit/social/threads.suggested/` or
 `kit/social/threads/<P>.suggested/`, and each output folder keeps its own `.written.json`). `ID` is the
 exact published finding id (not a slug or prefix), given once; `--finding` needs `--thread`, and `--thread`
-cannot be combined with `--check`, `--meetings`, `--outcomes` or `--within-days`. An unknown, unpublished
+cannot be combined with `--check`, `--meetings`, `--outcomes`, `--events` or `--within-days`. An unknown, unpublished
 or withdrawn id is refused and nothing is written.
 
 The posts, in this order, each starting `(n/N) ` where N is the final post count:
@@ -547,7 +580,26 @@ findings in the same folder are left alone and are not reported as stale, while 
 no longer published is listed as `stale`, never deleted. The command prints the report
 (`finding`, `posts`, `threads`, `posted: false`) and `Drafts written to kit/social/threads. Nothing was
 posted.`; wording the legal-claim guard flags is noted on stderr only, per post, and is never an approval.
-Finding drafts, meeting drafts and `--check` are unchanged. Nothing goes to `content/` or `public/`.
+Finding and meeting drafts are unchanged. Nothing goes to `content/` or `public/`.
+
+### Checking every draft folder (read-only)
+
+`social --check [--text]` names each draft's state in every private folder it finds: `kit/social/` (as always),
+`kit/social/<x|bluesky|mastodon>/`, `kit/social/{meetings,outcomes,threads}/` and their `<platform>/` sub-folders, and each
+`.suggested` sibling (including `kit/social.suggested/`). Absent folders are skipped; a link or non-folder in that list is
+named as a folder problem and never entered. States are `ok`, `missing`, `outdated`, `edited` and `not_regular`, each
+folder using its own length rule (a thread is checked post by post, `(n/N)` counters included). A valid edit is not a
+problem. A draft is listed as **stale**, with a reason and once, when its finding is no longer published, its meeting is
+cancelled, rescheduled (stored `starts_at` differs from the one drafted), past or no longer verified, or its recorded
+outcome changed or left its original N-day window. Default output stays JSON (a campaign with only `kit/social/*.md`
+drafts prints exactly what it always did); other folders add one key per folder under `folders`. `--text` prints the
+same result grouped by folder. Exit 3 on any problem. Nothing is written or posted.
+
+Meeting and outcome drafts keep a private `kit/social/<kind>/.check.json` next to `.written.json` (the source
+`starts_at`, or the whole recorded outcome, plus the window; no draft text). Drafts made before it existed have no
+original value to compare: they are checked against a fresh 14-day draft and, when different, reported `outdated` with the
+command to rebuild them. A kept organizer edit keeps its original entry; the fresh suggestion gets its own.
+
 
 ## Posting one approved social draft (Worker `post_social`)
 

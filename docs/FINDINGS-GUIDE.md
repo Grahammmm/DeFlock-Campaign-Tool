@@ -71,6 +71,13 @@ If the story is that an agency denied a request, or closed it, without producing
 python3 -m campaign_tool finding new --directory "$CAMPAIGN" --gap ex-records-office --request main --author "Author Z"
 ```
 
+If the lead is a count in an agency's own ALPR search log, there is a third start. Save the `kit-search-log --json` output of the log as `$SUMMARY` ([SEARCH-LOG.md](SEARCH-LOG.md)), ingest and register that same CSV with the commands of step 1 (`$SEARCH_LOG` is the CSV), then run `finding new --search-log`. The tool re-reads the stored record and refuses unless its hash is registered in `content/sources.json` for that agency and every count in the summary still matches; it takes the agency only from `--agency` and refuses `--title`, `--source`, `--gap` and `--request` with it. The draft holds the period, total, purpose-category counts and the ten busiest searching organizations as tables, cites the log as `Search log <12 hex>`, and leaves the title, summary, classification and confidence as `[EDIT ME: ...]`: a count is a lead, not evidence, so you still interpret it, add limitations, and take it through steps 3 to 8 like any draft. No purpose text, user name, case number or plate is copied, and nothing is published.
+
+```bash
+python3 -m campaign_tool kit-search-log --directory "$CAMPAIGN" --csv "$SEARCH_LOG" --agency ex-records-office --json
+python3 -m campaign_tool finding new --directory "$CAMPAIGN" --agency ex-records-office --search-log "$SUMMARY" --author "Author Z"
+```
+
 ## 3. Write the finding
 
 Reference: [PUBLICATION.md, offline review receipts](PUBLICATION.md#offline-review-receipts-cli).

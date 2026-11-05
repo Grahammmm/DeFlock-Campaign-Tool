@@ -114,7 +114,7 @@ class FreshInitTests(HelpMapCase):
         content = root / "content"
         self.assertEqual((content / "pages" / "help-map.json").read_bytes().decode("utf-8"),
                          json.dumps(starter(), indent=2, ensure_ascii=False) + "\n")
-        texts = [(content / name).read_text(encoding="utf-8") for name in ("site.json", "faq.json", "pages/help-map.json")]
+        texts = [(content / name).read_text(encoding="utf-8") for name in ("site.json", "faq.json", "pages/help-map.json", "pages/background.json")]
         self.assertEqual(report["placeholders"], sum(text.count("[EDIT ME: ") for text in texts))
         self.assertEqual(texts[2].count("[EDIT ME: "), 6)
         self.assertEqual(content_problems(root), [])

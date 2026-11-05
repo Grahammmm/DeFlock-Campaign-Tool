@@ -537,11 +537,11 @@ _MODULES = {
     "backup archives and keys": "backup backup_crypt",
     "generated drafts, exports and public content, no catalog store": """
         agency_brief content_init content_sharing coverage flyer kit_calendar kit_copy kit_export kit_fees kit_preserve kit_timing
-        map_survey meeting_outcome meeting_pack meeting_stage meetings newsletter.__main__ newsletter.archive
+        map_survey meeting_comment_publish meeting_outcome meeting_pack meeting_stage meetings meetings_manual newsletter.__main__ newsletter.archive
         newsletter.draft newsletter.sent outbox outbox_batch press recent search_log site site_check social social_threads""",
     "other local files with no catalog store": """
         agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
-        kit_fee_reply kit_preserve kit_repeat search_log law law_packet map_controller registry setup_cmd shell sources_cmd""",
+        finding_search_log kit_fee_reply kit_preserve kit_repeat search_log law law_packet map_controller registry setup_cmd shell sources_cmd""",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -559,14 +559,14 @@ MODULE_FUNCTIONS = {
     ),
     'backup_crypt': ('decrypted', 'encrypt', 'gpg_path',),
     'cli': (
-        '_store_bytes', 'backup_drill_cmd', 'finding_preview', 'initialize', 'main', 'meetings_cmd',
+        '_meetings_multi', '_store_bytes', 'backup_drill_cmd', 'finding_preview', 'initialize', 'main', 'meetings_cmd',
         'readiness', 'weight_budget'
     ),
     'content_init': ('_rename_noreplace', '_write', 'faq_document', 'init_content', 'init_from',),
     'content_sharing': ('import_sharing',),
     'coverage': ('_write', 'add_coverage', 'remove_coverage',),
     'finding_packet': ('_copy_hash', '_create', 'build_packet',),
-    'flyer': ('build',),
+    'flyer': ('build', 'build_event'),
     'image_meta': ('strip_file',),
     'import_existing': ('_write_receipt', 'run',),
     'kit_agencies': ('_save',),
@@ -579,6 +579,7 @@ MODULE_FUNCTIONS = {
     'kit_fee_reply': ('_write', 'fee_reply',),
     'kit_preserve': ('preserve_request',),
     'search_log': ('run_cli',),
+    'finding_search_log': ('draft_from_summary',),  # private finding draft via findings._write_draft; never published
     'kit_repeat': ('_replace_store', 'repeat_request',),
     'kit_preserve': ('preserve_request',),  # private kit/preservation draft, O_EXCL, 0600, no store
     'kit_timing': ('write_csv',),
@@ -589,10 +590,12 @@ MODULE_FUNCTIONS = {
     'law_packet': ('build',),
     'map_controller': ('main',),
     "map_survey": ('_install_new', '_write_checks', 'render_csv', 'survey_import',),
+    'meeting_comment_publish': ('publish',),
     'meeting_outcome': ('record_comment_counts', 'record_direction', 'record_minutes', 'record_outcome',),
     'meeting_pack': ('_commit_pack', '_discard', '_write_member', 'build',),
     'meeting_stage': ('stage',),
     'meetings': ('write_matters', 'write_meetings',),
+    'meetings_manual': ('_save',),  # private kit/meetings-manual.json, 0600 atomic write, organizer-entered meetings only
     'newsletter.__main__': ('main',),
     'newsletter.archive': ('publish_issue',),
     'newsletter.draft': ('write_draft',),
@@ -696,7 +699,7 @@ MODULE_FUNCTIONS = {
     'shell': ('main',),
     'site': ('_copy', '_csv_text', '_write', 'build_site', 'build_starter',),
     'site_check': ('write_weights',),
-    'social': ('_write_drafts', 'build_meeting_social', 'build_outcome_social', 'build_social',),
+    'social': ('_write_drafts', 'build_event_social', 'build_meeting_social', 'build_outcome_social', 'build_social',),
     'social_threads': ('build_thread_social',),
     'sources_cmd': ('_batch_write', '_rewrite', '_write_atomic', 'add_source',),
 }

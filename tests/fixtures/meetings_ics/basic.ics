@@ -1,0 +1,97 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Example City//Council//EN
+X-WR-CALNAME:Not The Body Name
+BEGIN:VTIMEZONE
+TZID:America/Los_Angeles
+BEGIN:STANDARD
+DTSTART:19701101T020000
+TZOFFSETFROM:-0700
+TZOFFSETTO:-0800
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:tz-1@example.gov
+SUMMARY:City Council regular meeting
+DESCRIPTION:Item 7: Automated License Plate Readers contract
+URL:https://example.gov/agenda/1
+ATTACH;FILENAME=staff-report.pdf:https://example.gov/files/a.pdf
+DTSTART;TZID=America/Los_Angeles:20261112T180000
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:Flock reminder inside an alarm
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:utc-1@example.gov
+SUMMARY:Flock camera review
+DTSTART:20261113T020000Z
+END:VEVENT
+BEGIN:VEVENT
+UID:dst-1@example.gov
+SUMMARY:ALPR late session
+DTSTART;TZID=America/Los_Angeles:20261101T013000
+END:VEVENT
+BEGIN:VEVENT
+UID:floating-1@example.gov
+SUMMARY:ALPR floating
+DTSTART:20261114T180000
+END:VEVENT
+BEGIN:VEVENT
+UID:unknown-1@example.gov
+SUMMARY:ALPR unknown zone
+DTSTART;TZID=Mars/Base:20261114T180000
+END:VEVENT
+BEGIN:VEVENT
+UID:rrule-1@example.gov
+SUMMARY:ALPR weekly
+RRULE:FREQ=WEEKLY;COUNT=4
+DTSTART;TZID=America/Los_Angeles:20261116T180000
+END:VEVENT
+BEGIN:VEVENT
+UID:rdate-1@example.gov
+SUMMARY:ALPR extra dates
+RDATE;TZID=America/Los_Angeles:20261120T180000
+DTSTART;TZID=America/Los_Angeles:20261117T180000
+END:VEVENT
+BEGIN:VEVENT
+UID:LONGUID
+SUMMARY:ALPR long uid
+DTSTART;TZID=America/Los_Angeles:20261118T180000
+END:VEVENT
+BEGIN:VEVENT
+UID:allday-1@example.gov
+SUMMARY:ALPR community day
+DTSTART;VALUE=DATE:20261115
+END:VEVENT
+BEGIN:VEVENT
+UID:cancelled-1@example.gov
+SUMMARY:ALPR policy hearing
+STATUS:CANCELLED
+DTSTART;TZID=America/Los_Angeles:20261119T180000
+END:VEVENT
+BEGIN:VEVENT
+UID:nomatch-1@example.gov
+SUMMARY:Parks budget
+DESCRIPTION:Playground repairs
+DTSTART;TZID=America/Los_Angeles:20261120T180000
+END:VEVENT
+BEGIN:VEVENT
+UID:attachonly-1@example.gov
+SUMMARY:Budget hearing
+ATTACH:https://example.gov/files/flock-alpr.pdf
+DTSTART;TZID=America/Los_Angeles:20261121T180000
+END:VEVENT
+BEGIN:VEVENT
+UID:http-1@example.gov
+SUMMARY:ALPR over http
+URL:http://example.gov/agenda/http
+ATTACH:http://example.gov/files/b.pdf
+DTSTART;TZID=America/Los_Angeles:20261122T180000
+END:VEVENT
+BEGIN:VEVENT
+UID:past-1@example.gov
+SUMMARY:ALPR already held
+DTSTART;TZID=America/Los_Angeles:20260901T180000
+END:VEVENT
+END:VCALENDAR
