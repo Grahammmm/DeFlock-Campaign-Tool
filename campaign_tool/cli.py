@@ -1069,6 +1069,12 @@ def main():
     atlas_p.add_argument("--csv", required=True, help="A saved Atlas of Surveillance export (UTF-8, at most 10 MiB)")
     atlas_p.add_argument("--directory", required=True)
     atlas_p.add_argument("--json", action="store_true", dest="as_json", help="Print the report as JSON")
+    suggest_text = ("Suggest in-state agencies named on recorded sharing lists as request leads (private, read-only). "
+                    "Receiving data is a reason to ask, not evidence of misuse.")
+    suggest_p = agency_cmds.add_parser("suggest", help=suggest_text, description=suggest_text, allow_abbrev=False)
+    suggest_p.add_argument("--from-sharing", action="store_true", required=True, dest="from_sharing",
+                           help="Use the recorded DF1207-08 sharing lists (required)")
+    suggest_p.add_argument("--directory", required=True)
     from .kit_track import CHANNELS as kit_track_channels
     sent_p = commands.add_parser("kit-sent", help="Record a request the organizer sent by hand in kit/sent.json; sends nothing")
     for flag in ("--directory", "--agency", "--date"):
@@ -1953,6 +1959,9 @@ def main():
             from . import kit_atlas
             report = kit_atlas.compare_atlas(root, Path(args.csv).expanduser())
             print(json.dumps(report, indent=2, ensure_ascii=False) if args.as_json else kit_atlas.render_atlas(report))
+        elif args.command == "kit-agency" and args.agency_command == "suggest":
+            from . import kit_sharing_suggest
+            print(kit_sharing_suggest.suggest_from_sharing(root))
         elif args.command == "kit-agency":
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
