@@ -1,7 +1,8 @@
 """`content init`: write the minimal valid content/ tree so `build` switches to the content site.
 
 Every organizer-owned sentence is a "[EDIT ME: ...]" placeholder; nothing is built, sent or published.
-A fresh init also seeds content/faq.json from the packaged draft FAQ starter (DF0022-02).
+A fresh init also seeds content/faq.json from the packaged draft FAQ starter (DF0022-02)
+and content/pages/help-map.json from the packaged help-map starter (DF0237-15).
 """
 import ctypes
 import errno
@@ -15,13 +16,14 @@ import tempfile
 from pathlib import Path
 
 from .cli import read_config
-from .content import load_faq, load_site
+from .content import load_faq, load_pages, load_site
 from .markdown_lite import lint
 
 PLACEHOLDER = "[EDIT ME: "
 _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
 FAQ_STARTER = Path(__file__).resolve().parent / "_resources" / "examples" / "faq.json"  # packaged mirror of examples/faq.json
+HELP_MAP_STARTER = Path(__file__).resolve().parent / "_resources" / "examples" / "pages" / "help-map.json"  # mirror of examples/pages/help-map.json
 GENERIC_DEADLINE = (PLACEHOLDER + "verify for this campaign] Check the applicable law package and official guidance for response timing. "
                     "A reminder is not a legal determination or a promise that records will be produced by that date.")
 
@@ -63,6 +65,16 @@ def faq_document(cfg):
         if load_faq(document, Path(folder), [], []) is None:
             raise RuntimeError("content init produced a FAQ the build would refuse")
     if any(lint(entry["answer_md"]) for entry in document["entries"]):
+        raise RuntimeError("content init produced Markdown the build would degrade")
+    return document
+
+
+def help_map_document():
+    """The draft help-map page starter: a fresh dict read from the packaged resource (never a checkout path).
+
+    Checked here by the Markdown lint; the page loader runs on the temporary content tree before publication."""
+    document = json.loads(HELP_MAP_STARTER.read_text(encoding="utf-8"))
+    if lint(document["body_md"]):
         raise RuntimeError("content init produced Markdown the build would degrade")
     return document
 
@@ -115,10 +127,15 @@ def init_content(root, source_root=None):
     document = site_document(cfg)
     text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
     faq_text = json.dumps(faq_document(cfg), indent=2, ensure_ascii=False) + "\n"
+    page_text = json.dumps(help_map_document(), indent=2, ensure_ascii=False) + "\n"
     temporary = Path(tempfile.mkdtemp(prefix=".content.new-", dir=root))
     try:
         _write(temporary / "site.json", text)
         _write(temporary / "faq.json", faq_text)
+        os.mkdir(temporary / "pages", 0o700)
+        _write(temporary / "pages" / "help-map.json", page_text)
+        if len(load_pages(temporary, set())) != 1:
+            raise RuntimeError("content init produced a page the build would refuse")
         # Self-check: a written file the build would reject is a bug here, not an organizer error.
         written = json.loads((temporary / "site.json").read_text(encoding="utf-8"))
         load_site(written)
@@ -134,9 +151,9 @@ def init_content(root, source_root=None):
     except BaseException:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
-    return {"written": ["content/faq.json", "content/findings/", "content/meetings/", "content/site.json",
-                        "content/sources.json"],
-            "placeholders": text.count(PLACEHOLDER) + faq_text.count(PLACEHOLDER)}
+    return {"written": ["content/faq.json", "content/findings/", "content/meetings/", "content/pages/",
+                        "content/pages/help-map.json", "content/site.json", "content/sources.json"],
+            "placeholders": text.count(PLACEHOLDER) + faq_text.count(PLACEHOLDER) + page_text.count(PLACEHOLDER)}
 
 
 def init_from(root, source_root):

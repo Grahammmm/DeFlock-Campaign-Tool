@@ -56,7 +56,7 @@ class SyncStatesTests(unittest.TestCase):
         code, out, err = run(None)
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out.splitlines(), ["ok " + name for name in RESOURCES]
-                         + ["resources=8 ok=8 stale=0 missing-target=0"])
+                         + ["resources=9 ok=9 stale=0 missing-target=0"])
         after = {name: (ROOT / "campaign_tool" / "_resources" / name).stat().st_mtime_ns for name in RESOURCES}
         self.assertEqual(before, after)
 
@@ -70,14 +70,14 @@ class SyncStatesTests(unittest.TestCase):
         self.assertIn("stale " + RESOURCES[1], lines)
         self.assertIn("missing-target " + RESOURCES[3], lines)
         self.assertEqual(lines.count("ok " + RESOURCES[0]), 1)
-        self.assertEqual(lines[-1], "resources=8 ok=6 stale=1 missing-target=1")
+        self.assertEqual(lines[-1], "resources=9 ok=7 stale=1 missing-target=1")
         self.assertEqual(self.snapshot(), before, "check mode must not write")
 
     def test_single_stale_only(self):
         self.target(RESOURCES[4]).write_bytes(self.target(RESOURCES[4]).read_bytes() + b"\n")
         code, out, _ = run(self.root)
         self.assertEqual(code, 1)
-        self.assertEqual(out.splitlines()[-1], "resources=8 ok=7 stale=1 missing-target=0")
+        self.assertEqual(out.splitlines()[-1], "resources=9 ok=8 stale=1 missing-target=0")
         self.assertIn("stale " + RESOURCES[4], out.splitlines())
 
     def test_write_repairs_stale_and_missing(self):
@@ -85,7 +85,7 @@ class SyncStatesTests(unittest.TestCase):
         self.target(RESOURCES[3]).unlink()
         code, out, err = run(self.root, "--write")
         self.assertEqual((code, err), (0, ""))
-        self.assertEqual(out.splitlines()[-1], "resources=8 ok=8 stale=0 missing-target=0")
+        self.assertEqual(out.splitlines()[-1], "resources=9 ok=9 stale=0 missing-target=0")
         for name in RESOURCES:
             self.assertEqual(self.target(name).read_bytes(), (self.root / name).read_bytes())
         self.assertEqual(self.leftovers(), [])
@@ -187,7 +187,7 @@ class SyncStatesTests(unittest.TestCase):
             code, out, err = run(self.root, "--write")
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out.splitlines(), ["ok " + name for name in RESOURCES]
-                         + ["resources=8 ok=8 stale=0 missing-target=0"])
+                         + ["resources=9 ok=9 stale=0 missing-target=0"])
         for name in RESOURCES:
             self.assertEqual(self.target(name).stat().st_mtime_ns, old)
             self.assertEqual(self.target(name).stat().st_ino, inodes[name])
