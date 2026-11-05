@@ -350,7 +350,14 @@ HANDOUT_DEFAULTS = {
                                 "file exactly as received. It shows the file has not changed since; it does not by "
                                 "itself prove who wrote it.",
 }
+# DF1622-09: page-local labels for the meetings.html body filter; deliberately not in JS_DEFAULTS, so no site-data.js transport.
+MEETINGS_JS_DEFAULTS = {
+    "js.meetings_label": "Filter meetings", "js.meetings_body": "Governing body",
+    "js.meetings_all_bodies": "All governing bodies", "js.meetings_count": "Showing {shown} of {total}",
+    "js.meetings_empty": "No meetings match this body.",
+}
 DEFAULTS.update(JS_DEFAULTS)
+DEFAULTS.update(MEETINGS_JS_DEFAULTS)
 DEFAULTS.update(HANDOUT_DEFAULTS)
 for _family, _labels in (("classification", CLASSIFICATION_LABELS), ("confidence", CONFIDENCE_LABELS), ("kind", KIND_LABELS)):
     DEFAULTS.update({f"{_family}.{code}": text for code, text in _labels.items()})
