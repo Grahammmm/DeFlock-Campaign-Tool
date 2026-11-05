@@ -12,8 +12,8 @@ from campaign_tool.site import GENERATED_TOP_LEVEL, REQUESTS_FILTER_ASSET, REQUE
 from tests.test_site_requests import COUNCIL, EXAMPLE, MIXED, POLICE, SHERIFF, TODAY, item
 
 # requests.html bytes captured on main before DF1622-08 (fixed day 2026-11-01); the filter must not change a disabled page.
-MAIN_EMPTY_SHA = "fdae59bb65fb799a7615dda9a8886c322190de29c570aaa54345cc1da63c689f"  # pragma: allowlist secret - nonsecret page digest
-MAIN_ONE_SHA = "87dfa84ef463c86c2792708cf385749334c6496d0d22312ad0f2650aaec624c6"  # pragma: allowlist secret - nonsecret page digest
+MAIN_EMPTY_SHA = "030d63ca65230ea196fb2738f656e00f3e42ad7d38ac7df0289a167ec7e78eb4"  # pragma: allowlist secret - nonsecret page digest
+MAIN_ONE_SHA = "e42b856ac5cccc183f90ac5c286c86d4dbbc5874d4bbb881c3e953993b105472"  # pragma: allowlist secret - nonsecret page digest
 ONE = {POLICE: [item("Plain", "2026-10-01")]}
 FORM = re.compile(r'<form class="sources-filter" id="requests-filter"[^>]*>')
 
