@@ -31,6 +31,7 @@ CLAIM_WORDING_BLOCKERS = {"campaign_tool/review.py", "tools/flock_dashboard.py",
 # Modules the walk below flags that were read and emit nothing a member of the public could read (reason each).
 REVIEWED_NOT_PUBLISHING = {
     "campaign_tool/content.py": "loads and validates content; its only writes are the scaffold helpers",
+    "campaign_tool/content_events.py": "validates content/events.json (shared privacy lint on every text field); it writes nothing",
     "campaign_tool/content_init.py": "writes the starter content/ templates for the organizer to edit",
     "campaign_tool/finding_packet.py": "private reviewer packet; refuses to write inside public/ or content/",
     "campaign_tool/image_meta.py": "reads image metadata; the writer is the copy step in site.py",
@@ -66,7 +67,8 @@ MARK = re.compile(r"^(public|feed\.xml|agency-cards\.js|social|briefs|cards)$|^(
 USES = ("privacy_patterns", "flock_privacy")
 SKIP = re.compile(r"tools/(accept_|fc\d)|^campaign_tool/records/|^campaign_tool/(privacy_patterns|publish_paths)\.py$|^tools/(check_public_tree|ci_affected)")
 # What each site-driven entry is fed: the published field that reaches its artefact.
-PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name"), "atom-feed": ("finding.summary",),
+PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name", "event.title", "event.venue",
+                         "event.description_md", "event.accessibility_note"), "atom-feed": ("finding.summary",),
           "agency-feeds": ("finding.summary",), "corrections-feed": ("finding.summary",), "open-graph-meta": ("finding.title",),
           "agency-cards": ("site.county_profile.summary", "agency.profile.summary"), "data-exports": ("source.title", "agency.name"),
           "map-geojson": ("map.cameras.geojson", "map.city-boundaries.geojson", "map.county.geojson")}
@@ -257,6 +259,12 @@ class Drivers:
             document = json.loads(original.read_text(encoding="utf-8"))
             document["features"][0].setdefault("properties", {})["how"] = value
             path.write_text(json.dumps(document), encoding="utf-8")
+            return
+        if kind == "event":  # DF1107-08: one synthetic campaign event with the probed field replaced
+            event = {"id": "forum", "title": "Teach-in", "starts_at": "2026-10-10T18:00:00Z", "ends_at": "2026-10-10T19:00:00Z",
+                     "venue": "Cedar Library", "description_md": "A synthetic gathering."}
+            event[key] = "Text %s end (fictional)" % value
+            (root / "content" / "events.json").write_text(json.dumps([event]), encoding="utf-8")
             return
         path = {"finding": next((root / "content" / "findings").glob("*.json")), "site": root / "content" / "site.json",
                 "source": root / "content" / "sources.json", "agency": root / "content" / "agencies.json"}[kind]
@@ -491,7 +499,8 @@ class RegistryTests(unittest.TestCase):
                                       ({"site": {"tagline": value}}, None, "site.tagline"),
                                       ({"site": {"county_profile": {"summary": value}}}, None, "site.county_profile.summary"),
                                       ({}, {"name": value}, "campaign.name"),
-                                      ({"supporters": [{"name": value}]}, None, "supporters[0].name")]:
+                                      ({"supporters": [{"name": value}]}, None, "supporters[0].name"),
+                                      ({"events": [{"venue": value}]}, None, "events[0].venue")]:
                 with self.assertRaises(ContentError) as raised:
                     _privacy_gate(model, cfg)
                 self.assertEqual(str(raised.exception), "privacy lint: %s: %s" % (where, category))
