@@ -247,13 +247,212 @@ class MeetingPackTests(unittest.TestCase):
             self.pack()
         self.assertFalse(self.folder.exists())
 
-    def test_atomic_write_failure_keeps_existing_file_and_cleans_temp(self):
+    def modes(self, folder=None):
+        """Name -> (bytes, mode) for the pack members; nothing is read from a non-regular member."""
+        folder = folder or self.folder
+        return {p.name: (p.read_bytes() if p.is_file() and not p.is_symlink() else None, p.lstat().st_mode & 0o777)
+                for p in folder.iterdir()}
+
+    def siblings(self):
+        return sorted(p.name for p in self.folder.parent.iterdir())
+
+    def fail_replace(self, when):
+        """Patch os.replace so calls for which when(source, target) is true raise; every other rename really happens."""
+        real, calls = os.replace, []
+
+        def replace(source, target):
+            calls.append((Path(source).name, Path(target).name))
+            if when(Path(source), Path(target)):
+                raise OSError('synthetic promotion failure')
+            return real(source, target)
+        return patch('campaign_tool.meeting_pack.os.replace', side_effect=replace), calls
+
+    def change_every_output(self):
+        self.finding(2, title='Replacement title', sources=[{**self.template['sources'][0], 'title': 'Changed source',
+                                                             'sha256': self.library[1]['sha256'], 'locator': 'page:2'}])
+        self.meeting['comment_kit_md'] = 'Changed comment.\n'
+        self.stage()
+
+    def test_prepare_failure_never_exposes_partial_new_pack(self):
+        real_open, real_fdopen = os.open, os.fdopen
+
+        class Faulty:
+            def __init__(self, stream, fail):
+                self.stream, self.fail = stream, fail
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+
+            def write(self, data):
+                if self.fail == 'write':
+                    raise OSError('synthetic write failure')
+                return self.stream.write(data)
+
+            def close(self):
+                self.stream.close()
+                if self.fail == 'close':
+                    raise OSError('synthetic close failure')
+        for existing in (False, True):
+            if existing:
+                self.pack()
+            before, content = (self.modes() if existing else None), self.snapshot()
+            for stage in ('open', 'write', 'close'):
+                for member in range(3):
+                    with self.subTest(existing=existing, stage=stage, member=member):
+                        seen = []
+
+                        def opening(path, *args, **kwargs):
+                            if '.m.new-' in str(path):
+                                seen.append(path)
+                                if stage == 'open' and len(seen) == member + 1:
+                                    raise OSError('synthetic open failure')
+                            return real_open(path, *args, **kwargs)
+
+                        def fdopening(fd, *args, **kwargs):
+                            stream = real_fdopen(fd, *args, **kwargs)
+                            return Faulty(stream, stage if len(seen) == member + 1 else None)
+                        with patch('campaign_tool.meeting_pack.os.open', side_effect=opening), \
+                                patch('campaign_tool.meeting_pack.os.fdopen', side_effect=fdopening):
+                            with self.assertRaisesRegex(OSError, 'synthetic .* failure'):
+                                self.pack(replace=existing)
+                        self.assertEqual(self.modes() if existing else self.folder.exists(), before if existing else False)
+                        self.assertEqual(self.siblings(), ['m'] if existing else [])
+                        self.assertEqual(self.snapshot(), content)
+
+    def test_replace_promotion_failure_restores_complete_generation(self):
         self.pack()
-        before = {p.name: p.read_bytes() for p in self.folder.iterdir()}
-        with patch('campaign_tool.meeting_pack.os.replace', side_effect=OSError('synthetic disk failure')):
-            with self.assertRaisesRegex(OSError, 'synthetic disk failure'):
-                self.pack(replace=True)
-        self.assertEqual({p.name: p.read_bytes() for p in self.folder.iterdir()}, before)
+        before = self.modes()
+        self.change_every_output()
+        failing, calls = self.fail_replace(lambda source, target: source.name.startswith('.m.new-') and target == self.folder)
+        with failing, self.assertRaisesRegex(OSError, 'synthetic promotion failure'):
+            self.pack(replace=True)
+        self.assertEqual(self.modes(), before)
+        self.assertEqual(self.siblings(), ['m'])
+        self.assertEqual(self.folder.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(len(calls), 3)  # old directory moved aside, promotion failed, old directory put back
+        self.pack(replace=True)  # nothing blocks the next run
+        self.assertIn('Replacement title', self.html())
+        self.assertEqual((self.folder / 'comment.md').read_text(), 'Changed comment.\n')
+        self.assertIn('Changed source', (self.folder / 'sources.csv').read_text())
+
+    def test_old_directory_move_failure_keeps_pack(self):
+        self.pack()
+        before = self.modes()
+        self.change_every_output()
+        failing, calls = self.fail_replace(lambda source, target: source == self.folder)
+        with failing, self.assertRaisesRegex(OSError, 'synthetic promotion failure'):
+            self.pack(replace=True)
+        self.assertEqual(self.modes(), before)
+        self.assertEqual(self.siblings(), ['m'])
+        self.assertEqual(len(calls), 1)
+
+    def test_new_pack_promotion_failure_leaves_nothing_but_existing_parents(self):
+        failing, _ = self.fail_replace(lambda source, target: target == self.folder)
+        with failing, self.assertRaisesRegex(OSError, 'synthetic promotion failure'):
+            self.pack()
+        self.assertFalse(self.folder.exists())
+        self.assertEqual(self.siblings(), [])
+
+    def test_restore_failure_retains_recoverable_old_pack(self):
+        self.pack()
+        before = self.modes()
+        self.change_every_output()
+        failing, _ = self.fail_replace(lambda source, target: target == self.folder)
+        with failing, self.assertRaisesRegex(OSError, r'meeting pack restore failed; previous pack retained at (\S+)') as caught:
+            self.pack(replace=True)
+        backup = Path(re.search(r'retained at (\S+)', str(caught.exception))[1])
+        self.assertEqual(backup.parent, self.folder.parent)
+        self.assertEqual(self.modes(backup), before)
+        self.assertFalse(self.folder.exists())
+        self.assertEqual(self.siblings(), [backup.name])  # the incomplete new directory is gone
+        for replace in (True, False):
+            with self.subTest(replace=replace), self.assertRaisesRegex(ValueError, f'meeting pack recovery required; inspect {re.escape(str(backup))} before rebuilding'):
+                self.pack(replace=replace)
+            self.assertEqual(self.modes(backup), before)
+            self.assertEqual(self.siblings(), [backup.name])
+
+    def test_cleanup_failure_warns_after_success(self):
+        self.pack()
+        before = self.modes()
+        self.change_every_output()
+        with patch('campaign_tool.meeting_pack.shutil.rmtree', side_effect=OSError('synthetic cleanup failure')):
+            report = self.pack(replace=True)
+        backups = [name for name in self.siblings() if name != 'm']
+        self.assertEqual(len(backups), 1)
+        backup = self.folder.parent / backups[0]
+        self.assertEqual(list(report), ['written', 'findings', 'truncated', 'comment_sent', 'warnings'])
+        self.assertEqual(report['warnings'], [f'previous pack retained at {backup}; remove it after checking the new pack'])
+        self.assertEqual(self.modes(backup), before)
+        self.assertEqual(sorted(self.modes()), ['comment.md', 'handout.html', 'sources.csv'])
+        self.assertEqual((self.folder / 'comment.md').read_text(), 'Changed comment.\n')
+        with self.assertRaisesRegex(ValueError, 'meeting pack recovery required; inspect .* before rebuilding'):
+            self.pack(replace=True)
+        self.assertEqual(self.modes(backup), before)
+
+    def test_unexpected_pack_contents_refuse_without_mutation(self):
+        refusal = 'meeting pack has unexpected contents; move it aside before regenerating'
+
+        def extra_note():
+            (self.folder / 'notes.txt').write_text('organizer note')
+
+        def subdirectory():
+            (self.folder / 'attachments').mkdir()
+
+        def missing_member():
+            (self.folder / 'sources.csv').unlink()
+
+        def fifo_member():
+            (self.folder / 'comment.md').unlink()
+            os.mkfifo(self.folder / 'comment.md')
+
+        def symlink_member():
+            (self.folder / 'comment.md').unlink()
+            (self.folder / 'comment.md').symlink_to(self.folder / 'handout.html')
+
+        def dangling_member():
+            (self.folder / 'comment.md').unlink()
+            (self.folder / 'comment.md').symlink_to(self.folder / 'nowhere')
+
+        def regular_file_in_place_of_pack():
+            shutil.rmtree(self.folder)
+            self.folder.write_text('not a directory')
+        for mutate in (extra_note, subdirectory, missing_member, fifo_member, symlink_member, dangling_member,
+                       regular_file_in_place_of_pack):
+            with self.subTest(case=mutate.__name__):
+                if self.folder.is_dir() or self.folder.is_symlink() or self.folder.exists():
+                    if self.folder.is_dir():
+                        shutil.rmtree(self.folder)
+                    else:
+                        self.folder.unlink()
+                self.pack()
+                mutate()
+                content = self.snapshot()
+                state = {p.name: (p.lstat().st_mode, None if p.is_symlink() or not p.is_file() else p.read_bytes())
+                         for p in self.folder.iterdir()} if self.folder.is_dir() else self.folder.read_bytes()
+                with self.assertRaisesRegex(ValueError, f'{refusal}|symlink'):
+                    self.pack(replace=True)
+                if mutate in (extra_note, subdirectory, missing_member, fifo_member, regular_file_in_place_of_pack):
+                    with self.assertRaisesRegex(ValueError, refusal):
+                        self.pack(replace=True)
+                self.assertEqual(self.siblings(), ['m'])
+                self.assertEqual({p.name: (p.lstat().st_mode, None if p.is_symlink() or not p.is_file() else p.read_bytes())
+                                  for p in self.folder.iterdir()} if self.folder.is_dir() else self.folder.read_bytes(), state)
+                self.assertEqual(self.snapshot(), content)
+
+    def test_successful_replacement_is_byte_compatible(self):
+        first = self.pack()
+        before = self.modes()
+        again = self.pack(replace=True)
+        self.assertEqual(again, first)
+        self.assertNotIn('warnings', again)
+        self.assertEqual(self.modes(), before)
+        self.assertEqual(sorted(before), ['comment.md', 'handout.html', 'sources.csv'])
+        self.assertEqual({mode for _, mode in before.values()}, {0o600})
+        self.assertEqual(self.folder.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.siblings(), ['m'])
 
     def test_public_source_url_and_maximum_override(self):
         self.library[0]['public_url'] = 'https://synthetic.invalid/source'
