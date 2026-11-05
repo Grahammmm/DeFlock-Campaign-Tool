@@ -2904,4 +2904,8 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
         model["redirects"] = _read_json(redirects_path)
     if supporters is not None:  # DF2207-13: public rows only (never the private consent records)
         model["supporters"] = supporters
+    from .body_schedules import read_body_schedules  # local: body_schedules imports this module
+    schedules = read_body_schedules(root, today=today)  # DF0022-10: optional; the key exists only with rows
+    if schedules:
+        model["body_schedules"] = schedules
     return model
