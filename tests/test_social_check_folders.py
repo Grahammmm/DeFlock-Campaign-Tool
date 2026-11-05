@@ -265,6 +265,23 @@ class Outcomes(FolderCheckCase):
         later = datetime(2026, 11, 6, 0, 0, 1, tzinfo=timezone.utc)
         self.assertEqual(self.stale(later)["m-one"], ["outcome left its 1-day window"])
 
+    def test_unbound_outcome_draft_follows_the_default_14_day_window(self):
+        later = datetime(2026, 11, 25, 12, 0, tzinfo=timezone.utc)
+        self.built(within_days=60)
+        (self.social / "outcomes" / ".check.json").unlink()
+        self.assertEqual(self.states("outcomes"), {"m-one": ("ok", [])})  # in-window control
+        report = self.folder("outcomes", later)
+        self.assertEqual(report["drafts"], [])
+        self.assertEqual(report["stale"], ["m-one"])
+        self.assertIn("outside the default 14-day window and its original window is unknown; rebuild with social --outcomes",
+                      report["stale_reasons"]["m-one"][0])
+        self.assertEqual(report["problems"], 1)
+
+    def test_bound_60_day_outcome_draft_stays_ok_after_14_days(self):
+        later = datetime(2026, 11, 25, 12, 0, tzinfo=timezone.utc)
+        self.built(within_days=60)
+        self.assertEqual(self.states("outcomes", later), {"m-one": ("ok", [])})
+
     def test_edited_outcome_draft_must_keep_recorded_fields(self):
         self.built()
         draft = self.social / "outcomes" / "m-one.md"

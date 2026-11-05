@@ -156,6 +156,11 @@ def _stale_outcome(ctx, stem, meta):
         first = ctx.meetings()[1].date() - timedelta(days=meta["within_days"] - 1)
         if not first <= S.date.fromisoformat(meeting["outcome"]["on"]) <= ctx.meetings()[1].date():
             reasons.append(f"outcome left its {meta['within_days']}-day window")
+    else:
+        # No bound provenance: fall back to what a fresh default-14-day generation would select.
+        now = ctx.meetings()[1]
+        if not now.date() - timedelta(days=13) <= S.date.fromisoformat(meeting["outcome"]["on"]) <= now.date():
+            reasons.append("outcome is outside the default 14-day window and its original window is unknown; rebuild with social --outcomes")
     return reasons
 
 
