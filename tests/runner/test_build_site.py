@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import unittest
+import zlib
 from pathlib import Path
 
 from runner.client import FakeWorkspace
@@ -87,7 +88,11 @@ class BuildSiteTests(unittest.TestCase):
     def test_base64_manifest_entries(self):
         ws = FakeWorkspace()
         inputs = manifest_from_example()
-        png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00IEND\xaeB`\x82"  # a well-formed (empty) PNG: signature + IEND
+        def chunk(name, body=b""):
+            return len(body).to_bytes(4, "big") + name + body + zlib.crc32(name + body).to_bytes(4, "big")
+        # a well-formed minimal PNG: signature + IHDR + IDAT + IEND, every CRC valid
+        png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", (3).to_bytes(4, "big") + (2).to_bytes(4, "big") + bytes(5))
+               + chunk(b"IDAT", b"\x78\x9c\x01\x02") + chunk(b"IEND"))
         inputs["content"]["public-assets/logo.png"] = {"base64": base64.b64encode(png).decode()}
         result = build_site.run(context(self.tmp.name, job("build_site", inputs), ws))
         self.assertEqual(result.status, "done", result.error)

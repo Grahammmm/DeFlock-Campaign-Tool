@@ -3,6 +3,7 @@
 Find upcoming public meetings with license plate reader agenda items, record them, and build
 a public-comment kit from published findings. Code: `campaign_tool/meetings.py`,
 `workers/workspace/src/comment_kit.ts`, the Meetings screen in `views/screens.ts`.
+For the task order (find, stage, verify, comment, record, outcome) see the [meetings guide](MEETINGS-GUIDE.md); this file stays the reference.
 
 ## Legistar import (CLI)
 
@@ -309,6 +310,16 @@ an existing pack is left untouched; `--upcoming` lists that meeting as skipped w
 the others. Without `base_url` there is no QR code and the handout is byte-identical to before.
 `comment.md` and `sources.csv` never change.
 
+**What members have said (DF1407-07).** When `content/statements.json` (see `docs/SITE-CONTENT.md`) holds statements for the
+meeting's `agency_id`, the handout gains a section after the findings: for each official of that body in
+`content/officials.json`, in roster order, at most their two newest statements (`said_on` descending, stored order on the
+same day), each printed as the member's name, the complete quote in quotation marks (never shortened, whitespace kept),
+`said_on`, the context and the source link. Officials without a statement are left out. Only then does `sources.csv` gain
+the columns `kind`, `said_on`, `source_url` (finding source rows get `source`; one `statement` row per printed quote, first
+six fields empty). With no statements file, no statement for the body, or a meeting without an `agency_id`, all three files
+are byte-identical to before. A malformed statements file, a name not on the roster, a missing roster or a quote that
+trips the full-hash check stops the pack and leaves an existing pack untouched. `comment.md` never changes.
+
 The handout follows the campaign's language: `<html lang>` is `site.json.language`, and its fixed headings and notes
 (title, "What we found", the empty-state sentence, the source line, "corrected", the agenda link, "N more on the
 site", the record-number explainer, and the classification and confidence wording) come from `content/labels.json`
@@ -325,6 +336,14 @@ through the same checks as `--id`. It prints `{window, built, skipped}`; each sk
 reason (cancelled, stale kit, pack exists, invalid id, symlinked or unreadable file). Meetings outside
 the window are not listed. Exit 0 when nothing was skipped, 3 when something needs attention.
 `--allow-past` is refused with `--upcoming`. Nothing is sent or published.
+
+## Social drafts (never posted)
+
+Meeting announcements and outcome posts are private drafts written by `social --meetings` and `social --outcomes`; nothing
+is posted. Their rules (windows, platform lengths, kept edits, skipped counts) are in
+[PUBLICATION.md](PUBLICATION.md#social-drafts-for-meetings-never-posted) for meetings and
+[PUBLICATION.md](PUBLICATION.md#social-drafts-for-outcomes-never-posted) for outcomes, and stay there. The task order is in
+the [meetings guide](MEETINGS-GUIDE.md#6-draft-the-announcement-never-posted).
 
 ## Recording a comment you submitted
 
@@ -701,3 +720,13 @@ A county campaign can follow the county board and city councils in one run. List
 ```
 
 `python3 -m campaign_tool meetings --directory D (--online | --from-json F) [--since YYYY-MM-DD]` (no `--client`) scans every entry into one `kit/meetings.json`: `client` is `multi`, `clients` lists the slugs, each meeting carries `client` and `source_label`, `sources` gives each body's `ok` or `failed` status, and `changes` is keyed by client. A body that fails (network, bad JSON) is named with its error, keeps its previous meetings marked `stale: true`, and the run exits 3 after writing; the other bodies are unaffected. A previous single-client file for a listed client is compared, not treated as another client. A bad `meeting_sources` entry stops the run naming its index. `--client X` keeps the single-body behaviour unchanged.
+
+## Organizer-entered meetings (`meetings-add`)
+
+For a governing body on no supported agenda platform. `python3 -m campaign_tool meetings-add --directory D --id manual-SLUG --body TEXT --agency-id ID --starts-at 2026-11-20T18:30:00-08:00 --agenda-url https://… --item-title TEXT --source-url https://… --checked-on YYYY-MM-DD` records one meeting in the private `kit/meetings-manual.json` (folder mode 0700, file mode 0600). The id must be `manual-` plus lowercase letters, digits and hyphens. `--agenda-url` is your attestation that the page is the body's official agenda; nothing is fetched. The start needs an explicit offset or `Z` (a zone is never guessed) and must not be in the past; `--checked-on` must be a real date no later than today and the meeting day. Text is plain (no `<` or `>`, no control characters). A malformed value stops with `Stopped:` and writes nothing; missing or conflicting flags exit 2.
+
+A later `meetings` scan rewrites only `kit/meetings.json`, so a manual entry is never dropped by it and is never listed as removed in its `changes`. `meetings-stage` reads both files by id: the same id in both files, or twice in one, refuses before anything is staged. A staged manual meeting defaults `--agency-id` to the saved one (a different one refuses), and its comment kit says `Organizer-entered meeting; official agenda checked YYYY-MM-DD.`; the source URL, check date, history and reasons never reach `content/`. A corrupt `kit/meetings-manual.json`, a symlink or non-regular file, or one over 4 MiB refuses; it is never reset.
+
+Correct an entry with `--replace --on YYYY-MM-DD --reason TEXT` and the full new fields (this also restores a cancelled one), or cancel it with `--id manual-SLUG --cancel --on YYYY-MM-DD --reason TEXT`. `--on` is from the entry's `checked_on` through today. Each correction appends `{action, on, reason, before}` to the entry's history (the old values stay); a second cancel and a replace of an unknown id refuse. Reasons stay in the private file and are never printed.
+
+A correction or cancel changes this private file only. It does not change an already staged page, a recorded outcome or a comment-submission receipt, and nothing is staged, built or published for you: re-run `meetings-stage --replace` for a corrected date, and reflect a cancellation by reviewing the staged meeting's `status` yourself. Nothing is sent.

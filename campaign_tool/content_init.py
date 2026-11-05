@@ -2,7 +2,7 @@
 
 Every organizer-owned sentence is a "[EDIT ME: ...]" placeholder; nothing is built, sent or published.
 A fresh init also seeds content/faq.json from the packaged draft FAQ starter (DF0022-02)
-and content/pages/help-map.json from the packaged help-map starter (DF0237-15).
+and content/pages/help-map.json and content/pages/background.json from the packaged page starters (DF0237-15, DF1407-12).
 """
 import ctypes
 import errno
@@ -24,6 +24,7 @@ _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
 FAQ_STARTER = Path(__file__).resolve().parent / "_resources" / "examples" / "faq.json"  # packaged mirror of examples/faq.json
 HELP_MAP_STARTER = Path(__file__).resolve().parent / "_resources" / "examples" / "pages" / "help-map.json"  # mirror of examples/pages/help-map.json
+BACKGROUND_STARTER = Path(__file__).resolve().parent / "_resources" / "examples" / "pages" / "background.json"  # mirror of examples/pages/background.json
 GENERIC_DEADLINE = (PLACEHOLDER + "verify for this campaign] Check the applicable law package and official guidance for response timing. "
                     "A reminder is not a legal determination or a promise that records will be produced by that date.")
 
@@ -79,6 +80,16 @@ def help_map_document():
     return document
 
 
+def background_document():
+    """The draft "Background reading" page starter: a fresh dict read from the packaged resource (never a checkout path).
+
+    Checked here by the Markdown lint; the page loader runs on the temporary content tree before publication."""
+    document = json.loads(BACKGROUND_STARTER.read_text(encoding="utf-8"))
+    if lint(document["body_md"]):
+        raise RuntimeError("content init produced Markdown the build would degrade")
+    return document
+
+
 def _write(path, text):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as out:
@@ -128,13 +139,15 @@ def init_content(root, source_root=None):
     text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
     faq_text = json.dumps(faq_document(cfg), indent=2, ensure_ascii=False) + "\n"
     page_text = json.dumps(help_map_document(), indent=2, ensure_ascii=False) + "\n"
+    background_text = json.dumps(background_document(), indent=2, ensure_ascii=False) + "\n"
     temporary = Path(tempfile.mkdtemp(prefix=".content.new-", dir=root))
     try:
         _write(temporary / "site.json", text)
         _write(temporary / "faq.json", faq_text)
         os.mkdir(temporary / "pages", 0o700)
         _write(temporary / "pages" / "help-map.json", page_text)
-        if len(load_pages(temporary, set())) != 1:
+        _write(temporary / "pages" / "background.json", background_text)
+        if len(load_pages(temporary, set())) != 2:
             raise RuntimeError("content init produced a page the build would refuse")
         # Self-check: a written file the build would reject is a bug here, not an organizer error.
         written = json.loads((temporary / "site.json").read_text(encoding="utf-8"))
@@ -152,8 +165,9 @@ def init_content(root, source_root=None):
         shutil.rmtree(temporary, ignore_errors=True)
         raise
     return {"written": ["content/faq.json", "content/findings/", "content/meetings/", "content/pages/",
-                        "content/pages/help-map.json", "content/site.json", "content/sources.json"],
-            "placeholders": text.count(PLACEHOLDER) + faq_text.count(PLACEHOLDER) + page_text.count(PLACEHOLDER)}
+                        "content/pages/background.json", "content/pages/help-map.json", "content/site.json", "content/sources.json"],
+            "placeholders": (text.count(PLACEHOLDER) + faq_text.count(PLACEHOLDER) + page_text.count(PLACEHOLDER)
+                             + background_text.count(PLACEHOLDER))}
 
 
 def init_from(root, source_root):

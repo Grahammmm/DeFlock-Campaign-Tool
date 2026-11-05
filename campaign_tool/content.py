@@ -1194,6 +1194,61 @@ def _calendar_day(value, label):
     return day
 
 
+ARCHIVE_KEYS = {"archived_url", "archived_on"}
+ARCHIVE_HOSTS = ("web.archive.org", "archive.ph", "archive.today")
+ARCHIVE_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+WAYBACK_PATH = re.compile(r"/web/([0-9]{14})/(https?)://([^/?#]+)(?:[/?#].*)?")
+
+
+def _archive_fields(value, label, today=None):
+    """DF0237-03: the optional organizer-recorded ``archived_url`` + ``archived_on`` pair of a source link object.
+
+    ``{}`` when neither key is present; otherwise both are required and returned exactly as written. The tool never
+    fetches or submits anything; an error names the field and the rule, never the value submitted.
+    """
+    if not ARCHIVE_KEYS & set(value):
+        return {}
+    for key in sorted(ARCHIVE_KEYS):
+        if not isinstance(value.get(key), str) or not value[key]:
+            raise ContentError(f"{label}.{key}: archived_url and archived_on go together, each a non-empty string")
+    url, name = value["archived_url"], f"{label}.archived_url"
+    _https(url, name)
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        raise ContentError(f"{name}: invalid URL host") from None
+    host = (parsed.hostname or "").lower()
+    if host not in ARCHIVE_HOSTS or port is not None or parsed.netloc.lower() != host:
+        raise ContentError(f"{name}: host must be exactly web.archive.org, archive.ph or archive.today")
+    stamp_day = None
+    if host == "web.archive.org":
+        found = WAYBACK_PATH.fullmatch(url[len("https://") + len(parsed.netloc):])
+        if not found:
+            raise ContentError(f"{name}: path must be /web/<14-digit timestamp>/<http:// or https:// address>")
+        target = found.group(3)
+        if "@" in target or not HOST.fullmatch(re.sub(r":[0-9]{1,5}$", "", target)):
+            raise ContentError(f"{name}: the archived address needs a host and no credentials")
+        try:
+            stamp_day = datetime.strptime(found.group(1), "%Y%m%d%H%M%S").date()
+        except ValueError:
+            raise ContentError(f"{name}: timestamp is not a real UTC date and time") from None
+    elif parsed.path in ("", "/"):
+        raise ContentError(f"{name}: needs the path of the archived copy")
+    on_label, on = f"{label}.archived_on", value["archived_on"]
+    try:
+        if not ARCHIVE_DAY.fullmatch(on):
+            raise ValueError
+        day = date.fromisoformat(on)
+    except ValueError:
+        raise ContentError(f"{on_label}: must be a real YYYY-MM-DD calendar date") from None
+    if day > (today or date.today()):
+        raise ContentError(f"{on_label}: must not be after the build date")
+    if stamp_day is not None and day != stamp_day:
+        raise ContentError(f"{on_label}: must equal the date of the archived_url timestamp")
+    return {"archived_url": url, "archived_on": on}
+
+
 def _contract_cost(value, label):
     """``profile.contract.cost``: an organizer-transcribed amount exactly as a document states it; never computed."""
     if not isinstance(value, dict) or set(value) != set(COST_KEYS):
@@ -1209,13 +1264,13 @@ def _contract_cost(value, label):
     return {"amount_usd": amount, "period": period, "as_stated_in": title}
 
 
-def _contract(value, label):
+def _contract(value, label, today=None):
     """An organizer-checked contract term (``profile.contract``) from its official source; never fetched."""
     if value is None:
         return None
     if isinstance(value, dict) and not {"source_url", "checked_on"} <= set(value):
         raise ContentError(f"{label}: needs source_url and checked_on")
-    _require_keys(value, CONTRACT_KEYS, CONTRACT_KEYS - {"renewal_note", "cost"}, label)
+    _require_keys(value, CONTRACT_KEYS | ARCHIVE_KEYS, CONTRACT_KEYS - {"renewal_note", "cost"}, label)
     vendor, note = _text(value, "vendor", label, allow_empty=False), _text(value, "renewal_note", label)
     for key, text, limit in (("vendor", vendor, 80), ("renewal_note", note, 200)):
         if len(text) > limit:
@@ -1229,6 +1284,7 @@ def _contract(value, label):
                 "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
     if "cost" in value:
         contract["cost"] = _contract_cost(value["cost"], f"{label}.cost")
+    contract.update(_archive_fields(value, label, today))
     return contract
 
 
@@ -1252,7 +1308,7 @@ def _funding(value, label, today=None):
         item = f"{label}[{index}]"
         if not isinstance(entry, dict):
             raise ContentError(f"{item}: expected an object")
-        if not FUNDING_REQUIRED <= set(entry) or set(entry) - FUNDING_KEYS:
+        if not FUNDING_REQUIRED <= set(entry) or set(entry) - FUNDING_KEYS - ARCHIVE_KEYS:
             raise ContentError(f"{item}: needs kind, name, as_stated_in, source_url and checked_on, and may add only "
                                "amount_usd with period, and fiscal_year")
         if entry["kind"] not in FUNDING_KINDS:
@@ -1284,20 +1340,81 @@ def _funding(value, label, today=None):
             clean.update(amount_usd=cost["amount_usd"], period=cost["period"])
         if "fiscal_year" in entry:
             clean["fiscal_year"] = year
+        clean.update(_archive_fields(entry, item, build_day))
         result.append(clean)
     return result
+
+
+REPORT_KINDS = ("annual_report", "audit_summary", "usage_statistics", "surveillance_report", "other")
+REPORT_REQUIRED = {"title", "kind", "period_start", "period_end", "source_url", "checked_on"}
+REPORT_KEYS = REPORT_REQUIRED | {"published_on"}
+REPORT_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _report_day(entry, key, item):
+    """One real canonical ASCII YYYY-MM-DD day of a report entry; the error names the field, never the value."""
+    value = entry[key]
+    try:
+        if not (isinstance(value, str) and REPORT_DAY.fullmatch(value)):
+            raise ValueError
+        return date.fromisoformat(value)
+    except ValueError:
+        raise ContentError(f"{item}.{key}: must be a real YYYY-MM-DD calendar date") from None
+
+
+def _reports(value, label, today=None):
+    """``profile.reports`` (DF0237-02): ALPR usage reports an agency published, as an organizer transcribed them.
+
+    Returned newest reporting period first (period_end, then period_start, descending; then title and source_url
+    ascending; exact ties keep input order). Nothing is deduplicated, merged, fetched or inferred. An error names the
+    entry and the rule it broke, never the value submitted.
+    """
+    if not isinstance(value, list) or not 1 <= len(value) <= 20:
+        raise ContentError(f"{label}: must be a list of 1 to 20 report entries")
+    build_day, result = today or date.today(), []
+    for index, entry in enumerate(value):
+        item = f"{label}[{index}]"
+        if not isinstance(entry, dict):
+            raise ContentError(f"{item}: expected an object")
+        if not REPORT_REQUIRED <= set(entry) or set(entry) - REPORT_KEYS - ARCHIVE_KEYS:
+            raise ContentError(f"{item}: needs title, kind, period_start, period_end, source_url and checked_on, "
+                               "and may add only published_on")
+        if not (isinstance(entry["kind"], str) and entry["kind"] in REPORT_KINDS):
+            raise ContentError(f"{item}.kind: choose one of {list(REPORT_KINDS)}")
+        title = entry["title"]
+        if not (isinstance(title, str) and 1 <= len(title) <= 160 and title == title.strip() and plain_text(title)
+                and not any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in title)):
+            raise ContentError(f"{item}.title: plain title as published, 1 to 160 characters without markup or control characters")
+        start, end = _report_day(entry, "period_start", item), _report_day(entry, "period_end", item)
+        if not start < end:
+            raise ContentError(f"{item}.period_end: must be after period_start")
+        checked = _report_day(entry, "checked_on", item)
+        if checked > build_day:
+            raise ContentError(f"{item}.checked_on: must not be after the build date")
+        clean = {"title": title, "kind": entry["kind"], "period_start": entry["period_start"],
+                 "period_end": entry["period_end"], "source_url": _https(entry["source_url"], f"{item}.source_url"),
+                 "checked_on": entry["checked_on"]}
+        if "published_on" in entry:
+            if _report_day(entry, "published_on", item) > checked:
+                raise ContentError(f"{item}.published_on: must not be after checked_on")
+            clean["published_on"] = entry["published_on"]
+        clean.update(_archive_fields(entry, item, build_day))
+        result.append(clean)
+    # Two stable passes: title and source_url ascending first, then the period descending (reverse keeps ties in order).
+    by_text = sorted(result, key=lambda r: (r["title"], r["source_url"]))
+    return sorted(by_text, key=lambda r: (r["period_end"], r["period_start"]), reverse=True)
 
 
 ALPR_POLICY_KEYS = {"url", "source_url", "checked_on"}
 
 
-def _alpr_policy(value, label):
+def _alpr_policy(value, label, today=None):
     """A posted ALPR usage policy an organizer found (``profile.alpr_policy``); linked only, never fetched or judged."""
     if value is None:
         return None
     if isinstance(value, dict) and not ALPR_POLICY_KEYS <= set(value):
         raise ContentError(f"{label}: needs url, source_url and checked_on")
-    _require_keys(value, ALPR_POLICY_KEYS, ALPR_POLICY_KEYS, label)
+    _require_keys(value, ALPR_POLICY_KEYS | ARCHIVE_KEYS, ALPR_POLICY_KEYS, label)
     try:
         checked = _calendar_day(value["checked_on"], f"{label}.checked_on")
     except ContentError:
@@ -1305,7 +1422,8 @@ def _alpr_policy(value, label):
     if checked is None or checked > date.today():
         raise ContentError(f"{label}.checked_on: must be a YYYY-MM-DD date not after the build date")
     return {"url": _https(value["url"], f"{label}.url"),
-            "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
+            "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"],
+            **_archive_fields(value, label, today)}
 
 
 POLICY_CHECK_KEYS = {"checked_on", "policy_url", "elements"}
@@ -1662,7 +1780,7 @@ def _transparency(value, label, slug, today=None):
     result = []
     for index, snapshot in enumerate(value):
         item = f"{label}[{index}]"
-        _require_keys(snapshot, {"checked_on", "source_url", *TRANSPARENCY_FIELDS}, {"checked_on", "source_url"}, item)
+        _require_keys(snapshot, {"checked_on", "source_url", *TRANSPARENCY_FIELDS, *ARCHIVE_KEYS}, {"checked_on", "source_url"}, item)
         if _calendar_day(snapshot["checked_on"], f"{item}.checked_on") > (today or date.today()):
             raise ContentError(f"{item}.checked_on: must not be after the build date")
         if result and snapshot["checked_on"] >= result[-1]["checked_on"]:
@@ -1679,6 +1797,7 @@ def _transparency(value, label, slug, today=None):
             if key == "retention_days" and number is not None and number > 3650:
                 raise ContentError(f"{item}.retention_days: at most 3650")
             clean[key] = number
+        clean.update(_archive_fields(snapshot, item, today))
         result.append(clean)
     return result
 
@@ -1760,7 +1879,7 @@ def load_agencies(document, label, today=None):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding", "pre_implementation_meeting", "sharing"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding", "reports", "pre_implementation_meeting", "sharing"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -1780,9 +1899,9 @@ def load_agencies(document, label, today=None):
             "verification": _verification(entry, item),
             "asked": _asked(entry, f"{item}.asked", today) if label == "content/agencies.json" else [],
             "flock_transparency_url": _flock_url(entry, item),
-            "contract": (contract := _contract(profile.get("contract"), f"{item}.profile.contract")),  # kept out of card JS
+            "contract": (contract := _contract(profile.get("contract"), f"{item}.profile.contract", today)),  # kept out of card JS
             "contract_check": _contract_check(profile.get("contract_check"), contract, f"{item}.profile.contract_check", today),  # likewise
-            "alpr_policy": (alpr_policy := _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy")),  # likewise
+            "alpr_policy": (alpr_policy := _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy", today)),  # likewise
             "policy_check": _policy_check(profile.get("policy_check"), f"{item}.profile.policy_check", alpr_policy, today),  # likewise
             "pre_implementation_meeting": _pre_meeting(profile.get("pre_implementation_meeting"),  # likewise
                                                        f"{item}.profile.pre_implementation_meeting", today),
@@ -1800,19 +1919,21 @@ def load_agencies(document, label, today=None):
         })
         if "funding" in profile:  # DF2207-02: only when the organizer recorded it, so other profiles keep their shape
             agencies[-1]["funding"] = _funding(profile["funding"], f"{item}.profile.funding", today)
+        if "reports" in profile:  # DF0237-02: likewise only when recorded
+            agencies[-1]["reports"] = _reports(profile["reports"], f"{item}.profile.reports", today)
         if profile.get("sharing") is not None:  # DF1207-08: likewise only when recorded, so other agencies keep their shape
             agencies[-1]["sharing"] = _sharing(profile["sharing"], f"{item}.profile.sharing", today)
     return agencies
 
 
-def default_agencies(root):
+def default_agencies(root, today=None):
     """Selected kit agencies plus governing bodies, or [] when no kit exists."""
     kit_dir = Path(root) / "kit"
     agencies = []
     for name in ("agencies.json", "governing-bodies.json"):
         path = kit_dir / name
         if path.is_file():
-            agencies.extend(load_agencies(_read_json(path), "kit/" + name))
+            agencies.extend(load_agencies(_read_json(path), "kit/" + name, today))
     seen, unique = set(), []
     for agency in agencies:
         if agency["agency_id"] not in seen:
@@ -1826,7 +1947,7 @@ def load_campaign_agencies(root, today=None):
     path = Path(root) / "content" / "agencies.json"
     if path.is_file():
         return load_agencies(_read_json(path), "content/agencies.json", today)
-    return default_agencies(root)
+    return default_agencies(root, today)
 
 
 # --- map -------------------------------------------------------------------

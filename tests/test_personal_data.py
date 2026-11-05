@@ -537,7 +537,7 @@ _MODULES = {
     "backup archives and keys": "backup backup_crypt",
     "generated drafts, exports and public content, no catalog store": """
         agency_brief content_init content_sharing coverage flyer kit_calendar kit_copy kit_export kit_fees kit_preserve kit_timing
-        map_survey meeting_comment_publish meeting_outcome meeting_pack meeting_stage meetings newsletter.__main__ newsletter.archive
+        map_survey meeting_comment_publish meeting_outcome meeting_pack meeting_stage meetings meetings_manual newsletter.__main__ newsletter.archive
         newsletter.draft newsletter.sent outbox outbox_batch press recent search_log site site_check social social_threads""",
     "other local files with no catalog store": """
         agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
@@ -566,7 +566,7 @@ MODULE_FUNCTIONS = {
     'content_sharing': ('import_sharing',),
     'coverage': ('_write', 'add_coverage', 'remove_coverage',),
     'finding_packet': ('_copy_hash', '_create', 'build_packet',),
-    'flyer': ('build',),
+    'flyer': ('build', 'build_event'),
     'image_meta': ('strip_file',),
     'import_existing': ('_write_receipt', 'run',),
     'kit_agencies': ('_save',),
@@ -595,6 +595,7 @@ MODULE_FUNCTIONS = {
     'meeting_pack': ('_commit_pack', '_discard', '_write_member', 'build',),
     'meeting_stage': ('stage',),
     'meetings': ('write_matters', 'write_meetings',),
+    'meetings_manual': ('_save',),  # private kit/meetings-manual.json, 0600 atomic write, organizer-entered meetings only
     'newsletter.__main__': ('main',),
     'newsletter.archive': ('publish_issue',),
     'newsletter.draft': ('write_draft',),
@@ -698,7 +699,7 @@ MODULE_FUNCTIONS = {
     'shell': ('main',),
     'site': ('_copy', '_csv_text', '_write', 'build_site', 'build_starter',),
     'site_check': ('write_weights',),
-    'social': ('_write_drafts', 'build_meeting_social', 'build_outcome_social', 'build_social',),
+    'social': ('_write_drafts', 'build_event_social', 'build_meeting_social', 'build_outcome_social', 'build_social',),
     'social_threads': ('build_thread_social',),
     'sources_cmd': ('_batch_write', '_rewrite', '_write_atomic', 'add_source',),
 }

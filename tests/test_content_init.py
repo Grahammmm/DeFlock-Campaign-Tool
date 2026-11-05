@@ -62,7 +62,7 @@ class ContentInitTests(unittest.TestCase):
         result = self.content_init()
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout[:result.stdout.rindex("}") + 1])
-        self.assertEqual(report["written"], ["content/faq.json", "content/findings/", "content/meetings/", "content/pages/", "content/pages/help-map.json",
+        self.assertEqual(report["written"], ["content/faq.json", "content/findings/", "content/meetings/", "content/pages/", "content/pages/background.json", "content/pages/help-map.json",
                                              "content/site.json", "content/sources.json"])
         self.assertIn('Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.',
                       result.stdout)
@@ -93,9 +93,10 @@ class ContentInitTests(unittest.TestCase):
         site = json.loads(text)
         faq_text = (self.root / "content" / "faq.json").read_text(encoding="utf-8")
         page_text = (self.root / "content" / "pages" / "help-map.json").read_text(encoding="utf-8")
+        page_text += (self.root / "content" / "pages" / "background.json").read_text(encoding="utf-8")
         self.assertEqual(report["placeholders"], text.count("[EDIT ME: ") + faq_text.count("[EDIT ME: ") + page_text.count("[EDIT ME: "))
         self.assertEqual(text.count("[EDIT ME: "), 4)
-        self.assertEqual(report["placeholders"], 26)
+        self.assertEqual(report["placeholders"], 36)
         self.assertTrue(site["tagline"].startswith("[EDIT ME: ") and site["tagline"].endswith("]"))
         self.assertTrue(site["mission_md"].startswith("[EDIT ME: ") and site["mission_md"].endswith("]"))
         prose = [line for line in site["about_md"].split("\n") if line and not line.startswith("## ")]
@@ -181,7 +182,7 @@ class ContentInitTests(unittest.TestCase):
                 mock.patch.object(content_init, "_rename_noreplace", side_effect=OSError("injected rename failure")):
             with self.assertRaisesRegex(OSError, "injected rename failure"):
                 content_init.init_content(self.root)
-        self.assertEqual(seen, ["site.json", "faq.json", "help-map.json", "sources.json"])
+        self.assertEqual(seen, ["site.json", "faq.json", "help-map.json", "background.json", "sources.json"])
         self.assertNothingLeft()
         # The refusal is re-checked just before the rename: content/ appearing mid-run is never replaced.
         with mock.patch.object(content_init, "_write", side_effect=lambda path, text: (
@@ -220,8 +221,8 @@ class ContentInitTests(unittest.TestCase):
             result = content_init.init_content(self.root)
         content = self.root / "content"
         self.assertEqual(sorted(str(p.relative_to(content)) for p in content.rglob("*")),
-                         ["faq.json", "findings", "meetings", "pages", "pages/help-map.json", "site.json", "sources.json"])
-        self.assertEqual(result["written"], ["content/faq.json", "content/findings/", "content/meetings/", "content/pages/", "content/pages/help-map.json",
+                         ["faq.json", "findings", "meetings", "pages", "pages/background.json", "pages/help-map.json", "site.json", "sources.json"])
+        self.assertEqual(result["written"], ["content/faq.json", "content/findings/", "content/meetings/", "content/pages/", "content/pages/background.json", "content/pages/help-map.json",
                                              "content/site.json", "content/sources.json"])
         self.assertEqual(list(self.root.glob(".content.new-*")), [])
         for path in [content, *content.rglob("*")]:
