@@ -57,7 +57,7 @@ BASELINE = {
     "findings/cite.js": "13f4d137f53aaa98bcc1cf1662769871f5629dda97e5700cf97727fca110cb47",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/index.html": "219c1d11be554b1833ca8bf3e40a75b5902cf56e7297d06362b1cc94ed070336",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/packet-all.html": "ac543df536e443ca8928f91ffbabf54f67db7787be449df76153818ba89dc94e",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "index.html": "42cda83c1a99b40c35d802d1bfe9ce6ce0b32e306b318391e5114eca3c820cad",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "index.html": "8217592895377a3723032e92f6367e2a1abc4d77de2ceefaf81785859e98d4e4",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.html": "bf6ea4ed6353fe1a7004b5e76c52cb9fa454e72f4d1efa73618b3ac3af3c751e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.ics": "dd19281997628992288aaccd1a377c0b0b41c72d2110b15a641cd7a813191ae5",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.xml": "2af1fa8b795edc83edc9c854e689411875b401b940c3cc99569311f182b41e5e",  # pragma: allowlist secret -- public rendered-file SHA-256
