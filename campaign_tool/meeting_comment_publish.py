@@ -84,4 +84,3 @@ def publish(root, meeting_id, file, *, signer_public=False, replace=False, today
         raise MeetingCommentPublishError(f"content/meetings/{meeting_id}.json must not be a symlink")
     _write_json(path, updated)
     return comment, notes
-
