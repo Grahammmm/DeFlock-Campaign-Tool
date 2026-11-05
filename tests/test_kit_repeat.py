@@ -112,6 +112,16 @@ class KitRepeatTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(self.store.stat().st_mode), 0o600)
         self.assertNotIn(f"{self.agency}#next", json.loads(self.sent.read_text())["requests"])  # not sent at creation
 
+    def test_pre_2000_canonical_range_stores_nothing_and_file_stays_readable(self):
+        self.sent_main("1990-01-01 through 1999-12-31")
+        self.assertNotIn("covers_through", self.sent_entry())  # outside the reader's 2000-01-01 bound: not inferred
+        self.assertEqual(run("kit-status", "--directory", self.root)[0], 0)
+        self.assertEqual(self.send("main", "2026-10-15", "--replace")[0], 0)  # correction with --replace still works
+        self.assertNotIn("covers_through", self.sent_entry())
+        self.set_range("2026-01-01 through 2026-09-30")
+        self.assertEqual(self.send("main", "2026-10-15", "--replace")[0], 0)
+        self.assertEqual(self.sent_entry()["covers_through"], "2026-09-30")
+
     def test_today_resolves_at_send_and_explicit_override(self):
         self.sent_main("2026-01-01 through today", "2026-03-02")
         self.assertEqual(self.sent_entry()["covers_through"], "2026-03-02")

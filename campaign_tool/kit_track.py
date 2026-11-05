@@ -322,7 +322,7 @@ def _covers_through(data, sent_on, given):  # the end day of the range asked for
     if found is None:
         return None
     end = sent_on if found[1] == "today" else found[1]  # the draft was fixed when it was recorded as sent
-    return end if _day(found[0]) <= _day(end) <= _day(sent_on) else None
+    return end if _day(found[0]) <= _day(end) <= _day(sent_on) and _day(end) >= EARLIEST else None  # the reader's bounds
 
 
 def _check(root, agency, request):  # main: kit-check's own report; a named request: the same check on its draft
