@@ -18,6 +18,7 @@ COMMANDS = {
     "adopt-mail": ("mail_adoption", "main"),
     "mail-poll": ("mail_poll", "main"),
     "approve": ("publish", "approve_main"),
+    "approvals": "approval_queue",
     "publish": ("publish", "publish_main"),
     "reopen": ("publish", "reopen_main"),
     "health": ("schedule", "health_main"),
