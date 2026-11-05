@@ -4,6 +4,7 @@ Synthetic saved answers and a temp copy of the fictional example only; the netwo
 Run as a script with ``--popup-fixture`` it prints built controllers for tests/map-controller.test.mjs.
 """
 import contextlib
+import hashlib
 import io
 import json
 import re
@@ -300,9 +301,23 @@ class SiteTests(unittest.TestCase):
         self.cameras(null_only)
         nulls = self.built()
         self.assertEqual(set(nulls), set(baseline))
+        catalogue = ("data.html", "data/datapackage.json")  # DF2207-12: the open-data catalogue states each file's size and SHA-256
         for name in baseline:
-            if name != "data/cameras.geojson":
+            if name != "data/cameras.geojson" and name not in catalogue:
                 self.assertEqual(nulls[name], baseline[name], name)  # list, popup script and data: byte-identical
+        self.assertNotEqual(nulls["data/cameras.geojson"], baseline["data/cameras.geojson"])
+        # the catalogue differs only in the cameras.geojson entry, and that entry carries each build's own size and digest
+        row = re.compile(r'<tr data-path="data/cameras\.geojson".*?</tr>', re.S)
+        for name, built in (("baseline", baseline), ("nulls", nulls)):
+            camera = built["data/cameras.geojson"]
+            digest = hashlib.sha256(camera).hexdigest()
+            [entry] = row.findall(built["data.html"].decode())
+            self.assertIn(f'data-bytes="{len(camera)}" data-sha256="{digest}"', entry, name)
+            [resource] = [r for r in json.loads(built["data/datapackage.json"])["resources"] if r["path"] == "cameras.geojson"]
+            self.assertEqual((resource["bytes"], resource["hash"]), (len(camera), "sha256:" + digest), name)
+        self.assertEqual(row.sub("", nulls["data.html"].decode()), row.sub("", baseline["data.html"].decode()))
+        without = lambda built: [r for r in json.loads(built["data/datapackage.json"])["resources"] if r["path"] != "cameras.geojson"]  # noqa: E731
+        self.assertEqual(without(nulls), without(baseline))
         self.assertNotIn(b"Faces", b"".join(baseline.values()))
         self.assertNotIn(b"Faces", nulls["app.js"] + nulls["cameras.html"])
         self.cameras(tagged_six())
