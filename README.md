@@ -142,7 +142,7 @@ See [LAUNCH.md](LAUNCH.md) for the end-to-end picture and the launch gates, plus
 
 ## Evidence before conclusions
 
-Downloaded is not analyzed. Extracted is not reviewed. Missing text is not automatically proof of misconduct. Compare conduct with the rule and policy in force on the event date, consider exceptions and counterevidence, and retain exact source locators. AI assistance is not legal advice or a guarantee of accuracy.
+Downloaded is not analyzed. Extracted is not reviewed. Missing text is not automatically proof of misconduct. Compare conduct with the rule and policy in force on the event date, consider exceptions and counterevidence, and retain exact source locators. AI assistance is not legal advice or a guarantee of accuracy. To read a proposed local surveillance or ALPR ordinance, see the [draft ordinance reading aid](docs/ORDINANCE-CHECKLIST.md): questions tied to enacted code sections, not advice and not an implemented product capability.
 
 ## Accounts and costs
 
