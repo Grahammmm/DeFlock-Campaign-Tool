@@ -1000,6 +1000,14 @@ def stage_outputs(args):
         raise
     except Exception:  # noqa: BLE001 - isolate text-state errors; never expose private exception text
         warning = warning or "OUTPUTS_TEXTSTATE_UNAVAILABLE"
+    # Per-asked-item response ratings need the register and the received items written above.
+    try:
+        from .outcomes.response_items import write_run_response_items
+        write_run_response_items(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - isolate rating errors; never expose private exception text
+        warning = warning or "OUTPUTS_RESPONSE_ITEMS_UNAVAILABLE"
     produced = 1
     if prepared_digest is not None:
         try:
