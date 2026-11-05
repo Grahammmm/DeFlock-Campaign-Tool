@@ -14,6 +14,7 @@ COMMANDS = {
     "scan-public": "public_scan",
     "run": ("run", "main"),
     "status": ("run", "status_main"),
+    "arrival": ("arrival", "main"),
     "adopt-mail": ("mail_adoption", "main"),
     "mail-poll": ("mail_poll", "main"),
     "approve": ("publish", "approve_main"),

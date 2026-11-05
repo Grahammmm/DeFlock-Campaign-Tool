@@ -15,8 +15,8 @@ lost the placeholder). It also refuses an output directory that already has file
 or sits inside a Git checkout, because rendered files hold private host
 values.
 
-Output: run-records.sh (0700), records-run.service, records-run.timer and
-targets/NAME.json (0600). Installing them into the private runtime and the
+Output: run-records.sh (0700), records-run.service, records-run.timer,
+records-arrival.path, records-arrival.service and targets/NAME.json (0600). Installing them into the private runtime and the
 systemd user directory is a separate, owner-approved cutover step (plan T17).
 Nothing here installs, enables or starts anything.
 """
@@ -34,11 +34,13 @@ from campaign_tool.records import run_orchestrator  # noqa: E402
 
 TEMPLATES = (("run-records.sh.in", "run-records.sh", 0o700),
              ("records-run.service.in", "records-run.service", 0o600),
-             ("records-run.timer.in", "records-run.timer", 0o600))
+             ("records-run.timer.in", "records-run.timer", 0o600),
+             ("records-arrival.path.in", "records-arrival.path", 0o600),
+             ("records-arrival.service.in", "records-arrival.service", 0o600))
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:+=,-]+$")
 ABSOLUTE = {"ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
-            "NOTIFY_PY", "NOTIFY_ENV_FILE", "RUN_RECORDS_SH", "STUB_FIXTURE",
+            "NOTIFY_PY", "NOTIFY_ENV_FILE", "RUN_RECORDS_SH", "STUB_FIXTURE", "RECORDS_DROP_DIR",
             # Container stage plans (targets/test-container.json.in,
             # targets/live-container.json.in and the Phase 2 OCR plans
             # targets/live-ocr-container.json.in and
@@ -68,7 +70,9 @@ TARGET_NAMES = {"DEFAULT_TARGET", "SCHEDULED_TARGET"}
 RESERVED = {"TARGET_NAME"}
 # Safety placeholders a template must keep: a wrapper template that dropped
 # the free-space preflight would otherwise render cleanly without it.
-REQUIRED_PLACEHOLDERS = {"run-records.sh.in": {"MIN_FREE_BYTES"}}
+REQUIRED_PLACEHOLDERS = {"run-records.sh.in": {"MIN_FREE_BYTES", "RECORDS_DROP_DIR", "SCHEDULED_TARGET"},
+                         "records-arrival.path.in": {"RECORDS_DROP_DIR", "RUNTIME_DIR"},
+                         "records-arrival.service.in": {"RUN_RECORDS_SH"}}
 UNIT_TIMEOUT_SECONDS = 47 * 60
 KILL_GRACE = 2
 BACKSTOP_GRACE = 15
@@ -103,6 +107,25 @@ def check_values(values):
         raise RenderError("EXPECTED_IMAGE: expected sha256:<64 hex>")
     if "MIN_FREE_BYTES" in values:
         check_min_free_bytes(values["MIN_FREE_BYTES"])
+    if "RECORDS_DROP_DIR" in values:
+        check_drop_dir(values["RECORDS_DROP_DIR"], values.get("RUNTIME_DIR"))
+
+
+def check_drop_dir(drop, runtime):
+    """The drop folder must be a normalised absolute path apart from the runtime tree.
+
+    The runtime tree holds the arrival stamps, done/, reports and receipts, so a
+    drop folder equal to, inside or around it would let the pipeline's own output
+    re-trigger the path unit.
+    """
+    path = PurePosixPath(drop)
+    if os.path.normpath(drop) != drop or drop == "/":
+        raise RenderError("RECORDS_DROP_DIR: expected a normalised absolute path")
+    if runtime is not None:
+        other = PurePosixPath(os.path.normpath(runtime))
+        if path == other or path in other.parents or other in path.parents:
+            raise RenderError("RECORDS_DROP_DIR: must be separate from RUNTIME_DIR "
+                              "(arrival, done and report trees)")
 
 
 def check_min_free_bytes(value):

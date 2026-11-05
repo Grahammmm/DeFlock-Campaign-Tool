@@ -1,0 +1,16 @@
+[Unit]
+Description=Records arrival run (incremental, lock-safe)
+# Candidate only. Started by records-arrival.path; never enabled by the renderer.
+
+[Service]
+Type=oneshot
+UMask=0077
+# The event file names are never passed to the shell; the wrapper re-inventories
+# the drop folder and the arrival stamps itself.
+ExecStart=/bin/sh @RUN_RECORDS_SH@ --arrival
+# Same envelope as records-run.service. The wrapper gives its single follow-up
+# run the remaining part of one shared absolute deadline, never a new budget;
+# render.py refuses budgets that do not fit this timeout.
+TimeoutStartSec=47min
+StandardOutput=null
+StandardError=null
