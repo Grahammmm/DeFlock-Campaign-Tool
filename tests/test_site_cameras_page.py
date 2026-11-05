@@ -117,19 +117,20 @@ class CamerasPageTests(unittest.TestCase):
             ("not tagged", "Pine PD", "no OSM link")])  # a way URL sorts after node URLs and is not linked
         self.assertEqual(group[2][0][:2], ("Flock Safety", "Unknown"))
 
-    # 4. no map: no page, no footer/fallback links, sitemap the same page set as before
+    # 4. no map: an empty page (DF1952-10), no footer/fallback links, sitemap lists it once
     def test_no_map_no_page_links_or_sitemap_entry(self):
         shutil.rmtree(self.map)
         self.base_url(BASE)
         written = {p.relative_to(self.public).as_posix() for p in build_site(self.root)}
-        self.assertNotIn("cameras.html", written)
-        for name in ("index.html", "about.html", "findings/index.html"):
+        self.assertIn("cameras.html", written)
+        for name in ("about.html", "findings/index.html"):
             self.assertNotIn("/cameras.html", self.read(name), name)
+        self.assertNotIn('<a href="/cameras.html">Mapped points</a>', self.read("index.html"))
         locs = [loc.text for loc in ET.fromstring(self.read("sitemap.xml")).iter(
             "{http://www.sitemaps.org/schemas/sitemap/0.9}loc")]
         self.assertEqual(locs, [BASE + p for p in ("/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html",
                                                    "/meetings.html", "/about.html", "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html",  # DF2037-14
-                                                   "/requests.html", "/data.html", "/agencies/cedar.html",  # DF1103-13 / DF2207-12 / DF2237-08
+                                                   "/requests.html", "/data.html", "/cameras.html", "/agencies/cedar.html",  # DF1103-13 / DF2207-12 / DF1952-10 / DF2237-08
                                                    "/findings/cedar-policy-posted.html",
                                                    "/meetings/cedar-council-2026-10.html",
                                                    "/sources/cafecafecafe.html", "/sources/beefbeefbeef.html")])  # DF1103-11, last
@@ -163,16 +164,17 @@ class CamerasPageTests(unittest.TestCase):
             build_site(self.root)
         self.assertFalse(self.public.exists())
 
-    #    ... and a content page content/pages/cameras.json is refused with a map (never silently replaced), kept without
+    #    ... and a content page content/pages/cameras.json is always refused (DF1952-10), with or without a map
     def test_content_page_named_cameras(self):
         (self.content / "pages").mkdir(exist_ok=True)
         self.write(self.content / "pages" / "cameras.json", {"title": "Our cameras", "description": "", "body_md": "Hi."})
-        with self.assertRaisesRegex(ContentError, r"content/pages/cameras\.json: collides with the generated cameras\.html"):
+        with self.assertRaisesRegex(ContentError, r"pages/cameras\.json: slug cameras is reserved"):
             build_site(self.root)
         self.assertFalse(self.public.exists())
         shutil.rmtree(self.map)
-        build_site(self.root)
-        self.assertIn("<h2>Our cameras</h2>", self.read("cameras.html"))
+        with self.assertRaisesRegex(ContentError, r"pages/cameras\.json: slug cameras is reserved"):
+            build_site(self.root)
+        self.assertFalse(self.public.exists())
 
     # 6. over 2 000 points: each section shows its full count and 500 rows, then "and N more on the map"
     def test_large_map_caps_rows_per_section(self):

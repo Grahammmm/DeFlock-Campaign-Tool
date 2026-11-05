@@ -297,6 +297,9 @@ class LabelsTest(unittest.TestCase):
                   "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.statements_heading",
                   "handout.statements_note", "handout.title",
                   "handout.what_we_found",
+                  "intro.officials_open_data",
+                  "js.requests_agency", "js.requests_all_agencies", "js.requests_all_states", "js.requests_count",
+                  "js.requests_empty", "js.requests_label", "js.requests_state",
                   "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
                   "license.about", "license.about_camera", "license.csv_note",
                   "map.check_duplicate", "map.check_earlier", "map.check_heading",
@@ -325,6 +328,7 @@ class LabelsTest(unittest.TestCase):
                   "sharing.kind", "sharing.kind_federal", "sharing.kind_local", "sharing.kind_private", "sharing.kind_state",
                   "sharing.kind_unknown", "sharing.law_status", "sharing.lead", "sharing.out_of_state", "sharing.receiver",
                   "sharing.source_list", "sharing.sources", "sharing.state", "sharing.title",
+                  "standings.deadline",  # DF1952-10: only with a verified upcoming deadline (tests/test_site_standings.py)
                   "statements.campaign_context", "statements.checked", "statements.context_interview",
                   "statements.context_meeting", "statements.context_newsletter", "statements.context_other",
                   "statements.context_press_release", "statements.heading", "statements.line", "statements.quote",
