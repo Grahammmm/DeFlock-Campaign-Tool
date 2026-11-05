@@ -1,0 +1,16 @@
+{
+  "/v1/Events": {"value": [
+    {"id": 2001, "eventName": "Board of Supervisors", "categoryName": "Board of Supervisors (fictional)",
+     "startDateTime": "2026-12-08T01:00:00Z", "agendaId": 900, "eventNotice": "",
+     "publishedFiles": [{"type": "Agenda", "fileId": 55, "url": "stream/EXAMPLECOUNTY/a.pdf"}]},
+    {"id": 2002, "eventName": "Planning Commission", "categoryName": "Planning (fictional)",
+     "startDateTime": "2026-12-09T17:00:00Z", "agendaId": 901, "publishedFiles": []}
+  ]},
+  "/v1/Meetings/900": {"id": 900, "items": [
+    {"id": 1, "agendaObjectItemName": "CONSENT", "agendaObjectItemDescription": "", "childItems": [
+      {"id": 2, "agendaObjectItemName": "Automated license plate reader (ALPR) use policy",
+       "agendaObjectItemDescription": "<p>Example policy (fictional)</p>", "childItems": []}]}
+  ]},
+  "/v1/Meetings/901": {"id": 901, "items": [
+    {"id": 3, "agendaObjectItemName": "Parks budget", "agendaObjectItemDescription": "Fictional", "childItems": []}]}
+}
