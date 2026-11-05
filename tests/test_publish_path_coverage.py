@@ -65,7 +65,7 @@ MARK = re.compile(r"^(public|feed\.xml|agency-cards\.js|social|briefs|cards)$|^(
 USES = ("privacy_patterns", "flock_privacy")
 SKIP = re.compile(r"tools/(accept_|fc\d)|^campaign_tool/records/|^campaign_tool/(privacy_patterns|publish_paths)\.py$|^tools/(check_public_tree|ci_affected)")
 # What each site-driven entry is fed: the published field that reaches its artefact.
-PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name"), "atom-feed": ("finding.summary",),
+PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name", "elsewhere.place", "elsewhere.body", "elsewhere.as_stated"), "atom-feed": ("finding.summary",),
           "agency-feeds": ("finding.summary",), "open-graph-meta": ("finding.title",),
           "agency-cards": ("site.county_profile.summary", "agency.profile.summary"), "data-exports": ("source.title", "agency.name"),
           "map-geojson": ("map.cameras.geojson", "map.city-boundaries.geojson", "map.county.geojson")}
@@ -256,6 +256,12 @@ class Drivers:
             document = json.loads(original.read_text(encoding="utf-8"))
             document["features"][0].setdefault("properties", {})["how"] = value
             path.write_text(json.dumps(document), encoding="utf-8")
+            return
+        if kind == "elsewhere":  # DF1107-04: a one-entry content/elsewhere.json whose one field holds the value
+            entry = {"place": "Fictional City", "state": "ZZ", "body": "Fictional City Council", "decided_on": "2026-01-02",
+                     "kind": "paused", "as_stated": "Fictional statement.", "source_url": "https://records.example.test/item",
+                     "checked_on": "2026-01-03", key: "Text %s end (fictional)" % value}
+            (root / "content" / "elsewhere.json").write_text(json.dumps([entry]), encoding="utf-8")
             return
         path = {"finding": next((root / "content" / "findings").glob("*.json")), "site": root / "content" / "site.json",
                 "source": root / "content" / "sources.json", "agency": root / "content" / "agencies.json"}[kind]
