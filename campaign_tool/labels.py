@@ -343,6 +343,8 @@ HANDOUT_DEFAULTS = {
     "handout.source_line": "Source: {title}, received {date}, record {record}",
     "handout.not_recorded": "not recorded", "handout.corrected": "corrected {date}",
     "handout.more_on_site": "{count} more on the site",
+    "handout.statements_heading": "What members have said",
+    "handout.statements_note": "Quoted from the linked sources; these selections do not summarize a member's views.",
     "handout.record_explainer": "What the record number means: the first 12 characters of a SHA-256 fingerprint of the "
                                 "file exactly as received. It shows the file has not changed since; it does not by "
                                 "itself prove who wrote it.",
