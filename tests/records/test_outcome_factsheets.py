@@ -157,7 +157,7 @@ class FactSheetsTests(unittest.TestCase):
         own = {"agency-factsheets.json", "agency-factsheets.md"}
         self.assertEqual({p.name for p in output.iterdir()} - {
             "comparison.json", "comparison.md", "text-state.json", "text-state.md",
-            "CURRENT-REQUEST-REGISTER.json", "CURRENT-REQUEST-REGISTER.md"}, own)
+            "CURRENT-REQUEST-REGISTER.json", "CURRENT-REQUEST-REGISTER.md", "outcomes"}, own)
         report = json.loads((output / "agency-factsheets.json").read_text())
         text = (output / "agency-factsheets.md").read_text()
         self.assertEqual(text, fs.markdown(report))
@@ -168,6 +168,12 @@ class FactSheetsTests(unittest.TestCase):
                     self.assertIn("document sha256 " + cite["document_sha256"] + ", page " + str(cite["page"]), text)
         self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o700)
         for path in output.iterdir():
+            if path.name == "outcomes":  # received-items directory (REC-AUTO-3)
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+                self.assertEqual([p.name for p in path.iterdir()], ["received-items.json"])
+                self.assertEqual(stat.S_IMODE((path / "received-items.json").stat().st_mode), 0o600)
+                json.loads((path / "received-items.json").read_text())
+                continue
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         snapshot = json.loads((output.parent / "test-run.json").read_text())
         self.assertEqual(snapshot["originals"], 2)
