@@ -971,6 +971,8 @@ def stage_outputs(args):
         write_run_comparison(args.project, args.run_id)
         from .outcomes.received_items import write_run_received_items
         write_run_received_items(args.project, args.run_id)
+        from .outcomes.release_links import write_run_release_links
+        write_run_release_links(args.project, args.run_id)
     except OSError:
         return result("fail", {"input": 1, "failed": 1}, "OUTPUTS_WRITE_FAILED"), 1
     finally:

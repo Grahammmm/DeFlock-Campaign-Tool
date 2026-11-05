@@ -22,6 +22,7 @@ COMMANDS = {
     "reopen": ("publish", "reopen_main"),
     "health": ("schedule", "health_main"),
     "pipeline-health": ("pipeline_health", "main"),
+    "release-links": ("outcomes.release_links", "main"),
     "schedule": ("schedule", "schedule_main"),
 }
 
