@@ -670,7 +670,7 @@ def backup_diff_cmd(args, root):
 def meetings_cmd(args, root):
     from datetime import date
     from .meetings import CivicClerkClient, LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
-    from .meetings import feed_opener, make_client
+    from .meetings import MeetingsError, feed_opener, make_client
     if args.matters and args.platform != "legistar":
         print("Stopped: --matters is Legistar only", file=sys.stderr)
         raise SystemExit(1)
@@ -683,7 +683,7 @@ def meetings_cmd(args, root):
         opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
     elif args.platform == "ics":
         if args.online == bool(args.from_ics):
-            raise ValueError("--platform ics needs exactly one of --online (one GET of the feed) or --from-ics FILE")
+            raise MeetingsError("--platform ics needs exactly one of --online (one GET of the feed) or --from-ics FILE")
         opener = default_opener if args.online else feed_opener(args.from_ics)
     elif args.online:
         opener = default_opener
