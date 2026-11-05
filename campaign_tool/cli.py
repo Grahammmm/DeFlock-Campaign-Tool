@@ -659,30 +659,22 @@ def backup_diff_cmd(args, root):
 
 def meetings_cmd(args, root):
     from datetime import date
-    from .meetings import CivicClerkClient, GranicusClient, LegistarClient, compare_meetings, default_opener, read_feed_file, fixture_opener, relevant_events, resolve_zone, write_meetings
+    from .meetings import CivicClerkClient, LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
+    from .meetings import feed_opener, make_client
     zone = resolve_zone(args.tz)
     if zone is None:
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
         raise SystemExit(2)
     read_config(root)
-    granicus = args.platform == "granicus"
-    if granicus and args.view_id is None or args.view_id is not None and not granicus:
-        raise ValueError("--view-id goes with --platform granicus, and granicus needs it")
-    if args.from_xml and not granicus:
-        raise ValueError("--from-xml reads a saved Granicus feed; use --platform granicus")
-    if args.from_xml:
-        feed = args.from_xml
-        opener = lambda url: read_feed_file(feed)
-    elif args.from_json:
+    if args.from_json:
         opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
     elif args.online:
         opener = default_opener
+    elif args.from_xml:
+        opener = feed_opener(args.from_xml)
     else:
-        raise ValueError("meetings needs --online to query the agenda platform, or a recorded response (--from-json, or --from-xml for Granicus)")
-    if granicus:
-        client = GranicusClient(args.client, args.view_id, opener=opener, label=args.from_xml or "feed")
-    else:
-        client = (CivicClerkClient if args.platform == "civicclerk" else LegistarClient)(args.client, opener=opener)
+        raise ValueError("meetings needs --online to query the agenda platform, or a recorded response (--from-json; --from-xml for Granicus)")
+    client = make_client(args, opener)
     since = date.fromisoformat(args.since) if args.since else None
     meetings = relevant_events(client, since=since, zone=zone, all_events=args.all_events)
     previous = _read_previous(root / "kit" / "meetings.json")
@@ -691,8 +683,7 @@ def meetings_cmd(args, root):
     target = write_meetings(root, meetings, args.client, None if previous is None else changes, zone=zone, source=client.source)
     report = {"client": args.client, "platform": client.source, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
               "cancelled_meetings": sum(m["status"] == "cancelled" for m in meetings)}
-    if granicus:
-        report.update(not_scanned=sum(bool(m.get("not_scanned")) for m in meetings), cut_by_item_cap=client.cut)
+    report.update(getattr(client, "report_extra", lambda m: {})(meetings))
     if "added" in changes:
         report["changes"] = {k: len(changes[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
     print(json.dumps(dict(report, note="keyword hits only; verify the posted agenda before publishing"), indent=2))

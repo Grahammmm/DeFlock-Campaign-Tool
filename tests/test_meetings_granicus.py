@@ -63,8 +63,11 @@ class Import(unittest.TestCase):
 
     def test_xml_refused(self):
         for bad in (b'<?xml version="1.0"?><!DOCTYPE rss [<!ENTITY x "y">]><rss/>', b"<!DOCTYPE rss><rss/>", b'<!ENTITY a "b"><rss/>'):
-            with self.assertRaisesRegex(MeetingsError, "DOCTYPE"):
+            with self.assertRaisesRegex(MeetingsError, "DOCTYPE|well-formed"):
                 run(bad)
+        utf16 = '<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE rss [<!ENTITY x "y">]><rss/>'.encode("utf-16")
+        with self.assertRaisesRegex(MeetingsError, "DOCTYPE"):
+            run(utf16)
         client = GranicusClient(HOST, 7, opener=lambda url: b"<rss><channel><item>", label="feed.xml")
         with self.assertRaisesRegex(MeetingsError, "feed.xml"):
             client.events()
@@ -95,6 +98,27 @@ class Import(unittest.TestCase):
         data = b"<rss><channel><item><title>Council</title><guid>9</guid><pubDate>Tue, 08 Dec 2026 10:00:00 -0800</pubDate>" \
                b"<description>ALPR</description></item></channel></rss>"
         self.assertEqual(run(data)[0][0]["starts_at"][:10], "2026-12-08")
+
+
+    def test_pubdate_wins_over_title_date(self):
+        data = b"<rss><channel><item><title>Council - Dec 9, 2026</title><guid>9</guid><pubDate>Tue, 08 Dec 2026 10:00:00 -0800</pubDate>" \
+               b"<description>ALPR</description></item></channel></rss>"
+        self.assertEqual(run(data)[0][0]["starts_at"][:10], "2026-12-08")
+        bad = data.replace(b"Tue, 08 Dec 2026 10:00:00 -0800", b"not a date")
+        self.assertEqual(run(bad)[0][0]["starts_at"][:10], "2026-12-09")
+
+    def test_since_defaults_to_today(self):
+        data = feed(item(title="Old - Jan 5, 2020", guid="1"), item(title="Future - Jan 5, 2999", guid="2"))
+        meetings, _ = run(data, since=None)
+        self.assertEqual([m["event_id"] for m in meetings], [2])
+
+    def test_title_alone_is_not_scanned(self):
+        data = feed(item(title="ALPR Review - Dec 8, 2026", desc=""))
+        self.assertEqual(run(data)[0], [])
+        meetings, _ = run(data, all_events=True)
+        self.assertEqual(len(meetings), 1)
+        self.assertTrue(meetings[0]["not_scanned"])
+        self.assertEqual((meetings[0]["matched_items"], meetings[0]["matched_terms"]), (0, []))
 
 
 class FeedFile(unittest.TestCase):

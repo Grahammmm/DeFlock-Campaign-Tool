@@ -558,9 +558,10 @@ python3 -m campaign_tool meetings --directory D --platform granicus --client <na
 Find the host and `view_id` in the address of your city's Granicus agenda page (`https://<name>.granicus.com/ViewPublisher.php?view_id=N`).
 Only the agendas in the public feed `https://<host>/ViewPublisherRSS.php?view_id=N&mode=agendas` are read (host must be `*.granicus.com`,
 `view_id` 1-9999; at most 60 events, the earliest by date, and the report says how many were cut). `--from-xml` reads a saved copy
-(a regular file, not a symlink, at most 2 MiB); a feed with a `<!DOCTYPE` or `<!ENTITY`, or one that is not well-formed, is refused
-and `kit/meetings.json` is left alone. Item title plus description is scanned with the same keyword list; the date comes from the
-title (`Mon D, YYYY`) or `pubDate`, with no time of day, in `--tz`. Ids are `granicus-<name>-<event id>`; a cancelled mark in the
+(a regular file, not a symlink, at most 2 MiB); a feed with a `<!DOCTYPE` or `<!ENTITY` (in any encoding), or one that is not well-formed, is refused
+and `kit/meetings.json` is left alone. Item title plus description is scanned with the same keyword list; the date comes from
+`pubDate`, or from the title (`Mon D, YYYY`) when `pubDate` is missing or invalid, with no time of day, in `--tz`;
+events before `--since` (default today) are skipped. Ids are `granicus-<name>-<event id>`; a cancelled mark in the
 title sets `status: "cancelled"`; a link is kept only if `https://` on the same host. An item with no description has no text beyond its
 title: it is dropped unless `--all-events`, which keeps it as `not_scanned: true` with no matches, meaning nobody has checked its agenda.
 

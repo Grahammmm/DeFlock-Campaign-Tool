@@ -16,6 +16,7 @@ import os
 import re
 import stat
 import xml.etree.ElementTree as ET
+from xml.parsers import expat
 from email.utils import parsedate_to_datetime
 import urllib.error
 import urllib.parse
@@ -226,25 +227,33 @@ class GranicusClient:
         self._scanned = {}
 
     def _date(self, title, pub):
+        try:
+            if pub:
+                return parsedate_to_datetime(pub).date().isoformat()
+        except (TypeError, ValueError, IndexError):
+            pass
         m = self.TITLE_DATE.search(title)
         if m:
             try:
                 return datetime.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%b %d %Y").date().isoformat()
             except ValueError:
                 pass
-        try:
-            return parsedate_to_datetime(pub).date().isoformat() if pub else None
-        except (TypeError, ValueError):
-            return None
+        return None
 
     def events(self, since=None, top=MAX_EVENTS):
         url = f"https://{self.host}/ViewPublisherRSS.php?view_id={self.view_id}&mode=agendas"
+        since = since or date.today()
         data = self.opener(url)
-        if re.search(rb"<!\s*(DOCTYPE|ENTITY)", data, re.IGNORECASE):
+
+        def refuse(*_):
             raise MeetingsError(f"{self.label}: DOCTYPE and ENTITY declarations are refused")
+        # Pre-pass with expat in any encoding (UTF-16 included): a DTD or entity declaration is refused before ElementTree sees it.
+        scan = expat.ParserCreate()
+        scan.StartDoctypeDeclHandler = scan.EntityDeclHandler = refuse
         try:
+            scan.Parse(data, True)
             root = ET.fromstring(data)
-        except ET.ParseError as exc:
+        except (expat.ExpatError, ET.ParseError) as exc:
             raise MeetingsError(f"{self.label}: not well-formed XML ({exc})") from None
         events = []
         for item in root.iter("item"):
@@ -256,7 +265,7 @@ class GranicusClient:
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query)
             ident = guid if guid.isdigit() else next((v[0] for k in ("clip_id", "event_id")
                                                       for v in [query.get(k) or []] if v and v[0].isdigit()), None)
-            if not day or not ident or len(ident) > 12 or (since and day < since.isoformat()):
+            if not day or not ident or len(ident) > 12 or day < since.isoformat():
                 continue
             parts = urllib.parse.urlsplit(link)
             ok = parts.scheme == "https" and (parts.hostname or "").lower() == self.host and not parts.username
@@ -271,10 +280,28 @@ class GranicusClient:
 
     def event_items(self, event_id):
         e = self._events.get(event_id, {})
-        return [{"EventItemTitle": e.get("EventBodyName", ""), "EventItemMatterName": e.get("_description", "")}]
+        if not e.get("_description"):
+            return []  # nothing but a title: not scanned, never a match
+        return [{"EventItemTitle": e.get("EventBodyName", ""), "EventItemMatterName": e["_description"]}]
 
     def scanned(self, event_id):
         return self._scanned.get(event_id, False)
+
+
+def feed_opener(path):
+    return lambda url: read_feed_file(path)
+
+
+def make_client(args, opener):
+    """The agenda-platform client for the ``meetings`` command; refuses flags that belong to another platform."""
+    granicus = args.platform == "granicus"
+    if granicus and (args.from_json or (args.online and args.from_xml)) or (args.from_xml or args.view_id is not None or args.all_events) and not granicus:
+        raise MeetingsError("--view-id, --from-xml and --all-events go with --platform granicus (which reads --online or --from-xml, not --from-json)")
+    if granicus:
+        client = GranicusClient(args.client, args.view_id, opener=opener, label=args.from_xml or "feed")
+        client.report_extra = lambda found: {"not_scanned": sum(bool(m.get("not_scanned")) for m in found), "cut_by_item_cap": client.cut}
+        return client
+    return (CivicClerkClient if args.platform == "civicclerk" else LegistarClient)(args.client, opener=opener)
 
 
 def resolve_zone(name):
