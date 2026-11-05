@@ -13,7 +13,8 @@ from .content import (_read_json, load_comment_asks, load_content, load_finding,
                       load_participation)
 from .kit import _kit_folder, _write_json
 from .legal_claims import legal_notes
-from .meetings import _clean, comment_kit_md
+from .meetings import _clean, comment_kit_md, manual_note
+from .meetings_manual import ManualMeetingError, read_meetings
 from .supporters import MAX_COSIGNERS, cosign_problems, resolve_cosigners
 
 MAX_KIT_BYTES = 4 * 1024 * 1024
@@ -26,22 +27,11 @@ class MeetingStageError(ValueError):
 
 
 def _read_kit(root):
-    path = root / "kit" / "meetings.json"
-    if os.path.islink(path):
-        raise MeetingStageError("kit/meetings.json must not be a symlink")
-    if not path.is_file():
-        raise MeetingStageError("kit/meetings.json not found; run `meetings` first")
-    if path.stat().st_size > MAX_KIT_BYTES:
-        raise MeetingStageError("kit/meetings.json: larger than 4 MiB")
+    """DF1103-09: kit/meetings.json (scan) and kit/meetings-manual.json (organizer-entered), merged by id."""
     try:
-        document = json.loads(path.read_bytes().decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise MeetingStageError(f"kit/meetings.json: not UTF-8 JSON ({exc.__class__.__name__})") from None
-    if not isinstance(document, dict) or document.get("schema_version") != 1:
-        raise MeetingStageError("kit/meetings.json: unsupported schema_version (expected 1)")
-    if not isinstance(document.get("meetings"), list):
-        raise MeetingStageError("kit/meetings.json: meetings must be a list")
-    return document["meetings"]
+        return read_meetings(root)
+    except ManualMeetingError as exc:
+        raise MeetingStageError(str(exc)) from None
 
 
 def _find(meetings, meeting_id):
@@ -87,6 +77,11 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     cosign_ids = _chosen_cosigners(cosign_ids) if cosign_ids is not None else None
     cfg = read_config(root)
     meeting = _find(_read_kit(root), meeting_id)
+    manual = meeting.get("source") == "manual"
+    if manual and agency_id is None:
+        agency_id = meeting["agency_id"]  # the saved agency; the kit and its lookup use this one entry
+    elif manual and agency_id != meeting["agency_id"]:
+        raise MeetingStageError(f"--agency-id: meeting {meeting_id} is saved for another agency")
     if meeting.get("status") == "cancelled":
         raise MeetingStageError(f"meeting {meeting_id} is cancelled; no comment kit")
     try:
@@ -170,7 +165,7 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     _write_json(target, document)
     report = {"written": f"content/meetings/{target.name}", "findings_cited": len(cited),
               "findings": [f["id"] for f in cited], "replaced": replaced,
-              "note": NOTE}
+              "note": manual_note(meeting) if manual else NOTE}
     if cosigners:
         report["cosigners"] = list(cosign_ids)
     flags = _ask_notes(custom, "--ask" if override is not None else "site.json.comment_asks")
