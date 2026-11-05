@@ -2072,7 +2072,7 @@ def load_map(content_dir, sources=None, today=None):
 PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
 RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
                                        "agency-cards", "app", "data", "vendor", "meetings", "methods", "privacy", "search",
-                                       "press"}  # generated top-level names (press: DF2207-10, reserved even when disabled)
+                                       "press", "requests"}  # generated top-level names (press: DF2207-10, reserved even when disabled)
 
 
 def _page_string(document, key, label, limit, required):
@@ -2782,4 +2782,8 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
         model["redirects"] = _read_json(redirects_path)
     if supporters is not None:  # DF2207-13: public rows only (never the private consent records)
         model["supporters"] = supporters
+    from .body_schedules import read_body_schedules  # local: body_schedules imports this module
+    schedules = read_body_schedules(root, today=today)  # DF0022-10: optional; the key exists only with rows
+    if schedules:
+        model["body_schedules"] = schedules
     return model

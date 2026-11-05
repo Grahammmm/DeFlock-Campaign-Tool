@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
-from .content import (CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, PRE_MEETING_RULE_ID, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, SHARING_BULLETIN_ID, SHARING_KINDS,
+from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, PRE_MEETING_RULE_ID, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, SHARING_BULLETIN_ID, SHARING_KINDS,
                       SHARING_RULE_ID, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
@@ -49,7 +49,7 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "sharing.html", "press.html"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "sharing.html", "press.html", "requests.html"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
@@ -791,7 +791,9 @@ class Site:
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         meetings_feed = f' · <a href="/meetings.xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else ""  # DF1103-10
         archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
-        parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a>{meetings_feed} · <a href="/search.html">{self.t("footer.search")}</a> · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}{archive}'
+        parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a>{meetings_feed} · <a href="/search.html">{self.t("footer.search")}</a>'
+                     f' · <a href="/requests.html">{self.t("footer.requests")}</a>'  # DF1103-13: between the feed and Corrections
+                     f' · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}{archive}'
                      ' · <a href="/methods.html">How to read our findings</a></p>')
         if self.faq:  # DF0022-01: appended last, so every earlier footer paragraph is unchanged
             parts.append(f'<p><a href="/faq.html">{self.t("footer.faq")}</a></p>')
@@ -1285,6 +1287,38 @@ class Site:
                    else f'<p>{self.t("notice.no_agencies")}</p>')
                 + '</section>\n')
         return self.page("agencies", self.labels["title.agencies"], self.labels["title.agencies_description"], "/agencies.html", main)
+
+    def request_rows(self):
+        """DF1103-13: every public asked item as ``(agency, item)``, newest ``asked_on`` first, then ``agency_id``, then the
+        item's position in its agency list; duplicates stay. Reads only the validated ``model["agencies"][*]["asked"]``."""
+        rows = [(agency["agency_id"], index, agency, item)
+                for agency in self.model["agencies"] for index, item in enumerate(agency.get("asked", []))]
+        rows.sort(key=lambda row: (row[0], row[1]))
+        rows.sort(key=lambda row: row[3]["asked_on"], reverse=True)  # stable: equal days keep (agency_id, index) order
+        return [(agency, item) for _, _, agency, item in rows]
+
+    def requests_html(self):
+        """/requests.html (DF1103-13): one table of every public asked item across agencies; the lead counts the same rows."""
+        rows = self.request_rows()
+        states = [item["state"] for _, item in rows]
+        counts = " · ".join(self.t("requests.count", state=self.t("requests.state_" + state), count=states.count(state))
+                            for state in ASKED_STATES)
+        lead = f'<p>{self.t("requests.lead", total=len(rows))} {counts}</p>'
+        heads = [self.t("requests.col_" + key) for key in ("agency", "topic", "asked_on", "state", "updated_on")]
+        body = []
+        for agency, item in rows:
+            page = self.agency_pages().get(agency["agency_id"], f'/agencies.html#{agency["slug"]}')
+            cells = [f'<a href="{e(page)}">{e(agency["name"])}</a>', e(item["topic"]), time_tag(item["asked_on"]),
+                     e(asked_sentence(item, self.today)),
+                     time_tag(item["updated_on"]) if item.get("updated_on") else self.t("requests.not_recorded")]
+            body.append(f'<tr><th scope="row" data-label="{heads[0]}">{cells[0]}</th>'
+                        + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
+        table = ((f'<table class="glance-table"><caption>{self.t("requests.caption")}</caption><thead><tr>'
+                  + "".join(f'<th scope="col">{head}</th>' for head in heads) + "</tr></thead><tbody>" + "".join(body)
+                  + "</tbody></table>") if rows else f'<p>{self.t("requests.empty")}</p>')
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div>'
+                f'<h2>{self.t("requests.title")}</h2></div></div>{lead}<p>{self.t("requests.note")}</p>{table}</section>\n')
+        return self.page("agencies", self.labels["requests.title"], self.labels["requests.description"], "/requests.html", main)
 
     @staticmethod
     def _official_name(person):
@@ -1913,6 +1947,27 @@ class Site:
         return self.page("sources", self.labels["title.sources"], self.labels["title.sources_description"], "/sources.html", main,
                          ["/site-data.js", "/sources/filter.js"] if form else [])
 
+    def body_schedule_html(self):
+        """DF0022-10: each body's organizer-verified regular meeting rule, once, sorted by body; "" without schedules.
+        Only a rule and its source: never a date, a scheduled meeting or an agenda-posting deadline."""
+        items = []
+        for schedule in self.model.get("body_schedules") or ():
+            words = [self.t(f"schedule.ordinal_{ordinal}") for ordinal in schedule["ordinals"]]
+            if len(words) == 1:
+                ordinals = words[0]
+            elif len(words) == 2:
+                ordinals = self.t("schedule.join_two", first=words[0], last=words[1])
+            else:
+                ordinals = self.t("schedule.join_many", prefix=", ".join(words[:-1]), last=words[-1])
+            rule = self.t("schedule.rule", ordinals=ordinals, weekday=self.t("schedule.weekday_" + schedule["weekday"]),
+                          time=e(schedule["local_start_time"]), zone=e(schedule["time_zone"]))
+            link = f'<a href="{e(schedule["source_url"])}" rel="noopener noreferrer">{e(schedule["source_url"])}</a>'
+            usually = self.t("schedule.usually", rule=rule, source=link, date=e(schedule["checked_on"]))
+            old = (f'<p>{self.t("schedule.stale")}</p>'
+                   if (self.today - date.fromisoformat(schedule["checked_on"])).days > 365 else "")
+            items.append(f'<article><h3>{e(schedule["body"])}</h3><p>{usually}</p>{old}</article>')
+        return f'    <section class="section" id="regular-meetings">{"".join(items)}</section>\n' if items else ""
+
     def meetings_html(self):
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p>'
                 f'<h2>{self.t("heading.meetings")}</h2></div><p>{self.t("intro.meetings")} '
@@ -1921,7 +1976,7 @@ class Site:
                 + (f' <a href="/meetings.xml" type="application/atom+xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else "")
                 + f' <a href="/meetings.ics">{self.t("intro.meetings_calendar")}</a></p></div>'
                 '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
-                + '</div></section>\n')
+                + '</div></section>\n') + self.body_schedule_html()
         if self.past:
             main += (f'    <section class="section" id="past-meetings"><h2>{self.t("heading.past_meetings")}</h2><div class="meeting-list">'
                      + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')
@@ -2366,7 +2421,8 @@ class Site:
 
     def page_paths(self):
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
-                 "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html"]
+                 "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html",
+                 "/requests.html"]  # DF1103-13
         paths += ["/cameras.html"] if self.map else []
         paths += ["/glossary.html"] if self.glossary else []
         paths += ["/faq.html"] if self.faq else []  # DF0022-01
@@ -2839,6 +2895,7 @@ def _plan_site(root, today=None, notes=None):
         "meetings.html": site.meetings_html(), "about.html": site.about_html(),
         "corrections.html": site.corrections_html(), "404.html": site.not_found_html(), "methods.html": site.methods_html(), "search.html": site.search_html(),
         "timeline.html": site.timeline_html(), "privacy.html": site.privacy_html(),
+        "requests.html": site.requests_html(),
     }
 
     for meeting in model["meetings"]:
