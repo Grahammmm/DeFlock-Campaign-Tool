@@ -109,8 +109,8 @@ class KitSentPortalUrlTests(unittest.TestCase):
         target = self.tmp / "tracker.csv"
         self.assertEqual(run("kit-status", "--directory", self.root, "--csv", target)[0], 0)
         rows = list(csv.reader(target.read_text(encoding="utf-8").splitlines()))
-        self.assertEqual(rows[0][-1], "request_url")
-        self.assertEqual(rows[1][-1], URL)
+        self.assertEqual(rows[0][-2:], ["request_url", "owner"])
+        self.assertEqual(rows[1][-2:], [URL, ""])
         self.assertEqual(target.read_text(encoding="utf-8").count(URL), 1)
         code, out, err = run("kit-followup", "--directory", self.root, "--agency", self.a, "--as-of", "2026-06-01")
         self.assertEqual(code, 0, err)
