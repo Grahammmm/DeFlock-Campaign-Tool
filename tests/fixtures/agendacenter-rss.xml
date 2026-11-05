@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example City Agendas (synthetic)</title>
+    <link>https://example-city.example.org/AgendaCenter</link>
+    <item>
+      <title>City Council - Regular Meeting</title>
+      <category>City Council</category>
+      <link>https://example-city.example.org/AgendaCenter/ViewFile/Agenda/_12082026-301</link>
+      <pubDate>Mon, 30 Nov 2026 08:00:00 -0800</pubDate>
+      <description>&lt;p&gt;Item 9: Approve renewal of the license plate readers agreement.&lt;/p&gt;</description>
+    </item>
+    <item>
+      <title>Parks Commission - Regular Meeting</title>
+      <category>Parks Commission</category>
+      <link>https://example-city.example.org/AgendaCenter/ViewFile/Agenda/_12102026-302</link>
+      <pubDate>Mon, 30 Nov 2026 08:00:00 -0800</pubDate>
+      <description>Playground repairs and a budget update.</description>
+    </item>
+    <item>
+      <title>Planning Commission - Regular Meeting</title>
+      <category>Planning Commission</category>
+      <link>https://example-city.example.org/AgendaCenter/ViewFile/Agenda/_12112026-303</link>
+      <pubDate>Mon, 30 Nov 2026 08:00:00 -0800</pubDate>
+      <description></description>
+    </item>
+  </channel>
+</rss>
