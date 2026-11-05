@@ -569,9 +569,10 @@ class LegacyAndAtomicTests(Fixture):
         self.legacy_fixture()
         names = ["findings/filter.js", "data/findings.json", "feed.xml", "findings/index.html"] + sorted(
             p.relative_to(self.public).as_posix() for p in (self.public / "findings" / "agency").glob("*.xml"))
-        # Only the staged-meetings and public-requests footer links change the legacy index.
+        # Only the staged-meetings, public-requests and (the base finding has a correction) corrections-feed footer links change the legacy index.
         footer_links = (' · <a href="/meetings.xml">Meetings feed</a>',
-                        ' · <a href="/requests.html">What we have asked for</a>')
+                        ' · <a href="/requests.html">What we have asked for</a>',
+                        ' · <a href="/corrections.xml">Corrections feed</a>')
         artifacts = []
         for name in names:
             text = self.read(name)
