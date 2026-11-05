@@ -46,7 +46,8 @@ def _label(row):
 
 
 def _uid(kind, row):
-    suffix = "" if row["request"] == "main" else "-" + row["request"]
+    # "#" is in neither the agency-id nor the request-name grammar, so it marks the boundary; main keeps its bare id
+    suffix = "" if row["request"] == "main" else "#" + row["request"]
     return f"{kind}-{row['agency_id']}{suffix}@{DOMAIN}"
 
 

@@ -194,6 +194,21 @@ DEFAULTS = {
     "agencies.glance_contract": "Contract ends", "agencies.glance_cost": "Contract cost as stated",
     "agencies.glance_asked": "Records items asked",
     "agencies.glance_not_checked": "not checked", "agencies.glance_posted": "posted", "agencies.glance_checked": "checked {date}",
+    "footer.requests": "What we have asked for",  # DF1103-13
+    "requests.title": "What we have asked for",
+    "requests.description": ("Every records request this campaign has publicly listed for an agency, newest first, "
+                             "with the state we last recorded."),
+    "requests.lead": "{total} requests listed. By state:",
+    "requests.count": "{state} ({count})",
+    "requests.state_awaiting_response": "Awaiting response", "requests.state_acknowledged": "Acknowledged",
+    "requests.state_partly_answered": "Partly answered", "requests.state_answered": "Answered",
+    "requests.state_declined_in_writing": "Declined in writing", "requests.state_withdrawn": "Withdrawn",
+    "requests.note": ("Each row is a request we have listed on an agency's page, in the state we last recorded. "
+                      "This page does not say any response is late."),
+    "requests.empty": "No public requests are listed yet.",
+    "requests.caption": "Every public request across agencies, newest first",
+    "requests.col_agency": "Agency", "requests.col_topic": "Topic", "requests.col_asked_on": "Asked on",
+    "requests.col_state": "State", "requests.col_updated_on": "Updated on", "requests.not_recorded": "Not recorded",
     "officials.heading": "Who decides", "officials.source": "source",
     "officials.listed": ("Listed from the body's official site ({source}), checked {date}. "
                          "Contact officials only through the channels on that site."),
@@ -212,6 +227,17 @@ DEFAULTS = {
     "signup.email": "Email address", "signup.placeholder": "you@example.org",
     "signup.provider_note": "Submitting opens the provider's hosted confirmation page.",
     "signup.none": "No email addresses are collected by this site. Follow meetings and findings here or by feed.",
+    "sharing.title": "Who receives data from our agencies",
+    "sharing.lead": ("These are receiving agencies named in organizer-transcribed vendor transparency lists. "
+                     "A listing does not establish that a transfer occurred."),
+    "sharing.out_of_state": "Out of state", "sharing.federal": "Federal", "sharing.in_state": "In state",
+    "sharing.receiver": "Receiving agency", "sharing.state": "State", "sharing.kind": "Kind",
+    "sharing.count": "Campaign agencies listing it", "sharing.sources": "Source lists", "sharing.source_list": "source list",
+    "sharing.checked": "checked {date}", "sharing.aliases": "Also transcribed as: {names}",
+    "sharing.law_status": "Law package: {status}.",
+    "sharing.kind_local": "Local", "sharing.kind_state": "State", "sharing.kind_federal": "Federal",
+    "sharing.kind_private": "Private", "sharing.kind_unknown": "Unknown",
+    "footer.sharing": "Data-sharing lists",
     "supporters.title": "Supporting organizations",
     "supporters.description": ("Organizations that have confirmed they support this campaign. A listing is not a legal "
                                "endorsement and does not let anyone speak for the organization."),

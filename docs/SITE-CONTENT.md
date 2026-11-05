@@ -335,6 +335,19 @@ rule the package lacks leaves out its line and never refuses the build. It lists
 conclusion about any agency; `build` and `content-check` refuse a hand-edited list that breaks these rules. It is not in card
 JS, open data or feeds, and the portal is never contacted.
 
+With at least one agency list, the build also writes `/sharing.html` (DF0237-04), "Who receives data from our agencies", with
+a footer link "Data-sharing lists" and a sitemap entry (only with a `base_url`); with none, none of these exist and every other
+file is unchanged. One row per receiving agency, grouped "Out of state", "Federal" (kind `federal` or state `US`), then
+"In state", each group a captioned table: receiving agency, state, kind (Local / State / Federal / Private / Unknown), how many
+of the campaign's agencies list it and, for each of those, a link to its agency page, a `source list` link and `checked DATE`.
+Two names are one row only when they differ in letter case, whitespace or one trailing period, and have the same state and
+kind; the smallest spelling is shown with the others under "Also transcribed as:". The count is agencies that list a receiver,
+not plates, transfers or searches; rows are in alphabetical order inside a group, never ranked by count. The page cites the
+same two rules with their official links and "Law package: `{status}`." ("status unavailable" if the package cannot be read),
+and says a listing does not establish that a transfer occurred. Its wording is in labels `sharing.*` and `footer.sharing`
+(`examples/labels/es.json` holds an unreviewed Spanish draft); the legal-claim guard scans it, alert-only, as `sharing.html`
+in `site_notes`. `sharing` is a reserved page, topic and finding slug even with no lists.
+
 An agency's optional `profile.contract_check` (DF2207-03) records an organizer's reading of the linked ALPR vendor
 agreement against the draft, tool-wide checklist `checklists/contract-checklist.json` (not part of any law package;
 status `draft`, packaged byte-identical and checked by `tools/sync_campaign_resources.py`): `{"checked_on": "YYYY-MM-DD",
@@ -358,7 +371,7 @@ An agency's optional `asked` (≤ 20 items) lists what the organizer asked it: `
 YYYY-MM-DD dates not after the build date, `updated_on` not before `asked_on`; `state` is one of `awaiting_response`,
 `acknowledged`, `partly_answered`, `answered`, `declined_in_writing`, `withdrawn`. A bad item stops the build naming
 `content/agencies.json[n].asked[i].<field>`; `content-check` lists every such problem, one line each. Kit agencies
-never carry it. It is shown only on `agencies.html` (docs/AGENCY-CARDS.md), never exported to data or feeds.
+never carry it. It is shown only on `agencies.html` (docs/AGENCY-CARDS.md) and `requests.html` (below), never exported to data or feeds.
 
 `agencies.html` opens with an "At a glance" table (`#at-a-glance`, labels `agencies.glance_*`): one row per agency in
 the list's own order, never sorted by any number, with no ranking, score or "best/worst" wording. Cells: cameras,
@@ -368,6 +381,26 @@ to the contract source, `contract.cost` as stated (`$12,345.60 per year`, linked
 date; "not checked" without a cost) and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0").
 A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
 No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
+
+#### What we have asked for (`requests.html`)
+
+`/requests.html` (DF1103-13, heading and title "What we have asked for") is always built for a content-backed campaign,
+including with no agencies or no `asked` items; the no-content starter never gets it. Its only source is the already
+validated `asked` list of each agency in `content/agencies.json`: it never reads `kit/agencies.json`, `kit/sent.json`,
+a correction-request file, the ledger or any other organizer state. One row per list element, so identical entries stay
+separate rows. Columns, in order: Agency (linked to its `agencies/<slug>.html` page, or to its card `agencies.html#<slug>`
+when it has no individual page of its own), Topic, Asked on, State, Updated on. Rows run newest `asked_on` first; equal
+days go by `agency_id`, then by position in that agency's list, and an `updated_on` never reorders them. State is exactly
+the sentence the agency card uses (`asked_sentence`, no note added); `awaiting_response` with no `updated_on` shows the
+build day, like the card, so that sentence changes from day to day. A missing `updated_on` shows "Not recorded", never the
+asked date or today's date. The lead gives the number of rows and a count for each of the six states in the order
+`awaiting_response`, `acknowledged`, `partly_answered`, `answered`, `declined_in_writing`, `withdrawn` (zero counts included),
+counted from the very rows shown; no state is inferred and nothing says a response is late. With no rows the page says "No
+public requests are listed yet." after the zero counts and shows no table. It reuses the `.glance-table` markup, so rows
+stack on phones with each cell's header, and adds no script, style, CSP rule or asset. It is linked as "What we have
+asked for" in the footer between the findings feed and Corrections (on every page), is listed once in `sitemap.xml` (with
+`base_url`, no `lastmod`), `requests.html` is a generated path (`public-assets/requests.html` is refused) and `requests` is a
+reserved page slug. Labels: `requests.*` and `footer.requests`.
 
 ### Contract cost as stated (`profile.contract.cost`)
 
@@ -787,7 +820,7 @@ hand from the body's own calendar page and re-check it; the tool never fetches i
 ## Generated pages and files
 
 `index.html` (hero map when configured, agency cards, mission, latest findings,
-signup, meetings), `agencies.html`, `findings/index.html`,
+signup, meetings), `agencies.html`, `requests.html` (every public asked item across agencies: see "What we have asked for"), `findings/index.html`,
 `findings/<slug>.html`, `sources.html` (with `#library` and one
 `#<fragment>` section per source group), `sources/<12-hex record number>.html` (one per library entry), `meetings.html`, `about.html`,
 `style.css`, `_headers`, `robots.txt`, `sitemap.xml` (only when `base_url` is
