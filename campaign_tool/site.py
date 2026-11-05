@@ -501,8 +501,9 @@ def ics_fold(line):
 
 
 class Site:
-    def __init__(self, root, cfg, model, today=None):
+    def __init__(self, root, cfg, model, today=None, correction_counts=None):
         self.root = Path(root)
+        self.correction_counts = correction_counts  # DF1103-14: aggregate rows only, or None when not opted in
         self.cfg = cfg
         self.model = model
         self.today = today or date.today()  # build date: contract terms
@@ -1791,6 +1792,21 @@ class Site:
         html = html.replace(main, main + '    <p class="draft-banner" role="note">Draft - not published</p>\n')
         return dict(page, html=html)
 
+    def correction_counts_html(self):
+        """DF1103-14: the opt-in quarterly table; \"\" when the site did not opt in. Aggregate columns only."""
+        if self.correction_counts is None:
+            return ""
+        heads = [self.t(f"correction_counts.col_{key}") for key in ("quarter", "received", "accepted", "declined", "open")]
+        body = "".join(f'<tr><th scope="row" data-label="{heads[0]}">{e(row["quarter"])}</th>'
+                       + "".join(f'<td data-label="{head}">{row[key]}</td>' for head, key in
+                                 zip(heads[1:], ("received", "accepted", "declined", "still_open"))) + "</tr>"
+                       for row in self.correction_counts)
+        table = (f'<table class="glance-table"><caption>{self.t("correction_counts.caption")}</caption><thead><tr>'
+                 + "".join(f'<th scope="col">{head}</th>' for head in heads) + "</tr></thead><tbody>" + body
+                 + "</tbody></table>") if self.correction_counts else f'<p>{self.t("correction_counts.empty")}</p>'
+        return (f'<section id="request-counts"><h3>{self.t("correction_counts.heading")}</h3>'
+                f'<p>{self.t("correction_counts.lead")}</p>{table}</section>')
+
     def corrections_html(self):
         rows = [(f, c, i) for f in self.model["findings"] for i, c in enumerate(f["corrections"])]
         rows.sort(key=lambda row: (row[0]["slug"], row[2]))
@@ -1801,7 +1817,7 @@ class Site:
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.findings")}</p>'
                 f'<h2>{self.t("heading.corrections")}</h2></div><p>{self.t("intro.corrections")}</p></div>'
                 + policy_html(self.site["contact_email"])
-                + (f'<ul>{items}</ul>' if items else f'<p>{self.t("notice.no_corrections")}</p>') + '</section>\n')
+                + (f'<ul>{items}</ul>' if items else f'<p>{self.t("notice.no_corrections")}</p>') + self.correction_counts_html() + '</section>\n')
         return self.page("findings", self.labels["title.corrections"], self.labels["title.corrections_description"], "/corrections.html", main)
 
     def not_found_html(self):
@@ -2820,7 +2836,12 @@ def _plan_site(root, today=None, notes=None):
     if model is None:
         return None
     _privacy_gate(model, cfg)
-    site = Site(root, cfg, model, today=today or date.today())
+    day = today or date.today()
+    counts = None
+    if model["site"].get("corrections", {}).get("show_request_counts"):  # DF1103-14: the only place the private log is opened
+        from .correction_requests import quarterly_counts
+        counts = quarterly_counts(root, day)
+    site = Site(root, cfg, model, today=day, correction_counts=counts)
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
         "index.html": site.index_html(), "agencies.html": site.agencies_html(),

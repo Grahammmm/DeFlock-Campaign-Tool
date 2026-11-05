@@ -1,13 +1,15 @@
 """Private log of correction requests: private/correction-requests.json (0600). Records what was asked about which
-published finding and the decision, never who asked; nothing is sent, published or read by the site build."""
+published finding and the decision, never who asked; nothing is sent or published. The site build does not read it,
+with one explicit off-by-default exception: site.json corrections.show_request_counts true makes the build call
+``quarterly_counts``, which publishes per-quarter counts only (never text, ids, dates or anything about who asked)."""
 import json
 import os
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from .content import load_content
-from .findings import _write_private
+from .content import ContentError, load_content
+from .findings import _read_json, _write_private
 from .privacy_patterns import EMAIL  # the shared pattern: everything the old local copy matched, plus the spelled-out forms
 
 NAME = "correction-requests.json"
@@ -62,6 +64,29 @@ def _check_request(index, item):
     return item["id"]
 
 
+def _validate_document(document, today=None):
+    """Pure whole-document check shared by the log commands and the counts. ``today`` (counts only) adds the strict
+    checks: integer schema_version, no date after today, decided_on not before received_on."""
+    if not isinstance(document, dict):
+        raise _unreadable("top level is not an object")
+    if unknown := [key for key in document if key not in ("schema_version", "requests")]:
+        raise _unreadable(f"unknown key {unknown[0]!r}")
+    if document.get("schema_version") != 1 or not isinstance(document.get("requests"), list):
+        raise _unreadable("needs schema_version 1 and a requests list")
+    if today is not None and type(document["schema_version"]) is not int:
+        raise _unreadable("needs schema_version 1 and a requests list")
+    ids = [_check_request(index, item) for index, item in enumerate(document["requests"])]
+    if ids != sorted(set(ids)) or (ids and ids[0] < 1):
+        raise _unreadable("ids must be unique, ascending and start at 1 or above")
+    if today is not None:
+        for index, item in enumerate(document["requests"]):
+            received = _date(item["received_on"])
+            decided = _date(item["decided_on"]) if "decided_on" in item else received
+            if received > today or decided > today or decided < received:
+                raise _unreadable(f"requests[{index}] has a future date or a decision before its receipt")
+    return document
+
+
 def _load(path):
     if not path.exists():
         return None
@@ -71,16 +96,7 @@ def _load(path):
         raise _unreadable(f"not valid JSON ({exc.__class__.__name__})") from None
     except OSError as exc:
         raise _unreadable(f"cannot read it ({exc.__class__.__name__})") from None
-    if not isinstance(document, dict):
-        raise _unreadable("top level is not an object")
-    if unknown := [key for key in document if key not in ("schema_version", "requests")]:
-        raise _unreadable(f"unknown key {unknown[0]!r}")
-    if document.get("schema_version") != 1 or not isinstance(document.get("requests"), list):
-        raise _unreadable("needs schema_version 1 and a requests list")
-    ids = [_check_request(index, item) for index, item in enumerate(document["requests"])]
-    if ids != sorted(set(ids)) or (ids and ids[0] < 1):
-        raise _unreadable("ids must be unique, ascending and start at 1 or above")
-    return document
+    return _validate_document(document)
 
 
 def _day(value, flag, today):
@@ -162,3 +178,46 @@ def open_overdue(root, today, days=14):
     if not os.path.lexists(Path(root) / "private" / NAME):
         return None
     return [r["id"] for r in list_requests(root, today) if r["state"] == "open" and r["days_open"] > days]
+
+
+COUNTS_REFUSAL = f"private/{NAME}: cannot publish correction request counts; check the private log"
+
+
+def _counts_path(root):
+    """The log path, or None when the private directory or the log is absent; links and non-directories are refused."""
+    private = Path(root) / "private"
+    if not os.path.lexists(private):
+        return None
+    if os.path.islink(private) or not private.is_dir():
+        raise ValueError("private")
+    path = private / NAME
+    if not os.path.lexists(path):
+        return None
+    if os.path.islink(path):
+        raise ValueError("log")
+    return path
+
+
+def quarterly_counts(root, today=None):
+    """DF1103-14: ``[{quarter, received, accepted, declined, still_open}]``, newest quarter first, grouped by the quarter the
+    request was received; accepted, declined and still_open split that cohort by the CURRENT stored state. Nothing else
+    leaves this function. Missing storage is zero rows and is never created; any other failure is one fixed ContentError
+    that carries no private value, filename or cause."""
+    today = _today(today)
+    try:
+        path = _counts_path(root)
+        if path is None:
+            return []
+        document = _validate_document(_read_json(path, 4 * 1024 * 1024, "correction request log"), today)
+        cohorts = {}
+        for item in document["requests"]:
+            day = date.fromisoformat(item["received_on"])
+            row = cohorts.setdefault(f"{day.year}-Q{(day.month - 1) // 3 + 1}",
+                                     {"received": 0, "accepted": 0, "declined": 0, "open": 0})
+            row["received"] += 1
+            row[item["state"]] += 1
+    except Exception:  # every failure, including a bug, must not echo private text
+        raise ContentError(COUNTS_REFUSAL) from None
+    return [{"quarter": quarter, "received": row["received"], "accepted": row["accepted"],
+             "declined": row["declined"], "still_open": row["open"]}
+            for quarter, row in sorted(cohorts.items(), reverse=True)]
