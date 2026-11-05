@@ -608,6 +608,25 @@ it: re-check and update it. The body's agency page and each meeting page with it
 `agency_id` show a "Who decides" list (names linked to `profile_url` when given) with the
 newest `checked_on` and its source link. Labels: `officials.*`.
 
+`content/statements.json` (optional, never fetched) records what a listed decision maker said in public: a JSON
+array of 0 to 200 rows, newest shown first. Each row has `agency_id` (the body's id in `officials.json`, not its
+display name), `official` (the name exactly as stored there, matched letter for letter, case and spaces included, only
+within that body), `said_on` and `checked_on` (real `YYYY-MM-DD` days; `said_on` <= `checked_on` <= the build date; an
+old statement is fine and the 365-day limit of `officials.json` does not apply), `quote` (1 to 400 characters copied
+exactly as the official source has it: nothing is trimmed, shortened, merged, paraphrased or rendered as Markdown),
+`context` (`meeting`, `press_release`, `newsletter`, `interview` or `other`) and `source_url` (an https address of the
+official minutes, video or press release; only its form is checked, you verify it is official and re-check it
+yourself). Optional: `recording_time` (`H:MM:SS`, shown beside the source as given) and `context_note` (1 to 200
+characters of plain text, no angle brackets, shown separately as "Campaign context"). Unknown fields, explicit `null`
+values, an unlisted official or body and a future date are refused by file, row and field; the refusal never repeats
+the quote. Email, phone and plate patterns are refused wherever they appear, in a quote too: choose other content,
+the tool never edits a quote to publish it. The legal-claim guard only flags a `context_note` as `review-required`
+(on stderr, from the build notes and `content-check`); it never changes success. With no file, or `[]`, no section
+appears and every page is byte-identical. The body's agency page shows "What decision makers have said" after
+"Who decides" and the votes; a body with statements but no findings or sources still gets its page. The quote is
+written with `white-space: pre-wrap`; a strict `style-src 'self'` policy may ignore that inline style, in which case the
+text is still complete and exact. Labels: `statements.*`.
+
 ### Adding a source record
 
 ```

@@ -15,7 +15,7 @@ import stat
 import sys
 from datetime import date
 
-from . import kit_agencies
+from . import content, kit_agencies
 from .privacy_patterns import categories as privacy_categories
 
 WARNING = "A count is a lead, not evidence"
@@ -349,6 +349,94 @@ def format_summary(summary):
     return "\n".join(out) + "\n"
 
 
+# ---- DF1107-02: names in the log against the recorded sharing list (private, read-only) ----------------------------
+
+SHARING_WARNING = "Names differ between systems; a mismatch is a lead, not evidence"
+
+
+def normalize_org_name(name):
+    """The DF0237-04 name rule: casefold, collapse whitespace, drop ONE terminal ASCII period, trim. Nothing fuzzier."""
+    key = " ".join(name.casefold().split())
+    if key.endswith("."):
+        key = key[:-1]
+    return key.strip()
+
+
+def _recorded_sharing(root, agency_id):
+    """The validated recorded sharing list of agency_id from content/agencies.json; fixed-text ValueError otherwise."""
+    field = f"content/agencies.json:{agency_id}.profile.sharing"
+    refusal = ValueError(f"--against-sharing needs a recorded sharing list at {field} (record one with content agency-sharing)")
+    folder, path = root / "content", root / "content" / "agencies.json"
+    try:
+        if stat.S_ISLNK(os.lstat(folder).st_mode) or not stat.S_ISREG(os.lstat(path).st_mode):
+            raise refusal
+    except OSError:
+        raise refusal from None
+    try:
+        agencies = content.load_agencies(content._read_json(path), "content/agencies.json")
+    except (ValueError, OSError, RecursionError):
+        raise ValueError("--against-sharing: content/agencies.json is not valid; content-check names the field") from None
+    found = [a for a in agencies if a["agency_id"] == agency_id and a.get("sharing")]
+    if len(found) != 1:
+        raise refusal
+    sharing = found[0]["sharing"]
+    for index, row in enumerate(sharing["recipients"]):
+        for name in ("name", "state", "kind"):
+            if _has_control(row[name]) or privacy_categories(row[name]):
+                raise ValueError(f"--against-sharing: {field}.recipients[{index}].{name} fails the privacy lint")
+    return sharing
+
+
+def compare_sharing(summary, sharing):
+    """The ``sharing`` JSON object: log organizations against recorded recipients by normalized NAME only."""
+    period, orgs = summary["period"], summary["organizations"]
+    if summary["input"]["columns"]["org"] is None:
+        raise ValueError("--against-sharing needs an organization column; name it with --org-col")
+    if period["first_date"] is None:
+        raise ValueError("--against-sharing needs at least one counted search with a valid date in the log")
+    own, excluded, retained = summary["agency_name"], 0, []
+    for row in orgs["rows"]:
+        if own is not None and row["name"] == own:  # literal equality only
+            excluded += row["count"]
+        else:
+            retained.append(row)
+    recipient_keys = {k for k in (normalize_org_name(r["name"]) for r in sharing["recipients"]) if k}
+    log_keys = {k for k in (normalize_org_name(r["name"]) for r in retained) if k}
+    not_listed = [{"name": r["name"], "state": r["state"], "count": r["count"]} for r in retained
+                  if normalize_org_name(r["name"]) not in recipient_keys]  # an empty key is never in recipient_keys
+    unseen = [{"name": r["name"], "state": r["state"], "kind": r["kind"]} for r in sharing["recipients"]
+              if normalize_org_name(r["name"]) not in log_keys]
+    not_listed.sort(key=lambda r: (r["name"], r["state"] is not None, r["state"] or ""))
+    unseen.sort(key=lambda r: (r["name"], r["state"], r["kind"]))
+    return {
+        "warning": SHARING_WARNING,
+        "log_period": {"first_date": period["first_date"], "last_date": period["last_date"]},
+        "checked_on": sharing["checked_on"],
+        "own_searches_excluded": excluded,
+        "unattributed_searches": orgs["unattributed"],
+        "not_on_recorded_list": {"warning": SHARING_WARNING, "rows": not_listed},
+        "without_observed_search": {"warning": SHARING_WARNING, "rows": unseen},
+    }
+
+
+def format_sharing(result):
+    period = result["log_period"]
+    dates = (f"dates: the log covers {period['first_date']} to {period['last_date']} (counted rows); "
+             f"the recorded sharing list was checked on {result['checked_on']}")
+    listed, unseen = result["not_on_recorded_list"]["rows"], result["without_observed_search"]["rows"]
+    out = ["", f"== Searching organizations not on the recorded sharing list == {SHARING_WARNING}", dates]
+    out += [f"{r['name']} [{r['state'] or 'state not given'}]: {r['count']}" for r in listed]
+    out += [] if listed else ["(none: every named searching organization matches a recorded entry by name)"]
+    out += [f"own searches excluded (name exactly equal to the agency's): {result['own_searches_excluded']}",
+            f"searches with no organization given, not compared: {result['unattributed_searches']}",
+            "", f"== Recorded sharing entries with no search in this log's date range == {SHARING_WARNING}", dates]
+    out += [f"{r['name']} [{r['state']}, {r['kind']}]" for r in unseen]
+    out += [] if unseen else ["(none)"]
+    out += ["No counted searches observed in this supplied log is not 'never searched': skipped and unattributed rows are "
+            "not considered, and an old sharing list is not a historical authorization ledger."]
+    return "\n".join(out) + "\n"
+
+
 def run_cli(root, args):
     """Validate the agency, summarize the whole file, then print once. Returns 0; refusals raise ValueError before any output."""
     from .cli import read_config  # local import: cli imports this module lazily
@@ -356,8 +444,14 @@ def run_cli(root, args):
     agencies = [a for a in kit_agencies.load_agencies(root) if a["agency_id"] == args.agency]
     if len(agencies) != 1:
         raise ValueError("--agency is not an agency_id in kit/agencies.json")
+    against = getattr(args, "against_sharing", False)
+    sharing = _recorded_sharing(root, args.agency) if against else None  # content/agencies.json is opened only on request
     summary = summarize_csv(args.csv, agencies[0], categories_path=args.categories, columns={
         "time": args.time_col, "reason": args.reason_col, "org": args.org_col, "state": args.state_col})
-    text = json.dumps(summary, ensure_ascii=True, indent=2) + "\n" if args.as_json else format_summary(summary)
+    result = compare_sharing(summary, sharing) if against else None
+    if args.as_json:
+        text = json.dumps({**summary, **({"sharing": result} if against else {})}, ensure_ascii=True, indent=2) + "\n"
+    else:
+        text = format_summary(summary) + (format_sharing(result) if against else "")
     sys.stdout.write(text)
     return 0
