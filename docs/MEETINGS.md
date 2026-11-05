@@ -555,7 +555,7 @@ before this can be considered a supported live poll. No detail requests or new s
 ## Not done
 
 No RSVP collection (the `rsvp_count` column is
-reserved), and no other agenda platforms (Granicus, PrimeGov). Each of those should keep the same keyword-lead, human-verify rule.
+reserved), and no other agenda platforms (PrimeGov). Each of those should keep the same keyword-lead, human-verify rule.
 
 ## CivicClerk import (CLI)
 
@@ -568,6 +568,22 @@ a `value` envelope or a bare list) and each event's agenda items from `/v1/Meeti
 `agendaObjectItemName` and `agendaObjectItemDescription`). Same keyword filter, `kit/meetings.json` shape and change report as
 Legistar, with ids `civicclerk-<slug>-<event id>` and `source: "civicclerk"`. `startDateTime` (UTC) is shown in `--tz`; an agenda
 link is kept only if `https://` on `civicclerk.com`; a cancelled mark in the event name or notice sets `status: "cancelled"`.
+
+## Granicus import (CLI)
+
+```
+python3 -m campaign_tool meetings --directory D --platform granicus --client <name>.granicus.com --view-id N (--online | --from-xml FEED) [--all-events] [--since YYYY-MM-DD] [--tz ZONE]
+```
+
+Find the host and `view_id` in the address of your city's Granicus agenda page (`https://<name>.granicus.com/ViewPublisher.php?view_id=N`).
+Only the agendas in the public feed `https://<host>/ViewPublisherRSS.php?view_id=N&mode=agendas` are read (host must be `*.granicus.com`,
+`view_id` 1-9999; at most 60 events, the earliest by date, and the report says how many were cut). `--from-xml` reads a saved copy
+(a regular file, not a symlink, at most 2 MiB); a feed with a `<!DOCTYPE` or `<!ENTITY` (in any encoding), or one that is not well-formed, is refused
+and `kit/meetings.json` is left alone. Item title plus description is scanned with the same keyword list; the date comes from
+`pubDate`, or from the title (`Mon D, YYYY`) when `pubDate` is missing or invalid, with no time of day, in `--tz`;
+events before `--since` (default today) are skipped. Ids are `granicus-<name>-<event id>`; a cancelled mark in the
+title sets `status: "cancelled"`; a link is kept only if `https://` on the same host. An item with no description has no text beyond its
+title: it is dropped unless `--all-events`, which keeps it as `not_scanned: true` with no matches, meaning nobody has checked its agenda.
 
 ## Calendar feed
 

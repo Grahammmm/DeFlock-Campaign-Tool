@@ -65,6 +65,22 @@ class Attachments(unittest.TestCase):
                     "https://x.legistar.com/a b", "https://x.legistar.com/\"onclick", "ftp://x.legistar.com/x", ""):
             self.assertEqual(kept(bad), [], bad)
 
+    def test_unparseable_url_dropped_and_counted_on_both_collection_paths(self):
+        bad = "https://[broken/x"
+        mapping = recorded()
+        mapping["/v1/examplecity/events/3001/eventitems"] = [{"EventItemTitle": "ALPR", "EventItemMatterAttachments": [
+            {"MatterAttachmentName": "bad", "MatterAttachmentHyperlink": bad},
+            {"MatterAttachmentName": "ok", "MatterAttachmentHyperlink": BASE + "7"}]}]
+        mapping["/v1/examplecity/matters/601/attachments"] = [
+            {"MatterAttachmentName": "bad", "MatterAttachmentHyperlink": bad},
+            {"MatterAttachmentName": "ok", "MatterAttachmentHyperlink": BASE + "8"}]
+        (meeting,) = meetings(mapping)
+        self.assertEqual(meeting["attachments"], [{"name": "ok", "url": BASE + "7"}])
+        self.assertEqual(meeting["attachments_dropped"], 1)
+        (matter,) = relevant_matters(client(mapping, []), since=SINCE)
+        self.assertEqual(matter["attachments"], [{"name": "ok", "url": BASE + "8"}])
+        self.assertEqual(matter["attachments_dropped"], 1)
+
     def test_cap_name_cleaning(self):
         mapping = recorded()
         mapping["/v1/examplecity/events/3001/eventitems"] = [{"EventItemTitle": "ALPR", "EventItemMatterAttachments": [
