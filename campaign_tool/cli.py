@@ -1253,6 +1253,8 @@ def main():
     search_log_p.add_argument("--agency", required=True, help="An agency_id in kit/agencies.json")
     search_log_p.add_argument("--json", dest="as_json", action="store_true", help="One JSON document instead of text")
     search_log_p.add_argument("--categories", help="Your own purpose term lists (JSON); replaces the default terms")
+    search_log_p.add_argument("--against-sharing", action="store_true", help="Also compare organization names with the agency's "
+                              "recorded sharing list in content/agencies.json (names only; a mismatch is a lead, not evidence)")
     for role in ("time", "reason", "org", "state"):
         search_log_p.add_argument(f"--{role}-col", metavar="HEADER", help=f"Exact header of the {role} column")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
