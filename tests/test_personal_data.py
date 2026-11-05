@@ -550,6 +550,7 @@ MODULE_FUNCTIONS = {
     "map_survey": ("_install_new", "_write_checks", "render_csv", "survey_import"),
     'agency_brief': ('_write_file', 'build_brief',),  # private kit/briefs html+txt from published content; kept unless --replace
     'agency_actions': ('_install',),
+    'agency_brief': ('_write_file', 'build_brief',),
     'agency_cards': ('main',),
     'approval': ('verify',),
     'backup': (

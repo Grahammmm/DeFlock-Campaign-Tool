@@ -842,6 +842,28 @@ not mean the outlet endorses the campaign.** Typing the headline exactly as publ
   `press.news`. The Spanish values in `examples/labels/es.json` are a machine-made draft like the rest of that file.
   Default examples and `content init` do not enable coverage.
 
+### Decisions elsewhere (`content/elsewhere.json`, optional)
+
+Decisions other governments have made, kept apart from this campaign's own agencies and findings. The file is a JSON array of 1 to 100 objects (a present empty array is refused, it is not an off switch); `content init` does not create it and the tool never fills it. Every key below is required except `news_url`:
+
+```json
+[{"place": "Springfield", "state": "OR", "body": "Springfield City Council", "decided_on": "2026-03-10",
+  "kind": "paused", "as_stated": "The council voted to pause the contract.",
+  "source_url": "https://records.example.test/minutes/2026-03-10", "news_url": "https://news.example.test/story",
+  "checked_on": "2026-09-15"}]
+```
+
+- `place`, `body` and `as_stated`: trimmed plain single-line text of 1 to 200 characters, no angle brackets or control characters. Write the place and body as the official source names them and `as_stated` as that source states the decision; nothing is abbreviated, translated, inferred or Markdown-rendered. `state` is two uppercase ASCII letters and is never inferred from the place.
+- `kind` is one of `ended_contract`, `paused`, `declined`, `adopted_ordinance`, `restricted_sharing`, `audit_ordered`, `other`.
+- `decided_on` and `checked_on` are real `YYYY-MM-DD` dates, `decided_on` not after `checked_on` and `checked_on` not after the build day. `checked_on` is your attestation that you re-read the official record that day; the tool never fetches a URL and cannot tell whether a host is official. Re-check the source before each publication.
+- `source_url` is the deciding body's own official record (`https://`, no user name); `news_url` is optional supplementary coverage and never replaces it.
+- Two entries with the same literal `place`, `body`, `decided_on` and `kind` are refused, naming both indexes (`elsewhere.json[1]: duplicate of elsewhere.json[0] ...`). A different kind or date is a different decision. Entries need not exist in `agencies.json`.
+- The file keeps your order in the content model; only the page sorts, on a copy: groups in the order of the kinds above (empty groups omitted), newest `decided_on` first, then place, body, state and source URL. There is no count, rank or total, and the page says "Decisions elsewhere are not decisions by this campaign's agencies."
+- `build` refuses the first problem and leaves the last good `public/` untouched; `content-check` lists every problem as `elsewhere.json[N].field: ...`. A symlink (even dangling), folder, FIFO, oversize file (2 MiB), invalid UTF-8 or JSON is refused, not skipped. An email, phone or plate pattern in a text field refuses the build by field name, without printing the value.
+- Legal-claim guard: each `as_stated` is scanned like a finding. A flagged one prints `review-required: elsewhere.json[N].as_stated: legal-claim wording (rules)` (build on stdout, `content-check` on stderr), never the text, and never changes success or the exit code; it asks a human to read it before publishing.
+- `elsewhere.html` joins the footer (last paragraph) and, with `base_url`, `sitemap.xml`. `elsewhere` is a reserved page and finding slug and `elsewhere.html` a reserved top-level name with or without the file. Delete the file and rebuild and the page, link and sitemap entry disappear; every other file is byte-identical to a build that never had it.
+- Labels: `elsewhere.title`, `elsewhere.description`, `elsewhere.note`, `elsewhere.verified`, `elsewhere.decided` and `elsewhere.checked` (`{date}`), `elsewhere.source`, `elsewhere.news`, `elsewhere.kind.<kind>` and `footer.elsewhere`; `examples/labels/es.json` carries a machine-made draft. Source text and place or body names are not translated.
+
 ### Newsletter archive (`content/newsletters/<YYYY-MM-DD>.json`, optional)
 
 Written by `newsletter archive --date D --publish` (see NEWSLETTER.md); exactly `{"schema_version": 1, "sent_on", "title",
@@ -1042,6 +1064,7 @@ section lists 500 rows, then "and N more on the map"; linked from the map fallba
 `faq.html` (only with a `content/faq.json`: see FAQ),
 `events.html` (only with a non-empty `content/events.json`: see Campaign events),
 `news.html` (only with a `content/coverage.json`: see In the news),
+`elsewhere.html` (only with a `content/elsewhere.json`: see Decisions elsewhere),
 `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or
