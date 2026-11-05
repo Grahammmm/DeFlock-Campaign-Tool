@@ -229,8 +229,8 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(canonical, bundled)
         self.assertEqual((REPO_ROOT / "schemas" / "agency-seed.schema.json").read_bytes(),
                          (REPO_ROOT / "campaign_tool" / "_resources" / "schemas" / "agency-seed.schema.json").read_bytes())
-        snapshot = (REPO_ROOT / "workers" / "wizard" / "src" / "generated" / "agencies-us-ca.json").read_text(encoding="utf-8")
-        self.assertNotIn("fusion_center", snapshot)
+        # The Workers snapshot is generated from the seed (sync-data.mjs --check enforces it), so it carries the centers too.
+        self.assertEqual(canonical, (REPO_ROOT / "workers" / "wizard" / "src" / "generated" / "agencies-us-ca.json").read_bytes())
 
 
 if __name__ == "__main__":
