@@ -1,5 +1,6 @@
 """Offline press drafts, using fictional content only."""
 import ast
+import hashlib
 import json
 import os
 import shutil
@@ -118,6 +119,11 @@ class PressDraftTests(unittest.TestCase):
             self.assertTrue(result['kept_edited'])
             self.assertEqual(target.read_text(), 'Organizer edit')
             self.assertEqual((self.root / result['path']).read_bytes(), original)
+        suggestion = (self.root / result['path']).read_bytes()
+        self.assertEqual(json.loads((self.root / 'kit/press.suggested/.written.json').read_text()),
+                         {target.name: hashlib.sha256(suggestion).hexdigest()})
+        self.assertEqual(json.loads((self.root / 'kit/press/.written.json').read_text()),
+                         {target.name: hashlib.sha256(original).hexdigest()})
         target.unlink()
         outside = Path(self.tmp.name) / 'outside'
         outside.write_text('untouched')
