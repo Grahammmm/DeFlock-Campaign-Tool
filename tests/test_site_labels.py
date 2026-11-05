@@ -285,6 +285,7 @@ class LabelsTest(unittest.TestCase):
                   "schedule.stale", "schedule.usually", "schedule.weekday_friday", "schedule.weekday_monday",
                   "schedule.weekday_saturday", "schedule.weekday_sunday", "schedule.weekday_thursday",
                   "schedule.weekday_tuesday", "schedule.weekday_wednesday",
+                  "standings.deadline",  # DF1952-10: only with a verified upcoming deadline (tests/test_site_standings.py)
                   "supporters.description", "supporters.joined", "supporters.kind.business",
                   "supporters.kind.civil_liberties", "supporters.kind.community", "supporters.kind.faith",
                   "supporters.kind.labor", "supporters.kind.neighborhood", "supporters.kind.other", "supporters.title",

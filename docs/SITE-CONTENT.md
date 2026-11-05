@@ -362,6 +362,24 @@ date; "not checked" without a cost) and the number of `asked` items linked to th
 A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
 No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
 
+#### Where things stand (home strip)
+
+A content-backed home (DF1952-10) shows "Where things stand" after the map and before the agency cards, always, including
+when every count is zero; the no-content starter is unchanged. Five counts, in order, each linked to its page, a zero shown
+as "none yet" and never as 0: agencies we have asked (distinct agencies with a non-empty `asked` list, not list length,
+status or kit agencies; `/requests.html`); asked items answered or partly answered (individual `asked` entries in state
+`answered` or `partly_answered`, duplicates kept, no dates compared; `/requests.html`); records in the public library
+(`len(sources)`, library entries not citations or hashes, private-copy entries included; `/sources.html`); published
+findings (corrected ones once, no drafts or withdrawn; `/findings/`); and community-mapped camera points, labelled
+"Community-mapped camera points; ownership unconfirmed" (every validated Point feature in the configured public cameras
+GeoJSON, whatever the city boundaries or list caps; zero without a map; `/cameras.html`). A mapped point is not evidence
+of agency ownership. Without a map, `cameras.html` is an empty page with the same disclaimer so the link resolves, it is
+in the sitemap, and `cameras` is always a reserved page slug. One extra line, "Next verified written-comment deadline",
+shows the earliest `participation.written_comment.deadline` among noncancelled upcoming meetings that is strictly after
+the build date at 00:00 UTC (ties by meeting id), in its own UTC offset, linked to the meeting page; with none the line is
+absent. The strip reads only assembled public content and the configured public map, never `kit/`. Labels: `standings.*`
+and `cameras.empty`.
+
 #### What we have asked for (`requests.html`)
 
 `/requests.html` (DF1103-13, heading and title "What we have asked for") is always built for a content-backed campaign,
