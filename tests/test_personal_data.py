@@ -517,7 +517,7 @@ FUNCTION_LEVEL_MODULES = {"findings", "kit", "kit_track", "kit_assign", "kit_und
                           "meeting_comments", "correction_requests", "supporters", "meeting_speakers"}
 _MODULES = {
     "records pipeline: ledger, objects, review queues, runner state; listed unknown at runtime": """
-        records.agency_reconciliation records.bounded_resume records.catalog records.catalog_links
+        records.agency_reconciliation records.arrival records.bounded_resume records.catalog records.catalog_links
         records.catalog_stage records.contained_resume records.container_host records.export_clearance
         records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes
         records.gates.batch_report records.gates.collect_reviews records.gates.reconcile_coverage
@@ -605,6 +605,7 @@ MODULE_FUNCTIONS = {
     'press': ('build_letter', 'build_press',),
     'recent': ('_write_new', 'run_cli',),
     'records.agency_reconciliation': ('run',),
+    'records.arrival': ('consume', 'main', 'mark_pending', 'scan_drop_status', 'stamp',),
     'records.bounded_resume': ('_worker',),
     'records.catalog': ('capture_file', 'import_catalog',),
     'records.catalog_links': ('_lock', '_write_new', 'run',),
@@ -646,7 +647,7 @@ MODULE_FUNCTIONS = {
     'records.mail_adoption': ('_snapshot_db',),
     'records.mail_poll': ('_write_once', 'poll',),
     'records.mail_resolution_census': ('inventory',),
-    'records.native_extract': ('_write_private', 'run', 'write_awaiting_ocr', 'write_private_list',),
+    'records.native_extract': ('_write_private', 'run', 'write_awaiting_ocr', 'write_failure_manifest', 'write_private_list',),
     'records.ocr_closure': ('load_cas_page', 'load_cas_vision',),
     'records.ocr_review': ('export', 'mark',),
     'records.ocr_stage': (

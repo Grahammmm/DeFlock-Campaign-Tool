@@ -209,6 +209,8 @@ class ShareLinksTests(unittest.TestCase):
         for tag, attrs in Tags(self.read("findings/cedar-policy-posted.html")).tags:
             if tag == "script" and dict(attrs).get("src") == "/findings/cite.js":
                 continue  # DF1422-14: the one first-party citation copy script
+            if tag == "script" and dict(attrs).get("type") == "application/ld+json":
+                continue  # DF1407-08: inert JSON-LD data block, never executed
             self.assertNotIn(tag, ("script", "iframe", "form", "img"))
             self.assertFalse(any(key.lower().startswith("on") for key, _ in attrs))
 

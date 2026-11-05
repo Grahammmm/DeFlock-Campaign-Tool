@@ -122,6 +122,7 @@ class FindingPreviewTests(unittest.TestCase):
         (self.root / "content" / "findings" / f"{SLUG}.json").write_text(json.dumps(published), encoding="utf-8")
         build_site(self.root)
         built = (self.public / "findings" / f"{SLUG}.html").read_text(encoding="utf-8").splitlines()
+        built = [line for line in built if not line.startswith('  <script type="application/ld+json">')]  # DF1407-08: published-only inert data, absent from previews
         self.assertNotIn('<script', preview)
         self.assertEqual(built.count(CITE_SCRIPT), 1)
         self.assertEqual([line for line in preview.splitlines() if line not in (BANNER, NOINDEX)],
