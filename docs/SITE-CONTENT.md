@@ -26,7 +26,22 @@ when a line names no file, and the same exit codes, so an editor or CI step can 
 
 ## Content directory
 
-`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, a draft `pages/help-map.json`, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+
+### Help-map page starter
+
+A fresh `content init` also writes `content/pages/help-map.json`, the page `/help-map.html` titled "Help map the cameras":
+six short sections on recognizing a possible plate reader, staying on public property and never photographing people or
+plates, adding a missing camera or correcting an existing point on OpenStreetMap or the DeFlock reporting page (with the
+tags `man_made=surveillance` and `surveillance:type=ALPR` that the map fetcher reads, linked to the OpenStreetMap wiki),
+what "ownership unconfirmed" means, and what the four point-check codes mean. It is read from the packaged copy of
+`examples/pages/help-map.json`, so it works from an installed wheel. Every section starts `[EDIT ME: verify for this
+campaign]`: the marker stays visible on the page until you replace it and is not an approval gate. The page uses one of
+the three `nav` slots; set `"nav": false` or delete `content/pages/help-map.json` to publish no such page. It names
+`methods.html` in words because Markdown links must be absolute `https://` URLs, and it links to no map page since a
+fresh tree has none. `content init --from OLD` copies a source campaign's own pages as before and never adds this
+starter. Before publishing run `content-check` and `build --check` offline; the legal-claim guard stays advisory and
+does not scan page copy, so read the page yourself. The report's `placeholders` count includes this page's markers.
 
 ### Draft FAQ starter
 
