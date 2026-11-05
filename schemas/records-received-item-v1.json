@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "records-received-item-v1",
+  "description": "Private per-run received-item inventory (run-outputs/<run_id>/outcomes/received-items.json). Review-required documentary screening, never a legal conclusion; the us-ca law package is draft.",
+  "type": "object",
+  "required": ["schema", "run_id", "review_required", "legal_conclusion", "law_package_status", "disclaimer", "comparison_sha256", "items", "diagnostics"],
+  "properties": {
+    "schema": {"const": "records-received-item-v1"},
+    "run_id": {"type": "string"},
+    "review_required": {"const": true},
+    "legal_conclusion": {"const": false},
+    "law_package_status": {"const": "draft"},
+    "disclaimer": {"type": "string"},
+    "comparison_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+    "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
+    "diagnostics": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "citation": {
+      "type": "object",
+      "required": ["page", "quote"],
+      "properties": {"page": {"type": ["integer", "null"], "minimum": 1}, "quote": {"type": ["string", "null"], "minLength": 1}}
+    },
+    "item": {
+      "type": "object",
+      "required": ["item_id", "original_sha256", "occurrence_ids", "agency_id", "request_id", "received_at", "kind", "kind_basis", "kit_equivalent", "candidates", "deadlines", "decision_source", "model_decisions", "extraction_status", "comparison_status", "findings", "review_required", "legal_conclusion", "diagnostics"],
+      "properties": {
+        "item_id": {"$ref": "#/$defs/sha"},
+        "original_sha256": {"$ref": "#/$defs/sha"},
+        "occurrence_ids": {"type": "array", "items": {"type": "string"}},
+        "agency_id": {"type": ["string", "null"]},
+        "request_id": {"type": ["string", "null"]},
+        "received_at": {"type": ["string", "null"]},
+        "received_at_source": {"type": ["string", "null"]},
+        "kind": {"enum": ["response", "extension", "denial", "fee", "records", "other"]},
+        "kind_basis": {"$ref": "#/$defs/citation"},
+        "kit_equivalent": {"type": ["string", "null"]},
+        "candidates": {"type": "array", "items": {"type": "object", "required": ["kind", "page", "quote"]}},
+        "deadlines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["date_text", "date", "page", "quote", "confidence", "legal_deadline_calculation"],
+            "properties": {"page": {"type": "integer", "minimum": 1}, "quote": {"type": "string", "minLength": 1}, "legal_deadline_calculation": {"const": false}}
+          }
+        },
+        "decision_source": {"enum": ["rules"]},
+        "model_decisions": {"type": "array"},
+        "extraction_status": {"enum": ["current", "unavailable"]},
+        "comparison_status": {"enum": ["mapped", "partial", "unresolved"]},
+        "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+        "review_required": {"const": true},
+        "legal_conclusion": {"const": false},
+        "diagnostics": {"type": "array", "items": {"type": "string"}}
+      },
+      "if": {"properties": {"kind": {"not": {"const": "other"}}}},
+      "then": {"properties": {"kind_basis": {"properties": {"page": {"type": "integer", "minimum": 1}, "quote": {"type": "string", "minLength": 1}}}}},
+      "else": {"properties": {"kind_basis": {"properties": {"page": {"type": "null"}, "quote": {"type": "null"}}}}}
+    },
+    "finding": {
+      "type": "object",
+      "required": ["finding_id", "rating", "rule_ref", "policy_ref", "page", "quote", "comparison_ref", "review_required", "needs_attorney_review", "legal_conclusion", "law_package_status", "disclaimer"],
+      "properties": {
+        "finding_id": {"$ref": "#/$defs/sha"},
+        "rating": {"enum": ["meets", "gap", "unknown"]},
+        "rule_ref": {"type": "object"},
+        "policy_ref": {"type": ["object", "null"]},
+        "page": {"type": "integer", "minimum": 1},
+        "quote": {"type": "string", "minLength": 1},
+        "review_required": {"const": true},
+        "needs_attorney_review": {"const": true},
+        "legal_conclusion": {"const": false},
+        "law_package_status": {"const": "draft"}
+      }
+    }
+  }
+}
