@@ -40,7 +40,7 @@ python3 -m http.server 8080 --bind 127.0.0.1 --directory ../my-campaign/public
 
 `kit` resolves the county (or a city given with `init --location "Morro Bay"`) against the offline California agency seed and writes `../my-campaign/kit/`: an organizer-owned `agencies.json`, one draft records request per sheriff, police and CHP entry, governing bodies, and a law-package summary. Nothing is sent and no agency is asserted to use ALPR; see [docs/AGENCY-DISCOVERY.md](docs/AGENCY-DISCOVERY.md) for what to verify before sending. To take one records request from choosing agencies to a recorded response, follow the [records-request organizer guide](docs/REQUESTS-GUIDE.md). To pass a campaign to a new organizer, follow the task-ordered [handover guide](docs/HANDOVER.md). For what each California request scope asks for and what to check when a response arrives, read the sourced [records primer](docs/RECORDS-PRIMER.md); it is orientation, not legal advice.
 
-Open http://127.0.0.1:8080. The generated site is a neutral campaign starter, not a claim that any agency violated a law. Use an external campaign directory so private records do not live in the software repository. A stopped command prints a `Fix:` line when the cause is known.
+Open http://127.0.0.1:8080. The generated site is a neutral campaign starter, not a claim that any agency violated a law. Use an external campaign directory so private records do not live in the software repository. A stopped command prints a `Fix:` line when the cause is known; the [troubleshooting guide](docs/TROUBLESHOOTING.md) explains the refusals organizers meet most often and the next command for each.
 
 ## Preserve a document
 

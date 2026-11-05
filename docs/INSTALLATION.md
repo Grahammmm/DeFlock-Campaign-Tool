@@ -37,6 +37,10 @@ corresponding supported seed/law package is required; this change does not
 introduce all-state support. The public tree scan is a pattern check, not privacy
 or legal certification.
 
+If a command stops with a message you do not recognize, the
+[troubleshooting guide](TROUBLESHOOTING.md) lists common refusals by command with the
+next step for each.
+
 ## Maintainer resource contract
 
 Canonical public inputs remain under data/, schemas/, jurisdictions/ and templates/.
