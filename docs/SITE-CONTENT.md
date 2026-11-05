@@ -328,6 +328,19 @@ rule the package lacks leaves out its line and never refuses the build. It lists
 conclusion about any agency; `build` and `content-check` refuse a hand-edited list that breaks these rules. It is not in card
 JS, open data or feeds, and the portal is never contacted.
 
+With at least one agency list, the build also writes `/sharing.html` (DF0237-04), "Who receives data from our agencies", with
+a footer link "Data-sharing lists" and a sitemap entry (only with a `base_url`); with none, none of these exist and every other
+file is unchanged. One row per receiving agency, grouped "Out of state", "Federal" (kind `federal` or state `US`), then
+"In state", each group a captioned table: receiving agency, state, kind (Local / State / Federal / Private / Unknown), how many
+of the campaign's agencies list it and, for each of those, a link to its agency page, a `source list` link and `checked DATE`.
+Two names are one row only when they differ in letter case, whitespace or one trailing period, and have the same state and
+kind; the smallest spelling is shown with the others under "Also transcribed as:". The count is agencies that list a receiver,
+not plates, transfers or searches; rows are in alphabetical order inside a group, never ranked by count. The page cites the
+same two rules with their official links and "Law package: `{status}`." ("status unavailable" if the package cannot be read),
+and says a listing does not establish that a transfer occurred. Its wording is in labels `sharing.*` and `footer.sharing`
+(`examples/labels/es.json` holds an unreviewed Spanish draft); the legal-claim guard scans it, alert-only, as `sharing.html`
+in `site_notes`. `sharing` is a reserved page, topic and finding slug even with no lists.
+
 An agency's optional `profile.contract_check` (DF2207-03) records an organizer's reading of the linked ALPR vendor
 agreement against the draft, tool-wide checklist `checklists/contract-checklist.json` (not part of any law package;
 status `draft`, packaged byte-identical and checked by `tools/sync_campaign_resources.py`): `{"checked_on": "YYYY-MM-DD",
