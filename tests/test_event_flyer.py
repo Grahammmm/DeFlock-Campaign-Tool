@@ -17,7 +17,9 @@ from campaign_tool.flyer import build, build_event
 REPO = Path(__file__).resolve().parents[1]
 BASE = 'https://synthetic.invalid'
 TODAY = date(2026, 12, 1)
-FIXTURE = json.loads((REPO / 'tests/fixtures/flyer/campaign-main.json').read_text())['sha256']
+FIXTURE = {label: {name: ''.join(chunks) for name, chunks in files.items()}
+           for label, files in json.loads(
+               (REPO / 'tests/fixtures/flyer/campaign-main.json').read_text())['sha256'].items()}
 SVG = b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>'
 
 
