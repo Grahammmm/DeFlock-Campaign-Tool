@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -251,6 +252,26 @@ class DropScanTests(ArrivalCase):
         stale = self.drop / "fresh.pdf"
         os.utime(stale, (time.time() - 60,) * 2)  # settled on a later wake: now acknowledged
         self.assertEqual(arrival.scan_drop(self.runtime, self.drop), 1)
+
+    def test_unsettled_files_are_reported_so_the_caller_can_rescan(self):
+        self.put("fresh.pdf", age=0)
+        self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (0, 1, False))
+        os.utime(self.drop / "fresh.pdf", (time.time() - 60,) * 2)
+        self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (1, 0, False))
+
+    def test_retained_full_prefix_does_not_starve_a_later_new_file(self):
+        with mock.patch.object(arrival, "MAX_DROP_FILES", 5):
+            for n in range(5):
+                self.put(f"a{n}.pdf")
+            self.put(".hidden-0")  # staging names never consume the cap
+            self.put("x.part")
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (5, 0, False))
+            self.put("z-new.pdf")
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (0, 0, True))
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (1, 0, False))
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (0, 0, True))  # next wake: new cycle
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (0, 0, False))
+            self.assertEqual(len(arrival.pending(self.runtime)), 6)
 
     def test_trigger_never_reads_record_bytes(self):
         path = self.put("scan.pdf")

@@ -15,6 +15,7 @@ Nothing here calls a model, mailer, publication or approval interface, and the
 drop scan never opens or parses record bytes.
 """
 import argparse
+import bisect
 import contextlib
 import fcntl
 import hashlib
@@ -355,8 +356,22 @@ def drop_ref(name, size, mtime_ns):
     return hashlib.sha256(f"drop-v1\0{name}\0{size}\0{mtime_ns}".encode("utf-8", "surrogateescape")).hexdigest()
 
 
+CURSOR_KEY = "_cursor"
+
+
 def scan_drop(runtime_dir, drop_dir, now=None):
     """Stamp new or changed completed files at the drop root; never read file bytes."""
+    return scan_drop_status(runtime_dir, drop_dir, now)[0]
+
+
+def scan_drop_status(runtime_dir, drop_dir, now=None):
+    """Return (stamped, unsettled, more).
+
+    unsettled counts regular final files still inside the settle window, so a
+    caller can rescan instead of losing their only wake. At most MAX_DROP_FILES
+    candidate names are examined per call, starting after a persisted cursor, so no tail of a large
+    retained folder is starved; more is True while names after the cursor remain unexamined; the cursor resets at the end.
+    """
     root, _, _ = _paths(runtime_dir)
     if not _check_dir(root, False):
         raise ArrivalError("ARRIVAL_RUNTIME_INVALID")
@@ -366,13 +381,14 @@ def scan_drop(runtime_dir, drop_dir, now=None):
     try:
         info = os.lstat(drop)
     except FileNotFoundError:
-        return 0
+        return 0, 0, False
     except OSError:
         raise ArrivalError("ARRIVAL_DROP_INVALID") from None
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
         raise ArrivalError("ARRIVAL_DROP_INVALID")
     now = time.time() if now is None else now
     stamped = 0
+    unsettled = 0
     with _MetaLock(root, True):
         inv_path = root / INVENTORY_NAME
         try:
@@ -383,10 +399,20 @@ def scan_drop(runtime_dir, drop_dir, now=None):
             raise ArrivalError("ARRIVAL_STATE_UNSAFE") from None
         if not isinstance(inventory, dict):
             raise ArrivalError("ARRIVAL_STATE_UNSAFE")
-        names = sorted(os.listdir(drop))[:MAX_DROP_FILES]
+        # Staging names are dropped before the cap so they never consume it.
+        candidates = sorted(
+            n for n in os.listdir(drop) if not (n.startswith(".") or n.endswith(TEMP_SUFFIXES))
+        )
+        cursor = inventory.get(CURSOR_KEY)
+        start = bisect.bisect_right(candidates, cursor) if isinstance(cursor, str) else 0
+        order = candidates[start:]
+        names = order[:MAX_DROP_FILES]
+        more = len(order) > MAX_DROP_FILES
+        if more:
+            inventory[CURSOR_KEY] = names[-1]
+        else:
+            inventory.pop(CURSOR_KEY, None)
         for name in names:
-            if name.startswith(".") or name.endswith(TEMP_SUFFIXES):
-                continue  # staging names: not an accepted final file
             try:
                 st = os.lstat(drop / name)
             except OSError:
@@ -394,6 +420,7 @@ def scan_drop(runtime_dir, drop_dir, now=None):
             if not stat.S_ISREG(st.st_mode):
                 continue  # symlinks, directories and specials are never acknowledged
             if now - st.st_mtime < SETTLE_SECONDS:
+                unsettled += 1
                 continue  # still settling: left unacknowledged for a later wake
             ref = drop_ref(name, st.st_size, st.st_mtime_ns)
             key = hashlib.sha256(name.encode("utf-8", "surrogateescape")).hexdigest()
@@ -417,7 +444,7 @@ def scan_drop(runtime_dir, drop_dir, now=None):
         finally:
             os.close(fd)
         os.replace(tmp, inv_path)
-    return stamped
+    return stamped, unsettled, more
 
 
 # --- command line ----------------------------------------------------------------
@@ -445,7 +472,8 @@ def main(argv=None):
         elif args.command == "list":
             print(json.dumps(pending(args.runtime_dir)))
         elif args.command == "scan-drop":
-            scan_drop(args.runtime_dir, args.drop_dir)
+            done, waiting, more = scan_drop_status(args.runtime_dir, args.drop_dir)
+            print(f"stamped={done} unsettled={waiting} more={int(more)}")
         elif args.command == "claim":
             batch = claim(args.runtime_dir, args.run_id)
             out = Path(args.out)

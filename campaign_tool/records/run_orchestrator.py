@@ -916,8 +916,8 @@ def cmd_run(args):
     if args.expect_target and args.expect_target != config["target"]:
         raise TargetConfigError("target config names a different target")
     scheduled = scheduled_invocation(args.scheduled, os.environ)
-    mode = report_mode(config, scheduled, args.arrival)
-    arrivals = load_arrivals(args.arrivals_file)
+    mode = report_mode(config, scheduled, getattr(args, "arrival", False))
+    arrivals = load_arrivals(getattr(args, "arrivals_file", None))
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
     return execute(config, args.run_id, mode, args.started_at, args.deadline_epoch,
@@ -930,11 +930,11 @@ def cmd_abort(args):
         raise SystemExit("run_orchestrator: invalid reason code")
     scheduled = scheduled_invocation(args.scheduled, os.environ)
     try:
-        mode = report_mode(load_target_config(args.target_config), scheduled, args.arrival)
+        mode = report_mode(load_target_config(args.target_config), scheduled, getattr(args, "arrival", False))
     except TargetConfigError:
-        mode = "arrival" if args.arrival else "scheduled" if scheduled else "manual"
+        mode = "arrival" if getattr(args, "arrival", False) else "scheduled" if scheduled else "manual"
     report = abort_report(args.run_id, mode, args.started_at, args.reason, args.stage,
-                          trigger=report_trigger(mode, scheduled), arrivals=load_arrivals(args.arrivals_file))
+                          trigger=report_trigger(mode, scheduled), arrivals=load_arrivals(getattr(args, "arrivals_file", None)))
     atomic_write_json(args.report, report)
     return 0
 

@@ -120,6 +120,15 @@ class ArrivalRunTests(ArrivalRuntime):
         self.assertEqual(self.run_wrapper("--arrival").returncode, 0)
         self.assertEqual(len(self.reports()), 2)
 
+    def test_fresh_renamed_drop_file_still_starts_a_run_without_backdating(self):
+        self.drop.mkdir()
+        staging = self.drop / "scan.pdf.part"
+        staging.write_bytes(b"%PDF-1.4 synthetic")
+        os.rename(staging, self.drop / "scan.pdf")  # mtime is now: inside the settle window
+        self.assertEqual(self.run_wrapper("--arrival").returncode, 0)
+        [report] = self.reports()
+        self.assertEqual([a["source"] for a in report["arrivals"]], ["drop-folder"])
+
     def test_burst_is_one_batch_and_cannot_extend_the_wait_indefinitely(self):
         stop = threading.Event()
         written = []
@@ -232,6 +241,9 @@ class DrainTests(ArrivalRuntime):
         self.addCleanup(holder.kill)
         self.assertTrue(self.wait_for(lambda: (self.target_dir / "run-records.log").exists()
                                       and "docker ready" in self.log()), "holder never reached its stages")
+        if args == ("--arrival",):  # an arrival parent claims its batch after "docker ready"
+            done = self.runtime / "arrival" / "done"
+            self.assertTrue(self.wait_for(lambda: any(done.glob("run_*/*"))), "parent never claimed")
         return holder
 
     def test_finishing_holder_drains_exactly_one_follow_up(self):

@@ -207,9 +207,23 @@ log() {
 # then do nothing at all when no stamp is pending. Coalesce a burst with a
 # bounded quiet wait; the cap keeps every start inside the 2 minute window.
 if [ "$ARRIVAL" -eq 1 ] && [ "$FOLLOWUP" -eq 0 ]; then
-  if ! arr scan-drop --runtime-dir "$RUNTIME_DIR" --drop-dir "$RECORDS_DROP_DIR"; then
-    refuse ARRIVAL_SCAN_FAILED
-  fi
+  # Rescan inside the same bounded wake while files are still settling or the
+  # capped scan has not covered the whole folder; a freshly renamed file has
+  # no second PathChanged event to wake us again.
+  scan_deadline=$(( $(date +%s) + ARRIVAL_MAX_WAIT ))
+  while :; do
+    if ! scan_out=$(arr scan-drop --runtime-dir "$RUNTIME_DIR" --drop-dir "$RECORDS_DROP_DIR"); then
+      refuse ARRIVAL_SCAN_FAILED
+    fi
+    case "$scan_out" in
+      *"unsettled=0 more=0") break ;;
+    esac
+    [ "$(date +%s)" -lt "$scan_deadline" ] || break
+    case "$scan_out" in
+      *"more=1") ;;
+      *) sleep 1 ;;
+    esac
+  done
   set +e
   arr has-work --stamps-only --runtime-dir "$RUNTIME_DIR"
   hw=$?
