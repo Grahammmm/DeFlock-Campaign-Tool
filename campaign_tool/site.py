@@ -224,6 +224,7 @@ PUBLIC_COPY_FIELDS = ("matches", "checked_on", "reason")
 PUBLIC_LIBRARY_TOP_LEVEL = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "sources")
 PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0137-09: meetings open data
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
+PUBLIC_MEETING_OPTIONAL = ("submitted_comment",)  # DF1407-06: JSON only ({on, channel}); never a CSV column
 PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes", "minutes_url", "minutes_approved_on",
                          "continued_to", "continued_to_date", "direction", "return_by",
                          "direction_source", "spoke", "written", "comment_source_url")  # never verified_by / verified_at
@@ -969,12 +970,23 @@ class Site:
                     f'(UTC{"-" if offset < 0 else "+"}{abs(offset) // 60:02d}:{abs(offset) % 60:02d})')
         return f'<p class="comment-deadline"><time datetime="{e(written["deadline"])}">{text}</time></p>'
 
-    def meeting_item(self, meeting):
+    def submitted_comment_html(self, meeting):
+        """DF1407-06: the comment the campaign submitted, as escaped plain text in a <pre>; "" without one."""
+        comment = meeting.get("submitted_comment")
+        if not comment:
+            return ""
+        heading = self.t("meeting.submitted_comment", channel=comment["channel"], date=comment["on"])
+        return f'<section id="submitted-comment"><h3>{heading}</h3><pre class="submitted-comment">{e(comment["text"])}</pre></section>'
+
+    def meeting_item(self, meeting, comment_link=False):
         agenda = (f' · <a href="{e(meeting["agenda_url"])}" rel="noopener noreferrer">{self.t("meeting.agenda")}</a>'
                   if meeting["agenda_url"] else "") + f' · <a href="/meetings/{e(meeting["id"])}.html">{self.t("meeting.page")}</a>'
         item = f'<p>{self.t("meeting.agenda_item")} {e(meeting["agenda_item"])}</p>' if meeting["agenda_item"] else ""
         item += meeting_outcome_html(meeting, self.t) if meeting["starts_at"][:10] < self.today.isoformat() else ""
         item += self._written_deadline(meeting)
+        if comment_link and meeting.get("submitted_comment"):  # DF1407-06: an agency page's past meeting
+            item += (f'<p><a href="/meetings/{e(meeting["id"])}.html#submitted-comment">'
+                     f'{self.t("meeting.submitted_comment_link")}</a></p>')
         where = f' · {e(meeting["location"])}' if meeting["location"] else ""
         cancelled = self.t("meeting.cancelled") + " " if meeting.get("status") == "cancelled" else ""
         kit = (f'<details><summary>{self.t("meeting.kit")}</summary>' + self.md(meeting["comment_kit_md"]) + '</details>'
@@ -1493,7 +1505,7 @@ class Site:
             f'<a href="/sources.html#{e(s["fragment"])}">{self.t("agency.in_library")}</a></p></li>'
             for s in self.model["sources"] if s["agency_id"] == aid)
         meetings = "".join(self.meeting_item(m) for m in self.upcoming if m.get("agency_id") == aid)
-        past = "".join(self.meeting_item(m) for m in self.past if m.get("agency_id") == aid)  # DF2207-05
+        past = "".join(self.meeting_item(m, comment_link=True) for m in self.past if m.get("agency_id") == aid)  # DF2207-05
         links = self.official_links(agency)
         main = (f'    <article class="section finding-body" id="content"><p class="eyebrow">{self.t("kind." + agency["kind"])}</p>'
                 f'<h2>{e(agency["name"])}</h2><p>{e(agency["jurisdiction_name"])}</p>'
@@ -2283,6 +2295,7 @@ class Site:
                 + self.public_comment_counts(meeting)
                 + self._written_deadline(meeting)
                 + self._cosigned(meeting)
+                + self.submitted_comment_html(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
                 + f'<h3>{self.t("meeting.kit")}</h3>{kit}<p class="notice">{e(self.site["not_legal_advice"])}</p>'
                 f'<p><a href="/meetings.html">{self.t("meeting.all")}</a></p></article>\n')
@@ -2933,6 +2946,8 @@ class Site:
                                                               "comment_source_url") if key in outcome}
             if "votes" in outcome:  # DF0137-07 per-member votes, in stored order
                 value["outcome"]["votes"] = [{"name": v["name"], "vote": v["vote"]} for v in outcome["votes"]]
+        if meeting.get("submitted_comment"):  # DF1407-06: when and how only, never the text or its digest
+            value["submitted_comment"] = {key: meeting["submitted_comment"][key] for key in ("on", "channel")}
         return value
 
     def meetings_json(self):
@@ -2942,7 +2957,9 @@ class Site:
                "meetings": [self._public_meeting(m) for m in ordered]}
         vote = (PUBLIC_VOTE_FIELDS, {})
         _assert_public(doc, "data/meetings.json", PUBLIC_MEETING_TOP_LEVEL | set(self.license_top()),
-                       {"meetings": (PUBLIC_MEETING_FIELDS, {"outcome": (PUBLIC_OUTCOME_FIELDS, {"votes": vote})})})
+                       {"meetings": ((*PUBLIC_MEETING_FIELDS, *PUBLIC_MEETING_OPTIONAL),
+                                     {"outcome": (PUBLIC_OUTCOME_FIELDS, {"votes": vote}),
+                                      "submitted_comment": (("on", "channel"), {})})})
         return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 

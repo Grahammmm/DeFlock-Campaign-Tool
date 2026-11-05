@@ -12,6 +12,7 @@ It refuses malformed or unreviewed input so the build stops instead of
 publishing it. Records originals, mail, subscribers and private analysis never
 belong in ``content/``.
 """
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,7 @@ from urllib.parse import urlsplit
 from . import finding_updates, law, map_controller
 from .agency_cards import text as plain_text, visible
 from .camera_direction import valid_direction
+from .privacy_patterns import categories as _privacy_categories
 from .review import CLASSIFICATIONS, review_blockers
 
 CONFIDENCE = ("verified", "likely", "needs_attorney_review")
@@ -689,7 +691,7 @@ def load_finding_preview(document, label, now=None):
 
 FINDING_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # public finding ids; distinct from a slug
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
-                "status", "participation", "outcome", "cited_findings", "cosigners"}
+                "status", "participation", "outcome", "cited_findings", "cosigners", "submitted_comment"}
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 CONTINUATION_KEYS = ("continued_to", "continued_to_date")  # DF0022-07: where the official source says an item went
@@ -975,6 +977,53 @@ def load_cosigners(value, label):
             raise ContentError(f"{label}[{index}]: {supporter_id!r} is listed more than once")
     return list(value)
 
+COMMENT_CHANNELS = ("email", "portal", "mail", "in_person")  # as meeting_comments.CHANNELS (DF1407-06)
+COMMENT_MAX_BYTES = 16384
+COMMENT_PLACEHOLDER = re.compile(r"\[\s*(?:name|city)\s*\]|\[\s*edit me\b[^\]]*\]", re.I)
+SUBMITTED_COMMENT_KEYS = ("on", "channel", "text", "sha256")
+
+
+def comment_text_problems(text):
+    """DF1407-06: problems with a submitted comment's text; each names a rule, and a privacy hit only its line and
+    categories, never the text. [] when the text is publishable: 1 to 16384 UTF-8 bytes, not blank, no NUL, byte-order mark
+    or control character other than tab, CR and LF, no unfilled [name], [city] or [EDIT ME] placeholder, and no email,
+    phone or plate pattern (the shared lint, line by line; a clean result is not privacy clearance)."""
+    if not isinstance(text, str):
+        return ["text must be a string"]
+    try:
+        size = len(text.encode("utf-8"))
+    except UnicodeEncodeError:
+        return ["text is not valid UTF-8"]
+    problems = [] if 1 <= size <= COMMENT_MAX_BYTES and text.strip() else [
+        f"text must be 1 to {COMMENT_MAX_BYTES} bytes of UTF-8 with at least one character that is not a space"]
+    if any(char == "\ufeff" or (unicodedata.category(char) == "Cc" and char not in "\t\r\n") for char in text):
+        problems.append("text must be plain text: no byte-order mark, NUL or control characters except tab and line breaks")
+    if COMMENT_PLACEHOLDER.search(text):
+        problems.append("text still holds an unfilled [name], [city] or [EDIT ME] placeholder")
+    for number, line in enumerate(re.split(r"\r\n|\r|\n", text), 1):
+        if found := _privacy_categories(line):
+            problems.append(f"privacy lint: line {number}: {', '.join(found)}")
+    return problems
+
+
+def load_submitted_comment(value, label, today=None):
+    """DF1407-06: the optional ``submitted_comment`` of a meeting: exactly on, channel, text, sha256. The digest must be
+    that of the stored text's UTF-8 bytes. Nothing is fetched; no private ledger is read."""
+    _require_keys(value, set(SUBMITTED_COMMENT_KEYS), set(SUBMITTED_COMMENT_KEYS), label)
+    day = _timestamp(value["on"], f"{label}.on", date_only=True)
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day) or day > (today or date.today()).isoformat():
+        raise ContentError(f"{label}.on: must be a YYYY-MM-DD date that is not in the future")
+    if value["channel"] not in COMMENT_CHANNELS:
+        raise ContentError(f"{label}.channel: must be one of {', '.join(COMMENT_CHANNELS)}")
+    if problems := comment_text_problems(value["text"]):
+        raise ContentError(f"{label}.text: {'; '.join(problems)}")
+    digest = value["sha256"]
+    if not isinstance(digest, str) or not SHA256.fullmatch(digest):
+        raise ContentError(f"{label}.sha256: must be 64 lowercase hex characters")
+    if hashlib.sha256(value["text"].encode("utf-8")).hexdigest() != digest:
+        raise ContentError(f"{label}.sha256: does not match the text")
+    return {key: value[key] for key in SUBMITTED_COMMENT_KEYS}
+
 
 def load_meeting(document, label, today=None):
     _require_keys(document, MEETING_KEYS, {"body", "starts_at"}, label)
@@ -1005,6 +1054,8 @@ def load_meeting(document, label, today=None):
            if "cited_findings" in document else {}),
         **({"cosigners": load_cosigners(document["cosigners"], f"{label}.cosigners")}
            if "cosigners" in document else {}),
+        **({"submitted_comment": load_submitted_comment(document["submitted_comment"], f"{label}.submitted_comment", today)}
+           if "submitted_comment" in document else {}),
     }
 
 

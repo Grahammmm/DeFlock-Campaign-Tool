@@ -135,6 +135,7 @@ DEFAULTS = {
     "meeting.minutes_pending": "Recorded by the campaign; minutes not yet approved", "agency.past_meetings": "Past meetings",
     "meeting.continued_to": "Continued to {date}", "meeting.continued_from": "Continued from {date}",
     "meeting.cosigned_one": "Co-signed by {count} organization", "meeting.cosigned_many": "Co-signed by {count} organizations",
+    "meeting.submitted_comment": "Our submitted comment ({channel}, {date})", "meeting.submitted_comment_link": "Our submitted comment",
     "meeting.staff_direction": "Staff were directed to: {direction} (by {date}, as stated in {source})",
 
     "schedule.usually": "Usually meets: {rule} ({source}, checked {date})",
