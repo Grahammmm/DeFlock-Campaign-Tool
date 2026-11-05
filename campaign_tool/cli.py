@@ -1201,6 +1201,10 @@ def main():
                            "wrote to (1-60 characters), not a person's name; no email address or phone number")
     contact_p.add_argument("--note", required=True, help="1-500 characters of plain text; no personal details")
     contact_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    preserve_p = commands.add_parser("kit-preserve", help="Private preservation-request draft for a sent, unanswered request; never sent")
+    for flag in ("--directory", "--agency"):
+        preserve_p.add_argument(flag, required=True)
+    preserve_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     denial_p = commands.add_parser("kit-denial-reply", help="Private reply draft after a recorded denied step; never sent")
     for flag in ("--directory", "--agency"):
         denial_p.add_argument(flag, required=True)
@@ -1211,6 +1215,10 @@ def main():
                                   "(dry run by default); nothing is sent or published")
     asked_p.add_argument("--directory", required=True)
     asked_p.add_argument("--apply", action="store_true", help="Write the proposal (validated, one atomic write)")
+    personal_p = commands.add_parser("personal-data", help="List the private files that can hold a person's name, email, "
+                                     "phone or address: counts and dates only, never values (read-only)")
+    personal_p.add_argument("--directory", required=True)
+    personal_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
                                      "section number in the agency's own words (read-only)")
     withheld_p.add_argument("--directory", required=True)
@@ -1555,6 +1563,15 @@ def main():
     if args.command == "law":
         from .law_packet import main as law_packet_main
         sys.exit(law_packet_main(args))
+    if args.command == "personal-data":  # the folder is not resolved: the register refuses a symlinked root itself
+        from .personal_data import PersonalDataError, exit_code, personal_data_register, render_text
+        try:
+            report = personal_data_register(Path(args.directory).expanduser())
+        except PersonalDataError as exc:
+            print("Stopped: " + str(exc), file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
+        sys.exit(exit_code(report))
     root = Path(args.directory).expanduser().resolve()
     try:
         if args.command == "init":
@@ -2049,6 +2066,10 @@ def main():
             print(json.dumps(record_contact(root, args.agency, args.on, args.channel, args.role, args.note,
                                             request=args.request), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-preserve":
+            from .kit_preserve import preserve_request
+            print(json.dumps(preserve_request(Path(args.directory).expanduser(), args.agency, request=args.request), indent=2))
+            print("Draft only. Nothing was sent.")
         elif args.command == "kit-denial-reply":
             from .kit_track import denial_reply
             print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))

@@ -30,6 +30,8 @@ PUBLISH_PATHS = (
     _entry("atom-feed", "campaign_tool/site.py", "Site.feed_xml", "feed", "public", "privacy+legal", GATE, "site", "feed.xml"),
     _entry("agency-feeds", "campaign_tool/site.py", "Site.agency_feeds", "feed", "public", "privacy+legal", GATE, "site",
            "findings/agency/<slug>.xml"),
+    _entry("corrections-feed", "campaign_tool/site.py", "Site.corrections_feed_xml", "feed", "public", "privacy+legal", GATE, "site",
+           "corrections.xml"),
     _entry("open-graph-meta", "campaign_tool/site.py", "Site.finding_html", "page", "public", "privacy+legal", GATE, "site",
            "og:/twitter: meta tags on each finding page"),
     _entry("agency-cards", "campaign_tool/agency_cards.py", "render", "card", "public", "privacy+legal", GATE, "site",

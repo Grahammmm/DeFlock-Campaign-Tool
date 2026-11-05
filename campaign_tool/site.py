@@ -51,7 +51,7 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "sharing.html", "press.html", "requests.html", "news.html"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
@@ -815,10 +815,11 @@ class Site:
                      + (f' · <a href="/glossary.html">{self.t("footer.glossary")}</a>' if self.glossary else "") + '</p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         meetings_feed = f' · <a href="/meetings.xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else ""  # DF1103-10
+        corrections_feed = f' · <a href="/corrections.xml">{self.t("corrections.feed")}</a>' if self.correction_entries() else ""  # DF0237-09
         archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
         parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a>{meetings_feed} · <a href="/search.html">{self.t("footer.search")}</a>'
                      f' · <a href="/requests.html">{self.t("footer.requests")}</a>'  # DF1103-13: between the feed and Corrections
-                     f' · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}{archive}'
+                     f' · <a href="/corrections.html">{self.t("nav.corrections")}</a>{corrections_feed}{sitemap}{archive}'
                      ' · <a href="/methods.html">How to read our findings</a></p>')
         if self.faq:  # DF0022-01: appended last, so every earlier footer paragraph is unchanged
             parts.append(f'<p><a href="/faq.html">{self.t("footer.faq")}</a></p>')
@@ -873,6 +874,8 @@ class Site:
                 + f'  <link rel="alternate" type="application/atom+xml" title="{self.t("title.feed")}" href="/feed.xml">\n'
                 + (f'  <link rel="alternate" type="application/atom+xml" title="{self.t("title.meetings_feed")}" href="/meetings.xml">\n'
                    if self.model["meetings"] and (path == "/meetings.html" or path.startswith("/meetings/")) else "")
+                + (f'  <link rel="alternate" type="application/atom+xml" title="{self.t("corrections.feed")}" href="/corrections.xml">\n'
+                   if self.correction_entries() and (path == "/corrections.html" or path in self.corrected_paths()) else "")
                 + canonical + extra)
 
     def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
@@ -1990,9 +1993,7 @@ class Site:
                 f'<p>{self.t("correction_counts.lead")}</p>{table}</section>')
 
     def corrections_html(self):
-        rows = [(f, c, i) for f in self.model["findings"] for i, c in enumerate(f["corrections"])]
-        rows.sort(key=lambda row: (row[0]["slug"], row[2]))
-        rows.sort(key=lambda row: row[1]["date"], reverse=True)  # stable: same-date rows keep slug/index order
+        rows = self.correction_entries()
         items = "".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time> · '
                         f'<a href="/findings/{e(f["slug"])}.html#corrections">{e(f["title"])}</a>: {e(c["note"])}</li>'
                         for f, c, _ in rows)
@@ -2667,6 +2668,42 @@ class Site:
         lines.append("END:VCALENDAR")
         return "".join(ics_fold(line) + "\r\n" for line in lines)
 
+    def correction_entries(self):
+        """DF0237-09: ``(finding, correction, stored_index)`` for every correction on a published finding, newest first
+        (date descending, slug, stored index). Never reads updates; the index is the stored array position."""
+        rows = [(f, c, i) for f in self.model["findings"] for i, c in enumerate(f["corrections"])]
+        rows.sort(key=lambda row: (row[0]["slug"], row[2]))
+        rows.sort(key=lambda row: row[1]["date"], reverse=True)
+        return rows
+
+    def corrected_paths(self):
+        return {finding_path(f) for f in self.model["findings"] if f["corrections"]}
+
+    def corrections_feed_xml(self):
+        """``corrections.xml`` (DF0237-09): Atom with one entry per correction (newest 50), or None without any."""
+        rows = self.correction_entries()
+        if not rows:
+            return None
+        ns = "http://www.w3.org/2005/Atom"
+        ET.register_namespace("", ns)
+        midnight = lambda c: _day(c["date"]) + "T00:00:00+00:00"
+        feed = ET.Element(f"{{{ns}}}feed")
+        ET.SubElement(feed, f"{{{ns}}}title").text = self.cfg["name"] + " corrections"
+        campaign_urn = "urn:deflock-campaign:" + re.sub(r"[^a-z0-9]+", "-", self.cfg["name"].lower())
+        ET.SubElement(feed, f"{{{ns}}}id").text = (self.base + "/corrections.xml") if self.base else campaign_urn + ":corrections"
+        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + "/corrections.xml", rel="self", type="application/atom+xml")
+        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + "/corrections.html", rel="alternate")
+        ET.SubElement(feed, f"{{{ns}}}updated").text = midnight(rows[0][1])
+        ET.SubElement(ET.SubElement(feed, f"{{{ns}}}author"), f"{{{ns}}}name").text = self.cfg["name"]
+        for finding, correction, index in rows[:50]:
+            entry = ET.SubElement(feed, f"{{{ns}}}entry")
+            ET.SubElement(entry, f"{{{ns}}}title").text = "Correction: " + finding["title"]
+            ET.SubElement(entry, f"{{{ns}}}id").text = f'urn:deflock-correction:{finding["id"]}:{index}'
+            ET.SubElement(entry, f"{{{ns}}}link", href=self.base + finding_path(finding) + "#corrections", rel="alternate")
+            ET.SubElement(entry, f"{{{ns}}}updated").text = midnight(correction)
+            ET.SubElement(entry, f"{{{ns}}}summary", type="text").text = correction["note"]
+        return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(feed, encoding="unicode") + "\n"
+
     def meetings_feed_entries(self):
         """DF1103-10: the staged meetings the feed lists, newest ``updated`` first, one per id, as plain dicts.
 
@@ -3126,6 +3163,9 @@ def _plan_site(root, today=None, notes=None):
     files.update(site.agency_feeds())
     if model["meetings"]:  # DF1103-10: no staged meetings, no feed (the tree swap drops a stale one)
         files["meetings.xml"] = site.meetings_feed_xml()
+    corrections_text = site.corrections_feed_xml()  # DF0237-09: no correction, no file (the tree swap drops a stale one)
+    if corrections_text is not None:
+        files["corrections.xml"] = corrections_text
     plan = []
     map_data = []  # DF2207-10: the map files copied under data/ (county and city boundaries), for the press page
     if model["map"]:
