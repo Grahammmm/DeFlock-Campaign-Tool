@@ -64,7 +64,7 @@
     "state": "WI",
     "body": "Common Council",
     "decided_on": "2026-05-26",
-    "kind": "ended_contract",
+    "kind": "other",
     "as_stated": "Resolution R-112-26 declares the City's intent to discontinue use of ALPR services provided through Flock Safety, subject to the existing agreement.",
     "source_url": "https://agendas.fitchburgwi.gov/OnBaseAgendaOnline/Documents/ViewDocument/Resolution%20for%20-%20Resolution%20R-112-26%20%2886385%29.pdf?documentType=Agenda&isSection=false&itemId=86424&meetingId=3729&publishId=92527",
     "checked_on": "2026-11-04"
@@ -95,7 +95,7 @@
     "body": "City Council",
     "decided_on": "2026-06-15",
     "kind": "other",
-    "as_stated": "Resolution adopted 7-0: the City shall not deploy new ALPR systems without prior City Council review and approval.",
+    "as_stated": "Resolution adopted 7-0: the City shall not deploy new ALPR systems for law enforcement purposes without prior Council review and approval.",
     "source_url": "https://cityordinances.durhamnc.gov/OnBaseAgendaOnline/Documents/DownloadFileBytes/Final-Published%20Attachment%20-%2019853%20-%204%20-%20RESOLUTION%20-%20REVISED%20RESOLUTION%20-%206.pdf?documentType=1&isAttachment=True&isSection=False&itemId=48176&meetingId=752&publishId=278666",
     "checked_on": "2026-11-04"
   }
