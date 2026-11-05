@@ -118,6 +118,7 @@ DEFAULTS = {
     "events.none_upcoming": "No upcoming events are listed.", "events.none_past": "No past events are listed.",
     "events.when": "{start} to {end}", "events.online": "Online", "events.where": "Where",
     "events.link": "Details and registration", "events.accessibility": "Accessibility",
+    "events.subscribe": "Subscribe to the campaign events calendar (.ics)", "footer.events_calendar": "Campaign events calendar (.ics)",
     "events.next": "Next campaign event", "events.all": "All campaign events",
     "finding.shares_one": "Shares {count} source record", "finding.shares_many": "Shares {count} source records",
     "finding.filter_label": "Filter findings", "finding.filter_agency": "Agency",
@@ -240,6 +241,14 @@ DEFAULTS = {
     "correction_counts.col_open": "Still open",
     "correction_counts.empty": "No correction requests have been logged yet.",
     "officials.heading": "Who decides", "officials.source": "source",
+    "statements.heading": "What decision makers have said",
+    "statements.line": "{official}, {date} ({context})",
+    "statements.quote": "\u201c{quote}\u201d",
+    "statements.context_meeting": "meeting", "statements.context_press_release": "press release",
+    "statements.context_newsletter": "newsletter", "statements.context_interview": "interview",
+    "statements.context_other": "other",
+    "statements.source": "Official source", "statements.recording": "(recording at {time})",
+    "statements.checked": "checked {date}", "statements.campaign_context": "Campaign context: {note}",
     "officials.listed": ("Listed from the body's official site ({source}), checked {date}. "
                          "Contact officials only through the channels on that site."),
     "map.picker_label": "Choose an area", "map.region_label": "Community-mapped ALPR points",
@@ -288,6 +297,18 @@ DEFAULTS = {
     "news.kind.news": "News", "news.kind.opinion": "Opinion", "news.kind.broadcast": "Broadcast", "news.kind.other": "Other",
     "finding.reported_in": "Reported in: {outlet} ({date})", "footer.news": "In the news",
     "press.news": "Press coverage of the campaign",
+    # DF1107-04: /elsewhere.html (optional content/elsewhere.json): organizer-verified decisions by other governments
+    "elsewhere.title": "Decisions elsewhere", "footer.elsewhere": "Decisions elsewhere",
+    "elsewhere.description": "Decisions by other governments, as their own official records state them, recorded by the organizers.",
+    "elsewhere.note": "Decisions elsewhere are not decisions by this campaign's agencies.",
+    "elsewhere.verified": "Each entry was read from the deciding body's own record by an organizer, who attests the date it was last "
+                          "checked. The wording is as that source states it; this site does not interpret it, and the record "
+                          "may have changed since.",
+    "elsewhere.decided": "Decided {date}", "elsewhere.source": "Official source", "elsewhere.news": "News coverage",
+    "elsewhere.checked": "Checked {date}",
+    "elsewhere.kind.ended_contract": "Ended a contract", "elsewhere.kind.paused": "Paused", "elsewhere.kind.declined": "Declined",
+    "elsewhere.kind.adopted_ordinance": "Adopted an ordinance", "elsewhere.kind.restricted_sharing": "Restricted data sharing",
+    "elsewhere.kind.audit_ordered": "Ordered an audit", "elsewhere.kind.other": "Other",
 }
 # DF0137-14: fixed strings the generated scripts write into the page. Defaults are today's exact English; site.py
 # switches the scripts to LABELS lookups (site-data.js) only when a js.* key differs from its default.
