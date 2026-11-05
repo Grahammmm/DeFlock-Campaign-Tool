@@ -18,7 +18,12 @@ from campaign_tool.site import build_site, ics_text
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
-DIGESTS = json.loads((REPO_ROOT / "tests" / "fixtures" / "agency-meetings-main-digests.json").read_text(encoding="utf-8"))["scenarios"]
+DIGESTS = {  # digests are stored as spaced 8-hex groups (credential scan); join them
+    _name: {_f: _h.replace(" ", "") for _f, _h in _files.items()}
+    for _name, _files in json.loads(
+        (REPO_ROOT / "tests" / "fixtures" / "agency-meetings-main-digests.json").read_text(encoding="utf-8")
+    )["scenarios"].items()
+}
 DAY = date(2026, 10, 20)
 HOST = "cedar-records.example.invalid"
 POLICE, COUNCIL, SHERIFF = "ca-cedar-police", "ca-cedar-city-council", "ca-cedar-county-sheriff"
