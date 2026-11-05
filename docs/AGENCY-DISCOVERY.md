@@ -431,6 +431,22 @@ ids, `--rule` without a law package, and a request without a `denied` step are r
 `--rule` the draft has no citations. An existing draft is kept unless `--replace`; symlinks are refused. Nothing is sent
 and `sent.json` is not changed. The draft is not legal advice.
 
+`kit-clarify-reply --directory D --agency ID [--request NAME] [--scope ID ...] [--date-range FROM:TO] [--replace]`
+(for example `--agency ID` for the main request, or `--agency ID --request contract-2026` for a named one) writes a
+private draft `kit/followups/<agency_id>[--<request>]-clarify-<today>.md` (0600, folder 0700) answering the agency's
+open `clarification_requested` step: the reference and portal lines, `On D you asked us to clarify or narrow this
+request`, the request re-rendered from the law package with your request settings (requester block, fee cap) for the
+scopes you keep, and a `No longer requested` list naming every scope the sent request asked for that you left out
+(`None — all originally asked scopes are retained.` when none), so nothing is dropped silently. Without `--scope` all
+originally asked scopes are kept; only scopes recorded as asked by that sent request can be chosen (`--scope` takes
+several ids; unknown, unasked, repeated or empty selections are refused). `--date-range` is two real `YYYY-MM-DD` dates
+(FROM not after TO, neither after today); without it the range comes from `request-settings.json`, else the draft's
+visible placeholder. The original range is not stored, so check any narrowing against what was actually sent. It is
+refused when no clarification is open (never asked, or already clarified, closed or withdrawn). An existing draft is
+kept unless `--replace`; symlinks and non-file targets are refused. The draft ends with the `kit-response ... --kind
+clarified` command: run it only after you have sent the reply yourself, with `--date` set to the day you sent it.
+Nothing is sent, and `sent.json`, the recorded scopes and the original draft hash are not changed.
+
 On a `produced` step, link the ingested records the agency sent with `--record PREFIX` (repeatable, at most 200):
 at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every prefix must match exactly one
 ingested record and none may already be linked to the request; otherwise nothing is written. Full hashes stay in

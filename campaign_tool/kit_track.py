@@ -1335,6 +1335,100 @@ def denial_reply(root, agency_id, rules=(), *, replace=False, law_base=None):
     return {"written": f"kit/followups/{target.name}", "rules": rules, "law_package_status": status}
 
 
+def _range_arg(value, today):  # "FROM:TO": two real ISO days, FROM <= TO, neither after today; the range text, or None
+    if value is None:
+        return None
+    parts = value.split(":") if isinstance(value, str) else []
+    days = [_day(p) for p in parts] if len(parts) == 2 else []
+    if len(days) != 2 or None in days:
+        raise ValueError("--date-range must be FROM:TO, two real YYYY-MM-DD dates")
+    if days[0] > days[1]:
+        raise ValueError("--date-range FROM must not be after TO")
+    if days[1] > today:
+        raise ValueError("--date-range must not end after today")
+    return f"{parts[0]} through {parts[1]}"
+
+
+def clarify_reply(root, agency_id, *, request="main", scopes=None, date_range=None, replace=False, law_base=None,
+                  today=None):
+    """Write a private, never-sent reply draft to kit/followups/ for the open clarification_requested step.
+
+    Only scopes the sent request recorded as asked can be kept; every asked scope left out is listed. Records nothing."""
+    import shlex
+    from .cli import read_config  # local import: cli imports this module lazily
+    root, today, request = Path(root), today or date.today(), _request(request)
+    if scopes is not None:
+        scopes = list(scopes)
+        if not scopes:
+            raise ValueError("--scope needs at least one scope id; leaving none would withdraw the whole request")
+        if len(set(scopes)) != len(scopes):
+            raise ValueError("--scope ids must not repeat")
+    window = _range_arg(date_range, today)
+    label = _label(agency_id, request)
+    entry = read_sent(root).get(_key(agency_id, request)) if kit.AGENCY_ID.fullmatch(agency_id) else None
+    if entry is None:
+        raise ValueError(f"no hand-sent request recorded for {label}")
+    validate_steps(entry, label, today=today)
+    opened = _waiting_since(entry["steps"])
+    if opened is None:
+        raise ValueError(f"no open clarification request to answer for {label}")
+    asked = entry.get("scopes")
+    if not asked:
+        raise ValueError(f"the scopes asked for are not recorded for {label}; cannot say which to keep")
+    try:
+        package = law.load_package(kit._jurisdiction(read_config(root)), law_base)
+    except ValueError:
+        raise ValueError("no law package: the request cannot be re-rendered") from None
+    titles = {s["scope_id"]: s["title"] for s in package["request_scopes"]}
+    if any(i not in titles for i in asked):
+        raise ValueError(f"a scope asked for by {label} is no longer in the law package")
+    if scopes is not None:
+        for scope_id in scopes:
+            if scope_id not in titles:
+                raise ValueError(f"--scope {scope_id} is not in the law package")
+            if scope_id not in asked:
+                raise ValueError(f"--scope {scope_id} was not asked for by the request sent to {label}")
+    keep = list(asked) if scopes is None else scopes
+    left_out = [i for i in asked if i not in keep]
+    path = root / "kit" / "agencies.json"
+    agency = next((a for a in kit._load_existing(path) if a.get("agency_id") == agency_id), None) \
+        if path.is_file() and not path.is_symlink() else None
+    if agency is None:
+        raise ValueError(f"{agency_id} is not in kit/agencies.json")
+    settings = kit.load_request_settings(root / "kit", today)
+    window = window or settings.get("date_range")
+    options = {k: settings[k] for k in ("requester_block", "fee_cap") if k in settings}
+    if window:
+        options["date_range"] = window
+    combined = kit.render_combined_request(package, agency, scopes=keep, **options)
+    name, (subject, first) = _clean_name(agency), draft_lines(entry)
+    command = " ".join(["python3 -B -m campaign_tool kit-response --directory", shlex.quote(str(root)),
+                        "--agency", shlex.quote(agency_id), *(["--request", shlex.quote(request)] if request != "main" else []),
+                        f"--date {today.isoformat()} --kind clarified"])
+    dropped = [f"- {titles[i]} ({i})" for i in left_out] or ["None — all originally asked scopes are retained."]
+    lines = [f"# Clarification reply draft: {name}{subject}", "",
+             "DRAFT — NOT SENT. Review before sending it yourself.", "",
+             f"To: {name}, records custodian", "", *([first, ""] if first else []),
+             f"On {entry['sent_on']} we sent a records request by {entry['channel']} to {name}.",
+             f"On {opened} you asked us to clarify or narrow this request. Our reply is the request below, as it now stands.",
+             "", "Check any narrowing against what was actually sent: the original date range is not stored.",
+             "", "## No longer requested", "", *dropped, "", "---", "", "## Request as clarified", "", combined, "---", "",
+             "After you have sent this reply yourself, record it (change --date if you send on another day):", "",
+             f"    {command}", "", "Draft only. Not legal advice. Nothing was sent or recorded."]
+    if package["status"] != "reviewed":
+        lines.append(f"Law package status: {package['status']} (not independently reviewed)")
+    target = _followup_target(root, f"{_stem(agency_id, request)}-clarify-{today.isoformat()}.md", replace)
+    if os.path.lexists(target) and not target.is_file():
+        raise ValueError(f"kit/followups/{target.name} is not a regular file")
+    kit._write_text(target, "\n".join(lines) + "\n")
+    return {"written": f"kit/followups/{target.name}", "open_since": opened, "kept": keep, "no_longer_requested": left_out,
+            "date_range": window, "law_package_status": package["status"], "record_after_sending": command}
+
+
+def _clean_name(agency):
+    return kit._clean_agency_name(agency["name"])
+
+
 def withheld(root):
     """Every recorded withheld basis, grouped by the Gov. Code section numbers found in its own text (read-only)."""
     rows = []
