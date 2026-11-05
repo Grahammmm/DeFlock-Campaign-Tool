@@ -33,10 +33,12 @@ REVIEWED_NOT_PUBLISHING = {
     "campaign_tool/content.py": "loads and validates content; its only writes are the scaffold helpers",
     "campaign_tool/content_events.py": "validates content/events.json (shared privacy lint on every text field); it writes nothing",
     "campaign_tool/content_init.py": "writes the starter content/ templates for the organizer to edit",
+    "campaign_tool/content_statements.py": "reads and validates content/statements.json (its lint runs in the build); it writes nothing",
     "campaign_tool/finding_packet.py": "private reviewer packet; refuses to write inside public/ or content/",
     "campaign_tool/image_meta.py": "reads image metadata; the writer is the copy step in site.py",
     "campaign_tool/kit_calendar.py": "private .ics under kit/, refused inside public/",
     "campaign_tool/recent.py": "private recent-activity report under kit/",
+    "campaign_tool/finding_search_log.py": "composes a private draft from a verified summary; the only write is findings._write_draft into private/drafts",
     "campaign_tool/search_log.py": "read-only private stdout aggregates of a local search log; writes nothing",
     "campaign_tool/setup_cmd.py": "writes the starter config",
     "campaign_tool/site_check.py": "reads the built tree",
@@ -67,9 +69,10 @@ MARK = re.compile(r"^(public|feed\.xml|agency-cards\.js|social|briefs|cards)$|^(
 USES = ("privacy_patterns", "flock_privacy")
 SKIP = re.compile(r"tools/(accept_|fc\d)|^campaign_tool/records/|^campaign_tool/(privacy_patterns|publish_paths)\.py$|^tools/(check_public_tree|ci_affected)")
 # What each site-driven entry is fed: the published field that reaches its artefact.
-PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name", "event.title", "event.venue",
-                         "event.description_md", "event.accessibility_note"), "atom-feed": ("finding.summary",),
-          "agency-feeds": ("finding.summary",), "corrections-feed": ("finding.summary",), "open-graph-meta": ("finding.title",),
+PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name", "statement.quote", "statement.context_note",
+                          "elsewhere.place", "elsewhere.body", "elsewhere.as_stated",
+                          "event.title", "event.venue", "event.description_md", "event.accessibility_note"), "atom-feed": ("finding.summary",),
+          "events-calendar": ("event.title", "event.venue"), "agency-feeds": ("finding.summary",), "corrections-feed": ("finding.summary",), "open-graph-meta": ("finding.title",),
           "agency-cards": ("site.county_profile.summary", "agency.profile.summary"), "data-exports": ("source.title", "agency.name"),
           "map-geojson": ("map.cameras.geojson", "map.city-boundaries.geojson", "map.county.geojson")}
 TEXT_ONLY = {"flock-page", "flock-publish-brief", "flock-publish-stage"}  # these tools refuse without printing the category per value
@@ -259,6 +262,24 @@ class Drivers:
             document = json.loads(original.read_text(encoding="utf-8"))
             document["features"][0].setdefault("properties", {})["how"] = value
             path.write_text(json.dumps(document), encoding="utf-8")
+            return
+        if kind == "elsewhere":  # DF1107-04: a one-entry content/elsewhere.json whose one field holds the value
+            entry = {"place": "Fictional City", "state": "ZZ", "body": "Fictional City Council", "decided_on": "2026-01-02",
+                     "kind": "paused", "as_stated": "Fictional statement.", "source_url": "https://records.example.test/item",
+                     "checked_on": "2026-01-03", key: "Text %s end (fictional)" % value}
+            (root / "content" / "elsewhere.json").write_text(json.dumps([entry]), encoding="utf-8")
+            return
+        if kind == "statement":  # DF1107-07: a roster body plus one statement whose public field carries the value
+            from datetime import date
+            day = date.today().isoformat()
+            row = {"agency_id": "ca-cedar-city-council", "official": "Rowan Example", "said_on": day, "quote": "Plain words.",
+                   "context": "meeting", "source_url": "https://cedar.example/minutes", "checked_on": day}
+            row[key] = "Text %s end" % value
+            (root / "content" / "officials.json").write_text(json.dumps({"schema_version": 1, "bodies": [{
+                "agency_id": "ca-cedar-city-council", "officials": [{
+                    "name": "Rowan Example", "role": "Member", "source_url": "https://cedar.example/council", "checked_on": day}]}]}),
+                encoding="utf-8")
+            (root / "content" / "statements.json").write_text(json.dumps([row]), encoding="utf-8")
             return
         if kind == "event":  # DF1107-08: one synthetic campaign event with the probed field replaced
             event = {"id": "forum", "title": "Teach-in", "starts_at": "2026-10-10T18:00:00Z", "ends_at": "2026-10-10T19:00:00Z",

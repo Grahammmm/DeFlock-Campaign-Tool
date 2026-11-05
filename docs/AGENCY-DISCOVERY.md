@@ -513,6 +513,27 @@ Atlas rows that match no seed agency; and every selected agency in `kit/agencies
 that no Atlas row matched. The last list is not a finding about use. `--json` prints the same report as JSON and
 nothing else. Use `kit-agency select` yourself if a lead is worth a request; this command never does.
 
+## Agencies that receive our agencies' data, as request leads (private, read-only)
+
+`kit-agency suggest --from-sharing --directory D` reads the recorded vendor-portal sharing lists
+(`content/agencies.json`, `profile.sharing`, see `content agency-sharing`) and lists the agencies they name as receivers
+as leads for requests of your own. **Receiving data is a reason to ask, not evidence of misuse**; it says nothing about
+access, transfer or compliance. Nothing is selected, written, fetched or sent.
+
+Matching: an in-state receiver is matched to the agency seed of the campaign's state (every county, not only yours) by
+name, equal after case, whitespace and one trailing period are normalized; accents, abbreviations, other punctuation and
+near spellings do not match. Exactly one seed agency makes a suggestion, with the seed name and id, the spellings the
+lists use and how many of the campaign's agencies list it (each counted once, not per list entry). Spellings that reach
+one seed agency are one suggestion. A name no seed agency has, or one that more than one seed agency has, is listed
+separately as written, with candidate ids and no recommendation. Federal (kind `federal` or state `US`), private and
+out-of-state listings are counted, not suggested or named; the counts are listings, not agencies.
+
+Each suggestion shows one of three states by agency id in `kit/agencies.json`: `selected`, `not selected`, or
+`not in kit`. `kit-agency select` only marks an agency already in the file, so a lead marked `not in kit` is added by a
+separate step you take yourself (`kit-agency add` or `import`); this command never adds or selects anything. The seed
+covers only the agencies it lists, so a receiver outside it appears under unmatched names. With no recorded sharing
+list the report says `No recorded sharing lists.`
+
 ## Count a saved ALPR search log (private, read-only)
 
 `kit-search-log --csv FILE --agency ID` counts a locally saved agency search log by month, organization and purpose category,

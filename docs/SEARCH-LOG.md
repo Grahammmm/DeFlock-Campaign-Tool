@@ -67,3 +67,39 @@ Output holds no file path, time of run, purpose text, user, case or plate value.
 At most 100 MiB, a regular file (no symlink, FIFO or directory), streamed. A file that changes while it is read is refused
 (best-effort detection, not a snapshot guarantee). An organization or state cell with an email, phone or plate pattern, or a control
 character, refuses the run. Errors never repeat cell contents or the path.
+
+## --against-sharing: names in the log against the recorded sharing list
+
+`kit-search-log --csv FILE --agency ID --against-sharing` adds two sections after the four above (and one `sharing` key to `--json`;
+`schema_version` stays 1). It reads the organizer-recorded list at `content/agencies.json:<agency_id>.profile.sharing`
+(see `content agency-sharing`); it never fetches a list, never falls back to another list, and writes nothing. Without the flag
+`content/agencies.json` is not opened and the output is unchanged.
+
+- **Searching organizations not on the recorded sharing list**: every log organization (as written, with its state and count) whose
+  name matches no recorded recipient name.
+- **Recorded sharing entries with no search in this log's date range**: every recorded recipient (name, state, kind as written) whose
+  name matches no searching organization in the log.
+- Names match only after casefolding, collapsing whitespace and removing one trailing period (the DF0237-04 rule). Accents,
+  abbreviations, suffixes, other punctuation and a second period are not normalized; there is no fuzzy matching. State and kind are
+  shown as context and never used to match, so the same name in two states matches by name only. An empty normalized name never matches.
+- The agency's own searches are left out only when the log's organization name equals the kit agency name character for character;
+  their count is `own_searches_excluded`. Rows without an organization are not mismatches; their count is `unattributed_searches`.
+- The log's first and last counted dates are printed beside the list's `checked_on`. Every section says
+  `Names differ between systems; a mismatch is a lead, not evidence`. No counted search in this log is not "never searched", skipped and
+  unattributed rows are not considered, and an old list is not a historical authorization ledger.
+- Refused by name (`--against-sharing`) with nothing printed: no recorded list for the agency, no organization column, no counted dated row,
+  or a recorded name, state or kind that fails the privacy lint (only the field and position are reported).
+
+```json
+"sharing": {
+  "warning": "Names differ between systems; a mismatch is a lead, not evidence",
+  "log_period": {"first_date": "2026-01-05", "last_date": "2026-03-01"},
+  "checked_on": "2026-02-01",
+  "own_searches_excluded": 0,
+  "unattributed_searches": 0,
+  "not_on_recorded_list": {"warning": "Names differ between systems; a mismatch is a lead, not evidence",
+                           "rows": [{"name": "as written in the log", "state": null, "count": 1}]},
+  "without_observed_search": {"warning": "Names differ between systems; a mismatch is a lead, not evidence",
+                              "rows": [{"name": "as written in the list", "state": "CA", "kind": "local"}]}
+}
+```

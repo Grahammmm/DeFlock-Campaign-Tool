@@ -13,7 +13,7 @@ Nothing is sent.
 import argparse
 import json
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from ..cli import read_config
@@ -64,6 +64,7 @@ def main(argv=None):
     origin = "manifest" if args.manifest else "content" if args.from_content else "template"
     root = Path(args.directory).expanduser().resolve()
     since_from = None
+    now = datetime.now(timezone.utc)  # DF1107-09: one instant for the manifest and the draft
     try:
         if args.site is not None and (Path(args.site).is_symlink() or not Path(args.site).is_dir()):
             raise ValueError(f"--site {args.site}: must be an existing folder, not a file or symlink")
@@ -81,12 +82,12 @@ def main(argv=None):
             previous = None if since else last_sent(root)
             if previous:
                 since, since_from = (date.fromisoformat(previous) + timedelta(days=1)).isoformat(), "record"
-            manifest = manifest_from_content(root, cfg, since and since + "T00:00:00+00:00")
+            manifest = manifest_from_content(root, cfg, since and since + "T00:00:00+00:00", now=now)
         else:
             manifest = {"schema_version": 1, "campaign": {"name": cfg["name"], "base_url": None,
                                                           "county_name": cfg["county"]},
                         "since": None, "findings": [], "meetings": []}
-        draft = build_draft(manifest, archive_public=args.from_content)
+        draft = build_draft(manifest, now, archive_public=args.from_content)
         paths = write_draft(root, draft)
     except (OSError, ValueError, DraftError, ContentError, KeyError) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)

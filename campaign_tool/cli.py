@@ -467,6 +467,16 @@ def readiness(root, campaign_id=None, out=None, contact_max_age_days=None, stale
 
 
 def kit(args, root):
+    if args.kit_action == "fee-reply":  # DF0237-07: the raw (unresolved) folder keeps symlink evidence for the writer
+        from .kit_fee_reply import NOTE, fee_reply
+        result = fee_reply(Path(args.directory).expanduser(), args.agency, request=args.request or "main",
+                           narrow=args.narrow, replace=args.replace)
+        flags = result.pop("review_flags")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(NOTE)
+        for note in flags:
+            print(note, file=sys.stderr)
+        return
     from .kit import build_kit
     summary = build_kit(root, online=args.online, include=args.include, scopes=args.scope)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
@@ -673,7 +683,9 @@ def meetings_cmd(args, root):
     if zone is None:
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
         raise SystemExit(2)
-    read_config(root)
+    cfg = read_config(root)
+    if args.client is None:
+        return _meetings_multi(args, root, cfg, zone)
     if args.from_json:
         opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
     elif args.online:
@@ -702,6 +714,33 @@ def meetings_cmd(args, root):
     if "added" in changes:
         report["changes"] = {k: len(changes[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
     print(json.dumps(dict(report, note="keyword hits only; verify the posted agenda before publishing"), indent=2))
+
+
+def _meetings_multi(args, root, cfg, zone):
+    """DF1507-08: no --client scans every campaign.json meeting_sources entry into one kit/meetings.json; exit 3 if any failed."""
+    from datetime import date
+    from .meetings import default_opener, fixture_opener, load_sources, scan_sources, write_meetings
+    if args.platform != "legistar" or args.matters or args.from_xml or args.view_id is not None or args.all_events:
+        raise ValueError("without --client only the Legistar events in meeting_sources are scanned; pass --client for other options")
+    sources = load_sources(cfg)
+    if not sources:
+        raise ValueError("add meeting_sources to campaign.json or pass --client")
+    if not (args.from_json or args.online):
+        raise ValueError("meetings needs --online to query the agenda platform, or a recorded response (--from-json)")
+    opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8"))) if args.from_json else default_opener
+    since = date.fromisoformat(args.since) if args.since else None
+    previous = _read_previous(root / "kit" / "meetings.json")
+    meetings, sources_report, changes = scan_sources(sources, lambda client: opener, since, zone, previous)
+    target = write_meetings(root, meetings, "multi", changes, zone=zone, source="legistar",
+                            extra={"clients": sorted(s["client"] for s in sources), "sources": sources_report})
+    counts = {c: ({k: len(v[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
+                  if "added" in v else {"previous": v["previous"]}) for c, v in changes.items()}
+    failed = [s["client"] for s in sources_report if s["status"] == "failed"]
+    print(json.dumps({"client": "multi", "platform": "legistar", "matched_meetings": len(meetings), "written": str(target),
+                      "sources": sources_report, "changes": counts, "failed_sources": failed,
+                      "note": "keyword hits only; verify the posted agenda before publishing"}, indent=2))
+    if failed:
+        sys.exit(3)
 
 
 def _read_previous(path):
@@ -855,7 +894,15 @@ def main():
     readiness_p.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified contacts checked over N days ago (at least 1)")
     readiness_p.add_argument("--stale-days", type=int, metavar="N", help="Name inputs dated over N days ago (1-3650)")
     kit_cmd = commands.add_parser("kit", help="Suggest agencies and draft records requests offline")
+    kit_cmd.add_argument("kit_action", nargs="?", choices=["fee-reply"],
+                         help="fee-reply: a private never-sent reply draft to the newest recorded fee estimate "
+                              "(needs --agency; optional --request, --narrow, --replace)")
     kit_cmd.add_argument("--directory", required=True)
+    kit_cmd.add_argument("--agency", default=None, help="With fee-reply: the agency id")
+    kit_cmd.add_argument("--request", default=None, help="With fee-reply: which sent request (default main)")
+    kit_cmd.add_argument("--narrow", default=None, metavar="T",
+                         help="With fee-reply: ask whether this narrower scope (1-300 plain-text characters) would change the estimate")
+    kit_cmd.add_argument("--replace", action="store_true", help="With fee-reply: rewrite an existing draft")
     kit_cmd.add_argument("--online", action="store_true",
                          help="Fall back to the Census geocoder when the seed cannot resolve the location")
     kit_cmd.add_argument("--include", action="append",
@@ -952,13 +999,13 @@ def main():
         list_p.add_argument(flag, type=keep_count(KEEP_LIMITS[key]), help=f"Newest per {period}, most recent N (0-{KEEP_LIMITS[key]})")
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
-    meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
-    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus"), default="legistar", help="Agenda platform (default legistar)")
+    meetings_p.add_argument("--client", help="Legistar client slug (the part after webapi.legistar.com/v1/); the <name>.granicus.com host for granicus; the AgendaCenter host for agendacenter; omit to scan every campaign.json meeting_sources entry")
+    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus", "agendacenter"), default="legistar", help="Agenda platform (default legistar)")
     meetings_p.add_argument("--matters", action="store_true", help="List ALPR keyword matters (legislation, contracts) instead of events; writes kit/matters.json (Legistar only)")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--view-id", type=int, help="Granicus view_id (--platform granicus; --client is then the <name>.granicus.com host)")
-    meetings_p.add_argument("--from-xml", help="Saved Granicus agenda RSS feed (offline)")
-    meetings_p.add_argument("--all-events", action="store_true", help="Also keep Granicus events with no text to scan, marked not_scanned")
+    meetings_p.add_argument("--from-xml", help="Saved Granicus or AgendaCenter agenda RSS feed (offline)")
+    meetings_p.add_argument("--all-events", action="store_true", help="Also keep Granicus/AgendaCenter events with no text to scan, marked not_scanned")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
     meetings_p.add_argument("--tz", default="America/Los_Angeles", help="IANA time zone for starts_at (default America/Los_Angeles)")
@@ -1056,6 +1103,12 @@ def main():
     atlas_p.add_argument("--csv", required=True, help="A saved Atlas of Surveillance export (UTF-8, at most 10 MiB)")
     atlas_p.add_argument("--directory", required=True)
     atlas_p.add_argument("--json", action="store_true", dest="as_json", help="Print the report as JSON")
+    suggest_text = ("Suggest in-state agencies named on recorded sharing lists as request leads (private, read-only). "
+                    "Receiving data is a reason to ask, not evidence of misuse.")
+    suggest_p = agency_cmds.add_parser("suggest", help=suggest_text, description=suggest_text, allow_abbrev=False)
+    suggest_p.add_argument("--from-sharing", action="store_true", required=True, dest="from_sharing",
+                           help="Use the recorded DF1207-08 sharing lists (required)")
+    suggest_p.add_argument("--directory", required=True)
     from .kit_track import CHANNELS as kit_track_channels
     sent_p = commands.add_parser("kit-sent", help="Record a request the organizer sent by hand in kit/sent.json; sends nothing")
     for flag in ("--directory", "--agency", "--date"):
@@ -1240,6 +1293,8 @@ def main():
     search_log_p.add_argument("--agency", required=True, help="An agency_id in kit/agencies.json")
     search_log_p.add_argument("--json", dest="as_json", action="store_true", help="One JSON document instead of text")
     search_log_p.add_argument("--categories", help="Your own purpose term lists (JSON); replaces the default terms")
+    search_log_p.add_argument("--against-sharing", action="store_true", help="Also compare organization names with the agency's "
+                              "recorded sharing list in content/agencies.json (names only; a mismatch is a lead, not evidence)")
     for role in ("time", "reason", "org", "state"):
         search_log_p.add_argument(f"--{role}-col", metavar="HEADER", help=f"Exact header of the {role} column")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
@@ -1425,6 +1480,9 @@ def main():
     new_p.add_argument("--title", help="Required unless --gap")
     new_p.add_argument("--source", action="append", default=[], metavar="PREFIX", help="12-64 hex of a library sha256; repeatable")
     new_p.add_argument("--author")
+    new_p.add_argument("--search-log", metavar="SUMMARY.json", help="With --agency: a private draft of the counts in a "
+                       "kit-search-log --json summary, after the ingested, registered record is re-read and every count "
+                       "matches")
     new_p.add_argument("--gap", metavar="AGENCY", help="Draft an information_gap from this agency's denied or closed request "
                        "that produced no records (dates, stated basis and library correspondence prefilled)")
     new_p.add_argument("--request", help="With --gap: the request name (default main)")
@@ -1521,14 +1579,31 @@ def main():
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
         diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "finding_command", None) == "new":
-        if args.gap is not None and (args.agency is not None or args.source):
+        if args.search_log is not None:
+            clash = [flag for flag, given in (("--gap", args.gap is not None), ("--request", args.request is not None),
+                                              ("--source", bool(args.source)), ("--title", args.title is not None)) if given]
+            if clash:
+                new_p.error(f"--search-log cannot be combined with {clash[0]}")
+            if args.agency is None:
+                new_p.error("--search-log requires --agency")
+        elif args.gap is not None and (args.agency is not None or args.source):
             new_p.error("--gap takes the agency from the request; it cannot be combined with --agency or --source")
-        if args.gap is None and args.request is not None:
+        if args.gap is None and args.request is not None and args.search_log is None:
             new_p.error("--request is only for --gap")
-        if args.gap is None and (args.agency is None or args.title is None):
+        if args.gap is None and args.search_log is None and (args.agency is None or args.title is None):
             new_p.error("the following arguments are required: " + ", ".join(
                 flag for flag, value in (("--agency", args.agency), ("--title", args.title)) if value is None)
                 + " (or --gap AGENCY)")
+    if args.command == "kit":
+        fee_only = [f for f, v in (("--agency", args.agency), ("--request", args.request), ("--narrow", args.narrow),
+                                   ("--replace", args.replace)) if v not in (None, False)]
+        if args.kit_action == "fee-reply":
+            if args.agency is None:
+                kit_cmd.error("fee-reply requires --agency")
+            if args.online or args.include or args.scope:
+                kit_cmd.error("fee-reply cannot be combined with --online, --include or --scope")
+        elif fee_only:
+            kit_cmd.error(", ".join(fee_only) + " only work with fee-reply")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
     if getattr(args, "stale_days", None) is not None and not 1 <= args.stale_days <= 3650:
@@ -1783,7 +1858,15 @@ def main():
         elif args.command == "finding" and args.finding_command == "new":
             from . import findings
             read_config(root)
-            if args.gap is not None:
+            if args.search_log is not None:
+                from .finding_search_log import draft_from_summary
+                try:
+                    result = draft_from_summary(root, args.agency, args.search_log, author=args.author)
+                except (OSError, ValueError) as exc:
+                    sys.exit(fixes.emit(exc) or 2)
+                print(json.dumps({key: value for key, value in result.items() if key != "source"}))
+                print(f"cited: Search log {result['source']}")
+            elif args.gap is not None:
                 result = findings.new_gap_draft(root, args.gap, args.request or "main", args.title, author=args.author)
                 print(json.dumps({key: value for key, value in result.items() if key != "blockers"}))
                 for prefix in result["blockers"]:
@@ -1928,6 +2011,9 @@ def main():
             from . import kit_atlas
             report = kit_atlas.compare_atlas(root, Path(args.csv).expanduser())
             print(json.dumps(report, indent=2, ensure_ascii=False) if args.as_json else kit_atlas.render_atlas(report))
+        elif args.command == "kit-agency" and args.agency_command == "suggest":
+            from . import kit_sharing_suggest
+            print(kit_sharing_suggest.suggest_from_sharing(root))
         elif args.command == "kit-agency":
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)

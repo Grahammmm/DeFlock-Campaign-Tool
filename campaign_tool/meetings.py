@@ -11,6 +11,7 @@ fetched unless the caller passes ``--online``.
 workspace generator: a two-minute public comment, three asks and a source list
 built from published findings only, in the ``markdown_lite`` subset.
 """
+import hashlib
 import json
 import os
 import re
@@ -226,6 +227,20 @@ def read_feed_file(path):
     return data
 
 
+def parse_feed(data, label="feed"):
+    """Root element of an RSS feed; DOCTYPE/ENTITY declarations (any encoding) and malformed XML are refused."""
+    def refuse(*_):
+        raise MeetingsError(f"{label}: DOCTYPE and ENTITY declarations are refused")
+    # Pre-pass with expat in any encoding (UTF-16 included): a DTD or entity declaration is refused before ElementTree sees it.
+    scan = expat.ParserCreate()
+    scan.StartDoctypeDeclHandler = scan.EntityDeclHandler = refuse
+    try:
+        scan.Parse(data, True)
+        return ET.fromstring(data)
+    except (expat.ExpatError, ET.ParseError) as exc:
+        raise MeetingsError(f"{label}: not well-formed XML ({exc})") from None
+
+
 class GranicusClient:
     """Granicus ViewPublisher agenda RSS (``https://<host>/ViewPublisherRSS.php?view_id=<n>&mode=agendas``), Legistar-shaped."""
     source = "granicus"
@@ -259,18 +274,7 @@ class GranicusClient:
     def events(self, since=None, top=MAX_EVENTS):
         url = f"https://{self.host}/ViewPublisherRSS.php?view_id={self.view_id}&mode=agendas"
         since = since or date.today()
-        data = self.opener(url)
-
-        def refuse(*_):
-            raise MeetingsError(f"{self.label}: DOCTYPE and ENTITY declarations are refused")
-        # Pre-pass with expat in any encoding (UTF-16 included): a DTD or entity declaration is refused before ElementTree sees it.
-        scan = expat.ParserCreate()
-        scan.StartDoctypeDeclHandler = scan.EntityDeclHandler = refuse
-        try:
-            scan.Parse(data, True)
-            root = ET.fromstring(data)
-        except (expat.ExpatError, ET.ParseError) as exc:
-            raise MeetingsError(f"{self.label}: not well-formed XML ({exc})") from None
+        root = parse_feed(self.opener(url), self.label)
         events = []
         for item in root.iter("item"):
             def field(name):
@@ -304,15 +308,108 @@ class GranicusClient:
         return self._scanned.get(event_id, False)
 
 
+AGENDACENTER_HOST = re.compile(r"[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){1,5}")
+AGENDACENTER_DATE = re.compile(r"_(\d{2})(\d{2})(\d{4})-")
+AGENDACENTER_ID = re.compile(r"-(\d{1,12})/?$")
+
+
+class AgendaCenterClient:
+    """CivicPlus AgendaCenter public RSS (``https://<host>/RSSFeed.aspx?ModID=65&CID=All-0``), Legistar-shaped.
+
+    Only the feed text (title, category, description) is scanned; agenda PDF links are recorded, never fetched.
+    """
+    source = "agendacenter"
+
+    def __init__(self, host, opener=None, label="feed"):
+        # 2-6 lowercase DNS labels; an all-digit last label is an IP literal; ports, userinfo and paths never match.
+        if (not isinstance(host, str) or not AGENDACENTER_HOST.fullmatch(host) or len(host) > 253
+                or host.rsplit(".", 1)[1].isdigit()):
+            raise MeetingsError("AgendaCenter host must be a lowercase DNS name (2-6 labels), no IP, port, user or path")
+        self.host, self.label = host, label
+        self.client = host.split(".")[0]
+        self.opener = opener or default_opener
+        self.cut = 0
+        self.dropped_no_date = 0
+        self._scanned = {}
+        self._events = {}
+
+    @staticmethod
+    def _date(link, pub):
+        m = AGENDACENTER_DATE.search(urllib.parse.urlsplit(link).path)
+        if m:
+            try:
+                return date(int(m.group(3)), int(m.group(1)), int(m.group(2))).isoformat()
+            except ValueError:
+                pass  # an impossible link date falls back to pubDate
+        try:
+            if pub:
+                return parsedate_to_datetime(pub).date().isoformat()
+        except (TypeError, ValueError, IndexError):
+            pass
+        return None
+
+    def events(self, since=None, top=MAX_EVENTS):
+        since = since or date.today()
+        root = parse_feed(self.opener(f"https://{self.host}/RSSFeed.aspx?ModID=65&CID=All-0"), self.label)
+        events, seen = [], set()
+        self.dropped_no_date = 0
+        for item in root.iter("item"):
+            def field(name):
+                node = item.find(name)
+                return " ".join((node.text or "").split()) if node is not None else ""
+            title, link, category = field("title"), field("link"), field("category")
+            day = self._date(link, field("pubDate"))
+            if not day:
+                self.dropped_no_date += 1
+                continue
+            if day < since.isoformat():
+                continue
+            m = AGENDACENTER_ID.search(urllib.parse.urlsplit(link).path)
+            ident = int(m.group(1)) if m else int(hashlib.sha256((link or title).encode("utf-8")).hexdigest()[:12], 16)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            parts = urllib.parse.urlsplit(link)
+            ok = (parts.scheme == "https" and (parts.hostname or "").lower() == self.host and not parts.username
+                  and parts.path.startswith("/AgendaCenter/"))
+            description = _clean(re.sub(r"<[^>]*>", " ", field("description")))
+            self._scanned[ident] = bool(description)
+            body = category or re.split(r" [-\u2013] ", title, maxsplit=1)[0]
+            events.append({"EventId": ident, "EventBodyName": body, "EventDate": day, "EventComment": title,
+                           "EventInSiteURL": link if ok else None, "_title": title, "_description": description})
+        events.sort(key=lambda e: (e["EventDate"], e["EventId"]))
+        self.cut = max(0, len(events) - min(top, MAX_EVENTS))
+        self._events = {e["EventId"]: e for e in events}
+        return events[:min(top, MAX_EVENTS)]
+
+    def event_items(self, event_id):
+        e = self._events.get(event_id, {})
+        if not e.get("_description"):
+            return []  # nothing but a title: not scanned, never a match
+        return [{"EventItemTitle": e["_title"], "EventItemMatterName": e["_description"]}]
+
+    def scanned(self, event_id):
+        return self._scanned.get(event_id, False)
+
+
 def feed_opener(path):
     return lambda url: read_feed_file(path)
 
 
 def make_client(args, opener):
     """The agenda-platform client for the ``meetings`` command; refuses flags that belong to another platform."""
-    granicus = args.platform == "granicus"
-    if granicus and (args.from_json or (args.online and args.from_xml)) or (args.from_xml or args.view_id is not None or args.all_events) and not granicus:
-        raise MeetingsError("--view-id, --from-xml and --all-events go with --platform granicus (which reads --online or --from-xml, not --from-json)")
+    granicus, center = args.platform == "granicus", args.platform == "agendacenter"
+    feed = granicus or center
+    if (feed and (args.from_json or (args.online and args.from_xml))
+            or (args.from_xml or args.all_events) and not feed
+            or args.view_id is not None and not granicus):
+        raise MeetingsError("--from-xml and --all-events go with --platform granicus or agendacenter (which read --online or --from-xml, not --from-json); "
+                            "--view-id goes with granicus")
+    if center:
+        client = AgendaCenterClient(args.client, opener=opener, label=args.from_xml or "feed")
+        client.report_extra = lambda found: {"not_scanned": sum(bool(m.get("not_scanned")) for m in found),
+                                             "cut_by_item_cap": client.cut, "dropped_no_date": client.dropped_no_date}
+        return client
     if granicus:
         client = GranicusClient(args.client, args.view_id, opener=opener, label=args.from_xml or "feed")
         client.report_extra = lambda found: {"not_scanned": sum(bool(m.get("not_scanned")) for m in found), "cut_by_item_cap": client.cut}
@@ -514,7 +611,74 @@ def compare_meetings(previous_doc, meetings, client, since):
     }
 
 
-def write_meetings(root, meetings, client_name, changes=None, zone=None, source="legistar"):
+MAX_SOURCES = 12
+SOURCE_KEYS = {"platform", "client", "label"}
+
+
+def load_sources(cfg):
+    """DF1507-08: validated ``campaign.json`` ``meeting_sources`` (1-12 Legistar bodies); [] when absent. ValueError names the index."""
+    raw = cfg.get("meeting_sources")
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_SOURCES:
+        raise ValueError(f"meeting_sources: give 1 to {MAX_SOURCES} entries")
+    out, seen = [], set()
+    for i, entry in enumerate(raw):
+        where = f"meeting_sources[{i}]"
+        if not isinstance(entry, dict) or set(entry) - SOURCE_KEYS or not {"platform", "client"} <= set(entry):
+            raise ValueError(f"{where}: use only platform, client and label")
+        client, label = entry["client"], entry.get("label", entry["client"])
+        if entry["platform"] != "legistar":
+            raise ValueError(f"{where}: platform must be legistar")
+        if not isinstance(client, str) or not CLIENT.fullmatch(client):
+            raise ValueError(f"{where}: client must be a short lowercase slug")
+        if client in seen:
+            raise ValueError(f"{where}: duplicate client {client}")
+        if not isinstance(label, str) or not label.strip() or len(label) > 80 or _plain(label) != label:
+            raise ValueError(f"{where}: label must be plain text of 1 to 80 characters (no < or >)")
+        seen.add(client)
+        out.append({"platform": "legistar", "client": client, "label": label.strip()})
+    return out
+
+
+def _previous_subset(previous, client):
+    """The previous document's meetings for ``client`` as a single-client document; None when it did not cover that client."""
+    if not isinstance(previous, dict) or not isinstance(previous.get("meetings"), list):
+        return previous  # None / "unreadable" / malformed: compare_meetings names it
+    prior_client = previous.get("client")
+    if prior_client == client:
+        return previous
+    if prior_client != "multi" or client not in (previous.get("clients") or []):
+        return None
+    return dict(previous, client=client,
+                meetings=[m for m in previous["meetings"] if isinstance(m, dict) and m.get("client") == client])
+
+
+def scan_sources(sources, opener_for, since, zone, previous=None):
+    """Scan every source on its own: ``(meetings, report, changes)``. A failing source keeps its previous meetings
+    (marked ``stale``) and is named in ``report``; ``changes`` covers the sources that succeeded."""
+    since = since or date.today()
+    meetings, report, changes = [], [], {}
+    for source in sources:
+        client, label = source["client"], source["label"]
+        subset = _previous_subset(previous, client)
+        try:
+            found = relevant_events(LegistarClient(client, opener=opener_for(client)), since=since, zone=zone)
+        except Exception as exc:  # network, JSON, a missing recorded response: this source only
+            old = subset.get("meetings") if isinstance(subset, dict) and subset.get("schema_version") == 1 else None
+            kept = [dict(m, client=client, source_label=label, stale=True) for m in old or [] if isinstance(m, dict)]
+            report.append({"client": client, "label": label, "status": "failed", "kept_previous_meetings": len(kept),
+                           "error": f"{type(exc).__name__}: {exc}"[:120]})
+            meetings.extend(kept)
+            continue
+        changes[client] = compare_meetings(subset, found, client, since)
+        report.append({"client": client, "label": label, "status": "ok", "meetings": len(found)})
+        meetings.extend(dict(m, client=client, source_label=label) for m in found)
+    meetings.sort(key=lambda m: (str(m.get("starts_at")), str(m.get("id"))))
+    return meetings, report, changes
+
+
+def write_meetings(root, meetings, client_name, changes=None, zone=None, source="legistar", extra=None):
     kit = root / "kit"
     _kit_folder(kit, mode=0o700)
     target = kit / "meetings.json"
@@ -526,6 +690,7 @@ def write_meetings(root, meetings, client_name, changes=None, zone=None, source=
                         "Verify the posted agenda before publishing a meeting."}
     if changes is not None:
         document["changes"] = changes
+    document.update(extra or {})
     _write_text(target, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
     return target
 

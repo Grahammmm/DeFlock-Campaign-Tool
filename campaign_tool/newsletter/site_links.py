@@ -8,7 +8,7 @@ nothing is ever fetched. Stdlib only.
 """
 from html.parser import HTMLParser
 
-from .draft import _PATH
+from .draft import _PATH, EVENT_PATH
 
 
 class _Anchors(HTMLParser):
@@ -35,7 +35,7 @@ def _split(draft, base_url):
     if not base:
         for token in (draft.get("text") or "").split():
             token = token.strip("()")
-            if _PATH.fullmatch(token):
+            if _PATH.fullmatch(token) or EVENT_PATH.fullmatch(token):
                 site.add(token)
     return sorted(site), sorted(external)
 

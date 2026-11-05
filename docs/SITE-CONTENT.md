@@ -127,6 +127,12 @@ Review receipts are not evaluated by the build; the organizer's publication
 approval (see [CONTRACTS.md](CONTRACTS.md), approval card `publish_finding`)
 remains the gate that moves a finding into `content/findings/`.
 
+A private draft of search-log counts: `finding new --directory D --agency ID --search-log SUMMARY.json` (the `kit-search-log --json`
+output, see [SEARCH-LOG.md](SEARCH-LOG.md)) writes a `private/drafts/` skeleton only when the summary's input hash is an ingested
+record registered in `content/sources.json` for that agency and a fresh read of it reproduces every count; its table holds
+aggregates only and the title, summary, classification and confidence stay `[EDIT ME: ...]`. It passes the same review and
+publish gates as any draft ([FINDINGS-GUIDE.md](FINDINGS-GUIDE.md)).
+
 Optional `also_agency_ids` (DF1952-07): a list of 1 to 10 distinct agency ids, none equal to `agency_id`, for a finding that
 is about several agencies. It needs a non-empty primary `agency_id` and every id (primary included) must be one of the
 campaign's agencies, or `load_finding`, `build`, `content-check`, `finding publish` and `finding correct` refuse it by
@@ -602,6 +608,25 @@ it: re-check and update it. The body's agency page and each meeting page with it
 `agency_id` show a "Who decides" list (names linked to `profile_url` when given) with the
 newest `checked_on` and its source link. Labels: `officials.*`.
 
+`content/statements.json` (optional, never fetched) records what a listed decision maker said in public: a JSON
+array of 0 to 200 rows, newest shown first. Each row has `agency_id` (the body's id in `officials.json`, not its
+display name), `official` (the name exactly as stored there, matched letter for letter, case and spaces included, only
+within that body), `said_on` and `checked_on` (real `YYYY-MM-DD` days; `said_on` <= `checked_on` <= the build date; an
+old statement is fine and the 365-day limit of `officials.json` does not apply), `quote` (1 to 400 characters copied
+exactly as the official source has it: nothing is trimmed, shortened, merged, paraphrased or rendered as Markdown),
+`context` (`meeting`, `press_release`, `newsletter`, `interview` or `other`) and `source_url` (an https address of the
+official minutes, video or press release; only its form is checked, you verify it is official and re-check it
+yourself). Optional: `recording_time` (`H:MM:SS`, shown beside the source as given) and `context_note` (1 to 200
+characters of plain text, no angle brackets, shown separately as "Campaign context"). Unknown fields, explicit `null`
+values, an unlisted official or body and a future date are refused by file, row and field; the refusal never repeats
+the quote. Email, phone and plate patterns are refused wherever they appear, in a quote too: choose other content,
+the tool never edits a quote to publish it. The legal-claim guard only flags a `context_note` as `review-required`
+(on stderr, from the build notes and `content-check`); it never changes success. With no file, or `[]`, no section
+appears and every page is byte-identical. The body's agency page shows "What decision makers have said" after
+"Who decides" and the votes; a body with statements but no findings or sources still gets its page. The quote is
+written with `white-space: pre-wrap`; a strict `style-src 'self'` policy may ignore that inline style, in which case the
+text is still complete and exact. Labels: `statements.*`.
+
 ### Adding a source record
 
 ```
@@ -817,6 +842,28 @@ not mean the outlet endorses the campaign.** Typing the headline exactly as publ
   `press.news`. The Spanish values in `examples/labels/es.json` are a machine-made draft like the rest of that file.
   Default examples and `content init` do not enable coverage.
 
+### Decisions elsewhere (`content/elsewhere.json`, optional)
+
+Decisions other governments have made, kept apart from this campaign's own agencies and findings. The file is a JSON array of 1 to 100 objects (a present empty array is refused, it is not an off switch); `content init` does not create it and the tool never fills it. Every key below is required except `news_url`:
+
+```json
+[{"place": "Springfield", "state": "OR", "body": "Springfield City Council", "decided_on": "2026-03-10",
+  "kind": "paused", "as_stated": "The council voted to pause the contract.",
+  "source_url": "https://records.example.test/minutes/2026-03-10", "news_url": "https://news.example.test/story",
+  "checked_on": "2026-09-15"}]
+```
+
+- `place`, `body` and `as_stated`: trimmed plain single-line text of 1 to 200 characters, no angle brackets or control characters. Write the place and body as the official source names them and `as_stated` as that source states the decision; nothing is abbreviated, translated, inferred or Markdown-rendered. `state` is two uppercase ASCII letters and is never inferred from the place.
+- `kind` is one of `ended_contract`, `paused`, `declined`, `adopted_ordinance`, `restricted_sharing`, `audit_ordered`, `other`.
+- `decided_on` and `checked_on` are real `YYYY-MM-DD` dates, `decided_on` not after `checked_on` and `checked_on` not after the build day. `checked_on` is your attestation that you re-read the official record that day; the tool never fetches a URL and cannot tell whether a host is official. Re-check the source before each publication.
+- `source_url` is the deciding body's own official record (`https://`, no user name); `news_url` is optional supplementary coverage and never replaces it.
+- Two entries with the same literal `place`, `body`, `decided_on` and `kind` are refused, naming both indexes (`elsewhere.json[1]: duplicate of elsewhere.json[0] ...`). A different kind or date is a different decision. Entries need not exist in `agencies.json`.
+- The file keeps your order in the content model; only the page sorts, on a copy: groups in the order of the kinds above (empty groups omitted), newest `decided_on` first, then place, body, state and source URL. There is no count, rank or total, and the page says "Decisions elsewhere are not decisions by this campaign's agencies."
+- `build` refuses the first problem and leaves the last good `public/` untouched; `content-check` lists every problem as `elsewhere.json[N].field: ...`. A symlink (even dangling), folder, FIFO, oversize file (2 MiB), invalid UTF-8 or JSON is refused, not skipped. An email, phone or plate pattern in a text field refuses the build by field name, without printing the value.
+- Legal-claim guard: each `as_stated` is scanned like a finding. A flagged one prints `review-required: elsewhere.json[N].as_stated: legal-claim wording (rules)` (build on stdout, `content-check` on stderr), never the text, and never changes success or the exit code; it asks a human to read it before publishing.
+- `elsewhere.html` joins the footer (last paragraph) and, with `base_url`, `sitemap.xml`. `elsewhere` is a reserved page and finding slug and `elsewhere.html` a reserved top-level name with or without the file. Delete the file and rebuild and the page, link and sitemap entry disappear; every other file is byte-identical to a build that never had it.
+- Labels: `elsewhere.title`, `elsewhere.description`, `elsewhere.note`, `elsewhere.verified`, `elsewhere.decided` and `elsewhere.checked` (`{date}`), `elsewhere.source`, `elsewhere.news`, `elsewhere.kind.<kind>` and `footer.elsewhere`; `examples/labels/es.json` carries a machine-made draft. Source text and place or body names are not translated.
+
 ### Newsletter archive (`content/newsletters/<YYYY-MM-DD>.json`, optional)
 
 Written by `newsletter archive --date D --publish` (see NEWSLETTER.md); exactly `{"schema_version": 1, "sent_on", "title",
@@ -956,6 +1003,14 @@ JSON array of 0 to 50 objects, kept in the order written:
   byte-identical. Rebuild after every change; deleting the file removes the page on the next build.
 - `build` and `content-check` use the same reader, so they refuse the same things: a duplicate `id`, an `ends_at` before
   `starts_at` and a non-https `url` are each named by field and position (`events.json[N].field`).
+- `events.ics` (DF1107-10): with a non-empty events file the build also writes `events.ics`, an iCalendar feed of the
+  upcoming events only (same cutoff as the page, so an all-past file gives a valid empty calendar), written with the same
+  escaping, 75-octet folding and UTC rules as `meetings.ics`. Each event is `UID:event-<id>@<host>` (host of `base_url`,
+  or `deflock-campaign.invalid` without one), `DTSTAMP` the build day at 00:00:00Z, `DTSTART` and `DTEND` converted from
+  their recorded offsets to UTC, `SUMMARY` the title, `LOCATION` the venue (or `Online`), and `URL` the `events.html#event-<id>`
+  anchor (path-only without `base_url`). Same inputs and build day give identical bytes. `events.html` links it with
+  `rel="alternate"` and a visible subscribe link, and the footer feed line names it. Without events there is no feed or link;
+  `events.ics` is a reserved top-level name either way. `meetings.ics` is unchanged.
 
 ## Regular meeting schedules (`content/body-schedules.json`, optional)
 
@@ -1017,6 +1072,7 @@ section lists 500 rows, then "and N more on the map"; linked from the map fallba
 `faq.html` (only with a `content/faq.json`: see FAQ),
 `events.html` (only with a non-empty `content/events.json`: see Campaign events),
 `news.html` (only with a `content/coverage.json`: see In the news),
+`elsewhere.html` (only with a `content/elsewhere.json`: see Decisions elsewhere),
 `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or

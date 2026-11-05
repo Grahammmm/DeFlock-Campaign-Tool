@@ -142,6 +142,12 @@ in date order. A linked, non-regular or malformed `kit/newsletter-sent.json` is 
 explicit `--since` wins. The draft JSON output names where the window came from in `since_from`:
 `"record"`, `"flag"` or `null`. This is the offline counterpart of the hosted `campaign_sent` event.
 
+### Campaign events (DF1107-09)
+
+With `--from-content`, events from `content/events.json` (DF1107-08) get a `## Campaign events` section after the upcoming meetings. An event is listed when its start instant is at or after both the draft time and `--since` (or the day after the last recorded send), and at most 30 days after the draft time; both ends are inclusive. Events already started, past or later than 30 days are left out; end times play no part. Entries are soonest first (then by id), at most 50, each with title, date and time in the event's own UTC offset (`Wed Mar 10, 2027 19:00 UTC-08:00`), its venue or `Online`, and a link to its `events.html#event-<id>` anchor (absolute with `base_url`, otherwise the plain path). Descriptions, accessibility notes and registration links are never copied. HTML, text and the public archive carry the same entries.
+
+With no events file, an empty file or no event starting at or after the draft time, the draft is byte-identical to one without this feature. When events start later than the window allows, the draft is still unchanged but the JSON `excluded.events_outside_window` names how many were left out; when the section appears the count also includes past events and `counts.events` holds the listed total. `newsletter --site PUBLIC` checks that `events.html` and each listed anchor exist.
+
 ### Kept issues and the local public archive (DF1952-09)
 
 `newsletter sent --date D` and `--record-sent D` are one writer. Besides the record it keeps the draft's exact bytes as

@@ -30,7 +30,8 @@ from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_
                       SHARING_RULE_ID, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
-from .content_events import build_cutoff, partition as partition_events
+from .content_statements import newest_first as newest_statements
+from .content_events import build_cutoff, parse_moment, partition as partition_events
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
@@ -52,7 +53,7 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "data.html", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html", "events.html"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html", "elsewhere.html", "events.html", "events.ics"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
@@ -635,7 +636,8 @@ class Site:
         self.multi_agency = any(f.get("also_agency_ids") for f in model["findings"])
         qualifying = ({aid for f in model["findings"] for aid in finding_agency_ids(f)}
                       | {s["agency_id"] for s in model["sources"]}
-                      | {a["agency_id"] for a in model["agencies"] if a.get("actions")})  # DF0237-01: a recorded action
+                      | {a["agency_id"] for a in model["agencies"] if a.get("actions")}  # DF0237-01: a recorded action
+                      | {row["agency_id"] for row in model.get("statements", ())})  # DF1107-07: a recorded statement
         self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
                               for a in model["agencies"] if a["agency_id"] in qualifying}
         self._record_pages = self._catalogue_record_pages(model["sources"])  # DF1103-11: refuses a shared 12-char prefix
@@ -643,6 +645,7 @@ class Site:
         # DF1952-04: content/glossary.json; an absent file or an empty terms list switches every glossary output off.
         self.glossary = model.get("glossary") if (model.get("glossary") or {}).get("terms") else None
         self.faq = model.get("faq") or None  # DF0022-01: content/faq.json entries; an absent file switches every FAQ output off
+        self.elsewhere = model.get("elsewhere") or None  # DF1107-04: content/elsewhere.json entries; an absent file switches every output off
         # DF1107-08: content/events.json; no file or [] switches every events output off. Start-based split at the build day (UTC).
         self.events = model.get("events") or None
         self.events_upcoming, self.events_past = partition_events(self.events or (), build_cutoff(self.today))
@@ -847,6 +850,7 @@ class Site:
         parts.append(f'<p><a href="/data.html">{self.t("footer.data")}</a></p>')  # DF2207-12: before the final links paragraph
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         meetings_feed = f' · <a href="/meetings.xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else ""  # DF1103-10
+        meetings_feed += f' · <a href="/events.ics">{self.t("footer.events_calendar")}</a>' if self.events else ""  # DF1107-10
         corrections_feed = f' · <a href="/corrections.xml">{self.t("corrections.feed")}</a>' if self.correction_entries() else ""  # DF0237-09
         archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
         parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a>{meetings_feed} · <a href="/search.html">{self.t("footer.search")}</a>'
@@ -859,6 +863,8 @@ class Site:
             parts.append(f'<p><a href="/news.html">{self.t("footer.news")}</a></p>')
         if self.sharing_rows:  # DF0237-04: after every other paragraph
             parts.append(f'<p><a href="/sharing.html">{self.t("footer.sharing")}</a></p>')
+        if self.elsewhere:  # DF1107-04: its own paragraph, last, so every earlier footer byte is unchanged without the file
+            parts.append(f'<p><a href="/elsewhere.html">{self.t("footer.elsewhere")}</a></p>')
         if self.events:  # DF1107-08: appended last, so every earlier footer paragraph is unchanged
             parts.append(f'<p><a href="/events.html">{self.t("footer.events")}</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
@@ -910,6 +916,8 @@ class Site:
                    if self.model["meetings"] and (path == "/meetings.html" or path.startswith("/meetings/")) else "")
                 + (f'  <link rel="alternate" type="application/atom+xml" title="{self.t("corrections.feed")}" href="/corrections.xml">\n'
                    if self.correction_entries() and (path == "/corrections.html" or path in self.corrected_paths()) else "")
+                + (f'  <link rel="alternate" type="text/calendar" title="{self.t("events.subscribe")}" href="/events.ics">\n'
+                   if self.events and path == "/events.html" else "")
                 + canonical + extra)
 
     def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
@@ -1434,6 +1442,30 @@ class Site:
             out += f'<p>{self.t("agency.votes_more", count=len(mine) - 50)}</p>' if len(mine) > 50 else ""
         return f'<section class="member-votes"><h3>{self.t("agency.votes_heading")}</h3>{out}</section>' if out else ""
 
+    def statements_section(self, agency_id):
+        """DF1107-07: ``What decision makers have said``, the organizer's exact transcriptions newest first; "" with none.
+
+        Each quote is the stored text escaped once, between typographic quotation marks, never shortened, merged or
+        paraphrased. Equal days keep the file's order. No file, or no row for this body, adds no bytes."""
+        rows = [row for row in newest_statements(self.model.get("statements", ())) if row["agency_id"] == agency_id]
+        if not rows:
+            return ""
+        items = []
+        for row in rows:
+            head = self.t("statements.line", official=e(row["official"]), date=time_tag(row["said_on"]),
+                          context=self.t("statements.context_" + row["context"]))
+            quote = self.t("statements.quote", quote=e(row["quote"]))
+            source = f'<a href="{e(row["source_url"])}" rel="noopener noreferrer">{self.t("statements.source")}</a>'
+            if row.get("recording_time"):
+                source += " " + self.t("statements.recording", time=e(row["recording_time"]))
+            lines = (f'<p>{head}</p><p class="statement-quote">{quote}</p>'
+                     f'<p>{source} · {self.t("statements.checked", date=time_tag(row["checked_on"]))}</p>')
+            if row.get("context_note"):
+                lines += f'<p>{self.t("statements.campaign_context", note=e(row["context_note"]))}</p>'
+            items.append(f"<li>{lines}</li>")
+        return (f'<section class="statements-on-record"><h3>{self.t("statements.heading")}</h3>'
+                f'<ul>{"".join(items)}</ul></section>')
+
     def who_decides(self, agency_id):
         """DF2237-13: the body's organizer-checked officials, or "" when ``content/officials.json`` lists none."""
         people = self.model.get("officials", {}).get(agency_id)
@@ -1505,6 +1537,7 @@ class Site:
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
                 + self.contract_check_block(agency, "h3")
                 + self.funding_block(agency) + self.actions_section(agency) + self.transparency_block(agency, "h3") + self.sharing_section(agency) + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
+                + self.statements_section(aid)
                 + self.local_rules_section(agency)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
@@ -1892,6 +1925,26 @@ class Site:
         main = f'    <section class="section finding-body" id="content"><h2>{self.t("news.title")}</h2>{body}</section>\n'
         return self.page("news", self.labels["news.title"], self.labels["news.description"], "/news.html", main)
 
+    def elsewhere_html(self):
+        """``/elsewhere.html`` (DF1107-04): decisions by other governments an organizer read off the official record, grouped by
+        kind in the fixed enum order, newest decision first. As stated, escaped plain text; no count, rank or score."""
+        from .content_elsewhere import sorted_for_page
+        groups = []
+        for kind, rows in sorted_for_page(self.elsewhere):
+            items = []
+            for entry in rows:
+                news = (f' · <a href="{e(entry["news_url"])}" rel="noopener noreferrer">{self.t("elsewhere.news")}</a>'
+                        if "news_url" in entry else "")
+                items.append(f'<li class="elsewhere-item"><strong>{e(entry["place"])}, {e(entry["state"])}</strong> · {e(entry["body"])}'
+                             f' · {self.t("elsewhere.decided", date=time_tag(entry["decided_on"]))}'
+                             f'<p>{e(entry["as_stated"])}</p>'
+                             f'<p><a href="{e(entry["source_url"])}" rel="noopener noreferrer">{self.t("elsewhere.source")}</a>{news}'
+                             f' · {self.t("elsewhere.checked", date=time_tag(entry["checked_on"]))}</p></li>')
+            groups.append(f'<h3>{self.t("elsewhere.kind." + kind)}</h3><ul class="elsewhere-list">{"".join(items)}</ul>')
+        main = (f'    <section class="section finding-body" id="content"><h2>{self.t("elsewhere.title")}</h2>'
+                f'<p class="notice">{self.t("elsewhere.note")}</p><p>{self.t("elsewhere.verified")}</p>{"".join(groups)}</section>\n')
+        return self.page("elsewhere", self.labels["elsewhere.title"], self.labels["elsewhere.description"], "/elsewhere.html", main)
+
     def terms_used_html(self, finding):
         """DF1952-04: ``Terms used on this page`` links to the glossary entries the finding's title, summary or body use;
         "" (no heading) without a glossary or a match."""
@@ -1980,6 +2033,7 @@ class Site:
                     + ("".join(self.event_html(event) for event in rows) or f'<p>{self.t(empty)}</p>') + '</section>')
         main = ('    <section class="section finding-body" id="content">'
                 f'<p>{self.t("events.lead")}</p><p>{self.t("events.as_of", date=e(self.today.isoformat()))}</p>'
+                f'<p><a href="/events.ics">{self.t("events.subscribe")}</a></p>'
                 + section("upcoming-events", "events.upcoming", self.events_upcoming, "events.none_upcoming")
                 + section("past-events", "events.past", self.events_past, "events.none_past") + '</section>\n')
         return self.page("events", self.labels["events.title"], self.labels["events.lead"], "/events.html", main)
@@ -2635,6 +2689,7 @@ class Site:
         paths += ["/sharing.html"] if self.sharing_rows else []  # DF0237-04
         paths += ["/press.html"] if self.site.get("press") else []  # DF2207-10
         paths += ["/news.html"] if self.coverage is not None else []  # DF0022-03
+        paths += ["/elsewhere.html"] if self.elsewhere else []  # DF1107-04
         if self.model.get("newsletters"):  # DF1952-09: only with public issues
             paths += ["/newsletters.html"] + [f'/newsletters/{i["sent_on"]}.html' for i in reversed(self.model["newsletters"])]
         paths += list(self.agency_pages().values())
@@ -2696,6 +2751,21 @@ class Site:
                 f'event date {finding["event_date"]}] {finding["summary"]}')
             ET.SubElement(entry, f"{{{ns}}}category", term=finding["classification"])
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(feed, encoding="unicode") + "\n"
+
+    def events_ics(self):
+        """DF1107-10: the campaign's upcoming events as an RFC 5545 calendar, same writer, escaping, folding and UTC rule as meetings.ics."""
+        host = urlsplit(self.base).hostname if self.base else "deflock-campaign.invalid"
+        stamp = self.today.strftime("%Y%m%d") + "T000000Z"
+        lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DeFlock Campaign Tool//events//EN", "CALSCALE:GREGORIAN",
+                 "X-WR-CALNAME:" + ics_text(self.cfg["name"] + " campaign events")]
+        for event in self.events_upcoming:
+            start, end = (parse_moment(event[key]).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ") for key in ("starts_at", "ends_at"))
+            lines += ["BEGIN:VEVENT", f'UID:event-{event["id"]}@{host}', "DTSTAMP:" + stamp, "DTSTART:" + start] + ([] if end == start else ["DTEND:" + end]) + [
+                      "SUMMARY:" + ics_text(event["title"]),
+                      "LOCATION:" + ("Online" if event.get("online") else ics_text(event["venue"])),
+                      "URL:" + f'{self.base}/events.html#event-{event["id"]}', "END:VEVENT"]
+        lines.append("END:VCALENDAR")
+        return "".join(ics_fold(line) + "\r\n" for line in lines)
 
     def meetings_ics(self):
         """Upcoming (not cancelled) meetings as an RFC 5545 calendar; deterministic for one build day."""
@@ -3075,7 +3145,7 @@ def _asset_plan(model):
     return plan
 
 
-PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map", "events")
+PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "statements", "map", "elsewhere", "events")
 # Fields an organizer fills with a contact on purpose, or that are never published: not scanned. A library entry is scanned
 # through its public projection only (never note, fragment or the full hash); an agency without its private contact and notes.
 PRIVACY_GATE_SKIP = {"how", "contact_email", "privacy_contact"}
@@ -3184,6 +3254,8 @@ def _plan(root, today=None, notes=None):
         pages["news.html"] = site.news_html()
     if site.sharing_rows:  # DF0237-04: no lists, no page; the slug is reserved, so nothing else can own this path
         pages["sharing.html"] = site.sharing_html()
+    if site.elsewhere:  # DF1107-04: no file, no page; the slug is reserved, so nothing else can own this path
+        pages["elsewhere.html"] = site.elsewhere_html()
 
     if model["newsletters"]:  # DF1952-09: newest first; the slug is reserved, so nothing else can own these paths
         pages["newsletters.html"] = site.newsletters_html()
@@ -3210,7 +3282,8 @@ def _plan(root, today=None, notes=None):
     brand = model["site"].get("brand", {})  # site.json brand: one appended rule per set part, nothing without it
     colours = ";".join(f"--{var}:{brand[key]}" for key, var in (("accent", "coral"), ("ink", "ink")) if key in brand)
     css = (pages["index.html"]["css"] + EXTRA_CSS + (f":root{{{colours}}}\n" if colours else "")
-           + (".brand-logo{max-height:48px;width:auto;height:auto}\n" if "logo" in brand else ""))
+           + (".brand-logo{max-height:48px;width:auto;height:auto}\n" if "logo" in brand else "")
+           + (".statement-quote{white-space:pre-wrap}\n" if model.get("statements") else ""))
     files = {name: page["html"] for name, page in pages.items()}
     agencies_text, meetings_text = site.agencies_json(), site.meetings_json()  # each rendered once; its CSV is read back from it
     files.update({
@@ -3231,6 +3304,8 @@ def _plan(root, today=None, notes=None):
     if site.sources_filter():  # DF1103-12: written only when sources.html loads it; an empty library leaves no stale asset
         files["sources/filter.js"] = site.sources_filter_js()
     files.update(site.agency_feeds())
+    if site.events:  # DF1107-10: no events file or [] means no calendar (the tree swap drops a stale one)
+        files["events.ics"] = site.events_ics()
     if model["meetings"]:  # DF1103-10: no staged meetings, no feed (the tree swap drops a stale one)
         files["meetings.xml"] = site.meetings_feed_xml()
     corrections_text = site.corrections_feed_xml()  # DF0237-09: no correction, no file (the tree swap drops a stale one)
