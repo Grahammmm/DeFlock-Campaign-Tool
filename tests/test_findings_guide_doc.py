@@ -229,7 +229,8 @@ class Walk:
         self.mapping = {"CAMPAIGN": self.root, "RECORD": self.base / "record.txt", "TODAY": self.today,
                         "REPLY_BY": self.today + timedelta(days=14), "PREVIEW_DIR": self.base / "preview",
                         "PREVIEW_DIR_2": self.base / "preview-2", "PACKET_DIR": self.base / "packet",
-                        "PACKET_DIR_2": self.base / "packet-2"}
+                        "PACKET_DIR_2": self.base / "packet-2",
+                        "SEARCH_LOG": self.base / "search-log.csv", "SUMMARY": self.base / "summary.json"}
         self.draft = self.revised = self.rereviewed = None
         self.reviews, self.history = [], []
         self.guide = read(GUIDE)
@@ -452,7 +453,8 @@ class GuideTests(unittest.TestCase):
             ("campaign_tool", ("finding", "reply")), ("campaign_tool", ("finding", "reviewers", "add")),
             ("campaign_tool", ("finding", "reviewers", "list")), ("campaign_tool", ("finding", "assign")),
             ("campaign_tool", ("finding", "review")), ("campaign_tool", ("finding", "publish")),
-            ("campaign_tool", ("content-check",)), ("campaign_tool", ("evidence",)), ("campaign_tool", ("build",)),
+            ("campaign_tool", ("content-check",)), ("campaign_tool", ("evidence",)),
+            ("campaign_tool", ("kit-search-log",)), ("campaign_tool", ("build",)),
             ("campaign_tool", ("finding", "diff")), ("campaign_tool", ("finding", "correct")),
             ("campaign_tool", ("social",)), ("campaign_tool", ("press", "draft")),
             ("campaign_tool.newsletter", ()), ("campaign_tool", ("finding", "withdraw")),
@@ -816,6 +818,34 @@ class GuideTests(unittest.TestCase):
         self.assertEqual(walk.status()["review_blockers"], [])
         self.assertIn("withdrawn", walk.refused("finding", "publish", walk.draft, "--directory", walk.root,
                                                 "--approved-by", "Organizer Y", watch=("content",)).lower())
+
+    def test_search_log_start_replays_with_a_synthetic_producer_summary(self):
+        walk = Walk(self)
+        walk.advance(match("sources", "add"))
+        log = walk.mapping["SEARCH_LOG"]
+        log.write_text("Timestamp,Search Purpose,Organization,State\n2026-01-05,theft,Org A,CA\n"
+                       "2026-01-06,investigation,Org A,CA\n2026-01-07,,Org B,NV\n", encoding="utf-8")
+        digest = hashlib.sha256(log.read_bytes()).hexdigest()
+        (walk.root / "kit").mkdir(exist_ok=True)
+        (walk.root / "kit" / "agencies.json").write_text(json.dumps(
+            [{"agency_id": AGENCY, "name": "Example Records Office (fictional)", "kind": "sheriff"}]), encoding="utf-8")
+        walk.ok("ingest", "--directory", walk.root, "--file", log, "--source-id", "example-search-log")
+        walk.ok("sources", "add", "--directory", walk.root, "--sha256", digest[:12], "--title", "Search log (invented)",
+                "--agency-id", AGENCY, "--received-at", "2026-02-10T17:00:00+00:00", "--fragment", "example-log")
+        commands = [argv for kind, body, _ in fences(read(GUIDE)) if kind == "bash"
+                    for argv in map(shlex.split, command_lines(body)) if "kit-search-log" in argv or "--search-log" in argv]
+        self.assertEqual([argv[3] for argv in commands], ["kit-search-log", "finding"])
+        code, out, err = run(*substitute(commands[0][3:], walk.mapping))
+        self.assertEqual(code, 0, err)
+        walk.mapping["SUMMARY"].write_text(out, encoding="utf-8")
+        code, out, err = run(*substitute(commands[1][3:], walk.mapping))
+        self.assertEqual(code, 0, err)
+        draft = findings.load_draft(Path(json.loads(out.splitlines()[0])["written"]))
+        self.assertEqual([s["sha256"] for s in draft["sources"]], [digest])
+        self.assertIn("| Org A | CA | 2 |", draft["body_md"])
+        self.assertTrue(draft["summary"].startswith("[EDIT ME: "))
+        self.assertEqual((draft["author"], draft["state"]), ("Author Z", "draft"))
+        self.assertFalse((walk.root / "public").exists() and any((walk.root / "public").rglob("fnd_*")))
 
     # --- 8 -------------------------------------------------------------------------------------------------------
     def test_challenges_privacy_and_network_guard(self):
