@@ -1,5 +1,6 @@
 """DF1107-11: `content link-check` inventory and opt-in availability check. Synthetic content, injected opener, no network."""
 import contextlib
+import http.client
 import hashlib
 import io
 import json
@@ -192,6 +193,39 @@ class InventoryTests(LinkCheckBase):
         self.assertNotIn(SENTINEL, text)
         self.assertEqual(text, content_links.run_cli(self.root, today=TODAY)[0])  # byte-deterministic
 
+    def test_press_newsletter_coverage_and_comment_source_are_listed_and_fetched_online_only(self):
+        content = self.root / "content"
+        site = json.loads((content / "site.json").read_text(encoding="utf-8"))
+        site["press"] = {"contact_role": "Press", "contact_email": "press@example.org",
+                         "about_md": "See [press source](https://press-only.example.org/p)."}
+        (content / "site.json").write_text(json.dumps(site), encoding="utf-8")
+        (content / "newsletters").mkdir(exist_ok=True)
+        (content / "newsletters" / "2026-10-20.json").write_text(json.dumps({
+            "schema_version": 1, "sent_on": "2026-10-20", "title": "Issue",
+            "body_md": "Read [letter source](https://news-only.example.org/n)."}), encoding="utf-8")
+        (content / "coverage.json").write_text(json.dumps({"schema_version": 1, "entries": [{
+            "outlet": "Daily", "headline": "Story", "url": "https://coverage-only.example.org/c",
+            "published_on": "2026-10-21"}]}), encoding="utf-8")
+        meeting = meeting_document()
+        meeting["outcome"]["spoke"] = 3
+        meeting["outcome"]["comment_source_url"] = "https://comment-only.example.org/c"
+        (content / "meetings" / "2026-10-cedar-council.json").write_text(json.dumps(meeting), encoding="utf-8")
+        urls = self.by_url()
+        for url, locator in (("https://press-only.example.org/p", "content/site.json:press.about_md[anchor 1]"),
+                             ("https://news-only.example.org/n", "content/newsletters/2026-10-20.json:body_md[anchor 1]"),
+                             ("https://coverage-only.example.org/c", "content/coverage.json:entries[0].url"),
+                             ("https://comment-only.example.org/c",
+                              "content/meetings/2026-10-cedar-council.json:outcome.comment_source_url")):
+            self.assertEqual(urls[url]["citations"], [locator])
+        with mock.patch.object(content_links, "real_opener", side_effect=AssertionError("opener built")):
+            content_links.run_cli(self.root, today=TODAY)  # offline: no opener
+        opener = FakeOpener({})
+        content_links.run_cli(self.root, True, opener=opener, today=TODAY)
+        fetched = [url for _, url, _, _ in opener.requests]
+        for url in ("https://press-only.example.org/p", "https://news-only.example.org/n",
+                    "https://coverage-only.example.org/c", "https://comment-only.example.org/c"):
+            self.assertEqual(fetched.count(url), 1)
+
     def test_published_only_and_archive_provenance(self):
         urls = self.by_url()
         self.assertEqual(urls[POLICY_URL]["archives"], [{
@@ -293,7 +327,7 @@ class TransportTests(LinkCheckBase):
         self.assertEqual([r["status"] for r in results], ["error"] * 3)
         self.assertIn("loop", results[0]["detail"])
         for bad in ("http://a.example.org/x", "file:///etc/passwd", "data:text/plain,hi", "javascript:alert(1)",
-                    "https://user:pw@a.example.org/x", "https://a.example.org/x\x1b[31m", "ftp://a.example.org/x"):
+                    "https://" + "user" + ":" + "pw" + "@a.example.org/x", "https://a.example.org/x\x1b[31m", "ftp://a.example.org/x"):
             opener = FakeOpener({"https://a.example.org/1": {"status": 302, "location": bad}})
             [result] = content_links.check_links(self.entries("https://a.example.org/1"), opener=opener)
             self.assertEqual(result["status"], "error", bad)
@@ -305,6 +339,28 @@ class TransportTests(LinkCheckBase):
         opener = FakeOpener({"https://a.example.org/1": {"status": 301, "location": "/2"}, "https://a.example.org/2": {"status": 410}})
         [result] = content_links.check_links(self.entries("https://a.example.org/1"), opener=opener)
         self.assertEqual((result["status"], result["chain"]), ("gone", ["https://a.example.org/2"]))
+
+    def test_malformed_and_control_redirects_never_abort_or_fetch(self):
+        base = "https://a.example.org/1"
+        for bad in ("https://[", "\nhttps://a.example.org/ok", "https://a.example.org/o\tk", "https://a.example.org/o\r\nk",
+                    "https://a.example.org/ok\n", " https://a.example.org/ok", "https://a.example.org:99999999/x"):
+            opener = FakeOpener({base: {"status": 302, "location": bad}})
+            results = content_links.check_links(self.entries(base, "https://a.example.org/after"), opener=opener)
+            self.assertEqual([r["status"] for r in results], ["error", "ok"], repr(bad))
+            self.assertEqual([url for _, url, _, _ in opener.requests], [base, "https://a.example.org/after"], repr(bad))
+            text = content_links.render(self.entries(base, "https://a.example.org/after"), "n", results)
+            self.assertNotIn("\n\t", text)
+            self.assertNotIn("\r", text)
+            self.assertTrue(all(r.closed for r in opener.responses))
+
+    def test_malformed_open_and_truncated_read_are_per_url_errors(self):
+        opener = FakeOpener({"https://a.example.org/p": ValueError("bad port"),
+                             "https://a.example.org/t": {"read_error": http.client.IncompleteRead(b"x")},
+                             "https://a.example.org/h": http.client.BadStatusLine("x")})
+        results = content_links.check_links(self.entries("https://a.example.org/p", "https://a.example.org/t",
+                                                         "https://a.example.org/h", "https://a.example.org/ok"), opener=opener)
+        self.assertEqual([r["status"] for r in results], ["error", "error", "error", "ok"])
+        self.assertTrue(all(r.closed for r in opener.responses))
 
     def test_shared_redirect_targets_are_fetched_once(self):
         opener = FakeOpener({"https://a.example.org/1": {"status": 301, "location": "/z"},

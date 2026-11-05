@@ -5,6 +5,7 @@ at a time (GET, first 64 KiB, no cookies or credentials, fixed User-Agent, 15 s 
 HTTP availability is neither authenticity, source equivalence, factual verification nor legal review. Nothing is written
 and no content or date is changed; an archived_url is only reported beside its original, never tried instead of it.
 """
+import http.client
 import json
 import re
 import ssl
@@ -48,6 +49,7 @@ def _external(url):
         return False
     try:
         parts = urlsplit(url)
+        parts.port  # raises ValueError for a malformed or out-of-range port
         return parts.scheme == "https" and bool(parts.hostname) and parts.username is None and parts.password is None
     except ValueError:
         return False
@@ -116,6 +118,7 @@ def collect_links(root, *, today=None):
         base_host = (urlsplit(site["base_url"]).hostname or "").lower() or None
     prose(site.get("mission_md"), "content/site.json:mission_md")
     prose(site.get("about_md"), "content/site.json:about_md")
+    prose((site.get("press") or {}).get("about_md"), "content/site.json:press.about_md")
 
     agencies_file = "content/agencies.json" if (content_dir / "agencies.json").is_file() else "kit/agencies.json"
     for agency in model["agencies"]:
@@ -155,7 +158,7 @@ def collect_links(root, *, today=None):
         prose(meeting.get("comment_kit_md"), base + ":comment_kit_md")
         cite((meeting.get("participation") or {}).get("source_url"), base + ":participation.source_url")
         outcome = meeting.get("outcome") or {}
-        for key in ("source_url", "minutes_url", "recording_url", "direction_source"):
+        for key in ("source_url", "minutes_url", "recording_url", "direction_source", "comment_source_url"):
             cite(outcome.get(key), f"{base}:outcome.{key}")
 
     for body_index, (agency_id, people) in enumerate(sorted(model["officials"].items())):
@@ -163,6 +166,11 @@ def collect_links(root, *, today=None):
             where = f"content/officials.json:{agency_id}.officials[{number}]"
             cite(person.get("profile_url"), where + ".profile_url")
             cite(person.get("source_url"), where + ".source_url")
+
+    for index, entry in enumerate(model.get("coverage") or []):
+        cite(entry.get("url"), f"content/coverage.json:entries[{index}].url")
+    for issue in model.get("newsletters") or []:
+        prose(issue.get("body_md"), f"content/newsletters/{issue.get('sent_on')}.json:body_md")
 
     finding_files = _file_names(content_dir, "findings", "id")
     for finding in model["findings"]:
@@ -232,16 +240,18 @@ def _category(exc):
 
 
 def _fetch(opener, url, timeout):
-    request = urllib.request.Request(url, method="GET", headers={"User-Agent": USER_AGENT})
     response = None
     try:
         try:
+            request = urllib.request.Request(url, method="GET", headers={"User-Agent": USER_AGENT})
             response = opener.open(request, timeout=timeout)
         except urllib.error.HTTPError as exc:  # carries status and headers; must be closed
             response = exc
         except (urllib.error.URLError, OSError) as exc:
             kind = _category(exc)
             return _Record("timeout" if kind == "timeout" else "error", detail=kind)
+        except (ValueError, http.client.HTTPException):  # malformed URL/port or response
+            return _Record("error", detail="malformed request or response")
         status = getattr(response, "status", None) or getattr(response, "code", None)
         if status in REDIRECT_CODES:
             return _Record("redirect", status, response.headers.get("Location") if response.headers else None)
@@ -251,6 +261,8 @@ def _fetch(opener, url, timeout):
             except (urllib.error.URLError, OSError) as exc:
                 kind = _category(exc)
                 return _Record("timeout" if kind == "timeout" else "error", status, detail="read failed: " + kind)
+            except (ValueError, http.client.HTTPException):  # e.g. IncompleteRead from a truncated chunked body
+                return _Record("error", status, detail="read failed: truncated or malformed response")
         return _Record("final", status)
     finally:
         if response is not None:
@@ -261,9 +273,12 @@ def _target(current, location):
     """(target url, problem). The target is shown even when refused."""
     if not isinstance(location, str) or not location.strip():
         return None, "redirect without a usable Location"
-    target = urljoin(current, location.strip())
-    if CONTROL.search(target):
-        return target, "redirect target has control characters; not followed"
+    if CONTROL.search(location):  # raw header, before strip/urljoin can erase a control character
+        return location, "redirect target has control characters; not followed"
+    try:
+        target = urljoin(current, location)
+    except ValueError:
+        return location, "redirect target is malformed; not followed"
     if not _external(target):
         return target, "redirect target is not an https URL with a host and no credentials; not followed"
     return target, None
