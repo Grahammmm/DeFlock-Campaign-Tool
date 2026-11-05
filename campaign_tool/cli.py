@@ -841,7 +841,7 @@ def main():
                          help="Fall back to the Census geocoder when the seed cannot resolve the location")
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
-                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in), school_police (opt-in), district_police (opt-in)")
+                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in), school_police (opt-in), district_police (opt-in), fusion_center (opt-in)")
     kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
@@ -981,6 +981,15 @@ def main():
     sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail", "in_person"))
     sent_p.add_argument("--file", help="The letter you sent: only its SHA-256 and size are kept, never its text or path")
     sent_p.add_argument("--replace", action="store_true", help="Overwrite an existing record for this meeting")
+    speakers_p = commands.add_parser("meetings-speakers", help="Private plan: which volunteer label covers which point of a "
+                                     "staged meeting's comment kit (kit/meetings/speakers/<id>.json); sends nothing")
+    speakers_p.add_argument("--directory", required=True)
+    speakers_p.add_argument("--id", required=True, help="Staged upcoming meeting id")
+    speakers_action = speakers_p.add_mutually_exclusive_group(required=True)
+    speakers_action.add_argument("--add", metavar="LABEL", help="Volunteer label (1-40 characters, no email or phone) for --point")
+    speakers_action.add_argument("--remove", metavar="LABEL", help="Remove every point of this label")
+    speakers_action.add_argument("--list", dest="list_plan", action="store_true", help="Points, speakers, gaps and overloaded labels")
+    speakers_p.add_argument("--point", metavar="POINT", help="With --add: finding:ID (a finding the kit cites) or ask:N")
     content_check_p = commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)")
     content_check_p.add_argument("--directory", required=True)
     content_check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
@@ -1430,6 +1439,15 @@ def main():
     flyer.add_argument("--directory", required=True)
     flyer.add_argument("--max-findings", type=int, choices=range(1, 7), default=3)
     flyer.add_argument("--replace", action="store_true")
+    map_p = commands.add_parser("map", help="Private camera field survey: a printable sheet and a sourced re-import")
+    map_cmds = map_p.add_subparsers(dest="map_command", required=True)
+    sheet_p = map_cmds.add_parser("survey-sheet", help="Write kit/survey/<city>-<date>.html and .csv; publishes nothing")
+    sheet_p.add_argument("--city", required=True, help="Exact boundary name (case-sensitive)")
+    sheet_p.add_argument("--directory", required=True)
+    import_p = map_cmds.add_parser("survey-import", help="Add the filled rows of a survey CSV to content/map/point-checks.json")
+    import_p.add_argument("--csv", required=True, metavar="FILLED")
+    import_p.add_argument("--directory", required=True)
+    import_p.add_argument("--apply", action="store_true", help="Write the file (default: only print the checks)")
     _campaign_option(parser)
     campaigns = commands.add_parser("campaigns", help="A named register of campaign directories; names and paths only"
                                     ).add_subparsers(dest="campaigns_command", required=True)
@@ -1449,6 +1467,8 @@ def main():
     if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
         if not args.upcoming or args.allow_past or args.within_days not in (None, *range(1, 91)):
             pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
+    if args.command == "meetings-speakers" and (args.add is None) != (args.point is None):
+        speakers_p.error("--point is required with --add and only allowed with --add")
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
         diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "finding_command", None) == "new":
@@ -1573,6 +1593,12 @@ def main():
             from .flyer import build as flyer_build
             print(json.dumps(flyer_build(Path(args.directory).expanduser(), args.max_findings, replace=args.replace)))
             print("Private file; nothing was printed, sent or published.")
+        elif args.command == "map":
+            from . import map_survey
+            if args.map_command == "survey-sheet":
+                print(json.dumps(map_survey.survey_sheet(root, args.city)))
+            else:
+                print(json.dumps(map_survey.survey_import(root, args.csv, apply=args.apply), indent=2, ensure_ascii=False))
         elif args.command == "meeting-pack" and args.upcoming:
             from .meeting_pack import build_upcoming
             report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
@@ -1603,6 +1629,15 @@ def main():
                      **({"letter_sha256_prefix": entry["letter_sha256"][:12]} if "letter_sha256" in entry else {})}
             print(json.dumps(shown, indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "meetings-speakers":
+            from .meeting_speakers import list_plan, update_plan
+            # The guards must see the unresolved directory so a campaign-root or ancestor symlink is refused.
+            root = Path(args.directory).expanduser()
+            if args.list_plan:
+                print(json.dumps(list_plan(root, args.id), indent=2, ensure_ascii=False))
+            else:
+                print(json.dumps(update_plan(root, args.id, add=args.add, point=args.point, remove=args.remove)))
+                print("Recorded only. Nothing was sent.", file=sys.stderr)
         elif args.command == "supporters":
             from .supporters import add_supporter, remove_supporter, set_cosign_consent
             if args.supporters_command == "consent":
