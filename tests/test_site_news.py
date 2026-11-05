@@ -29,6 +29,7 @@ from tests.test_site_faq import BASELINE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
+LD_JSON = re.compile(rb'  <script type="application/ld\+json">[^<]*</script>\n')  # DF1407-08: inert data, absent from the pre-feature pins
 BUILD_DAY = date(2026, 10, 1)  # the day BASELINE was rendered on
 NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network access attempted"))
 FINDING_ID, FINDING_SLUG = "fnd_0000000000000001", "cedar-policy-posted"
@@ -99,7 +100,7 @@ class NewsCase(unittest.TestCase):
         return self.tree()
 
     def tree(self):
-        return {p.relative_to(self.public).as_posix(): p.read_bytes() for p in sorted(self.public.rglob("*")) if p.is_file()}
+        return {p.relative_to(self.public).as_posix(): LD_JSON.sub(b"", p.read_bytes()) for p in sorted(self.public.rglob("*")) if p.is_file()}
 
     def digests(self, files):
         return {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
