@@ -272,6 +272,9 @@ duplicates ignored) and lists only the rules they cite; `summary.json` reports `
 An unknown scope id, or `--scope` with no law package, stops `kit` before anything is written. Switching scopes
 refreshes unedited drafts; edited ones are kept, with the fresh draft in `requests.suggested/`.
 
+For a plain-language explanation of what each scope asks for, who may hold it and what to check in a response, see the
+[California records primer](RECORDS-PRIMER.md). It covers record types and response checks, not legal advice.
+
 ## What organizers must verify before sending
 
 The kit is a starting point, not a mailing list. Before any request leaves:
