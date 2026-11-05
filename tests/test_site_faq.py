@@ -45,6 +45,9 @@ FOOTER_FAQ = '<p><a href="/faq.html">FAQ</a></p>'
 # and requests head 1234c7d0: removing only the requests footer link and sitemap
 # entry restores main byte-for-byte; requests.html matches the immutable PR.
 # Source-filter assets and every other byte remain exact.
+LD_JSON = re.compile(rb'  <script type="application/ld\+json">[^<]*</script>\n')  # DF1407-08: inert data, absent from the pre-feature pins
+
+
 # DF0237-09: the fixture carries a correction, so the corrections feed link in every footer, the corrections.xml file and
 # the rel=alternate link on corrections.html / the corrected finding page changed those pins (regenerated at TODAY).
 BASELINE = {
@@ -142,7 +145,7 @@ class FaqCase(unittest.TestCase):
         return {p.relative_to(self.public).as_posix(): p.read_bytes() for p in sorted(self.public.rglob("*")) if p.is_file()}
 
     def digests(self, files):
-        return {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
+        return {name: hashlib.sha256(LD_JSON.sub(b"", data)).hexdigest() for name, data in files.items()}
 
     def refused(self, value, pattern):
         """build refuses with ``pattern`` and public/ keeps its bytes; content-check lists the same problem."""

@@ -5,7 +5,8 @@ alone (kept for campaigns without a ``content/`` directory). ``build_site(root)`
 renders the multi-page site described in docs/SITE-CONTENT.md from the
 validated content model, wiring the agency-card renderer and, when a map is
 configured, the MapLibre controller. All generated JavaScript is self-hosted;
-pages contain no inline scripts, and the emitted ``_headers`` file carries a
+pages contain no executable inline scripts (with a ``base_url`` the only inline element is inert
+``application/ld+json`` data, see ``json_ld``), and the emitted ``_headers`` file carries a
 Content-Security-Policy that names only the hosts the content model declared.
 """
 import csv
@@ -502,6 +503,17 @@ def finding_updated(finding):
     return max((value for value in candidates if value), key=utc_moment)
 
 
+def json_ld(value):
+    """One inert ``<script type="application/ld+json">`` data element for ``value`` (JSON-serializable only).
+
+    Sorted keys, compact separators, ASCII only, no NaN; ``<``, ``>`` and ``&`` are written as JSON escapes so no
+    value can close the element or open markup. Raises the ordinary json error for anything else.
+    """
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+    text = text.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return f'  <script type="application/ld+json">{text}</script>\n'
+
+
 def js_json(value):
     return json.dumps(value, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
 
@@ -932,7 +944,7 @@ class Site:
         return "".join(f'  <meta {attr}="{key}" content="{value}">\n' for attr, key, value in tags)
 
     def head(self, title, description, path, scripts=(), stylesheets=(), kind="website", published=None, modified=None,
-             index=True):
+             index=True, structured=None):
         """``index=False``: a robots noindex tag instead of the share tags, and no canonical link."""
         canonical = f'  <link rel="canonical" href="{e(self.base + path)}">\n' if self.base and index else ""
         extra = "".join(f'  <link rel="stylesheet" href="{href}">\n' for href in stylesheets)
@@ -953,14 +965,15 @@ class Site:
                    if self.correction_entries() and (path == "/corrections.html" or path in self.corrected_paths()) else "")
                 + (f'  <link rel="alternate" type="text/calendar" title="{self.t("events.subscribe")}" href="/events.ics">\n'
                    if self.events and path == "/events.html" else "")
-                + canonical + extra)
+                + canonical + extra
+                + (json_ld(structured) if structured is not None and self.base and index else ""))
 
     def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
-             kind="website", published=None, modified=None, index=True):
+             kind="website", published=None, modified=None, index=True, structured=None):
         return render({
             "schema_version": 1,
             "language": self.site["language"],
-            "html": {"head": self.head(title, description, path, scripts, stylesheets, kind, published, modified, index),
+            "html": {"head": self.head(title, description, path, scripts, stylesheets, kind, published, modified, index, structured),
                      "header": self.header(current), "main": main, "footer": self.footer()},
             "styles": {"font_family": self.site["font_family"], "font_faces": ""},
         })
@@ -1405,7 +1418,11 @@ class Site:
                 + self.signup_section() + meetings + self.next_event_section())
         scripts = (["/vendor/maplibre-gl.js"] if self.map and self.maplibre else []) + ["/site-data.js", "/agency-cards.js", "/app.js"]
         stylesheets = ["/vendor/maplibre-gl.css"] if self.map and "maplibre-gl.css" in self.model["vendor"] else []
-        return self.page("index", self.labels["title.home"], self.site["tagline"], "/", main, scripts, stylesheets)
+        site_data = ({"@context": "https://schema.org", "@graph": [
+            {"@type": "Organization", "name": self.cfg["name"], "url": self.base},
+            {"@type": "WebSite", "name": self.cfg["name"], "url": self.base}]} if self.base else None)
+        return self.page("index", self.labels["title.home"], self.site["tagline"], "/", main, scripts, stylesheets,
+                         structured=site_data)
 
     def official_links(self, agency):
         """Records page, portal and Flock transparency links, as on ``agencies.html``."""
@@ -1999,7 +2016,24 @@ class Site:
         rows = "".join(f'<li>{label} · <time datetime="{e(u["date"])}">{e(u["date"])}</time>: {e(u["note"])}</li>' for u in items)
         return f'<h3 id="updates">{self.t("finding.updates")}</h3><ul>{rows}</ul>'
 
-    def finding_html(self, finding):
+    def finding_structured(self, finding):
+        """The schema.org Article for a published finding page; only facts the page already shows. None without a base."""
+        if not self.base:
+            return None
+        library = {s["sha256"]: s for s in self.model["sources"]}
+        urls = []
+        for cited in finding["sources"]:
+            url = (library.get(cited["sha256"]) or {}).get("public_url")
+            if url and url not in urls:
+                urls.append(url)
+        corrections = sorted(_day(c["date"]) for c in finding["corrections"])
+        return {"@context": "https://schema.org", "@type": "Article", "headline": finding["title"],
+                "description": finding["summary"], "datePublished": finding["published_at"],
+                "dateModified": corrections[-1] if corrections else (finding["updated_at"] or finding["published_at"]),
+                "url": self.base + finding_path(finding), "isBasedOn": urls,
+                "publisher": {"@type": "Organization", "name": self.cfg["name"], "url": self.base}}
+
+    def finding_html(self, finding, structured=True):
         sources = []
         for source in finding["sources"]:
             record_page = self.record_pages().get(source["sha256"])
@@ -2051,7 +2085,8 @@ class Site:
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         return self.page("findings", finding["title"], finding["summary"], finding_path(finding), main,
                          scripts=["/findings/cite.js"],
-                         kind="article", published=finding["published_at"], modified=finding["updated_at"])
+                         kind="article", published=finding["published_at"], modified=finding["updated_at"],
+                         structured=self.finding_structured(finding) if structured else None)
 
     def sorted_coverage(self):
         """The recorded coverage newest first, equal dates by URL ascending (the stored list and its order are untouched)."""
@@ -2229,7 +2264,7 @@ class Site:
     def finding_preview_html(self, finding):
         """``finding_html`` without the published-only citation script, plus a robots noindex meta
         and a "Draft - not published" banner at the top of ``<main>``. Never part of build output."""
-        page = self.finding_html(finding)
+        page = self.finding_html(finding, structured=False)
         html, title, main = page["html"], "  <title>", '  <main id="top">\n'
         html = html.replace('  <script defer src="/findings/cite.js"></script>\n', '')
         if html.count(title) != 1 or html.count(main) != 1:
