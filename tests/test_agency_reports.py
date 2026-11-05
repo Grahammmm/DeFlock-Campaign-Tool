@@ -23,7 +23,7 @@ from campaign_tool import law
 from campaign_tool.content import REPORT_KINDS, ContentError, _reports, load_agencies
 from campaign_tool.content_check import content_problems
 from campaign_tool.labels import DEFAULTS
-from campaign_tool.site import PUBLIC_AGENCY_FIELDS, PUBLIC_REPORT_FIELDS, Site, build_site
+from campaign_tool.site import PUBLIC_AGENCY_FIELDS, PUBLIC_ARCHIVE_FIELDS, PUBLIC_REPORT_FIELDS, Site, build_site
 from campaign_tool.site_check import check_accessibility, check_links
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -442,7 +442,7 @@ class ReportsTests(unittest.TestCase):
         self.assertEqual((declared["reports"]["minItems"], declared["reports"]["maxItems"]), (1, 20))
         self.assertEqual(declared["report_entry"]["properties"]["title"], {"type": "string", "minLength": 1, "maxLength": 160})
         self.assertEqual(sorted(declared["report_entry"]["required"]), sorted(REPORT))
-        self.assertEqual(sorted(declared["report_entry"]["properties"]), sorted(PUBLIC_REPORT_FIELDS))
+        self.assertEqual(sorted(declared["report_entry"]["properties"]), sorted(PUBLIC_REPORT_FIELDS + PUBLIC_ARCHIVE_FIELDS))
         self.assertEqual(declared["report_entry"]["properties"]["kind"]["enum"], list(REPORT_KINDS))
         self.assertFalse(declared["report_entry"]["additionalProperties"])
         # a private nested key fails closed before anything is written

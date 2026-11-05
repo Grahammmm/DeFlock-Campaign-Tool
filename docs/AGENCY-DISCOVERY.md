@@ -272,6 +272,9 @@ duplicates ignored) and lists only the rules they cite; `summary.json` reports `
 An unknown scope id, or `--scope` with no law package, stops `kit` before anything is written. Switching scopes
 refreshes unedited drafts; edited ones are kept, with the fresh draft in `requests.suggested/`.
 
+For a plain-language explanation of what each scope asks for, who may hold it and what to check in a response, see the
+[California records primer](RECORDS-PRIMER.md). It covers record types and response checks, not legal advice.
+
 ## What organizers must verify before sending
 
 The kit is a starting point, not a mailing list. Before any request leaves:
@@ -354,6 +357,16 @@ portal. The no-law-package fallback draft does not use `records_email` in its `T
 changed here), but does name a verified portal or postal route. Only the `To:` line changes; the other placeholders
 (fee cap, date range, requester) must still be filled, the postal address never appears in the draft, and approval
 and sending stay manual. Nothing is sent.
+
+When `kit` kept your edited draft it saved the fresh one as `kit/requests.suggested/<id>.md`. If that file differs from
+`kit/requests/<id>.md`, `kit-check` adds `edited draft differs from the fresh draft in requests.suggested/` to that
+agency's row, marks the row not ok (exit 3, as for a placeholder) and lists: `## ` scope headings only in the fresh
+draft or only in your edited draft, whether the date-range, fee-cap and law-package-status lines differ, and the
+rule-citation lines (`- <rule_id>: ...`) only in one of the two. `--json` adds a `suggested_differs` object to that row
+only. Compare with `diff -u -- kit/requests/<id>.md kit/requests.suggested/<id>.md` from the campaign directory
+(`kit-check` never runs it). This is a prompt to review, not a verdict that your edit is wrong; nothing is merged or
+overwritten. A suggestion that is a symlink, a directory or another non-regular file, or cannot be read, is named and
+never followed. Without a suggestion the output is unchanged. `kit-sent` and `kit-copy` gates were not expanded.
 
 To copy a draft out, `kit-copy --directory D --agency ID --for portal|email|mail [--json]` writes only the sendable part,
 the Subject line and the request text after it, to `kit/outgoing/ID.txt` (with its `characters` count, to compare a

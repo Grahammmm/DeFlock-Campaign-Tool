@@ -26,7 +26,7 @@ when a line names no file, and the same exit codes, so an editor or CI step can 
 
 ## Content directory
 
-`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, a draft `pages/help-map.json`, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, draft `pages/help-map.json` and `pages/background.json` starter pages, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
 
 ### Help-map page starter
 
@@ -42,6 +42,28 @@ the three `nav` slots; set `"nav": false` or delete `content/pages/help-map.json
 fresh tree has none. `content init --from OLD` copies a source campaign's own pages as before and never adds this
 starter. Before publishing run `content-check` and `build --check` offline; the legal-claim guard stays advisory and
 does not scan page copy, so read the page yourself. The report's `placeholders` count includes this page's markers.
+
+### Background-reading page starter
+
+A fresh `content init` also writes `content/pages/background.json`, the page `/background.html` titled "Background
+reading": nine public California documents about ALPRs and the public records law, in three groups (audit and
+guidance; California statutes and public records; legislative background). Each entry gives the title as published,
+the publisher, a labeled date (published, issued, effective or operative, analysis or approved date as the document
+calls for), one `https://` link and one sentence on what the document covers. Only official publishers are listed (the
+State Auditor, the Attorney General's office, the Legislature's leginfo site). The page says it is background and not a
+finding about any agency or legal advice. It is read from the packaged copy of `examples/pages/background.json`, so it
+works from an installed wheel, and it is California-scoped for every campaign, whatever its state.
+
+This is a starter the organizer re-checks. The intro and every entry start `[EDIT ME: verify for this campaign]`, which
+stays visible on the page until you replace it. Before publishing, open each link and confirm the title, publisher and
+date, check whether a statute has been amended since the date shown, and delete entries you do not want. The shipped
+California law package stays a draft; this list does not review it. The page uses one of the three `nav` slots (with the
+help-map page it uses two); `"nav": false` only hides its navigation link; the page stays public at `background.html`. To omit it, delete `content/pages/background.json` and rebuild.
+`content init --from OLD` copies the source campaign's own `background.json` when it has one and never adds this starter.
+The renderer shows only `##` headings, so each entry title is a bold line. Run `content-check` and `build --check`
+offline before publishing. The tests check the committed citation structure, the official-host rule and the
+legal-claim guard on the page text; they do not fetch the links, so link freshness and legal correctness are the
+organizer's to confirm. The report's `placeholders` count includes this page's markers.
 
 ### Draft FAQ starter
 
@@ -313,6 +335,24 @@ the build naming `<file>[n].profile.alpr_policy` (and the field); `null` or
 absent shows nothing. `agencies.html` shows "Posted ALPR usage policy (checked
 <date>, where we found it)" on that agency's card only; neither URL is fetched.
 Linking a policy says only that it was posted; it is not a finding about compliance.
+
+### Archived copies of agency sources (optional)
+
+Five organizer-verified link objects may carry a manually checked archive copy: `profile.alpr_policy`,
+`profile.contract`, every `profile.transparency` snapshot, every `profile.funding` entry and every `profile.reports`
+entry. Add both keys or neither: `"archived_url": "https://web.archive.org/web/20261020120000/https://example.org/policy.pdf"`
+and `"archived_on": "2026-10-20"`. The host must be exactly `web.archive.org`, `archive.ph` or `archive.today` (https,
+no port, no credentials; subdomains, `archive.is` and any other host are refused). A Wayback URL must have the form
+`/web/<14-digit timestamp>/<http(s) address>`, the timestamp a real UTC date and time, and `archived_on` must equal
+that timestamp's date. `archive.ph` and `archive.today` links need a path; their `archived_on` is the day you saved or
+checked the copy. `archived_on` is a real date not after the build date. A bad host, timestamp or date stops the build
+and `content-check` names the field, for example `content/agencies.json[1].profile.funding[0].archived_url`.
+
+The card and page then show `archived copy (DATE)` (label `agency.archived_copy`) right after that source link, and
+`data/agencies.json` carries both fields (the CSV carries them inside the same nested cells; no new column). An older
+transparency snapshot is validated but only the newest is shown. The detail page also shows the policy and contract
+lines when they carry a pair. An archive link does not say the copy is authentic, current or legally sufficient. The tool
+fetches nothing and submits nothing to an archive.
 
 An agency's optional `profile.policy_check` records an organizer's reading of the posted `alpr_policy` against the
 draft checklist `jurisdictions/us-ca/policy-checklist.json` (bound to the law-package rule
@@ -1558,6 +1598,55 @@ sends, publishes, builds and fetches nothing.
   `kit/briefs/` refuses even with `--replace`. Directories are created `0700` and files `0600`. The two files are replaced
   one after the other, not as a transaction: after an I/O failure the first file can already be new, the command says so
   and exits 1, and running it again with `--replace` repairs the pair.
+
+## External source links (`content link-check`)
+
+```
+python3 -m campaign_tool content link-check --directory CAMPAIGN [--online]
+```
+
+Without `--online` the command prints a deterministic inventory of the external `https://` URLs the public content cites and
+the line `Offline inventory; no URLs fetched.` It touches no network, DNS, cookie jar or cache, writes no file and changes no
+content; a missing `content/` is refused, never scaffolded. Only the validated public content is read (never `public/`,
+`kit/sent`, drafts or record bytes). Relative, `mailto:`, `http:`, `data:`, `file:` and `javascript:` references are not listed,
+nor are links to the host of `site.base_url` (when it is unset every absolute https reference is treated as external).
+
+Each URL is shown exactly as submitted with every `content/<file>:<field>` that cites it (repeated uses keep every locator).
+URLs that differ only by `#fragment` share one request. Cited fields:
+
+| Content | Fields |
+| --- | --- |
+| `agencies.json` (or `kit/agencies.json`) | `records_url`, `portal.url`, `verification.source_url`, the generated transparency URL, `profile.alpr_policy.url` and `.source_url`, `profile.policy_check.policy_url`, `profile.contract.source_url`, `profile.contract_check.contract_url`, `profile.pre_implementation_meeting.source_url`, `profile.transparency[].source_url`, `profile.funding[].source_url`, `profile.reports[].source_url`, `profile.sharing.source_url`, `agency-actions.json` `source_url` |
+| `sources.json` | `public_url` |
+| `meetings/*.json` | `agenda_url`, `participation.source_url`, `outcome.source_url`, `.minutes_url`, `.recording_url`, `.direction_source`, links in `comment_kit_md` |
+| `officials.json` | `profile_url`, `source_url` |
+| `statements.json` | `source_url` (stored row index) |
+| `body-schedules.json` | `source_url` (stored schedule index, not the sorted order) |
+| `events.json` | `url` and links in `description_md` |
+| Markdown | https links in `site.json` `mission_md` and `about_md`, finding `body_md`, `pages/*.json`, `topics/*.json` `intro_md`, FAQ answers, the glossary, and `elsewhere.json` `source_url` and `news_url` |
+
+When DF0237-03 recorded an `archived_url` and `archived_on` beside a link, they are printed under that link as
+`archive recorded at ...`, and the archive URL is itself an inventory entry. An archive is never fetched in place of a broken
+original and never hides its failure.
+
+With `--online` each distinct URL is requested once, one at a time, with `GET` (first 64 KiB only, never decoded or stored),
+no cookies, credentials, referrer or proxy, certificate verification on, 15 seconds per request, the fixed header
+`User-Agent: DeFlock-Campaign-Tool/link-check` and no retries. At most 5 redirects (301, 302, 303, 307, 308) are followed and
+every redirect target is shown; a redirect to a non-https URL, with credentials, with control characters, without a
+`Location`, in a loop or past the fifth is shown and reported as `error` without being requested. Results per URL:
+
+| Result | Meaning |
+| --- | --- |
+| `ok` | 2xx with no redirect |
+| `moved` | 2xx after one or more redirects |
+| `gone` | final status 404 or 410 (also after a redirect) |
+| `timeout` | the connection or read timed out |
+| `error` | TLS, DNS or connection failure, any other non-2xx status (403, 429 and 5xx are not `gone`), a refused redirect or a read failure |
+
+Exit code 0 when everything is `ok` or `moved` (or nothing is cited); 3 after all URLs are printed if any is `gone`, `error` or
+`timeout`; 1 when the content is missing or invalid. Failures print a category such as `TLS error`, never raw exception text.
+A reachable URL is not proof that the source is authentic, equivalent to what the content cites, factually correct or legally
+reviewed. The command never updates a URL, `checked_on` or `archived_on`.
 
 ## What is never rendered
 
