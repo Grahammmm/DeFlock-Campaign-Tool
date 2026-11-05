@@ -115,3 +115,33 @@ context, portal pointers (not blobs/): <class=N, ... | not measured>
   review verdict on that text or on any fact drawn from it.
 - (2) is waiting for preservation, (3) for OCR; (4) shows why the rest are held.
 - The report is for the organizer. Publishing it is a separate decision.
+
+## Distinct originals across several extract runs (alternative to Step 1)
+
+Step 1 reads one outcome file. `--total` adds observations, so an original that was
+retried counts once per file. To count each original **once**, name the outcome files
+yourself, **oldest first, newest last**:
+
+```text
+python3 -B tools/records_extract_summary.py --unique OLDER.json NEWER.json
+```
+
+- Each original (`original_sha256`) counts once, by its last observation in the order you
+  typed. The tool does not sort names or look at modification times, run ids or
+  `written_at`; reversing the order reverses the winner. The output says
+  `selection: "last-input-wins"`: caller order, not verified current state.
+- A retry replaces the earlier outcome (and its refusal code). An original missing from a
+  later file keeps its earlier observation. A later failure or `AWAITING_OCR` replaces an
+  earlier `EXTRACTED`. An empty file changes nothing.
+- It prints one counts-only line: `files`, `observations`, `documents` (distinct
+  originals), `replaced_observations`, `outcomes`, `unknown_outcomes`, `extracted`,
+  `failed` and `top_refusal_codes`, over the winning rows only. `failed` is the same
+  narrow set as in Step 1. No hash, file name, run id or time is printed.
+- Any unreadable or invalid file (including a missing hash, an uppercase or padded hash,
+  or the same original twice in one file) refuses the whole run: one line with `error`
+  and `input` (the 1-based position of the file) and exit status 1. A refused file is
+  not zero; never fill in numbers from the earlier files alone.
+- `--unique` cannot be combined with `--total` or `--self-test`.
+- Limits: `scope: "provided-outcome-files-only"`. Each file lists only the originals that
+  run selected, so this is not the whole inbox, not the ledger, not OCR visual review and
+  not fact-citation coverage, and it is not a legal or privacy review verdict.
