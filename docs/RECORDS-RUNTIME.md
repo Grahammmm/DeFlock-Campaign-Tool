@@ -68,3 +68,17 @@ are never touched; a symlinked or foreign-owned alert directory or file is refus
 | `schedule_missed`, `schedule_failed`, `schedule_stalled`, `schedule_gaps`, `schedule_held` | stop | The slot health from `records health`; `schedule_degraded` is warn, `schedule_never` unknown. |
 
 Limits are in `pipeline_health.LIMITS`. A machine-valid report is review-required, not semantic acceptance of the run.
+
+## Request playbook and banned-phrase lint
+
+`playbooks/records-alpr-v1.json` is the campaign-agnostic request playbook (jurisdiction-tagged; agencies, dates and policy
+sections are `[placeholders]`). It holds the three tiers (1 audit records and search/use logs, 2 policy, retention, access and
+sharing, 3 contracts and vendor terms) with their keywords, the first-request item order (exit ramp, then the lead items: native log
+export for a short named window with a pre-offered plate/case-number redaction, completed audits under the agency's own policy
+section, sharing lists and MOUs; then policy, retention, users and training; then contracts), the 8 follow-up patterns (extension,
+partial production, blanket denial, fee, no records, records contradict policy, silence, vague answer; each with when / goal /
+questions / cite / attach / do-not), the wording rules, a citation registry (`verified-in-package` or `unverified`; the law package
+stays the source of truth) and the banned-phrase list. `campaign_tool.records.playbook` loads and validates it (`load`, `pattern`,
+`tier_for`, `lint`). `records playbook check [--playbook FILE]` validates a playbook (exit 0, or 2 with a fixed refusal code);
+`records playbook lint FILE|-` prints each hit and `pass` (exit 0) or `needs edit` (exit 1). The lint is strict and cannot tell a
+quoted agency phrase from our own wording. Nothing here sends, posts or publishes, and a pass is not legal or semantic review.
