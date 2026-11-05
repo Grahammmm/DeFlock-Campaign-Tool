@@ -47,7 +47,7 @@ PUBLISH_PATHS = (
            ("_EMAIL.search(blob)", "_PHONE.search(blob)", '"plate" in categories(blob)'), "newsletter",
            "pre-public: the draft is linted as the last step before it is returned"),
     _entry("social-drafts", "campaign_tool/social.py", "_write_drafts", "draft", "pre-public", "privacy+legal", "refusal(", "social",
-           "kit/social/: finding, meeting and outcome drafts; nothing under public/"),
+           "kit/social/: finding, meeting, outcome and campaign-event drafts; nothing under public/"),
     _entry("social-post", "workers/workspace/src/executors/post_social.ts", "privacyHits", "post", "public", "privacy",
            "privacyHits(text)", "worker", "the Worker's per-post lint; its patterns live in social_adapter.ts", redaction=False),
     _entry("flock-report", "tools/flock_report.py", "lint", "report", "pre-public", "privacy+legal", "privacy.", "report",

@@ -483,8 +483,8 @@ def kit(args, root):
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
-def social_cmd(root, platforms=None, meetings=False, within_days=14, outcomes=False, thread_finding=None):
-    from .social import (build_meeting_social, build_outcome_social, build_social, meeting_review_notes,
+def social_cmd(root, platforms=None, meetings=False, within_days=14, outcomes=False, thread_finding=None, events=False):
+    from .social import (build_event_social, event_review_notes, build_meeting_social, build_outcome_social, build_social, meeting_review_notes,
                          outcome_review_notes, review_notes)
     if thread_finding is not None:  # DF2207-08: one private numbered thread for one published finding; nothing is posted
         from .social_threads import build_thread_social, thread_notes
@@ -492,6 +492,12 @@ def social_cmd(root, platforms=None, meetings=False, within_days=14, outcomes=Fa
         for note in thread_notes(root, thread_finding):
             print(note, file=sys.stderr)
         print("Drafts written to kit/social/threads. Nothing was posted.")
+        return
+    if events:  # DF1407-10: private drafts for upcoming campaign events; nothing is posted
+        print(json.dumps(build_event_social(root, platforms, within_days), indent=2, ensure_ascii=False))
+        for note in event_review_notes(root, within_days):
+            print(note, file=sys.stderr)
+        print("Drafts written to kit/social/events. Nothing was posted.")
         return
     if outcomes:  # DF1952-14: private drafts quoting recorded meeting outcomes; nothing is posted
         print(json.dumps(build_outcome_social(root, platforms, within_days), indent=2, ensure_ascii=False))
@@ -920,12 +926,14 @@ def main():
                           help="Draft one private post per scheduled upcoming meeting with verified participation into kit/social/meetings")
     social_p.add_argument("--outcomes", action="store_true",
                           help="Draft one private post per meeting with a recorded outcome dated in the last N days into kit/social/outcomes")
+    social_p.add_argument("--events", action="store_true",
+                          help="Draft one private post per campaign event (content/events.json) starting within N days into kit/social/events")
     social_p.add_argument("--thread", action="store_true",
                           help="With --finding: draft one private numbered thread for that published finding into kit/social/threads")
     social_p.add_argument("--finding", action="append", metavar="ID",
                           help="With --thread: the exact id of one published finding")
     social_p.add_argument("--within-days", type=int, default=None, metavar="N",
-                          help="With --meetings: meetings starting within N days; with --outcomes: outcomes recorded in the last N "
+                          help="With --meetings: meetings starting within N days; with --events: campaign events starting within N days; with --outcomes: outcomes recorded in the last N "
                                "calendar days, today included; 1 to 60 (default 14)")
     press = commands.add_parser("press", help="Draft private press material; sends nothing")
     press_commands = press.add_subparsers(dest="press_command", required=True)
@@ -1628,15 +1636,17 @@ def main():
         parser.error("--check reads finding drafts only; it cannot be combined with --meetings")
     if args.command == "social" and args.outcomes and (args.meetings or args.check):
         parser.error("--outcomes cannot be combined with " + ("--meetings" if args.meetings else "--check (--check reads finding drafts only)"))
+    if args.command == "social" and args.events and (args.meetings or args.outcomes or args.check or args.thread):
+        parser.error("--events cannot be combined with --meetings, --outcomes, --check or --thread")
     if args.command == "social" and args.finding is not None and not args.thread:
         parser.error("--finding needs --thread")
     if args.command == "social" and args.thread:
         if args.check or args.meetings or args.outcomes or args.within_days is not None:
-            parser.error("--thread cannot be combined with --check, --meetings, --outcomes or --within-days")
+            parser.error("--thread cannot be combined with --check, --meetings, --outcomes, --events or --within-days")
         if args.finding is None or len(args.finding) != 1:
             parser.error("--thread needs exactly one --finding ID")
-    if args.command == "social" and args.within_days is not None and not (args.meetings or args.outcomes):
-        parser.error("--within-days needs --meetings or --outcomes")
+    if args.command == "social" and args.within_days is not None and not (args.meetings or args.outcomes or args.events):
+        parser.error("--within-days needs --meetings or --outcomes (or --events)")
     if args.command == "social" and args.within_days is not None and not 1 <= args.within_days <= 60:
         parser.error("--within-days must be 1 to 60")
     if args.command == "build" and args.preview and args.budget is not None:
@@ -1701,7 +1711,7 @@ def main():
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
             social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days, args.outcomes,
-                       args.finding[0] if args.thread else None)
+                       args.finding[0] if args.thread else None, args.events)
         elif args.command == "press":
             if args.press_command == "letter":
                 from .press import build_letter
