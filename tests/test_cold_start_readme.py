@@ -182,6 +182,15 @@ class ColdStartReadmeTests(unittest.TestCase):
         self.assertEqual(lint_doc("[x](docs/NO-SUCH-GUIDE.md)", set(tracked_files(REPO)), set(), doc="README.md"),
                          ["link does not resolve to a tracked file: docs/NO-SUCH-GUIDE.md"])
 
+    def test_readme_links_the_ordinance_checklist_once_outside_start_locally(self):
+        start = re.search(r"^## Start locally\s*$(.*?)(?=^## |\Z)", self.readme, re.M | re.S).group(1)
+        self.assertNotIn("ORDINANCE-CHECKLIST", start)
+        self.assertEqual(self.readme.count("](docs/ORDINANCE-CHECKLIST.md)"), 1)
+        self.assertIn("docs/ORDINANCE-CHECKLIST.md", tracked_files(REPO))
+        self.assertEqual(lint_doc("[o](docs/ORDINANCE-CHECKLIST.md)", set(tracked_files(REPO)), set(), doc="README.md"), [])
+        self.assertEqual(lint_doc("[o](docs/NO-SUCH-CHECKLIST.md)", set(tracked_files(REPO)), set(), doc="README.md"),
+                         ["link does not resolve to a tracked file: docs/NO-SUCH-CHECKLIST.md"])
+
 
 if __name__ == "__main__":
     unittest.main()
