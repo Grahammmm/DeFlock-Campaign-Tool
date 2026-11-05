@@ -600,6 +600,25 @@ item `category`, else the title before ` - `. Ids are `agendacenter-<first host 
 link when there is none). An item with no description is dropped unless `--all-events`, which keeps it as `not_scanned: true`. Cancelled
 and changes rules, the 60-event cap and the keyword-lead, verify-by-hand rule are the same as for Legistar.
 
+## iCalendar agenda feed import (CLI)
+
+```
+python3 -m campaign_tool meetings --directory D --platform ics --feed-url https://... --body "City Council" (--online | --from-ics FILE) [--since YYYY-MM-DD] [--tz ZONE]
+```
+
+For a body that publishes only an `.ics` feed. `--feed-url` is an https URL (no user or password, at most 500 characters) and
+`--body` is the governing body's name (plain text, at most 120; the feed's own calendar name is not trusted). `--client` is not
+used and is refused. `--online` makes **one GET of the feed** and nothing else (at most 2 MiB); `--from-ics` reads a saved copy offline.
+Output has the Legistar shape with `source: "ics"`, `id` `ics-<body slug>-<12 hex of sha256(UID)>` and `event_id` the UID.
+
+Only `VEVENT`s are read (more than 2 000 refuse the run and write nothing). Times: `TZID=<IANA zone>` is kept in that zone, `...Z`
+is converted to `--tz`, `VALUE=DATE` is date-only (`time_known: false`); in a repeated DST hour the first occurrence is used. A
+floating time (no zone), an unknown `TZID`, a UID over 200 characters, a missing UID and an unreadable start are skipped and counted.
+**Recurring events (`RRULE`, `RDATE`, `RECURRENCE-ID`) are skipped and counted, not expanded.** The report prints
+`skipped` with each count. Only `SUMMARY` and `DESCRIPTION` are scanned for the ALPR keywords; `STATUS:CANCELLED` sets
+`status: "cancelled"`. `agenda_url` is the `URL` property if `https://`, else the first `https://` `ATTACH`; attachment links are
+recorded and **never fetched**. Changes (new, moved, cancelled) and the keyword-lead rule are the same as for Legistar.
+
 ## Calendar feed
 
 A built site publishes `/meetings.ics` (RFC 5545), linked from the meetings page, so supporters can subscribe. It lists the

@@ -398,6 +398,15 @@ def feed_opener(path):
 
 def make_client(args, opener):
     """The agenda-platform client for the ``meetings`` command; refuses flags that belong to another platform."""
+    if args.platform == "ics":  # DF1422-09: one public iCalendar feed; --client, --from-json, --from-xml and the Granicus flags do not apply
+        if args.client or args.from_json or args.from_xml or args.view_id is not None or args.all_events or args.matters:
+            raise MeetingsError("--platform ics takes --feed-url and --body with --online or --from-ics; not --client, --from-json, --from-xml, --view-id, --all-events or --matters")
+        if not getattr(args, "feed_url", None) or not getattr(args, "body", None):
+            raise MeetingsError("--platform ics needs --feed-url and --body")
+        from .meetings_ics import IcsClient
+        return IcsClient(args.feed_url, args.body, opener=opener, label=getattr(args, "from_ics", None) or "feed")
+    if getattr(args, "feed_url", None) or getattr(args, "body", None) or getattr(args, "from_ics", None):
+        raise MeetingsError("--feed-url, --body and --from-ics go with --platform ics")
     granicus, center = args.platform == "granicus", args.platform == "agendacenter"
     feed = granicus or center
     if (feed and (args.from_json or (args.online and args.from_xml))
@@ -526,6 +535,8 @@ def event_status(event):
 
 def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_events=False):
     """Upcoming events with at least one ALPR-related agenda item, as meeting dicts."""
+    if hasattr(client, "relevant"):  # a platform that reads whole documents (iCalendar) builds its own meeting dicts
+        return client.relevant(since=since, zone=zone)
     meetings = []
     for event in client.events(since=since, top=max_events)[:max_events]:
         if not isinstance(event, dict) or type(event.get("EventId")) is not int:
