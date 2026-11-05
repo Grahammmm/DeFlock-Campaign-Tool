@@ -260,6 +260,12 @@ def _reply_request(root, request_id):
 def _reply_finding(root, finding_id):
     """(finding or None, base_url or None). Missing content is absence; present but invalid content refuses."""
     try:
+        try:
+            mode = os.lstat(Path(root) / "content").st_mode
+        except FileNotFoundError:
+            return None, None  # genuinely absent
+        if not stat.S_ISDIR(mode):  # a file, link or dangling link is present but invalid
+            raise ValueError
         model = load_content(root)
     except Exception:
         raise ValueError(_CONTENT_REFUSAL) from None
@@ -307,6 +313,9 @@ def _reply_target(root, request_id):
         except FileNotFoundError:
             missing += 1
             continue
+        except OSError:
+            raise ValueError(f"kit/corrections/replies/{request_id}.md: path could not be checked safely; "
+                             "nothing was written") from None
         if missing or stat.S_ISLNK(mode) or (part != f"{request_id}.md" and not stat.S_ISDIR(mode)):
             raise ValueError(f"kit/corrections/replies/{request_id}.md: path has a link or non-directory, or the draft already exists; "
                              "nothing was written")

@@ -275,6 +275,37 @@ class ReplyTests(base.CorrectionRequestTests):
                           if p.is_file()}, public)
         self.assertEqual(sorted(p.name for p in self.replies.iterdir()), ["1.md", "2.md"])
 
+    def test_present_nondirectory_content_refuses(self):
+        self.add(received="2026-03-06")
+        content = self.root / "content"
+        for make in ("file", "dangling"):
+            if content.is_symlink() or content.is_file():
+                content.unlink()
+            else:
+                import shutil
+                shutil.move(str(content), str(self.base / "content-moved"))
+            if make == "file":
+                content.write_text("not a directory")
+            else:
+                content.symlink_to(self.base / "nowhere")
+            self.refuses("public content is unreadable")
+            self.assertFalse((self.root / "kit").exists())
+
+    def test_preflight_permission_error_is_domain_refusal(self):
+        self.add(received="2026-03-06")
+        real = os.lstat
+
+        def deny(path, *a, **k):
+            if str(path).endswith(os.path.join("kit", "corrections")):
+                raise PermissionError(13, "denied", str(path))
+            return real(path, *a, **k)
+
+        (self.root / "kit" / "corrections").mkdir(parents=True)
+        with mock.patch("campaign_tool.correction_requests.os.lstat", side_effect=deny):
+            message = self.refuses("could not be checked safely")
+        self.assertNotIn("denied", message)
+        self.assertFalse(self.replies.exists())
+
 
 for _name in [n for n in dir(base.CorrectionRequestTests) if n.startswith("test_")]:
     setattr(ReplyTests, _name, None)  # inherited tests belong to tests.test_correction_requests
