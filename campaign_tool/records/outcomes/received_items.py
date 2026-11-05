@@ -496,7 +496,9 @@ def write_run_received_items(project, run_id):
                 stream.write(encoded)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.link(temporary, target)  # fails if a final artifact appeared meanwhile
+            if os.path.lexists(target):  # the stage holds the run lock; re-check just before installing
+                raise ValueError("received_items_existing_output")
+            os.replace(temporary, target)
         finally:
             try:
                 os.unlink(temporary)

@@ -291,7 +291,8 @@ class RegisterIntegrationTests(unittest.TestCase):
         self.assertEqual((directory / "CURRENT-REQUEST-REGISTER.md").read_text(), register.markdown(report))
         self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
         for path in directory.iterdir():
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            # REC-AUTO-3: the outcomes directory is 0700; every file stays 0600.
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700 if path.name == "outcomes" else 0o600)
         snapshot = json.loads((self.project / "run-outputs" / "synthetic-run.json").read_text())
         self.assertEqual(snapshot["mail_messages"], 0)
         self.assertEqual(self.ledger.read_bytes(), before)

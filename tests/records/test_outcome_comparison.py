@@ -288,9 +288,9 @@ class OutputsStage(unittest.TestCase):
         snapshot = json.loads((project / "run-outputs/synthetic-run.json").read_text())
         self.assertEqual(set(snapshot), {"snapshot_version", "run_id", "stage_state", "mail_messages", "originals", "portal_items", "portal_refusals"})
         self.assertEqual(self.fingerprint(project), before)
-        frozen = {p.name: p.read_bytes() for p in output.iterdir()}
+        frozen = {str(p.relative_to(output)): p.read_bytes() for p in output.rglob("*") if p.is_file()}
         self.assertEqual(self.invoke(project)[1], 0)
-        self.assertEqual({p.name: p.read_bytes() for p in output.iterdir()}, frozen)
+        self.assertEqual({str(p.relative_to(output)): p.read_bytes() for p in output.rglob("*") if p.is_file()}, frozen)
         self.assertEqual(self.fingerprint(project), before)
         self.assertEqual(self.invoke(project, "synthetic-next-run")[1], 0)
         self.assertTrue((project / "run-outputs/synthetic-next-run/comparison.md").is_file())
@@ -383,7 +383,9 @@ class OutputsStage(unittest.TestCase):
 
     def test_integration_negative_control_detects_missing_hook(self):
         project = self.project()
-        with patch.object(c, "write_run_comparison", return_value=None):
+        # REC-AUTO-3: received items follow comparison, so a run without it must skip both writers.
+        with patch.object(c, "write_run_comparison", return_value=None), \
+                patch("campaign_tool.records.outcomes.received_items.write_run_received_items", return_value=None):
             self.assertEqual(self.invoke(project)[1], 0)
             with self.assertRaises(FileNotFoundError):
                 (project / "run-outputs/synthetic-run/comparison.json").read_text()
