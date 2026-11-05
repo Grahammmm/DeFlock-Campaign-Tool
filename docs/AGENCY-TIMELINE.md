@@ -166,6 +166,30 @@ snapshot (`retention_days` with its checked date and source); with none it carri
 `0700`, the file `0600`; an existing file, a symlink or a non-private folder is refused and nothing is overwritten.
 It sends nothing and changes no status, coverage or export.
 
+## Fee estimate reply draft (kit fee-reply)
+
+`kit fee-reply --directory D --agency ID [--request NAME] [--narrow T] [--replace]` writes a private, never-sent
+`kit/followups/ID--NAME-fee-DATE.md` (NAME defaults to `main`; DATE is the estimate's recorded date) for a request whose
+newest recorded step is a `fee_estimate`. It restates the recorded amount and date, asks for an itemized basis with
+quantities and rates, asks for electronic copies where the records exist electronically, and quotes the law package's
+`fee_basis` text with the `rule_id` and citation of the one in-force rule cited `Gov. Code § 7922.530`, plus the package
+status and, for a draft package, the caveat that it is not independently reviewed. It disputes nothing, asks for no
+waiver, authorizes nothing and sends nothing; read it, edit it and send it yourself.
+
+The newest step is the last stored step. A later acknowledgment, payment, waiver, clarification, production or denial
+refuses the draft, as does a closed or withdrawn request, an unknown or unselected agency, or no recorded estimate.
+Without exactly one in-force rule with that citation and a nonblank `fee_basis` it refuses with `No unambiguous fee rule
+in the law package; nothing written.`; the shipped us-ca package has no such rule yet, so it refuses until a reviewed
+rule is added. `--narrow T` (1-300 characters of trimmed plain text, no angle brackets or control characters) adds the
+question `Would limiting the scope to the following change the estimate?` with T quoted literally; without it the block
+is omitted. Wording notes from the legal-claim guard go to stderr and never stop the draft.
+
+An existing draft is kept unless `--replace`, which rewrites it from the current flags and the latest estimate (an
+omitted `--narrow` removes an old one). The folder is `0700`, the file `0600`; a link, a non-private folder or a
+hardlinked or special target is refused. The `fee-reply` options cannot be mixed with `--online`, `--include` or
+`--scope`, and `kit` without `fee-reply` is unchanged. The command changes no tracker, `kit-due`, `kit-fees` or
+`kit-status` output.
+
 ## Stated production date (kit requests)
 
 `kit-response --kind determination --expected-on YYYY-MM-DD` (or a later step, such as `fee_estimate`, that
