@@ -26,7 +26,7 @@ when a line names no file, and the same exit codes, so an editor or CI step can 
 
 ## Content directory
 
-`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, a draft `pages/help-map.json`, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, draft `pages/help-map.json` and `pages/background.json` starter pages, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
 
 ### Help-map page starter
 
@@ -42,6 +42,28 @@ the three `nav` slots; set `"nav": false` or delete `content/pages/help-map.json
 fresh tree has none. `content init --from OLD` copies a source campaign's own pages as before and never adds this
 starter. Before publishing run `content-check` and `build --check` offline; the legal-claim guard stays advisory and
 does not scan page copy, so read the page yourself. The report's `placeholders` count includes this page's markers.
+
+### Background-reading page starter
+
+A fresh `content init` also writes `content/pages/background.json`, the page `/background.html` titled "Background
+reading": nine public California documents about ALPRs and the public records law, in three groups (audit and
+guidance; California statutes and public records; legislative background). Each entry gives the title as published,
+the publisher, a labeled date (published, issued, effective or operative, analysis or approved date as the document
+calls for), one `https://` link and one sentence on what the document covers. Only official publishers are listed (the
+State Auditor, the Attorney General's office, the Legislature's leginfo site). The page says it is background and not a
+finding about any agency or legal advice. It is read from the packaged copy of `examples/pages/background.json`, so it
+works from an installed wheel, and it is California-scoped for every campaign, whatever its state.
+
+This is a starter the organizer re-checks. The intro and every entry start `[EDIT ME: verify for this campaign]`, which
+stays visible on the page until you replace it. Before publishing, open each link and confirm the title, publisher and
+date, check whether a statute has been amended since the date shown, and delete entries you do not want. The shipped
+California law package stays a draft; this list does not review it. The page uses one of the three `nav` slots (with the
+help-map page it uses two); `"nav": false` only hides its navigation link; the page stays public at `background.html`. To omit it, delete `content/pages/background.json` and rebuild.
+`content init --from OLD` copies the source campaign's own `background.json` when it has one and never adds this starter.
+The renderer shows only `##` headings, so each entry title is a bold line. Run `content-check` and `build --check`
+offline before publishing. The tests check the committed citation structure, the official-host rule and the
+legal-claim guard on the page text; they do not fetch the links, so link freshness and legal correctness are the
+organizer's to confirm. The report's `placeholders` count includes this page's markers.
 
 ### Draft FAQ starter
 
