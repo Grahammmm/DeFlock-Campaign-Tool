@@ -127,12 +127,12 @@ class ReviewPacketTests(unittest.TestCase):
 
     def test_rules_md_lists_needs_attorney_review_first_then_likely_then_verified(self):
         out, result = self.packet()
-        self.assertEqual(result["review_counts"], {"verified": 8, "likely": 1, "needs_attorney_review": 3})
+        self.assertEqual(result["review_counts"], {"verified": 8, "likely": 1, "needs_attorney_review": 9})
         listed = re.findall(r"^## \d+\. (\S+)$", (out / "RULES.md").read_text(encoding="utf-8"), re.M)
         labels = {rule["rule_id"]: rule["review"] for rule in law.load_package("us-ca")["rules"]}
         self.assertEqual(sorted(listed), sorted(labels))
         self.assertEqual([labels[rule_id] for rule_id in listed],
-                         ["needs_attorney_review"] * 3 + ["likely"] + ["verified"] * 8)
+                         ["needs_attorney_review"] * 9 + ["likely"] + ["verified"] * 8)
 
     def test_order_comes_from_the_review_field_not_the_text(self):
         package = copy.deepcopy(law.load_package("us-ca"))
