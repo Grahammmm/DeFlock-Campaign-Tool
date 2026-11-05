@@ -467,10 +467,23 @@ asked date or today's date. The lead gives the number of rows and a count for ea
 `awaiting_response`, `acknowledged`, `partly_answered`, `answered`, `declined_in_writing`, `withdrawn` (zero counts included),
 counted from the very rows shown; no state is inferred and nothing says a response is late. With no rows the page says "No
 public requests are listed yet." after the zero counts and shows no table. It reuses the `.glance-table` markup, so rows
-stack on phones with each cell's header, and adds no script, style, CSP rule or asset. It is linked as "What we have
+stack on phones with each cell's header, and adds no CSP rule (a script, style and asset only with the filter below). It is linked as "What we have
 asked for" in the footer between the findings feed and Corrections (on every page), is listed once in `sitemap.xml` (with
 `base_url`, no `lastmod`), `requests.html` is a generated path (`public-assets/requests.html` is refused) and `requests` is a
 reserved page slug. Labels: `requests.*` and `footer.requests`.
+
+**Agency and state filter (DF1622-08).** When the rows shown span two or more agencies or two or more request states (an
+agency with no asked row does not count; with none, one agency and one state the page, `style.css` and every other file stay
+byte-identical and no script is written), the page gains a form with an Agency select and a State select (State is the request
+workflow state, in the lead's order), a count line "Showing N of M" and a "No public request matches these filters." note, and
+loads `requests/filter.js`: first-party, ES5, no dependency, no network, cookies or storage, text and `hidden` only, so the
+CSP is unchanged. The full table always shows without JavaScript; the form and the note stay hidden until the script runs.
+Rows carry `data-agency` (the agency slug) and `data-state`; the two selects combine (both must match) and duplicates count
+as separate rows. The choice is kept in the address as `#agency=<slug>&state=<state>`; unknown keys, unknown values and bad
+escapes are ignored, and a copied link restores both selections. Printing shows every row. The labels are `js.requests_label`,
+`js.requests_agency`, `js.requests_state`, `js.requests_all_agencies`, `js.requests_all_states`, `js.requests_count`
+(`{shown}`, `{total}`) and `js.requests_empty`; they apply to this page only, never to `site-data.js` or other scripts.
+`requests` is a reserved top-level path, so `public-assets/requests/...` is refused.
 
 ### Contract cost as stated (`profile.contract.cost`)
 
