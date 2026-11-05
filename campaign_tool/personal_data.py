@@ -164,7 +164,7 @@ def _consent(data):
 
 
 def _speakers(data):
-    document = _document(data, ("schema_version", "meeting_id", "kit_sha256", "assignments"), list)
+    document = _document(data, ("schema_version", "assignments", "meeting_id", "kit_sha256"), list)
     if not all(isinstance(item, dict) and set(item) == {"label", "point"} for item in document["assignments"]):
         raise _Bad
     return len(document["assignments"]), []
