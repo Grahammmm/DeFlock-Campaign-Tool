@@ -1096,6 +1096,11 @@ def main():
         copy_p.add_argument(flag, required=True)
     copy_p.add_argument("--for", dest="copy_for", required=True, choices=("portal", "email", "mail"))
     copy_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
+    brief_p = commands.add_parser("agency-brief", help="Private printable meeting brief for one agency from published content "
+                                  "only: kit/briefs/<agency-slug>-<date>.html and .txt; sends and publishes nothing")
+    brief_p.add_argument("--directory", required=True)
+    brief_p.add_argument("--agency", required=True)
+    brief_p.add_argument("--replace", action="store_true", help="Overwrite an existing brief pair (regular files only)")
     coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
                                      "records, sources, findings (read-only)")
     coverage_p.add_argument("--directory", required=True)
@@ -1958,6 +1963,9 @@ def main():
             print(render(result))
             print("Recorded only. Nothing was fetched or sent." if result["applied"] else
                   "Checked only; nothing was written, fetched or sent.")
+        elif args.command == "agency-brief":
+            from .agency_brief import run_cli as agency_brief_cli
+            agency_brief_cli(root, args.agency, replace=args.replace)
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
             kit_check_cli(root, as_json=args.as_json)
