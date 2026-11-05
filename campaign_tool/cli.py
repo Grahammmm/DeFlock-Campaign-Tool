@@ -1223,6 +1223,15 @@ def main():
                                      "section number in the agency's own words (read-only)")
     withheld_p.add_argument("--directory", required=True)
     withheld_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
+    search_log_p = commands.add_parser("kit-search-log", help="Private counts from a locally saved ALPR search log CSV: months, "
+                                       "organizations, purpose categories (read-only; purposes are counted, never shown)")
+    search_log_p.add_argument("--directory", required=True)
+    search_log_p.add_argument("--csv", required=True, help="The agency's log as saved, UTF-8 CSV, at most 100 MiB")
+    search_log_p.add_argument("--agency", required=True, help="An agency_id in kit/agencies.json")
+    search_log_p.add_argument("--json", dest="as_json", action="store_true", help="One JSON document instead of text")
+    search_log_p.add_argument("--categories", help="Your own purpose term lists (JSON); replaces the default terms")
+    for role in ("time", "reason", "org", "state"):
+        search_log_p.add_argument(f"--{role}-col", metavar="HEADER", help=f"Exact header of the {role} column")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -2047,6 +2056,9 @@ def main():
             code = kit_asked_cli(root, args.apply)
             if code:
                 sys.exit(code)
+        elif args.command == "kit-search-log":
+            from .search_log import run_cli as search_log_cli
+            search_log_cli(root, args)
         elif args.command == "kit-withheld":
             from .kit_track import format_withheld, withheld
             report = withheld(root)
