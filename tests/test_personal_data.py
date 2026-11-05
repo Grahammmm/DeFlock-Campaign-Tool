@@ -537,7 +537,7 @@ _MODULES = {
     "backup archives and keys": "backup backup_crypt",
     "generated drafts, exports and public content, no catalog store": """
         agency_brief content_init content_sharing coverage flyer kit_calendar kit_copy kit_export kit_fees kit_preserve kit_timing
-        map_survey meeting_outcome meeting_pack meeting_stage meetings meetings_manual newsletter.__main__ newsletter.archive
+        map_survey meeting_comment_publish meeting_outcome meeting_pack meeting_stage meetings meetings_manual newsletter.__main__ newsletter.archive
         newsletter.draft newsletter.sent outbox outbox_batch press recent search_log site site_check social social_threads""",
     "other local files with no catalog store": """
         agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
@@ -590,6 +590,7 @@ MODULE_FUNCTIONS = {
     'law_packet': ('build',),
     'map_controller': ('main',),
     "map_survey": ('_install_new', '_write_checks', 'render_csv', 'survey_import',),
+    'meeting_comment_publish': ('publish',),
     'meeting_outcome': ('record_comment_counts', 'record_direction', 'record_minutes', 'record_outcome',),
     'meeting_pack': ('_commit_pack', '_discard', '_write_member', 'build',),
     'meeting_stage': ('stage',),

@@ -292,6 +292,7 @@
     "meeting.minutes_pending": "Registrado por la campaña; acta aún sin aprobar",
     "meeting.continued_to": "Continuado al {date}",
     "meeting.continued_from": "Continuado desde el {date}",
+    "meeting.submitted_comment": "Nuestro comentario presentado ({channel}, {date})", "meeting.submitted_comment_link": "Nuestro comentario presentado",
     "meeting.cosigned_one": "Firmado también por {count} organización",
     "meeting.cosigned_many": "Firmado también por {count} organizaciones",
     "meeting.staff_direction": "Se indicó al personal que: {direction} (para el {date}, según consta en {source})",
