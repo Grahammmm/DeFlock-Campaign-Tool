@@ -212,6 +212,23 @@ section number found in the agency's own text (`Gov. Code § 7923.600`, `Governm
 `GC 7922.000`; a basis naming two sections appears under both; none: `no section number stated`). It is read-only and
 adds no legal reading. Older `kit/sent.json` files with no `withheld_basis` read unchanged.
 
+## Follow-on requests (kit-repeat)
+
+`kit-sent` also stores `covers_through`, the last day of records that request asked for: the end of the one whole line
+`The date range for this request is FROM through TO.` in the draft it records (`today` becomes the sent date, because the
+draft is fixed when it is recorded as sent), or an explicit `--covers-through D` (a real date from 2000-01-01, not after
+`--date`). A missing, edited, repeated or placeholder line stores nothing; nothing is guessed from settings, summary or
+the sent date, and older `kit/sent.json` files read unchanged.
+`kit-repeat --directory D --agency ID --request NAME --as NEW [--through D] [--from D]` drafts an unsent follow-on at
+`kit/requests/<agency>--<NEW>.md`: the earlier draft's scope sections and requester text unchanged, with an explicit
+range from the day after the earlier `covers_through` through `--through` (default today, written as a date). A delayed
+send does not skip days: a range through 2026-09-30 sent on 2026-10-15 gives a follow-on starting 2026-10-01. An earlier
+request with no `covers_through` (legacy, imported or unknown) needs `--from D`; an unsent request, a used name, a
+`--through` after today or a start after the end is refused, and nothing is written. The link to the earlier request is
+kept in private `kit/repeat-drafts.json`; `kit-sent` on the follow-on records `follows` and its own `covers_through`
+(an edited follow-on draft is refused until restored). `kit-status` shows both fields, and `kit-coverage` and the status
+CSV add chain columns only when some request has them. Nothing is sent; no owner, reference or step is copied.
+
 ## Per-scope answers (kit requests)
 
 `kit-sent` records the law-package scope ids its draft covers as `scopes` (every package scope, in package order, when
