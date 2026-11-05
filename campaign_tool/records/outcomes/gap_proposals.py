@@ -186,8 +186,10 @@ def propose(received, page_text, package, *, run_id, requests=(), now=None, scor
                 def later(o):
                     a, b = _when(o.get("received_at")), _when(item.get("received_at"))
                     return a is not None and b is not None and a > b
-                answered = any(o["item_id"] != item["item_id"] and o.get("kind") in FINAL_KINDS
-                               and o.get("request_id") == item.get("request_id") and later(o) for o in agency_items)
+                answered = any(o["item_id"] != item["item_id"] and o.get("request_id") == item.get("request_id") and later(o)
+                               and (o.get("kind") in FINAL_KINDS
+                                    or any(d.get("date") and d["date"] > stated["date"] for d in o.get("deadlines", [])))
+                               for o in agency_items)
                 if not answered:
                     inferred = bool(stated.get("year_inferred"))
                     add(item, "promised_not_received", "stated_date", stated["page"], stated["quote"],
@@ -213,7 +215,7 @@ def propose(received, page_text, package, *, run_id, requests=(), now=None, scor
         log.append({"proposal_id": proposal["proposal_id"], **verdict})
         reasons = ([f"confidence_{proposal['confidence']}"] if proposal["confidence"] == "low" else []) + proposal["flags"]
         if verdict["source"] == "model" and verdict["answer"] == "no":
-            reasons.append("model_does_not_support")
+            reasons.append("model_answered_no")
         proposal["review_bucket"] = "review_list" if reasons else "proposal"
         proposal["review_reasons"] = sorted(set(reasons))
     grouped = {}
@@ -253,31 +255,27 @@ def _score(scorer, proposal):
         return fallback
 
 
-def h2o_scorer(url, *, timeout=20):
-    """Yes/no scorer over a LOOPBACK OpenAI-compatible endpoint (the local H2O server). Refuses any other host."""
+def h2o_scorer(url, *, timeout=60):
+    """Yes/no scorer over the LOOPBACK local H2O server's /v1/systemone `noul` question (calibrated P(yes)).
+    Refuses any other host. `url` is the server base, e.g. http://127.0.0.1:8091."""
     import math
     import urllib.parse
     import urllib.request
-    host = urllib.parse.urlparse(url).hostname
-    if host not in ("127.0.0.1", "localhost", "::1"):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
         raise ValueError("gap_proposals_scorer_not_loopback")
+    endpoint = f"{parsed.scheme}://{parsed.netloc}/v1/systemone"
 
     def ask(question, quote):
-        body = {"messages": [{"role": "user", "content": f"Excerpt: {quote}\nQuestion: {question}\nAnswer with one word, yes or no."}],
-                "max_tokens": 1, "temperature": 0, "logprobs": True, "top_logprobs": 5}
-        request = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        body = {"state": {"excerpt": quote}, "questions": {"q": {"type": "noul", "instructions": question}}}
+        request = urllib.request.Request(endpoint, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - loopback checked above
-            top = json.load(response)["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
-        mass = {"yes": 0.0, "no": 0.0}
-        for entry in top:
-            word = entry["token"].strip().lower()
-            if word in mass:
-                mass[word] += math.exp(entry["logprob"])
-        total = mass["yes"] + mass["no"]
-        if total <= 0:
+            p_yes = float(json.load(response)["answers"]["q"]["noul"])
+        if not 0.0 <= p_yes <= 1.0:
             return {"answer": None, "p_yes": 0.0}
-        return {"answer": "yes" if mass["yes"] >= mass["no"] else "no", "p_yes": mass["yes"] / total,
-                "logprobs": [(e["token"], e["logprob"]) for e in top]}
+        floor = 1e-9
+        return {"answer": "yes" if p_yes >= 0.5 else "no", "p_yes": p_yes,
+                "logprobs": [("yes", math.log(max(p_yes, floor))), ("no", math.log(max(1 - p_yes, floor)))]}
     return ask
 
 

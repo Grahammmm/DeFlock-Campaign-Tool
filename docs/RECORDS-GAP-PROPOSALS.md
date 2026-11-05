@@ -38,7 +38,7 @@ Each proposal gets a yes/no score. When a local H2O endpoint is configured
 otherwise, or on any fault, a fixed deterministic score is used. Both are written to
 `model_log`. A model answer never raises confidence; a "no" only moves the item to the review
 list. `review_list` holds every proposal that is low confidence, lacks a policy section, rests
-on unreviewed text or is not supported by the model. Items in it are never stated as fact.
+on unreviewed text or got a "no" from the model. Items in it are never stated as fact.
 
 Items with no agency are counted in `unlinked_items` and never assigned. A request with no id
 is grouped agency-wide, last.

@@ -127,6 +127,13 @@ class PureTests(unittest.TestCase):
         ledger = next(p for p in flat(report) if p["type"] == "deadline_passed_no_answer")
         self.assertEqual((ledger["evidence_kind"], ledger["item_id"]), ("ledger_field", None))
 
+    def test_later_extension_with_a_later_date_supersedes_the_passed_date(self):
+        old = {"date": "2026-11-02", "date_text": "November 2", "page": 1, "quote": "reply by November 2", "year_inferred": False}
+        new = dict(old, date="2026-11-30", date_text="November 30", quote="reply by November 30")
+        report = run([item(1, kind="extension", deadlines=[old]),
+                      item(2, kind="extension", deadlines=[new], received_at="2026-11-04T00:00:00Z")])
+        self.assertEqual([p for p in flat(report) if p["type"] == "promised_not_received"], [])
+
     def test_future_stated_date_makes_no_proposal(self):
         future = {"date": "2026-12-01", "date_text": "December 1, 2026", "page": 1, "quote": "by December 1, 2026", "year_inferred": False}
         self.assertEqual(flat(run([item(1, kind="extension", deadlines=[future])])), [])
@@ -172,7 +179,7 @@ class ScorerTests(unittest.TestCase):
         report = run(self.items, scorer=lambda q, quote: {"answer": "no", "p_yes": 0.1, "logprobs": [("no", -0.1)]})
         proposal = flat(report)[0]
         self.assertEqual((proposal["confidence"], proposal["review_bucket"]), ("high", "review_list"))
-        self.assertIn("model_does_not_support", proposal["review_reasons"])
+        self.assertIn("model_answered_no", proposal["review_reasons"])
         self.assertEqual(report["review_list"], [proposal["proposal_id"]])
         self.assertEqual(report["model_log"][0]["logprobs"], [["no", -0.1]])
 
@@ -184,8 +191,27 @@ class ScorerTests(unittest.TestCase):
 
     def test_scorer_refuses_non_loopback(self):
         with self.assertRaises(ValueError):
-            gp.h2o_scorer("http://example.com:8091/v1/chat/completions")
-        gp.h2o_scorer("http://127.0.0.1:8091/v1/chat/completions")
+            gp.h2o_scorer("http://example.com:8091")
+        gp.h2o_scorer("http://127.0.0.1:8091")
+
+    def test_h2o_scorer_reads_noul_probability_from_systemone(self):
+        class Reply(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+        seen = {}
+
+        def fake(request, timeout):
+            seen["url"], seen["body"] = request.full_url, json.loads(request.data)
+            return Reply(json.dumps({"answers": {"q": {"type": "noul", "noul": 0.9}}}).encode())
+        with patch("urllib.request.urlopen", fake):
+            got = gp.h2o_scorer("http://127.0.0.1:8091")("Q?", "quote text")
+        self.assertEqual(seen["url"], "http://127.0.0.1:8091/v1/systemone")
+        self.assertEqual(seen["body"]["state"], {"excerpt": "quote text"})
+        self.assertEqual((got["answer"], got["p_yes"]), ("yes", 0.9))
+        self.assertEqual([t for t, _ in got["logprobs"]], ["yes", "no"])
 
 
 class StageTests(unittest.TestCase):
