@@ -58,7 +58,7 @@ This is a starter the organizer re-checks. The intro and every entry start `[EDI
 stays visible on the page until you replace it. Before publishing, open each link and confirm the title, publisher and
 date, check whether a statute has been amended since the date shown, and delete entries you do not want. The shipped
 California law package stays a draft; this list does not review it. The page uses one of the three `nav` slots (with the
-help-map page it uses two); set `"nav": false` or delete `content/pages/background.json` to publish no such page.
+help-map page it uses two); `"nav": false` only hides its navigation link; the page stays public at `background.html`. To omit it, delete `content/pages/background.json` and rebuild.
 `content init --from OLD` copies the source campaign's own `background.json` when it has one and never adds this starter.
 The renderer shows only `##` headings, so each entry title is a bold line. Run `content-check` and `build --check`
 offline before publishing. The tests check the committed citation structure, the official-host rule and the
