@@ -981,6 +981,15 @@ def main():
     sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail", "in_person"))
     sent_p.add_argument("--file", help="The letter you sent: only its SHA-256 and size are kept, never its text or path")
     sent_p.add_argument("--replace", action="store_true", help="Overwrite an existing record for this meeting")
+    speakers_p = commands.add_parser("meetings-speakers", help="Private plan: which volunteer label covers which point of a "
+                                     "staged meeting's comment kit (kit/meetings/speakers/<id>.json); sends nothing")
+    speakers_p.add_argument("--directory", required=True)
+    speakers_p.add_argument("--id", required=True, help="Staged upcoming meeting id")
+    speakers_action = speakers_p.add_mutually_exclusive_group(required=True)
+    speakers_action.add_argument("--add", metavar="LABEL", help="Volunteer label (1-40 characters, no email or phone) for --point")
+    speakers_action.add_argument("--remove", metavar="LABEL", help="Remove every point of this label")
+    speakers_action.add_argument("--list", dest="list_plan", action="store_true", help="Points, speakers, gaps and overloaded labels")
+    speakers_p.add_argument("--point", metavar="POINT", help="With --add: finding:ID (a finding the kit cites) or ask:N")
     content_check_p = commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)")
     content_check_p.add_argument("--directory", required=True)
     content_check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
@@ -1453,6 +1462,8 @@ def main():
     if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
         if not args.upcoming or args.allow_past or args.within_days not in (None, *range(1, 91)):
             pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
+    if args.command == "meetings-speakers" and (args.add is None) != (args.point is None):
+        speakers_p.error("--point is required with --add and only allowed with --add")
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
         diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "finding_command", None) == "new":
@@ -1607,6 +1618,15 @@ def main():
                      **({"letter_sha256_prefix": entry["letter_sha256"][:12]} if "letter_sha256" in entry else {})}
             print(json.dumps(shown, indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "meetings-speakers":
+            from .meeting_speakers import list_plan, update_plan
+            # The guards must see the unresolved directory so a campaign-root or ancestor symlink is refused.
+            root = Path(args.directory).expanduser()
+            if args.list_plan:
+                print(json.dumps(list_plan(root, args.id), indent=2, ensure_ascii=False))
+            else:
+                print(json.dumps(update_plan(root, args.id, add=args.add, point=args.point, remove=args.remove)))
+                print("Recorded only. Nothing was sent.", file=sys.stderr)
         elif args.command == "supporters":
             from .supporters import add_supporter, remove_supporter, set_cosign_consent
             if args.supporters_command == "consent":
