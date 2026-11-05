@@ -50,6 +50,11 @@ class EventsIcsTests(EventsCase):
         self.assertIn("DTSTART:20261101T073000Z\r\n", text)
         self.assertIn("DTEND:20261101T093000Z\r\n", text)
 
+    def test_zero_duration_event_omits_dtend(self):
+        text = self.feed([event(1, starts_at="2026-10-10T18:00:00Z", ends_at="2026-10-10T18:00:00Z")])
+        self.assertIn("DTSTART:20261010T180000Z\r\n", text)
+        self.assertNotIn("DTEND", text)
+
     def test_past_left_out_all_past_is_valid_empty_feed_with_links(self):
         mixed = self.feed([event(1, starts_at="2026-09-30T23:59:59Z", ends_at="2026-10-01T01:00:00Z"), event(2)])
         self.assertNotIn("event-forum-1@", mixed)
