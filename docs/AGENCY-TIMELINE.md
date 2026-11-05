@@ -292,6 +292,11 @@ keep only the agency's stated production date) and a timed event for each staged
 written-comment deadline on or after `--as-of`. It holds ids, dates, agency or body names and the official source
 link only. It is refused inside the campaign's `public/` or `content/` and never overwrites: re-run into a new file.
 
+Request event UIDs keep agency and request identifiers separate. Named requests now use # before the request name.
+Earlier imported named-request events use old UIDs; remove those events or import into a fresh private calendar
+before importing the new file. Main-request and meeting UIDs are unchanged. This export does not update or remove
+events already imported by a calendar app.
+
 ## Requests filed on MuckRock (kit requests)
 
 `kit-sent --channel muckrock --request-url https://www.muckrock.com/foi/.../<name>-<id>` records a request you filed
