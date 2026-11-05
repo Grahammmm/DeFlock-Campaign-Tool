@@ -78,7 +78,7 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 
 | Path | Required | Purpose |
 | --- | --- | --- |
-| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), `license` (below), optional `press` (below), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
+| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), `license` (below), optional `press` (below), optional `corrections` (`{"show_request_counts": true|false}`, default off: publishes per-quarter correction-request counts only, see [CORRECTIONS-PROCESS.md](CORRECTIONS-PROCESS.md); a build with it on reads `private/correction-requests.json`, `content-check` never does), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
 | `content/findings/*.json` | no | one published finding per file (schema below) |
 | `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id`, optional `cited_findings` (1 to 3 unique finding ids, written by `meetings-stage`) |
 | `content/sources.json` | no | source-library entries: `sha256`, `title`, `agency_id`, `received_at`, `public_url` or null, `fragment`, `pages`, `note` |

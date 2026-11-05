@@ -208,6 +208,13 @@ DEFAULTS = {
     "requests.caption": "Every public request across agencies, newest first",
     "requests.col_agency": "Agency", "requests.col_topic": "Topic", "requests.col_asked_on": "Asked on",
     "requests.col_state": "State", "requests.col_updated_on": "Updated on", "requests.not_recorded": "Not recorded",
+    "correction_counts.heading": "Correction requests we received",  # DF1103-14, only with corrections.show_request_counts
+    "correction_counts.lead": "Grouped by quarter received; decisions and still-open counts reflect the current log, not quarter-end totals.",
+    "correction_counts.caption": "Correction requests received, by quarter",
+    "correction_counts.col_quarter": "Quarter", "correction_counts.col_received": "Received",
+    "correction_counts.col_accepted": "Accepted", "correction_counts.col_declined": "Declined",
+    "correction_counts.col_open": "Still open",
+    "correction_counts.empty": "No correction requests have been logged yet.",
     "officials.heading": "Who decides", "officials.source": "source",
     "officials.listed": ("Listed from the body's official site ({source}), checked {date}. "
                          "Contact officials only through the channels on that site."),

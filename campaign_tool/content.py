@@ -158,7 +158,7 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image", "license", "comment_asks", "press"}
+             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image", "license", "comment_asks", "press", "corrections"}
 # DF2207-10: the optional reporter page. contact_role is required; the address defaults to site.json.contact_email.
 PRESS_KEYS = {"contact_role", "contact_email", "about_md"}
 MAX_PRESS_ROLE, MAX_PRESS_ABOUT = 80, 1500
@@ -349,6 +349,22 @@ def load_comment_asks(value, label):
     return list(value)
 
 
+CORRECTIONS_KEYS = {"show_request_counts"}
+
+
+def load_corrections(value):
+    """DF1103-14: site.json.corrections is ``{"show_request_counts": <true|false>}``; refusals name the field, never a value."""
+    label = "site.json.corrections"
+    if not isinstance(value, dict):
+        raise ContentError(f"{label}: expected an object")
+    if set(value) - CORRECTIONS_KEYS:
+        raise ContentError(f"{label}: unknown field(s); only show_request_counts is allowed")
+    flag = value.get("show_request_counts", False)
+    if type(flag) is not bool:
+        raise ContentError(f"{label}.show_request_counts: must be true or false")
+    return {"show_request_counts": flag}
+
+
 def load_site(document, assets_dir=None):
     """``assets_dir`` (content/public-assets) lets ``brand`` check its logo and favicon files."""
     _require_keys(document, SITE_KEYS, {"schema_version", "tagline", "about_md"}, "site.json")
@@ -420,6 +436,7 @@ def load_site(document, assets_dir=None):
         **({"brand": load_brand(document["brand"], assets_dir)} if "brand" in document else {}),
         **({"share_image": load_share_image(document["share_image"], assets_dir)} if "share_image" in document else {}),
         **({"license": load_license(document["license"])} if "license" in document else {}),
+        **({"corrections": load_corrections(document["corrections"])} if "corrections" in document else {}),
         **({"press": load_press(document["press"], _email(document.get("contact_email"), "site.json.contact_email"))}
            if "press" in document else {}),
     }
