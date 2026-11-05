@@ -215,7 +215,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_default_include_never_lists_district_police(self):
         self.assertNotIn("district_police", discovery.DEFAULT_INCLUDE)
-        self.assertEqual(discovery.OPT_IN_KINDS, ("campus_police", "ccd_police", "school_police", "district_police"))
+        self.assertEqual(discovery.OPT_IN_KINDS, ("campus_police", "ccd_police", "school_police", "district_police", "fusion_center"))
         self.assertIn("district_police", discovery.LAW_ENFORCEMENT_KINDS)
         self.assertIn("district_police", discovery.COUNTY_KINDS)
         for query in ("Alameda County", "San Diego County", "Los Angeles County", "Oakland"):

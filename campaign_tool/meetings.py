@@ -21,7 +21,7 @@ from email.utils import parsedate_to_datetime
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -33,6 +33,8 @@ API_BASE = "https://webapi.legistar.com/v1"
 KEYWORDS_FILE = Path(__file__).resolve().parents[1] / "data" / "meeting-keywords.json"
 CLIENT = re.compile(r"[a-z0-9-]{2,64}")
 MAX_EVENTS = 60
+MAX_MATTERS = 100
+GUID = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 MAX_BYTES = 4 * 1024 * 1024
 TIMEOUT = 20
 GRANICUS_HOST = re.compile(r"[a-z0-9-]{1,63}\.granicus\.com")
@@ -127,6 +129,15 @@ class LegistarClient:
         if type(event_id) is not int or event_id < 0:
             raise MeetingsError("event id must be an integer")
         return self._get(f"events/{event_id}/eventitems")
+
+    def matters(self, since=None, top=MAX_MATTERS):
+        """Matters modified on or after ``since`` (date, default today minus 365 days), newest first."""
+        since = since or date.today() - timedelta(days=365)
+        return self._get("matters", {
+            "$filter": f"MatterLastModifiedUtc ge datetime'{since.isoformat()}'",
+            "$orderby": "MatterLastModifiedUtc desc",
+            "$top": str(min(int(top), MAX_MATTERS)),
+        })
 
 
 class CivicClerkClient(LegistarClient):
@@ -469,6 +480,55 @@ def write_meetings(root, meetings, client_name, changes=None, zone=None, source=
                         "Verify the posted agenda before publishing a meeting."}
     if changes is not None:
         document["changes"] = changes
+    _write_text(target, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
+    return target
+
+
+def _matter_date(value):
+    """YYYY-MM-DD from a Legistar date string, else None."""
+    try:
+        return date.fromisoformat(value[:10]).isoformat() if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def relevant_matters(client, since=None):
+    """Matters whose file number, name or title match the ALPR keywords, as keyword leads."""
+    out = []
+    for raw in client.matters(since=since)[:MAX_MATTERS]:
+        if not isinstance(raw, dict) or type(raw.get("MatterId")) is not int:
+            continue
+        fields = [raw.get(k) if isinstance(raw.get(k), str) else "" for k in ("MatterFile", "MatterName", "MatterTitle")]
+        text = " ".join(" ".join(fields).split())
+        terms = sorted({h.group(0).lower() for h in KEYWORDS.finditer(text)})
+        if not terms:
+            continue
+
+        def clean(key):
+            value = raw.get(key)
+            return _plain(" ".join(value.split()))[:300] if isinstance(value, str) else ""
+        guid = raw.get("MatterGuid")
+        url = (f"https://{client.client}.legistar.com/LegislationDetail.aspx?ID={raw['MatterId']}&GUID={guid}"
+               if isinstance(guid, str) and GUID.fullmatch(guid) else None)
+        out.append({"id": f"{client.source}-{client.client}-matter-{raw['MatterId']}",
+                    "file": clean("MatterFile"), "title": clean("MatterTitle") or clean("MatterName"),
+                    "type": clean("MatterTypeName"), "status": clean("MatterStatusName"), "body": clean("MatterBodyName"),
+                    "intro_date": _matter_date(raw.get("MatterIntroDate")), "agenda_date": _matter_date(raw.get("MatterAgendaDate")),
+                    "passed_date": _matter_date(raw.get("MatterPassedDate")), "url": url, "matched_terms": terms})
+    out.sort(key=lambda r: r["id"])
+    out.sort(key=lambda r: r["intro_date"] or "", reverse=True)
+    return out
+
+
+def write_matters(root, matters, client_name, since=None):
+    kit = root / "kit"
+    _kit_folder(kit, mode=0o700)
+    target = kit / "matters.json"
+    document = {"schema_version": 1, "source": "legistar", "client": client_name,
+                "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "keywords": KEYWORDS.pattern, "since": (since or date.today() - timedelta(days=365)).isoformat(),
+                "matters": matters,
+                "note": "Keyword hits on matter titles, not confirmation of ALPR use. Verify on the official Legistar page before citing."}
     _write_text(target, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
     return target
 

@@ -92,6 +92,51 @@ is separate from the city, county, campus, community college and school
 records offices. The page each row came from is recorded in the pull request
 that added it, not in the seed.
 
+### California fusion centers (opt-in)
+
+Fusion-center suggestions are unverified; a listing is not evidence of ALPR use or data sharing.
+
+California regional intelligence (fusion) centers are seeded as kind `fusion_center` from the `FUSION_CENTERS`
+table in `tools/build_agency_seed.py`, after the special-district entries and before the city entries. A center is
+listed only when official pages state both of two facts: the counties it serves (one official page) and its host or
+governing agency (one official page, which may be a different page). Official means the center's own site, its host
+agency's own site, or a state or federal government page (G decision 2026-11-04). Each fact is cited by the page that
+states it; a county list or host is never inferred from a news story, directory, map or similar center. A statewide
+center (the State Threat Assessment Center, STAC) has no enumerated counties and is not listed. The validator checks
+transcription structure only (https pages, a real non-future `checked_on` date, known county codes, no duplicates),
+never that a page says what the row claims, so review the pages below before relying on a row.
+
+Each center gets one entry per county it explicitly serves, id `ca-<center>-fusion-center-<county>`; none is copied
+to a neighboring county or placed by headquarters. Every entry is unverified with null contacts, and its two
+`sources` entries each carry the https page, `accessed` and `checked_on` for one fact (the county, the host). The
+source title tells you to verify the records custodian: the host's records office may not be the center's.
+
+| Center (as the page names it) | Host or governing agency (host page) | County served (county page) | checked_on |
+| --- | --- | --- | --- |
+| Orange County Intelligence Assessment Center | Orange County Sheriff's Department ([Counter-Terrorism Bureau page](https://www.ocsheriff.gov/commands-divisions/investigations-special-operations-command/operations-support-intelligence-0)) | Orange ([DHS page](https://www.dhs.gov/see-something-say-something/reporting/california/ociac)) | 2026-11-04 |
+
+1 center, 1 county entry. Left out, with the exact missing fact (pages read 2026-11-04):
+
+| Center | Page(s) checked | Missing fact |
+| --- | --- | --- |
+| Joint Regional Intelligence Center (JRIC) | jric.org home (names Los Angeles, Riverside, San Bernardino, San Luis Obispo, Santa Barbara and Ventura); the FBI 2006 story and the LA Sheriff's manual name partners only | no official page states a host or governing agency; the center's page says only that it is a partnership of agencies |
+| San Diego Law Enforcement Coordination Center (SD-LECC) | sd-lecc.org home (names San Diego and Imperial); the San Diego Sheriff's Special Investigations Division page | the county page calls it a collaborative partnership and the Sheriff page lists it among a division's units without saying the Sheriff hosts or governs it; no page states a host |
+| California Central Intelligence Center / Sacramento Regional Threat Assessment Center (CCIC/SacRTAC) | sacrtac.org, ccic.ca.gov, DHS | no official page enumerates its counties (the "34 counties of the Eastern District" are not listed) and none states the host |
+| Northern California Regional Intelligence Center (NCRIC) | ncric.ca.gov | the "15 county region" is not enumerated on the current pages and an older page lists 13 counties; the governing body is not an agency host |
+| State Threat Assessment Center (STAC) | caloes.ca.gov | statewide: it serves no enumerated counties |
+
+The other California centers were not checked and are not listed; add one only with its two official pages.
+
+The seed entries are opt-in: a kit lists them only with `--include fusion_center`, never by default. On a new
+private kit run `python3 -m campaign_tool kit --directory D --include sheriff --include fusion_center --scope sharing`.
+`--include` is repeatable and explicit. An existing `kit/agencies.json` is kept as it is, so running `kit` again with
+another `--include` does not insert rows. For an existing kit, add the reviewed seed agency with `kit-agency add` or
+`kit-agency import`, select its exact agency ID with `kit-agency select --directory D --id ID`, and run `kit` again
+with `--scope sharing`; `kit-agency deselect` stops its drafting. Nothing is selected without the organizer's action.
+The data-sharing scope in `jurisdictions/us-ca/package.json` applies unchanged, with its draft-status and legal
+caveats; no request wording changes. The hosted wizard snapshot under `workers/` is frozen and is not updated here,
+so `workers/scripts/sync-data.mjs --check` will report it stale after this seed change until a hosted update lands.
+
 Coverage: all 58 counties, and all 482 incorporated cities, each with a
 `city_council` entry and a policing value (own police department, county
 sheriff, another agency, or not recorded). A city whose policing arrangement
@@ -437,3 +482,33 @@ line of the file. If any row is bad nothing is written and each bad row is named
 header is line 1; the first 20 are listed, then a count). Otherwise all rows are appended in file order as selected,
 `verified: false`, `added_by: organizer`, and the next kit run drafts requests for the law-enforcement ones. `--check`
 runs every check and prints the same summary with `"written": false` without changing the file. Nothing is sent.
+
+## Cross-check a saved Atlas of Surveillance export (private, read-only)
+
+`kit-agency atlas --csv FILE --directory D [--json]` compares a CSV you saved by hand from the Atlas of Surveillance
+with the county seed and `kit/agencies.json`. **An Atlas listing is a lead, not evidence**: it does not show that an
+agency operates plate readers, and an agency the Atlas does not list is not shown to have none. Nothing is fetched,
+written, selected or published, and the campaign folder is only read.
+
+The file must be a regular UTF-8 file of at most 10 MiB (one leading byte-order mark is fine; a symlink, folder or
+named pipe is refused). It needs the header columns `Agency`, `City`, `County`, `State` and `Technology`, spelled
+exactly, in any order; a missing one is refused by name. A vendor column is optional and may be called `Company` or
+`Vendor` (not both); without one the vendor shows as `vendor not supplied`, and a vendor is printed exactly as written.
+Other columns are ignored and never printed. Blank rows are skipped. A malformed file (bad quoting, a row with the
+wrong number of cells, a NUL, a control or bidirectional character in `Agency`, `City` or the vendor, an empty
+`Agency`, `County`, `State` or `Technology`) is refused as a whole, naming the line and the rule but not the cell.
+
+Only rows whose `Technology` is exactly `Automated License Plate Readers` (case and spacing ignored), whose `State`
+is the campaign's two-letter code and whose `County` is the campaign's county (an optional trailing ` County` is
+ignored) are used. `City` is shown, never used to match or exclude. There is no fuzzy matching and no acronym or
+substring rule. An Atlas agency name matches a seed agency of that county when both are equal after lowercasing,
+deleting apostrophes, turning other punctuation into spaces and removing trailing `department`, `dept` and `office`
+words; nothing else is normalized (accents, `police`, `sheriff` and abbreviations are compared as written). Two seed
+agencies with one normalized name are never guessed between: the row is listed as `ambiguous_seed_name` with the
+candidate ids.
+
+The report has three sections, each headed by the notice above: seed agencies the Atlas lists (marked `selected` or
+`not selected` by the same agency id in `kit/agencies.json`, never by name, with the Atlas agency, vendor and CSV line);
+Atlas rows that match no seed agency; and every selected agency in `kit/agencies.json`, organizer-added ones included,
+that no Atlas row matched. The last list is not a finding about use. `--json` prints the same report as JSON and
+nothing else. Use `kit-agency select` yourself if a lead is worth a request; this command never does.

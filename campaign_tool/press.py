@@ -1,4 +1,5 @@
 """Private, offline press drafts based only on published findings."""
+import hashlib
 import json
 import os
 import re
@@ -10,7 +11,6 @@ from .content import ContentError, _read_json, load_content, load_finding
 from .kit import _kit_folder, _write_json, _write_text
 from .legal_claims import legal_notes
 from .site import CLASSIFICATION_LABELS, CONFIDENCE_LABELS
-from .social import _load_record, _sha
 
 
 MAX_CHARS = 6000
@@ -90,28 +90,51 @@ def build_press(root, finding_ids, day=None):
     _bad_ids(ids, available)
     findings = [available[i] for i in ids]
     text = _text(findings, base, model['site'].get('contact_email'))
+    name = f"{day}-{findings[0]['slug']}.md"
     kit = root / 'kit'
     folder = kit / 'press'
+    suggested = kit / 'press.suggested'
+    _check_ancestors(root)
     for directory in (kit, folder):
-        _kit_folder(directory)
-    name = f"{day}-{findings[0]['slug']}.md"
-    target = folder / name
+        _plain_folder(directory)
     record_path = folder / '.written.json'
-    record = _load_record(record_path)
-    edited = False
-    if os.path.lexists(target):
-        edited = (target.is_symlink() or not target.is_file() or
-                  _sha(target.read_bytes()) != record.get(name))
+    record = _letter_record(record_path, 'drafting press material')
+    target = folder / name
+    edited = os.path.lexists(target) and (_regular_bytes(target) is None or
+                                          _sha(_regular_bytes(target)) != record.get(name))
+    write_record, write_path = record, record_path
     if edited:
-        folder = kit / 'press.suggested'
-        _kit_folder(folder)
-        target = folder / name
-    else:
-        record[name] = _sha(text.encode('utf-8'))
+        _plain_folder(suggested)
+        write_path = suggested / '.written.json'
+        write_record = _letter_record(write_path, 'drafting press material')
+        target = suggested / name
+        if os.path.lexists(target):
+            current = _regular_bytes(target)
+            if current is None or _sha(current) != write_record.get(name):
+                rel = target.relative_to(root).as_posix()
+                raise ValueError(f'{rel} already exists and is not an unedited generated suggestion; '
+                                 'move it aside (rename or copy it elsewhere), then run press draft again. '
+                                 'Nothing was written.')
+    for directory in ((kit, suggested) if edited else (kit, folder)):
+        _kit_folder(directory, 0o700)
     _write_text(target, text)
-    if not edited:
-        _write_json(record_path, dict(sorted(record.items())))
+    write_record[name] = _sha(text.encode('utf-8'))
+    _write_json(write_path, dict(sorted(write_record.items())))
     return {'path': target.relative_to(root).as_posix(), 'findings': ids, 'kept_edited': edited, 'sent': False}
+
+
+def _sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def _check_ancestors(root):
+    """Refuse a root or any existing ancestor that is a symlink or not a folder. Creates nothing."""
+    path = Path(os.path.abspath(root))
+    for item in (path, *path.parents):
+        if os.path.islink(item):
+            raise ValueError(f'{item.name or str(item)}/ must not be a symlink')
+        if os.path.lexists(item) and not item.is_dir():
+            raise ValueError(f'{item.name}/ is not a folder')
 
 
 # --- private letters to the editor (DF2207-09) --------------------------------------------------------------
@@ -228,18 +251,18 @@ def _no_duplicate_keys(pairs):
     return found
 
 
-def _letter_record(path):
+def _letter_record(path, action='writing a letter'):
     """Generated-file hashes {filename: sha256}; {} when absent, a refusal when present but unsafe or malformed."""
     label = f'{path.parent.name}/{path.name}'
     if not os.path.lexists(path):
         return {}
     status = os.lstat(path)
     if not stat.S_ISREG(status.st_mode) or status.st_size > _RECORD_LIMIT:
-        raise ValueError(f'{label} must be a regular file under 1 MiB; fix or remove it before writing a letter')
+        raise ValueError(f'{label} must be a regular file under 1 MiB; fix or remove it before {action}')
     try:
         record = json.loads(path.read_bytes().decode('utf-8'), object_pairs_hook=_no_duplicate_keys)
     except (ValueError, OSError, RecursionError):
-        raise ValueError(f'{label} is not valid JSON without duplicate keys; fix or remove it before writing a letter') from None
+        raise ValueError(f'{label} is not valid JSON without duplicate keys; fix or remove it before {action}') from None
     if not isinstance(record, dict) or not all(
             _LETTER_NAME.fullmatch(k) and isinstance(v, str) and _HEX64.fullmatch(v) for k, v in record.items()):
         raise ValueError(f'{label} must map simple .md file names to lowercase SHA-256 hashes; fix or remove it')

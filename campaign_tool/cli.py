@@ -26,7 +26,7 @@ def now():
 
 def read_config(root):
     cfg = json.loads((root / "campaign.json").read_text(encoding="utf-8"))
-    if cfg.get("schema_version") != 1:
+    if not isinstance(cfg, dict) or cfg.get("schema_version") != 1:
         raise ValueError("Unsupported campaign schema version")
     for key in ("name", "county", "state"):
         if not isinstance(cfg.get(key), str) or not cfg[key].strip():
@@ -661,6 +661,9 @@ def meetings_cmd(args, root):
     from datetime import date
     from .meetings import CivicClerkClient, LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
     from .meetings import feed_opener, make_client
+    if args.matters and args.platform != "legistar":
+        print("Stopped: --matters is Legistar only", file=sys.stderr)
+        raise SystemExit(1)
     zone = resolve_zone(args.tz)
     if zone is None:
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
@@ -676,6 +679,13 @@ def meetings_cmd(args, root):
         raise ValueError("meetings needs --online to query the agenda platform, or a recorded response (--from-json; --from-xml for Granicus)")
     client = make_client(args, opener)
     since = date.fromisoformat(args.since) if args.since else None
+    if args.matters:
+        from .meetings import relevant_matters, write_matters
+        matters = relevant_matters(client, since=since)
+        target = write_matters(root, matters, args.client, since=since)
+        print(json.dumps({"client": args.client, "matched_matters": len(matters), "written": str(target),
+                          "note": "keyword hits on matter titles; verify on the official Legistar page before citing"}, indent=2))
+        return
     meetings = relevant_events(client, since=since, zone=zone, all_events=args.all_events)
     previous = _read_previous(root / "kit" / "meetings.json")
     changes = ({"previous": previous} if previous == "unreadable"
@@ -845,7 +855,7 @@ def main():
                          help="Fall back to the Census geocoder when the seed cannot resolve the location")
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
-                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in), school_police (opt-in), district_police (opt-in)")
+                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in), school_police (opt-in), district_police (opt-in), fusion_center (opt-in)")
     kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
@@ -939,6 +949,7 @@ def main():
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
     meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus"), default="legistar", help="Agenda platform (default legistar)")
+    meetings_p.add_argument("--matters", action="store_true", help="List ALPR keyword matters (legislation, contracts) instead of events; writes kit/matters.json (Legistar only)")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--view-id", type=int, help="Granicus view_id (--platform granicus; --client is then the <name>.granicus.com host)")
     meetings_p.add_argument("--from-xml", help="Saved Granicus agenda RSS feed (offline)")
@@ -988,6 +999,15 @@ def main():
     sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail", "in_person"))
     sent_p.add_argument("--file", help="The letter you sent: only its SHA-256 and size are kept, never its text or path")
     sent_p.add_argument("--replace", action="store_true", help="Overwrite an existing record for this meeting")
+    speakers_p = commands.add_parser("meetings-speakers", help="Private plan: which volunteer label covers which point of a "
+                                     "staged meeting's comment kit (kit/meetings/speakers/<id>.json); sends nothing")
+    speakers_p.add_argument("--directory", required=True)
+    speakers_p.add_argument("--id", required=True, help="Staged upcoming meeting id")
+    speakers_action = speakers_p.add_mutually_exclusive_group(required=True)
+    speakers_action.add_argument("--add", metavar="LABEL", help="Volunteer label (1-40 characters, no email or phone) for --point")
+    speakers_action.add_argument("--remove", metavar="LABEL", help="Remove every point of this label")
+    speakers_action.add_argument("--list", dest="list_plan", action="store_true", help="Points, speakers, gaps and overloaded labels")
+    speakers_p.add_argument("--point", metavar="POINT", help="With --add: finding:ID (a finding the kit cites) or ask:N")
     content_check_p = commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)")
     content_check_p.add_argument("--directory", required=True)
     content_check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
@@ -1026,6 +1046,11 @@ def main():
             agency_p.add_argument("--kind", required=True, help="sheriff, police, chp, county_board, city_council, "
                                   "district_attorney or other")
             agency_p.add_argument("--note", default=None, help="Up to 300 characters")
+    atlas_text = "Cross-check a local Atlas CSV (private, read-only). An Atlas listing is a lead, not evidence."
+    atlas_p = agency_cmds.add_parser("atlas", help=atlas_text, description=atlas_text, allow_abbrev=False)
+    atlas_p.add_argument("--csv", required=True, help="A saved Atlas of Surveillance export (UTF-8, at most 10 MiB)")
+    atlas_p.add_argument("--directory", required=True)
+    atlas_p.add_argument("--json", action="store_true", dest="as_json", help="Print the report as JSON")
     from .kit_track import CHANNELS as kit_track_channels
     sent_p = commands.add_parser("kit-sent", help="Record a request the organizer sent by hand in kit/sent.json; sends nothing")
     for flag in ("--directory", "--agency", "--date"):
@@ -1041,6 +1066,17 @@ def main():
     sent_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     sent_p.add_argument("--correspondence", action="append", default=[], metavar="PREFIX",
                         help="Repeatable: >= 12 hex of the ingested sent message or confirmation; not records")
+    sent_p.add_argument("--covers-through", metavar="D", help="YYYY-MM-DD: the last day of records this request asked "
+                        "for, when the draft's 'The date range for this request is FROM through TO.' line is missing "
+                        "or edited (not after --date); kit-repeat starts the follow-on the day after")
+    repeat_p = commands.add_parser("kit-repeat", help="Draft a follow-on request for the records created since an "
+                                   "earlier sent request (private, unsent; nothing is sent)")
+    for flag in ("--directory", "--agency", "--request", "--as"):
+        repeat_p.add_argument(flag, required=True, dest="new_request" if flag == "--as" else None,
+                              help="Name of the new request" if flag == "--as" else None)
+    repeat_p.add_argument("--through", metavar="D", help="YYYY-MM-DD last day to ask for (default today, written as a date)")
+    repeat_p.add_argument("--from", dest="date_from", metavar="D", help="YYYY-MM-DD first day, required when the "
+                          "earlier request has no recorded coverage end (sent before this feature, imported or unknown)")
     status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
@@ -1381,6 +1417,10 @@ def main():
     for flag in ("--on", "--note", "--directory"):
         cr_decide.add_argument(flag, required=True)
     cr_cmds.add_parser("list", help="Open requests first, with days_open").add_argument("--directory", required=True)
+    cr_reply = cr_cmds.add_parser("reply", help="Write a private, never-sent reply draft from the recorded decision "
+                                  "(kit/corrections/replies/N.md; an existing draft is never replaced)")
+    cr_reply.add_argument("--id", type=int, required=True)
+    cr_reply.add_argument("--directory", required=True)
     today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
@@ -1421,6 +1461,15 @@ def main():
     flyer.add_argument("--directory", required=True)
     flyer.add_argument("--max-findings", type=int, choices=range(1, 7), default=3)
     flyer.add_argument("--replace", action="store_true")
+    map_p = commands.add_parser("map", help="Private camera field survey: a printable sheet and a sourced re-import")
+    map_cmds = map_p.add_subparsers(dest="map_command", required=True)
+    sheet_p = map_cmds.add_parser("survey-sheet", help="Write kit/survey/<city>-<date>.html and .csv; publishes nothing")
+    sheet_p.add_argument("--city", required=True, help="Exact boundary name (case-sensitive)")
+    sheet_p.add_argument("--directory", required=True)
+    import_p = map_cmds.add_parser("survey-import", help="Add the filled rows of a survey CSV to content/map/point-checks.json")
+    import_p.add_argument("--csv", required=True, metavar="FILLED")
+    import_p.add_argument("--directory", required=True)
+    import_p.add_argument("--apply", action="store_true", help="Write the file (default: only print the checks)")
     _campaign_option(parser)
     campaigns = commands.add_parser("campaigns", help="A named register of campaign directories; names and paths only"
                                     ).add_subparsers(dest="campaigns_command", required=True)
@@ -1440,6 +1489,8 @@ def main():
     if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
         if not args.upcoming or args.allow_past or args.within_days not in (None, *range(1, 91)):
             pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
+    if args.command == "meetings-speakers" and (args.add is None) != (args.point is None):
+        speakers_p.error("--point is required with --add and only allowed with --add")
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
         diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "finding_command", None) == "new":
@@ -1564,6 +1615,12 @@ def main():
             from .flyer import build as flyer_build
             print(json.dumps(flyer_build(Path(args.directory).expanduser(), args.max_findings, replace=args.replace)))
             print("Private file; nothing was printed, sent or published.")
+        elif args.command == "map":
+            from . import map_survey
+            if args.map_command == "survey-sheet":
+                print(json.dumps(map_survey.survey_sheet(root, args.city)))
+            else:
+                print(json.dumps(map_survey.survey_import(root, args.csv, apply=args.apply), indent=2, ensure_ascii=False))
         elif args.command == "meeting-pack" and args.upcoming:
             from .meeting_pack import build_upcoming
             report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
@@ -1594,6 +1651,15 @@ def main():
                      **({"letter_sha256_prefix": entry["letter_sha256"][:12]} if "letter_sha256" in entry else {})}
             print(json.dumps(shown, indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "meetings-speakers":
+            from .meeting_speakers import list_plan, update_plan
+            # The guards must see the unresolved directory so a campaign-root or ancestor symlink is refused.
+            root = Path(args.directory).expanduser()
+            if args.list_plan:
+                print(json.dumps(list_plan(root, args.id), indent=2, ensure_ascii=False))
+            else:
+                print(json.dumps(update_plan(root, args.id, add=args.add, point=args.point, remove=args.remove)))
+                print("Recorded only. Nothing was sent.", file=sys.stderr)
         elif args.command == "supporters":
             from .supporters import add_supporter, remove_supporter, set_cosign_consent
             if args.supporters_command == "consent":
@@ -1752,11 +1818,13 @@ def main():
             try:
                 result = (cr.add(root, args.finding, args.received, args.summary) if args.cr_command == "add" else
                           cr.decide(root, args.id, args.decision, args.on, args.note) if args.cr_command == "decide"
-                          else cr.list_requests(root))
+                          else cr.reply(root, args.id) if args.cr_command == "reply" else cr.list_requests(root))
             except ValueError as exc:
                 fixes.emit(exc)
                 sys.exit(3)
-            print(json.dumps(result, indent=2, ensure_ascii=False) + "\nPrivate log only; nothing was sent or published.")
+            print(json.dumps(result, indent=2, ensure_ascii=False) + (
+                "\nPrivate draft only; nothing was sent or published." if args.cr_command == "reply"
+                else "\nPrivate log only; nothing was sent or published."))
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root, as_json=args.as_json)
@@ -1820,6 +1888,10 @@ def main():
             from .content_init import init_content
             print(json.dumps(init_content(root, args.source_campaign), indent=2))
             print(f"content/ written from {Path(args.source_campaign).name}. Review every copied page and replace anything specific to the other locality; nothing was built or deployed." if args.source_campaign is not None else 'content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
+        elif args.command == "kit-agency" and args.agency_command == "atlas":
+            from . import kit_atlas
+            report = kit_atlas.compare_atlas(root, Path(args.csv).expanduser())
+            print(json.dumps(report, indent=2, ensure_ascii=False) if args.as_json else kit_atlas.render_atlas(report))
         elif args.command == "kit-agency":
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
@@ -1834,8 +1906,14 @@ def main():
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
                                          replace=args.replace, reference=args.reference,
                                          replace_reference=args.replace_reference,
-                                         correspondence=args.correspondence, request_url=args.request_url), indent=2))
+                                         correspondence=args.correspondence, request_url=args.request_url,
+                                         covers_through=args.covers_through), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-repeat":
+            from .kit_repeat import repeat_request
+            print(json.dumps(repeat_request(root, args.agency, args.request, args.new_request, through=args.through,
+                                            date_from=args.date_from), indent=2))
+            print("Unsent draft written. Review it, then kit-check and kit-sent. Nothing was sent.")
         elif args.command == "kit-sent-import":
             from .kit_import_sent import import_sent
             print(json.dumps(import_sent(root, Path(args.csv).expanduser(), apply=args.apply), indent=2))

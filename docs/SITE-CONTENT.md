@@ -26,7 +26,22 @@ when a line names no file, and the same exit codes, so an editor or CI step can 
 
 ## Content directory
 
-`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, a draft `pages/help-map.json`, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+
+### Help-map page starter
+
+A fresh `content init` also writes `content/pages/help-map.json`, the page `/help-map.html` titled "Help map the cameras":
+six short sections on recognizing a possible plate reader, staying on public property and never photographing people or
+plates, adding a missing camera or correcting an existing point on OpenStreetMap or the DeFlock reporting page (with the
+tags `man_made=surveillance` and `surveillance:type=ALPR` that the map fetcher reads, linked to the OpenStreetMap wiki),
+what "ownership unconfirmed" means, and what the four point-check codes mean. It is read from the packaged copy of
+`examples/pages/help-map.json`, so it works from an installed wheel. Every section starts `[EDIT ME: verify for this
+campaign]`: the marker stays visible on the page until you replace it and is not an approval gate. The page uses one of
+the three `nav` slots; set `"nav": false` or delete `content/pages/help-map.json` to publish no such page. It names
+`methods.html` in words because Markdown links must be absolute `https://` URLs, and it links to no map page since a
+fresh tree has none. `content init --from OLD` copies a source campaign's own pages as before and never adds this
+starter. Before publishing run `content-check` and `build --check` offline; the legal-claim guard stays advisory and
+does not scan page copy, so read the page yourself. The report's `placeholders` count includes this page's markers.
 
 ### Draft FAQ starter
 
@@ -1283,7 +1298,7 @@ under the OpenStreetMap link of a tagged point (label `map.direction_line`) and 
 untagged points show nothing new. The value is a volunteer's tag: no bearing is converted, and nothing is inferred
 about a road, a plate, coverage, ownership or an independent check.
 
-`content/map/point-checks.json` (optional; organizer-edited by hand, never fetched or written by the tool) records what
+`content/map/point-checks.json` (optional; organizer-edited by hand, never fetched; the tool writes it only through `map survey-import --apply`) records what
 an organizer found at single mapped points: `{"schema_version": 1, "checks": [{"node": 123, "status": "seen_in_person",
 "checked_on": "2026-11-01", "source": "<12-hex library prefix or https:// URL>", "note": "optional, 200 characters"}]}`.
 `node` must be an OpenStreetMap node id present in `cameras.geojson` (its `.../node/N` URL); `status` is
@@ -1297,6 +1312,22 @@ refused entry. With the file, `cameras.html` gains an "Organizer check" column (
 (the note and the source stay off the popup and out of `site-data.js`). Without the file nothing is built differently.
 A check never removes or edits a point and never writes to OpenStreetMap: `duplicate` and `not_found_on_site` points stay
 on the map and in every count. `in_agency_record` says an agency record lists the point; it is never ownership.
+
+**Field survey (DF0237-13).** `map survey-sheet --city NAME --directory D` writes a private, printable
+`kit/survey/<city-slug>-<date>.html` and a matching `.csv` (0600, folders 0700; never overwritten, so the same city and
+day again refuses) listing every mapped point inside the boundary named exactly NAME (case-sensitive; an unknown name is
+refused): node URL, latitude, longitude, manufacturer, operator, direction and the latest organizer check, then four blank
+columns `status`, `checked_on`, `source`, `note` for a new observation. Cells that a spreadsheet would run as a formula
+(a leading `=`, `+`, `-`, `@`, tab or carriage return, including a negative longitude) get one leading apostrophe. A point
+without a node URL inside the city is refused by feature index. `map survey-import --csv FILLED --directory D [--apply]`
+skips a row whose four columns are all blank; every other row needs `status`, `checked_on` and `source`, where `source` is
+the volunteer's own evidence (an `https://` URL without userinfo, at most 500 characters, or a 12-hex library prefix that
+matches exactly one `sources.json` entry). The tool never fills in, defaults, copies or infers a source (the sheet's
+`latest_source` column is not read). The merged document (existing checks plus the new ones) must pass the same validator
+as `build`; a missing or invalid field, an edited node URL, an unmapped node or a duplicate of an existing check is named by
+row (the header is row 1) and field, never its value, and refuses the whole import. Without `--apply` it only prints the
+checks it would add; with `--apply` it writes `content/map/point-checks.json` atomically (fresh temp file; a symlink is
+refused). Nothing is published until the next `build`.
 
 The build never downloads MapLibre. To enable the interactive map, copy the
 library into `content/vendor/maplibre-gl.js` and `content/vendor/maplibre-gl.css`
