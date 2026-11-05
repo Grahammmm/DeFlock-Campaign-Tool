@@ -371,6 +371,15 @@ HTML has one inline `<style>`, no script and no external load; its only links ar
 named in `site.json` but missing, is refused. Nothing is printed, sent or published and nothing is
 written under `public/` or `content/`; printing and handing it out stay an organizer decision.
 
+With `base_url` set, a QR code is printed beside each finding URL and beside the "Get involved" site URL, so a
+reader can scan instead of typing. The codes are made offline by the tool itself (`campaign_tool/qr.py`, standard
+library only: byte mode, error correction level M, versions 1-10, four-module quiet zone) and encode exactly the
+URL printed beside them, nothing shortened or tracked; the printed URL stays the accessible equivalent, and the
+"N more on the site" line has no code. A URL longer than 213 bytes cannot be encoded: the flyer is refused with
+"QR URL exceeds 213-byte capacity (version 10, level M)." before anything is written, `--replace` included, and the
+earlier flyer is left as it was. Without `base_url` there is no QR code and both `flyer.html` and `flyer.txt` are
+byte-identical to what they were before this feature; `flyer.txt` never carries a QR code.
+
 ### Event flyer
 
 `python3 -m campaign_tool flyer --directory D --event ID [--replace]` (not combinable with `--max-findings`)
@@ -385,15 +394,6 @@ events-page reference `events.html#event-<id>` (absolute with `base_url`, otherw
 site logo is copied as `event-<id>-logo.<ext>`, so event flyers and the campaign flyer coexist; an existing
 twin or same-id logo is refused without `--replace`, which touches only that event. The report is
 `{"written": [...], "event": "<id>"}`. Nothing is printed, sent or published.
-
-With `base_url` set, a QR code is printed beside each finding URL and beside the "Get involved" site URL, so a
-reader can scan instead of typing. The codes are made offline by the tool itself (`campaign_tool/qr.py`, standard
-library only: byte mode, error correction level M, versions 1-10, four-module quiet zone) and encode exactly the
-URL printed beside them, nothing shortened or tracked; the printed URL stays the accessible equivalent, and the
-"N more on the site" line has no code. A URL longer than 213 bytes cannot be encoded: the flyer is refused with
-"QR URL exceeds 213-byte capacity (version 10, level M)." before anything is written, `--replace` included, and the
-earlier flyer is left as it was. Without `base_url` there is no QR code and both `flyer.html` and `flyer.txt` are
-byte-identical to what they were before this feature; `flyer.txt` never carries a QR code.
 
 ## Reviewer roster (role assignment, not authentication)
 
