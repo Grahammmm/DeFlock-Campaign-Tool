@@ -273,6 +273,18 @@ class DropScanTests(ArrivalCase):
             self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (0, 0, False))
             self.assertEqual(len(arrival.pending(self.runtime)), 6)
 
+    def test_unsettled_file_on_an_earlier_page_survives_pagination(self):
+        with mock.patch.object(arrival, "MAX_DROP_FILES", 5):
+            for n in range(5):
+                self.put(f"b{n}.pdf")
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (5, 0, False))
+            self.put("a-fresh.pdf", age=0)  # sorts before every retained file
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (0, 1, True))
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (0, 1, False))
+            os.utime(self.drop / "a-fresh.pdf", (time.time() - 60,) * 2)
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (1, 0, True))
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (0, 0, False))
+
     def test_trigger_never_reads_record_bytes(self):
         path = self.put("scan.pdf")
         os.chmod(path, 0)

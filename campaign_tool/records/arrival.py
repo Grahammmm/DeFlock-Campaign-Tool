@@ -357,6 +357,7 @@ def drop_ref(name, size, mtime_ns):
 
 
 CURSOR_KEY = "_cursor"
+CARRY_KEY = "_unsettled"
 
 
 def scan_drop(runtime_dir, drop_dir, now=None):
@@ -404,6 +405,8 @@ def scan_drop_status(runtime_dir, drop_dir, now=None):
             n for n in os.listdir(drop) if not (n.startswith(".") or n.endswith(TEMP_SUFFIXES))
         )
         cursor = inventory.get(CURSOR_KEY)
+        carried = inventory.get(CARRY_KEY)
+        carried = carried if isinstance(carried, int) and not isinstance(carried, bool) and cursor is not None else 0
         start = bisect.bisect_right(candidates, cursor) if isinstance(cursor, str) else 0
         order = candidates[start:]
         names = order[:MAX_DROP_FILES]
@@ -412,6 +415,7 @@ def scan_drop_status(runtime_dir, drop_dir, now=None):
             inventory[CURSOR_KEY] = names[-1]
         else:
             inventory.pop(CURSOR_KEY, None)
+            inventory.pop(CARRY_KEY, None)
         for name in names:
             try:
                 st = os.lstat(drop / name)
@@ -435,6 +439,12 @@ def scan_drop_status(runtime_dir, drop_dir, now=None):
             stamp(runtime_dir, "drop-folder", ref, _held=True)  # durable before the inventory
             inventory[key] = ref
             stamped += 1
+        if more:
+            # Earlier pages' unsettled files must survive pagination, or a
+            # settled final page would end the wake and lose their only trigger.
+            inventory[CARRY_KEY] = carried + unsettled
+        else:
+            unsettled += carried
         data = json.dumps(inventory, sort_keys=True).encode("ascii")
         tmp = root / (INVENTORY_NAME + ".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)

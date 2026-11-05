@@ -129,6 +129,30 @@ class ArrivalRunTests(ArrivalRuntime):
         [report] = self.reports()
         self.assertEqual([a["source"] for a in report["arrivals"]], ["drop-folder"])
 
+    def test_fresh_earlier_page_rename_after_a_full_retained_prefix_is_still_stamped(self):
+        self.drop.mkdir()
+        old = time.time() - 600
+        inventory = {}
+        for n in range(arrival.MAX_DROP_FILES + 1):
+            name = f"m{n:05d}.pdf"
+            path = self.drop / name
+            path.write_bytes(b"x")
+            os.utime(path, (old, old))
+            st = os.lstat(path)
+            inventory[hashlib.sha256(name.encode()).hexdigest()] = arrival.drop_ref(name, st.st_size, st.st_mtime_ns)
+        # The retained prefix is already acknowledged (seeded directly: 5,001 fsynced stamps are slow).
+        inv = self.runtime / arrival.INVENTORY_NAME
+        inv.write_text(json.dumps(inventory))
+        os.chmod(inv, 0o600)
+        self.assertEqual(self.run_wrapper("--arrival").returncode, 0)
+        self.assertEqual(self.reports(), [])  # nothing new: quiet
+        staging = self.drop / "a-new.pdf.part"
+        staging.write_bytes(b"%PDF-1.4 synthetic")
+        os.rename(staging, self.drop / "a-new.pdf")  # fresh mtime, lexically on page one
+        result = self.run_wrapper("--arrival", env={"ARRIVAL_MAX_WAIT_SECONDS": "20"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.reports()), 1)
+
     def test_burst_is_one_batch_and_cannot_extend_the_wait_indefinitely(self):
         stop = threading.Event()
         written = []
