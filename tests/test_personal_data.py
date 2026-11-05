@@ -528,7 +528,7 @@ _MODULES = {
         records.legacy_adoption records.mail_adoption records.mail_poll records.mail_resolution_census
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
         records.outcomes.comparison records.outcomes.factsheets records.outcomes.reading records.outcomes.register
-        records.outcomes.textstate records.portal.download records.portal.engine records.portal.ledger_adapter
+        records.outcomes.textstate records.pipeline_health records.portal.download records.portal.engine records.portal.ledger_adapter
         records.portal.store records.publish records.queue_runtime records.recovery.backup
         records.recovery.backup_v2 records.recovery.publication records.review_bundle records.review_retirement
         records.run records.run_orchestrator records.run_stages records.runner.canonical_mail records.runner.core
@@ -684,6 +684,7 @@ MODULE_FUNCTIONS = {
         'write_notify_alert'
     ),
     'records.run_stages': ('backup_adoption_dbs', 'stage_outputs',),
+    'records.pipeline_health': ('main', 'write_alerts',),
     'records.runner.canonical_mail': ('CanonicalMailBackend._capture_verification',),
     'records.runner.core': ('journal', 'run', 'writer_lock',),
     'records.runner.export_proof': ('ExporterWrapper.prepare', 'export_lock',),
