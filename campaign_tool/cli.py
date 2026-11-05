@@ -1201,6 +1201,10 @@ def main():
                            "wrote to (1-60 characters), not a person's name; no email address or phone number")
     contact_p.add_argument("--note", required=True, help="1-500 characters of plain text; no personal details")
     contact_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    preserve_p = commands.add_parser("kit-preserve", help="Private preservation-request draft for a sent, unanswered request; never sent")
+    for flag in ("--directory", "--agency"):
+        preserve_p.add_argument(flag, required=True)
+    preserve_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     denial_p = commands.add_parser("kit-denial-reply", help="Private reply draft after a recorded denied step; never sent")
     for flag in ("--directory", "--agency"):
         denial_p.add_argument(flag, required=True)
@@ -2049,6 +2053,10 @@ def main():
             print(json.dumps(record_contact(root, args.agency, args.on, args.channel, args.role, args.note,
                                             request=args.request), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-preserve":
+            from .kit_preserve import preserve_request
+            print(json.dumps(preserve_request(Path(args.directory).expanduser(), args.agency, request=args.request), indent=2))
+            print("Draft only. Nothing was sent.")
         elif args.command == "kit-denial-reply":
             from .kit_track import denial_reply
             print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
