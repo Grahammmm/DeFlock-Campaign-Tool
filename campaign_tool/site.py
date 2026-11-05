@@ -49,7 +49,11 @@ ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmpl"  # DF1103-12
-GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
+REQUESTS_FILTER_ASSET = Path(__file__).parent / "assets" / "requests-filter.js.tmpl"  # DF1622-08
+# Appended to style.css only with the requests filter: the mobile table rule makes rows display:block, so [hidden] needs help.
+REQUESTS_FILTER_CSS = ("#requests-table tbody tr[hidden]{display:none}\n"
+                       "@media print{#requests-table tbody tr[hidden]{display:table-row!important}}\n")
+GENERATED_TOP_LEVEL = {"requests", "index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
                        "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html", "elsewhere.html", "events.html", "events.ics"}
@@ -1408,9 +1412,38 @@ class Site:
         rows.sort(key=lambda row: row[3]["asked_on"], reverse=True)  # stable: equal days keep (agency_id, index) order
         return [(agency, item) for _, _, agency, item in rows]
 
+    def requests_filter_enabled(self, rows=None):
+        """DF1622-08: True when the shown request rows span 2+ agencies or 2+ request states (zero-row agencies never count)."""
+        rows = self.request_rows() if rows is None else rows
+        return len({a["agency_id"] for a, _ in rows}) >= 2 or len({i["state"] for _, i in rows}) >= 2
+
+    def requests_filter_form(self, rows):
+        """DF1622-08: the hidden agency/state form over the requests table; requests/filter.js reveals and wires it."""
+        agencies = {a["slug"]: a["name"] for a, _ in rows}
+        seen = {i["state"] for _, i in rows}
+
+        def select(key, first, options):
+            return (f'<div><label for="requests-filter-{key}">{self.t("js.requests_" + key)}</label>'
+                    f'<select id="requests-filter-{key}" name="{key}"><option value="all">{self.t(first)}</option>'
+                    + "".join(f'<option value="{e(v)}">{e(t)}</option>' for v, t in options) + '</select></div>')
+        ordered = sorted(agencies.items(), key=lambda kv: (kv[1].casefold(), kv[0]))
+        template = html_text(self.labels["js.requests_count"])
+        return (f'<form class="sources-filter" id="requests-filter" aria-label="{self.t("js.requests_label")}" '
+                f'data-count-template="{template}" hidden>'
+                + select("agency", "js.requests_all_agencies", ordered)
+                + select("state", "js.requests_all_states",
+                         [(s, self.labels["requests.state_" + s]) for s in ASKED_STATES if s in seen])
+                + f'<p class="sources-filter-count" id="requests-filter-count" aria-live="polite">'
+                  f'{self.t("js.requests_count", shown=len(rows), total=len(rows))}</p></form>')
+
+    def requests_filter_js(self):
+        """requests/filter.js: the packaged template, read only when the filter is enabled."""
+        return REQUESTS_FILTER_ASSET.read_text(encoding="utf-8")
+
     def requests_html(self):
         """/requests.html (DF1103-13): one table of every public asked item across agencies; the lead counts the same rows."""
         rows = self.request_rows()
+        filtered = self.requests_filter_enabled(rows)
         states = [item["state"] for _, item in rows]
         counts = " · ".join(self.t("requests.count", state=self.t("requests.state_" + state), count=states.count(state))
                             for state in ASKED_STATES)
@@ -1422,14 +1455,20 @@ class Site:
             cells = [f'<a href="{e(page)}">{e(agency["name"])}</a>', e(item["topic"]), time_tag(item["asked_on"]),
                      e(asked_sentence(item, self.today)),
                      time_tag(item["updated_on"]) if item.get("updated_on") else self.t("requests.not_recorded")]
-            body.append(f'<tr><th scope="row" data-label="{heads[0]}">{cells[0]}</th>'
+            hooks = f' data-agency="{e(agency["slug"])}" data-state="{e(item["state"])}"' if filtered else ""
+            body.append(f'<tr{hooks}><th scope="row" data-label="{heads[0]}">{cells[0]}</th>'
                         + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
-        table = ((f'<table class="glance-table"><caption>{self.t("requests.caption")}</caption><thead><tr>'
+        table_id = ' id="requests-table"' if filtered else ""
+        table = ((f'<table class="glance-table"{table_id}><caption>{self.t("requests.caption")}</caption><thead><tr>'
                   + "".join(f'<th scope="col">{head}</th>' for head in heads) + "</tr></thead><tbody>" + "".join(body)
                   + "</tbody></table>") if rows else f'<p>{self.t("requests.empty")}</p>')
         main = (f'    <section class="section" id="content"><div class="section-heading"><div>'
-                f'<h2>{self.t("requests.title")}</h2></div></div>{lead}<p>{self.t("requests.note")}</p>{table}</section>\n')
-        return self.page("agencies", self.labels["requests.title"], self.labels["requests.description"], "/requests.html", main)
+                f'<h2>{self.t("requests.title")}</h2></div></div>{lead}<p>{self.t("requests.note")}</p>'
+                + (self.requests_filter_form(rows) if filtered else "") + table
+                + (f'<p class="sources-filter-empty" id="requests-filter-empty" hidden>{self.t("js.requests_empty")}</p>'
+                   if filtered else "") + '</section>\n')
+        return self.page("agencies", self.labels["requests.title"], self.labels["requests.description"], "/requests.html", main,
+                         ["/requests/filter.js"] if filtered else [])
 
     @staticmethod
     def _official_name(person):
@@ -3285,7 +3324,8 @@ def _plan_site(root, today=None, notes=None):
     colours = ";".join(f"--{var}:{brand[key]}" for key, var in (("accent", "coral"), ("ink", "ink")) if key in brand)
     css = (pages["index.html"]["css"] + EXTRA_CSS + (f":root{{{colours}}}\n" if colours else "")
            + (".brand-logo{max-height:48px;width:auto;height:auto}\n" if "logo" in brand else "")
-           + (".statement-quote{white-space:pre-wrap}\n" if model.get("statements") else ""))
+           + (".statement-quote{white-space:pre-wrap}\n" if model.get("statements") else "")
+           + (REQUESTS_FILTER_CSS if site.requests_filter_enabled() else ""))
     files = {name: page["html"] for name, page in pages.items()}
     agencies_text, meetings_text = site.agencies_json(), site.meetings_json()  # each rendered once; its CSV is read back from it
     files.update({
@@ -3305,6 +3345,8 @@ def _plan_site(root, today=None, notes=None):
         files["findings/cite.js"] = CITE_JS
     if site.sources_filter():  # DF1103-12: written only when sources.html loads it; an empty library leaves no stale asset
         files["sources/filter.js"] = site.sources_filter_js()
+    if site.requests_filter_enabled():  # DF1622-08: written only when requests.html loads it; below threshold leaves no stale asset
+        files["requests/filter.js"] = site.requests_filter_js()
     files.update(site.agency_feeds())
     if site.events:  # DF1107-10: no events file or [] means no calendar (the tree swap drops a stale one)
         files["events.ics"] = site.events_ics()

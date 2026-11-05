@@ -350,7 +350,15 @@ HANDOUT_DEFAULTS = {
                                 "file exactly as received. It shows the file has not changed since; it does not by "
                                 "itself prove who wrote it.",
 }
+# DF1622-08: the requests-table filter labels. Page-local (requests.html only): deliberately outside JS_DEFAULTS so no
+# other script, page or site-data.js changes when one is relabelled.
+REQUESTS_JS_DEFAULTS = {
+    "js.requests_label": "Filter public requests", "js.requests_agency": "Agency", "js.requests_state": "State",
+    "js.requests_all_agencies": "All agencies", "js.requests_all_states": "All states",
+    "js.requests_count": "Showing {shown} of {total}", "js.requests_empty": "No public request matches these filters.",
+}
 DEFAULTS.update(JS_DEFAULTS)
+DEFAULTS.update(REQUESTS_JS_DEFAULTS)
 DEFAULTS.update(HANDOUT_DEFAULTS)
 for _family, _labels in (("classification", CLASSIFICATION_LABELS), ("confidence", CONFIDENCE_LABELS), ("kind", KIND_LABELS)):
     DEFAULTS.update({f"{_family}.{code}": text for code, text in _labels.items()})
