@@ -21,6 +21,7 @@ from .finding_law import check as check_law, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
 from .content_elsewhere import read_elsewhere
+from .meeting_elsewhere import reference_problems
 from .legal_claims import elsewhere_notes, faq_notes, statement_notes
 from .labels import MAX_LABELS_BYTES, load_labels
 from .newsletter.archive import FOLDER as NEWSLETTERS, issue_paths, load_public_issue
@@ -222,7 +223,7 @@ def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today
         findings.append(finding)
     findings_intact = len(findings) == len(_files(content_dir, "findings"))
 
-    meeting_ids, loaded_meetings = set(), []
+    meeting_ids, loaded_meetings, labelled_meetings = set(), [], []
     for path in _files(content_dir, "meetings"):
         label = "meetings/" + path.name
         meeting = _attempt(problems, label, lambda: _meeting(path, label))
@@ -232,6 +233,7 @@ def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today
             problems.append(f"meetings/{path.name}: duplicate meeting id")
         meeting_ids.add(meeting["id"])
         loaded_meetings.append(meeting)
+        labelled_meetings.append((label, meeting))
     problems.extend(continuation_problems(loaded_meetings))  # DF0022-07: the same cross-record rule build enforces
     problems.extend(cosign_problems(root, loaded_meetings))  # DF2207-14: every staged meeting naming a stale co-signer
 
@@ -257,6 +259,8 @@ def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today
     elsewhere = read_elsewhere(root, today, problems)  # DF1107-04: the build's own reader; names every independent problem
     if elsewhere_out is not None and elsewhere is not None:
         elsewhere_out.extend(elsewhere)
+    if elsewhere is not None or not os.path.lexists(content_dir / "elsewhere.json"):  # DF1107-06: an unreadable file is already named
+        problems.extend(reference_problems(labelled_meetings, elsewhere))
     from .content_events import read_events  # local: content_events imports content
     read_events(root, problems)  # DF1107-08: the build's own reader and privacy lint; it names every independent problem itself
     # DF0022-03: the build's own reader and refusal text; with a refused finding file ids are not matched (already named)

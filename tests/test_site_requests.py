@@ -14,13 +14,13 @@ from unittest import mock
 
 from campaign_tool.cli import read_config
 from campaign_tool.content import ASKED_STATES, ContentError, load_content
-from campaign_tool.site import Site, asked_sentence, build_site, preview_site
+from campaign_tool.site import REQUESTS_FILTER_CSS, Site, asked_sentence, build_site, preview_site
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 TODAY = date(2026, 11, 1)
 SHERIFF, POLICE, COUNCIL = "ca-cedar-county-sheriff", "ca-cedar-police", "ca-cedar-city-council"
-ROW = re.compile(r'<tr><th scope="row" data-label="([^"]*)"><a href="([^"]*)">(.*?)</a></th>'
+ROW = re.compile(r'<tr(?: data-agency="[^"]*" data-state="[^"]*")?><th scope="row" data-label="([^"]*)"><a href="([^"]*)">(.*?)</a></th>'
                  r'<td data-label="([^"]*)">(.*?)</td><td data-label="([^"]*)"><time datetime="([^"]*)">\7</time></td>'
                  r'<td data-label="([^"]*)">(.*?)</td><td data-label="([^"]*)">(.*?)</td></tr>', re.S)
 LEAD = re.compile(r"<p>(\d+) requests listed\. By state: (.*?)</p>")
@@ -301,7 +301,10 @@ class SiteRequestsTests(unittest.TestCase):
         self.asked({})
         self.build()
         bare = {p.relative_to(self.public).as_posix(): p.read_bytes() for p in self.public.rglob("*") if p.is_file()}
-        self.assertEqual(sorted(bare), sorted(first))  # the request rows add no file
+        self.assertEqual(sorted(bare), sorted(set(first) - {"requests/filter.js"}))  # only the conditional filter script
+        self.assertTrue(first["style.css"].endswith(REQUESTS_FILTER_CSS.encode()))
+        self.assertNotIn(b"requests-table", bare["style.css"])
+        first["style.css"] = first["style.css"][:-len(REQUESTS_FILTER_CSS)]  # compare without the enabled-only fragment
         for name in ("_headers", "style.css", "robots.txt", "feed.xml", "data/findings.json", "data/findings.csv",
                      "data/sources.json", "data/sources.csv", "data/meetings.json", "site-data.js", "app.js", "search.js"):
             self.assertTrue(bare[name] == first[name], name)

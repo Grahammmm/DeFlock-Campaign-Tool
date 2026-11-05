@@ -3,6 +3,7 @@
 Find upcoming public meetings with license plate reader agenda items, record them, and build
 a public-comment kit from published findings. Code: `campaign_tool/meetings.py`,
 `workers/workspace/src/comment_kit.ts`, the Meetings screen in `views/screens.ts`.
+For the task order (find, stage, verify, comment, record, outcome) see the [meetings guide](MEETINGS-GUIDE.md); this file stays the reference.
 
 ## Legistar import (CLI)
 
@@ -80,7 +81,7 @@ are keyword leads, not confirmation of ALPR use: verify on the official Legistar
 The CLI does not write to the hosted workspace. Organizers add the meetings they verified
 on the Meetings screen, or stage one verified entry for the offline site build
 ([SITE-CONTENT.md](SITE-CONTENT.md)) with
-`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--finding ID ...] [--location TEXT] [--participation FILE] [--ask T ...] [--replace]`,
+`python3 -m campaign_tool meetings-stage --directory D --id <meeting id> [--agency-id ID] [--finding ID ...] [--location TEXT] [--participation FILE] [--ask T ...] [--elsewhere N ...] [--replace]`,
 which writes `content/meetings/<id>.json` with a comment kit that cites published findings only;
 nothing is fetched, and `--replace` regenerates an existing file.
 
@@ -98,6 +99,19 @@ position (`--ask[2]`, `site.json.comment_asks[2]`), before anything is written. 
 anywhere but the staged kit: `--replace` without `--ask` returns to `comment_asks` or the defaults. Legal-claim
 wording in your asks is flagged as an advisory `review_flags` note (printed on stderr, positions and rule names
 only); the kit is still written ([LEGAL-CLAIM-GUARD.md](LEGAL-CLAIM-GUARD.md)).
+
+**Decisions elsewhere in the kit (DF1107-06).** `meetings-stage --elsewhere N` (repeatable, at most 3, distinct) cites
+decision N of `content/elsewhere.json`, counted 1-based in the file's STORED order (never the page's kind/date sorting).
+An index of zero, below zero, past the end or given twice is refused by flag and value; with no `content/elsewhere.json`
+the flag is refused. The kit gets a plain `Elsewhere:` paragraph after the cited findings in the two-minute, spoken and
+written versions (a spoken or written version still needs its verified participation), one line each in the order
+given: `PLACE, STATE: BODY, DECIDED_ON: as_stated (official source URL)`. The lines are never shortened or dropped: if
+they do not fit the spoken or written word budget, staging is refused. The meeting stores full snapshots as
+`cited_elsewhere`, so reordering `elsewhere.json` cannot change a staged kit. `build` and `content-check` find each
+snapshot by place, body, `decided_on` and kind, and name one that no longer exists, or whose state, `as_stated` or
+source URL changed (a new `checked_on` or `news_url` alone is fine); restage with `--replace`, which repairs only its own
+meeting. `--replace` without `--elsewhere` removes the paragraph. These are decisions of other governments, not of this
+campaign's agencies; the tool sends nothing. Without `--elsewhere` the kit and the report are byte-identical to before.
 
 **Co-signed written comments (DF2207-14).** `meetings-stage --cosign SUPPORTER_ID` (repeatable, 1 to 30 unique ids, in
 the order given) adds a bold `Co-signed by` line and one bullet per organization name after `[city]` in the
@@ -296,6 +310,16 @@ an existing pack is left untouched; `--upcoming` lists that meeting as skipped w
 the others. Without `base_url` there is no QR code and the handout is byte-identical to before.
 `comment.md` and `sources.csv` never change.
 
+**What members have said (DF1407-07).** When `content/statements.json` (see `docs/SITE-CONTENT.md`) holds statements for the
+meeting's `agency_id`, the handout gains a section after the findings: for each official of that body in
+`content/officials.json`, in roster order, at most their two newest statements (`said_on` descending, stored order on the
+same day), each printed as the member's name, the complete quote in quotation marks (never shortened, whitespace kept),
+`said_on`, the context and the source link. Officials without a statement are left out. Only then does `sources.csv` gain
+the columns `kind`, `said_on`, `source_url` (finding source rows get `source`; one `statement` row per printed quote, first
+six fields empty). With no statements file, no statement for the body, or a meeting without an `agency_id`, all three files
+are byte-identical to before. A malformed statements file, a name not on the roster, a missing roster or a quote that
+trips the full-hash check stops the pack and leaves an existing pack untouched. `comment.md` never changes.
+
 The handout follows the campaign's language: `<html lang>` is `site.json.language`, and its fixed headings and notes
 (title, "What we found", the empty-state sentence, the source line, "corrected", the agenda link, "N more on the
 site", the record-number explainer, and the classification and confidence wording) come from `content/labels.json`
@@ -313,6 +337,14 @@ reason (cancelled, stale kit, pack exists, invalid id, symlinked or unreadable f
 the window are not listed. Exit 0 when nothing was skipped, 3 when something needs attention.
 `--allow-past` is refused with `--upcoming`. Nothing is sent or published.
 
+## Social drafts (never posted)
+
+Meeting announcements and outcome posts are private drafts written by `social --meetings` and `social --outcomes`; nothing
+is posted. Their rules (windows, platform lengths, kept edits, skipped counts) are in
+[PUBLICATION.md](PUBLICATION.md#social-drafts-for-meetings-never-posted) for meetings and
+[PUBLICATION.md](PUBLICATION.md#social-drafts-for-outcomes-never-posted) for outcomes, and stay there. The task order is in
+the [meetings guide](MEETINGS-GUIDE.md#6-draft-the-announcement-never-posted).
+
 ## Recording a comment you submitted
 
 After you have sent a written comment (or spoken one) yourself, record it with
@@ -328,6 +360,29 @@ no longer lists its `comment_deadline` item, and `meeting-pack` returns `"commen
 (`null` when none) and prints `Comment recorded as submitted on <on> (<channel>).`; the three pack files are
 unchanged. A malformed `kit/comments-sent.json` shows in `today` as one `unreadable` item (every deadline is
 still listed), `meeting-pack` treats it as no record, and `meetings-comment-sent` refuses until it is fixed.
+
+## Publishing the comment you submitted
+
+`python3 -m campaign_tool meetings-comment-publish --directory D --id M --file LETTER --signer-public [--replace]`
+stages the text you already submitted by hand as the public copy on the meeting's page. It sends and builds nothing: it
+writes `submitted_comment` into `content/meetings/<M>.json`, and the next normal `build` renders it.
+
+* `LETTER` must be byte for byte the file `meetings-comment-sent --file` recorded for this meeting: its SHA-256 and size
+  must equal the recorded `letter_sha256` and `letter_bytes`. A meeting recorded without `--file` cannot be published. Changing
+  even a newline makes it a different file. Nothing is normalized, redacted or filled in.
+* UTF-8 plain text of 1 to 16384 bytes (CRLF and non-ASCII allowed; no byte-order mark, NUL or other control characters),
+  with no unfilled `[name]`, `[city]` or `[EDIT ME]` placeholder. Other bracketed prose is fine.
+* The shared privacy lint (email, phone, plate) runs line by line; a hit refuses and names the line number and category only.
+  A clean result is not privacy clearance: the patterns have known blind spots. The legal-claim guard only prints
+  `review-required` notes (rule names) and never refuses.
+* `--signer-public` is your confirmation that whoever signed the comment agreed to be named publicly. The tool cannot check it.
+* The date and channel come from the private record, never from a flag. An existing public comment is kept unless `--replace`;
+  the private record is never changed.
+
+The meeting page then shows `Our submitted comment (CHANNEL, DATE)` as escaped plain text (anchor `#submitted-comment`),
+an existing agency page's past meeting links to it, and `data/meetings.json` carries only `submitted_comment: {on, channel}`
+(JSON only; no text, digest or CSV column). This is a recorded submission, not proof of delivery or a legal finding. Without
+the field every page and export is unchanged.
 
 ## Recording an outcome
 
@@ -600,6 +655,25 @@ item `category`, else the title before ` - `. Ids are `agendacenter-<first host 
 link when there is none). An item with no description is dropped unless `--all-events`, which keeps it as `not_scanned: true`. Cancelled
 and changes rules, the 60-event cap and the keyword-lead, verify-by-hand rule are the same as for Legistar.
 
+## iCalendar agenda feed import (CLI)
+
+```
+python3 -m campaign_tool meetings --directory D --platform ics --feed-url https://... --body "City Council" (--online | --from-ics FILE) [--since YYYY-MM-DD] [--tz ZONE]
+```
+
+For a body that publishes only an `.ics` feed. `--feed-url` is an https URL (no user or password, at most 500 characters) and
+`--body` is the governing body's name (plain text, at most 120; the feed's own calendar name is not trusted). `--client` is not
+used and is refused. `--online` makes **one GET of the feed** and nothing else (at most 2 MiB); `--from-ics` reads a saved copy offline.
+Output has the Legistar shape with `source: "ics"`, `id` `ics-<body slug>-<12 hex of sha256(UID)>` and `event_id` the UID.
+
+Only `VEVENT`s are read (more than 2 000 refuse the run and write nothing). Times: `TZID=<IANA zone>` is kept in that zone, `...Z`
+is converted to `--tz`, `VALUE=DATE` is date-only (`time_known: false`); in a repeated DST hour the first occurrence is used. A
+floating time (no zone), an unknown `TZID`, a UID over 200 characters, a missing UID and an unreadable start are skipped and counted.
+**Recurring events (`RRULE`, `RDATE`, `RECURRENCE-ID`) are skipped and counted, not expanded.** The report prints
+`skipped` with each count. Only `SUMMARY` and `DESCRIPTION` are scanned for the ALPR keywords; `STATUS:CANCELLED` sets
+`status: "cancelled"`. `agenda_url` is the `URL` property if `https://`, else the first `https://` `ATTACH`; attachment links are
+recorded and **never fetched**. Changes (new, moved, cancelled) and the keyword-lead rule are the same as for Legistar.
+
 ## Calendar feed
 
 A built site publishes `/meetings.ics` (RFC 5545), linked from the meetings page, so supporters can subscribe. It lists the
@@ -646,3 +720,13 @@ A county campaign can follow the county board and city councils in one run. List
 ```
 
 `python3 -m campaign_tool meetings --directory D (--online | --from-json F) [--since YYYY-MM-DD]` (no `--client`) scans every entry into one `kit/meetings.json`: `client` is `multi`, `clients` lists the slugs, each meeting carries `client` and `source_label`, `sources` gives each body's `ok` or `failed` status, and `changes` is keyed by client. A body that fails (network, bad JSON) is named with its error, keeps its previous meetings marked `stale: true`, and the run exits 3 after writing; the other bodies are unaffected. A previous single-client file for a listed client is compared, not treated as another client. A bad `meeting_sources` entry stops the run naming its index. `--client X` keeps the single-body behaviour unchanged.
+
+## Organizer-entered meetings (`meetings-add`)
+
+For a governing body on no supported agenda platform. `python3 -m campaign_tool meetings-add --directory D --id manual-SLUG --body TEXT --agency-id ID --starts-at 2026-11-20T18:30:00-08:00 --agenda-url https://… --item-title TEXT --source-url https://… --checked-on YYYY-MM-DD` records one meeting in the private `kit/meetings-manual.json` (folder mode 0700, file mode 0600). The id must be `manual-` plus lowercase letters, digits and hyphens. `--agenda-url` is your attestation that the page is the body's official agenda; nothing is fetched. The start needs an explicit offset or `Z` (a zone is never guessed) and must not be in the past; `--checked-on` must be a real date no later than today and the meeting day. Text is plain (no `<` or `>`, no control characters). A malformed value stops with `Stopped:` and writes nothing; missing or conflicting flags exit 2.
+
+A later `meetings` scan rewrites only `kit/meetings.json`, so a manual entry is never dropped by it and is never listed as removed in its `changes`. `meetings-stage` reads both files by id: the same id in both files, or twice in one, refuses before anything is staged. A staged manual meeting defaults `--agency-id` to the saved one (a different one refuses), and its comment kit says `Organizer-entered meeting; official agenda checked YYYY-MM-DD.`; the source URL, check date, history and reasons never reach `content/`. A corrupt `kit/meetings-manual.json`, a symlink or non-regular file, or one over 4 MiB refuses; it is never reset.
+
+Correct an entry with `--replace --on YYYY-MM-DD --reason TEXT` and the full new fields (this also restores a cancelled one), or cancel it with `--id manual-SLUG --cancel --on YYYY-MM-DD --reason TEXT`. `--on` is from the entry's `checked_on` through today. Each correction appends `{action, on, reason, before}` to the entry's history (the old values stay); a second cancel and a replace of an unknown id refuse. Reasons stay in the private file and are never printed.
+
+A correction or cancel changes this private file only. It does not change an already staged page, a recorded outcome or a comment-submission receipt, and nothing is staged, built or published for you: re-run `meetings-stage --replace` for a corrected date, and reflect a cancellation by reviewing the staged meeting's `status` yourself. Nothing is sent.

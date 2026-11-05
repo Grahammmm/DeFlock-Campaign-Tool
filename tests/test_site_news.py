@@ -530,9 +530,27 @@ class PageTests(NewsCase):
         self.assertIn('<p class="notice">No press coverage has been recorded yet.</p>', empty)
         self.assertNotIn('class="news-list"', empty)
 
+    @staticmethod
+    def without_catalogue(files):
+        """DF2207-12 adds exactly two outputs, one footer paragraph and one sitemap URL; remove only those, keep every pinned digest."""
+        data_link = b'<p><a href="/data.html">Open data</a></p>'
+        data_url = b'<url><loc>https://cedar-records.example.invalid/data.html</loc></url>'
+        legacy = {}
+        for name, data in files.items():
+            if name in ("data.html", "data/datapackage.json"):
+                continue
+            if name.endswith(".html"):
+                assert data.count(data_link) == 1, name
+                data = data.replace(data_link, b"", 1)
+            if name == "sitemap.xml":
+                assert data.count(data_url) == 1
+                data = data.replace(data_url, b"", 1)
+            legacy[name] = data
+        return legacy
+
     def test_optional_bytes_toggle_reservations_and_public_contracts(self):
         absent = self.build()
-        self.assertEqual(self.digests(absent), BASELINE)  # no coverage file: every output is the pre-change render
+        self.assertEqual(self.digests(self.without_catalogue(absent)), BASELINE)  # no coverage file: every output is the pre-change render
         self.assertTrue(all(b"news.html" not in data for data in absent.values()))
 
         self.put(document(row(1, findings=[FINDING_ID]), row(2)))
@@ -540,7 +558,7 @@ class PageTests(NewsCase):
         self.assertEqual(set(enabled) - set(absent), {"news.html"})
         self.assertEqual(set(absent) - set(enabled), set())
         reported = re.compile(r'<p class="reported-in">.*?</p>')
-        for name, data in enabled.items():
+        for name, data in self.without_catalogue(enabled).items():
             if name == "news.html" or name == "sitemap.xml":
                 continue
             if name.endswith(".html"):

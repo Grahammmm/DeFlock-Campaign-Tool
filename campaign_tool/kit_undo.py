@@ -7,10 +7,15 @@ Two files are written in a fixed order and are **not** atomic together. The audi
 first; only then is ``sent.json`` replaced with the shortened step list and the receipt's ``undo_id`` stored on the
 entry. A crash or write failure between the two leaves a receipt whose id is not on the entry: that is an *attempted*
 undo, never counted as applied, and a retry writes a new receipt with a new id.
+
+The archive is read through one bounded, non-following descriptor, and an undo that would push its serialized size
+past ``ARCHIVE_MAX_BYTES`` is refused before either file changes; see ``docs/KIT-UNDO-ARCHIVE.md``.
 """
+import errno
 import hashlib
 import json
 import os
+import stat
 import unicodedata
 import uuid
 from datetime import datetime, timezone
@@ -38,20 +43,55 @@ def _digest(entry):  # a stable hash of one sent.json entry
                           .encode("utf-8")).hexdigest()
 
 
+def _read_bounded(path, bad):
+    """The bytes of one regular file opened without following a symlink, never more than the cap plus one."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        if os.path.lexists(path):
+            raise bad("not a regular file") from None
+        return None
+    except OSError as exc:
+        raise bad("not a regular file" if exc.errno in (errno.ELOOP, errno.ENXIO) else "cannot be opened") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise bad("not a regular file")
+        if info.st_size > ARCHIVE_MAX_BYTES:
+            raise bad("too large")
+        chunks, total = [], 0
+        while total <= ARCHIVE_MAX_BYTES:
+            try:
+                chunk = os.read(fd, min(1 << 20, ARCHIVE_MAX_BYTES + 1 - total))
+            except OSError:
+                raise bad("cannot be read") from None
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if total > ARCHIVE_MAX_BYTES:
+            raise bad("too large")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def serialized_size(document):
+    """Exact bytes ``kit._write_json`` writes for the document (indent=2, non-ASCII kept, final newline)."""
+    return len((json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+
+
 def read_archive(kit_dir):
     """(path, receipts) of kit/sent-undone.json; no file means no receipts. A bad file is never reset."""
     path = Path(kit_dir) / ARCHIVE
 
     def bad(reason):
         return ValueError("kit/sent-undone.json unreadable: " + reason)
-    if not os.path.lexists(path):
+    data = _read_bounded(path, bad)
+    if data is None:
         return path, []
-    if path.is_symlink() or not path.is_file():
-        raise bad("not a regular file")
-    if path.stat().st_size > ARCHIVE_MAX_BYTES:
-        raise bad("too large")
     try:
-        document = json.loads(path.read_bytes().decode("utf-8"))
+        document = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise bad("not JSON") from None
     if (not isinstance(document, dict) or document.get("schema_version") != 1
@@ -100,7 +140,14 @@ def undo_step(root, agency_id, *, request="main", reason, today=None):
     receipt = {"undo_id": undo_ids[-1], "agency_id": agency_id, "request": request,
                "undone_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "reason": reason,
                "step": removed, "entry_before_sha256": _digest(entry), "entry_after_sha256": _digest(after)}
-    kit._write_json(archive_path, {"schema_version": 1, "undos": [*receipts, receipt]})  # audit first (new inode, 0600)
+    candidate = {"schema_version": 1, "undos": [*receipts, receipt]}
+    try:
+        too_big = serialized_size(candidate) > ARCHIVE_MAX_BYTES  # the reader's own limit, checked before any write
+    except UnicodeEncodeError:
+        raise ValueError("kit/sent-undone.json cannot be written as UTF-8; nothing was changed") from None
+    if too_big:
+        raise ValueError("kit/sent-undone.json would exceed 16 MiB; nothing was changed")
+    kit._write_json(archive_path, candidate)  # audit first (new inode, 0600)
     _fsync(archive_path)
     _fsync(kit_dir)
     requests[key] = after
