@@ -26,6 +26,7 @@ EXTRA = [("synthetic-two", POLICE, "apparent_conflict", "2025-06-01"),
          ("synthetic-five", None, "apparent_conflict", "2026-04-01"),
          ("synthetic-six", SHERIFF, "information_gap", "2025-02-02")]
 SCRIPT_TAG = re.compile(r'^<script defer src="/(?:vendor/maplibre-gl|site-data|agency-cards|app|findings/filter|findings/cite|sources/filter|search)\.js"></script>$')
+JSON_LD_TAG = re.compile(r'^<script type="application/ld\+json">[^<]*</script>$')  # DF1407-08: inert data block
 
 
 class FindingsFilterTests(unittest.TestCase):
@@ -160,7 +161,7 @@ class FindingsFilterTests(unittest.TestCase):
             tags = re.findall(r"<script\b[^>]*>.*?</script>", html, flags=re.S)
             self.assertEqual(html.count("<script"), len(tags), page.name)
             for tag in tags:
-                self.assertRegex(tag, SCRIPT_TAG, page.name)
+                self.assertRegex(tag, SCRIPT_TAG if "ld+json" not in tag else JSON_LD_TAG, page.name)
         result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "build", "--directory", str(self.root), "--check"],
                                 capture_output=True, text=True, cwd=REPO_ROOT, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)

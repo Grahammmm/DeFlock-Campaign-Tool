@@ -24,6 +24,7 @@ DIGESTS = {  # digests are stored as spaced 8-hex groups (credential scan); join
         (REPO_ROOT / "tests" / "fixtures" / "agency-meetings-main-digests.json").read_text(encoding="utf-8")
     )["scenarios"].items()
 }
+LD_JSON = re.compile(rb'  <script type="application/ld\+json">[^<]*</script>\n')  # DF1407-08: inert data, absent from the pre-feature pins
 DAY = date(2026, 10, 20)
 HOST = "cedar-records.example.invalid"
 POLICE, COUNCIL, SHERIFF = "ca-cedar-police", "ca-cedar-city-council", "ca-cedar-county-sheriff"
@@ -77,7 +78,7 @@ class AgencyIcsTests(unittest.TestCase):
         if scenario is not None and SCENARIOS[scenario] is not None:
             self.stage(SCENARIOS[scenario])
         build_site(self.root, today=DAY)
-        return {p.relative_to(self.public).as_posix(): p.read_bytes() for p in sorted(self.public.rglob("*")) if p.is_file()}
+        return {p.relative_to(self.public).as_posix(): LD_JSON.sub(b"", p.read_bytes()) for p in sorted(self.public.rglob("*")) if p.is_file()}
 
     def digests(self, files):
         return {name: sha(data) for name, data in files.items()}
