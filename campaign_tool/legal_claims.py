@@ -113,7 +113,7 @@ def faq_notes(entries):
 
 
 def site_notes(root):
-    """root: a campaign directory -> review-required notes for its finding content and meeting directions (the text the site build publishes).
+    """root: a campaign directory -> review-required notes for its finding content, meeting directions and agency action statements (the text the site build publishes).
     Used by the CLI build and the runner build_site job, so both carry the same flags to their human approval gate."""
     try:
         from .content import load_content
@@ -129,6 +129,10 @@ def site_notes(root):
             direction = (meeting.get("outcome") or {}).get("direction")
             if direction is not None:
                 found += legal_notes([(f"meetings/{meeting.get('id', '?')}.outcome.direction", direction)])
+        # DF0237-01: hand-edited agency actions get the same note as `agency-action add`, located by their stored row
+        from .agency_actions import LABEL, read_actions
+        stored = read_actions(root, (model or {}).get("agencies", [])) or []
+        found += legal_notes([(f"{LABEL}.actions[{n}].as_stated", row["as_stated"]) for n, row in enumerate(stored)])
         if any(a.get("sharing") for a in (model or {}).get("agencies", [])):  # DF0237-04: the generated /sharing.html wording, scanned only when the page exists
             try:
                 from .cli import read_config

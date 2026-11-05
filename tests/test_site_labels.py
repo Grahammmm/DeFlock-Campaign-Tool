@@ -14,6 +14,7 @@ from unittest import mock
 
 from campaign_tool import labels as labels_module
 from campaign_tool.cli import read_config
+from campaign_tool.agency_actions import ACTION_KINDS, add_action
 from campaign_tool.content import ContentError, load_content
 from campaign_tool.labels import DEFAULTS, JS_DEFAULTS, PLACEHOLDER, html_text, load_labels
 from campaign_tool.site import FILTER_JS, build_site, preview
@@ -254,7 +255,14 @@ class LabelsTest(unittest.TestCase):
         # agency.contract_cost, agency.cost_*: the fixture has no contract cost (tests/test_agency_contract_cost.py covers those).
         # correction_counts.*: only a site that sets corrections.show_request_counts renders these (tests/test_site_correction_counts.py).
         # agency.funding_*: the fixture records no funding (tests/test_agency_funding.py covers those).
-        absent = ["agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
+        # agency.action*: the fixture records no agency actions (test_agency_actions_labels_replace_every_fixed_string below).
+        absent = ["agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",
+                  "agency.action_kind_contract_ended", "agency.action_kind_contract_paused",
+                  "agency.action_kind_contract_renewed", "agency.action_kind_contract_signed", "agency.action_kind_other",
+                  "agency.action_kind_policy_adopted", "agency.action_kind_policy_amended", "agency.action_kind_policy_posted",
+                  "agency.action_kind_retention_changed", "agency.action_kind_sharing_ended",
+                  "agency.action_kind_sharing_started", "agency.action_line", "agency.actions_heading",
+                  "agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
                   "agency.cost_total", "agency.funding_fiscal_year", "agency.funding_kind_asset_forfeiture",
                   "agency.funding_kind_donation", "agency.funding_kind_general_fund", "agency.funding_kind_grant",
                   "agency.funding_kind_other", "agency.funding_provenance",
@@ -323,6 +331,26 @@ class LabelsTest(unittest.TestCase):
                 if len(chunk.split()) >= 2:
                     self.assertNotIn(chunk.strip(), page)
         self.assertIn('<a href="/supporters.html">Xsupporters.titleX</a>', (root / "public" / "index.html").read_text(encoding="utf-8"))
+
+    def test_agency_actions_labels_replace_every_fixed_string_when_actions_are_recorded(self):
+        markers = {key: f"X{key}X" for key in DEFAULTS}
+        # Keep interpolation so the nested kind labels remain observable.
+        markers["agency.action_line"] += " {on} {kind} {statement} {source} {checked}"
+        root = self.root("rich", labels=markers)
+        for kind in ACTION_KINDS:
+            add_action(root, "ca-cedar-police", on="2026-08-01", kind=kind, as_stated=f"Zq {kind} statement",
+                       source_url=f"https://example.invalid/zq-{kind}", checked_on="2026-09-01", today=SOON)
+        build_site(root, today=SOON)
+        page = (root / "public" / "agencies" / "cedar.html").read_text(encoding="utf-8")
+        keys = [key for key in DEFAULTS if key.startswith("agency.action")]
+        self.assertEqual(len(keys), 15)
+        for key in keys:
+            self.assertIn(f"X{key}X", page, key)
+        for text in (DEFAULTS[key] for key in keys):
+            for chunk in PLACEHOLDER.split(text):
+                if chunk.strip() and len(chunk.split()) >= 2:
+                    self.assertNotIn(chunk.strip(), page)
+        self.assertNotIn("Changes on record", page)
 
     def test_non_page_outputs_and_starter_ignore_labels(self):
         markers = {key: f"X{key}X" for key in DEFAULTS if key not in JS_DEFAULTS}  # no js.* key: scripts unchanged

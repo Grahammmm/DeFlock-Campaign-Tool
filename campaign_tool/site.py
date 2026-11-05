@@ -235,6 +235,10 @@ SOURCES_CSV_COLUMNS = tuple(c for key in PUBLIC_LIBRARY_FIELDS
 PUBLIC_AGENCY_TOP_LEVEL = {"schema_version", "campaign", "generated_from", "base_url", "url_kind", "agencies"}
 PUBLIC_AGENCY_FIELDS = ("agency_id", "name", "kind", "url", "asked", "alpr_policy", "contract", "transparency", "camera_count")
 PUBLIC_AGENCY_OPTIONAL = ("funding",)  # DF2207-02: present only when the organizer recorded it
+# DF0237-01: `actions` is present only when the organizer recorded one. It stays out of PUBLIC_AGENCY_OPTIONAL because
+# that tuple also names the data/agencies.csv columns, whose header is pinned and must not change with the data.
+PUBLIC_AGENCY_ACTIONS = ("actions",)
+PUBLIC_ACTION_FIELDS = ("on", "kind", "as_stated", "source_url", "checked_on")
 PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
 PUBLIC_POLICY_FIELDS = ("url", "checked_on")
 PUBLIC_CONTRACT_FIELDS = ("vendor", "start", "end", "source_url", "checked_on")  # never renewal_note
@@ -628,7 +632,8 @@ class Site:
             check_finding_agencies(finding, self.agencies_by_id, f'findings/{finding["slug"]}.json')
         self.multi_agency = any(f.get("also_agency_ids") for f in model["findings"])
         qualifying = ({aid for f in model["findings"] for aid in finding_agency_ids(f)}
-                      | {s["agency_id"] for s in model["sources"]})
+                      | {s["agency_id"] for s in model["sources"]}
+                      | {a["agency_id"] for a in model["agencies"] if a.get("actions")})  # DF0237-01: a recorded action
         self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
                               for a in model["agencies"] if a["agency_id"] in qualifying}
         self._record_pages = self._catalogue_record_pages(model["sources"])  # DF1103-11: refuses a shared 12-char prefix
@@ -1059,6 +1064,27 @@ class Site:
             items.append(f'<li>{" · ".join(parts)}. <span class="funding-provenance">{provenance}</span></li>')
         return f'<ul class="agency-funding">{"".join(items)}</ul>' if items else ""
 
+    @staticmethod
+    def newest_actions(agency):
+        """DF0237-01: the agency's recorded actions, newest ``on`` first; equal days keep their stored order."""
+        return sorted(agency.get("actions", []), key=lambda action: action["on"], reverse=True)
+
+    def actions_section(self, agency):
+        """DF0237-01: ``Changes on record``, one line per organizer-transcribed action as ``D: kind: T (source, checked DATE)``.
+
+        The statement is the official source's wording, escaped once; nothing is inferred, credited or explained.
+        ``""`` when the agency has none, so a page without actions is byte-identical to before."""
+        items = []
+        for action in self.newest_actions(agency):
+            source = (f'<a href="{e(action["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>')
+            items.append("<li>" + self.t("agency.action_line", on=time_tag(action["on"]),
+                                         kind=self.t("agency.action_kind_" + action["kind"]),
+                                         statement=e(action["as_stated"]), source=source,
+                                         checked=time_tag(action["checked_on"])) + "</li>")
+        if not items:
+            return ""
+        return f'<h3>{self.t("agency.actions_heading")}</h3><ul class="agency-actions">{"".join(items)}</ul>'
+
     def policy_check_section(self, agency):
         """DF1207-06: the organizer's reading of which listed elements a posted policy addresses; fixed wording, no judgement."""
         check = agency.get("policy_check")
@@ -1439,7 +1465,7 @@ class Site:
                 + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency) + self.pre_meeting_section(agency)
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
                 + self.contract_check_block(agency, "h3")
-                + self.funding_block(agency) + self.transparency_block(agency, "h3") + self.sharing_section(agency) + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
+                + self.funding_block(agency) + self.actions_section(agency) + self.transparency_block(agency, "h3") + self.sharing_section(agency) + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
                 + self.local_rules_section(agency)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
@@ -2783,6 +2809,8 @@ class Site:
                                  if newest else None),
                 **({"funding": [{k: f[k] for k in PUBLIC_FUNDING_FIELDS if k in f} for f in agency["funding"]]}
                    if agency.get("funding") else {}),  # DF2207-02: only when the organizer recorded it
+                **({"actions": [{k: a[k] for k in PUBLIC_ACTION_FIELDS} for a in self.newest_actions(agency)]}
+                   if agency.get("actions") else {}),  # DF0237-01: likewise, the page's order
                 "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
 
     def agencies_json(self):
@@ -2794,8 +2822,9 @@ class Site:
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "agencies": [self._public_agency(a, cities) for a in listed]}
         _assert_public(doc, "data/agencies.json", PUBLIC_AGENCY_TOP_LEVEL | set(self.license_top()),
-                       {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL,
-                                     {"asked": (PUBLIC_ASKED_FIELDS, {}),
+                       {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL + PUBLIC_AGENCY_ACTIONS,
+                                     {"actions": (PUBLIC_ACTION_FIELDS, {}),
+                                                            "asked": (PUBLIC_ASKED_FIELDS, {}),
                                                             "alpr_policy": (PUBLIC_POLICY_FIELDS, {}),
                                                             "contract": (PUBLIC_CONTRACT_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
                                                             "funding": (PUBLIC_FUNDING_FIELDS, {}),
