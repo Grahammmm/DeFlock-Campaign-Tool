@@ -11,6 +11,7 @@ fetched unless the caller passes ``--online``.
 workspace generator: a two-minute public comment, three asks and a source list
 built from published findings only, in the ``markdown_lite`` subset.
 """
+import hashlib
 import json
 import os
 import re
@@ -226,6 +227,20 @@ def read_feed_file(path):
     return data
 
 
+def parse_feed(data, label="feed"):
+    """Root element of an RSS feed; DOCTYPE/ENTITY declarations (any encoding) and malformed XML are refused."""
+    def refuse(*_):
+        raise MeetingsError(f"{label}: DOCTYPE and ENTITY declarations are refused")
+    # Pre-pass with expat in any encoding (UTF-16 included): a DTD or entity declaration is refused before ElementTree sees it.
+    scan = expat.ParserCreate()
+    scan.StartDoctypeDeclHandler = scan.EntityDeclHandler = refuse
+    try:
+        scan.Parse(data, True)
+        return ET.fromstring(data)
+    except (expat.ExpatError, ET.ParseError) as exc:
+        raise MeetingsError(f"{label}: not well-formed XML ({exc})") from None
+
+
 class GranicusClient:
     """Granicus ViewPublisher agenda RSS (``https://<host>/ViewPublisherRSS.php?view_id=<n>&mode=agendas``), Legistar-shaped."""
     source = "granicus"
@@ -259,18 +274,7 @@ class GranicusClient:
     def events(self, since=None, top=MAX_EVENTS):
         url = f"https://{self.host}/ViewPublisherRSS.php?view_id={self.view_id}&mode=agendas"
         since = since or date.today()
-        data = self.opener(url)
-
-        def refuse(*_):
-            raise MeetingsError(f"{self.label}: DOCTYPE and ENTITY declarations are refused")
-        # Pre-pass with expat in any encoding (UTF-16 included): a DTD or entity declaration is refused before ElementTree sees it.
-        scan = expat.ParserCreate()
-        scan.StartDoctypeDeclHandler = scan.EntityDeclHandler = refuse
-        try:
-            scan.Parse(data, True)
-            root = ET.fromstring(data)
-        except (expat.ExpatError, ET.ParseError) as exc:
-            raise MeetingsError(f"{self.label}: not well-formed XML ({exc})") from None
+        root = parse_feed(self.opener(url), self.label)
         events = []
         for item in root.iter("item"):
             def field(name):
@@ -304,15 +308,108 @@ class GranicusClient:
         return self._scanned.get(event_id, False)
 
 
+AGENDACENTER_HOST = re.compile(r"[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){1,5}")
+AGENDACENTER_DATE = re.compile(r"_(\d{2})(\d{2})(\d{4})-")
+AGENDACENTER_ID = re.compile(r"-(\d{1,12})/?$")
+
+
+class AgendaCenterClient:
+    """CivicPlus AgendaCenter public RSS (``https://<host>/RSSFeed.aspx?ModID=65&CID=All-0``), Legistar-shaped.
+
+    Only the feed text (title, category, description) is scanned; agenda PDF links are recorded, never fetched.
+    """
+    source = "agendacenter"
+
+    def __init__(self, host, opener=None, label="feed"):
+        # 2-6 lowercase DNS labels; an all-digit last label is an IP literal; ports, userinfo and paths never match.
+        if (not isinstance(host, str) or not AGENDACENTER_HOST.fullmatch(host) or len(host) > 253
+                or host.rsplit(".", 1)[1].isdigit()):
+            raise MeetingsError("AgendaCenter host must be a lowercase DNS name (2-6 labels), no IP, port, user or path")
+        self.host, self.label = host, label
+        self.client = host.split(".")[0]
+        self.opener = opener or default_opener
+        self.cut = 0
+        self.dropped_no_date = 0
+        self._scanned = {}
+        self._events = {}
+
+    @staticmethod
+    def _date(link, pub):
+        m = AGENDACENTER_DATE.search(urllib.parse.urlsplit(link).path)
+        if m:
+            try:
+                return date(int(m.group(3)), int(m.group(1)), int(m.group(2))).isoformat()
+            except ValueError:
+                pass  # an impossible link date falls back to pubDate
+        try:
+            if pub:
+                return parsedate_to_datetime(pub).date().isoformat()
+        except (TypeError, ValueError, IndexError):
+            pass
+        return None
+
+    def events(self, since=None, top=MAX_EVENTS):
+        since = since or date.today()
+        root = parse_feed(self.opener(f"https://{self.host}/RSSFeed.aspx?ModID=65&CID=All-0"), self.label)
+        events, seen = [], set()
+        self.dropped_no_date = 0
+        for item in root.iter("item"):
+            def field(name):
+                node = item.find(name)
+                return " ".join((node.text or "").split()) if node is not None else ""
+            title, link, category = field("title"), field("link"), field("category")
+            day = self._date(link, field("pubDate"))
+            if not day:
+                self.dropped_no_date += 1
+                continue
+            if day < since.isoformat():
+                continue
+            m = AGENDACENTER_ID.search(urllib.parse.urlsplit(link).path)
+            ident = int(m.group(1)) if m else int(hashlib.sha256((link or title).encode("utf-8")).hexdigest()[:12], 16)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            parts = urllib.parse.urlsplit(link)
+            ok = (parts.scheme == "https" and (parts.hostname or "").lower() == self.host and not parts.username
+                  and parts.path.startswith("/AgendaCenter/"))
+            description = _clean(re.sub(r"<[^>]*>", " ", field("description")))
+            self._scanned[ident] = bool(description)
+            body = category or re.split(r" [-\u2013] ", title, maxsplit=1)[0]
+            events.append({"EventId": ident, "EventBodyName": body, "EventDate": day, "EventComment": title,
+                           "EventInSiteURL": link if ok else None, "_title": title, "_description": description})
+        events.sort(key=lambda e: (e["EventDate"], e["EventId"]))
+        self.cut = max(0, len(events) - min(top, MAX_EVENTS))
+        self._events = {e["EventId"]: e for e in events}
+        return events[:min(top, MAX_EVENTS)]
+
+    def event_items(self, event_id):
+        e = self._events.get(event_id, {})
+        if not e.get("_description"):
+            return []  # nothing but a title: not scanned, never a match
+        return [{"EventItemTitle": e["_title"], "EventItemMatterName": e["_description"]}]
+
+    def scanned(self, event_id):
+        return self._scanned.get(event_id, False)
+
+
 def feed_opener(path):
     return lambda url: read_feed_file(path)
 
 
 def make_client(args, opener):
     """The agenda-platform client for the ``meetings`` command; refuses flags that belong to another platform."""
-    granicus = args.platform == "granicus"
-    if granicus and (args.from_json or (args.online and args.from_xml)) or (args.from_xml or args.view_id is not None or args.all_events) and not granicus:
-        raise MeetingsError("--view-id, --from-xml and --all-events go with --platform granicus (which reads --online or --from-xml, not --from-json)")
+    granicus, center = args.platform == "granicus", args.platform == "agendacenter"
+    feed = granicus or center
+    if (feed and (args.from_json or (args.online and args.from_xml))
+            or (args.from_xml or args.all_events) and not feed
+            or args.view_id is not None and not granicus):
+        raise MeetingsError("--from-xml and --all-events go with --platform granicus or agendacenter (which read --online or --from-xml, not --from-json); "
+                            "--view-id goes with granicus")
+    if center:
+        client = AgendaCenterClient(args.client, opener=opener, label=args.from_xml or "feed")
+        client.report_extra = lambda found: {"not_scanned": sum(bool(m.get("not_scanned")) for m in found),
+                                             "cut_by_item_cap": client.cut, "dropped_no_date": client.dropped_no_date}
+        return client
     if granicus:
         client = GranicusClient(args.client, args.view_id, opener=opener, label=args.from_xml or "feed")
         client.report_extra = lambda found: {"not_scanned": sum(bool(m.get("not_scanned")) for m in found), "cut_by_item_cap": client.cut}
