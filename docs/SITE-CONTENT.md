@@ -858,6 +858,36 @@ Decisions other governments have made, kept apart from this campaign's own agenc
 - `elsewhere.html` joins the footer (last paragraph) and, with `base_url`, `sitemap.xml`. `elsewhere` is a reserved page and finding slug and `elsewhere.html` a reserved top-level name with or without the file. Delete the file and rebuild and the page, link and sitemap entry disappear; every other file is byte-identical to a build that never had it.
 - Labels: `elsewhere.title`, `elsewhere.description`, `elsewhere.note`, `elsewhere.verified`, `elsewhere.decided` and `elsewhere.checked` (`{date}`), `elsewhere.source`, `elsewhere.news`, `elsewhere.kind.<kind>` and `footer.elsewhere`; `examples/labels/es.json` carries a machine-made draft. Source text and place or body names are not translated.
 
+#### Starter: `examples/elsewhere.json` (historical research, organizer re-checks and copies by hand)
+
+`examples/elsewhere.json` holds ten decisions other local governments made about ALPR or Flock cameras, each taken from the deciding body's own published record (an adopted resolution, a council action agenda, or the city or town's own news release or program page). It is a historical research starter read on 2026-11-04, not a list of current policy, not complete, not a count or ranking, and not legal advice. The tool does not verify the URLs, and `content init`, `init`, `content-check` and `build` never copy or scan it. Nothing publishes it.
+
+Before using an entry: reopen its official record, confirm the place, body, date, outcome and what equipment it concerns, check whether the decision still stands, and set `checked_on` to the day you read it. Copying an entry is not approval; the page still carries the legal-claim review notes described above.
+
+To copy it without overwriting your own work, use a disposable campaign first (never replace an edited `content/elsewhere.json`):
+
+```sh
+cp -n examples/elsewhere.json ../my-campaign/content/elsewhere.json   # -n refuses to overwrite an existing file
+python3 -m campaign_tool content-check --directory ../my-campaign     # lists every problem as elsewhere.json[N].field
+```
+
+Remove the entries you have not re-read, then run `content-check` again. Sources per entry (document title; locator; `news_url` is not used, every record was readable directly):
+
+| Place, body, date, kind | Official document and locator |
+|---|---|
+| Mountain View CA, City Council, 2026-02-24, ended_contract | City news release "City Council Terminates ALPR Contract with Flock Safety"; links the Feb. 24 Council report |
+| Los Altos Hills CA, City Council, 2026-01-15, ended_contract | Town page "Automatic License Plate Readers (ALPR)", Important Updates box (updated 1/15/2026) |
+| Lakewood CA, City Council, 2026-03-24, declined | City "Council Recap: Flock pilot program review", published 2026-03-25, last paragraph (3-2 vote) |
+| Flagstaff AZ, City Council, 2025-12-16, ended_contract | City news item "Flagstaff City Council votes to cancel Flock camera contract" (item 2202) |
+| Redmond WA, City Council, 2025-11-12, paused | City page "Automated License Plate Reader Program", Status Timeline, Nov. 12, 2025 entry |
+| Redmond WA, City Council, 2026-07-21, ended_contract | Same page, Status Timeline, July 21, 2026 entry |
+| Fitchburg WI, Common Council, 2026-05-26, ended_contract | Resolution R-112-26 "Discontinue contract with Flock Safety and use of Flock cameras", 'Adopted this 26th day of May, 2026'; it declares an intent to discontinue subject to the existing agreement, so check the contract's actual end |
+| Liberty Hill TX, City Council, 2026-09-09, ended_contract | City news item "City Discontinues Flock" (item 395), "What did City Council decide?" |
+| Frankfort KY, Board of Commissioners, 2026-10-12, ended_contract | City news item "Board of Commissioners Vote Not to Renew Flock Contract" (item 274); a decision not to renew at expiry in January 2027, not an early termination |
+| Durham NC, City Council, 2026-06-15, other | Resolution Governing the City's Use of Law Enforcement Surveillance Technologies, Section 4, published attachment to item 49 of the 2026-06-15 Council action agenda (approved 7/0); a resolution, not an ordinance. The attachment is labelled a revised resolution: confirm it is the adopted text |
+
+Candidates considered and left out because no official record of the decision itself could be read and verified: Vermilion OH (ordinance 2026-46, the page shows no passage date), Midland TX, Eastpointe MI, North Liberty IA, South Lyon MI, Barnstable MA, Asheville NC, Fort Collins CO, Lafayette CO, Renton WA and Bloomington IN (only news or aggregator reports were read), Anchorage AK (AO 2026-108 read only as a proposed ordinance), Stoughton WI and Appleton WI (proposals or referrals, no adopted outcome read) and West Hollywood CA (staff report, not the decision).
+
 ### Newsletter archive (`content/newsletters/<YYYY-MM-DD>.json`, optional)
 
 Written by `newsletter archive --date D --publish` (see NEWSLETTER.md); exactly `{"schema_version": 1, "sent_on", "title",
