@@ -129,7 +129,12 @@ class LegistarClient:
     def event_items(self, event_id):
         if type(event_id) is not int or event_id < 0:
             raise MeetingsError("event id must be an integer")
-        return self._get(f"events/{event_id}/eventitems")
+        return self._get(f"events/{event_id}/eventitems", {"Attachments": "1"})
+
+    def matter_attachments(self, matter_id):
+        if type(matter_id) is not int or matter_id < 0:
+            raise MeetingsError("matter id must be an integer")
+        return self._get(f"matters/{matter_id}/attachments")
 
     def matters(self, since=None, top=MAX_MATTERS):
         """Matters modified on or after ``since`` (date, default today minus 365 days), newest first."""
@@ -460,6 +465,41 @@ def _item_text(item):
     return " ".join(parts)
 
 
+MAX_ATTACHMENTS = 20
+ATTACHMENT_HOST = re.compile(r"(?:[a-z0-9-]+\.)+legistar\.com|legistar\.granicus\.com|legistar\d+\.granicus\.com")
+ATTACHMENT_BAD = re.compile(r"[\s<>\"'\\\x00-\x1f\x7f]")
+
+
+def _attachment(obj):
+    """DF2022-13: ``{"name", "url"}`` for one Legistar attachment object, or None when its link is not an official https Legistar URL."""
+    url = obj.get("MatterAttachmentHyperlink") if isinstance(obj, dict) else None
+    if not isinstance(url, str) or len(url) > 500 or ATTACHMENT_BAD.search(url) or not url.startswith("https://"):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.username is not None or parts.password is not None or port is not None or not ATTACHMENT_HOST.fullmatch(parts.hostname or ""):
+        return None
+    name = obj.get("MatterAttachmentName")
+    name = " ".join(_plain(name if isinstance(name, str) else "").replace("[", "").replace("]", "").split())[:200]
+    return {"name": name or "Attachment", "url": url.replace("(", "%28").replace(")", "%29")}
+
+
+def _attachments(objects):
+    """(kept, dropped): de-duplicated by URL, at most MAX_ATTACHMENTS; dropped counts the links refused. Never fetched."""
+    kept, seen, dropped = [], set(), 0
+    for obj in objects:
+        found = _attachment(obj)
+        if found is None:
+            dropped += 1
+        elif found["url"] not in seen and len(kept) < MAX_ATTACHMENTS:
+            seen.add(found["url"])
+            kept.append(found)
+    return kept, dropped
+
+
 def match_items(items):
     """Return ``[(item_text, [terms])]`` for agenda items matching the ALPR keywords."""
     hits = []
@@ -490,7 +530,8 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_ev
     for event in client.events(since=since, top=max_events)[:max_events]:
         if not isinstance(event, dict) or type(event.get("EventId")) is not int:
             continue
-        hits = match_items(client.event_items(event["EventId"]))
+        items = client.event_items(event["EventId"])
+        hits = match_items(items)
         unscanned = not hits and all_events and hasattr(client, "scanned") and not client.scanned(event["EventId"])
         if not hits and not unscanned:
             continue
@@ -502,6 +543,9 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_ev
         if not isinstance(agenda_url, str) or not agenda_url.startswith("https://"):
             agenda_url = None
         item_text, terms = hits[0] if hits else ("", [])
+        matched = [i for i in items if isinstance(i, dict) and match_items([i])]
+        attached, dropped = _attachments(a for i in matched for a in (i.get("EventItemMatterAttachments") or [])
+                                         if isinstance(i.get("EventItemMatterAttachments"), list))
         meetings.append({
             "id": f"{client.source}-{client.client}-{event['EventId']}",
             "body": _plain(body),
@@ -515,6 +559,8 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_ev
             "matched_terms": sorted({t for _, ts in hits for t in ts}),
             "matched_items": len(hits),
             "status": event_status(event),
+            "attachments": attached,
+            "attachments_dropped": dropped,
             **({"not_scanned": True, "relevance": "not_scanned"} if unscanned else {}),
         })
     meetings.sort(key=lambda m: m["starts_at"])
@@ -543,7 +589,7 @@ def compare_meetings(previous_doc, meetings, client, since):
         return {"previous": "unreadable"}
     if previous_doc.get("client") != client:
         return {"previous": "other_client", "previous_client": str(previous_doc.get("client"))[:64]}
-    before = {m["id"]: m for m in old}
+    before = {m["id"]: m for m in old}  # attachments are not compared: a changed list alone is never agenda_changed
     after = {m["id"]: m for m in meetings}
     cutoff = since.isoformat()
     gone = sorted(set(before) - set(after))
@@ -607,11 +653,17 @@ def relevant_matters(client, since=None):
         guid = raw.get("MatterGuid")
         url = (f"https://{client.client}.legistar.com/LegislationDetail.aspx?ID={raw['MatterId']}&GUID={guid}"
                if isinstance(guid, str) and GUID.fullmatch(guid) else None)
+        try:
+            listed = client.matter_attachments(raw["MatterId"])
+        except MeetingsError:
+            listed = []
+        attached, dropped = _attachments(listed if isinstance(listed, list) else [])
         out.append({"id": f"{client.source}-{client.client}-matter-{raw['MatterId']}",
                     "file": clean("MatterFile"), "title": clean("MatterTitle") or clean("MatterName"),
                     "type": clean("MatterTypeName"), "status": clean("MatterStatusName"), "body": clean("MatterBodyName"),
                     "intro_date": _matter_date(raw.get("MatterIntroDate")), "agenda_date": _matter_date(raw.get("MatterAgendaDate")),
-                    "passed_date": _matter_date(raw.get("MatterPassedDate")), "url": url, "matched_terms": terms})
+                    "passed_date": _matter_date(raw.get("MatterPassedDate")), "url": url, "matched_terms": terms,
+                    "attachments": attached, "attachments_dropped": dropped})
     out.sort(key=lambda r: r["id"])
     out.sort(key=lambda r: r["intro_date"] or "", reverse=True)
     return out
@@ -791,6 +843,11 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
             lines.append(f"- Written comment: {_clean(written.get('how'))}" + (f", by {due}" if due else ""))
         lines.append(f"Source: {_clean(part.get('source_url'))} (checked {_clean(part.get('verified_at'))})")
     lines.append("")
+    attachments = [a for a in meeting.get("attachments") or [] if isinstance(a, dict) and str(a.get("url")).startswith("https://")]
+    if attachments:  # DF2022-13: official agenda-system links, never fetched
+        lines.append("## Read first")
+        lines.extend(f"- [{_clean(a.get('name') or 'Attachment').replace('[', '').replace(']', '')}]({a['url']})" for a in attachments)
+        lines.extend(["Attachments are official links from the agenda system; read them before you speak.", ""])
     lines.append("## Sources")
     if not findings:
         lines.append("- No published findings yet; cite the records request itself and its date.")

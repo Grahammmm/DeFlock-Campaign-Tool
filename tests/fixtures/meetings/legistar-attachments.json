@@ -1,0 +1,29 @@
+{
+  "_note": "Synthetic Legistar Web API responses (Attachments=1). Hosts are fictional or documented Legistar patterns; nothing is fetched.",
+  "/v1/examplecity/events": [
+    {"EventId": 3001, "EventBodyName": "Example City Council", "EventDate": "2026-10-14T00:00:00", "EventTime": "6:00 PM",
+     "EventInSiteURL": "https://examplecity.legistar.com/MeetingDetail.aspx?ID=3001"}
+  ],
+  "/v1/examplecity/events/3001/eventitems": [
+    {"EventItemId": 1, "EventItemTitle": "Approval of minutes", "EventItemMatterAttachments": [
+      {"MatterAttachmentName": "Unmatched minutes", "MatterAttachmentHyperlink": "https://examplecity.legistar.com/View.ashx?M=F&ID=1&GUID=U"}]},
+    {"EventItemId": 2, "EventItemTitle": "Renewal of the automated license plate reader agreement", "EventItemMatterAttachments": [
+      {"MatterAttachmentName": "Staff report", "MatterAttachmentHyperlink": "https://examplecity.legistar.com/View.ashx?M=F&ID=2&GUID=A"},
+      {"MatterAttachmentName": "Vendor <b>agreement</b>", "MatterAttachmentHyperlink": "https://examplecity.legistar.com/View.ashx?M=F&ID=3&GUID=B"},
+      {"MatterAttachmentName": "Insecure", "MatterAttachmentHyperlink": "http://examplecity.legistar.com/View.ashx?M=F&ID=4"},
+      {"MatterAttachmentName": "Elsewhere", "MatterAttachmentHyperlink": "https://evil.example/View.ashx"},
+      {"MatterAttachmentName": "Script", "MatterAttachmentHyperlink": "javascript:alert(1)"}]},
+    {"EventItemId": 3, "EventItemTitle": "Flock Safety camera locations", "EventItemMatterAttachments": [
+      {"MatterAttachmentName": "Staff report again", "MatterAttachmentHyperlink": "https://examplecity.legistar.com/View.ashx?M=F&ID=2&GUID=A"},
+      {"MatterAttachmentName": "", "MatterAttachmentHyperlink": "https://legistar2.granicus.com/examplecity/attachments/policy.pdf"}]}
+  ],
+  "/v1/examplecity/matters": [
+    {"MatterId": 601, "MatterGuid": "AAAAAAAA-1111-2222-3333-444444444444", "MatterFile": "26-0601",
+     "MatterName": "Flock Safety agreement", "MatterTitle": "Automated license plate readers",
+     "MatterIntroDate": "2026-03-10T00:00:00"}
+  ],
+  "/v1/examplecity/matters/601/attachments": [
+    {"MatterAttachmentName": "Contract", "MatterAttachmentHyperlink": "https://examplecity.legistar.com/View.ashx?M=F&ID=9&GUID=C"},
+    {"MatterAttachmentName": "Bad", "MatterAttachmentHyperlink": "https://evil.example/x"}
+  ]
+}
