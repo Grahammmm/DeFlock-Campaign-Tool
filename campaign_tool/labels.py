@@ -274,6 +274,18 @@ DEFAULTS = {
     "news.kind.news": "News", "news.kind.opinion": "Opinion", "news.kind.broadcast": "Broadcast", "news.kind.other": "Other",
     "finding.reported_in": "Reported in: {outlet} ({date})", "footer.news": "In the news",
     "press.news": "Press coverage of the campaign",
+    # DF1107-04: /elsewhere.html (optional content/elsewhere.json): organizer-verified decisions by other governments
+    "elsewhere.title": "Decisions elsewhere", "footer.elsewhere": "Decisions elsewhere",
+    "elsewhere.description": "Decisions by other governments, as their own official records state them, recorded by the organizers.",
+    "elsewhere.note": "Decisions elsewhere are not decisions by this campaign's agencies.",
+    "elsewhere.verified": "Each entry was read from the deciding body's own record by an organizer, who attests the date it was last "
+                          "checked. The wording is as that source states it; this site does not interpret it, and the record "
+                          "may have changed since.",
+    "elsewhere.decided": "Decided {date}", "elsewhere.source": "Official source", "elsewhere.news": "News coverage",
+    "elsewhere.checked": "Checked {date}",
+    "elsewhere.kind.ended_contract": "Ended a contract", "elsewhere.kind.paused": "Paused", "elsewhere.kind.declined": "Declined",
+    "elsewhere.kind.adopted_ordinance": "Adopted an ordinance", "elsewhere.kind.restricted_sharing": "Restricted data sharing",
+    "elsewhere.kind.audit_ordered": "Ordered an audit", "elsewhere.kind.other": "Other",
 }
 # DF0137-14: fixed strings the generated scripts write into the page. Defaults are today's exact English; site.py
 # switches the scripts to LABELS lookups (site-data.js) only when a js.* key differs from its default.

@@ -50,7 +50,7 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "sharing.html", "press.html", "requests.html", "news.html"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "sharing.html", "press.html", "requests.html", "news.html", "elsewhere.html"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
@@ -641,6 +641,7 @@ class Site:
         # DF1952-04: content/glossary.json; an absent file or an empty terms list switches every glossary output off.
         self.glossary = model.get("glossary") if (model.get("glossary") or {}).get("terms") else None
         self.faq = model.get("faq") or None  # DF0022-01: content/faq.json entries; an absent file switches every FAQ output off
+        self.elsewhere = model.get("elsewhere") or None  # DF1107-04: content/elsewhere.json entries; an absent file switches every output off
         self.coverage = model.get("coverage")  # DF0022-03: None without content/coverage.json; [] (present, empty) keeps the page
         # DF1952-06: curated topics (slug order); each finding id -> the topics listing it. No topics key = none.
         self.topics = model.get("topics", [])
@@ -824,6 +825,8 @@ class Site:
             parts.append(f'<p><a href="/news.html">{self.t("footer.news")}</a></p>')
         if self.sharing_rows:  # DF0237-04: after every other paragraph
             parts.append(f'<p><a href="/sharing.html">{self.t("footer.sharing")}</a></p>')
+        if self.elsewhere:  # DF1107-04: its own paragraph, last, so every earlier footer byte is unchanged without the file
+            parts.append(f'<p><a href="/elsewhere.html">{self.t("footer.elsewhere")}</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def share(self, title, description, path, kind, published, modified):
@@ -1853,6 +1856,26 @@ class Site:
         main = f'    <section class="section finding-body" id="content"><h2>{self.t("news.title")}</h2>{body}</section>\n'
         return self.page("news", self.labels["news.title"], self.labels["news.description"], "/news.html", main)
 
+    def elsewhere_html(self):
+        """``/elsewhere.html`` (DF1107-04): decisions by other governments an organizer read off the official record, grouped by
+        kind in the fixed enum order, newest decision first. As stated, escaped plain text; no count, rank or score."""
+        from .content_elsewhere import sorted_for_page
+        groups = []
+        for kind, rows in sorted_for_page(self.elsewhere):
+            items = []
+            for entry in rows:
+                news = (f' · <a href="{e(entry["news_url"])}" rel="noopener noreferrer">{self.t("elsewhere.news")}</a>'
+                        if "news_url" in entry else "")
+                items.append(f'<li class="elsewhere-item"><strong>{e(entry["place"])}, {e(entry["state"])}</strong> · {e(entry["body"])}'
+                             f' · {self.t("elsewhere.decided", date=time_tag(entry["decided_on"]))}'
+                             f'<p>{e(entry["as_stated"])}</p>'
+                             f'<p><a href="{e(entry["source_url"])}" rel="noopener noreferrer">{self.t("elsewhere.source")}</a>{news}'
+                             f' · {self.t("elsewhere.checked", date=time_tag(entry["checked_on"]))}</p></li>')
+            groups.append(f'<h3>{self.t("elsewhere.kind." + kind)}</h3><ul class="elsewhere-list">{"".join(items)}</ul>')
+        main = (f'    <section class="section finding-body" id="content"><h2>{self.t("elsewhere.title")}</h2>'
+                f'<p class="notice">{self.t("elsewhere.note")}</p><p>{self.t("elsewhere.verified")}</p>{"".join(groups)}</section>\n')
+        return self.page("elsewhere", self.labels["elsewhere.title"], self.labels["elsewhere.description"], "/elsewhere.html", main)
+
     def terms_used_html(self, finding):
         """DF1952-04: ``Terms used on this page`` links to the glossary entries the finding's title, summary or body use;
         "" (no heading) without a glossary or a match."""
@@ -2558,6 +2581,7 @@ class Site:
         paths += ["/sharing.html"] if self.sharing_rows else []  # DF0237-04
         paths += ["/press.html"] if self.site.get("press") else []  # DF2207-10
         paths += ["/news.html"] if self.coverage is not None else []  # DF0022-03
+        paths += ["/elsewhere.html"] if self.elsewhere else []  # DF1107-04
         if self.model.get("newsletters"):  # DF1952-09: only with public issues
             paths += ["/newsletters.html"] + [f'/newsletters/{i["sent_on"]}.html' for i in reversed(self.model["newsletters"])]
         paths += list(self.agency_pages().values())
@@ -2962,7 +2986,7 @@ def _asset_plan(model):
     return plan
 
 
-PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map")
+PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map", "elsewhere")
 # Fields an organizer fills with a contact on purpose, or that are never published: not scanned. A library entry is scanned
 # through its public projection only (never note, fragment or the full hash); an agency without its private contact and notes.
 PRIVACY_GATE_SKIP = {"how", "contact_email", "privacy_contact"}
@@ -3049,6 +3073,8 @@ def _plan_site(root, today=None, notes=None):
         pages["news.html"] = site.news_html()
     if site.sharing_rows:  # DF0237-04: no lists, no page; the slug is reserved, so nothing else can own this path
         pages["sharing.html"] = site.sharing_html()
+    if site.elsewhere:  # DF1107-04: no file, no page; the slug is reserved, so nothing else can own this path
+        pages["elsewhere.html"] = site.elsewhere_html()
 
     if model["newsletters"]:  # DF1952-09: newest first; the slug is reserved, so nothing else can own these paths
         pages["newsletters.html"] = site.newsletters_html()

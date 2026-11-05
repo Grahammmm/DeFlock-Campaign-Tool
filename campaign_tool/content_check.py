@@ -20,7 +20,8 @@ from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES,
 from .finding_law import check as check_law, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
-from .legal_claims import faq_notes
+from .content_elsewhere import read_elsewhere
+from .legal_claims import elsewhere_notes, faq_notes
 from .labels import MAX_LABELS_BYTES, load_labels
 from .newsletter.archive import FOLDER as NEWSLETTERS, issue_paths, load_public_issue
 from .redirects import check_file as check_redirects
@@ -190,10 +191,11 @@ def _asked_links(problems, root, document):
             problems.append(f"{label}: older than its request's latest step ({latest[0]} on {latest[1]}); run kit-asked")
 
 
-def content_problems(root, limit=LIMIT, faq_out=None):
+def content_problems(root, limit=LIMIT, faq_out=None, elsewhere_out=None, today=None):
     """Sorted, de-duplicated problem lines for ``root/content``; None when there is no content/.
 
-    ``faq_out``: a list that receives the validated FAQ entries when content/faq.json is present and valid."""
+    ``faq_out``: a list that receives the validated FAQ entries when content/faq.json is present and valid.
+    ``elsewhere_out``: the same for content/elsewhere.json (DF1107-04); ``today``: the day checked_on may not pass."""
     root = Path(root)
     content_dir = root / "content"
     if not content_dir.is_dir():
@@ -251,6 +253,9 @@ def content_problems(root, limit=LIMIT, faq_out=None):
     faq = read_faq(root, findings if findings_intact else None, problems)
     if faq_out is not None and faq is not None:
         faq_out.extend(faq)
+    elsewhere = read_elsewhere(root, today, problems)  # DF1107-04: the build's own reader; names every independent problem
+    if elsewhere_out is not None and elsewhere is not None:
+        elsewhere_out.extend(elsewhere)
     # DF0022-03: the build's own reader and refusal text; with a refused finding file ids are not matched (already named)
     _attempt(problems, "coverage.json", lambda: read_coverage(root, findings if findings_intact else None))
 
@@ -318,7 +323,7 @@ def content_problems(root, limit=LIMIT, faq_out=None):
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
 FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "pages/", "topics/", "kit/", "law/", "newsletters/",
                  "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json",
-                 "faq.json", "coverage.json", "body-schedules.json")
+                 "faq.json", "coverage.json", "body-schedules.json", "elsewhere.json")
 
 
 def problem_record(line):
@@ -343,8 +348,8 @@ def _law_package(root):
 
 def run_cli(root, as_json=False):
     """Print ``content/: N problem(s)`` and one line each (or one ``content-check-v1`` JSON line); exit 3 when any."""
-    faq = []
-    problems = content_problems(root, limit=None, faq_out=faq)
+    faq, elsewhere = [], []
+    problems = content_problems(root, limit=None, faq_out=faq, elsewhere_out=elsewhere)
     if problems is None:
         if as_json:
             print(json.dumps({"schema": SCHEMA, "count": 0, "problems": [], "truncated": False,
@@ -365,6 +370,8 @@ def run_cli(root, as_json=False):
         for line in _cap(problems, LIMIT):
             print(line)
     for note in faq_notes(faq):  # DF0022-01: stderr only, advisory; the stdout schema, count and exit code are unchanged
+        print(note, file=sys.stderr)
+    for note in elsewhere_notes(elsewhere):  # DF1107-04: stderr only, advisory, like the FAQ notes above
         print(note, file=sys.stderr)
     if problems:
         raise SystemExit(3)
