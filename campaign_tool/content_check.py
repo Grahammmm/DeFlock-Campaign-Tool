@@ -287,6 +287,9 @@ def content_problems(root, limit=LIMIT, faq_out=None):
         for label, finding in labelled:
             _attempt(problems, label, lambda: check_finding_agencies(finding, known, label))
 
+    from .agency_actions import action_problems  # local: agency_actions imports content
+    problems.extend(action_problems(root, agencies))  # DF0237-01: the build's own reader; None agencies skips only the id check
+
     # DF1952-01: the law check follows agency loading so a local overlay's agency_ids are judged against loaded agencies
     # (None, when agencies are themselves refused and named, skips only that scope check).
     _attempt(problems, "campaign.json", lambda: problems.extend(check_law(root, findings, agencies)[0]))

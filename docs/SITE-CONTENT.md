@@ -441,6 +441,53 @@ The site says nothing about a donor beyond the name in the document. Labels: `ag
 `agency.funding_kind_asset_forfeiture`, `agency.funding_kind_donation`, `agency.funding_kind_other`. A profile without
 `funding` reads and renders exactly as before.
 
+### Agency actions outside a meeting (`content/agency-actions.json`)
+
+What an agency's own official source says it changed outside a recorded meeting outcome (a policy posted, sharing ended, a
+contract signed) can be transcribed by an organizer, one dated action at a time. The file holds exactly
+`{"schema_version": 1, "actions": [ROW, ...]}` (an empty list is valid; no file means no section, no page and no event) and each
+ROW has exactly `agency_id` (one of this campaign's selected agencies, matched exactly), `on` (the day it took effect), `kind`
+(`policy_adopted`, `policy_amended`, `policy_posted`, `sharing_started`, `sharing_ended`, `retention_changed`,
+`contract_signed`, `contract_renewed`, `contract_ended`, `contract_paused`, `cameras_added`, `cameras_removed` or `other`),
+`as_stated` (1 to 200 characters exactly as the official source states it, already trimmed; no angle brackets, control,
+invisible or line-separator characters; accents, apostrophes and ampersands are kept as written), `source_url` (an https
+address of that source, 1 to 500 characters; recorded, never fetched) and `checked_on` (the day the organizer checked the
+source). Dates are real `YYYY-MM-DD` days with `on` not after `checked_on` and `checked_on` not in the future. An agency has at
+most 50 actions, and the same agency + `on` + `kind` + `source_url` twice is refused, whatever the statement or checked date.
+
+```
+python3 -m campaign_tool content agency-action add --directory DIR --agency ID --on 2026-09-01 --kind policy_posted \
+    --as-stated "Use policy posted on the department website" --source-url https://example.org/policy --checked-on 2026-10-01
+python3 -m campaign_tool content agency-action remove --directory DIR --agency ID --index 2
+```
+
+Both commands need `--directory` and an existing `content/`; `add` needs every flag and has no replace or update form, and
+neither creates `content/` or touches any other file. They print `Agency action added: ID, index N.` or
+`Agency action removed: ID, index N.` and `Content only; nothing was built, sent or deployed.`; a refusal exits 1 (a missing or
+unknown flag exits 2). `--index` is the 1-based position among that agency's actions in the **file** (insertion order), not the
+page's newest-first order, and is the `N` that `add` prints; removing the last action leaves a valid empty file. The whole
+file is checked before and after a change and written with one rename, so a refusal or a failed write leaves the old bytes;
+links, hard links, special files and a file that changed meanwhile are refused. Only one organizer should edit at a time.
+Problems name `content/agency-actions.json.actions[N].FIELD` (N counts from 0 in file order, as the other content messages do)
+and never repeat a statement, address or unknown key, from `build` (exit 1) and `content-check` (exit 3) alike.
+
+The agency's own page then shows **Changes on record** after its funding and before the transparency block, newest `on` first
+(same-day actions keep file order), one line each: `D: <kind label>: T (source, checked DATE)` with the source link. An agency
+with an action has a page even without a finding or source. `timeline.html` lists each as kind `agency_action`
+(`AGENCY: KIND: T`, linked to the agency page with its official record) and, only when there is one, appends "Agency actions are
+transcribed from their cited official sources." to its lead. `data/agencies.json` carries an optional `actions` array (omitted
+when none; `on`, `kind`, `as_stated`, `source_url`, `checked_on`, newest first, 1 to 50). It is not in `data/agencies.csv`, whose
+header never changes with the data. Labels: `agency.actions_heading`, `agency.action_line` (`{on}`, `{kind}`, `{statement}`,
+`{source}`, `{checked}`; the source word is `agency.cost_source`) and `agency.action_kind_<KIND>`; `examples/labels/es.json` has
+unreviewed Spanish drafts.
+
+**The organizer is responsible for the transcription.** The software does not fetch, read or confirm the source, and it infers
+nothing: a policy that is posted is not a finding that it is followed, and no sentence says the campaign or anyone else caused
+a change. An alert-only legal-claim check runs on each statement: `add` prints a `review-required` note on stderr (location and
+rule names, never the text) and still succeeds, and the build's review notes cover hand-edited rows the same way. The note is
+for a human at the publish gate and is never an error. Meeting decisions stay separate (`meetings/*.json` outcomes); nothing is
+merged with, or removed because of, a meeting.
+
 ### Local rules on record (agency page, from `law/local-rules.json`)
 
 An existing agency page (`agencies/<slug>.html`) shows a `Local rules on record` section, after the facts,
@@ -953,7 +1000,8 @@ and `agencies`; per agency `agency_id`, `name`, `kind`, `url` (the page path, wi
 has one, `cost`: `amount_usd`, `period`, `as_stated_in`) or null, `transparency`
 (the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, an optional
 `funding` array (only when recorded: `kind`, `name`, `as_stated_in`, `source_url`, `checked_on` and, when given,
-`amount_usd` with `period`, and `fiscal_year`), and `camera_count`
+`amount_usd` with `period`, and `fiscal_year`), an optional `actions` array (only when recorded, DF0237-01: `on`, `kind`,
+`as_stated`, `source_url`, `checked_on`, newest first; see "Agency actions outside a meeting"), and `camera_count`
 (the card's camera-count sentence) or null. It never includes `records_email`, `records_url`, `portal`, the asked-item
 `note`, the contract `renewal_note`, kit files, notes or any other key; the build refuses with
 `data/agencies.json: non-public key ...` and writes nothing.
@@ -962,7 +1010,7 @@ to the matching JSON (`agencies.html`, `meetings.html` and `about.html`; label `
 Each is read back from the JSON text the build has already rendered and checked, so columns contain only allowlisted public
 JSON fields, and there is no CSV without its JSON. The header includes required and optional public record keys in the order
 the JSON file writes them (alphabetical), for no records too. In particular, agencies always have a `funding` column, even
-when no agency has recorded funding. A key a record lacks (including `funding` or a meeting's `outcome`) or a null is an empty
+when no agency has recorded funding (`actions` is JSON-only: no column, so the header never changes). A key a record lacks (including `funding` or a meeting's `outcome`) or a null is an empty
 cell, never a missing column;
 then one row per record in the JSON array's order. Text stays as it is, a number keeps its JSON spelling, `true`/`false` stay
 `true`/`false`, a list is joined with `; ` in stored order (a string item as text, any other item as compact JSON), and an

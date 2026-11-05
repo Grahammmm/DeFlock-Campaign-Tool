@@ -437,3 +437,33 @@ line of the file. If any row is bad nothing is written and each bad row is named
 header is line 1; the first 20 are listed, then a count). Otherwise all rows are appended in file order as selected,
 `verified: false`, `added_by: organizer`, and the next kit run drafts requests for the law-enforcement ones. `--check`
 runs every check and prints the same summary with `"written": false` without changing the file. Nothing is sent.
+
+## Cross-check a saved Atlas of Surveillance export (private, read-only)
+
+`kit-agency atlas --csv FILE --directory D [--json]` compares a CSV you saved by hand from the Atlas of Surveillance
+with the county seed and `kit/agencies.json`. **An Atlas listing is a lead, not evidence**: it does not show that an
+agency operates plate readers, and an agency the Atlas does not list is not shown to have none. Nothing is fetched,
+written, selected or published, and the campaign folder is only read.
+
+The file must be a regular UTF-8 file of at most 10 MiB (one leading byte-order mark is fine; a symlink, folder or
+named pipe is refused). It needs the header columns `Agency`, `City`, `County`, `State` and `Technology`, spelled
+exactly, in any order; a missing one is refused by name. A vendor column is optional and may be called `Company` or
+`Vendor` (not both); without one the vendor shows as `vendor not supplied`, and a vendor is printed exactly as written.
+Other columns are ignored and never printed. Blank rows are skipped. A malformed file (bad quoting, a row with the
+wrong number of cells, a NUL, a control or bidirectional character in `Agency`, `City` or the vendor, an empty
+`Agency`, `County`, `State` or `Technology`) is refused as a whole, naming the line and the rule but not the cell.
+
+Only rows whose `Technology` is exactly `Automated License Plate Readers` (case and spacing ignored), whose `State`
+is the campaign's two-letter code and whose `County` is the campaign's county (an optional trailing ` County` is
+ignored) are used. `City` is shown, never used to match or exclude. There is no fuzzy matching and no acronym or
+substring rule. An Atlas agency name matches a seed agency of that county when both are equal after lowercasing,
+deleting apostrophes, turning other punctuation into spaces and removing trailing `department`, `dept` and `office`
+words; nothing else is normalized (accents, `police`, `sheriff` and abbreviations are compared as written). Two seed
+agencies with one normalized name are never guessed between: the row is listed as `ambiguous_seed_name` with the
+candidate ids.
+
+The report has three sections, each headed by the notice above: seed agencies the Atlas lists (marked `selected` or
+`not selected` by the same agency id in `kit/agencies.json`, never by name, with the Atlas agency, vendor and CSV line);
+Atlas rows that match no seed agency; and every selected agency in `kit/agencies.json`, organizer-added ones included,
+that no Atlas row matched. The last list is not a finding about use. `--json` prints the same report as JSON and
+nothing else. Use `kit-agency select` yourself if a lead is worth a request; this command never does.

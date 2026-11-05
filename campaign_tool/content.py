@@ -2857,6 +2857,11 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
 
     agencies = load_campaign_agencies(root, today)
     known_agencies = {agency["agency_id"] for agency in agencies}
+    from .agency_actions import by_agency, read_actions  # local: agency_actions imports this module
+    actions = by_agency(read_actions(root, agencies, today=today))  # DF0237-01: None without the file
+    for agency in agencies:  # only a nonempty store adds a key, so an absent or empty file leaves every agency unchanged
+        if actions.get(agency["agency_id"]):
+            agency["actions"] = actions[agency["agency_id"]]
     for finding in findings:  # DF1952-07: extra agencies of a multi-agency finding must be known agencies
         check_finding_agencies(finding, known_agencies, finding_files[finding["id"]])
 
