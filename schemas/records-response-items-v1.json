@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "records-response-items-v1",
+  "description": "Private per-run, per-asked-item rating of records responses (run-outputs/<run_id>/outcomes/response-items.json). Machine rating by fixed rules, review required, never a legal finding; a citation is quoted, never judged valid; missing means not mentioned in the text read.",
+  "type": "object",
+  "required": ["schema", "run_id", "review_required", "semantic_assessment", "requests", "counts", "unlinked_items", "limits"],
+  "properties": {
+    "schema": {"const": "records-response-items-v1"},
+    "run_id": {"type": "string"},
+    "review_required": {"const": true},
+    "semantic_assessment": {"const": "machine_rated_review_required"},
+    "requests": {"type": "array", "items": {"$ref": "#/$defs/request"}},
+    "counts": {
+      "type": "object",
+      "required": ["answered", "withheld", "exemption_cited", "no_records_stated", "missing", "unclear"],
+      "additionalProperties": false,
+      "properties": {
+        "answered": {"type": "integer", "minimum": 0},
+        "withheld": {"type": "integer", "minimum": 0},
+        "exemption_cited": {"type": "integer", "minimum": 0},
+        "no_records_stated": {"type": "integer", "minimum": 0},
+        "missing": {"type": "integer", "minimum": 0},
+        "unclear": {"type": "integer", "minimum": 0}
+      }
+    },
+    "unlinked_items": {"type": "integer", "minimum": 0},
+    "limits": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": ["agency_key", "request_id", "ledger_request_id", "flags", "responses", "asks"],
+      "properties": {
+        "agency_key": {"type": "string"},
+        "request_id": {"type": "string"},
+        "ledger_request_id": {"type": "string"},
+        "flags": {"type": "array", "items": {"type": "string"}},
+        "responses": {"type": "array", "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+        "asks": {"type": "array", "items": {"$ref": "#/$defs/ask"}}
+      }
+    },
+    "ask": {
+      "type": "object",
+      "required": ["ask_id", "text", "rating", "evidence", "flags"],
+      "properties": {
+        "ask_id": {"type": "string", "pattern": "^ask-[1-9][0-9]*$"},
+        "text": {"type": "string", "maxLength": 500},
+        "rating": {"enum": ["answered", "withheld", "exemption_cited", "no_records_stated", "missing", "unclear"]},
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["item_id", "page", "quote"],
+            "properties": {
+              "item_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+              "page": {"type": "integer", "minimum": 1},
+              "quote": {"type": "string", "minLength": 1, "maxLength": 600}
+            }
+          }
+        },
+        "flags": {"type": "array", "items": {"type": "string"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"rating": {"const": "missing"}}}, "then": {"properties": {"evidence": {"maxItems": 0}}}},
+        {"if": {"properties": {"rating": {"enum": ["answered", "withheld", "exemption_cited", "no_records_stated"]}}},
+         "then": {"properties": {"evidence": {"minItems": 1}}}}
+      ]
+    }
+  }
+}
