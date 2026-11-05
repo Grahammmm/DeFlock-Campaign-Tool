@@ -83,10 +83,27 @@ matches its checksum. Duplicate JSON keys or tar members, malformed entries and
 conflicting paths are refused. Member count and size limits apply during verification.
 
 `restore` refuses a non-empty or symlinked target, verifies first, extracts member by member
-with `O_EXCL`, directories `0700` and files `0600`, re-hashes every file on disk, and deletes
-the whole target if anything fails. It rechecks byte counts and metadata-to-original
+with `O_EXCL`, directories `0700` and files `0600`, re-hashes every file on disk, and on
+failure removes only what it created. It rechecks byte counts and metadata-to-original
 closure on the restored files. The restored ledger is a working database
 (`campaign_tool status` reads it).
+
+Restore also guards the target while it works. The target is captured before verification
+(absent, or a real empty directory with its inode and mode) and checked again once
+verification has finished, before anything is created or changed; if it appeared, vanished,
+was replaced by another directory or a link, or gained an entry meanwhile, restore stops with
+`restore target changed during verification; nothing restored` and does not touch it. A new
+root is created with an exclusive `mkdir`, so a directory that won the race is never adopted.
+Every file and directory restore creates is recorded by inode at creation. A later failure
+removes those entries in reverse order, and only while each is still the same inode; entries
+that arrived or were replaced since, and any directory that still holds them, are kept. An
+empty directory that existed before the restore is never removed and gets its original mode
+back; a root restore created is removed only when it is empty. If an entry restore did not
+create is found in the tree before it would report success (or in the way of an extraction),
+it stops with `restore target changed during restore; refusing unowned entries` rather than
+return a mixed-owner campaign, and leaves that entry in place (with the directories leading
+to it). Restore takes no lock and is not a defence against a hostile process that rewrites
+files it already wrote; it protects data that is not its own.
 
 Python API: `backup.export(root, out_path) -> manifest` (with `manifest_sha256`),
 `backup.verify(path, expected_manifest_sha256=None) -> report`,

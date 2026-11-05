@@ -68,6 +68,11 @@ def enrich(root, maplibre=False):
     _write(content / "faq.json", {  # DF0022-01: reaches every faq label (a cited finding, a law reference, a glossary term in the question)
         "schema_version": 1, "entries": [{"question": "Zq title question?", "answer_md": "Zq answer.",
                                           "finding_ids": ["fnd_0000000000000002"], "rule_id": "ca-civ-1798.90.5-definitions"}]})
+    news = [{"outlet": f"Zq outlet {kind}", "headline": f"Zq headline {kind}", "url": f"https://zq.example.test/{kind}",
+             "published_on": "2026-09-01", "findings": ["fnd_0000000000000002"], "kind": kind}
+            for kind in ("news", "opinion", "broadcast", "other")]
+    _write(content / "coverage.json", {  # DF0022-03: rich reaches every kind, the finding link and "Reported in"; late the empty state
+        "schema_version": 1, "entries": [] if maplibre else news})
     _write(content / "meetings" / "zq-cancelled.json", {
         "id": "zq-cancelled", "body": "Zq board", "starts_at": "2026-09-01T18:00:00-07:00", "status": "cancelled"})
     if maplibre:

@@ -1241,6 +1241,21 @@ def main():
     sharing_p.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD", help="Day the organizer read the portal")
     sharing_p.add_argument("--source-url", required=True, help="https URL of the portal page (transparency.flocksafety.com)")
     sharing_p.add_argument("--replace", action="store_true", help="Overwrite an existing sharing list")
+    coverage_cmds = content_cmds.add_parser("coverage", help="Record press coverage in content/coverage.json for /news.html "
+                                            "(typed by the organizer; nothing is fetched, quoted or published)"
+                                            ).add_subparsers(dest="coverage_command", required=True)
+    coverage_add = coverage_cmds.add_parser("add", help="List one article: outlet, headline as published, https link, date")
+    coverage_add.add_argument("--directory", required=True)
+    coverage_add.add_argument("--outlet", required=True, help="1-80 characters")
+    coverage_add.add_argument("--headline", required=True, help="The headline exactly as published, 1-200 characters")
+    coverage_add.add_argument("--url", required=True, help="https link to the article (an exact, unique string)")
+    coverage_add.add_argument("--published-on", required=True, metavar="YYYY-MM-DD", help="Publication date, not after today")
+    coverage_add.add_argument("--finding", action="append", default=None, metavar="ID",
+                              help="A published finding id the story reported; repeat for up to three")
+    coverage_add.add_argument("--kind", default="news", choices=("news", "opinion", "broadcast", "other"))
+    coverage_remove = coverage_cmds.add_parser("remove", help="Drop the one entry with exactly this URL")
+    coverage_remove.add_argument("--directory", required=True)
+    coverage_remove.add_argument("--url", required=True)
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
     review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
@@ -1753,6 +1768,15 @@ def main():
             print(json.dumps(import_sharing(root, args.agency, Path(args.csv).expanduser(), args.checked_on, args.source_url,
                                             replace=args.replace), indent=2))
             print("Recorded only. Nothing was fetched or published.")
+        elif args.command == "content" and args.content_command == "coverage":
+            from .coverage import add_coverage, remove_coverage
+            if args.coverage_command == "remove":
+                result = remove_coverage(root, url=args.url)
+            else:
+                result = add_coverage(root, outlet=args.outlet, headline=args.headline, url=args.url,
+                                      published_on=args.published_on, finding_ids=args.finding, kind=args.kind)
+            print(json.dumps(result))
+            print("Nothing was built, published or sent.")
         elif args.command == "content":
             from .content_init import init_content
             print(json.dumps(init_content(root, args.source_campaign), indent=2))
