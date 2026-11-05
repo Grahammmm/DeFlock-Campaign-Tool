@@ -541,7 +541,7 @@ _MODULES = {
         newsletter.draft newsletter.sent outbox outbox_batch press recent search_log site site_check social social_threads""",
     "other local files with no catalog store": """
         agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
-        kit_fee_reply kit_preserve kit_repeat search_log law law_packet map_controller registry setup_cmd shell sources_cmd""",
+        finding_search_log kit_fee_reply kit_preserve kit_repeat search_log law law_packet map_controller registry setup_cmd shell sources_cmd""",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -578,6 +578,7 @@ MODULE_FUNCTIONS = {
     'kit_fee_reply': ('_write', 'fee_reply',),
     'kit_preserve': ('preserve_request',),
     'search_log': ('run_cli',),
+    'finding_search_log': ('draft_from_summary',),  # private finding draft via findings._write_draft; never published
     'kit_repeat': ('_replace_store', 'repeat_request',),
     'kit_preserve': ('preserve_request',),  # private kit/preservation draft, O_EXCL, 0600, no store
     'kit_timing': ('write_csv',),
