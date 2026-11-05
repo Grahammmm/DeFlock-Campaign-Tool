@@ -45,7 +45,7 @@ FOOTER_FAQ = '<p><a href="/faq.html">FAQ</a></p>'
 # and requests head 1234c7d0: removing only the requests footer link and sitemap
 # entry restores main byte-for-byte; requests.html matches the immutable PR.
 # Source-filter assets and every other byte remain exact.
-LD_JSON = re.compile(rb'  <script type="application/ld+json">[^<]*</script>\n')  # DF1407-08: inert data, absent from the pre-feature pins
+LD_JSON = re.compile(rb'  <script type="application/ld\+json">[^<]*</script>\n')  # DF1407-08: inert data, absent from the pre-feature pins
 
 
 # DF0237-09: the fixture carries a correction, so the corrections feed link in every footer, the corrections.xml file and
