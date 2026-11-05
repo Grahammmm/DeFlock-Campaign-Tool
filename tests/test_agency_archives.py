@@ -301,6 +301,17 @@ class ArchiveSiteTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 law.validate(broken, SCHEMA)
 
+    def test_mixed_case_hosts_export_schema_valid(self):
+        for url in ("https://ARCHIVE.PH/AbCd1", "https://Archive.Today/AbCd1",
+                    "https://WEB.ARCHIVE.ORG/web/20261020120000/https://example.invalid/x"):
+            with self.subTest(url=url):
+                self.record(alpr_policy={**POLICY, **pair(url)})
+                self.build()
+                doc = json.loads(self.read("data/agencies.json"))
+                item = [x for x in doc["agencies"] if x["agency_id"] == "ca-cedar-police"][0]
+                self.assertEqual(item["alpr_policy"]["archived_url"], url)
+                law.validate(doc, SCHEMA)
+
     def test_absent_pairs_leave_no_trace(self):
         self.record(alpr_policy=POLICY, contract=CONTRACT, transparency=[SNAPSHOT], funding=[FUNDING], reports=[REPORT])
         self.build()

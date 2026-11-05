@@ -80,7 +80,7 @@
     "archived_url": {
       "description": "An archive copy of this source link that an organizer found or saved by hand; optional, only with archived_on. The host is web.archive.org (path /web/<14-digit timestamp>/<http(s) address>), archive.ph or archive.today. The build checks that the timestamp is a real UTC time. The tool fetches nothing and submits nothing to an archive; it does not vouch that the copy is authentic, current or complete.",
       "type": "string",
-      "pattern": "^https://(web[.]archive[.]org/web/[0-9]{14}/https?://[^/?#@]+|archive[.](ph|today)/[^?#])"
+      "pattern": "^https://([Ww][Ee][Bb][.][Aa][Rr][Cc][Hh][Ii][Vv][Ee][.][Oo][Rr][Gg]/web/[0-9]{14}/https?://[^/?#@]+|[Aa][Rr][Cc][Hh][Ii][Vv][Ee][.]([Pp][Hh]|[Tt][Oo][Dd][Aa][Yy])/[^?#])"
     },
     "archived_on": {
       "description": "The day the organizer recorded the archive copy, not after the build date; for a web.archive.org link it equals the date in the timestamp (checked by the build).",
