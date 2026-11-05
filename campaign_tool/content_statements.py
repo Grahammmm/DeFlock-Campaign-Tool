@@ -26,6 +26,7 @@ ROW_KEYS = REQUIRED + ("recording_time", "context_note")
 CONTEXTS = ("meeting", "press_release", "newsletter", "interview", "other")
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", re.ASCII)
 RECORDING = re.compile(r"(?:0|[1-9][0-9]{0,2}):[0-5][0-9]:[0-5][0-9]", re.ASCII)
+ABSENT = object()
 PUBLIC_FIELDS = ("official", "quote", "source_url", "recording_time", "context_note")
 
 
@@ -124,12 +125,12 @@ def _parse(data):
 
 
 def _read_document(root):
-    """The parsed document, or None when the file is absent. A link, folder, FIFO or oversized file is refused unread."""
+    """The parsed document (JSON null included), or ABSENT when there is no file. A link, folder, FIFO or oversized file is refused unread."""
     path = Path(root) / "content" / FILE
     try:
         info = os.lstat(path)
     except FileNotFoundError:
-        return None
+        return ABSENT
     except OSError:
         raise ContentError(f"{FILE}: cannot be inspected") from None
     if stat.S_ISLNK(info.st_mode):
@@ -157,7 +158,7 @@ def read_statements(root, officials, today=None, problems=None):
     today = today or date.today()
     try:
         document = _read_document(root)
-        if document is None:
+        if document is ABSENT:
             return None
     except ContentError as exc:
         if problems is None:
