@@ -8,9 +8,11 @@ Drafts for slugs that are no longer published are listed as stale, never deleted
 ``check_social(root)`` writes nothing: it names each published slug's draft state
 (ok, missing, outdated, edited, not_regular) with problem codes and the stale drafts.
 ``build_social(root, platforms=[...])`` sizes drafts by each platform's own count
-(``post_length``) into ``kit/social/<platform>/``; ``check_social`` reads ``kit/social/`` only.
+(``post_length``) into ``kit/social/<platform>/``; ``check_social`` also checks every platform, meeting, outcome and
+thread draft folder (``social_check``), still read-only. Meeting and outcome drafts keep a private ``.check.json``
+(original starts_at / outcome and window) next to ``.written.json`` so a later change can be named.
 ``build_meeting_social(root)`` drafts one post per scheduled, upcoming, organizer-verified staged meeting into
-``kit/social/meetings/`` (same rules, never posted); finding drafts and ``check_social`` do not change.
+``kit/social/meetings/`` (same rules, never posted); finding drafts do not change.
 ``build_outcome_social(root)`` drafts one post per meeting with a recorded outcome dated in the last N days into
 ``kit/social/outcomes/`` (result and vote quoted as recorded; never posted).
 """
@@ -121,6 +123,39 @@ def _read_regular(path):
         return handle.read() if stat.S_ISREG(os.fstat(handle.fileno()).st_mode) else None
 
 
+def _read_state(path, what):
+    """Read a private JSON sidecar without following links: ``({}, 'absent')``, ``(entries, 'ok')`` or ``({}, 'bad')``.
+
+    ``what`` is ``'record'`` (``.written.json``: slug -> sha) or ``'meta'`` (``.check.json`` schema 1 provenance)."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return {}, "absent"
+    except OSError:
+        return {}, "bad"
+    try:
+        data = _read_regular(path)
+        document = json.loads(data.decode("utf-8")) if data is not None else None
+    except (OSError, ValueError):
+        return {}, "bad"
+    if what == "record":
+        ok = isinstance(document, dict) and all(isinstance(v, str) for v in document.values())
+        return (document, "ok") if ok else ({}, "bad")
+    entries = document.get("drafts") if isinstance(document, dict) and document.get("schema_version") == 1 else None
+    if isinstance(entries, dict) and all(_meta_valid(e) for e in entries.values()):
+        return entries, "ok"
+    return {}, "bad"
+
+
+def _meta_valid(entry):
+    if not (isinstance(entry, dict) and isinstance(entry.get("sha256"), str) and entry.get("kind") in ("meetings", "outcomes")):
+        return False
+    if type(entry.get("within_days")) is not int or not 1 <= entry["within_days"] <= 60:
+        return False
+    return isinstance(entry.get("starts_at") if entry["kind"] == "meetings" else entry.get("outcome"),
+                      str if entry["kind"] == "meetings" else dict)
+
+
 def _edit_problems(finding, data, base_url):
     lines = data.decode("utf-8", errors="replace").split("\n")
     if lines[0].lstrip().startswith("<!--") and lines[0].rstrip().endswith("-->"):
@@ -134,8 +169,10 @@ def _edit_problems(finding, data, base_url):
     return [code for code, failed in checks.items() if failed]
 
 
-def check_social(root):
-    """Compare ``kit/social/`` with the published findings; read-only, returns the report."""
+def check_social(root, now=None):
+    """Compare ``kit/social/`` with the published findings and check every other draft folder; read-only, returns the report.
+
+    ``folders`` (one key per present platform / meeting / outcome / thread folder) is added only when such a folder exists."""
     findings, base_url = _published(root)
     social_dir = root / "kit" / "social"
     for folder in (root / "kit", social_dir):
@@ -163,7 +200,12 @@ def check_social(root):
     stale = sorted(p.stem for p in social_dir.glob("*.md") if p.stem not in slugs
                    and (p.is_symlink() or stat.S_ISREG(p.lstat().st_mode)))
     count = sum(len(e["problems"]) for e in entries) + len(stale)
-    return {"findings": len(findings), "drafts": entries, "stale": stale, "problems": count, "posted": False}
+    report = {"findings": len(findings), "drafts": entries, "stale": stale, "problems": count, "posted": False}
+    from .social_check import check_folders  # local: social_check imports this module
+    if folders := check_folders(root, findings, base_url, now):
+        report["folders"] = folders
+        report["problems"] += sum(f["problems"] for f in folders.values())
+    return report
 
 
 def build_social(root, platforms=None):
@@ -192,10 +234,29 @@ def build_social(root, platforms=None):
                           for p in platforms}}
 
 
-def _write_drafts(social_dir, suggested_dir, drafts):
+def _write_meta(primary, suggested, provenance, drafts, written, kept, stale):
+    """Private provenance next to ``.written.json``: written drafts get fresh entries, kept/stale ones keep theirs."""
+    old, _ = _read_state(primary / ".check.json", "meta")
+    entries = {s: old[s] for s in (*kept, *stale) if s in old}
+    for slug in written:
+        entries[slug] = {"sha256": _sha(drafts[slug].encode("utf-8")), **provenance[slug]}
+    _write_json(primary / ".check.json", {"schema_version": 1, "drafts": dict(sorted(entries.items()))})
+    if kept:  # a fresh suggestion's provenance describes the suggested bytes
+        old, _ = _read_state(suggested / ".check.json", "meta")
+        entries = {s: e for s, e in old.items() if s not in kept}
+        for slug in kept:
+            entries[slug] = {"sha256": _sha(drafts[slug].encode("utf-8")), **provenance[slug]}
+        _write_json(suggested / ".check.json", {"schema_version": 1, "drafts": dict(sorted(entries.items()))})
+
+
+def _write_drafts(social_dir, suggested_dir, drafts, provenance=None):
     for slug, text in sorted(drafts.items()):  # the shared privacy lint, before any file or folder is touched
         if note := refusal(f"social draft {slug}", text):
             raise ValueError(note)
+    for folder in ((social_dir, suggested_dir) if provenance is not None else ()):
+        target = folder / ".check.json"
+        if os.path.lexists(target) and not stat.S_ISREG(os.lstat(target).st_mode):
+            raise ValueError(f"{folder.name}/.check.json is not a regular file; remove it and rebuild the drafts")
     _kit_folder(social_dir)
     record_path = social_dir / ".written.json"
     record = _load_record(record_path)
@@ -217,6 +278,8 @@ def _write_drafts(social_dir, suggested_dir, drafts):
     stale = sorted(p.stem for p in social_dir.glob("*.md") if p.stem not in drafts)
     new_record.update({slug: record[slug] for slug in stale if slug in record})
     _write_json(record_path, dict(sorted(new_record.items())))
+    if provenance is not None:
+        _write_meta(social_dir, suggested_dir, provenance, drafts, written, kept, stale)
     return {"written": written, "kept_edited": kept, "suggested": len(kept), "stale": stale, "posted": False}
 
 
@@ -327,6 +390,10 @@ def meeting_review_notes(root, within_days=14, now=None):
         return ["review-required: social: legal-claim wording (meeting posts could not be scanned; read them before use)"]
 
 
+def _meeting_provenance(meetings, within_days):
+    return {m["id"]: {"kind": "meetings", "within_days": within_days, "starts_at": m["starts_at"]} for m in meetings}
+
+
 def build_meeting_social(root, platforms=None, within_days=14, now=None):
     """Write meeting drafts into ``kit/social/meetings/`` (``<platform>/`` each with ``platforms``) and return
     ``{meetings, skipped, unreadable_files, posted}``; ``meetings`` is ``build_social``'s dict (per platform with ``platforms``)."""
@@ -339,7 +406,7 @@ def build_meeting_social(root, platforms=None, within_days=14, now=None):
         for folder in (kit_dir, social_dir, meeting_dir, social_dir / "meetings.suggested"):
             if folder in (kit_dir, social_dir) or os.path.lexists(folder):
                 _kit_folder(folder)
-        result = _write_drafts(meeting_dir, social_dir / "meetings.suggested", drafts)
+        result = _write_drafts(meeting_dir, social_dir / "meetings.suggested", drafts, _meeting_provenance(meetings, within_days))
     else:
         platforms = list(dict.fromkeys(platforms))
         unknown = [p for p in platforms if p not in PLATFORMS]
@@ -352,7 +419,8 @@ def build_meeting_social(root, platforms=None, within_days=14, now=None):
                 _kit_folder(folder)
         for folder in (kit_dir, social_dir, meeting_dir):
             _kit_folder(folder)
-        result = {"platforms": {p: _write_drafts(meeting_dir / p, meeting_dir / (p + ".suggested"), plan[p]) for p in platforms}}
+        result = {"platforms": {p: _write_drafts(meeting_dir / p, meeting_dir / (p + ".suggested"), plan[p],
+                                                             _meeting_provenance(meetings, within_days)) for p in platforms}}
     return {"meetings": result, "skipped": skipped, "unreadable_files": unreadable, "posted": False}
 
 
@@ -421,6 +489,10 @@ def outcome_review_notes(root, within_days=14, now=None):
         return ["review-required: social: legal-claim wording (outcome posts could not be scanned; read them before use)"]
 
 
+def _outcome_provenance(meetings, within_days):
+    return {m["id"]: {"kind": "outcomes", "within_days": within_days, "outcome": m["outcome"]} for m in meetings}
+
+
 def build_outcome_social(root, platforms=None, within_days=14, now=None):
     """Write outcome drafts into ``kit/social/outcomes/`` (``<platform>/`` each with ``platforms``) and return
     ``{outcomes, skipped, unreadable_files, posted}``; ``outcomes`` is ``build_social``'s dict (per platform with ``platforms``)."""
@@ -433,7 +505,7 @@ def build_outcome_social(root, platforms=None, within_days=14, now=None):
         for folder in (kit_dir, social_dir, outcome_dir, social_dir / "outcomes.suggested"):
             if folder in (kit_dir, social_dir) or os.path.lexists(folder):
                 _kit_folder(folder)
-        result = _write_drafts(outcome_dir, social_dir / "outcomes.suggested", drafts)
+        result = _write_drafts(outcome_dir, social_dir / "outcomes.suggested", drafts, _outcome_provenance(meetings, within_days))
     else:
         platforms = list(dict.fromkeys(platforms))
         unknown = [p for p in platforms if p not in PLATFORMS]
@@ -446,5 +518,6 @@ def build_outcome_social(root, platforms=None, within_days=14, now=None):
                 _kit_folder(folder)
         for folder in (kit_dir, social_dir, outcome_dir):
             _kit_folder(folder)
-        result = {"platforms": {p: _write_drafts(outcome_dir / p, outcome_dir / (p + ".suggested"), plan[p]) for p in platforms}}
+        result = {"platforms": {p: _write_drafts(outcome_dir / p, outcome_dir / (p + ".suggested"), plan[p],
+                                                            _outcome_provenance(meetings, within_days)) for p in platforms}}
     return {"outcomes": result, "skipped": skipped, "unreadable_files": unreadable, "posted": False}

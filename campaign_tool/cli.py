@@ -914,6 +914,7 @@ def main():
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
     social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
+    social_p.add_argument("--text", action="store_true", help="With --check: print the report as text grouped by folder instead of JSON")
     social_p.add_argument("--platform", action="append", choices=["x", "bluesky", "mastodon"],
                           help="Draft for this platform's own length rule into kit/social/<platform> (repeatable)")
     social_p.add_argument("--meetings", action="store_true",
@@ -1639,11 +1640,13 @@ def main():
     if getattr(args, "json", False) and not args.checklist:
         parser.error("--json requires --checklist")
     if args.command == "social" and args.check and args.platform:
-        parser.error("--check reads kit/social only; it cannot be combined with --platform")
+        parser.error("--check reads every draft folder itself; it cannot be combined with --platform")
     if args.command == "social" and args.meetings and args.check:
-        parser.error("--check reads finding drafts only; it cannot be combined with --meetings")
+        parser.error("--check reads every draft folder itself; it cannot be combined with --meetings")
     if args.command == "social" and args.outcomes and (args.meetings or args.check):
-        parser.error("--outcomes cannot be combined with " + ("--meetings" if args.meetings else "--check (--check reads finding drafts only)"))
+        parser.error("--outcomes cannot be combined with " + ("--meetings" if args.meetings else "--check (--check reads every draft folder itself)"))
+    if args.command == "social" and args.text and not args.check:
+        parser.error("--text needs --check")
     if args.command == "social" and args.finding is not None and not args.thread:
         parser.error("--finding needs --thread")
     if args.command == "social" and args.thread:
@@ -1727,7 +1730,11 @@ def main():
         elif args.command == "social" and args.check:
             from .social import check_social
             report = check_social(root)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
+            if args.text:
+                from .social_check import format_text
+                sys.stdout.write(format_text(report))
+            else:
+                print(json.dumps(report, indent=2, ensure_ascii=False))
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
             social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days, args.outcomes,
