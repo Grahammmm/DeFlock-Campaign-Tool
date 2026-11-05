@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from . import law, map_controller
 from .agency_cards import text as plain_text, visible
+from .camera_direction import valid_direction
 from .review import CLASSIFICATIONS, review_blockers
 
 CONFIDENCE = ("verified", "likely", "needs_attorney_review")
@@ -1783,6 +1784,9 @@ def _validate_cameras(document, label):
                 if value is not None and (not isinstance(value, str) or
                                           not re.fullmatch(r"https://www\.openstreetmap\.org/(?:node|way)/\d+", value)):
                     raise ContentError(f"{label}.features[{index}].url: must be an openstreetmap.org object URL")
+            elif key == "direction":  # DF0237-11: an OpenStreetMap facing tag as tagged, or null; never echoed back
+                if value is not None and not valid_direction(value):
+                    raise ContentError(f"{label}.features[{index}].direction: expected an OpenStreetMap facing tag or null")
             elif isinstance(value, str) and not plain_text(value):
                 raise ContentError(f"{label}.features[{index}].{key}: plain text only")
             elif not isinstance(value, (str, int, float, bool)) and value is not None:
@@ -2072,7 +2076,7 @@ def load_map(content_dir, sources=None, today=None):
 PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
 RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
                                        "agency-cards", "app", "data", "vendor", "meetings", "methods", "privacy", "search",
-                                       "press", "requests"}  # generated top-level names (press: DF2207-10, reserved even when disabled)
+                                       "press", "news", "requests"}  # generated top-level names (press: DF2207-10, news: DF0022-03, reserved even when disabled)
 
 
 def _page_string(document, key, label, limit, required):
@@ -2651,6 +2655,125 @@ def read_faq(root, findings, problems=None):
     return load_faq(document, root, findings, problems)
 
 
+# --- press coverage (DF0022-03): content/coverage.json -> /news.html and "Reported in" lines ------------------
+COVERAGE_KEYS = {"schema_version", "entries"}
+COVERAGE_REQUIRED, COVERAGE_OPTIONAL = {"outlet", "headline", "url", "published_on"}, {"findings", "kind"}
+COVERAGE_KINDS = ("news", "opinion", "broadcast", "other")
+MAX_COVERAGE_ENTRIES, MAX_COVERAGE_OUTLET, MAX_COVERAGE_HEADLINE, MAX_COVERAGE_FINDINGS = 1000, 80, 200, 3
+COVERAGE_DATE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
+
+
+def _coverage_text(value, limit):
+    """True for a non-blank string of 1..limit characters with no angle bracket, control character or line break.
+
+    The text is kept exactly as written (no trimming): it is the outlet's name or the headline as published."""
+    return (isinstance(value, str) and 1 <= len(value) <= limit and value.strip() != "" and "<" not in value
+            and ">" not in value and not any(unicodedata.category(char) in ("Cc", "Cs", "Zl", "Zp") for char in value))
+
+
+def coverage_entries(document, *, today=None):
+    """Validate the shape of a parsed ``content/coverage.json`` and return its normalized entries in stored order.
+
+    ``{"schema_version": 1, "entries": [{outlet, headline, url, published_on, [findings, kind]}]}``. The first refusal
+    raises ``ContentError`` naming ``coverage.json.entries[N].field`` (zero-based) and never repeating a value. Finding ids
+    are checked for form and uniqueness only; ``load_coverage`` also checks that each one is published. A URL is
+    identified by its exact text, so a second entry with the same string is refused (no canonicalization)."""
+    today = today or date.today()
+    if not isinstance(document, dict):
+        raise ContentError("coverage.json: expected an object")
+    if set(document) != COVERAGE_KEYS:
+        raise ContentError("coverage.json: must have exactly the fields schema_version and entries")
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        raise ContentError("coverage.json.schema_version: must be 1")
+    entries = document["entries"]
+    if not isinstance(entries, list) or len(entries) > MAX_COVERAGE_ENTRIES:
+        raise ContentError(f"coverage.json.entries: must be a list of at most {MAX_COVERAGE_ENTRIES} entries")
+    accepted, first_at = [], {}
+    for index, entry in enumerate(entries):
+        base = f"coverage.json.entries[{index}]"
+        if not isinstance(entry, dict):
+            raise ContentError(f"{base}: expected an object")
+        unknown = sorted(str(key) for key in set(entry) - COVERAGE_REQUIRED - COVERAGE_OPTIONAL)
+        if unknown:
+            raise ContentError(f"{base}: unknown field(s) {unknown}")
+        missing = sorted(COVERAGE_REQUIRED - set(entry))
+        if missing:
+            raise ContentError(f"{base}: missing field(s) {missing}")
+        if not _coverage_text(entry["outlet"], MAX_COVERAGE_OUTLET):
+            raise ContentError(f"{base}.outlet: must be non-blank plain single-line text of 1-{MAX_COVERAGE_OUTLET} characters "
+                               "without <, > or control characters")
+        if not _coverage_text(entry["headline"], MAX_COVERAGE_HEADLINE):
+            raise ContentError(f"{base}.headline: must be non-blank plain single-line text of 1-{MAX_COVERAGE_HEADLINE} characters "
+                               "without <, > or control characters")
+        url = _https(entry["url"], f"{base}.url")
+        if url in first_at:
+            raise ContentError(f"{base}.url: duplicate URL")
+        first_at[url] = index
+        published_on = entry["published_on"]
+        try:
+            real = (date.fromisoformat(published_on)
+                    if isinstance(published_on, str) and COVERAGE_DATE.fullmatch(published_on) else None)
+        except ValueError:
+            real = None
+        if real is None or real.isoformat() != published_on:
+            raise ContentError(f"{base}.published_on: must be a real date written YYYY-MM-DD")
+        if real > today:
+            raise ContentError(f"{base}.published_on: must not be after today")
+        ids = entry.get("findings", [])
+        if (not isinstance(ids, list) or len(ids) > MAX_COVERAGE_FINDINGS or len(set(map(str, ids))) != len(ids)
+                or any(not isinstance(item, str) or not FINDING_ID.fullmatch(item) for item in ids)):
+            raise ContentError(f"{base}.findings: must name at most {MAX_COVERAGE_FINDINGS} unique published finding IDs")
+        kind = entry.get("kind", "news")
+        if not isinstance(kind, str) or kind not in COVERAGE_KINDS:
+            raise ContentError(f"{base}.kind: must be one of {', '.join(COVERAGE_KINDS)}")
+        accepted.append({"outlet": entry["outlet"], "headline": entry["headline"], "url": url, "published_on": published_on,
+                         "findings": list(ids), "kind": kind})
+    return accepted
+
+
+def load_coverage(document, findings, *, today=None):
+    """``coverage_entries`` plus the reference check: every cited finding id must be one of the already validated,
+    published content ``findings`` (a draft, a withdrawn or an unknown id is refused). ``findings`` None skips only that
+    membership check (content-check, when a finding file is itself refused and already named). Entries keep file order."""
+    entries = coverage_entries(document, today=today)
+    if findings is not None:
+        published = {finding["id"] for finding in findings}
+        for index, entry in enumerate(entries):
+            if any(finding_id not in published for finding_id in entry["findings"]):
+                raise ContentError(f"coverage.json.entries[{index}].findings: "
+                                   f"must name at most {MAX_COVERAGE_FINDINGS} unique published finding IDs")
+    return entries
+
+
+COVERAGE_ABSENT = object()  # read_coverage_document's answer for a missing file (a JSON null is a present, refused file)
+
+
+def read_coverage_document(root):
+    """The parsed ``<root>/content/coverage.json``, or ``COVERAGE_ABSENT`` when the file does not exist.
+
+    A symlink (even dangling), folder or other non-regular path is refused, never skipped; a read failure is a named
+    ``ContentError``, not a traceback. The file is read through the size-limited ``_read_json``."""
+    path = Path(root) / "content" / "coverage.json"
+    if path.is_symlink():
+        raise ContentError("coverage.json: symlinks are not read")
+    if not os.path.lexists(path):
+        return COVERAGE_ABSENT
+    if not path.is_file():
+        raise ContentError("coverage.json: must be a regular file, not a symlink or folder")
+    try:
+        return _read_json(path)
+    except OSError:
+        raise ContentError("coverage.json: could not be read") from None
+    except RecursionError:
+        raise ContentError("coverage.json: not valid UTF-8 JSON (nested too deeply)") from None
+
+
+def read_coverage(root, findings, *, today=None):
+    """``load_coverage`` of ``<root>/content/coverage.json``; None when the file is absent (present but empty is ``[]``)."""
+    document = read_coverage_document(root)
+    return None if document is COVERAGE_ABSENT else load_coverage(document, findings, today=today)
+
+
 # --- assembly ---------------------------------------------------------------
 
 def load_content(root, today=None, *, _replacing_cosign_id=None):
@@ -2776,6 +2899,9 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
     faq = read_faq(root, findings)  # DF0022-01: optional; None without the file
     if faq is not None:
         model["faq"] = faq
+    coverage = read_coverage(root, findings, today=today)  # DF0022-03: optional; None without the file, [] when present and empty
+    if coverage is not None:
+        model["coverage"] = coverage
     # content/redirects.json (DF2037-16): the key is present exactly when the file is, so a parsed JSON null is still
     # checked (and refused) by site against the pages it writes; without the file there is no key.
     if redirects_path.is_file() or redirects_path.is_symlink():

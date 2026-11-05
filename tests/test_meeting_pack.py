@@ -2,11 +2,13 @@
 import copy
 import csv
 import hashlib
+import html
 import io
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -17,8 +19,10 @@ from unittest.mock import patch
 
 from campaign_tool.labels import DEFAULTS
 from campaign_tool.meeting_pack import build
+from campaign_tool.qr import svg
 
 REPO = Path(__file__).resolve().parents[1]
+BASE = 'https://synthetic.invalid'
 NOW = datetime(2026, 11, 1, tzinfo=timezone.utc)
 ES_ENGLISH_KEYS = ('handout.title', 'handout.what_we_found', 'handout.agenda', 'handout.nothing_published',
                    'handout.not_recorded', 'handout.record_explainer', 'classification.documented_fact',
@@ -211,9 +215,11 @@ class MeetingPackTests(unittest.TestCase):
         self.assertIn('&lt;script&gt;', page)
         self.assertIn('&amp; title', page)
         self.assertNotIn('<script', page)
-        urls = set(re.findall(r'https?://[^<"\s]+', page))
-        self.assertEqual(urls, {'https://synthetic.invalid/agenda', 'https://synthetic.invalid/findings/finding-1.html',
-                                'https://synthetic.invalid/findings/finding-2.html'})
+        # Navigable targets are the anchors; the QR graphics' SVG namespace is not a link or a load.
+        targets = set(re.findall(r'<a href="([^"]*)"', page))
+        self.assertEqual(targets, {'https://synthetic.invalid/agenda', 'https://synthetic.invalid/findings/finding-1.html',
+                                   'https://synthetic.invalid/findings/finding-2.html', 'https://synthetic.invalid'})
+        self.assertNotRegex(page, r'\bsrc=|\bhref="(?!https://synthetic\.invalid)|<image|<use|foreignObject|url\(|@import|<link|<iframe')
 
     def test_csv_quoting_dedup_and_multiple_locators(self):
         one = self.finding(1)
@@ -514,11 +520,162 @@ class MeetingPackTests(unittest.TestCase):
     def labels(self, labels):
         self.write('labels.json', {'schema_version': 1, 'labels': labels})
 
-    def test_no_labels_english_handout_is_byte_identical_to_main(self):
-        # sha256 of handout.html as built by origin/main f38ae765 (before DF0137-17) for the same four fixtures.
+    # DF0237-14: with no base_url the handout carries no QR code and is byte-identical to origin/main 42d6a576,
+    # whose sha256 values these are (public synthetic fixture digests, not credentials).
+    NO_QR_DIGESTS = {
+        'plain': 'e1b804d34e5673216cfdcbeebe333f79f75a23f0ffe4dfa30c9a47afe9427f4c',  # pragma: allowlist secret
+        'es-rich': '4ee38e29645491cc4160affc6f9e786f3a734733ff2fab7ba3117dbf40afe081',  # pragma: allowlist secret
+    }
+
+    def no_base_handouts(self, mode):
+        """handout.html sha256 with a null or absent base_url: two English findings, and the rich Spanish fixture."""
+        memory = copy.deepcopy((self.meeting, self.site, self.library))
+        backup = self.root.parent / 'content-backup'
+        shutil.copytree(self.content, backup)
+        shutil.rmtree(self.root / 'kit', ignore_errors=True)
+        site = {key: value for key, value in self.site.items() if mode != 'missing' or key != 'base_url'}
+        if mode == 'null':
+            site['base_url'] = None
+        self.write('site.json', site)
+        sha = lambda: hashlib.sha256((self.folder / 'handout.html').read_bytes()).hexdigest()
+        out = {}
+        self.pack()
+        out['plain'] = sha()
+        self.rich()
+        self.write('site.json', {**site, 'language': 'es'})
+        self.labels(self.ES)
+        self.pack(replace=True)
+        out['es-rich'] = sha()
+        data = (self.folder / 'handout.html').read_bytes()
+        self.assertNotIn(b'<svg', data)
+        self.assertNotIn(b'xmlns', data)
+        self.assertNotIn(b'.qr', data)
+        shutil.rmtree(self.content)
+        shutil.move(backup, self.content)
+        shutil.rmtree(self.root / 'kit')
+        self.meeting, self.site, self.library = memory
+        return out
+
+    def test_no_base_outputs_are_byte_identical(self):
+        for mode in ('null', 'missing'):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.no_base_handouts(mode), self.NO_QR_DIGESTS)
+                self.assertEqual(self.no_base_handouts(mode), self.NO_QR_DIGESTS)  # repeated builds are deterministic
+
+    def pack_files(self):
+        return {path.name: path.read_bytes() for path in sorted(self.folder.iterdir())}
+
+    def test_one_qr_per_displayed_finding_and_one_site_qr_localized(self):
+        self.rich()
+        self.site['language'] = 'es'
+        self.write('site.json', self.site)
+        self.labels(self.ES)
+        self.finding(8, state='draft')
+        self.finding(9, agency_id='ca-other-police')
+        before = self.snapshot()
+        self.pack(max_findings=5)
+        page = self.html()
+        self.assertEqual(before, self.snapshot())
+        self.assertIn('<html lang="es">', page)
+        shown = [f'{BASE}/findings/finding-{n}.html' for n in (7, 6, 5, 4, 3)]
+        for url in [*shown, BASE]:
+            self.assertIn(f'<p><a href="{url}">{url}</a>{svg(url)}</p>', page)
+        self.assertEqual(page.count('<svg'), 6)
+        self.assertEqual(page.count('class="qr"'), 6)
+        self.assertNotIn('finding-8', page)  # a draft is never shown, so never encoded
+        self.assertNotIn('finding-9', page)  # nor is another agency's finding
+        self.assertNotIn('finding-2', page)  # nor a finding cut by --max-findings
+        self.assertIn(f'<p>2 más en el sitio: {BASE}</p>', page)  # the truncation line has no QR
+        self.assertIn('Orden del día</a></p>', page)  # the agenda link has no QR either
+        self.assertEqual(page.count('Orden del día'), 1)
+        self.assertLess(page.index(f'<a href="{BASE}">'), page.index('El número de registro'))
+        self.assertGreater(page.index(f'<a href="{BASE}">'), page.index(f'finding-3.html">'))  # after the last finding
+        self.assertIn('.qr { display: inline-block', page)
+        for block in re.findall(r'<article>.*?</article>', page, re.S):
+            self.assertEqual(block.count('<svg'), 1)
+
+    def test_qr_does_not_change_comment_sources_or_report(self):
+        self.rich()
+        with_base = self.pack(max_findings=5)
+        files_with = self.pack_files()
+        self.site['base_url'] = None
+        self.write('site.json', self.site)
+        without = self.pack(max_findings=5, replace=True)
+        files_without = self.pack_files()
+        self.assertEqual(with_base, without)
+        for name in ('comment.md', 'sources.csv'):
+            self.assertEqual(files_with[name], files_without[name])
+        self.assertNotEqual(files_with['handout.html'], files_without['handout.html'])
+        for name in files_with:
+            self.assertEqual(stat.S_IMODE((self.folder / name).stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.folder.stat().st_mode), 0o700)
+
+    def test_no_findings_still_gets_one_site_qr(self):
+        self.meeting['agency_id'] = 'ca-other-police'
+        self.stage()
+        self.pack()
+        page = self.html()
+        self.assertEqual(page.count('<svg'), 1)
+        self.assertIn(f'<p><a href="{BASE}">{BASE}</a>{svg(BASE)}</p>\n<p>', page)
+        self.assertIn('Records are requested', page)
+
+    def test_qr_encodes_raw_url_and_html_escapes_it_once(self):
+        base = 'https://synthetic.invalid/a?x=1&y=100%25_b'
+        self.site['base_url'] = base + '/'
+        self.write('site.json', self.site)
+        self.pack()
+        page = self.html()
+        url = base + '/findings/finding-1.html'
+        escaped = html.escape(url, quote=True)
+        self.assertIn(f'<p><a href="{escaped}">{escaped}</a>{svg(url)}</p>', page)
+        self.assertIn(f'<p><a href="{html.escape(base)}">{html.escape(base)}</a>{svg(base)}</p>', page)
+        self.assertNotIn('&amp;amp;', page)
+        self.assertNotIn('x=1&y', page)
+
+    def test_oversized_finding_refuses_before_writes(self):
+        long_base = 'https://synthetic.invalid/' + 'z' * 180  # the base fits; base + a finding path does not
+        self.site['base_url'] = long_base
+        self.write('site.json', self.site)
+        before = self.snapshot()
+        with self.assertRaises(ValueError) as caught:
+            self.pack()
+        self.assertEqual(str(caught.exception), 'QR URL exceeds 213-byte capacity (version 10, level M).')
+        self.assertNotIn('synthetic', str(caught.exception))
+        self.assertFalse((self.root / 'kit').exists())
+        self.assertEqual(before, self.snapshot())
+        result = self.cli()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('QR URL exceeds 213-byte capacity', result.stderr)
+        self.assertFalse((self.root / 'kit').exists())
+        # an existing pack survives --replace untouched: bytes, modes and mtimes
+        self.site['base_url'] = BASE
+        self.write('site.json', self.site)
+        self.pack()
+        state = {p.name: (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns) for p in self.folder.iterdir()}
+        self.site['base_url'] = long_base
+        self.write('site.json', self.site)
+        with self.assertRaises(ValueError):
+            self.pack(replace=True)
+        self.assertEqual(state, {p.name: (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns) for p in self.folder.iterdir()})
+        self.assertEqual(sorted(os.listdir(self.folder)), ['comment.md', 'handout.html', 'sources.csv'])
+
+    def test_base_that_alone_exceeds_capacity_is_refused_by_length(self):
+        self.site['base_url'] = 'https://synthetic.invalid/' + 'z' * 200
+        self.write('site.json', self.site)
+        self.meeting['agency_id'] = 'ca-other-police'  # no finding URLs at all: only the site URL is encoded
+        self.stage()
+        with self.assertRaisesRegex(ValueError, 'QR URL exceeds 213-byte capacity'):
+            self.pack()
+        self.assertFalse((self.root / 'kit').exists())
+
+    def test_no_labels_english_handout_digests_main_for_no_base_and_qr_for_base(self):
+        # sha256 of handout.html for the same four fixtures. 'rich-no-base' and 'empty' have no base_url and keep the digests
+        # origin/main f38ae765 (before DF0137-17) produced: no QR code leaves them byte-identical. 'plain' and 'rich' have a
+        # base_url, so DF0237-14 adds the QR codes, the site link and the QR CSS; their digests are the reviewed QR output
+        # (replacing main's 30de2c25... and 82dc65aa...); tests above pin what those additions are.
         expected = {  # Public handout fixture digests, not credentials.
-            'plain': '30de2c2520239b2f2e02c6b7a94ca46fe09f59d9e74f339b974a6ef47e444515',  # pragma: allowlist secret
-            'rich': '82dc65aaeda7a782d66308cab2af059fc575b93f6f1ba0ff6bcccfb0acf1f1ef',  # pragma: allowlist secret
+            'plain': '6996880cb0389381756742a0e8906da621581b7706886930a6343fc1a9cf3a04',  # pragma: allowlist secret
+            'rich': 'fe8fbc7ca45f869749957d99bf684795d61d21b5fe7c95cfb316ddef0382e846',  # pragma: allowlist secret
             'rich-no-base': '0fb688d3bd7ea920843e0e3157a57105625a2cab4ada289959341e1653089c9f',  # pragma: allowlist secret
             'empty': 'edf0c2a136c29211f08a65f88bd95dcb1441da6edf92bc7dd7b811054af72ced',  # pragma: allowlist secret
         }
@@ -526,6 +683,7 @@ class MeetingPackTests(unittest.TestCase):
             with self.subTest(case=case):
                 self.assertEqual(hashlib.sha256(data).hexdigest(), expected[case])
                 self.assertIn(b'<html lang="en">', data)
+                self.assertEqual(b'<svg' in data, case in ('plain', 'rich'))
 
     def test_default_labels_file_and_explicit_en_change_nothing(self):
         plain = self.handouts()

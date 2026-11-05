@@ -17,6 +17,7 @@ from .content import _read_json, load_finding, load_meeting, load_site, load_sou
 from .labels import DEFAULTS, MAX_LABELS_BYTES, html_text, load_labels
 from . import meeting_comments
 from .meeting_stage import stale_kits
+from .qr import CSS as QR_CSS, svg  # QR_CSS is emitted only when a base URL puts QR codes on the page
 from .site import FULL_HASH
 
 
@@ -41,7 +42,7 @@ def _handout(name, meeting, findings, library, site, truncated, labels):
              '<style>@page { size: letter; margin: 0.6in } body { font: 10pt sans-serif; }',
              'h1 { font-size: 16pt } h2 { font-size: 12pt } p { margin: .3em 0 }',
              'article { break-inside: avoid; margin: .6em 0 } .summary { white-space: nowrap;',
-             'overflow: hidden; text-overflow: ellipsis } a { overflow-wrap: anywhere }',
+             'overflow: hidden; text-overflow: ellipsis } a { overflow-wrap: anywhere }' + (QR_CSS if base else ''),
              '@media print { body { margin: 0 } }</style><body>',
              f'<h1>{e(name)}</h1><p>{e(meeting["body"])} — {e(meeting["starts_at"])}</p>',
              f'<p>{e(meeting["agenda_item"])} · {e(meeting["location"])}</p>']
@@ -64,10 +65,12 @@ def _handout(name, meeting, findings, library, site, truncated, labels):
                                    record=source['sha256'][:12]) + '</p>')
         if base:
             url = base + '/findings/' + finding['slug'] + '.html'
-            parts.append(f'<p><a href="{e(url)}">{e(url)}</a></p>')
+            parts.append(f'<p><a href="{e(url)}">{e(url)}</a>{svg(url)}</p>')
         parts.append('</article>')
     if truncated:
         parts.append('<p>' + t('handout.more_on_site', count=truncated) + (f': {e(base)}' if base else '') + '</p>')
+    if base:
+        parts.append(f'<p><a href="{e(base)}">{e(base)}</a>{svg(base)}</p>')
     parts.extend(['<p>' + t('handout.record_explainer') + '</p>',
                   f'<p>{e(site["not_legal_advice"])}</p></body></html>'])
     return '\n'.join(parts)

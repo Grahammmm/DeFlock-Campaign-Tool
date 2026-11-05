@@ -658,7 +658,7 @@ def backup_diff_cmd(args, root):
 
 def meetings_cmd(args, root):
     from datetime import date
-    from .meetings import LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
+    from .meetings import CivicClerkClient, LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
     zone = resolve_zone(args.tz)
     if zone is None:
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
@@ -670,14 +670,14 @@ def meetings_cmd(args, root):
         opener = default_opener
     else:
         raise ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response")
-    client = LegistarClient(args.client, opener=opener)
+    client = (CivicClerkClient if args.platform == "civicclerk" else LegistarClient)(args.client, opener=opener)
     since = date.fromisoformat(args.since) if args.since else None
     meetings = relevant_events(client, since=since, zone=zone)
     previous = _read_previous(root / "kit" / "meetings.json")
     changes = ({"previous": previous} if previous == "unreadable"
                else compare_meetings(previous, meetings, args.client, since or date.today()))
-    target = write_meetings(root, meetings, args.client, None if previous is None else changes, zone=zone)
-    report = {"client": args.client, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
+    target = write_meetings(root, meetings, args.client, None if previous is None else changes, zone=zone, source=client.source)
+    report = {"client": args.client, "platform": client.source, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
               "cancelled_meetings": sum(m["status"] == "cancelled" for m in meetings)}
     if "added" in changes:
         report["changes"] = {k: len(changes[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
@@ -933,6 +933,7 @@ def main():
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
+    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk"), default="legistar", help="Agenda platform (default legistar)")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
@@ -1230,6 +1231,21 @@ def main():
     sharing_p.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD", help="Day the organizer read the portal")
     sharing_p.add_argument("--source-url", required=True, help="https URL of the portal page (transparency.flocksafety.com)")
     sharing_p.add_argument("--replace", action="store_true", help="Overwrite an existing sharing list")
+    coverage_cmds = content_cmds.add_parser("coverage", help="Record press coverage in content/coverage.json for /news.html "
+                                            "(typed by the organizer; nothing is fetched, quoted or published)"
+                                            ).add_subparsers(dest="coverage_command", required=True)
+    coverage_add = coverage_cmds.add_parser("add", help="List one article: outlet, headline as published, https link, date")
+    coverage_add.add_argument("--directory", required=True)
+    coverage_add.add_argument("--outlet", required=True, help="1-80 characters")
+    coverage_add.add_argument("--headline", required=True, help="The headline exactly as published, 1-200 characters")
+    coverage_add.add_argument("--url", required=True, help="https link to the article (an exact, unique string)")
+    coverage_add.add_argument("--published-on", required=True, metavar="YYYY-MM-DD", help="Publication date, not after today")
+    coverage_add.add_argument("--finding", action="append", default=None, metavar="ID",
+                              help="A published finding id the story reported; repeat for up to three")
+    coverage_add.add_argument("--kind", default="news", choices=("news", "opinion", "broadcast", "other"))
+    coverage_remove = coverage_cmds.add_parser("remove", help="Drop the one entry with exactly this URL")
+    coverage_remove.add_argument("--directory", required=True)
+    coverage_remove.add_argument("--url", required=True)
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
     review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
@@ -1742,6 +1758,15 @@ def main():
             print(json.dumps(import_sharing(root, args.agency, Path(args.csv).expanduser(), args.checked_on, args.source_url,
                                             replace=args.replace), indent=2))
             print("Recorded only. Nothing was fetched or published.")
+        elif args.command == "content" and args.content_command == "coverage":
+            from .coverage import add_coverage, remove_coverage
+            if args.coverage_command == "remove":
+                result = remove_coverage(root, url=args.url)
+            else:
+                result = add_coverage(root, outlet=args.outlet, headline=args.headline, url=args.url,
+                                      published_on=args.published_on, finding_ids=args.finding, kind=args.kind)
+            print(json.dumps(result))
+            print("Nothing was built, published or sent.")
         elif args.command == "content":
             from .content_init import init_content
             print(json.dumps(init_content(root, args.source_campaign), indent=2))
