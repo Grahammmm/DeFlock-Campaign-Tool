@@ -540,8 +540,8 @@ _MODULES = {
         map_survey meeting_outcome meeting_pack meeting_stage meetings newsletter.__main__ newsletter.archive
         newsletter.draft newsletter.sent outbox outbox_batch press recent site site_check social social_threads""",
     "other local files with no catalog store": """
-        agency_actions agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
-        kit_repeat law law_packet map_controller registry setup_cmd shell sources_cmd""",
+        agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
+        kit_fee_reply kit_preserve kit_repeat search_log law law_packet map_controller registry setup_cmd shell sources_cmd""",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -573,6 +573,10 @@ MODULE_FUNCTIONS = {
     'kit_copy': ('_mail', '_write', 'copy',),
     'kit_export': ('status_csv', 'write_rows',),
     'kit_fees': ('write_csv',),
+    'agency_brief': ('_write_file', 'build_brief',),
+    'kit_fee_reply': ('_write', 'fee_reply',),
+    'kit_preserve': ('preserve_request',),
+    'search_log': ('run_cli',),
     'kit_repeat': ('_replace_store', 'repeat_request',),
     'kit_timing': ('write_csv',),
     'law': (
