@@ -215,6 +215,25 @@ class ExtensionReplyTests(unittest.TestCase):
         self.assertEqual(outside.read_text(encoding="utf-8"), "sentinel\n")
         self.assertEqual([p.name for p in self.followups.glob(".*")], [])
 
+    @unittest.skipUnless(os.name == "posix", "POSIX modes")
+    def test_existing_permissive_followups_folder_is_made_private(self):
+        self.step("extension", "--reason", "first")
+        self.followups.mkdir(mode=0o777)
+        self.followups.chmod(0o777)
+        self.assertEqual(self.reply()[0], 0)
+        self.assertEqual(self.followups.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.draft().stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX modes")
+    def test_foreign_owned_followups_folder_refused_before_writing(self):
+        self.step("extension", "--reason", "first")
+        self.followups.mkdir(mode=0o700)
+        with mock.patch("os.getuid", return_value=os.getuid() + 1):
+            got, _, err = self.reply()
+        self.assertEqual(got, 1)
+        self.assertIn("not owned by you", err)
+        self.assertEqual(list(self.followups.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

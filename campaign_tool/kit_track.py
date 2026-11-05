@@ -1349,6 +1349,12 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None, owner=None
 def _followup_target(root, name, replace):  # private kit/followups/ (0700); symlinks and silent overwrites refused
     folder = Path(root) / "kit" / "followups"
     kit._kit_folder(folder, 0o700)
+    if os.name == "posix":  # mkdir leaves an existing folder as it was: take it back to 0700 or refuse it
+        status = folder.stat()
+        if status.st_uid != os.getuid():
+            raise ValueError("kit/followups/ is not owned by you; refusing to write drafts there")
+        if status.st_mode & 0o077:
+            folder.chmod(0o700)
     target = folder / name
     if os.path.islink(target):
         raise ValueError(f"kit/followups/{target.name} must not be a symlink")

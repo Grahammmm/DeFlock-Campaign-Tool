@@ -1,4 +1,5 @@
 {
+  "kit/followups/ is not owned by you; refusing to write drafts there": "refusal that already names the folder and why; the organizer must use their own folder; not in the table",
   "request for 5 is closed; no extension reply drafted": "kit-extension-reply refusal that already names the request state that stops the draft; not in the table",
   "request for 5 was withdrawn by us on 5; no extension reply drafted": "kit-extension-reply refusal that already names the request state that stops the draft; not in the table",
   "request for 5 was answered (5 on 5); no extension reply drafted": "kit-extension-reply refusal that already names the request state that stops the draft; not in the table",
