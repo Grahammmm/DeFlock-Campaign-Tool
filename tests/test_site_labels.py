@@ -268,6 +268,7 @@ class LabelsTest(unittest.TestCase):
                   "correction_counts.col_open", "correction_counts.col_quarter", "correction_counts.col_received",
                   "correction_counts.empty", "correction_counts.heading", "correction_counts.lead",
                   "finding.agency_response", "finding.quote_page", "finding.quote_transcribed", "finding.reply_declined", "finding.reply_no_response", "finding.reply_received",
+                  "finding.update", "finding.updates",
                   "footer.license", "footer.sharing",
                   "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
                   "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.title",

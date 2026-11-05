@@ -153,6 +153,13 @@ to the finding's `#corrections` section. The footer and each finding page link
 to it, and finding lists mark a corrected finding with a "Corrected" pill
 showing its latest correction date. The starter preview has no such page.
 
+A finding with `updates` (`finding update`, see PUBLICATION.md) shows an **Updates** section (`#updates`) under its body,
+before the sources: each entry is the label `Update`, its date and its note as escaped literal text, newest date first
+(same date: the entry added last first). An update is not a correction: it adds no Corrected pill, no row on
+`/corrections.html` and no `Corrected` feed lead, and the labels `finding.updates` and `finding.update` can be
+overridden in `labels.json`. `data/findings.json` carries `updates` (`date`, `note`) in stored order only on a finding
+that has them; `data/findings.csv` has no such column, so a campaign without updates builds byte-identical files.
+
 A finding page also lists, under **Discussed at public meetings**, the staged meetings whose
 `cited_findings` include its id (DF2207-06): newest first, each linking `meetings/<id>.html` with the body,
 the recorded date and time in its own UTC offset, the agenda item and the recorded outcome result when any.

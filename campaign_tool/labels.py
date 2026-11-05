@@ -98,6 +98,7 @@ DEFAULTS = {
     "finding.cite_select": "Select and copy",
     "finding.quote_transcribed": "Transcribed by the campaign; not checked against the record text.",
     "finding.quote_page": "Page {page}",
+    "finding.updates": "Updates", "finding.update": "Update",
     "finding.agency_response": "Agency response", "finding.reply_received": "The agency replied on {on}. We asked on {asked_on}.",
     "finding.reply_declined": "The agency declined to comment on {on}. We asked on {asked_on}.",
     "finding.reply_no_response": "asked on {asked_on}; no response by {reply_by}",

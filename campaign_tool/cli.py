@@ -1309,6 +1309,12 @@ def main():
         correct_p.add_argument(flag, required=True)
     correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
     correct_p.add_argument("--approved-by", help="Named person approving this correction (the publication gate refuses without one)")
+    update_p = finding_cmds.add_parser("update", help="Append a dated Update to a published finding for new information "
+                                       "that does not change what it says (no build; not a correction)")
+    update_p.add_argument("id", metavar="ID")
+    for flag in ("--directory", "--on", "--note"):
+        update_p.add_argument(flag, required=True)
+    update_p.add_argument("--approved-by", help="Named person approving this update (the publication gate refuses without one)")
     withdraw_p = finding_cmds.add_parser("withdraw", help="Move a published finding to private/withdrawn/ (no notice page, no build)")
     withdraw_p.add_argument("id", metavar="ID")
     for flag in ("--directory", "--reason"):
@@ -1674,6 +1680,13 @@ def main():
                 return
             if args.finding_command == "correct":
                 print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft, None, args.approved_by)))
+                print("Not built or deployed. Run build, then review the site before any deploy.")
+                return
+            if args.finding_command == "update":
+                from .legal_claims import legal_notes
+                print(json.dumps(findings.update(root, args.id, args.on, args.note, None, args.approved_by)))
+                for line in legal_notes([("--note", args.note)]):  # alert-only: rule names, never the note
+                    print(line, file=sys.stderr)
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 return
             if args.finding_command == "withdraw":

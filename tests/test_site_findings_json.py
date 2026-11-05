@@ -196,7 +196,7 @@ class FindingsJsonTests(unittest.TestCase):
         self.assertEqual(sorted(finding["properties"]["classification"]["enum"]), sorted(CLASSIFICATIONS))
         self.assertEqual(sorted(finding["properties"]["confidence"]["enum"]),
                          sorted(set(CONFIDENCE) - {"needs_attorney_review"}))
-        self.assertEqual(set(finding["properties"]), set(PUBLIC_FINDING_FIELDS))
+        self.assertEqual(set(finding["properties"]), set(PUBLIC_FINDING_FIELDS) | {"updates"})  # DF0022-06: optional, JSON only
         self.assertEqual(set(SCHEMA["$defs"]["source"]["properties"]), set(PUBLIC_SOURCE_FIELDS))
         self.assertEqual(set(SCHEMA["$defs"]["correction"]["properties"]), set(PUBLIC_CORRECTION_FIELDS))
         for where in (SCHEMA, finding, SCHEMA["$defs"]["source"], SCHEMA["$defs"]["correction"]):

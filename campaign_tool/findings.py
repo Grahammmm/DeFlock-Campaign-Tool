@@ -23,13 +23,13 @@ except ImportError:  # Windows
     fcntl = None
     import msvcrt
 
-from . import content, publication_gate
+from . import content, finding_updates, publication_gate
 from .content import FINDING_KEYS
 from .evidence import PREFIX, _ledger_hashes, _object_present
 from .review import CLASSIFICATIONS, EDIT_MARKER, ROLES, _who, content_hash, declared_interest_agencies, review_blockers
 from .sources_cmd import PREFIX as HEX_PREFIX, _known_agencies, _library
 
-PUBLICATION_FIELDS = ("state", "published_at", "updated_at", "corrections")
+PUBLICATION_FIELDS = ("state", "published_at", "updated_at", "corrections", "updates")  # DF0022-06: updates stay outside the reviewed hash
 DECISIONS = ("approve", "reject", "changes_requested")
 MAX_DRAFT_BYTES = 1024 * 1024
 MAX_RECEIPTS_BYTES = 4 * 1024 * 1024
@@ -880,6 +880,8 @@ def _known_for(root, document):
 def publish(root, draft_path, approved_by, now=None):
     """Write content/findings/<slug>.json as published and log it privately; never builds or deploys."""
     draft = load_draft(draft_path)
+    if "updates" in draft and draft["updates"] != []:  # DF0022-06: history is outside the reviewed hash, so it cannot ride a first publish
+        raise ValueError("updates require an already published finding")
     receipts = _load_receipts(_receipts_path(root, draft))
     blockers = _bound_blockers(root, draft, receipts)
     if blockers:
@@ -1116,6 +1118,8 @@ def _correct_locked(root, finding_id, date, note, from_draft, moment, approved_b
     when = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
     kept = {"state": existing["state"], "published_at": existing["published_at"], "updated_at": when,
             "corrections": list(existing["corrections"]) + [{"date": date, "note": note}]}
+    if "updates" in existing:  # DF0022-06: reviewed_view drops the history, so keep it on both paths
+        kept["updates"] = list(existing["updates"])
     draft = existing  # the content the approver saw: the published finding, or the reviewed draft below
     if from_draft is None:
         document = dict(reviewed_view(existing), **kept)
@@ -1123,6 +1127,8 @@ def _correct_locked(root, finding_id, date, note, from_draft, moment, approved_b
         draft = load_draft(from_draft)
         if draft["id"] != finding_id or draft.get("slug") != current["slug"]:
             raise ValueError(f"{from_draft}: draft id and slug must be {finding_id!r} and {current['slug']!r}")
+        if "updates" in draft and draft["updates"] != existing.get("updates", []):  # absent in the draft is ignored
+            raise ValueError("update history cannot be replaced by finding correct")
         blockers = _bound_blockers(root, draft, _load_receipts(_receipts_path(root, draft)))
         if blockers:
             raise ValueError(f"review blockers: {blockers}")
@@ -1142,6 +1148,56 @@ def _correct_locked(root, finding_id, date, note, from_draft, moment, approved_b
              "text_changed": reviewed_hash(document) != reviewed_hash(existing)}
     _write_logged(root, folder, target, document, entry)
     return {"corrected": current["slug"], "corrections": len(kept["corrections"])}
+
+
+def update(root, finding_id, on, note, now=None, approved_by=None):
+    """DF0022-06: append one dated update ``{date, note}`` to the published finding with ``finding_id``: new information
+    that does not change what it says. Append-only and offline; it passes the same publication gate as ``correct`` (the
+    named ``approved_by`` approves this exact update) and cannot change any reviewed field, so review receipts stay bound.
+    The log line omits the note. Never builds or deploys."""
+    moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    for folder in (root / "content", root / "private"):
+        if not _real_dir(folder):
+            raise ValueError(f"{folder}: no {folder.name}/ directory in this campaign")
+    with _locked(root / "private", ".publish.lock"):
+        return _update_locked(root, finding_id, on, note, moment, approved_by)
+
+
+def _update_locked(root, finding_id, on, note, moment, approved_by=None):
+    folder = root / "content" / "findings"
+    withdrawn_ids, _ = withdrawn_names(root)
+    if finding_id in withdrawn_ids:
+        raise ValueError(f"id {finding_id!r} was withdrawn; a withdrawn finding takes no update")
+    target, existing = _one_published(folder, finding_id)
+    label = f"content/findings/{target.name}"
+    if existing.get("state") != "published":
+        raise ValueError(f"id {finding_id!r}: only a published finding takes an update")
+    today = moment.date()
+    current = content.load_finding(existing, label, today=today)
+    finding_updates.check_update_date(on, current["published_at"], today, "--on")
+    finding_updates.validate_update_note(note, "--note")
+    when = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def prospective(document):  # the file as it would be written, and the seal of this exact operation
+        proposed = dict(document, updates=list(document.get("updates", [])) + [{"date": on, "note": note}], updated_at=when)
+        return proposed, publication_gate.content_digest({
+            "action": "update", "id": finding_id, "on": on, "note": note,
+            "existing": publication_gate.content_digest(document), "proposed": publication_gate.content_digest(proposed)})
+
+    proposed, seal = prospective(existing)
+    if reviewed_hash(proposed) != reviewed_hash(existing):
+        raise ValueError("update cannot change reviewed content; use finding correct")
+    finding = content.load_finding(proposed, label, known_agency_ids=_known_for(root, proposed), today=today)
+    if len(json.dumps(proposed, sort_keys=True, indent=2, ensure_ascii=False).encode("utf-8")) + 1 > MAX_DRAFT_BYTES:
+        raise ValueError(f"{label}: the finding would be larger than {MAX_DRAFT_BYTES} bytes with this update")
+    approval = {"artefact_id": finding_id, "content_hash": seal, "approved_by": approved_by,
+                "approved_on": when[:10], "status": "approved"}  # the person at the CLI approves this exact update
+    again = _one_published(folder, finding_id)[1]  # re-read: a file changed since the first read cannot inherit the approval
+    publication_gate.assert_publishable(finding_id, prospective(again)[1], [approval])
+    entry = {"at": when, "action": "update", "id": finding_id, "slug": finding["slug"], "date": on,
+             "content_sha256": reviewed_hash(proposed), "updates": len(proposed["updates"])}
+    _write_logged(root, folder, target, proposed, entry)
+    return {"updated": finding["slug"], "updates": len(proposed["updates"])}
 
 
 def withdraw(root, finding_id, reason, now=None):

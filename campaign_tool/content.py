@@ -21,7 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import law, map_controller
+from . import finding_updates, law, map_controller
 from .agency_cards import text as plain_text, visible
 from .camera_direction import valid_direction
 from .review import CLASSIFICATIONS, review_blockers
@@ -447,7 +447,7 @@ def load_site(document, assets_dir=None):
 FINDING_KEYS = {"id", "title", "slug", "summary", "body_md", "classification", "confidence",
                 "event_date", "sources", "published_at", "updated_at", "corrections", "state",
                 "author", "limitations", "counterevidence", "agency_id", "rule_version",
-                "duty", "exceptions", "rule_ids", "also_agency_ids", "agency_response"}
+                "duty", "exceptions", "rule_ids", "also_agency_ids", "agency_response", "updates"}
 FINDING_REQUIRED = {"id", "title", "slug", "summary", "classification", "confidence",
                     "event_date", "sources", "published_at", "corrections", "state",
                     "author", "limitations", "counterevidence"}
@@ -658,6 +658,12 @@ def load_finding(document, label, *, known_agency_ids=None, today=None):
     if also_agency_ids is not None:  # absent stays absent: a primary-only finding keeps its exact shape
         loaded["also_agency_ids"] = also_agency_ids
     loaded.update(response)  # absent stays absent, like also_agency_ids: a finding with no reply keeps its exact shape
+    if "updates" in document:  # DF0022-06: absent stays absent; present (even []) is validated and kept in stored order
+        try:
+            loaded["updates"] = finding_updates.load_updates(document["updates"], published_at, today=today,
+                                                             label=f"{label}.updates")
+        except finding_updates.UpdateError as exc:
+            raise ContentError(str(exc)) from None
     if known_agency_ids is not None:
         check_finding_agencies(loaded, known_agency_ids, label)
     return loaded
@@ -670,9 +676,11 @@ def load_finding_preview(document, label, now=None):
     if not isinstance(document, dict):
         raise ContentError(f"{label}: expected an object")
     if document.get("state") != "published":
+        if "updates" in document and document["updates"] != []:  # DF0022-06: a draft has no history to preview
+            raise ContentError(f"{label}.updates: updates require an already published finding")
         when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         document = {key: value for key, value in document.items()
-                    if key not in ("state", "published_at", "updated_at", "corrections")}
+                    if key not in ("state", "published_at", "updated_at", "corrections", "updates")}
         document.update(state="published", published_at=when, corrections=[])
     return load_finding(document, label)
 
