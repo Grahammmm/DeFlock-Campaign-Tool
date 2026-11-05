@@ -536,12 +536,12 @@ _MODULES = {
         records.understanding.cli records.understanding.digest records.worker_lifecycle""",
     "backup archives and keys": "backup backup_crypt",
     "generated drafts, exports and public content, no catalog store": """
-        content_init content_sharing coverage flyer kit_calendar kit_copy kit_export kit_fees kit_timing
+        agency_brief content_init content_sharing coverage flyer kit_calendar kit_copy kit_export kit_fees kit_timing
         map_survey meeting_outcome meeting_pack meeting_stage meetings newsletter.__main__ newsletter.archive
         newsletter.draft newsletter.sent outbox outbox_batch press recent site site_check social social_threads""",
     "other local files with no catalog store": """
-        agency_actions agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
-        kit_repeat law law_packet map_controller registry setup_cmd shell sources_cmd""",
+        agency_actions agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked kit_preserve
+        kit_repeat law law_packet map_controller registry search_log setup_cmd shell sources_cmd""",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -549,6 +549,7 @@ MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for modul
 MODULE_FUNCTIONS = {
     "map_survey": ("_install_new", "_write_checks", "render_csv", "survey_import"),
     'agency_actions': ('_install',),
+    'agency_brief': ('_write_file', 'build_brief',),
     'agency_cards': ('main',),
     'approval': ('verify',),
     'backup': (
@@ -690,6 +691,8 @@ MODULE_FUNCTIONS = {
     'site_check': ('write_weights',),
     'social': ('_write_drafts', 'build_meeting_social', 'build_outcome_social', 'build_social',),
     'social_threads': ('build_thread_social',),
+    'kit_preserve': ('preserve_request',),
+    'search_log': ('run_cli',),
     'sources_cmd': ('_batch_write', '_rewrite', '_write_atomic', 'add_source',),
 }
 
