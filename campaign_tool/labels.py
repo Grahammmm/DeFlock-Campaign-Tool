@@ -81,6 +81,7 @@ DEFAULTS = {
     "intro.meetings_calendar": "Subscribe to the meetings calendar (.ics)",
     "intro.meetings_open_data_about": "Meetings with their recorded outcomes, votes and official sources:",
     "intro.agencies_open_data": "Agencies as open data (JSON)",
+    "intro.officials_open_data": "Officials as open data (JSON)",
     "intro.agencies_open_data_about": "Agencies with their asked items, posted policy, contract end and portal numbers, as each source reported them:",
     "notice.no_findings": "No findings have been published yet.", "notice.no_upcoming": "No upcoming meetings are listed.",
     "notice.past_meetings_link": "Past meetings and their comment kits", "notice.no_meetings": "No meetings are listed yet.",
@@ -195,6 +196,7 @@ DEFAULTS = {
     "agency.published_findings": "Published findings", "agency.source_records": "Source records",
     "agency.received": "received {date}", "agency.in_library": "In the source library",
     "agency.upcoming": "Upcoming meetings", "agency.no_upcoming": "No upcoming meetings are listed for this body.",
+    "agency.meetings_calendar": "Subscribe to this agency's meetings (.ics)",
     "agency.transparency_heading": "Reported on the Flock transparency portal",
     "agency.transparency_checked": "as reported by the vendor, checked {date}",
     "agency.transparency_cameras": "Cameras: {count}", "agency.transparency_retention_days": "Retention days: {count}",
@@ -221,6 +223,15 @@ DEFAULTS = {
     "agencies.glance_no_report": "none on record",
     "agencies.glance_not_checked": "not checked", "agencies.glance_posted": "posted", "agencies.glance_checked": "checked {date}",
     "footer.requests": "What we have asked for",  # DF1103-13
+    "standings.heading": "Where things stand",  # DF1952-10
+    "standings.agencies": "Agencies we have asked for records",
+    "standings.answered": "Asked items answered or partly answered",
+    "standings.records": "Records in the public library",
+    "standings.findings": "Published findings",
+    "standings.cameras": "Community-mapped camera points; ownership unconfirmed",
+    "standings.none_yet": "none yet",
+    "standings.deadline": "Next verified written-comment deadline",
+    "cameras.empty": "No community-mapped points are listed yet.",
     "requests.title": "What we have asked for",
     "requests.description": ("Every records request this campaign has publicly listed for an agency, newest first, "
                              "with the state we last recorded."),
