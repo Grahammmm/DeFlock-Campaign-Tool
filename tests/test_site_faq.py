@@ -51,7 +51,7 @@ BASELINE = {
     "404.html": "5eb8c84c7ecd10e8837b67d3b9b234fda5cd2d2704291cb37287fd6ecf468f19",  # pragma: allowlist secret -- public rendered-file SHA-256
     "_headers": "d8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "about.html": "b377eacf453c9c363298c43f62dd465a833e6cc4d95e693e08fd578c8bfa2df6",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "agencies.html": "eb1e16fba75717593eba4a00e6d56e76872f0e7f398912a2b17d1e918d930d5c",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "agencies.html": "cb719448fe3eab2c74cbc928090ce5c1a332dd64263a155bdac15caf49484344",  # pragma: allowlist secret -- public rendered-file SHA-256
     "agencies/cedar.html": "ec9acef0d6d9ac1e16d5cf5db6b2daeb9b27e0bcb1fcdf41b4331efde0f860a4",  # pragma: allowlist secret -- public rendered-file SHA-256
     "agency-cards.js": "95d2218da220b6ec4ecd303342c0aaa090f5ea4999b0ffd05b3454c46719ca00",  # pragma: allowlist secret -- public rendered-file SHA-256
     "app.js": "ab63767de14fee8703a11531e24ebcfc4a8b845f986208772f242ef8d447db9e",  # pragma: allowlist secret -- public rendered-file SHA-256

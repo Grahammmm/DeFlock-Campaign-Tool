@@ -258,17 +258,22 @@ class LabelsTest(unittest.TestCase):
         # agency.funding_*: the fixture records no funding (tests/test_agency_funding.py covers those).
         # statements.*: the fixture has no statements.json (tests/test_site_statements.py covers those labels).
         # agency.action*: the fixture records no agency actions (test_agency_actions_labels_replace_every_fixed_string below).
+        # agency.report*: the fixture records no reports (tests/test_agency_reports.py overrides every one).
+        # agency.archived_copy: the fixture records no archived copy (tests/test_agency_archives.py overrides it).
         absent = ["agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",
                   "agency.action_kind_contract_ended", "agency.action_kind_contract_paused",
                   "agency.action_kind_contract_renewed", "agency.action_kind_contract_signed", "agency.action_kind_other",
                   "agency.action_kind_policy_adopted", "agency.action_kind_policy_amended", "agency.action_kind_policy_posted",
                   "agency.action_kind_retention_changed", "agency.action_kind_sharing_ended",
-                  "agency.action_kind_sharing_started", "agency.action_line", "agency.actions_heading",
+                  "agency.action_kind_sharing_started", "agency.action_line", "agency.actions_heading", "agency.archived_copy",
                   "agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
                   "agency.cost_total", "agency.funding_fiscal_year", "agency.funding_kind_asset_forfeiture",
                   "agency.funding_kind_donation", "agency.funding_kind_general_fund", "agency.funding_kind_grant",
                   "agency.funding_kind_other", "agency.funding_provenance",
                   "agency.mapped_reported_caveat", "agency.mapped_reported_counts", "agency.mapped_reported_unknown",
+                  "agency.report_checked", "agency.report_kind_annual_report", "agency.report_kind_audit_summary",
+                  "agency.report_kind_other", "agency.report_kind_surveillance_report", "agency.report_kind_usage_statistics",
+                  "agency.report_period", "agency.report_published", "agency.reports_heading",
                   "agency.transparency_cameras", "agency.transparency_checked", "agency.transparency_down",
                   "agency.transparency_heading", "agency.transparency_hotlist_alerts", "agency.transparency_retention_days",
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
@@ -289,7 +294,8 @@ class LabelsTest(unittest.TestCase):
                   "finding.update", "finding.updates",
                   "footer.elsewhere", "footer.events", "footer.events_calendar", "footer.license", "footer.sharing",
                   "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
-                  "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.title",
+                  "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.statements_heading",
+                  "handout.statements_note", "handout.title",
                   "handout.what_we_found",
                   "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
                   "license.about", "license.about_camera", "license.csv_note",

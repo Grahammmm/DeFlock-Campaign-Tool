@@ -184,6 +184,12 @@ DEFAULTS = {
     "agency.action_kind_contract_ended": "Contract ended", "agency.action_kind_contract_paused": "Contract paused",
     "agency.action_kind_cameras_added": "Cameras added", "agency.action_kind_cameras_removed": "Cameras removed",
     "agency.action_kind_other": "Other",
+    "agency.reports_heading": "Reports this agency has published about its ALPR use",
+    "agency.report_period": "Reporting period {start} \u2013 {end}", "agency.report_published": "Published {date}",
+    "agency.archived_copy": "archived copy ({date})",
+    "agency.report_checked": "checked {date}", "agency.report_kind_annual_report": "Annual report",
+    "agency.report_kind_audit_summary": "Audit summary", "agency.report_kind_usage_statistics": "Usage statistics",
+    "agency.report_kind_surveillance_report": "Surveillance report", "agency.report_kind_other": "Other",
     "agency.page": "Agency page", "agency.page_description": "Records and findings for {name}",
     "agency.published_findings": "Published findings", "agency.source_records": "Source records",
     "agency.received": "received {date}", "agency.in_library": "In the source library",
@@ -210,7 +216,8 @@ DEFAULTS = {
     "agencies.glance_searches_last_30_days": "Searches last 30 days (portal)",
     "agencies.glance_retention_days": "Retention days (portal)", "agencies.glance_policy": "ALPR policy",
     "agencies.glance_contract": "Contract ends", "agencies.glance_cost": "Contract cost as stated",
-    "agencies.glance_asked": "Records items asked",
+    "agencies.glance_asked": "Records items asked", "agencies.glance_report": "Latest report",
+    "agencies.glance_no_report": "none on record",
     "agencies.glance_not_checked": "not checked", "agencies.glance_posted": "posted", "agencies.glance_checked": "checked {date}",
     "footer.requests": "What we have asked for",  # DF1103-13
     "requests.title": "What we have asked for",
@@ -337,6 +344,8 @@ HANDOUT_DEFAULTS = {
     "handout.source_line": "Source: {title}, received {date}, record {record}",
     "handout.not_recorded": "not recorded", "handout.corrected": "corrected {date}",
     "handout.more_on_site": "{count} more on the site",
+    "handout.statements_heading": "What members have said",
+    "handout.statements_note": "Quoted from the linked sources; these selections do not summarize a member's views.",
     "handout.record_explainer": "What the record number means: the first 12 characters of a SHA-256 fingerprint of the "
                                 "file exactly as received. It shows the file has not changed since; it does not by "
                                 "itself prove who wrote it.",

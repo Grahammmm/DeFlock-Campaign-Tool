@@ -1,0 +1,51 @@
+{
+  "checked_main_sha": "f49f142d (flyer.build unchanged by DF1407-11)",
+  "scenario": "examples/fictional-campaign, site.json base_url=https://synthetic.invalid, no findings dir content",
+  "sha256": {
+    "base_on": {
+      "flyer.html": [
+        "3535e123",
+        "cca47e87",
+        "7eb1e27a",
+        "5a813d8e",
+        "f913fea9",
+        "740ee45e",
+        "1dd589a3",
+        "ab55fe86"
+      ],
+      "flyer.txt": [
+        "734aab57",
+        "de9bea1f",
+        "06e32921",
+        "e72a8645",
+        "4022b79b",
+        "d5a97d0a",
+        "09369a5d",
+        "b4e01ded"
+      ]
+    },
+    "base_off": {
+      "flyer.html": [
+        "a7b12778",
+        "52e92450",
+        "c5fb3ce2",
+        "c5c23860",
+        "8d8ae739",
+        "731f2c07",
+        "8f8f9475",
+        "28fc0d3b"
+      ],
+      "flyer.txt": [
+        "188cf8a2",
+        "9e9b137f",
+        "7952750f",
+        "79cd6eaa",
+        "0220d25d",
+        "be5829f7",
+        "851da424",
+        "ff4e3f52"
+      ]
+    }
+  },
+  "sha256_note": "each SHA-256 is stored as eight 8-hex-character chunks, joined in order by the test"
+}
