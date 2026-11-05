@@ -1439,6 +1439,15 @@ def main():
     flyer.add_argument("--directory", required=True)
     flyer.add_argument("--max-findings", type=int, choices=range(1, 7), default=3)
     flyer.add_argument("--replace", action="store_true")
+    map_p = commands.add_parser("map", help="Private camera field survey: a printable sheet and a sourced re-import")
+    map_cmds = map_p.add_subparsers(dest="map_command", required=True)
+    sheet_p = map_cmds.add_parser("survey-sheet", help="Write kit/survey/<city>-<date>.html and .csv; publishes nothing")
+    sheet_p.add_argument("--city", required=True, help="Exact boundary name (case-sensitive)")
+    sheet_p.add_argument("--directory", required=True)
+    import_p = map_cmds.add_parser("survey-import", help="Add the filled rows of a survey CSV to content/map/point-checks.json")
+    import_p.add_argument("--csv", required=True, metavar="FILLED")
+    import_p.add_argument("--directory", required=True)
+    import_p.add_argument("--apply", action="store_true", help="Write the file (default: only print the checks)")
     _campaign_option(parser)
     campaigns = commands.add_parser("campaigns", help="A named register of campaign directories; names and paths only"
                                     ).add_subparsers(dest="campaigns_command", required=True)
@@ -1584,6 +1593,12 @@ def main():
             from .flyer import build as flyer_build
             print(json.dumps(flyer_build(Path(args.directory).expanduser(), args.max_findings, replace=args.replace)))
             print("Private file; nothing was printed, sent or published.")
+        elif args.command == "map":
+            from . import map_survey
+            if args.map_command == "survey-sheet":
+                print(json.dumps(map_survey.survey_sheet(root, args.city)))
+            else:
+                print(json.dumps(map_survey.survey_import(root, args.csv, apply=args.apply), indent=2, ensure_ascii=False))
         elif args.command == "meeting-pack" and args.upcoming:
             from .meeting_pack import build_upcoming
             report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
