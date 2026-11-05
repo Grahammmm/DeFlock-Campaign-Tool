@@ -4,7 +4,7 @@ This guide takes a new organizer through one records request in the order you do
 
 **Private and offline. Not legal advice.** Nothing in this guide, and no command in it, sends, prints, pays, uploads or publishes anything: you send each request yourself, outside the tool, and the tool only records that you did. Dates it shows are provisional reminders counted from the day you say a request was sent, not legal deadlines, and a draft that passes `kit-check` has not had a legal review. This guide draws no conclusion about any agency.
 
-Checked against main 8057292b61d3024664f3f8509b0355b81297ecdc.
+Checked against main be0717a74b8f988209180b717fa86e0ee342d90d.
 
 ## Before you start
 
