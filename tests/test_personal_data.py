@@ -536,6 +536,7 @@ _MODULES = {
         records.understanding.cli records.understanding.digest records.worker_lifecycle""",
     "backup archives and keys": "backup backup_crypt",
     "generated drafts, exports and public content, no catalog store": """
+        agency_brief search_log kit_preserve
         content_init content_sharing coverage flyer kit_calendar kit_copy kit_export kit_fees kit_timing
         map_survey meeting_outcome meeting_pack meeting_stage meetings newsletter.__main__ newsletter.archive
         newsletter.draft newsletter.sent outbox outbox_batch press recent site site_check social social_threads""",
@@ -549,6 +550,9 @@ MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for modul
 MODULE_FUNCTIONS = {
     "map_survey": ("_install_new", "_write_checks", "render_csv", "survey_import"),
     'agency_actions': ('_install',),
+    'agency_brief': ('_write_file', 'build_brief',),
+    'kit_preserve': ('preserve_request',),
+    'search_log': ('run_cli',),
     'agency_cards': ('main',),
     'approval': ('verify',),
     'backup': (
