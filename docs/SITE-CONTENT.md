@@ -314,6 +314,24 @@ absent shows nothing. `agencies.html` shows "Posted ALPR usage policy (checked
 <date>, where we found it)" on that agency's card only; neither URL is fetched.
 Linking a policy says only that it was posted; it is not a finding about compliance.
 
+### Archived copies of agency sources (optional)
+
+Five organizer-verified link objects may carry a manually checked archive copy: `profile.alpr_policy`,
+`profile.contract`, every `profile.transparency` snapshot, every `profile.funding` entry and every `profile.reports`
+entry. Add both keys or neither: `"archived_url": "https://web.archive.org/web/20261020120000/https://example.org/policy.pdf"`
+and `"archived_on": "2026-10-20"`. The host must be exactly `web.archive.org`, `archive.ph` or `archive.today` (https,
+no port, no credentials; subdomains, `archive.is` and any other host are refused). A Wayback URL must have the form
+`/web/<14-digit timestamp>/<http(s) address>`, the timestamp a real UTC date and time, and `archived_on` must equal
+that timestamp's date. `archive.ph` and `archive.today` links need a path; their `archived_on` is the day you saved or
+checked the copy. `archived_on` is a real date not after the build date. A bad host, timestamp or date stops the build
+and `content-check` names the field, for example `content/agencies.json[1].profile.funding[0].archived_url`.
+
+The card and page then show `archived copy (DATE)` (label `agency.archived_copy`) right after that source link, and
+`data/agencies.json` carries both fields (the CSV carries them inside the same nested cells; no new column). An older
+transparency snapshot is validated but only the newest is shown. The detail page also shows the policy and contract
+lines when they carry a pair. An archive link does not say the copy is authentic, current or legally sufficient. The tool
+fetches nothing and submits nothing to an archive.
+
 An agency's optional `profile.policy_check` records an organizer's reading of the posted `alpr_policy` against the
 draft checklist `jurisdictions/us-ca/policy-checklist.json` (bound to the law-package rule
 `ca-civ-1798.90.51-usage-and-privacy-policy`, Civ. Code § 1798.90.51(b); status `draft`, packaged byte-identical and

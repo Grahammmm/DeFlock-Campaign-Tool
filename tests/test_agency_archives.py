@@ -50,7 +50,7 @@ def refusal(value, today=BUILD_DAY):
         _archive_fields(value, "L", today)
     except ContentError as caught:
         return str(caught)
-    return None
+    return ""
 
 
 def profile(**parts):
@@ -107,7 +107,7 @@ class ArchiveValidationTests(unittest.TestCase):
     def test_host_parser_is_exact(self):
         for url in (WAY, "https://archive.ph/AbCd1", "https://archive.today/2026.10.20-120000/https://example.invalid/x",
                     "https://ARCHIVE.PH/AbCd1"):
-            self.assertIsNone(refusal(pair(url)), url)
+            self.assertEqual("", refusal(pair(url)), url)
         for url in ("https://web.archive.org.evil.invalid/web/20261020120000/https://example.invalid/x",
                     "https://evilweb.archive.org/web/20261020120000/https://example.invalid/x",
                     "https://sub.archive.ph/AbCd1", "https://archive.is/AbCd1", "https://archive.ph./AbCd1",
@@ -119,15 +119,15 @@ class ArchiveValidationTests(unittest.TestCase):
                     "https://archive.ph", "https://archive.ph/", "https://archive.ph/?x=1"):
             message = refusal(pair(url))
             with self.subTest(url=url):
-                self.assertIsNotNone(message)
+                self.assertNotEqual(message, "")
                 self.assertTrue(message.startswith("L.archived_url: "), message)
                 self.assertNotIn("evil", message)
                 self.assertNotIn("AbCd1", message)
 
     def test_wayback_timestamp_and_target(self):
         for stamp, day in (("20240229000000", "2024-02-29"), ("20261020235959", "2026-10-20"), ("20261020000000", "2026-10-20")):
-            self.assertIsNone(refusal(pair(way(stamp), day)), stamp)
-        self.assertIsNone(refusal(pair(way("20261020120000", "http://example.invalid:8080/x"))))
+            self.assertEqual("", refusal(pair(way(stamp), day)), stamp)
+        self.assertEqual("", refusal(pair(way("20261020120000", "http://example.invalid:8080/x"))))
         for stamp in ("2026102012000", "202610201200000", "２０２６１０２０１２００００", "20261020120000id_", "2026*",
                       "20261320120000", "20230229120000", "20261032120000", "20261020250000", "20261020126000",
                       "20261020120060", "00000000000000", "latest", "%32026102012000"):
@@ -144,16 +144,16 @@ class ArchiveValidationTests(unittest.TestCase):
         # the date must be the timestamp's own date, and the error names archived_on, not archived_url
         self.assertEqual(refusal(pair(way("20261020120000"), "2026-10-19")),
                          "L.archived_on: must equal the date of the archived_url timestamp")
-        self.assertIsNone(refusal(pair("https://archive.ph/AbCd1", "2020-01-01")))  # other hosts: date supplied by hand
+        self.assertEqual("", refusal(pair("https://archive.ph/AbCd1", "2020-01-01")))  # other hosts: date supplied by hand
 
     def test_archive_calendar_uses_build_day(self):
-        self.assertIsNone(refusal(pair("https://archive.ph/AbCd1", "2026-11-01")))
+        self.assertEqual("", refusal(pair("https://archive.ph/AbCd1", "2026-11-01")))
         self.assertEqual(refusal(pair("https://archive.ph/AbCd1", "2026-11-02")), "L.archived_on: must not be after the build date")
-        self.assertIsNotNone(refusal(pair("https://archive.ph/AbCd1", "2026-11-02"), today=date(2026, 1, 1)))
+        self.assertNotEqual("", refusal(pair("https://archive.ph/AbCd1", "2026-11-02"), today=date(2026, 1, 1)))
         self.assertEqual(refusal(pair(way("20261102000000"), "2026-11-02")), "L.archived_on: must not be after the build date")
         for on in ("2026-02-29", "2026-2-1", "20261020", "2026-10-20T00:00", " 2026-10-20", "２０２６-10-20", "2026-10-20\n"):
             self.assertEqual(refusal(pair("https://archive.ph/AbCd1", on)), "L.archived_on: must be a real YYYY-MM-DD calendar date", on)
-        self.assertIsNone(refusal(pair("https://archive.ph/AbCd1", "2024-02-29")))
+        self.assertEqual("", refusal(pair("https://archive.ph/AbCd1", "2024-02-29")))
         # no relation to checked_on is invented: older and newer than it are both fine
         for on in ("2026-01-01", "2026-10-30"):
             got = load_agencies(profile(contract={**CONTRACT, **pair("https://archive.ph/AbCd1", on)}), "content/agencies.json", BUILD_DAY)
@@ -263,10 +263,10 @@ class ArchiveSiteTests(unittest.TestCase):
         self.assertIn('href="https://web.archive.org/web/20261020120000/https://example.invalid/cedar/doc?a=1&amp;b=2"', card)
         self.assertNotIn("&amp;amp;", card)
         labels = self.root / "content" / "labels.json"
-        labels.write_text(json.dumps({"schema_version": 1, "labels": {"agency.archived_copy": "saved <b>{date}</b>"}}), encoding="utf-8")
+        labels.write_text(json.dumps({"schema_version": 1, "labels": {"agency.archived_copy": "saved & kept {date}"}}), encoding="utf-8")
         self.build()
         card, _ = self.card_and_page()
-        self.assertIn("saved &lt;b&gt;2026-10-20&lt;/b&gt;</a>", card)
+        self.assertIn("saved &amp; kept 2026-10-20</a>", card)
         labels.write_text(json.dumps({"schema_version": 1, "labels": {"agency.archived_copy": ES["agency.archived_copy"]}}), encoding="utf-8")
         self.build()
         self.assertIn("copia archivada (2026-10-20)</a>", self.card_and_page()[0])
