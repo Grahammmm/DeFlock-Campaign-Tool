@@ -197,11 +197,11 @@ class FreshInitTests(FaqCase):
         root = self.campaign()
         report = content_init.init_content(root)
         content = root / "content"
-        self.assertEqual(report["written"], ["content/faq.json", "content/findings/", "content/meetings/", "content/pages/", "content/pages/help-map.json",
+        self.assertEqual(report["written"], ["content/faq.json", "content/findings/", "content/meetings/", "content/pages/", "content/pages/background.json", "content/pages/help-map.json",
                                              "content/site.json", "content/sources.json"])
-        texts = [(content / name).read_text(encoding="utf-8") for name in ("site.json", "faq.json", "pages/help-map.json")]
+        texts = [(content / name).read_text(encoding="utf-8") for name in ("site.json", "faq.json", "pages/help-map.json", "pages/background.json")]
         self.assertEqual(report["placeholders"], sum(text.count("[EDIT ME: ") for text in texts))
-        self.assertEqual(report["placeholders"], 4 + 16 + 6)
+        self.assertEqual(report["placeholders"], 4 + 16 + 6 + 10)
         self.assertEqual(json.loads(texts[1]), starter())  # California keeps the starter exactly, rule_id included
         self.assertEqual(content_problems(root), [])
         self.assertEqual(faq_notes(read_faq(root, [])), [])
@@ -227,7 +227,7 @@ class FreshInitTests(FaqCase):
         expected = copy.deepcopy(starter())
         expected["entries"][DEADLINE_AT] = {"question": QUESTIONS[DEADLINE_AT], "answer_md": GENERIC}
         self.assertEqual(document, expected)  # the other fourteen answers are the shipped starter
-        self.assertEqual(report["placeholders"], 4 + 16 + 6)
+        self.assertEqual(report["placeholders"], 4 + 16 + 6 + 10)
         self.assertEqual(content_problems(root), [])
         build_site(root, today=TODAY)
         page = (root / "public" / "faq.html").read_text(encoding="utf-8")

@@ -483,8 +483,8 @@ def kit(args, root):
     print("Kit written to " + str(root / "kit") + ". Nothing was sent.", file=sys.stdout)
 
 
-def social_cmd(root, platforms=None, meetings=False, within_days=14, outcomes=False, thread_finding=None):
-    from .social import (build_meeting_social, build_outcome_social, build_social, meeting_review_notes,
+def social_cmd(root, platforms=None, meetings=False, within_days=14, outcomes=False, thread_finding=None, events=False):
+    from .social import (build_event_social, event_review_notes, build_meeting_social, build_outcome_social, build_social, meeting_review_notes,
                          outcome_review_notes, review_notes)
     if thread_finding is not None:  # DF2207-08: one private numbered thread for one published finding; nothing is posted
         from .social_threads import build_thread_social, thread_notes
@@ -492,6 +492,12 @@ def social_cmd(root, platforms=None, meetings=False, within_days=14, outcomes=Fa
         for note in thread_notes(root, thread_finding):
             print(note, file=sys.stderr)
         print("Drafts written to kit/social/threads. Nothing was posted.")
+        return
+    if events:  # DF1407-10: private drafts for upcoming campaign events; nothing is posted
+        print(json.dumps(build_event_social(root, platforms, within_days), indent=2, ensure_ascii=False))
+        for note in event_review_notes(root, within_days):
+            print(note, file=sys.stderr)
+        print("Drafts written to kit/social/events. Nothing was posted.")
         return
     if outcomes:  # DF1952-14: private drafts quoting recorded meeting outcomes; nothing is posted
         print(json.dumps(build_outcome_social(root, platforms, within_days), indent=2, ensure_ascii=False))
@@ -531,6 +537,9 @@ def _site_claim_notes(root):
 def build(root, check=False, budget=None, weights_out=None, weights_baseline=None):
     from .site import build_site
     public = root / "public"
+    if check and any(os.path.lexists(public / name) for name in ("data.html", "data/datapackage.json")):
+        from .site_check import check_data_catalogue  # DF2207-12: refuse an already-missing or changed listed file first
+        check_data_catalogue(public)
     notes = []
     written = build_site(root, notes=notes)
     for note in notes:  # informational: the exit code is unchanged
@@ -547,7 +556,9 @@ def build(root, check=False, budget=None, weights_out=None, weights_baseline=Non
     for note in _site_claim_notes(root):  # DF-4 alert-only: notes for the publish gate, never an error or an exit code
         print(note)
     if check:
-        from .site_check import check_accessibility, check_links
+        from .site_check import check_accessibility, check_data_catalogue, check_links
+        if content_mode:
+            check_data_catalogue(public)  # DF2207-12: the fresh output, before any success line
         hits = check_public_tree(public)
         for path, line, label in hits:
             print(f"public/{path}:{line}: {label}", file=sys.stderr)
@@ -670,7 +681,7 @@ def backup_diff_cmd(args, root):
 def meetings_cmd(args, root):
     from datetime import date
     from .meetings import CivicClerkClient, LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
-    from .meetings import feed_opener, make_client
+    from .meetings import MeetingsError, feed_opener, make_client
     if args.matters and args.platform != "legistar":
         print("Stopped: --matters is Legistar only", file=sys.stderr)
         raise SystemExit(1)
@@ -679,10 +690,16 @@ def meetings_cmd(args, root):
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
         raise SystemExit(2)
     cfg = read_config(root)
-    if args.client is None:
+    if args.platform != "ics" and (args.feed_url or args.body or args.from_ics):
+        raise MeetingsError("--feed-url, --body and --from-ics go with --platform ics")
+    if args.client is None and args.platform != "ics":
         return _meetings_multi(args, root, cfg, zone)
     if args.from_json:
         opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
+    elif args.platform == "ics":
+        if args.online == bool(args.from_ics):
+            raise MeetingsError("--platform ics needs exactly one of --online (one GET of the feed) or --from-ics FILE")
+        opener = default_opener if args.online else feed_opener(args.from_ics)
     elif args.online:
         opener = default_opener
     elif args.from_xml:
@@ -690,6 +707,7 @@ def meetings_cmd(args, root):
     else:
         raise ValueError("meetings needs --online to query the agenda platform, or a recorded response (--from-json; --from-xml for Granicus)")
     client = make_client(args, opener)
+    name = client.body if args.platform == "ics" else args.client
     since = date.fromisoformat(args.since) if args.since else None
     if args.matters:
         from .meetings import relevant_matters, write_matters
@@ -701,9 +719,9 @@ def meetings_cmd(args, root):
     meetings = relevant_events(client, since=since, zone=zone, all_events=args.all_events)
     previous = _read_previous(root / "kit" / "meetings.json")
     changes = ({"previous": previous} if previous == "unreadable"
-               else compare_meetings(previous, meetings, args.client, since or date.today()))
-    target = write_meetings(root, meetings, args.client, None if previous is None else changes, zone=zone, source=client.source)
-    report = {"client": args.client, "platform": client.source, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
+               else compare_meetings(previous, meetings, name, since or date.today()))
+    target = write_meetings(root, meetings, name, None if previous is None else changes, zone=zone, source=client.source)
+    report = {"client": name, "platform": client.source, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
               "cancelled_meetings": sum(m["status"] == "cancelled" for m in meetings)}
     report.update(getattr(client, "report_extra", lambda m: {})(meetings))
     if "added" in changes:
@@ -753,7 +771,7 @@ def _read_previous(path):
 def meeting_stage_cmd(args, root):
     from .meeting_stage import stage
     report = stage(root, args.id, args.agency_id, args.location, args.replace, args.participation,
-                   finding_ids=args.finding, asks=args.ask, cosign_ids=args.cosign)
+                   finding_ids=args.finding, asks=args.ask, cosign_ids=args.cosign, elsewhere_indices=args.elsewhere)
     print(json.dumps(report, indent=2))
     for note in report.get("review_flags", []):  # DF2207-07: advisory legal-claim notes, positions only
         print(note, file=sys.stderr)
@@ -907,18 +925,21 @@ def main():
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
     social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
+    social_p.add_argument("--text", action="store_true", help="With --check: print the report as text grouped by folder instead of JSON")
     social_p.add_argument("--platform", action="append", choices=["x", "bluesky", "mastodon"],
                           help="Draft for this platform's own length rule into kit/social/<platform> (repeatable)")
     social_p.add_argument("--meetings", action="store_true",
                           help="Draft one private post per scheduled upcoming meeting with verified participation into kit/social/meetings")
     social_p.add_argument("--outcomes", action="store_true",
                           help="Draft one private post per meeting with a recorded outcome dated in the last N days into kit/social/outcomes")
+    social_p.add_argument("--events", action="store_true",
+                          help="Draft one private post per campaign event (content/events.json) starting within N days into kit/social/events")
     social_p.add_argument("--thread", action="store_true",
                           help="With --finding: draft one private numbered thread for that published finding into kit/social/threads")
     social_p.add_argument("--finding", action="append", metavar="ID",
                           help="With --thread: the exact id of one published finding")
     social_p.add_argument("--within-days", type=int, default=None, metavar="N",
-                          help="With --meetings: meetings starting within N days; with --outcomes: outcomes recorded in the last N "
+                          help="With --meetings: meetings starting within N days; with --events: campaign events starting within N days; with --outcomes: outcomes recorded in the last N "
                                "calendar days, today included; 1 to 60 (default 14)")
     press = commands.add_parser("press", help="Draft private press material; sends nothing")
     press_commands = press.add_subparsers(dest="press_command", required=True)
@@ -956,6 +977,9 @@ def main():
     supporters_remove = supporters.add_parser("remove", help="Drop one organization's public entry and private record")
     supporters_remove.add_argument("--directory", required=True)
     supporters_remove.add_argument("--id", required=True)
+    press_check = press_commands.add_parser("check", help="Check private press drafts and letters against current findings and meetings; read-only")
+    press_check.add_argument("--directory", required=True)
+    press_check.add_argument("--json", action="store_true", dest="as_json", help="Print JSON only")
     press_letter = press_commands.add_parser("letter", help="Draft a private letter to the editor; sends nothing")
     press_letter.add_argument("--directory", required=True)
     press_letter.add_argument("--finding", action="append", default=[], help="Published finding id (repeat for 1 to 3)")
@@ -995,13 +1019,16 @@ def main():
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", help="Legistar client slug (the part after webapi.legistar.com/v1/); the <name>.granicus.com host for granicus; the AgendaCenter host for agendacenter; omit to scan every campaign.json meeting_sources entry")
-    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus", "agendacenter"), default="legistar", help="Agenda platform (default legistar)")
+    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus", "agendacenter", "ics"), default="legistar", help="Agenda platform (default legistar)")
     meetings_p.add_argument("--matters", action="store_true", help="List ALPR keyword matters (legislation, contracts) instead of events; writes kit/matters.json (Legistar only)")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--view-id", type=int, help="Granicus view_id (--platform granicus; --client is then the <name>.granicus.com host)")
     meetings_p.add_argument("--from-xml", help="Saved Granicus or AgendaCenter agenda RSS feed (offline)")
     meetings_p.add_argument("--all-events", action="store_true", help="Also keep Granicus/AgendaCenter events with no text to scan, marked not_scanned")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
+    meetings_p.add_argument("--feed-url", help="--platform ics: the governing body's public iCalendar agenda feed (https URL)")
+    meetings_p.add_argument("--body", help="--platform ics: the governing body's name (plain text; the feed's own calendar name is not trusted)")
+    meetings_p.add_argument("--from-ics", help="--platform ics: saved iCalendar feed (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
     meetings_p.add_argument("--tz", default="America/Los_Angeles", help="IANA time zone for starts_at (default America/Los_Angeles)")
     stage_p = commands.add_parser("meetings-stage", help="Write content/meetings/<id>.json from one kit/meetings.json entry")
@@ -1016,9 +1043,26 @@ def main():
     stage_p.add_argument("--cosign", action="append", metavar="SUPPORTER_ID", default=None,
                          help="Name a consenting supporting organization under this meeting's written comment "
                               "(repeatable, max 30; needs --participation with a written_comment; sends nothing)")
+    stage_p.add_argument("--elsewhere", action="append", type=int, metavar="N", default=None,
+                         help="Cite decision N of content/elsewhere.json (1-based, stored order; repeatable, max 3; "
+                              "cites other governments' decisions, sends nothing)")
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    add_p = commands.add_parser("meetings-add", help="Record an organizer-entered meeting for a body on no supported agenda platform "
+                                "(private kit/meetings-manual.json; nothing is fetched, sent or published)")
+    add_p.add_argument("--directory", required=True)
+    add_p.add_argument("--id", required=True, help="manual-SLUG (lowercase letters, digits, hyphens)")
+    for flag, text in (("--body", "Governing body, as the official agenda names it"), ("--agency-id", "The body's agency id"),
+                       ("--starts-at", "ISO start time with its UTC offset or Z"),
+                       ("--agenda-url", "Official https agenda page (your attestation; never fetched)"),
+                       ("--item-title", "Agenda item title"), ("--source-url", "https page where you checked the agenda"),
+                       ("--checked-on", "YYYY-MM-DD you checked the official agenda"),
+                       ("--on", "With --replace or --cancel: YYYY-MM-DD of the correction"),
+                       ("--reason", "With --replace or --cancel: why (kept privately; not printed)")):
+        add_p.add_argument(flag, help=text)
+    add_p.add_argument("--replace", action="store_true", help="Correct an existing manual meeting (needs --on and --reason)")
+    add_p.add_argument("--cancel", action="store_true", help="Mark a manual meeting cancelled (needs --on and --reason; no entry fields)")
     outcome_p = commands.add_parser("meetings-outcome", help="Record an organizer-verified outcome on a past staged meeting")
     for flag in ("--directory", "--id"):
         outcome_p.add_argument(flag, required=True)
@@ -1046,6 +1090,12 @@ def main():
     sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail", "in_person"))
     sent_p.add_argument("--file", help="The letter you sent: only its SHA-256 and size are kept, never its text or path")
     sent_p.add_argument("--replace", action="store_true", help="Overwrite an existing record for this meeting")
+    publish_p = commands.add_parser("meetings-comment-publish", help="Stage the exact comment you recorded as submitted as the "
+                                    "public copy on its meeting page (content/meetings/<id>.json); sends nothing")
+    for flag in ("--directory", "--id", "--file"):
+        publish_p.add_argument(flag, required=True)
+    publish_p.add_argument("--signer-public", action="store_true", help="Confirm that whoever signed the comment agreed to be named publicly")
+    publish_p.add_argument("--replace", action="store_true", help="Overwrite an already staged submitted comment")
     speakers_p = commands.add_parser("meetings-speakers", help="Private plan: which volunteer label covers which point of a "
                                      "staged meeting's comment kit (kit/meetings/speakers/<id>.json); sends nothing")
     speakers_p.add_argument("--directory", required=True)
@@ -1348,6 +1398,10 @@ def main():
     )
     content_init.add_argument("--directory", required=True)
     content_init.add_argument("--from", dest="source_campaign")
+    content_plain_p = content_cmds.add_parser("check-plain", help="Advisory plain-language check of content/pages, faq.json and "
+                                              "glossary.json (read-only, never a gate; exit 0 with suggestions)")
+    content_plain_p.add_argument("--directory", required=True)
+    content_plain_p.add_argument("--json", dest="as_json", action="store_true", help="Print the report as one JSON object")
     strip_p = content_cmds.add_parser("strip-metadata", help="Write <name>.clean<ext> beside a JPEG/PNG/WebP without "
                                       "its EXIF, GPS, XMP, IPTC, comment or text metadata (no re-encode)")
     strip_p.add_argument("file")
@@ -1377,6 +1431,10 @@ def main():
     sharing_p.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD", help="Day the organizer read the portal")
     sharing_p.add_argument("--source-url", required=True, help="https URL of the portal page (transparency.flocksafety.com)")
     sharing_p.add_argument("--replace", action="store_true", help="Overwrite an existing sharing list")
+    links_p = content_cmds.add_parser("link-check", help="List every external https URL the public content cites; with --online "
+                                      "also request each once (GET, first 64 KiB, no cookies, 15 s, 5 redirects). Writes nothing")
+    links_p.add_argument("--directory", required=True)
+    links_p.add_argument("--online", action="store_true", help="Touch the network; without it nothing is fetched")
     coverage_cmds = content_cmds.add_parser("coverage", help="Record press coverage in content/coverage.json for /news.html "
                                             "(typed by the organizer; nothing is fetched, quoted or published)"
                                             ).add_subparsers(dest="coverage_command", required=True)
@@ -1548,7 +1606,9 @@ def main():
     pack.add_argument("--allow-past", action="store_true")
     flyer = commands.add_parser("flyer", help="Write a private printable one-page campaign flyer; prints and publishes nothing")
     flyer.add_argument("--directory", required=True)
-    flyer.add_argument("--max-findings", type=int, choices=range(1, 7), default=3)
+    flyer_mode = flyer.add_mutually_exclusive_group()
+    flyer_mode.add_argument("--max-findings", type=int, choices=range(1, 7), default=None)
+    flyer_mode.add_argument("--event", help="Write the flyer for one upcoming content/events.json event instead of the campaign flyer")
     flyer.add_argument("--replace", action="store_true")
     map_p = commands.add_parser("map", help="Private camera field survey: a printable sheet and a sourced re-import")
     map_cmds = map_p.add_subparsers(dest="map_command", required=True)
@@ -1578,6 +1638,10 @@ def main():
     if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
         if not args.upcoming or args.allow_past or args.within_days not in (None, *range(1, 91)):
             pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
+    if args.command == "meetings":
+        if args.platform == "ics":
+            if args.client or not args.feed_url or not args.body:
+                meetings_p.error("--platform ics needs --feed-url and --body and does not use --client")
     if args.command == "meetings-speakers" and (args.add is None) != (args.point is None):
         speakers_p.error("--point is required with --add and only allowed with --add")
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
@@ -1615,20 +1679,24 @@ def main():
     if getattr(args, "json", False) and not args.checklist:
         parser.error("--json requires --checklist")
     if args.command == "social" and args.check and args.platform:
-        parser.error("--check reads kit/social only; it cannot be combined with --platform")
+        parser.error("--check reads every draft folder itself; it cannot be combined with --platform")
     if args.command == "social" and args.meetings and args.check:
-        parser.error("--check reads finding drafts only; it cannot be combined with --meetings")
+        parser.error("--check reads every draft folder itself; it cannot be combined with --meetings")
     if args.command == "social" and args.outcomes and (args.meetings or args.check):
-        parser.error("--outcomes cannot be combined with " + ("--meetings" if args.meetings else "--check (--check reads finding drafts only)"))
+        parser.error("--outcomes cannot be combined with " + ("--meetings" if args.meetings else "--check (--check reads every draft folder itself)"))
+    if args.command == "social" and args.text and not args.check:
+        parser.error("--text needs --check")
+    if args.command == "social" and args.events and (args.meetings or args.outcomes or args.check or args.thread):
+        parser.error("--events cannot be combined with --meetings, --outcomes, --check or --thread")
     if args.command == "social" and args.finding is not None and not args.thread:
         parser.error("--finding needs --thread")
     if args.command == "social" and args.thread:
         if args.check or args.meetings or args.outcomes or args.within_days is not None:
-            parser.error("--thread cannot be combined with --check, --meetings, --outcomes or --within-days")
+            parser.error("--thread cannot be combined with --check, --meetings, --outcomes, --events or --within-days")
         if args.finding is None or len(args.finding) != 1:
             parser.error("--thread needs exactly one --finding ID")
-    if args.command == "social" and args.within_days is not None and not (args.meetings or args.outcomes):
-        parser.error("--within-days needs --meetings or --outcomes")
+    if args.command == "social" and args.within_days is not None and not (args.meetings or args.outcomes or args.events):
+        parser.error("--within-days needs --meetings or --outcomes (or --events)")
     if args.command == "social" and args.within_days is not None and not 1 <= args.within_days <= 60:
         parser.error("--within-days must be 1 to 60")
     if args.command == "build" and args.preview and args.budget is not None:
@@ -1651,6 +1719,20 @@ def main():
                         "(or --from-request AGENCY)")
         elif args.request is not None or args.tz is not None:
             batch.error("--request and --tz are only for --from-request")
+    if args.command == "meetings-add":
+        entry_flags = {"--body": args.body, "--agency-id": args.agency_id, "--starts-at": args.starts_at,
+                       "--agenda-url": args.agenda_url, "--item-title": args.item_title,
+                       "--source-url": args.source_url, "--checked-on": args.checked_on}
+        if args.replace and args.cancel:
+            parser.error("--replace and --cancel cannot be combined")
+        if args.cancel and any(v is not None for v in entry_flags.values()):
+            parser.error("--cancel takes only --id, --on and --reason, no entry fields")
+        if not args.cancel and any(v is None for v in entry_flags.values()):
+            parser.error("meetings-add needs " + ", ".join(entry_flags) + " (or --cancel)")
+        if (args.replace or args.cancel) and (args.on is None or args.reason is None):
+            parser.error("--replace and --cancel need --on and --reason")
+        if not (args.replace or args.cancel) and (args.on is not None or args.reason is not None):
+            parser.error("--on and --reason are only for --replace or --cancel")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -1689,12 +1771,21 @@ def main():
         elif args.command == "social" and args.check:
             from .social import check_social
             report = check_social(root)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
+            if args.text:
+                from .social_check import format_text
+                sys.stdout.write(format_text(report))
+            else:
+                print(json.dumps(report, indent=2, ensure_ascii=False))
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
             social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days, args.outcomes,
-                       args.finding[0] if args.thread else None)
+                       args.finding[0] if args.thread else None, args.events)
         elif args.command == "press":
+            if args.press_command == "check":
+                from .press_check import check_press, format_text
+                report = check_press(root)
+                print(json.dumps(report, indent=2, ensure_ascii=False) if args.as_json else format_text(report))
+                sys.exit(3 if report["problems"] else 0)
             if args.press_command == "letter":
                 from .press import build_letter
                 result = build_letter(root, args.finding, args.date, words=args.words, outlet=args.outlet)
@@ -1727,8 +1818,12 @@ def main():
         elif args.command == "meetings":
             meetings_cmd(args, root)
         elif args.command == "flyer":
-            from .flyer import build as flyer_build
-            print(json.dumps(flyer_build(Path(args.directory).expanduser(), args.max_findings, replace=args.replace)))
+            from .flyer import build as flyer_build, build_event as flyer_event
+            if args.event is not None:
+                report = flyer_event(Path(args.directory).expanduser(), args.event, replace=args.replace)
+            else:
+                report = flyer_build(Path(args.directory).expanduser(), 3 if args.max_findings is None else args.max_findings, replace=args.replace)
+            print(json.dumps(report))
             print("Private file; nothing was printed, sent or published.")
         elif args.command == "map":
             from . import map_survey
@@ -1756,6 +1851,17 @@ def main():
                       f"({report['comment_sent']['channel']}).")
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "meetings-add":
+            from .meetings_manual import cancel_manual, record_manual
+            read_config(root)  # not a campaign folder: Stopped, before anything is read or written
+            if args.cancel:
+                result = cancel_manual(root, args.id, on=args.on, reason=args.reason)
+            else:
+                result = record_manual(root, args.id, body=args.body, agency_id=args.agency_id, starts_at=args.starts_at,
+                                       agenda_url=args.agenda_url, agenda_item=args.item_title, source_url=args.source_url,
+                                       checked_on=args.checked_on, replace=args.replace, on=args.on, reason=args.reason)
+            print(json.dumps(result, indent=2))
+            print("Recorded only. Nothing was sent or published.")
         elif args.command == "meetings-outcome":
             from .meeting_outcome import run_outcome_command
             print("\n".join(run_outcome_command(root, args)))
@@ -1766,6 +1872,13 @@ def main():
                      **({"letter_sha256_prefix": entry["letter_sha256"][:12]} if "letter_sha256" in entry else {})}
             print(json.dumps(shown, indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "meetings-comment-publish":
+            from .meeting_comment_publish import publish
+            comment, notes = publish(root, args.id, args.file, signer_public=args.signer_public, replace=args.replace)
+            print(json.dumps({"id": args.id, "on": comment["on"], "channel": comment["channel"], "bytes": len(comment["text"].encode("utf-8"))}, indent=2))
+            for note in notes:
+                print(note, file=sys.stderr)
+            print("Staged only: a later site build shows it. Nothing was sent or published; a clean lint is not privacy clearance.")
         elif args.command == "meetings-speakers":
             from .meeting_speakers import list_plan, update_plan
             # The guards must see the unresolved directory so a campaign-root or ancestor symlink is refused.
@@ -1978,6 +2091,10 @@ def main():
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal, mailing_address=args.mailing_address), indent=2))
             print("Nothing was sent.")
+        elif args.command == "content" and args.content_command == "check-plain":
+            from .content_plain import run_cli as content_plain_cli
+            read_config(root)
+            content_plain_cli(root, args.as_json)
         elif args.command == "content" and args.content_command == "strip-metadata":
             from .image_meta import strip_file
             print(json.dumps(strip_file(args.file, args.out), indent=2))
@@ -1993,6 +2110,12 @@ def main():
                 done = agency_actions.remove_action(root, args.agency, agency_actions.parse_index(args.index))
                 print(f"Agency action removed: {done['agency_id']}, index {done['index']}.")
             print("Content only; nothing was built, sent or deployed.")
+        elif args.command == "content" and args.content_command == "link-check":
+            from .content_links import run_cli as link_check_cli
+            report, code = link_check_cli(root, args.online)
+            sys.stdout.write(report)
+            if code:
+                sys.exit(code)
         elif args.command == "content" and args.content_command == "agency-sharing":
             from .content_sharing import import_sharing
             print(json.dumps(import_sharing(root, args.agency, Path(args.csv).expanduser(), args.checked_on, args.source_url,

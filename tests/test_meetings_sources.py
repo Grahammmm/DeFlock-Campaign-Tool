@@ -167,6 +167,18 @@ class MultiSourceTests(unittest.TestCase):
         self.assertEqual(load_sources({}), [])
         self.assertEqual(load_sources({"meeting_sources": [{"platform": "legistar", "client": "alphacity"}]})[0]["label"], "alphacity")
 
+    def test_ics_only_flags_refused_on_multi_source_run_without_kit(self):
+        self.sources(SOURCES)
+        for extra in (("--feed-url", "https://example.gov/council.ics"), ("--body", "Council"), ("--from-ics", "not-present.ics")):
+            with self.subTest(extra=extra):
+                result = self.run_multi(A, B, C, extra=extra)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.target.exists())
+        self.assertEqual(self.run_multi(A, B, C).returncode, 0)
+        before = self.target.read_bytes()
+        self.assertNotEqual(self.run_multi(A, B, C, extra=("--body", "Council")).returncode, 0)
+        self.assertEqual(self.target.read_bytes(), before)
+
     def test_meetings_stage_works_on_the_combined_file(self):
         shutil.copytree(REPO_ROOT / "examples" / "fictional-campaign", self.dir / "example")
         self.root = self.dir / "example"

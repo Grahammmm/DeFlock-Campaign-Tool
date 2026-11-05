@@ -127,15 +127,13 @@ def _warning(rule, rows, count=None, limit=None, abbreviation=None):
             "abbreviation": abbreviation}
 
 
-def check_plain(finding, glossary=None):
-    """Ordered warning dicts for ``finding`` (title, summary, body_md in that order); never touches the text."""
-    sources = finding.get("sources")
-    titles = [source["title"] for source in sources if isinstance(source, dict) and isinstance(source.get("title"), str)
-              and source["title"]] if isinstance(sources, list) else []
-    texts = {field: finding.get(field) if isinstance(finding.get(field), str) else "" for field in FIELDS}
-    explained, aliases, warnings = set(), _glossary_acronyms(glossary), []
-    for field in FIELDS:
-        text = texts[field]
+def check_fields(items, titles=(), aliases=frozenset(), summary_rule=False):
+    """Ordered warning dicts for ``items`` ((field name, text) pairs checked in that order).
+
+    An abbreviation spelled out in an earlier item is explained in later ones. ``summary_rule`` adds the finding-only
+    ``long_summary`` rule for an item named ``summary``. Never touches the text."""
+    explained, warnings = set(), []
+    for field, text in items:
         tokens = _tokens(field, text, titles)
         counted = [token for token in tokens if not token["skipped"]]
         found = []
@@ -143,7 +141,7 @@ def check_plain(finding, glossary=None):
             words = [token for token in counted if token["sentence_key"] == key]
             if len(words) > SENTENCE_LIMIT:
                 found.append(_warning("long_sentence", words, len(words), SENTENCE_LIMIT))
-        if field == "summary" and len(counted) > SUMMARY_LIMIT:
+        if summary_rule and field == "summary" and len(counted) > SUMMARY_LIMIT:
             found.append(_warning("long_summary", counted, len(counted), SUMMARY_LIMIT))
         for paragraph in sorted({token["paragraph"] for token in counted}):
             words = [token for token in counted if token["paragraph"] == paragraph]
@@ -163,7 +161,16 @@ def check_plain(finding, glossary=None):
     return warnings
 
 
-def _row_text(row):
+def check_plain(finding, glossary=None):
+    """Ordered warning dicts for ``finding`` (title, summary, body_md in that order); never touches the text."""
+    sources = finding.get("sources")
+    titles = [source["title"] for source in sources if isinstance(source, dict) and isinstance(source.get("title"), str)
+              and source["title"]] if isinstance(sources, list) else []
+    items = [(field, finding.get(field) if isinstance(finding.get(field), str) else "") for field in FIELDS]
+    return check_fields(items, titles, _glossary_acronyms(glossary), summary_rule=True)
+
+
+def row_text(row):
     where = f"{row['field']} paragraph {row['paragraph']}, sentence {row['sentence']}, word {row['word']}"
     if row["rule"] == "unexplained_abbreviation":
         return f"{where}: unexplained_abbreviation {row['abbreviation']} (not spelled out earlier)"
@@ -171,7 +178,7 @@ def _row_text(row):
 
 
 def render_rows(warnings):
-    return [_row_text(row) for row in warnings]
+    return [row_text(row) for row in warnings]
 
 
 def render_report(report):

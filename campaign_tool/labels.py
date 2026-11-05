@@ -81,6 +81,7 @@ DEFAULTS = {
     "intro.meetings_calendar": "Subscribe to the meetings calendar (.ics)",
     "intro.meetings_open_data_about": "Meetings with their recorded outcomes, votes and official sources:",
     "intro.agencies_open_data": "Agencies as open data (JSON)",
+    "intro.officials_open_data": "Officials as open data (JSON)",
     "intro.agencies_open_data_about": "Agencies with their asked items, posted policy, contract end and portal numbers, as each source reported them:",
     "notice.no_findings": "No findings have been published yet.", "notice.no_upcoming": "No upcoming meetings are listed.",
     "notice.past_meetings_link": "Past meetings and their comment kits", "notice.no_meetings": "No meetings are listed yet.",
@@ -135,6 +136,7 @@ DEFAULTS = {
     "meeting.minutes_pending": "Recorded by the campaign; minutes not yet approved", "agency.past_meetings": "Past meetings",
     "meeting.continued_to": "Continued to {date}", "meeting.continued_from": "Continued from {date}",
     "meeting.cosigned_one": "Co-signed by {count} organization", "meeting.cosigned_many": "Co-signed by {count} organizations",
+    "meeting.submitted_comment": "Our submitted comment ({channel}, {date})", "meeting.submitted_comment_link": "Our submitted comment",
     "meeting.staff_direction": "Staff were directed to: {direction} (by {date}, as stated in {source})",
 
     "schedule.usually": "Usually meets: {rule} ({source}, checked {date})",
@@ -184,10 +186,17 @@ DEFAULTS = {
     "agency.action_kind_contract_ended": "Contract ended", "agency.action_kind_contract_paused": "Contract paused",
     "agency.action_kind_cameras_added": "Cameras added", "agency.action_kind_cameras_removed": "Cameras removed",
     "agency.action_kind_other": "Other",
+    "agency.reports_heading": "Reports this agency has published about its ALPR use",
+    "agency.report_period": "Reporting period {start} \u2013 {end}", "agency.report_published": "Published {date}",
+    "agency.archived_copy": "archived copy ({date})",
+    "agency.report_checked": "checked {date}", "agency.report_kind_annual_report": "Annual report",
+    "agency.report_kind_audit_summary": "Audit summary", "agency.report_kind_usage_statistics": "Usage statistics",
+    "agency.report_kind_surveillance_report": "Surveillance report", "agency.report_kind_other": "Other",
     "agency.page": "Agency page", "agency.page_description": "Records and findings for {name}",
     "agency.published_findings": "Published findings", "agency.source_records": "Source records",
     "agency.received": "received {date}", "agency.in_library": "In the source library",
     "agency.upcoming": "Upcoming meetings", "agency.no_upcoming": "No upcoming meetings are listed for this body.",
+    "agency.meetings_calendar": "Subscribe to this agency's meetings (.ics)",
     "agency.transparency_heading": "Reported on the Flock transparency portal",
     "agency.transparency_checked": "as reported by the vendor, checked {date}",
     "agency.transparency_cameras": "Cameras: {count}", "agency.transparency_retention_days": "Retention days: {count}",
@@ -210,9 +219,19 @@ DEFAULTS = {
     "agencies.glance_searches_last_30_days": "Searches last 30 days (portal)",
     "agencies.glance_retention_days": "Retention days (portal)", "agencies.glance_policy": "ALPR policy",
     "agencies.glance_contract": "Contract ends", "agencies.glance_cost": "Contract cost as stated",
-    "agencies.glance_asked": "Records items asked",
+    "agencies.glance_asked": "Records items asked", "agencies.glance_report": "Latest report",
+    "agencies.glance_no_report": "none on record",
     "agencies.glance_not_checked": "not checked", "agencies.glance_posted": "posted", "agencies.glance_checked": "checked {date}",
     "footer.requests": "What we have asked for",  # DF1103-13
+    "standings.heading": "Where things stand",  # DF1952-10
+    "standings.agencies": "Agencies we have asked for records",
+    "standings.answered": "Asked items answered or partly answered",
+    "standings.records": "Records in the public library",
+    "standings.findings": "Published findings",
+    "standings.cameras": "Community-mapped camera points; ownership unconfirmed",
+    "standings.none_yet": "none yet",
+    "standings.deadline": "Next verified written-comment deadline",
+    "cameras.empty": "No community-mapped points are listed yet.",
     "requests.title": "What we have asked for",
     "requests.description": ("Every records request this campaign has publicly listed for an agency, newest first, "
                              "with the state we last recorded."),
@@ -337,11 +356,35 @@ HANDOUT_DEFAULTS = {
     "handout.source_line": "Source: {title}, received {date}, record {record}",
     "handout.not_recorded": "not recorded", "handout.corrected": "corrected {date}",
     "handout.more_on_site": "{count} more on the site",
+    "handout.statements_heading": "What members have said",
+    "handout.statements_note": "Quoted from the linked sources; these selections do not summarize a member's views.",
     "handout.record_explainer": "What the record number means: the first 12 characters of a SHA-256 fingerprint of the "
                                 "file exactly as received. It shows the file has not changed since; it does not by "
                                 "itself prove who wrote it.",
 }
+# DF1622-08: the requests-table filter labels. Page-local (requests.html only): deliberately outside JS_DEFAULTS so no
+# other script, page or site-data.js changes when one is relabelled.
+REQUESTS_JS_DEFAULTS = {
+    "js.requests_label": "Filter public requests", "js.requests_agency": "Agency", "js.requests_state": "State",
+    "js.requests_all_agencies": "All agencies", "js.requests_all_states": "All states",
+    "js.requests_count": "Showing {shown} of {total}", "js.requests_empty": "No public request matches these filters.",
+}
+# DF2207-12: data.html, the open-data catalogue.
+DATA_DEFAULTS = {
+    "data.title": "Open data",
+    "data.intro": ("Every open-data file this site publishes, with its size and SHA-256 checksum so you can confirm a "
+                   "download is complete and unchanged. The same list is available as a machine-readable Data Package."),
+    "data.csv_note": ("CSV files are flat copies of the JSON files: every cell is text, and lists or nested values are "
+                      "joined or written as compact JSON. The Data Package lists each CSV's columns; the schema linked "
+                      "from a CSV row describes the source JSON records, not the CSV."),
+    "data.download": "Download", "data.description": "Description", "data.bytes": "Bytes", "data.sha256": "SHA-256",
+    "data.schema": "Schema", "data.schema_csv": "Source-record schema (JSON)", "data.license": "Licence",
+    "data.license_unstated": "licence not stated", "data.package": "Data Package (datapackage.json)",
+    "footer.data": "Open data",
+}
+DEFAULTS.update(DATA_DEFAULTS)
 DEFAULTS.update(JS_DEFAULTS)
+DEFAULTS.update(REQUESTS_JS_DEFAULTS)
 DEFAULTS.update(HANDOUT_DEFAULTS)
 for _family, _labels in (("classification", CLASSIFICATION_LABELS), ("confidence", CONFIDENCE_LABELS), ("kind", KIND_LABELS)):
     DEFAULTS.update({f"{_family}.{code}": text for code, text in _labels.items()})

@@ -141,7 +141,7 @@ class SocialPlatformTests(unittest.TestCase):
         self.assertIn("invalid choice: 'tiktok'", result.stderr)
         result = self.cli("--check", "--platform", "x")
         self.assertEqual(result.returncode, 2)
-        self.assertIn("--check reads kit/social only", result.stderr)
+        self.assertIn("--check reads every draft folder itself", result.stderr)
         for bad in (["tiktok"], []):
             with self.assertRaisesRegex(ValueError, "unknown platform"):
                 build_social(self.root, bad)

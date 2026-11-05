@@ -572,7 +572,8 @@ class LegacyAndAtomicTests(Fixture):
         # Only the staged-meetings, public-requests and (the base finding has a correction) corrections-feed footer links change the legacy index.
         footer_links = (' · <a href="/meetings.xml">Meetings feed</a>',
                         ' · <a href="/requests.html">What we have asked for</a>',
-                        ' · <a href="/corrections.xml">Corrections feed</a>')
+                        ' · <a href="/corrections.xml">Corrections feed</a>',
+                        '<p><a href="/data.html">Open data</a></p>')
         artifacts = []
         for name in names:
             text = self.read(name)
