@@ -128,6 +128,21 @@ class RefusalTests(unittest.TestCase):
         self.refuse(lambda b: b.update(banned_phrases=[]), "banned_invalid")
         self.refuse(lambda b: b["banned_phrases"].append(dict(b["banned_phrases"][0])), "banned_invalid")
 
+    def test_malformed_field_types_refuse_with_playbook_error(self):
+        self.refuse(lambda b: b["first_request"]["items"][0].update(cite=None), "first_request_invalid")
+        self.refuse(lambda b: b["first_request"]["items"][0].update(cite=[{}]), "first_request_invalid")
+        self.refuse(lambda b: b["followup_patterns"][0].update(cite=[{}]), "patterns_invalid")
+        self.refuse(lambda b: b["followup_patterns"][0].update(cite=None), "patterns_invalid")
+        self.refuse(lambda b: b["banned_phrases"][0].update(id=[]), "banned_invalid")
+        self.refuse(lambda b: b["banned_phrases"][0].update(id=None), "banned_invalid")
+
+    def test_default_playbook_ships_inside_the_package(self):
+        package = Path(pb.__file__).resolve().parents[1]
+        self.assertTrue(pb.DEFAULT_PATH.is_file())
+        self.assertIn(package, pb.DEFAULT_PATH.parents)
+        manifest = (package.parent / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn("_resources/playbooks/records-alpr-v1.json", manifest)
+
     def test_non_object_and_file_refusals(self):
         with self.assertRaises(pb.PlaybookError) as ctx:
             pb.validate([])

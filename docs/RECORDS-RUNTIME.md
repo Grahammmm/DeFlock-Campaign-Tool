@@ -71,7 +71,7 @@ Limits are in `pipeline_health.LIMITS`. A machine-valid report is review-require
 
 ## Request playbook and banned-phrase lint
 
-`playbooks/records-alpr-v1.json` is the campaign-agnostic request playbook (jurisdiction-tagged; agencies, dates and policy
+`campaign_tool/_resources/playbooks/records-alpr-v1.json` is the campaign-agnostic request playbook (jurisdiction-tagged; agencies, dates and policy
 sections are `[placeholders]`). It holds the three tiers (1 audit records and search/use logs, 2 policy, retention, access and
 sharing, 3 contracts and vendor terms) with their keywords, the first-request item order (exit ramp, then the lead items: native log
 export for a short named window with a pre-offered plate/case-number redaction, completed audits under the agency's own policy

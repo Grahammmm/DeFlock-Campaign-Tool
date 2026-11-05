@@ -1,6 +1,6 @@
 """Records request playbook: a data file, its loader and a banned-phrase lint.
 
-The playbook (``playbooks/<id>.json``) holds the tier list, the first-request item
+The playbook (``_resources/playbooks/<id>.json``, shipped in the package) holds the tier list, the first-request item
 order, the follow-up patterns and the wording rules. Nothing here is specific to one
 campaign or agency: all of that is data. This module only reads the file, assigns
 text to a tier and checks drafts for banned phrases. It sends, posts and publishes
@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "records-playbook-v1"
-DEFAULT_PATH = Path(__file__).resolve().parents[2] / "playbooks" / "records-alpr-v1.json"
+DEFAULT_PATH = Path(__file__).resolve().parents[1] / "_resources" / "playbooks" / "records-alpr-v1.json"  # packaged resource
 MAX_BYTES = 512 * 1024
 CITE_STATUS = ("verified-in-package", "unverified")
 PATTERN_KEYS = ("id", "when", "goal", "questions", "cite", "attach", "do_not")
@@ -37,6 +37,12 @@ def _need(condition, code, detail=""):
 def _strings(value, code, detail):
     _need(isinstance(value, list) and value and all(isinstance(v, str) and v.strip() for v in value), code, detail)
     return value
+
+
+def _cites(refs, cites, where, code="first_request_invalid"):
+    _need(isinstance(refs, list) and all(isinstance(r, str) for r in refs), code, where)
+    for ref in refs:
+        _need(ref in cites, "citation_unknown", ref)
 
 
 def _compile(entry):
@@ -84,8 +90,7 @@ def validate(playbook):
         _need(item["tier"] in tier_ids and isinstance(item["key"], str) and item["key"] and item["key"] not in keys
               and isinstance(item["ask"], str) and item["ask"], "first_request_invalid", "item " + str(position))
         keys.add(item["key"])
-        for ref in item.get("cite", []):
-            _need(ref in cites, "citation_unknown", str(ref))
+        _cites(item.get("cite", []), cites, "item " + str(position))
     _need([i["tier"] for i in items] == sorted(i["tier"] for i in items), "first_request_invalid", "items must not put a lower tier first")
 
     _strings(playbook.get("wording_rules"), "wording_rules_invalid", "wording_rules")
@@ -101,13 +106,12 @@ def validate(playbook):
         _strings(pattern["questions"], "patterns_invalid", pattern["id"] + ".questions")
         _strings(pattern["do_not"], "patterns_invalid", pattern["id"] + ".do_not")
         _need(isinstance(pattern["attach"], list), "patterns_invalid", pattern["id"] + ".attach")
-        _need(isinstance(pattern["cite"], list), "patterns_invalid", pattern["id"] + ".cite")
-        for ref in pattern["cite"]:
-            _need(ref in cites, "citation_unknown", str(ref))
+        _cites(pattern["cite"], cites, pattern["id"] + ".cite", "patterns_invalid")
 
     banned = playbook.get("banned_phrases")
     _need(isinstance(banned, list) and banned, "banned_invalid", "empty")
     ids = [b.get("id") if isinstance(b, dict) else None for b in banned]
+    _need(all(isinstance(i, str) and i for i in ids), "banned_invalid", "id")
     _need(len(set(ids)) == len(ids), "banned_invalid", "duplicate id")
     for entry in banned:
         _compile(entry)
