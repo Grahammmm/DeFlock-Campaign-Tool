@@ -120,3 +120,102 @@ def build(root, max_findings=3, *, replace=False):
     for name in names:
         os.chmod(folder / name, 0o600)
     return {'written': ['kit/flyer/' + name for name in names], 'findings': len(findings), 'truncated': truncated}
+
+
+LOGO_SUFFIXES = ('.png', '.webp', '.svg')
+
+
+def _shown_moment(value):
+    """The supplied date, time and offset exactly as given (Z is shown as explicit UTC); never converted."""
+    day, rest = value.split('T')
+    return f'{day} {rest[:-1]} UTC' if rest.endswith('Z') else f'{day} {rest[:8]} (UTC{rest[8:]})'
+
+
+def _render_event(name, place, site, event, logo_name):
+    e = lambda value: html.escape(str(value), quote=True)
+    base = (site.get('base_url') or '').rstrip('/')
+    brand = site.get('brand', {})
+    anchor = f'{base}/events.html#event-{event["id"]}'
+    where = 'Online' if event.get('online') else event['venue']
+    when = f'{_shown_moment(event["starts_at"])} to {_shown_moment(event["ends_at"])}'
+    note = event.get('accessibility_note')
+    parts = ['<!doctype html><html lang="en"><meta charset="utf-8">', f'<title>{e(event["title"])}</title>',
+             '<style>@page { size: letter; margin: 0.5in } body { font: 12pt sans-serif; margin: 0 }',
+             'h1 { font-size: 26pt; margin: .2em 0 } h2 { font-size: 15pt; margin: .8em 0 .3em }',
+             'p { margin: .3em 0 } img { max-height: 1in; width: auto }',
+             '.small { font-size: 9pt } .desc { white-space: pre-wrap } a { overflow-wrap: anywhere }</style><body>']
+    if logo_name:
+        size = brand.get('logo_size')
+        dims = f' width="{size[0]}" height="{size[1]}"' if size else ''
+        parts.append(f'<img src="{e(logo_name)}" alt="{e(brand["logo_alt"])}"{dims}>')
+    parts += [f'<p>{e(name)}</p>', f'<h1>{e(event["title"])}</h1>', f'<p>{e(when)}</p>', f'<p>{e(where)}</p>']
+    text = [name, '', event['title'], when, where]
+    if note:
+        parts.append(f'<p>Accessibility: {e(note)}</p>')
+        text.append(f'Accessibility: {note}')
+    parts += [f'<p class="desc">{e(event["description_md"])}</p>', f'<p><a href="{e(anchor)}">{e(anchor)}</a></p>',
+              f'<p class="small">{e(site["tagline"])} {e(place)}</p>',
+              f'<p class="small">{e(site["not_legal_advice"])}</p></body></html>']
+    text += ['', event['description_md'], '', anchor, '', f'{site["tagline"]} {place}', site['not_legal_advice']]
+    return '\n'.join(parts), '\n'.join(text) + '\n'
+
+
+def build_event(root, event_id, today=None, *, replace=False):
+    """Private kit/flyer/event-<id>.html + .txt for one upcoming event of content/events.json (start-based, UTC build day)."""
+    from datetime import datetime, timezone
+    from .content_events import build_cutoff, partition, read_events
+    from .content import SLUG
+    if type(event_id) is not str or not SLUG.fullmatch(event_id):
+        raise ValueError("--event must be a lowercase event id of 1 to 64 letters, digits and hyphens starting with a letter")
+    if today is None:
+        today = datetime.now(timezone.utc).date()
+    elif isinstance(today, datetime) or not hasattr(today, 'year') or not hasattr(today, 'day'):
+        raise ValueError("today must be a date")
+    root = Path(root).absolute()
+    content = root / 'content'
+    _unlinked(root)
+    _unlinked(content)
+    if not content.is_dir():
+        raise ValueError("content/ missing; run init/content first")
+    cfg = read_config(root)
+    events = read_events(root)
+    if not events:
+        raise ValueError(f"event {event_id}: content/events.json has no events")
+    event = next((ev for ev in events if ev['id'] == event_id), None)
+    if event is None:
+        raise ValueError(f"unknown event {event_id}: not in content/events.json")
+    upcoming, _ = partition(events, build_cutoff(today))
+    if event not in upcoming:
+        raise ValueError(f"event {event_id} is past (it started before {today.isoformat()} 00:00 UTC); only upcoming events get a flyer")
+    logo, site = _logo(content, _read_json(content / 'site.json'))
+    stem = f'event-{event_id}'
+    logo_name = f'{stem}-logo' + logo.suffix.lower() if logo else ''
+    page, text = _render_event(cfg['name'], f'{cfg["county"]}, {cfg["state"]}', site, event, logo_name)
+    folder = root / 'kit' / 'flyer'
+    for path in (root / 'kit', folder):
+        _unlinked(path)
+    mine = [f'{stem}.html', f'{stem}.txt', *(f'{stem}-logo{s}' for s in LOGO_SUFFIXES)]
+    for name in mine:
+        _unlinked(folder / name)
+    existing = [n for n in mine if os.path.lexists(folder / n)]
+    if existing and not replace:
+        raise ValueError(f"event flyer exists ({', '.join('kit/flyer/' + n for n in existing)}); use --replace to overwrite")
+    for name in existing:
+        if not (folder / name).is_file():
+            raise ValueError(f"kit/flyer/{name} is not a regular file; remove it first")
+    names = [f'{stem}.html', f'{stem}.txt', *([logo_name] if logo_name else [])]
+    for directory in (root / 'kit', folder):
+        _kit_folder(directory, 0o700)
+        os.chmod(directory, 0o700)
+    for old in existing:
+        if old not in names:
+            (folder / old).unlink()
+    if logo:
+        temporary = folder / f'.{stem}-logo.tmp'
+        temporary.write_bytes(logo.read_bytes())
+        os.replace(temporary, folder / logo_name)
+    _write_text(folder / f'{stem}.html', page)
+    _write_text(folder / f'{stem}.txt', text)
+    for name in names:
+        os.chmod(folder / name, 0o600)
+    return {'written': ['kit/flyer/' + name for name in names], 'event': event_id}

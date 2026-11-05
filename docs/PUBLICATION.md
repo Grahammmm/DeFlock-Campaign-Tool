@@ -371,6 +371,21 @@ HTML has one inline `<style>`, no script and no external load; its only links ar
 named in `site.json` but missing, is refused. Nothing is printed, sent or published and nothing is
 written under `public/` or `content/`; printing and handing it out stay an organizer decision.
 
+### Event flyer
+
+`python3 -m campaign_tool flyer --directory D --event ID [--replace]` (not combinable with `--max-findings`)
+writes a private `kit/flyer/event-<id>.html` and `.txt` twin for one upcoming event of `content/events.json`,
+read and validated by the same reader as the events page. Upcoming is the events page rule: the event
+`starts_at` is on or after 00:00:00 UTC of the current UTC day; an unknown, missing or past event is refused
+by name before anything is written. Both twins carry the title, the start and end exactly as supplied
+(date, time and UTC offset; `Z` is shown as UTC, nothing is converted), the venue or `Online`, the
+accessibility note only when given, the full description as escaped plain text with its line breaks, and the
+events-page reference `events.html#event-<id>` (absolute with `base_url`, otherwise the site-relative
+`/events.html#event-<id>`, which is not a working file:// link). No findings, scripts or external loads. The
+site logo is copied as `event-<id>-logo.<ext>`, so event flyers and the campaign flyer coexist; an existing
+twin or same-id logo is refused without `--replace`, which touches only that event. The report is
+`{"written": [...], "event": "<id>"}`. Nothing is printed, sent or published.
+
 With `base_url` set, a QR code is printed beside each finding URL and beside the "Get involved" site URL, so a
 reader can scan instead of typing. The codes are made offline by the tool itself (`campaign_tool/qr.py`, standard
 library only: byte mode, error correction level M, versions 1-10, four-module quiet zone) and encode exactly the

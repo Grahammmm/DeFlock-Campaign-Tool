@@ -1,0 +1,14 @@
+{
+  "checked_main_sha": "f49f142d (flyer.build unchanged by DF1407-11)",
+  "scenario": "examples/fictional-campaign, site.json base_url=https://synthetic.invalid, no findings dir content",
+  "sha256": {
+    "base_on": {
+      "flyer.html": "3535e123cca47e877eb1e27a5a813d8ef913fea9740ee45e1dd589a3ab55fe86",
+      "flyer.txt": "734aab57de9bea1f06e32921e72a86454022b79bd5a97d0a09369a5db4e01ded"
+    },
+    "base_off": {
+      "flyer.html": "a7b1277852e92450c5fb3ce2c5c238608d8ae739731f2c078f8f947528fc0d3b",
+      "flyer.txt": "188cf8a29e9b137f7952750f79cd6eaa0220d25dbe5829f7851da424ff4e3f52"
+    }
+  }
+}
