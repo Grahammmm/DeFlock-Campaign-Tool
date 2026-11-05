@@ -677,6 +677,19 @@ it: re-check and update it. The body's agency page and each meeting page with it
 `agency_id` show a "Who decides" list (names linked to `profile_url` when given) with the
 newest `checked_on` and its source link. Labels: `officials.*`.
 
+**Officials as open data (DF1622-11).** When `content/officials.json` lists at least one person (a missing file or
+`"bodies": []` lists nobody), the build also writes `data/officials.json` (`schemas/officials-open-data.schema.json`) and
+`data/officials.csv`; with nobody listed neither file exists, a rebuild removes stale ones, and every other file is
+byte-identical. Every loaded body with people is exported, also one without an agency page, sorted by agency `name` then
+`agency_id`. Top level: `schema_version` 1, `campaign`, `generated_from` (`content/officials.json`), `base_url` (or null),
+`url_kind`, `bodies`, plus `license` and `license_url` only when `site.json` sets a licence. Each body has `agency_id`, `name`
+and `officials`; each official has exactly `name`, `role`, `profile_url` (null when absent), `source_url` and `checked_on`,
+in the roster's order, duplicates kept. The CSV is flattened from that checked JSON, one official per row, columns
+`agency_id,agency_name,name,role,profile_url,source_url,checked_on` (CRLF, UTF-8); a cell starting with `=`, `+`, `-`, `@`,
+tab or CR gets a leading apostrophe (the JSON does not). Votes stay only in `data/meetings.json`; contacts, notes and any
+other key are never exported (the build refuses with `data/officials.json: non-public key ...`). `agencies.html` links both
+files, and `press.html` lists them when press is configured. Label: `intro.officials_open_data`.
+
 `content/statements.json` (optional, never fetched) records what a listed decision maker said in public: a JSON
 array of 0 to 200 rows, newest shown first. Each row has `agency_id` (the body's id in `officials.json`, not its
 display name), `official` (the name exactly as stored there, matched letter for letter, case and spaces included, only
