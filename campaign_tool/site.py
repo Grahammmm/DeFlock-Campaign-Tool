@@ -30,6 +30,7 @@ from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_
                       SHARING_RULE_ID, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
+from .content_events import build_cutoff, partition as partition_events
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
@@ -50,7 +51,7 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html", "events.html"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
@@ -641,6 +642,9 @@ class Site:
         # DF1952-04: content/glossary.json; an absent file or an empty terms list switches every glossary output off.
         self.glossary = model.get("glossary") if (model.get("glossary") or {}).get("terms") else None
         self.faq = model.get("faq") or None  # DF0022-01: content/faq.json entries; an absent file switches every FAQ output off
+        # DF1107-08: content/events.json; no file or [] switches every events output off. Start-based split at the build day (UTC).
+        self.events = model.get("events") or None
+        self.events_upcoming, self.events_past = partition_events(self.events or (), build_cutoff(self.today))
         self.coverage = model.get("coverage")  # DF0022-03: None without content/coverage.json; [] (present, empty) keeps the page
         # DF1952-06: curated topics (slug order); each finding id -> the topics listing it. No topics key = none.
         self.topics = model.get("topics", [])
@@ -825,6 +829,8 @@ class Site:
             parts.append(f'<p><a href="/news.html">{self.t("footer.news")}</a></p>')
         if self.sharing_rows:  # DF0237-04: after every other paragraph
             parts.append(f'<p><a href="/sharing.html">{self.t("footer.sharing")}</a></p>')
+        if self.events:  # DF1107-08: appended last, so every earlier footer paragraph is unchanged
+            parts.append(f'<p><a href="/events.html">{self.t("footer.events")}</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def share(self, title, description, path, kind, published, modified):
@@ -1242,7 +1248,7 @@ class Site:
                 + f'    <section class="section" id="findings"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.latest_findings")}</p><h2>{self.t("heading.findings_home")}</h2></div>'
                   f'<p><a href="/findings/">{self.t("intro.all_findings")}</a> · <a href="/feed.xml">{self.t("intro.atom_feed")}</a></p></div>'
                 + self.findings_list(self.model["findings"][:5]) + '</section>\n'
-                + self.signup_section() + meetings)
+                + self.signup_section() + meetings + self.next_event_section())
         scripts = (["/vendor/maplibre-gl.js"] if self.map and self.maplibre else []) + ["/site-data.js", "/agency-cards.js", "/app.js"]
         stylesheets = ["/vendor/maplibre-gl.css"] if self.map and "maplibre-gl.css" in self.model["vendor"] else []
         return self.page("index", self.labels["title.home"], self.site["tagline"], "/", main, scripts, stylesheets)
@@ -1909,6 +1915,45 @@ class Site:
         main = '    <section class="section finding-body" id="content">' + "".join(entries) + '</section>\n'
         return self.page("faq", self.labels["faq.title"], self.labels["faq.title"], "/faq.html", main)
 
+    def event_when(self, event):
+        """Both full timestamps exactly as supplied (original zone offsets), no conversion."""
+        return self.t("events.when", start=time_tag(event["starts_at"]), end=time_tag(event["ends_at"]))
+
+    def event_where(self, event):
+        return self.t("events.online") if event.get("online") else e(event["venue"])
+
+    def next_event_section(self):
+        """DF1107-08: the first upcoming campaign event on the home page; "" without one (a past-only file adds nothing)."""
+        if not self.events_upcoming:
+            return ""
+        event = self.events_upcoming[0]
+        return (f'    <section class="section" id="next-event"><div class="section-heading"><div><h2>{self.t("events.next")}</h2></div>'
+                f'<p><a href="/events.html">{self.t("events.all")}</a></p></div>'
+                f'<p><a href="/events.html#event-{e(event["id"])}">{e(event["title"])}</a></p>'
+                f'<p>{self.event_when(event)}</p><p>{self.event_where(event)}</p></section>\n')
+
+    def event_html(self, event):
+        parts = [f'<article id="event-{e(event["id"])}"><h3>{e(event["title"])}</h3>',
+                 f'<p>{self.event_when(event)}</p>',
+                 f'<p>{self.t("events.where")}: {self.event_where(event)}</p>',
+                 markdown(event["description_md"])]
+        if event.get("url"):
+            parts.append(f'<p><a href="{e(event["url"])}" rel="noopener noreferrer">{self.t("events.link")}</a></p>')
+        if event.get("accessibility_note"):
+            parts.append(f'<p>{self.t("events.accessibility")}: {e(event["accessibility_note"])}</p>')
+        return "".join(parts) + '</article>'
+
+    def events_html(self):
+        """``/events.html`` (DF1107-08): upcoming events first, then past ones, each with a stable ``event-<id>`` anchor."""
+        def section(heading_id, label, rows, empty):
+            return (f'<section id="{heading_id}"><h2>{self.t(label)}</h2>'
+                    + ("".join(self.event_html(event) for event in rows) or f'<p>{self.t(empty)}</p>') + '</section>')
+        main = ('    <section class="section finding-body" id="content">'
+                f'<p>{self.t("events.lead")}</p><p>{self.t("events.as_of", date=e(self.today.isoformat()))}</p>'
+                + section("upcoming-events", "events.upcoming", self.events_upcoming, "events.none_upcoming")
+                + section("past-events", "events.past", self.events_past, "events.none_past") + '</section>\n')
+        return self.page("events", self.labels["events.title"], self.labels["events.lead"], "/events.html", main)
+
     def agency_response_html(self, finding):
         """The agency's reply (or silence) under "Agency response" as escaped plain text, never Markdown; "" when
         the finding has no reply or only a prepared (pending) request. The record shows as its 12-character prefix."""
@@ -2552,6 +2597,7 @@ class Site:
         paths += ["/cameras.html"] if self.map else []
         paths += ["/glossary.html"] if self.glossary else []
         paths += ["/faq.html"] if self.faq else []  # DF0022-01
+        paths += ["/events.html"] if self.events else []  # DF1107-08: the page only, never its fragment anchors
         if self.topics:  # DF1952-06: the index file topics/index.html is served at /topics/
             paths += ["/topics/"] + [f'/topics/{t["slug"]}.html' for t in self.topics]
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
@@ -2999,7 +3045,7 @@ def _asset_plan(model):
     return plan
 
 
-PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map")
+PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map", "events")
 # Fields an organizer fills with a contact on purpose, or that are never published: not scanned. A library entry is scanned
 # through its public projection only (never note, fragment or the full hash); an agency without its private contact and notes.
 PRIVACY_GATE_SKIP = {"how", "contact_email", "privacy_contact"}
@@ -3082,6 +3128,8 @@ def _plan_site(root, today=None, notes=None):
         pages["glossary.html"] = site.glossary_html()
     if site.faq:  # DF0022-01: the slug is reserved, so no content page can already hold this name
         pages["faq.html"] = site.faq_html()
+    if site.events:  # DF1107-08: the slug is reserved, so no content page can already hold this name
+        pages["events.html"] = site.events_html()
     if site.coverage is not None:  # DF0022-03: the slug is reserved; a present empty file keeps the page with its empty notice
         pages["news.html"] = site.news_html()
     if site.sharing_rows:  # DF0237-04: no lists, no page; the slug is reserved, so nothing else can own this path
