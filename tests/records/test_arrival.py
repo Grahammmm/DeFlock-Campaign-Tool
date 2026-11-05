@@ -165,6 +165,19 @@ class PendingConsumeTests(ArrivalCase):
             self.assertFalse(arrival.has_work(self.runtime, stamps_only=True))
             self.assertEqual(arrival.pending(self.runtime), [])
 
+    def test_real_burst_over_max_stamps_drains_in_bounded_batches(self):
+        total = arrival.MAX_STAMPS + 1
+        for n in range(total):
+            arrival.stamp(self.runtime, "inbox-watch", hashlib.sha256(n.to_bytes(4, "big")).hexdigest())
+        self.assertEqual(len(arrival.pending(self.runtime)), arrival.MAX_STAMPS)
+        first = arrival.consume(self.runtime, RUN_1)
+        self.assertEqual(len(first), arrival.MAX_STAMPS)
+        rest = arrival.consume(self.runtime, RUN_2)
+        self.assertEqual(len(rest), 1)
+        refs = {s["ref"] for s in first + rest}
+        self.assertEqual(len(refs), total)
+        self.assertEqual(arrival.pending(self.runtime), [])
+
     def test_consume_claims_a_fixed_snapshot_and_is_idempotent(self):
         self.stamps(2)
         expected = arrival.pending(self.runtime)
