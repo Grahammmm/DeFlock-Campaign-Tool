@@ -196,6 +196,7 @@ DEFAULTS = {
     "agency.published_findings": "Published findings", "agency.source_records": "Source records",
     "agency.received": "received {date}", "agency.in_library": "In the source library",
     "agency.upcoming": "Upcoming meetings", "agency.no_upcoming": "No upcoming meetings are listed for this body.",
+    "agency.meetings_calendar": "Subscribe to this agency's meetings (.ics)",
     "agency.transparency_heading": "Reported on the Flock transparency portal",
     "agency.transparency_checked": "as reported by the vendor, checked {date}",
     "agency.transparency_cameras": "Cameras: {count}", "agency.transparency_retention_days": "Retention days: {count}",
