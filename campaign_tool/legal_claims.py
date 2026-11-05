@@ -112,6 +112,15 @@ def faq_notes(entries):
         return ["review-required: legal-claim wording (guard-error)"]
 
 
+def elsewhere_notes(entries):
+    """entries: the validated ``content/elsewhere.json`` entries -> review-required notes for EVERY as_stated (DF1107-04).
+    Alert-only like ``legal_notes``: the notes name ``elsewhere.json[N].as_stated`` and the rules, never the text."""
+    try:
+        return legal_notes((f"elsewhere.json[{n}].as_stated", entry["as_stated"]) for n, entry in enumerate(entries or []))
+    except Exception:  # noqa: BLE001
+        return ["review-required: legal-claim wording (guard-error)"]
+
+
 def statement_notes(rows):
     """rows: validated ``content/statements.json`` rows -> review-required notes for each campaign ``context_note`` (DF1107-07).
     The note is scanned raw, on its own; the attributed quote is the official's wording, not campaign text, and is not scanned.
@@ -133,7 +142,8 @@ def site_notes(root):
             [t for x in v for t in walk(x)] if isinstance(v, (list, tuple)) else [v] if isinstance(v, str) else []
         asks = ((f"site.json.comment_asks[{n}]", ask) for n, ask in enumerate((model or {}).get("site", {}).get("comment_asks", []), 1))
         notes = (legal_notes([*((f"findings/{f.get('slug', '?')}", t) for f in (model or {}).get("findings", []) for t in walk(f)), *asks])
-                 + faq_notes((model or {}).get("faq")))  # DF0022-01: every FAQ answer, scanned on its own
+                 + faq_notes((model or {}).get("faq"))  # DF0022-01: every FAQ answer, scanned on its own
+                 + elsewhere_notes((model or {}).get("elsewhere")))  # DF1107-04: every as_stated, scanned on its own
         # DF0022-08: one call per meeting on the raw direction text (never the attributed page wording); identical notes once
         found = []
         for meeting in (model or {}).get("meetings", []):
