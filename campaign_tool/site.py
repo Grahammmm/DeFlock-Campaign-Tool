@@ -48,8 +48,11 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "press.html"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
+# DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
+PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
+    "data/cameras.geojson",)
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
 CLASSIFICATION_DEFINITIONS = {
@@ -218,7 +221,7 @@ PUBLIC_MEETING_TOP_LEVEL = {"schema_version", "generated_at", "meetings"}  # DF0
 PUBLIC_MEETING_FIELDS = ("id", "body", "agency_id", "starts_at", "status", "agenda_url", "url", "outcome")
 PUBLIC_OUTCOME_FIELDS = ("result", "on", "source_url", "vote", "votes", "minutes_url", "minutes_approved_on",
                          "continued_to", "continued_to_date", "direction", "return_by",
-                         "direction_source")  # never verified_by / verified_at
+                         "direction_source", "spoke", "written", "comment_source_url")  # never verified_by / verified_at
 PUBLIC_VOTE_FIELDS = ("name", "vote")
 # DF1207-14: data/findings.csv and data/sources.csv are flattened from the built public JSON documents, so no CSV column
 # can exist that the JSON does not carry; "sources", "corrections" and "public_copy" are the only nested values.
@@ -770,6 +773,8 @@ class Site:
             parts.append(f'<p><a href="/topics/">{self.t("nav.topics")}</a></p>')
         if self.supporters:  # DF2207-13
             parts.append(f'<p><a href="/supporters.html">{self.t("supporters.title")}</a></p>')
+        if self.site.get("press"):  # DF2207-10: only with site.json.press
+            parts.append(f'<p><a href="/press.html">{self.t("footer.press")}</a></p>')
         parts.append(f'<p><a href="/privacy.html">{self.t("footer.privacy")}</a>'
                      + (f' · <a href="/glossary.html">{self.t("footer.glossary")}</a>' if self.glossary else "") + '</p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
@@ -1445,6 +1450,47 @@ class Site:
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", "Findings packet", "Every published finding on one printable page", "/findings/packet-all.html", main)
 
+    def press_license(self, path):
+        """DF2207-10: the licence text beside one open-data link. cameras.geojson is always ODbL with the OpenStreetMap
+        credit; every other file shows the organizer's site.json.license, or says none is specified (never a guess)."""
+        if path == "data/cameras.geojson":
+            return (f'<a href="{e(ODBL["url"])}" rel="license">{e(ODBL["name"])}</a>, '
+                    f'<a href="{e(ODBL["attribution_url"])}" rel="noopener noreferrer">{e(ODBL["attribution"])}</a>')
+        if not self.license:
+            return self.t("press.license_unspecified")
+        attribution = f', {e(self.license["attribution"])}' if "attribution" in self.license else ""
+        return f'<a href="{e(self.license["url"])}" rel="license">{e(self.license["name"])}</a>{attribution}'
+
+    def press_html(self, data_paths):
+        """/press.html (DF2207-10): the campaign description, the press contact, the ten newest published findings with their
+        exact citation text, the brand logo download and the open-data files this build writes (``data_paths``, with licences)."""
+        press, brand = self.site["press"], self.site.get("brand", {})
+        about = self.md(self.site["about_md"]) + (self.md(press["about_md"]) if press["about_md"] else "")
+        contact = (f'<h3>{self.t("press.contact")}</h3><p>{e(press["contact_role"])} · '
+                   f'<a href="mailto:{e(press["contact_email"])}">{e(press["contact_email"])}</a></p>')
+        newest = sorted(self.model["findings"], key=lambda f: (utc_moment(f["published_at"]), f["slug"]), reverse=True)[:10]
+        cards = []
+        for finding in newest:
+            latest = max((c["date"] for c in finding["corrections"]), default=None)
+            corrected = (f'<span class="status-pill"><a href="{e(finding_path(finding))}#corrections">'
+                         f'{self.t("finding.corrected", date=time_tag(latest))}</a></span>' if latest else "")
+            cards.append(
+                f'<li id="press-finding-{e(finding["slug"])}"><div class="finding-meta">{self.pill(finding["classification"])}'
+                f'<span>{self.confidence_link(finding["confidence"])}</span>'
+                f'<span>{self.t("finding.published", date=date_label(finding["published_at"]))}</span>{corrected}</div>'
+                f'<h4><a href="{e(finding_path(finding))}">{e(finding["title"])}</a></h4><p>{e(finding["summary"])}</p>'
+                f'<section class="cite"><h5>{self.t("finding.cite")}</h5>'
+                f'<p class="cite-text">{e(citation(finding, self.cfg["name"], self.base))}</p></section></li>')
+        recent = (f'<ul class="finding-list">{"".join(cards)}</ul>' if cards else f'<p>{self.t("notice.no_findings")}</p>')
+        logo = (f'<h3>{self.t("press.logo")}</h3><p><img class="brand-logo" src="/{e(brand["logo"])}" alt="{e(brand["logo_alt"])}" '
+                f'width="{brand["logo_size"][0]}" height="{brand["logo_size"][1]}"> '
+                f'<a href="/{e(brand["logo"])}" download>{self.t("press.download_logo")}</a></p>' if "logo" in brand else "")
+        data = "".join(f'<li><a href="/{e(path)}">{e(path)}</a> · {self.press_license(path)}</li>' for path in data_paths)
+        main = (f'    <section class="section finding-body" id="content"><h2>{self.t("press.title")}</h2>{about}{contact}'
+                f'<h3>{self.t("press.findings")}</h3>{recent}{logo}<h3>{self.t("press.data")}</h3><ul>{data}</ul>'
+                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+        return self.page("press", self.labels["press.title"], self.labels["press.description"], "/press.html", main)
+
     def supporters_html(self):
         """/supporters.html (DF2207-13): consented organizations by kind (enum order), then name, with the joined date.
         Only the public rows are rendered; the fixed intro says a listing is not a legal endorsement."""
@@ -1801,6 +1847,27 @@ class Site:
         return self.page("sources", self.labels["title.sources"], self.labels["title.sources_description"], "/sources.html", main,
                          ["/site-data.js", "/sources/filter.js"] if form else [])
 
+    def body_schedule_html(self):
+        """DF0022-10: each body's organizer-verified regular meeting rule, once, sorted by body; "" without schedules.
+        Only a rule and its source: never a date, a scheduled meeting or an agenda-posting deadline."""
+        items = []
+        for schedule in self.model.get("body_schedules") or ():
+            words = [self.t(f"schedule.ordinal_{ordinal}") for ordinal in schedule["ordinals"]]
+            if len(words) == 1:
+                ordinals = words[0]
+            elif len(words) == 2:
+                ordinals = self.t("schedule.join_two", first=words[0], last=words[1])
+            else:
+                ordinals = self.t("schedule.join_many", prefix=", ".join(words[:-1]), last=words[-1])
+            rule = self.t("schedule.rule", ordinals=ordinals, weekday=self.t("schedule.weekday_" + schedule["weekday"]),
+                          time=e(schedule["local_start_time"]), zone=e(schedule["time_zone"]))
+            link = f'<a href="{e(schedule["source_url"])}" rel="noopener noreferrer">{e(schedule["source_url"])}</a>'
+            usually = self.t("schedule.usually", rule=rule, source=link, date=e(schedule["checked_on"]))
+            old = (f'<p>{self.t("schedule.stale")}</p>'
+                   if (self.today - date.fromisoformat(schedule["checked_on"])).days > 365 else "")
+            items.append(f'<article><h3>{e(schedule["body"])}</h3><p>{usually}</p>{old}</article>')
+        return f'    <section class="section" id="regular-meetings">{"".join(items)}</section>\n' if items else ""
+
     def meetings_html(self):
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p>'
                 f'<h2>{self.t("heading.meetings")}</h2></div><p>{self.t("intro.meetings")} '
@@ -1809,7 +1876,7 @@ class Site:
                 + (f' <a href="/meetings.xml" type="application/atom+xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else "")
                 + f' <a href="/meetings.ics">{self.t("intro.meetings_calendar")}</a></p></div>'
                 '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
-                + '</div></section>\n')
+                + '</div></section>\n') + self.body_schedule_html()
         if self.past:
             main += (f'    <section class="section" id="past-meetings"><h2>{self.t("heading.past_meetings")}</h2><div class="meeting-list">'
                      + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')
@@ -1875,6 +1942,21 @@ class Site:
         return (f'<p class="meeting-direction">'
                 f'{self.t("meeting.staff_direction", direction=e(outcome["direction"]), date=e(outcome["return_by"]), source=link)}</p>')
 
+    def public_comment_counts(self, meeting):
+        """DF0022-09: ``N people spoke and M written comments were received, as stated in SOURCE`` (or the one count the
+        record states) for a held meeting whose outcome carries the group; "" otherwise. The numbers are the official
+        record's literal totals, the source a plain link; no for/against split, name or quote exists to show, and a count
+        the record did not state is never shown as zero."""
+        outcome = meeting.get("outcome") or {}
+        if ("spoke" not in outcome and "written" not in outcome) or meeting["status"] == "cancelled" \
+                or meeting["starts_at"][:10] >= self.today.isoformat():
+            return ""
+        source = e(outcome["comment_source_url"])
+        link = f'<a href="{source}" rel="noopener noreferrer">{source}</a>'
+        key = "meeting.comments_" + ("both" if "spoke" in outcome and "written" in outcome
+                                     else "spoke" if "spoke" in outcome else "written")
+        counts = {name: str(outcome[name]) for name in ("spoke", "written") if name in outcome}
+        return f'<p class="meeting-comments">{self.t(key, **counts, source=link)}</p>'
 
     def meeting_html(self, meeting):
         """``meetings/<id>.html`` (DF2022-03): one meeting with its comment kit open, linkable and printable."""
@@ -1893,6 +1975,7 @@ class Site:
                    if meeting["starts_at"][:10] < self.today.isoformat() else "")
                 + self.meeting_continuation_html(meeting)
                 + self.meeting_direction_html(meeting)
+                + self.public_comment_counts(meeting)
                 + self._written_deadline(meeting)
                 + self._cosigned(meeting)
                 + (f'<p class="notice">{self.t("notice.meeting_cancelled")}</p>' if cancelled else "")
@@ -2246,6 +2329,7 @@ class Site:
             paths += ["/topics/"] + [f'/topics/{t["slug"]}.html' for t in self.topics]
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
         paths += ["/supporters.html"] if self.supporters else []  # DF2207-13
+        paths += ["/press.html"] if self.site.get("press") else []  # DF2207-10
         if self.model.get("newsletters"):  # DF1952-09: only with public issues
             paths += ["/newsletters.html"] + [f'/newsletters/{i["sent_on"]}.html' for i in reversed(self.model["newsletters"])]
         paths += list(self.agency_pages().values())
@@ -2461,7 +2545,8 @@ class Site:
             value["outcome"] = {key: outcome[key] for key in ("result", "on", "source_url", "vote", "minutes_url",
                                                               "minutes_approved_on", "continued_to",
                                                               "continued_to_date", "direction", "return_by",
-                                                              "direction_source") if key in outcome}
+                                                              "direction_source", "spoke", "written",
+                                                              "comment_source_url") if key in outcome}
             if "votes" in outcome:  # DF0137-07 per-member votes, in stored order
                 value["outcome"]["votes"] = [{"name": v["name"], "vote": v["vote"]} for v in outcome["votes"]]
         return value
@@ -2770,16 +2855,20 @@ def _plan_site(root, today=None, notes=None):
     if model["meetings"]:  # DF1103-10: no staged meetings, no feed (the tree swap drops a stale one)
         files["meetings.xml"] = site.meetings_feed_xml()
     plan = []
+    map_data = []  # DF2207-10: the map files copied under data/ (county and city boundaries), for the press page
     if model["map"]:
         found = model["map"]
         files["data/cameras.geojson"] = site.cameras_geojson()  # DF1422-13: ODbL + OSM attribution members, always
         plan = [(found[key], relative, 8 * 1024 * 1024) for key, relative in (
             ("boundary_path", found["controller"]["city_boundaries_url"]),
             ("county_boundary_path", "data/county.geojson")) if found[key]]
+        map_data = [Path(relative).as_posix() for _, relative, _ in plan]
         plan += [(path, f"vendor/{name}", VENDOR_MAX_BYTES) for name, path in model["vendor"].items()]
     plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
     for source, _, limit in plan:  # every copy is checked before the filesystem changes
         _check_copy(source, limit)
+    if model["site"].get("press"):  # DF2207-10: links only the open data this build writes, never a scan of public/
+        files["press.html"] = site.press_html(sorted({name for name in PRESS_DATA_FILES if name in files} | set(map_data)))["html"]
     if "redirects" in model:  # DF2037-16: any present file, even JSON null, is checked against every path written
         from .findings import withdrawn_names  # local, as the other optional site steps
         written = [*files, *(Path(relative).as_posix() for _, relative, _ in plan)]
