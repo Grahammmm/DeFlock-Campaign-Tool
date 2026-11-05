@@ -33,6 +33,7 @@ REVIEWED_NOT_PUBLISHING = {
     "campaign_tool/content.py": "loads and validates content; its only writes are the scaffold helpers",
     "campaign_tool/content_events.py": "validates content/events.json (shared privacy lint on every text field); it writes nothing",
     "campaign_tool/content_init.py": "writes the starter content/ templates for the organizer to edit",
+    "campaign_tool/content_statements.py": "reads and validates content/statements.json (its lint runs in the build); it writes nothing",
     "campaign_tool/finding_packet.py": "private reviewer packet; refuses to write inside public/ or content/",
     "campaign_tool/image_meta.py": "reads image metadata; the writer is the copy step in site.py",
     "campaign_tool/kit_calendar.py": "private .ics under kit/, refused inside public/",
@@ -67,7 +68,8 @@ MARK = re.compile(r"^(public|feed\.xml|agency-cards\.js|social|briefs|cards)$|^(
 USES = ("privacy_patterns", "flock_privacy")
 SKIP = re.compile(r"tools/(accept_|fc\d)|^campaign_tool/records/|^campaign_tool/(privacy_patterns|publish_paths)\.py$|^tools/(check_public_tree|ci_affected)")
 # What each site-driven entry is fed: the published field that reaches its artefact.
-PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name", "elsewhere.place", "elsewhere.body", "elsewhere.as_stated",
+PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name", "statement.quote", "statement.context_note",
+                          "elsewhere.place", "elsewhere.body", "elsewhere.as_stated",
                           "event.title", "event.venue", "event.description_md", "event.accessibility_note"), "atom-feed": ("finding.summary",),
           "agency-feeds": ("finding.summary",), "corrections-feed": ("finding.summary",), "open-graph-meta": ("finding.title",),
           "agency-cards": ("site.county_profile.summary", "agency.profile.summary"), "data-exports": ("source.title", "agency.name"),
@@ -265,6 +267,18 @@ class Drivers:
                      "kind": "paused", "as_stated": "Fictional statement.", "source_url": "https://records.example.test/item",
                      "checked_on": "2026-01-03", key: "Text %s end (fictional)" % value}
             (root / "content" / "elsewhere.json").write_text(json.dumps([entry]), encoding="utf-8")
+            return
+        if kind == "statement":  # DF1107-07: a roster body plus one statement whose public field carries the value
+            from datetime import date
+            day = date.today().isoformat()
+            row = {"agency_id": "ca-cedar-city-council", "official": "Rowan Example", "said_on": day, "quote": "Plain words.",
+                   "context": "meeting", "source_url": "https://cedar.example/minutes", "checked_on": day}
+            row[key] = "Text %s end" % value
+            (root / "content" / "officials.json").write_text(json.dumps({"schema_version": 1, "bodies": [{
+                "agency_id": "ca-cedar-city-council", "officials": [{
+                    "name": "Rowan Example", "role": "Member", "source_url": "https://cedar.example/council", "checked_on": day}]}]}),
+                encoding="utf-8")
+            (root / "content" / "statements.json").write_text(json.dumps([row]), encoding="utf-8")
             return
         if kind == "event":  # DF1107-08: one synthetic campaign event with the probed field replaced
             event = {"id": "forum", "title": "Teach-in", "starts_at": "2026-10-10T18:00:00Z", "ends_at": "2026-10-10T19:00:00Z",

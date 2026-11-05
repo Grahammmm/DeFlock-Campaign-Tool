@@ -30,6 +30,7 @@ from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_
                       SHARING_RULE_ID, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
+from .content_statements import newest_first as newest_statements
 from .content_events import build_cutoff, partition as partition_events
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
@@ -634,7 +635,8 @@ class Site:
         self.multi_agency = any(f.get("also_agency_ids") for f in model["findings"])
         qualifying = ({aid for f in model["findings"] for aid in finding_agency_ids(f)}
                       | {s["agency_id"] for s in model["sources"]}
-                      | {a["agency_id"] for a in model["agencies"] if a.get("actions")})  # DF0237-01: a recorded action
+                      | {a["agency_id"] for a in model["agencies"] if a.get("actions")}  # DF0237-01: a recorded action
+                      | {row["agency_id"] for row in model.get("statements", ())})  # DF1107-07: a recorded statement
         self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
                               for a in model["agencies"] if a["agency_id"] in qualifying}
         self._record_pages = self._catalogue_record_pages(model["sources"])  # DF1103-11: refuses a shared 12-char prefix
@@ -1407,6 +1409,30 @@ class Site:
             out += f'<p>{self.t("agency.votes_more", count=len(mine) - 50)}</p>' if len(mine) > 50 else ""
         return f'<section class="member-votes"><h3>{self.t("agency.votes_heading")}</h3>{out}</section>' if out else ""
 
+    def statements_section(self, agency_id):
+        """DF1107-07: ``What decision makers have said``, the organizer's exact transcriptions newest first; "" with none.
+
+        Each quote is the stored text escaped once, between typographic quotation marks, never shortened, merged or
+        paraphrased. Equal days keep the file's order. No file, or no row for this body, adds no bytes."""
+        rows = [row for row in newest_statements(self.model.get("statements", ())) if row["agency_id"] == agency_id]
+        if not rows:
+            return ""
+        items = []
+        for row in rows:
+            head = self.t("statements.line", official=e(row["official"]), date=time_tag(row["said_on"]),
+                          context=self.t("statements.context_" + row["context"]))
+            quote = self.t("statements.quote", quote=e(row["quote"]))
+            source = f'<a href="{e(row["source_url"])}" rel="noopener noreferrer">{self.t("statements.source")}</a>'
+            if row.get("recording_time"):
+                source += " " + self.t("statements.recording", time=e(row["recording_time"]))
+            lines = (f'<p>{head}</p><p class="statement-quote">{quote}</p>'
+                     f'<p>{source} · {self.t("statements.checked", date=time_tag(row["checked_on"]))}</p>')
+            if row.get("context_note"):
+                lines += f'<p>{self.t("statements.campaign_context", note=e(row["context_note"]))}</p>'
+            items.append(f"<li>{lines}</li>")
+        return (f'<section class="statements-on-record"><h3>{self.t("statements.heading")}</h3>'
+                f'<ul>{"".join(items)}</ul></section>')
+
     def who_decides(self, agency_id):
         """DF2237-13: the body's organizer-checked officials, or "" when ``content/officials.json`` lists none."""
         people = self.model.get("officials", {}).get(agency_id)
@@ -1478,6 +1504,7 @@ class Site:
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
                 + self.contract_check_block(agency, "h3")
                 + self.funding_block(agency) + self.actions_section(agency) + self.transparency_block(agency, "h3") + self.sharing_section(agency) + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
+                + self.statements_section(aid)
                 + self.local_rules_section(agency)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
@@ -3069,7 +3096,7 @@ def _asset_plan(model):
     return plan
 
 
-PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map", "elsewhere", "events")
+PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "statements", "map", "elsewhere", "events")
 # Fields an organizer fills with a contact on purpose, or that are never published: not scanned. A library entry is scanned
 # through its public projection only (never note, fragment or the full hash); an agency without its private contact and notes.
 PRIVACY_GATE_SKIP = {"how", "contact_email", "privacy_contact"}
@@ -3186,7 +3213,8 @@ def _plan_site(root, today=None, notes=None):
     brand = model["site"].get("brand", {})  # site.json brand: one appended rule per set part, nothing without it
     colours = ";".join(f"--{var}:{brand[key]}" for key, var in (("accent", "coral"), ("ink", "ink")) if key in brand)
     css = (pages["index.html"]["css"] + EXTRA_CSS + (f":root{{{colours}}}\n" if colours else "")
-           + (".brand-logo{max-height:48px;width:auto;height:auto}\n" if "logo" in brand else ""))
+           + (".brand-logo{max-height:48px;width:auto;height:auto}\n" if "logo" in brand else "")
+           + (".statement-quote{white-space:pre-wrap}\n" if model.get("statements") else ""))
     files = {name: page["html"] for name, page in pages.items()}
     agencies_text, meetings_text = site.agencies_json(), site.meetings_json()  # each rendered once; its CSV is read back from it
     files.update({
