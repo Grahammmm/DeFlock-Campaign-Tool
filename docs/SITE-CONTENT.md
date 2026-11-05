@@ -877,6 +877,38 @@ Questions an organizer has checked, in the order written, become `/faq.html`. Th
 - Labels: `faq.title`, `footer.faq`, `faq.findings`, `faq.terms`, `faq.rule` and `faq.law_status` (see Labels). The
   Spanish values in `examples/labels/es.json` are a machine-made draft like the rest of that file.
 
+### Plain-language check for pages, FAQ and glossary (advisory, never a gate)
+
+    python3 -m campaign_tool content check-plain --directory D [--json]
+
+Lists readability suggestions for site text an organizer wrote. It is read-only: it rewrites nothing, writes no report,
+receipt, cache or folder, and never builds or loads the whole of `content/`, so unrelated content problems or finding
+review status cannot stop it. `build`, publish, review receipts and content hashes never read it. It is different from
+`content-check`, which validates content for publication; this only suggests. For findings use
+[`finding check-plain`](PUBLICATION.md#plain-language-check-advisory-never-a-gate), which is unchanged.
+
+- **Checked:** `content/pages/*.json` (`title`, then `body_md`, files in name order), each `content/faq.json` entry
+  (`question`, then `answer_md`, in stored order) and each `content/glossary.json` term (`definition_md`, in stored
+  order). Page `description`, `notice_md`, glossary terms and aliases as prose, `site.json` and findings are not checked.
+  Missing files or folders mean nothing to check. Organizer placeholders and empty strings are checked like any text.
+- **Rules and counting:** the same three rules and counting as the finding check: a sentence over 30 words
+  (`long_sentence`), a paragraph over 150 words (`long_paragraph`) and an all-capital abbreviation of 2 to 6 letters
+  not spelled out earlier (`unexplained_abbreviation`). There is no `long_summary`. Text inside matched double quotes
+  is skipped but its words still count in a word's position number. Markdown is counted as written, not rendered.
+- **Spelled out earlier:** `expanded words (ABC)` or `ABC (expanded words)` earlier in the same page (title before
+  body) or the same FAQ entry (question before answer) explains it; nothing carries to the next page, entry or term. An
+  abbreviation listed as an alias (2 to 6 capitals) of any glossary term is never reported, anywhere.
+- **Output:** text is the finding heading, one line per suggestion `<file> <entry>: <field> paragraph P, sentence S,
+  word W: <rule> (...)`, then `<N> suggestion(s). Nothing was changed.` With `--json`, one object
+  `{"advisory": true, "warnings": [...]}` where each warning has `file` (`content/...`), `entry` (the page name,
+  `entries[N]` or `terms[N]`, zero-based as stored in the file) and then the finding check's keys. Paragraph, sentence
+  and word are one-based; `start` is a zero-based Unicode code-point offset in the field and `end` is exclusive. No
+  prose is printed.
+- **Exit codes:** 0 whenever the content can be read, with or without suggestions (the finding check exits 3 with
+  suggestions); 1 with a `Stopped:` line naming the file when a checked file is unreadable, a symlink, special file,
+  too large, not UTF-8 JSON or lacks the string fields above, and no report is printed; 2 for a usage error.
+- **Limits:** a heuristic only: no dictionary, no language detection, no readability score.
+
 ### In the news (`content/coverage.json`, optional)
 
 Press coverage an organizer has read and typed in becomes `/news.html`. The tool stores only the outlet, the headline
