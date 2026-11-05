@@ -27,9 +27,9 @@ TODAY = date(2026, 11, 1)
 AGENCY = "ca-cedar-city-council"
 # Digest of every public file of the pre-change build on main 39f75c0f (fixed-date fixtures below); mixed drops the two
 # files this feature may change. Recapture from a new main, never from this feature's output.
-ROOTS = {"empty": "b215c8e12789dff9d41b11660577acc754eaca46bcbd07f012facbaadf27895c",
-         "one-body": "080521b214aec02c812e9ec652249380fb6cd7733d825409213c486ec54ec390",
-         "mixed": "fb01bc1fe2926b7fff2e85ff44b39148a00547393493fa1cf2fb3e0bc29399f3"}
+ROOTS = {"empty": "b215c8e12789dff9d41b11660577acc754eaca46bcbd07f012facbaadf27895c",  # pragma: allowlist secret
+         "one-body": "080521b214aec02c812e9ec652249380fb6cd7733d825409213c486ec54ec390",  # pragma: allowlist secret
+         "mixed": "fb01bc1fe2926b7fff2e85ff44b39148a00547393493fa1cf2fb3e0bc29399f3"}  # pragma: allowlist secret
 MIXED = (("alpha-up", "Council A", "2026-11-10", None), ("beta-up", "Council B", "2026-11-11", None),
          ("alpha-past", "Council A", "2026-10-01", None), ("beta-cancel", "Council B", "2026-11-12", "cancelled"))
 
