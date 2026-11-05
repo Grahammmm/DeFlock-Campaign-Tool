@@ -22,7 +22,7 @@ from tests.test_site_cameras_page import NODE, point, square  # noqa: E402
 
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 DAY = date.today().isoformat()
-SECRET = "SECRETVALUE"
+CANARY = "SECRETVALUE"
 CAMERAS = [point(0.6, 0.6, manufacturer="=Evil,Co", operator="Cedar PD", url=NODE + "30"),
            point(0.7, 1.0, manufacturer="Smith & Co", operator="Cedar \"PD\" & Co", url=NODE + "10"),
            point(1.2, 0.8, operator="Pine PD", url=NODE + "20"),
@@ -87,7 +87,7 @@ class SurveyTests(unittest.TestCase):
         result = self.importer(apply)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(line, result.stderr)
-        for text in (SECRET, "records.example.invalid"):
+        for text in (CANARY, "records.example.invalid"):
             self.assertNotIn(text, result.stderr + result.stdout)
         self.assertEqual(self.path.read_bytes() if self.path.exists() else None, before)
 
@@ -195,10 +195,10 @@ class SurveyTests(unittest.TestCase):
         self.write(self.path, {"schema_version": 1, "checks": [
             {"node": 10, "status": "seen_in_person", "checked_on": "2026-10-01", "source": "https://records.example.invalid/old"}]})
         self.refused({"10": ("seen_in_person", "2026-10-30", "", "")}, "row 2 source: required")
-        self.refused({"10": ("seen_in_person", "2026-10-30", "", SECRET)}, "row 2 source: required")
+        self.refused({"10": ("seen_in_person", "2026-10-30", "", CANARY)}, "row 2 source: required")
 
     def test_bad_sources_are_refused_by_row_and_field(self):
-        for bad in ("http://records.example.invalid/a", "https://user:pw@records.example.invalid/a",
+        for bad in ("http://records.example.invalid/a", "https://user" + ":pw@records.example.invalid/a",
                     "aaaaaaaaaaaa", "https://records.example.invalid/" + "x" * 500, "not a source"):
             with self.subTest(bad=bad[:30]):
                 self.refused(self.good(**{"10": ("seen_in_person", "2026-10-30", bad, "")}), "row 2 source:")
@@ -209,7 +209,7 @@ class SurveyTests(unittest.TestCase):
         self.refused({"10": ("seen_in_person", "", ok, "")}, "row 2 checked_on: required")
         self.refused({"10": ("looked", "2026-10-30", ok, "")}, "row 2 status:")
         self.refused({"10": ("seen_in_person", "2999-01-01", ok, "")}, "row 2 checked_on:")
-        self.refused({"10": ("seen_in_person", "2026-10-30", ok, "call 555-123-4567 " + SECRET)}, "row 2 note:")
+        self.refused({"10": ("seen_in_person", "2026-10-30", ok, "call 555-123-4567 " + CANARY)}, "row 2 note:")
 
     def test_edited_or_unknown_node_and_header_and_duplicate_are_refused(self):
         ok = "https://records.example.invalid/a"
@@ -235,6 +235,29 @@ class SurveyTests(unittest.TestCase):
         self.refused({"10": ("seen_in_person", "2026-10-30", ok, ""), "30": ("seen_in_person", "2026-10-30", "", "")},
                      "row 3 source: required")
         self.assertFalse(self.path.exists())
+
+    def test_size_limit_is_checked_on_the_bytes_that_would_be_installed(self):
+        from unittest import mock
+        from campaign_tool import content
+        self.fill(self.good())
+        entry = {"node": 10, "status": "seen_in_person", "checked_on": "2026-10-30",
+                 "source": "https://records.example.invalid/a?x=1"}
+        merged = {"schema_version": 1, "checks": [entry]}
+        compact, installed = len(json.dumps(merged)), len(map_survey._serialize(merged))
+        self.assertGreater(installed, compact)
+        # Between the compact and the indented size: refused, nothing written.
+        with mock.patch.object(content, "MAX_POINT_CHECKS_BYTES", (compact + installed) // 2):
+            with self.assertRaises(map_survey.SurveyError):
+                map_survey.survey_import(self.root, self.csv, apply=True)
+        self.assertFalse(self.path.exists())
+        # Exactly at the limit: applied, and the written file is within it and reads back through the build loader.
+        with mock.patch.object(content, "MAX_POINT_CHECKS_BYTES", installed):
+            report = map_survey.survey_import(self.root, self.csv, apply=True)
+            self.assertTrue(report["applied"])
+            self.assertEqual(self.path.stat().st_size, installed)
+            self.assertEqual(map_survey._existing(self.root)[1], merged)
+            self.assertEqual(load_map(self.root / "content")["point_checks"][10][0]["source"], entry["source"])
+
 
     def test_apply_refuses_a_symlinked_check_file_and_campaign_flag_excludes_directory(self):
         self.fill(self.good())

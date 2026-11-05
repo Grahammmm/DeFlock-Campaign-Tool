@@ -282,12 +282,13 @@ def survey_import(root, csv_path, *, apply=False, today=None):
         seen.add((node, key))
         additions.append((number, entry))
     merged = {"schema_version": 1, "checks": list(document["checks"]) + [entry for _, entry in additions]}
+    data = _serialize(merged)
     if additions and not problems:
         library = root / "content" / "sources.json"
         sources = content.load_sources(content._read_json(library)) if library.is_file() else []
         with tempfile.TemporaryDirectory(prefix="survey-import-") as scratch:
             probe = Path(scratch) / "point-checks.json"
-            probe.write_text(json.dumps(merged), encoding="utf-8")
+            probe.write_bytes(data)  # the exact bytes --apply would install, so the size limit is checked on them
             found, _ = content.point_check_problems(probe, nodes, sources, day)
         offset = len(document["checks"])
         for text in found:
@@ -301,7 +302,7 @@ def survey_import(root, csv_path, *, apply=False, today=None):
     report = {"applied": False, "added": len(additions), "checks": [entry for _, entry in additions],
               "note": "Dry run: nothing was written. Rerun with --apply; the checks reach the site at the next build."}
     if apply and additions:
-        _write_checks(path, merged)
+        _write_checks(path, data)
         report.update(applied=True, note="Checks written to content/map/point-checks.json; "
                                          "nothing is published until the next build.")
     elif apply:
@@ -309,12 +310,15 @@ def survey_import(root, csv_path, *, apply=False, today=None):
     return report
 
 
-def _write_checks(path, document):
+def _serialize(document):
+    return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _write_checks(path, data):
     """Fresh temp file beside the target, fsync, then os.replace; a symlink target is refused."""
     if path.is_symlink():
         raise SurveyError("map/point-checks.json: symlinks are not written")
     mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
-    data = (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix=".point-checks.", suffix=".tmp")
     try:
         os.fchmod(fd, mode)
