@@ -409,6 +409,248 @@ class KitResponseUndoTests(unittest.TestCase):
         self.assertIn("--reason", help_text.getvalue())
         self.assertEqual(run("kit-response-undo", "--directory", self.root, "--agency", self.agency)[0], 2)  # --reason required
 
+    # bounded archive (RF1410-11) -------------------------------------------------------------------------------
+    def two_steps(self):
+        entry = self.entry()
+        entry.pop("undo_ids", None)
+        document = self.load()
+        document["requests"][self.agency] = {**entry, "steps": [step("2026-03-05", "acknowledged"),
+                                                                step("2026-03-06", "extension")]}
+        self.sent.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+    def modes(self):
+        return {p.name: stat.S_IMODE(p.stat().st_mode) for p in (self.sent, self.archive) if p.exists()}
+
+    def restore(self, files):  # put sent.json / the archive back to a captured state (None = absent)
+        for path, data in files.items():
+            if data is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(data)
+
+    def probe_size(self, **kwargs):
+        """Run one successful undo, return the archive bytes it wrote, then put both files back as they were."""
+        files = {self.sent: self.sent.read_bytes(), self.archive: self.archive.read_bytes() if self.archive.exists() else None}
+        code, out, err = self.undo(**kwargs)
+        self.assertEqual(code, 0, err)
+        size = self.archive.stat().st_size
+        self.restore(files)
+        return size
+
+    def refused_at(self, cap, *words, **kwargs):
+        before, modes = self.snapshot(), self.modes()
+        with mock.patch.object(kit_undo, "ARCHIVE_MAX_BYTES", cap), \
+                mock.patch.object(kit, "_write_json", side_effect=AssertionError("written")):
+            self.refused(self.undo(**kwargs), "would exceed 16 MiB", "nothing was changed", *words)
+        self.assertEqual((self.snapshot(), self.modes()), (before, modes))
+
+    def test_candidate_exact_byte_cap_and_one_over(self):
+        self.two_steps()
+        size = self.probe_size()  # first receipt into a missing archive
+        self.assertFalse(self.archive.exists())
+        self.refused_at(size - 1)  # a missing archive whose first receipt alone is over the cap
+        self.assertFalse(self.archive.exists())
+        with mock.patch.object(kit_undo, "ARCHIVE_MAX_BYTES", size):
+            self.assertEqual(self.undo()[0], 0)  # exactly the cap is accepted
+        self.assertEqual(self.archive.stat().st_size, size)  # predicted size equals what was written
+        # a valid archive that already holds a receipt: the next one at cap + 1 refuses, at the cap it is accepted
+        self.two_steps()
+        size2 = self.probe_size()
+        self.assertGreater(size2, size)
+        self.refused_at(size2 - 1)
+        self.assertEqual(len(self.receipts()), 1)
+        self.assertNotIn("undo_ids", self.entry())
+        with mock.patch.object(kit_undo, "ARCHIVE_MAX_BYTES", size2):
+            self.assertEqual(self.undo()[0], 0)
+        self.assertEqual(self.archive.stat().st_size, size2)
+        self.assertEqual(len(self.receipts()), 2)
+        self.assertEqual(len(self.entry()["undo_ids"]), 1)
+
+    def test_multibyte_reason_and_reserialization_budget(self):
+        self.two_steps()
+        reason = "é" * 200  # 200 characters, 400 UTF-8 bytes
+        self.assertEqual(len(kit_undo.clean_reason(reason)), 200)
+        size = self.probe_size(reason=reason)
+        ascii_size = self.probe_size(reason="e" * 200)
+        self.assertEqual(size - ascii_size, 200)  # the budget counts encoded bytes, not characters
+        self.refused_at(size - 1, reason=reason)
+        with mock.patch.object(kit_undo, "ARCHIVE_MAX_BYTES", size):
+            self.assertEqual(self.undo(reason=reason)[0], 0)
+        self.assertEqual(self.archive.stat().st_size, size)
+        self.assertEqual(self.receipts()[0]["reason"], reason)
+        # a compact, whitespace-heavy existing archive is measured as the pretty form it will be rewritten as
+        compact = {"schema_version": 1, "undos": self.receipts()}
+        self.archive.write_text(json.dumps(compact, separators=(",", ":"), ensure_ascii=True), encoding="utf-8")
+        pretty = kit_undo.serialized_size(compact)
+        self.assertNotEqual(pretty, self.archive.stat().st_size)
+        self.two_steps()
+        files = {self.sent: self.sent.read_bytes(), self.archive: self.archive.read_bytes()}
+        code, out, err = self.undo(reason=reason)
+        self.assertEqual(code, 0, err)
+        grown = self.archive.stat().st_size
+        self.restore(files)
+        self.refused_at(grown - 1, reason=reason)
+        with mock.patch.object(kit_undo, "ARCHIVE_MAX_BYTES", grown):
+            self.assertEqual(self.undo(reason=reason)[0], 0)
+
+    def test_unmodified_production_limit_cannot_strand_next_undo(self):
+        self.assertEqual(kit_undo.ARCHIVE_MAX_BYTES, 16 << 20)
+        self.two_steps()
+        size = self.probe_size()
+        # a valid schema-v1 archive of unique-id receipts, sized to leave less room than one more receipt needs
+        template = {"agency_id": "x", "request": "main", "undone_at": STAMP, "reason": "filler",
+                    "step": step("2026-03-05", "acknowledged"), "entry_before_sha256": "0" * 64,
+                    "entry_after_sha256": "1" * 64}
+        cap = 16 << 20
+        base = kit_undo.serialized_size({"schema_version": 1, "undos": []})
+        one = kit_undo.serialized_size({"schema_version": 1, "undos": [{**template, "undo_id": "0" * 32}]}) - base
+        receipts = [{**template, "undo_id": f"{i:032x}"} for i in range((cap - base) // (one + 2) - 1)]
+        document = {"schema_version": 1, "undos": receipts}
+        room = 100
+        receipts[-1]["reason"] += "p" * (cap - room - kit_undo.serialized_size(document))
+        self.assertEqual(kit_undo.serialized_size(document), cap - room)
+        self.assertGreater(size - base, room)  # one more real receipt cannot fit
+        self.archive.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        self.assertEqual(self.archive.stat().st_size, cap - room)
+        before, modes = self.snapshot(), self.modes()
+        self.refused(self.undo(), "would exceed 16 MiB", "nothing was changed")
+        self.assertEqual((self.snapshot(), self.modes()), (before, modes))
+        self.assertEqual(kit_undo.read_archive(self.root / "kit")[1], receipts)  # still readable by its own reader
+
+    def test_bounded_descriptor_reader(self):
+        self.two_steps()
+        self.assertEqual(self.undo()[0], 0)
+        size = self.archive.stat().st_size
+        real_read, sizes = os.read, []
+
+        def spy(fd, n):
+            sizes.append(n)
+            return real_read(fd, n)
+        with mock.patch.object(kit_undo, "ARCHIVE_MAX_BYTES", size), mock.patch("os.read", side_effect=spy):
+            self.assertEqual(len(kit_undo.read_archive(self.root / "kit")[1]), 1)  # exactly the cap is valid
+        self.assertLessEqual(sum(sizes[:-1]), size + 1)
+        self.assertTrue(all(n <= size + 1 for n in sizes))
+        with mock.patch.object(kit_undo, "ARCHIVE_MAX_BYTES", size - 1):
+            self.refused_untouched("too large")  # cap + 1 file, refused from fstat without reading
+        # a file that grew after metadata inspection: fstat says it fits, the descriptor yields more than the cap
+        small = 100
+        reads = []
+
+        def endless(fd, n):
+            reads.append(n)
+            return b" " * n
+        fake = mock.Mock(side_effect=lambda fd: os.stat_result((stat.S_IFREG | 0o600, 0, 0, 1, 0, 0, 0, 0, 0, 0)))
+        with mock.patch.object(kit_undo, "ARCHIVE_MAX_BYTES", small), mock.patch("os.fstat", fake), \
+                mock.patch("os.read", side_effect=endless):
+            with self.assertRaisesRegex(ValueError, "too large"):
+                kit_undo.read_archive(self.root / "kit")
+        self.assertEqual(sum(reads), small + 1)  # never more than cap + 1 bytes were requested
+
+    def test_reader_special_files_decode_errors_and_close(self):
+        self.two_steps()
+        outside = self.tmp / "outside.json"
+        outside.write_text('{"schema_version": 1, "undos": []}')
+        fifo = self.tmp / "fifo"
+        os.mkfifo(fifo)
+        cases = {"symlink": lambda: self.archive.symlink_to(outside),
+                 "dangling": lambda: self.archive.symlink_to(self.tmp / "missing"),
+                 "directory": lambda: self.archive.mkdir(),
+                 "fifo": lambda: os.mkfifo(self.archive),
+                 "bad utf-8": lambda: self.archive.write_bytes(b'{"schema_version": 1, "undos": []}\xff')}
+        for label, make in cases.items():
+            with self.subTest(label):
+                if self.archive.is_dir() and not self.archive.is_symlink():
+                    self.archive.rmdir()
+                else:
+                    self.archive.unlink(missing_ok=True)
+                make()
+                before = (self.sent.read_bytes(), outside.read_bytes())
+                with mock.patch.object(kit, "_write_json", side_effect=AssertionError("written")):
+                    self.refused(self.undo(), "kit/sent-undone.json unreadable")
+                self.assertEqual((self.sent.read_bytes(), outside.read_bytes()), before)
+        self.archive.unlink()
+        # a pathname swapped to a symlink just before the open is not followed
+        self.archive.write_text('{"schema_version": 1, "undos": []}')
+        swap_open = os.open
+
+        def swap(path, *args, **kwargs):
+            if Path(path) == self.archive:
+                self.archive.unlink()
+                self.archive.symlink_to(outside)
+            return swap_open(path, *args, **kwargs)
+        with mock.patch("os.open", side_effect=swap):
+            self.refused(self.undo(), "unreadable", "not a regular file")
+        self.assertEqual(outside.read_text(), '{"schema_version": 1, "undos": []}')
+        self.archive.unlink()
+        # open and read errors are controlled refusals; the descriptor is closed on every path
+        self.archive.write_text('{"schema_version": 1, "undos": []}')
+        real_open0 = os.open
+
+        def deny(path, *args, **kwargs):
+            if Path(path) == self.archive:
+                raise PermissionError(errno.EACCES, "denied")
+            return real_open0(path, *args, **kwargs)
+        with mock.patch("os.open", side_effect=deny):
+            self.refused(self.undo(), "unreadable")
+        opened, closed = [], []
+        real_open, real_close = os.open, os.close
+
+        def track_open(path, *args, **kwargs):
+            fd = real_open(path, *args, **kwargs)
+            if Path(path) == self.archive:
+                opened.append(fd)
+            return fd
+
+        def track_close(fd):
+            closed.append(fd)
+            real_close(fd)
+        for failure in (OSError(errno.EIO, "read failed"), None):
+            opened.clear(), closed.clear()
+            if failure is None:
+                self.archive.write_text("{not json")
+            with mock.patch("os.open", side_effect=track_open), mock.patch("os.close", side_effect=track_close):
+                if failure is not None:
+                    with mock.patch("os.read", side_effect=failure):
+                        self.refused(self.undo(), "unreadable")
+                else:
+                    self.refused(self.undo(), "not JSON")
+            self.assertEqual(opened, closed)
+            self.assertTrue(opened)
+
+    def test_attempted_receipts_consume_retry_budget(self):
+        self.two_steps()
+        size = self.probe_size()
+        real = kit._write_json
+
+        def fail_sent(path, document):
+            if Path(path).name == "sent.json":
+                raise OSError(errno.EIO, "injected sent failure")
+            real(path, document)
+        with mock.patch.object(kit, "_write_json", side_effect=fail_sent):
+            self.refused(self.undo(), "injected sent failure")
+        self.assertEqual(len(self.receipts()), 1)  # one valid attempt, not applied
+        self.assertNotIn("undo_ids", self.entry())
+        # the retry needs room for the attempt already on file as well: one byte short refuses unchanged
+        retry = kit_undo.serialized_size({"schema_version": 1, "undos": [*self.receipts(), self.receipts()[0]]})
+        self.assertGreater(retry, size)
+        self.refused_at(retry - 1)
+        self.assertEqual(len(self.receipts()), 1)
+        self.assertNotIn("undo_ids", self.entry())
+        self.assertEqual(self.status_row().get("undone_steps", 0), 0)
+        # with exactly enough room the ordinary retry succeeds and counts once
+        with mock.patch.object(kit_undo, "ARCHIVE_MAX_BYTES", retry):
+            self.assertEqual(self.undo()[0], 0)
+        self.assertEqual(len(self.receipts()), 2)
+        self.assertEqual(self.entry()["undo_ids"], [self.receipts()[1]["undo_id"]])
+
+    def test_archive_documentation_links(self):
+        doc = Path(kit_undo.__file__).resolve().parent.parent / "docs" / "KIT-UNDO-ARCHIVE.md"
+        text = doc.read_text(encoding="utf-8")
+        self.assertIn("docs/KIT-UNDO-ARCHIVE.md", kit_undo.__doc__ or "")
+        self.assertIn("(AGENCY-TIMELINE.md)", text)
+        self.assertTrue((doc.parent / "AGENCY-TIMELINE.md").is_file())
+        self.assertIn("would exceed 16 MiB; nothing was changed", text)
+
 
 if __name__ == "__main__":
     unittest.main()
