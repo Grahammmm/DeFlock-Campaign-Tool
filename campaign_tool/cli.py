@@ -1576,6 +1576,8 @@ def main():
             print("Recorded only. Nothing was sent.")
         elif args.command == "meetings-speakers":
             from .meeting_speakers import list_plan, update_plan
+            # The guards must see the unresolved directory so a campaign-root or ancestor symlink is refused.
+            root = Path(args.directory).expanduser()
             if args.list_plan:
                 print(json.dumps(list_plan(root, args.id), indent=2, ensure_ascii=False))
             else:

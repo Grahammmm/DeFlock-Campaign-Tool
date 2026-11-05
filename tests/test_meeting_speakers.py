@@ -105,6 +105,26 @@ class CliTests(Base):
         self.assertEqual(run(*self.args("--remove", "Nobody"))[1].strip(), '{"id": "m-a", "changed": false, "assignments": 3}')
         self.assertEqual(json.loads(run(*self.args("--remove", " Ann  Lee"))[1])["assignments"], 2)
 
+    def test_cli_refuses_root_and_ancestor_symlinks(self):
+        self.stage(starts_at="2099-01-01T10:00:00-08:00")
+        real = self.tmp / "realroot"
+        self.root.rename(real)
+        self.root.symlink_to(real)
+        for action in (("--add", "Ann", "--point", "ask:1"), ("--list",), ("--remove", "Ann")):
+            code, out, err = run(*self.args(*action))
+            self.assertEqual((code, err.strip()), (1, "Stopped: " + ms.SYMLINK), action)
+        self.assertFalse((real / "kit").exists())
+        self.root.unlink()
+        parent = self.tmp / "parent"
+        parent.mkdir()
+        real.rename(parent / "campaign")
+        link = self.tmp / "linkparent"
+        link.symlink_to(parent)
+        code, out, err = run("meetings-speakers", "--directory", link / "campaign", "--id", "m-a",
+                             "--add", "Ann", "--point", "ask:1")
+        self.assertEqual((code, err.strip()), (1, "Stopped: " + ms.SYMLINK))
+        self.assertFalse((parent / "campaign" / "kit").exists())
+
     def test_cli_exact_domain_refusals(self):
         self.stage(starts_at="2000-01-01T10:00:00-08:00")
         code, out, err = run(*self.args("--list"))
@@ -222,6 +242,18 @@ class PlanTests(Base):
         path.write_text(json.dumps(document))
         with self.assertRaises(ms.MeetingSpeakersError):
             ms.list_plan(self.root, "m-a", now=NOW)
+
+    def test_add_refuses_unknown_existing_reference_in_current_store(self):
+        self.add("Ann", "ask:1")
+        document = json.loads(self.store().read_text())
+        document["assignments"].append({"label": "Bo", "point": "ask:3"})
+        self.store().write_text(json.dumps(document), encoding="utf-8")
+        before = self.store().read_bytes()
+        self.refused(ms.STALE, ms.list_plan, "m-a", now=NOW)
+        self.refused(ms.STALE, ms.update_plan, "m-a", add="Cy", point="ask:2", now=NOW)
+        self.refused(ms.STALE, ms.update_plan, "m-a", add="Ann", point="ask:1", now=NOW)
+        self.assertEqual(self.store().read_bytes(), before)
+        self.assertEqual(ms.update_plan(self.root, "m-a", remove="Bo", now=NOW)["assignments"], 1)
 
     def test_stale_snapshot_requires_explicit_cleanup(self):
         self.add("Ann", "ask:1")

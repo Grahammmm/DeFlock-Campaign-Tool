@@ -266,6 +266,8 @@ def update_plan(root, meeting_id, *, add=None, point=None, remove=None, now=None
     if add is not None:
         if pairs and stored != digest:
             raise MeetingSpeakersError(STALE)
+        if any(old not in catalog for _, old in pairs):  # same check --list makes
+            raise MeetingSpeakersError(STALE)
         if (label, point) in pairs:
             return {"id": meeting_id, "changed": False, "assignments": len(pairs)}
         if len(pairs) >= MAX_PAIRS:
