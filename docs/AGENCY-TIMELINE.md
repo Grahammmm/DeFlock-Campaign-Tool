@@ -292,6 +292,11 @@ keep only the agency's stated production date) and a timed event for each staged
 written-comment deadline on or after `--as-of`. It holds ids, dates, agency or body names and the official source
 link only. It is refused inside the campaign's `public/` or `content/` and never overwrites: re-run into a new file.
 
+Request event UIDs keep agency and request identifiers separate. Named requests now use # before the request name.
+Earlier imported named-request events use old UIDs; remove those events or import into a fresh private calendar
+before importing the new file. Main-request and meeting UIDs are unchanged. This export does not update or remove
+events already imported by a calendar app.
+
 ## Requests filed on MuckRock (kit requests)
 
 `kit-sent --channel muckrock --request-url https://www.muckrock.com/foi/.../<name>-<id>` records a request you filed
@@ -329,6 +334,45 @@ named as `line <L>: <the kit-response message>` (the header is line 1; up to 20 
 command exits 2 and nothing is written. A row equal to a step already recorded on that request is reported
 `already recorded, skipped`; the same row twice in the file is refused on its second line. Without `--apply` the command
 only checks; with `--apply` every new step is recorded in file order in one atomic write. Nothing is fetched or sent.
+
+## Requests sent before you used the tool (kit-sent-import)
+
+`kit-sent-import --directory D --csv FILE [--apply]` records requests the campaign sent before it used this tool, so
+their timelines, contacts and reminders can follow. `kit-sent` refuses these because it needs a kit draft that passes
+`kit-check`; this command asks for neither. The file is private, UTF-8 (a BOM is fine), at most 512 KiB and 1-500 data
+rows, a regular file (a symlink is refused), with the header exactly
+`agency_id,request,sent_on,channel,reference,letter_record`. Synthetic example:
+
+```
+agency_id,request,sent_on,channel,reference,letter_record
+ca-example-police,,2026-03-02,email,R0123-030226,3f9a1c0d7b2e
+ca-example-police,contract-2026,2026-03-09,portal,,
+ca-example-sheriff,main,2026-02-27,mail,,
+```
+
+`agency_id` must appear exactly once in `kit/agencies.json` (selected or not; no verified contact is needed). `request`
+is empty or `main` for the original request, else a name of 1-40 characters a-z, 0-9 or `-`. `sent_on` is a real
+`YYYY-MM-DD` date from 2000-01-01 to today. `channel` is `email`, `portal` or `mail` (a MuckRock request comes from
+`kit-muckrock-import`). `reference` is the agency's own number (1-40 letters, digits, `-` `_` `#` `.`) or empty.
+`letter_record` is empty or one ledger prefix (12 or more lowercase hex characters) of the sent letter you already
+ingested; it is stored as correspondence (the full hash, never a production record), and the same original may support
+separate requests. The ledger is only read: nothing is ingested and no letter is opened.
+
+Rows are checked in file order against `kit/agencies.json`, the request-name and reference rules and the requests
+already recorded plus the rows before them. An existing request, ordinary or imported, is refused, as is a second row
+for the same request (`same request as line N`); there is no skip, replace or merge mode, so rerunning a file that was
+applied is refused. Any refused row is named as `line <L>: <field>: <reason>` (physical line, header is line 1; up to 20
+are listed, then `and N more`), no input value is repeated, the command exits 2 and nothing is written, even for a bad row at
+the end of the file. Without `--apply` it only checks and prints `{"checked": N, "imported": 0, "written": false}`; with `--apply`
+every row is recorded in one atomic write to the private `kit/sent.json` (mode 0600). Nothing is fetched or sent.
+
+An imported entry is a historical assertion by the organizer: `imported: true`, the date, channel, optional reference and
+letter, and no draft or draft hash. Its origin is permanent: `kit-sent` cannot replace it, and nothing edits or converts
+it. `kit-status` shows `draft_changed_since_sent: null` and `imported: true` for it (blank in `kit-status --csv`), and
+`kit-coverage` still reports `drafted` honestly. Provisional deadlines and their warnings are unchanged: they run from
+the recorded sent date, which is your statement, not the agency's receipt. Then fill the timeline with
+`kit-response-import` (preview, then `--apply`), add your own `kit-contact` entries and use `kit-response-undo` as for
+any hand-sent request.
 
 ## Taking back the latest step (kit-response-undo)
 
@@ -432,3 +476,32 @@ Supervisor" --note "Asked when to expect a determination"`.
 - `kit-response-undo` leaves contacts untouched. `kit-sent --replace` (only while no step is recorded) keeps them, and
   refuses a corrected sent date later than any contact. There is no contact undo or export. A malformed `contacts`
   list makes `kit/sent.json` unreadable rather than being dropped. Nothing is fetched or sent.
+
+## Who owns a request (kit-assign)
+
+`kit-assign --directory D --agency ID [--request NAME] (--to NAME | --clear)` records which teammate is handling one
+recorded request, in the private `kit/assignments.json` (mode 0600, written atomically as `{"schema_version": 1,
+"assignments": {KEY: LABEL}}`, KEY being the `kit/sent.json` key). `--request` defaults to `main`; exactly one of `--to`
+and `--clear` is required. The agency must be in `kit/agencies.json` and the request must already be recorded (by
+`kit-sent` or `kit-sent-import`; a closed or imported request qualifies, an unsent draft does not); otherwise the command
+stops with exit 1 and writes nothing. A label is an alias the team chose, not a verified identity: 1-40 characters after
+collapsing whitespace, case kept, compared exactly. Angle brackets, control or format characters, any `@` and seven or
+more decimal digits (any script) are refused, and the refused text is never echoed. Assigning the same owner again, or
+clearing a request with no owner, writes nothing. Output ends `Recorded only. Nothing was sent.`
+
+- `kit-status` (also with `--csv`), `kit-due` and `today` take `--owner NAME` and keep only that person's requests; the
+  filter is applied before counts, the waiting-on-you note and the `kit-due` exit 3, so another person's past-due
+  request never changes your result. `--owner` and `--request` intersect; an owner nobody holds gives an empty list
+  (exit 0), and an unknown `--request` is still refused. `today` filters only request work: meetings, findings,
+  contracts and contacts stay listed, and its `kit-status` suggestion carries `--owner` (quoted).
+- `owner` appears only on rows of assigned requests (every `kit-due` collection and download row too), as the last
+  `kit-status --csv` column (blank when unassigned), and as ` [owner: LABEL]` at the end of a `today` request line. A
+  named request never inherits `main`'s owner, and `today` names a named request as `(AGENCY/NAME)`.
+- `kit-coverage` has one row per selected agency's `main` request and per recorded named request, with `request` and
+  `owner` columns, and lists unassigned requests first (see `docs/AGENCY-DISCOVERY.md`).
+- An assignment never changes a due date, a response step or any other store; `kit-sent --replace` and
+  `kit-response-undo` leave it alone. An assignment whose request no longer exists stays in the file and is ignored.
+  An unreadable `kit/assignments.json` (not JSON, repeated key, wrong schema, over 1 MiB, a symlink or a symlinked
+  `kit/`) stops the commands above, is never reset, and shows in `today` as one `unreadable` item naming the file.
+  There is no notification, roster, bulk assignment, history or public owner list, and no protection against two people
+  writing at once.

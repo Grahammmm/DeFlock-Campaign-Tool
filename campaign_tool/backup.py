@@ -15,7 +15,10 @@ bytes as written); record it somewhere the archive is not, and pass it to
 ``verify`` to detect a rewritten archive.
 ``restore(path, root)`` refuses a non-empty root, rejects unsafe member names,
 extracts with private modes (0700 directories, 0600 files) and re-verifies the
-files on disk.
+files on disk. Restore owns only what it creates: the target state is captured
+first and revalidated once verification has finished, every entry is created
+exclusively and recorded by inode, and a failure removes only those entries
+(never a caller's directory, an unrelated arrival or a replacement).
 
 ``export_hosted(client, out_path)`` builds the same archive for a hosted
 campaign from the workspace Worker: the D1 export (``/api/runner/export.json``)
@@ -50,7 +53,7 @@ HEX64 = frozenset("0123456789abcdef")
 
 
 class BackupError(ValueError):
-    """Export, verification or restore refused; nothing partial is left behind."""
+    """Export, verification or restore refused; a failed restore never removes entries it did not create."""
 
 
 def _sha256(path):
@@ -761,18 +764,273 @@ def restore(path, root, gnupg_home=None):
     return _restore_tar(path, root)
 
 
+_TARGET_CHANGED_VERIFY = "restore target changed during verification; nothing restored"
+_TARGET_CHANGED_RESTORE = "restore target changed during restore; refusing unowned entries"
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _O_NOFOLLOW | _O_CLOEXEC
+_FILE_READ_FLAGS = os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC
+_FILE_NEW_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_CLOEXEC
+
+
+_DIR_FD_OPS = all(func in os.supports_dir_fd for func in (os.open, os.mkdir, os.stat, os.unlink, os.rmdir))
+
+
+def _identity(st):
+    return (st.st_dev, st.st_ino)
+
+
+class _RestoreTarget:
+    """Ownership ledger for one restore: it creates, checks and removes only its own entries.
+
+    The caller's directory is captured with lstat (absent, or a real empty directory with its
+    inode and mode) and revalidated after verification. Everything extracted is created
+    exclusively through descriptors held on the owned directories, and its inode is recorded
+    right away, so rollback removes an entry only while it is still the inode this restore
+    created. Nothing is ever deleted recursively and a caller-existing root is never removed.
+    """
+
+    def __init__(self, root):
+        if not _DIR_FD_OPS:
+            raise BackupError("restore needs directory-relative file operations, which this platform lacks")
+        self.root = Path(root)
+        self.ident = None   # captured inode of an existing empty root; None when it is absent
+        self.mode = None
+        try:
+            st = os.lstat(self.root)
+        except (FileNotFoundError, NotADirectoryError):
+            st = None
+        if st is not None:
+            if stat.S_ISLNK(st.st_mode):
+                raise BackupError("restore target must not be a symlink")
+            if not stat.S_ISDIR(st.st_mode) or os.listdir(self.root):
+                raise BackupError(f"{self.root} is not an empty directory; restore refuses to overwrite")
+            self.ident, self.mode = _identity(st), stat.S_IMODE(st.st_mode)
+        self.root_created = False
+        self.mode_changed = False
+        self.rootfd = None
+        self.dirs = {}       # relative directory ("" is the root) -> descriptor held open
+        self.owned = []      # (relative path, "file" | "dir", identity) in creation order
+        self.files = {}      # relative file path -> identity
+        self.parents = []    # (path, identity) of missing ancestors this restore created
+
+    def begin(self):
+        """Revalidate the captured state after verification, then take the root."""
+        if self.ident is None:
+            self._create_root()
+        else:
+            self._open_root()
+        self.dirs[""] = self.rootfd
+
+    def _create_root(self):
+        if os.path.lexists(self.root):
+            raise BackupError(_TARGET_CHANGED_VERIFY)
+        missing = []
+        probe = self.root.parent
+        while probe != probe.parent and not os.path.lexists(probe):
+            missing.append(probe)
+            probe = probe.parent
+        for path in reversed(missing):
+            try:
+                os.mkdir(path)
+            except FileExistsError:
+                if not os.path.isdir(path):
+                    raise
+                continue   # a directory that arrived meanwhile is an existing ancestor, not ours
+            self.parents.append((path, _identity(os.lstat(path))))
+        try:
+            os.mkdir(self.root, 0o700)
+        except FileExistsError:
+            raise BackupError(_TARGET_CHANGED_VERIFY) from None
+        self.root_created = True
+        self.ident = _identity(os.lstat(self.root))
+        fd = self._open_dir(self.root, _TARGET_CHANGED_RESTORE)
+        try:
+            if _identity(os.fstat(fd)) != self.ident:
+                raise BackupError(_TARGET_CHANGED_RESTORE)
+            os.fchmod(fd, 0o700)
+        except BaseException:
+            os.close(fd)
+            raise
+        self.rootfd = fd
+
+    def _open_root(self):
+        try:
+            same = _identity(os.lstat(self.root)) == self.ident
+        except OSError:
+            same = False
+        if not same:
+            raise BackupError(_TARGET_CHANGED_VERIFY)
+        fd = self._open_dir(self.root, _TARGET_CHANGED_VERIFY)
+        try:
+            if _identity(os.fstat(fd)) != self.ident or os.listdir(fd):
+                raise BackupError(_TARGET_CHANGED_VERIFY)
+        except BaseException:
+            os.close(fd)
+            raise
+        self.rootfd = fd
+        self.mode_changed = True
+        os.fchmod(fd, 0o700)
+
+    def _open_dir(self, name, message, dir_fd=None):
+        try:
+            return os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
+        except OSError:
+            raise BackupError(message) from None
+
+    def ensure_dir(self, rel):
+        """Descriptor of an owned directory, creating it exclusively when it is new."""
+        if rel in self.dirs:
+            return self.dirs[rel]
+        parent, _, leaf = rel.rpartition("/")
+        parent_fd = self.ensure_dir(parent)
+        try:
+            os.mkdir(leaf, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            raise BackupError(_TARGET_CHANGED_RESTORE) from None
+        try:
+            ident = _identity(os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False))
+        except OSError:
+            raise BackupError(_TARGET_CHANGED_RESTORE) from None
+        self.owned.append((rel, "dir", ident))
+        fd = self._open_dir(leaf, _TARGET_CHANGED_RESTORE, dir_fd=parent_fd)
+        try:
+            if _identity(os.fstat(fd)) != ident:
+                raise BackupError(_TARGET_CHANGED_RESTORE)
+            os.fchmod(fd, 0o700)
+        except BaseException:
+            os.close(fd)
+            raise
+        self.dirs[rel] = fd
+        return fd
+
+    def write_file(self, rel, source):
+        parent, _, leaf = rel.rpartition("/")
+        parent_fd = self.ensure_dir(parent)
+        try:
+            fd = os.open(leaf, _FILE_NEW_FLAGS, 0o600, dir_fd=parent_fd)
+        except FileExistsError:
+            raise BackupError(_TARGET_CHANGED_RESTORE) from None
+        try:
+            ident = _identity(os.fstat(fd))
+            self.owned.append((rel, "file", ident))
+            self.files[rel] = ident
+            handle = os.fdopen(fd, "wb")
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle:
+            shutil.copyfileobj(source, handle)
+            os.fchmod(handle.fileno(), 0o600)
+
+    def _owned_stat(self, rel):
+        parent, _, leaf = rel.rpartition("/")
+        try:
+            return os.stat(leaf, dir_fd=self.dirs[parent], follow_symlinks=False)
+        except (KeyError, OSError):
+            return None
+
+    def reverify(self, files):
+        """Re-hash the owned files through their own directory descriptors."""
+        mismatches = []
+        for name, entry in files.items():
+            if name not in self.files:
+                mismatches.append(name)
+                continue
+            parent, _, leaf = name.rpartition("/")
+            try:
+                fd = os.open(leaf, _FILE_READ_FLAGS, dir_fd=self.dirs[parent])
+            except (KeyError, OSError):
+                raise BackupError(_TARGET_CHANGED_RESTORE) from None
+            with os.fdopen(fd, "rb") as handle:
+                st = os.fstat(handle.fileno())
+                if _identity(st) != self.files[name]:
+                    raise BackupError(_TARGET_CHANGED_RESTORE)
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if st.st_size != entry["bytes"] or digest.hexdigest() != entry["sha256"]:
+                mismatches.append(name)
+            elif stat.S_IMODE(st.st_mode) != 0o600:
+                mismatches.append(name + " (mode)")
+        return mismatches
+
+    def check_root(self):
+        """The path must still lead to the directory this restore is filling."""
+        try:
+            same = _identity(os.lstat(self.root)) == self.ident
+        except OSError:
+            same = False
+        if not same:
+            raise BackupError(_TARGET_CHANGED_RESTORE)
+
+    def finish(self):
+        """Refuse to report success unless the tree holds exactly the entries this restore made."""
+        self.check_root()
+        children = {}
+        for rel, _kind, _ident in self.owned:
+            parent, _, leaf = rel.rpartition("/")
+            children.setdefault(parent, set()).add(leaf)
+        for rel, fd in self.dirs.items():
+            if set(os.listdir(fd)) != children.get(rel, set()):
+                raise BackupError(_TARGET_CHANGED_RESTORE)
+        for rel, kind, ident in self.owned:
+            st = self._owned_stat(rel)
+            wanted = stat.S_ISREG if kind == "file" else stat.S_ISDIR
+            if st is None or _identity(st) != ident or not wanted(st.st_mode):
+                raise BackupError(_TARGET_CHANGED_RESTORE)
+
+    def rollback(self):
+        """Best-effort cleanup of owned entries only; never masks the original exception."""
+        for rel, kind, ident in reversed(self.owned):
+            try:
+                st = self._owned_stat(rel)
+                if st is None or _identity(st) != ident:
+                    continue
+                parent, _, leaf = rel.rpartition("/")
+                if kind == "file" and stat.S_ISREG(st.st_mode):
+                    os.unlink(leaf, dir_fd=self.dirs[parent])
+                elif kind == "dir" and stat.S_ISDIR(st.st_mode):
+                    os.rmdir(leaf, dir_fd=self.dirs[parent])
+            except OSError:
+                pass
+        if self.mode_changed and self.rootfd is not None:
+            try:
+                os.fchmod(self.rootfd, self.mode)
+            except OSError:
+                pass
+        removable = [(self.root, self.ident)] if self.root_created else []
+        for path, ident in removable + list(reversed(self.parents)):
+            try:
+                if _identity(os.lstat(path)) == ident:
+                    os.rmdir(path)
+            except OSError:
+                pass
+
+    def close(self):
+        for fd in self.dirs.values():
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        if self.rootfd is not None and self.dirs.get("") != self.rootfd:
+            with contextlib.suppress(OSError):
+                os.close(self.rootfd)
+        self.dirs.clear()
+        self.rootfd = None
+
+
 def _restore_tar(path, root):
-    """Extract into an empty ``root`` with private modes, then re-verify on disk."""
+    """Extract into an absent or empty ``root`` with private modes, then re-verify on disk.
+
+    The target state is captured first and revalidated once verification has finished; every
+    entry is created exclusively and recorded, and a failure removes only what this restore
+    created (see ``_RestoreTarget``).
+    """
     path = Path(path)
     root = Path(root)
-    if root.is_symlink():
-        raise BackupError("restore target must not be a symlink")
-    if root.exists() and (not root.is_dir() or any(root.iterdir())):
-        raise BackupError(f"{root} is not an empty directory; restore refuses to overwrite")
+    target = _RestoreTarget(root)
     report = verify(path)
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(root, 0o700)
     try:
+        target.begin()
         with tarfile.open(path, mode="r:") as tar:
             members = _archive_members(tar)
             manifest = _read_manifest(tar, members)
@@ -785,35 +1043,22 @@ def _restore_tar(path, root):
             for member in members:
                 if not member.isfile() or member.name == MANIFEST:
                     continue
-                target = root / member.name
-                partial = root
-                for part in Path(member.name).parts[:-1]:
-                    partial = partial / part
-                    partial.mkdir(exist_ok=True, mode=0o700)
-                    os.chmod(partial, 0o700)
-                source = tar.extractfile(member)
-                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "wb") as handle:
-                    shutil.copyfileobj(source, handle)
-                os.chmod(target, 0o600)
-        (root / "private").mkdir(exist_ok=True, mode=0o700)
-        os.chmod(root / "private", 0o700)
-        mismatches = []
-        for name, entry in manifest["files"].items():
-            target = root / name
-            if not target.is_file() or target.stat().st_size != entry["bytes"] or _sha256(target) != entry["sha256"]:
-                mismatches.append(name)
-            elif stat.S_IMODE(target.stat().st_mode) != 0o600:
-                mismatches.append(name + " (mode)")
+                target.write_file("/".join(Path(member.name).parts), tar.extractfile(member))
+        target.ensure_dir("private")
+        mismatches = target.reverify(manifest["files"])
         if mismatches:
             raise BackupError("restored files failed re-verification: " + ", ".join(mismatches[:10]))
+        target.check_root()
         paths = {name: root / name for name in manifest["files"]
                  if name in ("private/ledger.sqlite", "private/d1-export.json")}
         originals, counts = _metadata(paths)
         _closure(manifest["files"], originals, counts, manifest["counts"], has_metadata=bool(paths))
+        target.finish()
     except BaseException:
-        shutil.rmtree(root, ignore_errors=True)
+        target.rollback()
         raise
+    finally:
+        target.close()
     report["restored_to"] = str(root)
     return report
 

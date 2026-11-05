@@ -250,6 +250,32 @@ Cancelled, past and stale kits stop: re-stage corrections with `meetings-stage -
 Use `--allow-past` for an archive, or `--replace` to regenerate an existing private pack.
 Nothing is sent or published. Review the print preview before handing it over.
 
+The three files are one pack, written as one prepared generation: the tool encodes and writes all three into a
+private `.M.new-<random>` directory beside the pack (0700 directory, 0600 files), then swaps that directory into
+`kit/meeting-packs/M`. A handled error (a full disk, a permission error) never leaves a new handout beside an old
+comment or sources sheet: a new pack is either complete or absent, and `--replace` moves the old directory to
+`.M.old-<random>`, promotes the new one, and puts the old one back if promotion fails. `--replace` refuses a pack that
+holds anything but the three expected regular files (an extra note, a subdirectory, a missing file, a link or a
+special file) with `meeting pack has unexpected contents; move it aside before regenerating`; it never deletes your
+files. If the old directory cannot be put back, the error names it (`previous pack retained at PATH`) and the next
+run refuses with `meeting pack recovery required; inspect PATH before rebuilding`: check which generation you want,
+then move or remove that `.M.old-*` directory yourself. If only the final removal of the old directory fails, the new
+pack is complete and the result carries `warnings` naming the retained copy; remove it after checking the new pack
+(`--replace` will not run until you do). An abandoned `.M.new-*` directory left by a killed process is never swept
+automatically; inspect it and remove it by hand. Not promised: durability after power loss, that the pack is
+invisible for the instant between the two renames, safety with two writers at once, or that `--upcoming` is
+all-or-nothing (packs finished before a later failure stay, and the error still stops the run).
+
+With `site.json.base_url` set, the handout prints a QR code beside each finding URL and one last link with a QR
+code to the campaign site, after the findings and before the record explainer (also when there are no findings).
+Codes are made offline by the tool itself (`campaign_tool/qr.py`, standard library only; byte mode, error
+correction level M, versions 1-10, four-module quiet zone) and encode exactly the URL printed beside them; the
+agenda link, the sources and the "N more on the site" line get none. A URL over 213 bytes stops that pack with
+"QR URL exceeds 213-byte capacity (version 10, level M)." before anything is written, `--replace` included, so
+an existing pack is left untouched; `--upcoming` lists that meeting as skipped with the same reason and builds
+the others. Without `base_url` there is no QR code and the handout is byte-identical to before.
+`comment.md` and `sources.csv` never change.
+
 The handout follows the campaign's language: `<html lang>` is `site.json.language`, and its fixed headings and notes
 (title, "What we found", the empty-state sentence, the source line, "corrected", the agenda link, "N more on the
 site", the record-number explainer, and the classification and confidence wording) come from `content/labels.json`
@@ -406,6 +432,47 @@ day, a later meeting with no outcome and a malformed file never suppress it. Thi
 outcome does not prove staff did what was asked, its absence does not mean they did not, and no fulfillment status is
 stored. `data/meetings.json` carries `direction`, `return_by` and `direction_source` on the outcome, all or none.
 
+### Recording public-comment counts
+
+When the official minutes or record state how many members of the public spoke on the item and how many written
+comments were received, record them with `--spoke N`, `--written M` and `--comment-source URL`. Either count or both,
+including an explicit `0`; a count the record does not state is simply left out (absent is never shown as zero). Each is
+ASCII decimal digits only, 0 to 999 (leading zeros are read as the integer): `--spoke: must be a whole number from 0 to
+999` (likewise `--written`) refuses a sign, fraction, exponent, space, non-ASCII digit or blank. Two modes:
+
+- **With the outcome** (the four creation flags): the counts are part of the new outcome. The source defaults to the
+  outcome's `--source`. `--comment-source` without a count is refused (`--comment-source needs --spoke or --written`)
+  before anything is written.
+- **Counts only** (`--directory`, `--id`, `--spoke` and/or `--written`, no creation flag): adds the counts to an outcome
+  already recorded (`public comment counts: needs a recorded outcome`), on a held, non-cancelled meeting. The source
+  defaults to the outcome's current minutes URL, else its `--source`. Only the three count keys are merged; the result,
+  verifier, votes, recording, minutes, direction, continuation and every other key stay as stored. The first counts need
+  no `--replace`; a second is refused (`public comment counts already recorded; pass --replace to overwrite them`) and
+  `--replace` replaces the whole group: a count not given again is removed and the source is resolved anew. Counts-only
+  mode refuses `--vote`, `--votes`, `--recording-*`, `--continued-to*` and the direction flags
+  (`counts-only mode cannot be combined with FLAG`); minutes mode refuses the count flags; a partial set of creation
+  flags still names what is missing. A full `--replace` of the outcome drops omitted counts (as it drops omitted votes);
+  the minutes-only and direction-only `--replace` keep them. There is no way to clear counts by themselves.
+
+The three keys are stored flat on the outcome (`spoke`, `written`, `comment_source_url`, https, at most 500 characters,
+the source required with a count and not alone); `build` and `content-check` refuse a hand-edited null, boolean, float,
+string, out-of-range or sourceless group by field name. Nothing is fetched. The meeting page says
+`N people spoke and M written comments were received, as stated in SOURCE` (or `N people spoke, as stated in SOURCE`,
+or `M written comments were received, as stated in SOURCE`; SOURCE a plain link) under the direction line; the numbers
+are the record's literal totals, not a count of unique people, support or opposition, or comments sent by this campaign.
+The wording is the `meeting.comments_both`, `meeting.comments_spoke` and `meeting.comments_written` labels (Spanish draft
+in `examples/labels/es.json`). A meeting without counts is byte-identical to before; `today` is unchanged.
+`data/meetings.json` carries `spoke`, `written` and `comment_source_url` on the outcome.
+
+## Regular meeting schedules
+
+`content/body-schedules.json` (optional, organizer-verified, never fetched) records when a body usually meets so that
+`today` can suggest agenda-watch dates and `meetings.html` can say `Usually meets: ...`. The exact schema, exact body
+naming (as staged meetings name the body), time-zone interpretation, the 365-day stale threshold and how to re-check
+and update it are in [SITE-CONTENT.md](SITE-CONTENT.md#regular-meeting-schedules-contentbody-schedulesjson-optional).
+An `Expected BODY meeting D: watch for the agenda` line is a prompt to look at the official agenda, not a scheduled
+meeting: stage a meeting only from the official record.
+
 ## Meetings feed (`meetings.xml`)
 
 When `content/meetings/` stages at least one meeting, `build` writes `public/meetings.xml`, one Atom document
@@ -468,7 +535,19 @@ before this can be considered a supported live poll. No detail requests or new s
 ## Not done
 
 No RSVP collection (the `rsvp_count` column is
-reserved), and no other agenda platforms (Granicus, PrimeGov, CivicClerk). Each of those should keep the same keyword-lead, human-verify rule.
+reserved), and no other agenda platforms (Granicus, PrimeGov). Each of those should keep the same keyword-lead, human-verify rule.
+
+## CivicClerk import (CLI)
+
+```
+python3 -m campaign_tool meetings --directory D --platform civicclerk --client <slug> (--online | --from-json REC) [--since YYYY-MM-DD] [--tz ZONE]
+```
+
+`CivicClerkClient` reads `https://<slug>.api.civicclerk.com/v1/Events` (`startDateTime ge <since>`, at most 60 events;
+a `value` envelope or a bare list) and each event's agenda items from `/v1/Meetings/<agendaId>` (`items`, nested `childItems`,
+`agendaObjectItemName` and `agendaObjectItemDescription`). Same keyword filter, `kit/meetings.json` shape and change report as
+Legistar, with ids `civicclerk-<slug>-<event id>` and `source: "civicclerk"`. `startDateTime` (UTC) is shown in `--tz`; an agenda
+link is kept only if `https://` on `civicclerk.com`; a cancelled mark in the event name or notice sets `status: "cancelled"`.
 
 ## Calendar feed
 

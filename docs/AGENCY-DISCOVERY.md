@@ -392,11 +392,15 @@ ingested record and none may already be linked to the request; otherwise nothing
 private `kit/sent.json`; `kit-response` and `kit-status` print 12-character prefixes only (`records`,
 `record_prefixes`, at most 50 then `more`). Which records an agency produced is never published.
 
-`kit-coverage --directory D [--csv]` prints one row per selected agency in `kit/agencies.json`: whether its draft
-exists (a regular file, not a symlink), sent date and channel, last response step, distinct records linked on
-`produced` steps, `content/sources.json` entries and published findings for the agency. Agencies with no sent request
-come first, then a totals line (selected, drafted, sent, answered, with records, with findings, and requests for
-agencies no longer selected). Without `content/` sources and findings are 0. `--csv` writes RFC 4180 CSV to stdout;
+`kit-coverage --directory D [--csv]` prints one row per selected agency's main request in `kit/agencies.json`, plus one
+row for each of its recorded named requests (`--request` names): whether the request's draft exists (a regular file, not
+a symlink), sent date and channel, last response step, distinct records linked on `produced` steps, `content/sources.json`
+entries and published findings for the agency, then the `request` name and its `owner` (`kit-assign`; blank when
+unassigned). Unassigned requests come first, unsent ones before sent ones, then a totals line (selected, drafted, sent,
+answered, with records, with findings, requests for agencies no longer selected, fee unpaid, `requests` and
+`unassigned_requests`). The agency totals count each agency once however many requests it has; `requests` and
+`unassigned_requests` count rows, and sources and findings are per agency, so they repeat on each of its rows. Without
+`content/` sources and findings are 0. `--csv` writes RFC 4180 CSV to stdout;
 cells starting with `=`, `+`, `-` or `@` get a leading `'`. It writes nothing and sends nothing.
 
 ### Track requests in a spreadsheet
@@ -404,7 +408,7 @@ cells starting with `=`, `+`, `-` or `@` get a leading `'`. It writes nothing an
 `kit-status --directory D --csv FILE` writes the same requests as `kit-status`, in the same order, to a new private
 spreadsheet file and prints `{"written", "rows", "law_package_status", "note"}`. Columns: `agency_id, name, sent_on,
 channel, provisional_determination_due, provisional_with_extension, extended, closed, steps, last_step_on,
-last_step_kind, linked_records, draft_changed_since_sent`; `yes`/`no` for true/false and an empty cell for an unknown
+last_step_kind, linked_records, draft_changed_since_sent, fee_estimate, fee_state, fee_paid, request_url, owner`; `yes`/`no` for true/false and an empty cell for an unknown
 value (for example both due columns when there is no law package). Record hashes are not exported, only the count.
 The file is created with mode 0600 and is never overwritten: `FILE` must end in `.csv`, its folder must exist, and it
 must not exist yet (a symlink counts as existing) or be inside the campaign's `public/` or `content/` folder (also

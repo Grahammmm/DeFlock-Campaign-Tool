@@ -198,7 +198,8 @@ class TopicTests(unittest.TestCase):
                              ("topics", r"topics/topics\.json: slug topics is a reserved page name"),
                              ("timeline", r"topics/timeline\.json: slug timeline is a reserved page name"),
                              ("cameras", r"topics/cameras\.json: slug cameras is a reserved page name"),
-                             ("sitemap", r"topics/sitemap\.json: slug sitemap is a reserved page name")):
+                             ("sitemap", r"topics/sitemap\.json: slug sitemap is a reserved page name"),
+                             ("sharing", r"topics/sharing\.json: slug sharing is a reserved page name")):
             with self.subTest(slug):
                 self.topic(slug, [alpha])
                 self.refused_keeps_public(needle)
