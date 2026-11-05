@@ -7,9 +7,9 @@
         "meetings": 2
       },
       "files": {
-        "newsletter-draft.html": "c8cfa773312b55c4b1095f24220ff7e6dc35d5830296e7c357b09adb7486aae1",
-        "newsletter-draft.json": "715f9fdab44c7e613357344799ab7d5979d3dcccc9cafbc9c830ecb3fd41865f",
-        "newsletter-draft.txt": "c50457b9715f47712352c12b62c9d862369b9fc571c65a5a81095fd183b76aa4"
+        "newsletter-draft.html": "c8cfa773-312b55c4-b1095f24-220ff7e6-dc35d583-0296e7c3-57b09adb-7486aae1",
+        "newsletter-draft.json": "715f9fda-b44c7e61-33573447-99ab7d59-79d3dccc-c9cafbc9-c830ecb3-fd41865f",
+        "newsletter-draft.txt": "c50457b9-715f4771-2352c12b-62c9d862-369b9fc5-71c65a5a-81095fd1-83b76aa4"
       },
       "keys": [
         "consent_footer",
@@ -86,9 +86,9 @@
         "meetings": 1
       },
       "files": {
-        "newsletter-draft.html": "2e5c4481bb83e3d5cd28d0059bb08a9f43c0a6a6536815b2251ff2ca2c1d9c5e",
-        "newsletter-draft.json": "31d84d1ad557da621d3685d76b8031f42fb004d3fca4609cae104f182a1b7b41",
-        "newsletter-draft.txt": "211bd8eedb94aa015c74b0887167f2cd9796766bcdb09190e9871bd9c59b4d3d"
+        "newsletter-draft.html": "2e5c4481-bb83e3d5-cd28d005-9bb08a9f-43c0a6a6-536815b2-251ff2ca-2c1d9c5e",
+        "newsletter-draft.json": "31d84d1a-d557da62-1d3685d7-6b8031f4-2fb004d3-fca4609c-ae104f18-2a1b7b41",
+        "newsletter-draft.txt": "211bd8ee-db94aa01-5c74b088-7167f2cd-9796766b-cdb09190-e9871bd9-c59b4d3d"
       },
       "keys": [
         "consent_footer",
@@ -135,9 +135,9 @@
         "meetings": 0
       },
       "files": {
-        "newsletter-draft.html": "5cccf94cecdad674bce4b20746957f163e155b99ea290945f3083965828d6af4",
-        "newsletter-draft.json": "1e03f280fa8aed2a1bec11a2d168bac5ab389c4ad0417b1bdae95a837e7a8329",
-        "newsletter-draft.txt": "914396e0646627c5123b9ee416db3833c0c06da9e373409ccc8c041e0de51c53"
+        "newsletter-draft.html": "5cccf94c-ecdad674-bce4b207-46957f16-3e155b99-ea290945-f3083965-828d6af4",
+        "newsletter-draft.json": "1e03f280-fa8aed2a-1bec11a2-d168bac5-ab389c4a-d0417b1b-dae95a83-7e7a8329",
+        "newsletter-draft.txt": "914396e0-646627c5-123b9ee4-16db3833-c0c06da9-e373409c-cc8c041e-0de51c53"
       },
       "keys": [
         "consent_footer",

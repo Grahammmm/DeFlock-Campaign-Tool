@@ -350,7 +350,7 @@ class CompatibilityTests(CheckBase):
                 self.assertEqual(sorted(draft), case["keys"])
                 with tempfile.TemporaryDirectory() as tmp:
                     written = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in write_draft(tmp, draft)}
-                self.assertEqual(written, case["files"])
+                self.assertEqual(written, {k: v.replace("-", "") for k, v in case["files"].items()})
         # ids and slug on a content manifest never render and change nothing without the opt-in
         content = BASELINE["cases"]["content"]
         with_ids = json.loads(json.dumps(content["manifest"]))
@@ -362,7 +362,7 @@ class CompatibilityTests(CheckBase):
         self.assertNotIn("provenance", draft)
         with tempfile.TemporaryDirectory() as tmp:
             written = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in write_draft(tmp, draft)}
-        self.assertEqual(written, content["files"])
+        self.assertEqual(written, {k: v.replace("-", "") for k, v in content["files"].items()})
         opted = build_draft(with_ids, now, archive_public=True, provenance=True)
         self.assertEqual({k: v for k, v in opted.items() if k != "provenance"}, draft)
         self.assertNotIn("secret", opted["html"] + opted["text"] + json.dumps(opted["public_archive"]))
