@@ -252,6 +252,8 @@ def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today
     faq = read_faq(root, findings if findings_intact else None, problems)
     if faq_out is not None and faq is not None:
         faq_out.extend(faq)
+    from .content_events import read_events  # local: content_events imports content
+    read_events(root, problems)  # DF1107-08: the build's own reader and privacy lint; it names every independent problem itself
     # DF0022-03: the build's own reader and refusal text; with a refused finding file ids are not matched (already named)
     _attempt(problems, "coverage.json", lambda: read_coverage(root, findings if findings_intact else None))
 
@@ -339,7 +341,7 @@ def _statements(problems, root, agencies, out, today):
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
 FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "pages/", "topics/", "kit/", "law/", "newsletters/",
                  "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json",
-                 "faq.json", "coverage.json", "body-schedules.json", "statements.json", "officials.json")
+                 "faq.json", "coverage.json", "body-schedules.json", "statements.json", "officials.json", "events.json")
 
 
 def problem_record(line):
