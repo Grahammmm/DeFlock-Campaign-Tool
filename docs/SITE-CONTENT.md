@@ -975,6 +975,14 @@ JSON array of 0 to 50 objects, kept in the order written:
   byte-identical. Rebuild after every change; deleting the file removes the page on the next build.
 - `build` and `content-check` use the same reader, so they refuse the same things: a duplicate `id`, an `ends_at` before
   `starts_at` and a non-https `url` are each named by field and position (`events.json[N].field`).
+- `events.ics` (DF1107-10): with a non-empty events file the build also writes `events.ics`, an iCalendar feed of the
+  upcoming events only (same cutoff as the page, so an all-past file gives a valid empty calendar), written with the same
+  escaping, 75-octet folding and UTC rules as `meetings.ics`. Each event is `UID:event-<id>@<host>` (host of `base_url`,
+  or `deflock-campaign.invalid` without one), `DTSTAMP` the build day at 00:00:00Z, `DTSTART` and `DTEND` converted from
+  their recorded offsets to UTC, `SUMMARY` the title, `LOCATION` the venue (or `Online`), and `URL` the `events.html#event-<id>`
+  anchor (path-only without `base_url`). Same inputs and build day give identical bytes. `events.html` links it with
+  `rel="alternate"` and a visible subscribe link, and the footer feed line names it. Without events there is no feed or link;
+  `events.ics` is a reserved top-level name either way. `meetings.ics` is unchanged.
 
 ## Regular meeting schedules (`content/body-schedules.json`, optional)
 

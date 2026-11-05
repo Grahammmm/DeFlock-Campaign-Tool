@@ -31,7 +31,7 @@ from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
 from .content_statements import newest_first as newest_statements
-from .content_events import build_cutoff, partition as partition_events
+from .content_events import build_cutoff, parse_moment, partition as partition_events
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
@@ -52,7 +52,7 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html", "events.html"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html", "events.html", "events.ics"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
@@ -819,6 +819,7 @@ class Site:
                      + (f' · <a href="/glossary.html">{self.t("footer.glossary")}</a>' if self.glossary else "") + '</p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         meetings_feed = f' · <a href="/meetings.xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else ""  # DF1103-10
+        meetings_feed += f' · <a href="/events.ics">{self.t("footer.events_calendar")}</a>' if self.events else ""  # DF1107-10
         corrections_feed = f' · <a href="/corrections.xml">{self.t("corrections.feed")}</a>' if self.correction_entries() else ""  # DF0237-09
         archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
         parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a>{meetings_feed} · <a href="/search.html">{self.t("footer.search")}</a>'
@@ -882,6 +883,8 @@ class Site:
                    if self.model["meetings"] and (path == "/meetings.html" or path.startswith("/meetings/")) else "")
                 + (f'  <link rel="alternate" type="application/atom+xml" title="{self.t("corrections.feed")}" href="/corrections.xml">\n'
                    if self.correction_entries() and (path == "/corrections.html" or path in self.corrected_paths()) else "")
+                + (f'  <link rel="alternate" type="text/calendar" title="{self.t("events.subscribe")}" href="/events.ics">\n'
+                   if self.events and path == "/events.html" else "")
                 + canonical + extra)
 
     def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
@@ -1977,6 +1980,7 @@ class Site:
                     + ("".join(self.event_html(event) for event in rows) or f'<p>{self.t(empty)}</p>') + '</section>')
         main = ('    <section class="section finding-body" id="content">'
                 f'<p>{self.t("events.lead")}</p><p>{self.t("events.as_of", date=e(self.today.isoformat()))}</p>'
+                f'<p><a href="/events.ics">{self.t("events.subscribe")}</a></p>'
                 + section("upcoming-events", "events.upcoming", self.events_upcoming, "events.none_upcoming")
                 + section("past-events", "events.past", self.events_past, "events.none_past") + '</section>\n')
         return self.page("events", self.labels["events.title"], self.labels["events.lead"], "/events.html", main)
@@ -2694,6 +2698,21 @@ class Site:
             ET.SubElement(entry, f"{{{ns}}}category", term=finding["classification"])
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(feed, encoding="unicode") + "\n"
 
+    def events_ics(self):
+        """DF1107-10: the campaign's upcoming events as an RFC 5545 calendar, same writer, escaping, folding and UTC rule as meetings.ics."""
+        host = urlsplit(self.base).hostname if self.base else "deflock-campaign.invalid"
+        stamp = self.today.strftime("%Y%m%d") + "T000000Z"
+        lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DeFlock Campaign Tool//events//EN", "CALSCALE:GREGORIAN",
+                 "X-WR-CALNAME:" + ics_text(self.cfg["name"] + " campaign events")]
+        for event in self.events_upcoming:
+            start, end = (parse_moment(event[key]).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ") for key in ("starts_at", "ends_at"))
+            lines += ["BEGIN:VEVENT", f'UID:event-{event["id"]}@{host}', "DTSTAMP:" + stamp, "DTSTART:" + start, "DTEND:" + end,
+                      "SUMMARY:" + ics_text(event["title"]),
+                      "LOCATION:" + ("Online" if event.get("online") else ics_text(event["venue"])),
+                      "URL:" + f'{self.base}/events.html#event-{event["id"]}', "END:VEVENT"]
+        lines.append("END:VCALENDAR")
+        return "".join(ics_fold(line) + "\r\n" for line in lines)
+
     def meetings_ics(self):
         """Upcoming (not cancelled) meetings as an RFC 5545 calendar; deterministic for one build day."""
         host = urlsplit(self.base).hostname if self.base else "deflock-campaign.invalid"
@@ -3209,6 +3228,8 @@ def _plan_site(root, today=None, notes=None):
     if site.sources_filter():  # DF1103-12: written only when sources.html loads it; an empty library leaves no stale asset
         files["sources/filter.js"] = site.sources_filter_js()
     files.update(site.agency_feeds())
+    if site.events:  # DF1107-10: no events file or [] means no calendar (the tree swap drops a stale one)
+        files["events.ics"] = site.events_ics()
     if model["meetings"]:  # DF1103-10: no staged meetings, no feed (the tree swap drops a stale one)
         files["meetings.xml"] = site.meetings_feed_xml()
     corrections_text = site.corrections_feed_xml()  # DF0237-09: no correction, no file (the tree swap drops a stale one)
