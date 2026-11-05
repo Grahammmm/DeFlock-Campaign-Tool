@@ -1,6 +1,7 @@
 """Private, offline one-page campaign flyer (kit/flyer/flyer.html + flyer.txt); prints, sends and publishes nothing."""
 import html
 import os
+import tempfile
 from pathlib import Path
 
 from .cli import read_config
@@ -211,9 +212,15 @@ def build_event(root, event_id, today=None, *, replace=False):
         if old not in names:
             (folder / old).unlink()
     if logo:
-        temporary = folder / f'.{stem}-logo.tmp'
-        temporary.write_bytes(logo.read_bytes())
-        os.replace(temporary, folder / logo_name)
+        descriptor, name = tempfile.mkstemp(prefix=f'.{stem}-logo.', suffix='.tmp', dir=folder)  # exclusive, new regular file
+        temporary = Path(name)
+        try:
+            with os.fdopen(descriptor, 'wb') as handle:
+                handle.write(logo.read_bytes())
+            os.replace(temporary, folder / logo_name)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
     _write_text(folder / f'{stem}.html', page)
     _write_text(folder / f'{stem}.txt', text)
     for name in names:

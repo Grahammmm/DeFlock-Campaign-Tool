@@ -566,7 +566,7 @@ MODULE_FUNCTIONS = {
     'content_sharing': ('import_sharing',),
     'coverage': ('_write', 'add_coverage', 'remove_coverage',),
     'finding_packet': ('_copy_hash', '_create', 'build_packet',),
-    'flyer': ('build',),
+    'flyer': ('build', 'build_event'),
     'image_meta': ('strip_file',),
     'import_existing': ('_write_receipt', 'run',),
     'kit_agencies': ('_save',),

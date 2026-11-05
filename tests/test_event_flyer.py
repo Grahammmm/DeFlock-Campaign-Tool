@@ -236,6 +236,20 @@ class EventFlyerTests(unittest.TestCase):
             for name, digest in FIXTURE[label].items():
                 self.assertEqual(hashlib.sha256((self.folder / name).read_bytes()).hexdigest(), digest, (label, name))
 
+    def test_predictable_temporary_logo_symlink_is_not_followed(self):
+        self.logo()
+        outside = self.root / 'outside.txt'
+        outside.write_bytes(b'keep')
+        os.chmod(outside, 0o644)
+        self.folder.mkdir(parents=True)
+        os.symlink(outside, self.folder / '.event-ev1-logo.tmp')
+        report = self.make()
+        self.assertIn('kit/flyer/event-ev1-logo.svg', report['written'])
+        self.assertEqual(outside.read_bytes(), b'keep')
+        self.assertEqual(stat.S_IMODE(outside.stat().st_mode), 0o644)
+        self.assertEqual((self.folder / 'event-ev1-logo.svg').read_bytes(), SVG)
+        self.assertEqual(stat.S_IMODE((self.folder / 'event-ev1-logo.svg').stat().st_mode), 0o600)
+
     def test_bad_logo_symlinks_and_special_targets_refused_untouched(self):
         self.make()
         self.logo(b'not an svg')
