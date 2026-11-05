@@ -5,9 +5,10 @@ Description=Records arrival trigger (drop folder and arrival stamps)
 # state are no-ops: the service exits 0 without Docker, report or notify.
 
 [Path]
-# Close-after-write, create and rename sensitive. Not DirectoryNotEmpty: the
-# drop folder keeps its originals forever, and a persistent glob on unconsumed
-# stamps would hot-loop while the records lock is busy.
+# Change, close-after-write and rename sensitive. Deliberately not a level
+# trigger on a non-empty folder: the drop folder keeps its originals forever,
+# and a persistent glob on unconsumed stamps would hot-loop while the records
+# lock is busy.
 PathChanged=@RECORDS_DROP_DIR@
 PathChanged=@RUNTIME_DIR@/arrival
 Unit=records-arrival.service

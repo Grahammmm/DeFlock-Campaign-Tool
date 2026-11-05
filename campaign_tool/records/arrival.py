@@ -15,6 +15,7 @@ Nothing here calls a model, mailer, publication or approval interface, and the
 drop scan never opens or parses record bytes.
 """
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -172,8 +173,13 @@ def _load_stamp(path):
     return validate_stamp(data)
 
 
-def stamp(runtime_dir, source, ref):
-    """Durably record one arrival; return the stamp file name."""
+def stamp(runtime_dir, source, ref, _held=False):
+    """Durably record one arrival; return the stamp file name.
+
+    Publication (link + unlink of the private temp name) runs under the short
+    metadata lock, so a concurrent ``pending``/``consume`` never sees the
+    transient second hard link.
+    """
     if source not in SOURCES:
         raise ArrivalError("ARRIVAL_SOURCE_INVALID")
     if not isinstance(ref, str) or not REF_RE.match(ref):
@@ -195,16 +201,19 @@ def stamp(runtime_dir, source, ref):
         finally:
             os.close(fd)
         stem = moment.strftime("%Y%m%dT%H%M%S.%fZ")
-        for suffix in [""] + [f"-{n:02d}" for n in range(1, 100)]:
-            final = arrival / f"{stem}-{source}{suffix}.json"
-            try:
-                os.link(tmp, final)  # exclusive: never overwrites a same-clock stamp
-                break
-            except FileExistsError:
-                continue
-        else:
-            raise ArrivalError("ARRIVAL_PUBLISH_FAILED")
-        _fsync_dir(arrival)
+        lock = contextlib.nullcontext() if _held else _MetaLock(root, True)
+        with lock:
+            for suffix in [""] + [f"-{n:02d}" for n in range(1, 100)]:
+                final = arrival / f"{stem}-{source}{suffix}.json"
+                try:
+                    os.link(tmp, final)  # exclusive: never overwrites a same-clock stamp
+                    break
+                except FileExistsError:
+                    continue
+            else:
+                raise ArrivalError("ARRIVAL_PUBLISH_FAILED")
+            os.unlink(tmp)
+            _fsync_dir(arrival)
     except ArrivalError:
         raise
     except OSError:
@@ -235,7 +244,10 @@ def pending(runtime_dir):
     _, arrival, _ = _paths(runtime_dir)
     if not _check_dir(arrival, False):
         return []
-    return [_load_stamp(arrival / name) for name in _stamp_files(arrival)]
+    root = arrival.parent
+    lock = _MetaLock(root, False) if os.path.lexists(root / LOCK_NAME) else contextlib.nullcontext()
+    with lock:
+        return [_load_stamp(arrival / name) for name in _stamp_files(arrival)]
 
 
 def consume(runtime_dir, run_id):
@@ -393,7 +405,7 @@ def scan_drop(runtime_dir, drop_dir, now=None):
                 continue
             if (again.st_size, again.st_mtime_ns) != (st.st_size, st.st_mtime_ns):
                 continue  # mutating
-            stamp(runtime_dir, "drop-folder", ref)  # durable before the inventory
+            stamp(runtime_dir, "drop-folder", ref, _held=True)  # durable before the inventory
             inventory[key] = ref
             stamped += 1
         data = json.dumps(inventory, sort_keys=True).encode("ascii")

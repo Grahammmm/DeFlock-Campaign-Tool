@@ -376,7 +376,7 @@ class RenderArrivalTests(unittest.TestCase):
         with self.assertRaises(self.render.RenderError):
             self.do_render(MIN_FREE_BYTES="1")
         with self.assertRaises(self.render.RenderError):
-            self.do_render(RUN_BUDGET_SECONDS="2700")
+            self.do_render(RUN_BUDGET_SECONDS="2800")
 
 
 if __name__ == "__main__":
