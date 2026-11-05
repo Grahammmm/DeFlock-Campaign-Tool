@@ -13,7 +13,9 @@ from .content import (_read_json, load_comment_asks, load_content, load_finding,
                       load_participation)
 from .kit import _kit_folder, _write_json
 from .legal_claims import legal_notes
-from .meetings import _clean, comment_kit_md
+from .meeting_elsewhere import choose
+from .meetings import _clean, comment_kit_md, manual_note
+from .meetings_manual import ManualMeetingError, read_meetings
 from .supporters import MAX_COSIGNERS, cosign_problems, resolve_cosigners
 
 MAX_KIT_BYTES = 4 * 1024 * 1024
@@ -26,22 +28,11 @@ class MeetingStageError(ValueError):
 
 
 def _read_kit(root):
-    path = root / "kit" / "meetings.json"
-    if os.path.islink(path):
-        raise MeetingStageError("kit/meetings.json must not be a symlink")
-    if not path.is_file():
-        raise MeetingStageError("kit/meetings.json not found; run `meetings` first")
-    if path.stat().st_size > MAX_KIT_BYTES:
-        raise MeetingStageError("kit/meetings.json: larger than 4 MiB")
+    """DF1103-09: kit/meetings.json (scan) and kit/meetings-manual.json (organizer-entered), merged by id."""
     try:
-        document = json.loads(path.read_bytes().decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise MeetingStageError(f"kit/meetings.json: not UTF-8 JSON ({exc.__class__.__name__})") from None
-    if not isinstance(document, dict) or document.get("schema_version") != 1:
-        raise MeetingStageError("kit/meetings.json: unsupported schema_version (expected 1)")
-    if not isinstance(document.get("meetings"), list):
-        raise MeetingStageError("kit/meetings.json: meetings must be a list")
-    return document["meetings"]
+        return read_meetings(root)
+    except ManualMeetingError as exc:
+        raise MeetingStageError(str(exc)) from None
 
 
 def _find(meetings, meeting_id):
@@ -82,11 +73,16 @@ def _chosen_cosigners(cosign_ids):
 
 
 def stage(root, meeting_id, agency_id=None, location=None, replace=False, participation=None, today=None,
-          finding_ids=None, asks=None, cosign_ids=None):
+          finding_ids=None, asks=None, cosign_ids=None, elsewhere_indices=None):
     override = load_comment_asks(asks, "--ask") if asks is not None else None  # DF2207-07: before anything is read or written
     cosign_ids = _chosen_cosigners(cosign_ids) if cosign_ids is not None else None
     cfg = read_config(root)
     meeting = _find(_read_kit(root), meeting_id)
+    manual = meeting.get("source") == "manual"
+    if manual and agency_id is None:
+        agency_id = meeting["agency_id"]  # the saved agency; the kit and its lookup use this one entry
+    elif manual and agency_id != meeting["agency_id"]:
+        raise MeetingStageError(f"--agency-id: meeting {meeting_id} is saved for another agency")
     if meeting.get("status") == "cancelled":
         raise MeetingStageError(f"meeting {meeting_id} is cancelled; no comment kit")
     try:
@@ -102,6 +98,12 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     custom = override if override is not None else site_asks
     findings = (_chosen_findings(model["findings"], list(finding_ids)) if finding_ids is not None
                 else _default_findings(model["findings"], agency_id))
+    snapshots = []
+    if elsewhere_indices is not None:  # DF1107-06: stored order of content/elsewhere.json, never the page's sorting
+        try:
+            snapshots = choose(model.get("elsewhere"), elsewhere_indices)
+        except ValueError as exc:
+            raise MeetingStageError(str(exc)) from None
     cited = [{**f, "path": f"/findings/{f['slug']}.html"} for f in findings]
     entry = {**meeting, "body": _clean(meeting.get("body")), "agenda_item": _clean(meeting.get("agenda_item"))}
     if participation is not None:  # organizer-verified JSON; validated before anything is written
@@ -128,7 +130,7 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
         "starts_at": meeting.get("starts_at"),
         "agenda_item": entry["agenda_item"],
         "comment_kit_md": comment_kit_md(entry, cited, cfg["name"], base_url=model["site"].get("base_url"),
-                                    asks=custom, **({"cosign_names": [row["name"] for row in cosigners]} if cosigners else {})),
+                                    asks=custom, **({"elsewhere": snapshots} if snapshots else {}), **({"cosign_names": [row["name"] for row in cosigners]} if cosigners else {})),
     }
     if isinstance(meeting.get("agenda_url"), str):
         document["agenda_url"] = meeting["agenda_url"]
@@ -141,6 +143,8 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
         document["cosigners"] = list(cosign_ids)
     if cited:  # DF2207-06: the exact ids the kit cites, once; a kit citing none omits the field
         document["cited_findings"] = [f["id"] for f in cited]
+    if snapshots:  # full snapshots, flag order: a later reorder of elsewhere.json cannot change this kit
+        document["cited_elsewhere"] = snapshots
     kept = root / "content" / "meetings" / f"{meeting_id}.json"  # an organizer-verified outcome survives --replace
     try:
         old = _read_json(kept) if replace and kept.is_file() and not os.path.islink(kept) else {}
@@ -170,10 +174,13 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     _write_json(target, document)
     report = {"written": f"content/meetings/{target.name}", "findings_cited": len(cited),
               "findings": [f["id"] for f in cited], "replaced": replaced,
-              "note": NOTE}
+              "note": manual_note(meeting) if manual else NOTE}
     if cosigners:
         report["cosigners"] = list(cosign_ids)
     flags = _ask_notes(custom, "--ask" if override is not None else "site.json.comment_asks")
+    if snapshots:  # raw as_stated scanned; positions and rules only
+        report["elsewhere"] = [{key: s[key] for key in ("place", "body", "decided_on")} for s in snapshots]
+        flags += legal_notes((f"--elsewhere[{n}]", s["as_stated"]) for n, s in enumerate(snapshots, 1))
     if flags:  # advisory only: positions and rule names, never the text; the kit is written either way
         report["review_flags"] = flags
     return report

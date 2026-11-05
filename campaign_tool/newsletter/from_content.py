@@ -63,14 +63,16 @@ def manifest_from_content(root, cfg, since=None, now=None):
     model = load_content(root)
     if model is None:
         raise ValueError("--from-content needs a content/ directory")
+    # DF1622-13: ``id`` and ``slug`` (findings) and ``id`` (meetings) are identity only; build_draft never renders them.
     findings = [{"title": f["title"], "summary": f["summary"], "classification": f["classification"],
                  "confidence": f["confidence"], "path": f"/findings/{f['slug']}.html",
                  "published_at": f["published_at"], "corrected": bool(f["corrections"]),
-                 "corrections": [{"date": c["date"], "note": c["note"]} for c in f["corrections"]]}
+                 "corrections": [{"date": c["date"], "note": c["note"]} for c in f["corrections"]],
+                 "id": f["id"], "slug": f["slug"]}
                 for f in model["findings"]]
     meetings = [{"body": m["body"], "starts_at": m["starts_at"], "agenda_item": m["agenda_item"],
                  "agenda_url": m["agenda_url"], "relevance": None,
-                 "participation": m.get("participation")}  # DF2037-15: verified facts, or None (check the agenda)
+                 "id": m["id"], "participation": m.get("participation")}  # DF2037-15: verified facts, or None (check the agenda)
                 for m in model["meetings"] if m.get("status") != "cancelled"]
     # DF2237-12: only outcomes an organizer recorded (verified_at on or after the day of `since`);
     # a meeting without one is never listed as decided.
