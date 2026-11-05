@@ -66,8 +66,8 @@ class SocialMeetingTests(unittest.TestCase):
         self.assertFalse(summary["posted"])
         draft = (self.out / "cedar-verified.md").read_text(encoding="utf-8")
         self.assertEqual(draft, MARK.format("cedar-verified") + EXPECTED + "\n")
-        self.assertEqual(self.tree(), ["kit/social", "kit/social/meetings", "kit/social/meetings/.written.json",
-                                       "kit/social/meetings/cedar-verified.md"])
+        self.assertEqual(self.tree(), ["kit/social", "kit/social/meetings", "kit/social/meetings/.check.json",
+                                       "kit/social/meetings/.written.json", "kit/social/meetings/cedar-verified.md"])
         self.assertFalse((self.root / "public").exists())
 
     def test_cancelled_past_far_and_unverified_skipped_and_counted(self):  # edge 2
@@ -272,8 +272,11 @@ class SocialMeetingTests(unittest.TestCase):
         build_meeting_social(self.root, now=NOW)
         self.assertEqual({p.name: p.read_bytes() for p in (self.root / "kit" / "social").glob("*.md")}, findings_before)
         check_after = self.cli("--check")
-        self.assertEqual((check_after.returncode, check_after.stdout), (check_before.returncode, check_before.stdout))
-        self.assertEqual(json.loads(check_after.stdout)["stale"], [])
+        report_after = json.loads(check_after.stdout)
+        folders_after = report_after.pop("folders")  # the meeting folders are now named; the finding part is unchanged
+        self.assertEqual((check_after.returncode, report_after), (check_before.returncode, json.loads(check_before.stdout)))
+        self.assertEqual(sorted(folders_after), ["kit/social/meetings", "kit/social/meetings/x"])
+        self.assertEqual(report_after["stale"], [])
         summary = build_social(self.root)  # finding drafts rerun: nothing about meetings
         self.assertEqual(sorted(summary), ["kept_edited", "posted", "stale", "suggested", "written"])
         self.assertEqual(summary["stale"], [])

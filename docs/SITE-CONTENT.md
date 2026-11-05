@@ -1619,6 +1619,55 @@ sends, publishes, builds and fetches nothing.
   one after the other, not as a transaction: after an I/O failure the first file can already be new, the command says so
   and exits 1, and running it again with `--replace` repairs the pair.
 
+## External source links (`content link-check`)
+
+```
+python3 -m campaign_tool content link-check --directory CAMPAIGN [--online]
+```
+
+Without `--online` the command prints a deterministic inventory of the external `https://` URLs the public content cites and
+the line `Offline inventory; no URLs fetched.` It touches no network, DNS, cookie jar or cache, writes no file and changes no
+content; a missing `content/` is refused, never scaffolded. Only the validated public content is read (never `public/`,
+`kit/sent`, drafts or record bytes). Relative, `mailto:`, `http:`, `data:`, `file:` and `javascript:` references are not listed,
+nor are links to the host of `site.base_url` (when it is unset every absolute https reference is treated as external).
+
+Each URL is shown exactly as submitted with every `content/<file>:<field>` that cites it (repeated uses keep every locator).
+URLs that differ only by `#fragment` share one request. Cited fields:
+
+| Content | Fields |
+| --- | --- |
+| `agencies.json` (or `kit/agencies.json`) | `records_url`, `portal.url`, `verification.source_url`, the generated transparency URL, `profile.alpr_policy.url` and `.source_url`, `profile.policy_check.policy_url`, `profile.contract.source_url`, `profile.contract_check.contract_url`, `profile.pre_implementation_meeting.source_url`, `profile.transparency[].source_url`, `profile.funding[].source_url`, `profile.reports[].source_url`, `profile.sharing.source_url`, `agency-actions.json` `source_url` |
+| `sources.json` | `public_url` |
+| `meetings/*.json` | `agenda_url`, `participation.source_url`, `outcome.source_url`, `.minutes_url`, `.recording_url`, `.direction_source`, links in `comment_kit_md` |
+| `officials.json` | `profile_url`, `source_url` |
+| `statements.json` | `source_url` (stored row index) |
+| `body-schedules.json` | `source_url` (stored schedule index, not the sorted order) |
+| `events.json` | `url` and links in `description_md` |
+| Markdown | https links in `site.json` `mission_md` and `about_md`, finding `body_md`, `pages/*.json`, `topics/*.json` `intro_md`, FAQ answers, the glossary, and `elsewhere.json` `source_url` and `news_url` |
+
+When DF0237-03 recorded an `archived_url` and `archived_on` beside a link, they are printed under that link as
+`archive recorded at ...`, and the archive URL is itself an inventory entry. An archive is never fetched in place of a broken
+original and never hides its failure.
+
+With `--online` each distinct URL is requested once, one at a time, with `GET` (first 64 KiB only, never decoded or stored),
+no cookies, credentials, referrer or proxy, certificate verification on, 15 seconds per request, the fixed header
+`User-Agent: DeFlock-Campaign-Tool/link-check` and no retries. At most 5 redirects (301, 302, 303, 307, 308) are followed and
+every redirect target is shown; a redirect to a non-https URL, with credentials, with control characters, without a
+`Location`, in a loop or past the fifth is shown and reported as `error` without being requested. Results per URL:
+
+| Result | Meaning |
+| --- | --- |
+| `ok` | 2xx with no redirect |
+| `moved` | 2xx after one or more redirects |
+| `gone` | final status 404 or 410 (also after a redirect) |
+| `timeout` | the connection or read timed out |
+| `error` | TLS, DNS or connection failure, any other non-2xx status (403, 429 and 5xx are not `gone`), a refused redirect or a read failure |
+
+Exit code 0 when everything is `ok` or `moved` (or nothing is cited); 3 after all URLs are printed if any is `gone`, `error` or
+`timeout`; 1 when the content is missing or invalid. Failures print a category such as `TLS error`, never raw exception text.
+A reachable URL is not proof that the source is authentic, equivalent to what the content cites, factually correct or legally
+reviewed. The command never updates a URL, `checked_on` or `archived_on`.
+
 ## What is never rendered
 
 - Findings that are not `state: published`, carry `needs_attorney_review`, or

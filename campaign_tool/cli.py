@@ -925,6 +925,7 @@ def main():
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
     social_p.add_argument("--check", action="store_true", help="Report draft problems without writing (exit 3 on any)")
+    social_p.add_argument("--text", action="store_true", help="With --check: print the report as text grouped by folder instead of JSON")
     social_p.add_argument("--platform", action="append", choices=["x", "bluesky", "mastodon"],
                           help="Draft for this platform's own length rule into kit/social/<platform> (repeatable)")
     social_p.add_argument("--meetings", action="store_true",
@@ -1408,6 +1409,10 @@ def main():
     sharing_p.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD", help="Day the organizer read the portal")
     sharing_p.add_argument("--source-url", required=True, help="https URL of the portal page (transparency.flocksafety.com)")
     sharing_p.add_argument("--replace", action="store_true", help="Overwrite an existing sharing list")
+    links_p = content_cmds.add_parser("link-check", help="List every external https URL the public content cites; with --online "
+                                      "also request each once (GET, first 64 KiB, no cookies, 15 s, 5 redirects). Writes nothing")
+    links_p.add_argument("--directory", required=True)
+    links_p.add_argument("--online", action="store_true", help="Touch the network; without it nothing is fetched")
     coverage_cmds = content_cmds.add_parser("coverage", help="Record press coverage in content/coverage.json for /news.html "
                                             "(typed by the organizer; nothing is fetched, quoted or published)"
                                             ).add_subparsers(dest="coverage_command", required=True)
@@ -1652,11 +1657,13 @@ def main():
     if getattr(args, "json", False) and not args.checklist:
         parser.error("--json requires --checklist")
     if args.command == "social" and args.check and args.platform:
-        parser.error("--check reads kit/social only; it cannot be combined with --platform")
+        parser.error("--check reads every draft folder itself; it cannot be combined with --platform")
     if args.command == "social" and args.meetings and args.check:
-        parser.error("--check reads finding drafts only; it cannot be combined with --meetings")
+        parser.error("--check reads every draft folder itself; it cannot be combined with --meetings")
     if args.command == "social" and args.outcomes and (args.meetings or args.check):
-        parser.error("--outcomes cannot be combined with " + ("--meetings" if args.meetings else "--check (--check reads finding drafts only)"))
+        parser.error("--outcomes cannot be combined with " + ("--meetings" if args.meetings else "--check (--check reads every draft folder itself)"))
+    if args.command == "social" and args.text and not args.check:
+        parser.error("--text needs --check")
     if args.command == "social" and args.events and (args.meetings or args.outcomes or args.check or args.thread):
         parser.error("--events cannot be combined with --meetings, --outcomes, --check or --thread")
     if args.command == "social" and args.finding is not None and not args.thread:
@@ -1742,7 +1749,11 @@ def main():
         elif args.command == "social" and args.check:
             from .social import check_social
             report = check_social(root)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
+            if args.text:
+                from .social_check import format_text
+                sys.stdout.write(format_text(report))
+            else:
+                print(json.dumps(report, indent=2, ensure_ascii=False))
             sys.exit(3 if report["problems"] else 0)
         elif args.command == "social":
             social_cmd(root, args.platform, args.meetings, 14 if args.within_days is None else args.within_days, args.outcomes,
@@ -2061,6 +2072,12 @@ def main():
                 done = agency_actions.remove_action(root, args.agency, agency_actions.parse_index(args.index))
                 print(f"Agency action removed: {done['agency_id']}, index {done['index']}.")
             print("Content only; nothing was built, sent or deployed.")
+        elif args.command == "content" and args.content_command == "link-check":
+            from .content_links import run_cli as link_check_cli
+            report, code = link_check_cli(root, args.online)
+            sys.stdout.write(report)
+            if code:
+                sys.exit(code)
         elif args.command == "content" and args.content_command == "agency-sharing":
             from .content_sharing import import_sharing
             print(json.dumps(import_sharing(root, args.agency, Path(args.csv).expanduser(), args.checked_on, args.source_url,
