@@ -66,7 +66,7 @@ def _has_control(text):
 
 def _check_new(agency_id, name, kind, note, state, existing=(), today=None):
     """The ``add`` field rules for one new agency: its entry, or ValueError naming the first bad field."""
-    if not isinstance(agency_id, str) or not kit.AGENCY_ID.match(agency_id):
+    if not isinstance(agency_id, str) or not kit.AGENCY_ID.fullmatch(agency_id):
         raise ValueError("agency_id must be lowercase like 'ca-example-police'")
     if agency_id[:2] != state:
         raise ValueError(f"agency_id must start with '{state}-' for this campaign's state")
@@ -120,7 +120,7 @@ def _read_csv(csv_path):
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise ValueError("csv is not UTF-8") from None
-    reader, rows, start = csv.reader(io.StringIO(text, newline="")), [], 1
+    reader, rows, start = csv.reader(io.StringIO(text, newline=""), strict=True), [], 1
     try:
         for cells in reader:
             if cells:
