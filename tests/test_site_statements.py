@@ -115,7 +115,7 @@ class StatementsTests(unittest.TestCase):
         self.build()
         page = self.read(COUNCIL_PAGE)
         self.assertEqual(page.count("What decision makers have said"), 1)
-        self.assertIn('<p class="statement-quote" style="white-space: pre-wrap">\u201c' + "  Keep  this &lt;b&gt;exact&lt;/b&gt; &amp; "
+        self.assertIn('<p class="statement-quote">\u201c' + "  Keep  this &lt;b&gt;exact&lt;/b&gt; &amp; "
                       '&quot;quoted&quot; text — 100%  ' + '\u201d</p>', page.replace("&#x27;", "'"))
         self.assertIn("(recording at 1:02:45)", page)
         self.assertIn("Campaign context: Said before the vote.", page)
@@ -128,6 +128,20 @@ class StatementsTests(unittest.TestCase):
         self.assertNotIn("statement-quote", self.read("meetings/cedar-council-2026-10.html"))
         self.build()  # repeat builds are deterministic
         self.assertEqual(self.read(COUNCIL_PAGE), page)
+
+    # CSP is style-src 'self': the pre-wrap presentation must come from style.css, never an inline style attribute
+    def test_whitespace_preserved_under_csp_without_inline_style(self):
+        self.build()
+        absent_css = self.read("style.css")
+        self.assertNotIn("statement-quote", absent_css)
+        self.statements(statement(quote="a  b   c"))
+        self.build()
+        page, css = self.read(COUNCIL_PAGE), self.read("style.css")
+        self.assertNotIn("style=", page)
+        self.assertIn("style-src 'self'", self.read("_headers"))
+        self.assertNotIn("unsafe-inline", self.read("_headers"))
+        self.assertIn(".statement-quote{white-space:pre-wrap}", css)
+        self.assertIn('<p class="statement-quote">\u201ca  b   c\u201d</p>', page)
 
     def test_quote_of_400_is_never_shortened_and_repeats_are_not_merged(self):
         long = "é" * 400

@@ -1413,7 +1413,7 @@ class Site:
             source = f'<a href="{e(row["source_url"])}" rel="noopener noreferrer">{self.t("statements.source")}</a>'
             if row.get("recording_time"):
                 source += " " + self.t("statements.recording", time=e(row["recording_time"]))
-            lines = (f'<p>{head}</p><p class="statement-quote" style="white-space: pre-wrap">{quote}</p>'
+            lines = (f'<p>{head}</p><p class="statement-quote">{quote}</p>'
                      f'<p>{source} · {self.t("statements.checked", date=time_tag(row["checked_on"]))}</p>')
             if row.get("context_note"):
                 lines += f'<p>{self.t("statements.campaign_context", note=e(row["context_note"]))}</p>'
@@ -3102,7 +3102,8 @@ def _plan_site(root, today=None, notes=None):
     brand = model["site"].get("brand", {})  # site.json brand: one appended rule per set part, nothing without it
     colours = ";".join(f"--{var}:{brand[key]}" for key, var in (("accent", "coral"), ("ink", "ink")) if key in brand)
     css = (pages["index.html"]["css"] + EXTRA_CSS + (f":root{{{colours}}}\n" if colours else "")
-           + (".brand-logo{max-height:48px;width:auto;height:auto}\n" if "logo" in brand else ""))
+           + (".brand-logo{max-height:48px;width:auto;height:auto}\n" if "logo" in brand else "")
+           + (".statement-quote{white-space:pre-wrap}\n" if model.get("statements") else ""))
     files = {name: page["html"] for name, page in pages.items()}
     agencies_text, meetings_text = site.agencies_json(), site.meetings_json()  # each rendered once; its CSV is read back from it
     files.update({
