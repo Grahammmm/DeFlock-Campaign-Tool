@@ -569,14 +569,16 @@ class LegacyAndAtomicTests(Fixture):
         self.legacy_fixture()
         names = ["findings/filter.js", "data/findings.json", "feed.xml", "findings/index.html"] + sorted(
             p.relative_to(self.public).as_posix() for p in (self.public / "findings" / "agency").glob("*.xml"))
-        # The staged example meeting adds only this shared footer link to the legacy index.
-        feed_link = ' · <a href="/meetings.xml">Meetings feed</a>'
+        # Only the staged-meetings and public-requests footer links change the legacy index.
+        footer_links = (' · <a href="/meetings.xml">Meetings feed</a>',
+                        ' · <a href="/requests.html">What we have asked for</a>')
         artifacts = []
         for name in names:
             text = self.read(name)
-            self.assertEqual(text.count(feed_link), 1 if name == "findings/index.html" else 0, name)
-            if name == "findings/index.html":
-                text = text.replace(feed_link, "", 1)
+            for link in footer_links:
+                self.assertEqual(text.count(link), 1 if name == "findings/index.html" else 0, name)
+                if name == "findings/index.html":
+                    text = text.replace(link, "", 1)
             artifacts.append(f"{name}\n{text}")
         self.assertEqual(digest("\n".join(artifacts)), LEGACY_DIGEST)
         self.assertEqual(self.read("findings/filter.js"), FILTER_JS)
