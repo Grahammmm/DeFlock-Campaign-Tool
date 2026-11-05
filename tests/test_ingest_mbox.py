@@ -293,6 +293,113 @@ class IngestMboxTests(unittest.TestCase):
         self.assertEqual(set(self.outcomes(again)), {"present"})
         self.assertEqual(self.counts(), stored)
 
+    # RF1410-13: LF and CRLF framing; expected bytes are written out, never produced by the splitter
+    def test_split_lf_crlf_and_mixed_framing_preserves_exact_messages(self):
+        from campaign_tool.ingest_mbox import _split
+        lf_sep, crlf_sep = b"From a@example.org Tue\n", b"From a@example.org Tue\r\n"
+
+        def cut(data):
+            return [data[s:e] for s, e in _split(data, "x.mbox")]
+        self.assertEqual(cut(lf_sep + b"H: 1\n\nbody\n\n"), [b"H: 1\n\nbody\n"])
+        self.assertEqual(cut(crlf_sep + b"H: 1\r\n\r\nbody\r\n\r\n"), [b"H: 1\r\n\r\nbody\r\n"])
+        self.assertEqual(cut(crlf_sep + b"A\r\n\r\n" + crlf_sep + b"B\r\n\r\n"), [b"A\r\n", b"B\r\n"])
+        # mixed: CRLF separator with LF message and LF framing, LF separator with CRLF framing
+        self.assertEqual(cut(crlf_sep + b"A\nB\r\nC\n\n" + lf_sep + b"D\r\n\r\n"), [b"A\nB\r\nC\n", b"D\r\n"])
+        # only one framing ending is removed; earlier blank lines stay
+        self.assertEqual(cut(crlf_sep + b"A\r\n\r\n\r\n"), [b"A\r\n\r\n"])
+        self.assertEqual(cut(lf_sep + b"A\n\n\n"), [b"A\n\n"])
+        # no framing newline kept; a bare CR is never removed; a final single CRLF is the framing
+        self.assertEqual(cut(crlf_sep + b"A"), [b"A"])
+        self.assertEqual(cut(crlf_sep + b"A\r"), [b"A\r"])
+        self.assertEqual(cut(crlf_sep + b"A\r\n"), [b"A"])
+        self.assertEqual(cut(lf_sep + b"A\r\n\r"), [b"A\r\n\r"])
+        # >From kept; inline From does not split; line-start From (mboxo) does
+        self.assertEqual(cut(crlf_sep + b">From x\r\nSent From y\r\n\r\n"), [b">From x\r\nSent From y\r\n"])
+        self.assertEqual(len(cut(crlf_sep + b"A\r\nFrom z\r\nB\r\n\r\n")), 2)
+
+    def test_empty_crlf_message_skipped_without_derived_object(self):
+        good = message(body="Synthetic CRLF body.\n").replace(b"\n", b"\r\n")
+        for sep, frame in ((b"\n", b"\n"), (b"\r\n", b"\r\n")):
+            with self.subTest(frame=frame):
+                head = b"From records@example.org Tue" + sep
+                data = head + frame + head + good + frame + head + frame + head + good + frame + head + frame
+                path = self.write(data, f"empty{len(frame)}.mbox")
+                report = self.ingest(path)
+                self.assertEqual(report["skipped"], [{"number": n, "code": "empty"} for n in (1, 3, 5)])
+                self.assertEqual((report["count"], [m["number"] for m in report["messages"]]), (5, [2, 4]))
+                self.assertEqual([m["sha256"] for m in report["messages"]], [sha(good)] * 2)
+        objects = os.listdir(self.root / "private" / "objects")
+        self.assertNotIn(sha(b"\r"), objects)
+        self.assertNotIn(sha(b""), objects)
+        self.assertEqual(len(objects), 3)  # two mailboxes and one message
+        self.assertEqual(self.rows("SELECT count(*) FROM contains"), [(4,)])
+
+    def crlf_three(self):
+        return [m.replace(b"\n", b"\r\n") for m in three()]
+
+    def crlf_mbox(self, *messages):
+        sep = SEPARATOR[:-1] + b"\r\n"
+        return b"".join(sep + body + b"\r\n" for body in messages)
+
+    def test_crlf_cli_hash_receipt_contains_and_replay(self):
+        m1, m2, m3 = self.crlf_three()
+        data = self.crlf_mbox(m1, m2, m3)
+        path = self.write(data)
+        report = self.ingest(path)
+        box = sha(data)
+        self.assertEqual(report["mailbox"]["sha256"], box)
+        self.assertEqual([(m["number"], m["sha256"]) for m in report["messages"]], [(1, sha(m1)), (2, sha(m2)), (3, sha(m3))])
+        objects = self.root / "private" / "objects"
+        self.assertEqual((objects / box).read_bytes(), data)
+        self.assertEqual([(objects / sha(m)).read_bytes() for m in (m1, m2, m3)], [m1, m2, m3])
+        forwarded = report["messages"][2]["attachments"][0]["sha256"]
+        self.assertEqual(sorted(self.rows("SELECT * FROM contains")), sorted([
+            (box, sha(m1), "message-1.eml"), (box, sha(m2), "message-2.eml"), (box, sha(m3), "message-3.eml"),
+            (sha(m1), sha(PDF), "scan.pdf"), (sha(m1), sha(CSV), "scan-2.pdf"), (sha(m3), forwarded, "attachment-1.eml")]))
+        stored = (self.counts(), sorted(os.listdir(objects)))
+        again = self.ingest(path)
+        self.assertEqual(set(self.outcomes(again)), {"present"})
+        self.assertEqual((self.counts(), sorted(os.listdir(objects))), stored)
+
+    def test_crlf_dry_run_and_refusals_preserve_private_tree(self):
+        m1, m2, _ = self.crlf_three()
+        data = self.crlf_mbox(m1, bad_message(), m2)
+        path = self.write(data)
+        before = self.files()
+        preview = self.ingest(path, dry=True)
+        self.assertEqual(self.files(), before)
+        self.assertEqual(preview["skipped"], [{"number": 2, "code": "malformed"}])
+        real = self.ingest(path)
+        self.assertEqual([m["sha256"] for m in preview["messages"]], [m["sha256"] for m in real["messages"]])
+        self.assertEqual([m["sha256"] for m in real["messages"]], [sha(m1), sha(m2)])
+        self.assertEqual(real["skipped"], preview["skipped"])
+        after = self.files()
+        self.assertEqual(self.ingest(path, dry=True)["count"], 3)
+        self.assertEqual(self.files(), after)
+        refused = self.write(b"Hello\r\n" + data, "hello-crlf.mbox")
+        self.ingest(refused, returncode=1)
+        self.assertEqual(self.files(), after | {str(refused.relative_to(self.base)): refused.read_bytes()})
+
+    def test_derived_size_boundary_excludes_complete_frame(self):
+        import contextlib
+        import io
+        from campaign_tool import ingest_mbox
+        limit = 40
+        head = b"Subject: s\r\n\r\n"
+        for eol, frame in ((b"\n", b"\n"), (b"\r\n", b"\r\n")):
+            fit = head.replace(b"\r\n", eol) + b"x" * (limit - len(head.replace(b"\r\n", eol)))
+            for payload, code in ((fit, None), (fit + b"y", "too_large")):
+                with self.subTest(eol=eol, size=len(payload)):
+                    sep = b"From a@example.org Tue" + eol
+                    path = self.write(sep + payload + frame, "size.mbox")
+                    args = types.SimpleNamespace(mbox=str(path), source_id="synthetic-mbox-1", dry_run=True)
+                    out = io.StringIO()
+                    with mock.patch.object(ingest_mbox, "MAX_BYTES", limit), contextlib.redirect_stdout(out):
+                        ingest_mbox.ingest_mbox(args, self.root)
+                    report = json.loads(out.getvalue().rsplit("Dry run", 1)[0])
+                    self.assertEqual(report["skipped"], [{"number": 1, "code": code}] if code else [])
+                    self.assertEqual([m["sha256"] for m in report["messages"]], [] if code else [sha(payload)])
+
 
 if __name__ == "__main__":
     unittest.main()
