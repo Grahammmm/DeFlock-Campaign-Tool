@@ -38,7 +38,7 @@ python3 -m campaign_tool build --directory ../my-campaign
 python3 -m http.server 8080 --bind 127.0.0.1 --directory ../my-campaign/public
 ```
 
-`kit` resolves the county (or a city given with `init --location "Morro Bay"`) against the offline California agency seed and writes `../my-campaign/kit/`: an organizer-owned `agencies.json`, one draft records request per sheriff, police and CHP entry, governing bodies, and a law-package summary. Nothing is sent and no agency is asserted to use ALPR; see [docs/AGENCY-DISCOVERY.md](docs/AGENCY-DISCOVERY.md) for what to verify before sending.
+`kit` resolves the county (or a city given with `init --location "Morro Bay"`) against the offline California agency seed and writes `../my-campaign/kit/`: an organizer-owned `agencies.json`, one draft records request per sheriff, police and CHP entry, governing bodies, and a law-package summary. Nothing is sent and no agency is asserted to use ALPR; see [docs/AGENCY-DISCOVERY.md](docs/AGENCY-DISCOVERY.md) for what to verify before sending. To take one records request from choosing agencies to a recorded response, follow the [records-request organizer guide](docs/REQUESTS-GUIDE.md).
 
 Open http://127.0.0.1:8080. The generated site is a neutral campaign starter, not a claim that any agency violated a law. Use an external campaign directory so private records do not live in the software repository. A stopped command prints a `Fix:` line when the cause is known.
 
@@ -70,7 +70,7 @@ Original bytes are preserved under their SHA-256 hash. Separate receipt identiti
 - Offline agency discovery for all 58 California counties (`data/agencies/us-ca.json`, unverified seed) and a drafted-request kit.
 - Static, mobile-friendly website generation: a neutral starter from `campaign.json` alone, or a multi-page campaign site (findings with hashed sources, agencies, source library, meetings, Atom feed, agency cards and optional MapLibre map) from a reviewed `content/` directory with a generated Content-Security-Policy; see [docs/SITE-CONTENT.md](docs/SITE-CONTENT.md).
 - Private local document storage and SQLite receipt ledger.
-- A review-gate library binding independent review receipts to finding content; volunteer reviewers follow the role-by-role [review guide](docs/REVIEW-GUIDE.md), and the person writing a finding follows the task-ordered [findings guide](docs/FINDINGS-GUIDE.md).
+- A review-gate library binding independent review receipts to finding content; volunteer reviewers follow the role-by-role [review guide](docs/REVIEW-GUIDE.md), and the person writing a finding follows the task-ordered [findings guide](docs/FINDINGS-GUIDE.md); the press, social and newsletter volunteer follows the draft-only [outreach guide](docs/OUTREACH-GUIDE.md).
 - Synthetic policy, search log, agreement, and agency reply fixtures.
 - Offline newsletter drafts (`python3 -m campaign_tool.newsletter`), Legistar meeting import with an ALPR keyword filter (`campaign_tool meetings`, fixture-driven without `--online`), and verified `backup` / `verify` / `restore` of a campaign directory.
 - Portable records-analysis and review skills.

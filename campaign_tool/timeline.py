@@ -3,7 +3,8 @@ from datetime import datetime
 
 LEAD = "Dates from published sources, findings, corrections, records requests, meetings and recorded decisions."
 KINDS = ("records_received", "finding_published", "correction", "meeting", "records_requested", "request_update",
-         "decision")
+         "decision", "agency_action")
+ACTIONS_NOTE = " Agency actions are transcribed from their cited official sources."  # DF0237-01: only when an event exists
 
 
 def _day(value):
@@ -17,9 +18,11 @@ def timeline_events(model, today, agency_pages=None):
     Equal day/kind/href events use text as a final deterministic tie-breaker.
     ``agency_pages`` maps agency_id to its page path; other agencies link to their agencies.html anchor.
     """
+    from .labels import DEFAULTS
     from .site import OUTCOME_LABELS, asked_sentence
 
     names = {a["agency_id"]: a["name"] for a in model["agencies"]}
+    labels = model.get("labels") or DEFAULTS  # the kind label the agency page shows, overrides included
     events = []
 
     def add(value, kind, text, href, **extra):
@@ -27,6 +30,9 @@ def timeline_events(model, today, agency_pages=None):
 
     for agency in model["agencies"]:
         href = (agency_pages or {}).get(agency["agency_id"]) or f'/agencies.html#{agency["slug"]}'
+        for action in agency.get("actions", []):  # DF0237-01: transcribed from the cited official source, never inferred
+            add(action["on"], "agency_action", f'{agency["name"]}: {labels["agency.action_kind_" + action["kind"]]}: {action["as_stated"]}', href,
+                source_url=action["source_url"])
         for item in agency.get("asked", []):
             add(item["asked_on"], "records_requested", f'Records requested from {agency["name"]}: {item["topic"]}', href)
             if item.get("updated_on"):
@@ -64,7 +70,8 @@ def render_timeline(site, events):
     """Render the body through the existing escaping helper and shared frame."""
     from .site import e
 
-    parts = ['<section class="section" id="content"><h2>Campaign timeline</h2>', f'<p>{LEAD}</p>']
+    note = ACTIONS_NOTE if any(event["kind"] == "agency_action" for event in events) else ""
+    parts = ['<section class="section" id="content"><h2>Campaign timeline</h2>', f'<p>{LEAD}{note}</p>']
     month = None
     for event in events:
         current = event["date"][:7]
