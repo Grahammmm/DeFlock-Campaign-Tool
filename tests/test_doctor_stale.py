@@ -382,6 +382,150 @@ class DoctorStaleTests(unittest.TestCase):
         for detail in (self.package["records_law"]["sources"][0]["title"], FUTURE, "age_days"):
             self.assertNotIn(detail, buffer.getvalue())
 
+    # --- DF1107-13: dated objects in the public content/agencies.json ---
+    PREFIX = "content/agencies.json:ex-city."
+
+    def write_agencies(self, *profiles, **extra):
+        (self.root / "content").mkdir(exist_ok=True)
+        rows = [dict({"agency_id": f"ex-city{'' if i == 0 else i}", "name": "Synthetic"}, profile=p, **extra)
+                for i, p in enumerate(profiles)]
+        (self.root / "content" / "agencies.json").write_text(json.dumps(rows), encoding="utf-8")
+
+    def profile_entries(self, days=90):
+        return {e["input"]: e for e in self.report(days)["stale_inputs"] if e["input"].startswith("content/agencies")}
+
+    def test_every_family_boundary_future_and_hint(self):
+        hint = "recheck the source and update checked_on"
+        for singleton in ("alpr_policy", "contract", "policy_check", "contract_check", "pre_implementation_meeting",
+                          "sharing"):
+            for offset, status in ((89, None), (90, None), (91, "stale"), (-1, "future")):
+                with self.subTest(field=singleton, offset=offset):
+                    self.write_agencies({singleton: {"checked_on": ago(offset)}})
+                    found = self.profile_entries()
+                    if status is None:
+                        self.assertEqual(found, {})
+                        continue
+                    entry = found[self.PREFIX + singleton]
+                    self.assertEqual((entry["status"], entry["date"], entry["age_days"]), (status, ago(offset), offset))
+                    self.assertEqual(entry["refresh"], hint if status == "stale" else FUTURE + hint)
+        self.write_agencies({"funding": [{"checked_on": ago(5)}, {"checked_on": ago(120)}, {"checked_on": ahead(1)}]})
+        found = self.profile_entries()
+        self.assertEqual(sorted(found), [self.PREFIX + "funding[1]", self.PREFIX + "funding[2]"])
+        self.assertEqual((found[self.PREFIX + "funding[1]"]["status"], found[self.PREFIX + "funding[2]"]["status"]),
+                         ("stale", "future"))
+
+    def test_only_newest_transparency_and_unknown_dates(self):
+        self.write_agencies({"transparency": [{"checked_on": ago(3)}, {"checked_on": ago(400)}]})
+        self.assertEqual(self.profile_entries(), {})  # old history under a fresh newest: silent
+        self.write_agencies({"transparency": [{"checked_on": ago(400)}, {"checked_on": ago(200)}, {"checked_on": ago(200)}]})
+        self.assertEqual(list(self.profile_entries()), [self.PREFIX + "transparency[1]"])  # unsorted, tie: first wins
+        self.write_agencies({"transparency": [{"checked_on": ago(3)}, {"checked_on": "2026-02-30"}]})
+        found = self.profile_entries()
+        self.assertEqual(list(found), [self.PREFIX + "transparency[1]"])
+        self.assertEqual((found[self.PREFIX + "transparency[1]"]["status"], found[self.PREFIX + "transparency[1]"]["date"]),
+                         ("unknown", None))
+        self.assertNotIn("age_days", found[self.PREFIX + "transparency[1]"])
+        self.write_agencies({"contract": {"vendor": "x"}, "alpr_policy": {"checked_on": 20261001}})
+        self.assertEqual({k: v["status"] for k, v in self.profile_entries().items()},
+                         {self.PREFIX + "contract": "unknown", self.PREFIX + "alpr_policy": "unknown"})
+
+    def test_nothing_added_without_profile_facts_or_for_unselected_or_private_kit(self):
+        self.write_agencies({}, selected=False)
+        self.assertEqual(self.profile_entries(), {})
+        self.write_agencies({"funding": [], "transparency": [], "contract": None, "sharing": None})
+        self.assertEqual(self.profile_entries(), {})
+        self.write_agencies({"contract": {"checked_on": ago(500)}}, selected=False)
+        self.assertEqual(self.profile_entries(), {})
+        (self.root / "content" / "agencies.json").write_text("[]", encoding="utf-8")
+        (self.root / "kit").mkdir(exist_ok=True)
+        (self.root / "kit" / "agencies.json").write_text(json.dumps(
+            [{"agency_id": "ex-city", "name": "S", "profile": {"contract": {"checked_on": ago(500)}}}]), encoding="utf-8")
+        self.assertEqual(self.profile_entries(), {})
+        (self.root / "content" / "agencies.json").unlink()
+        self.assertEqual(self.profile_entries(), {})  # missing file: nothing, not a warning
+
+    def test_unreadable_or_malformed_file_is_one_bounded_unknown(self):
+        (self.root / "content").mkdir(exist_ok=True)
+        path = self.root / "content" / "agencies.json"
+        secret = "SECRET-LEAK"
+        for case in ("bytes", "text", "oversize", "dir", "dangling", "fifo", "wrongtype", "badid", "badshape"):
+            with self.subTest(case=case):
+                if path.is_dir() and not path.is_symlink():
+                    path.rmdir()
+                elif path.exists() or path.is_symlink():
+                    path.unlink()
+                if case == "bytes":
+                    path.write_bytes(b"\xff\xfe" + secret.encode())
+                elif case == "text":
+                    path.write_text("{" + secret, encoding="utf-8")
+                elif case == "oversize":
+                    path.write_text('["' + "a" * (2 * 1024 * 1024) + '"]', encoding="utf-8")
+                elif case == "dir":
+                    path.mkdir()
+                elif case == "dangling":
+                    os.symlink(self.root / secret, path)
+                elif case == "fifo":
+                    os.mkfifo(path)
+                elif case == "wrongtype":
+                    path.write_text(json.dumps({"agency_id": secret}), encoding="utf-8")
+                elif case == "badid":
+                    path.write_text(json.dumps([{"agency_id": secret, "profile": {}}]), encoding="utf-8")
+                else:
+                    path.write_text(json.dumps([{"agency_id": "ex-city", "profile": {
+                        "funding": [{"checked_on": ago(300)}, "x"], "contract": [1]}}]), encoding="utf-8")
+                found = self.profile_entries()
+                entry = found["content/agencies.json"]
+                self.assertEqual((entry["status"], entry["date"], entry["refresh"]),
+                                 ("unknown", None, "recheck the source and update checked_on"))
+                self.assertNotIn(secret, json.dumps(self.report()))
+                if case == "badshape":  # the valid sibling is still diagnosed
+                    self.assertEqual(found[self.PREFIX + "funding[0]"]["status"], "stale")
+
+    def test_symlink_to_valid_file_is_not_followed(self):
+        target = self.root / "real.json"
+        target.write_text(json.dumps([{"agency_id": "ex-city", "profile": {"contract": {"checked_on": ago(500)}}}]),
+                          encoding="utf-8")
+        (self.root / "content").mkdir(exist_ok=True)
+        os.symlink(target, self.root / "content" / "agencies.json")
+        self.assertEqual(list(self.profile_entries()), ["content/agencies.json"])
+
+    def test_merged_sorted_capped_unchanged_without_flag_and_read_only(self):
+        self.write_agencies(*[{"contract": {"checked_on": ago(300)}, "funding": [{"checked_on": ago(300)}]}] * 60)
+        self.meetings_at(120)
+        report = self.report()
+        total = len(report["stale_inputs"]) + report["stale_inputs_more"]
+        self.assertEqual(len(report["stale_inputs"]), 100)
+        names = [e["input"] for e in report["stale_inputs"]]
+        self.assertEqual(names, sorted(names))
+        self.assertEqual(total, 120 + 2)  # 120 profile rows + stale meetings + absent map
+        buffer = io.StringIO()
+        config = json.loads((self.root / "campaign.json").read_text(encoding="utf-8"))
+        (self.root / "campaign.json").write_text(json.dumps(dict(config, campaign_id="synthetic-campaign")),
+                                                 encoding="utf-8")
+        with self.assertRaises(ValueError), contextlib.redirect_stdout(buffer):  # long next action: refused, no output
+            cli.readiness(self.root, campaign_id="synthetic-campaign", stale_days=90)
+        self.assertEqual(buffer.getvalue(), "")
+        self.write_agencies({"contract": {"checked_on": ago(300)}, "funding": [{"checked_on": ago(300)}]})
+        report = self.report()
+        with contextlib.redirect_stdout(buffer):
+            cli.readiness(self.root, campaign_id="synthetic-campaign", stale_days=90)
+        self.assertEqual(json.loads(buffer.getvalue())["counts"]["stale_inputs"],
+                         len(report["stale_inputs"]) + report.get("stale_inputs_more", 0))
+        self.assertNotIn("stale_inputs", json.loads(buffer.getvalue()))  # counts only, no detailed array
+        path = self.root / "content" / "agencies.json"
+        command = [sys.executable, "-B", "-m", "campaign_tool", "doctor", "--directory", str(self.root)]
+        self.write_agencies({"contract": {"checked_on": ago(500)}})  # old facts, no flag
+        plain_old = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+        path.unlink()
+        plain_none = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+        self.assertEqual(plain_old.stdout, plain_none.stdout)  # no flag: profile facts change no byte
+        self.assertNotIn("stale_inputs", plain_old.stdout)
+        self.write_agencies({"contract": {"checked_on": ago(500)}})
+        before = (path.read_bytes(), path.stat().st_mtime_ns)
+        with mock.patch.object(socket, "socket", side_effect=AssertionError("no network")):
+            self.report()
+        self.assertEqual(before, (path.read_bytes(), path.stat().st_mtime_ns))
+
 
 if __name__ == "__main__":
     unittest.main()

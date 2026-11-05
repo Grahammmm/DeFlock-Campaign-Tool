@@ -98,10 +98,108 @@ def _law(jurisdiction, stale_days, today):
     return found
 
 
+PROFILE_FILE = "content/agencies.json"
+PROFILE_REFRESH = "recheck the source and update checked_on"
+PROFILE_SINGLETONS = ("alpr_policy", "contract", "policy_check", "contract_check", "pre_implementation_meeting",
+                      "sharing")
+
+
+def _profile_document(root):
+    """The parsed public content/agencies.json: None when absent, "bad" when unreadable (never echoed)."""
+    import json
+    import os
+    import stat
+    from .content import MAX_JSON_BYTES
+    path = root / "content" / "agencies.json"
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):  # symlink (even dangling), directory or FIFO: never opened
+            return "bad"
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return "bad"
+            data = handle.read(MAX_JSON_BYTES + 1)
+        return json.loads(data.decode("utf-8")) if len(data) <= MAX_JSON_BYTES else "bad"
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, RecursionError):
+        return "bad"
+
+
+def _profile_day(value):
+    """A strict round-tripping YYYY-MM-DD string as a date; None for anything else."""
+    if isinstance(value, str) and len(value) == 10:
+        try:
+            day = date.fromisoformat(value)
+        except ValueError:
+            return None
+        return day if day.isoformat() == value else None
+    return None
+
+
+def _profiles(root, stale_days, today):
+    """One entry per dated profile object in content/agencies.json (public file only; no private fallback)."""
+    from .content import AGENCY_ID
+    document = _profile_document(root)
+    if document is None:
+        return []
+    found, bad = [], document == "bad" or not isinstance(document, list)
+
+    def check(name, obj):
+        nonlocal bad
+        if not isinstance(obj, dict):
+            bad = True
+            return
+        entry = _dated(name, _profile_day(obj.get("checked_on")), PROFILE_REFRESH, stale_days, today)
+        if entry:
+            found.append(entry)
+
+    for entry in [] if bad else document:
+        if not isinstance(entry, dict) or not isinstance(entry.get("agency_id"), str) \
+                or not AGENCY_ID.fullmatch(entry["agency_id"]):
+            bad = True
+            continue
+        profile = entry.get("profile")
+        if entry.get("selected", True) is not True or profile is None:
+            continue
+        if not isinstance(profile, dict):
+            bad = True
+            continue
+        base = f"{PROFILE_FILE}:{entry['agency_id']}."
+        for field in PROFILE_SINGLETONS:
+            if profile.get(field) is not None:
+                check(base + field, profile[field])
+        for field in ("funding", "transparency"):
+            items = profile.get(field)
+            if items is None:
+                continue
+            if not isinstance(items, list):
+                bad = True
+                continue
+            if field == "funding":
+                for index, item in enumerate(items):
+                    check(f"{base}funding[{index}]", item)
+                continue
+            newest = None  # the newest valid snapshot (first wins a tie); invalid ones are unknown
+            for index, item in enumerate(items):
+                day = _profile_day(item.get("checked_on")) if isinstance(item, dict) else None
+                if not isinstance(item, dict):
+                    bad = True
+                elif day is None:
+                    check(f"{base}transparency[{index}]", item)
+                elif newest is None or day > newest[0]:
+                    newest = (day, index, item)
+            if newest:
+                check(f"{base}transparency[{newest[1]}]", newest[2])
+    if bad:
+        found.append(_entry(PROFILE_FILE, "unknown", PROFILE_REFRESH))
+    return found
+
+
 def stale_inputs(root, cfg, stale_days, today=None):
     """Stale, future-dated, unknown and absent inputs sorted by input name; fresh inputs are not listed."""
     today = today or date.today()
     jurisdiction = str(cfg.get("country", "US")).lower() + "-" + cfg["state"].lower()
     found = [_meetings(root, stale_days, today), _map(root, stale_days, today), _seed(jurisdiction, stale_days, today)]
     found += _law(jurisdiction, stale_days, today)
+    found += _profiles(root, stale_days, today)
     return sorted((e for e in found if e), key=lambda e: (e["input"], e.get("title", "")))
