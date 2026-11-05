@@ -2281,7 +2281,7 @@ def load_map(content_dir, sources=None, today=None):
 PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
 RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
                                        "agency-cards", "app", "data", "vendor", "meetings", "methods", "privacy", "search",
-                                       "press", "news", "requests"}  # generated top-level names (press: DF2207-10, news: DF0022-03, reserved even when disabled)
+                                       "press", "news", "requests", "cameras"}  # generated top-level names (press: DF2207-10, news: DF0022-03, reserved even when disabled)
 
 
 def _page_string(document, key, label, limit, required):

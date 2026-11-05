@@ -399,7 +399,7 @@ CONSENT_FOOTER_TEMPLATE_MARKER = "[TEMPLATE CONSENT FOOTER: replace with the cam
 DEFAULT_CONSENT_FOOTER = "You receive this because you signed up for {name} updates. Unsubscribe at any time."
 
 
-def build_draft(manifest, now=None, *, archive_public=False):
+def build_draft(manifest, now=None, *, archive_public=False, provenance=False):
     """Return ``{"subject", "html", "text", "counts", "excluded", "consent_footer"}``.
 
     Only findings published at or after ``since`` and meetings starting at or
@@ -417,6 +417,9 @@ def build_draft(manifest, now=None, *, archive_public=False):
     ``{"schema_version": 1, "title": SUBJECT, "body_md": PUBLIC_MARKDOWN}``: the Markdown
     exactly as assembled before the consent footer, so no footer, sender or unsubscribe
     wording, review flag or count can be in it. HTML and text are unchanged.
+
+    ``provenance=True`` (DF1622-13, only ``--from-content``) adds a private ``provenance`` object (see
+    docs/NEWSLETTER.md) from the rows ``id``/``slug`` carry; it is never rendered nor copied to ``public_archive``.
     """
     if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
         raise DraftError("manifest.schema_version must be 1")
@@ -457,7 +460,7 @@ def build_draft(manifest, now=None, *, archive_public=False):
             day, _, note = max(recent)
             label = f"findings[{i}]"
             corrections.append((day, _clean(finding.get("title") or finding.get("summary"), label + ".title", 200),
-                                _note(note), _link(base_url, finding.get("path"), label + ".path")))
+                                _note(note), _link(base_url, finding.get("path"), label + ".path"), finding))
     corrections.sort(key=lambda c: (-c[0].toordinal(), c[1]))
     excluded = {"findings_before_since": len(findings) - len(kept_findings) - len(corrections),
                 "meetings_past": len(meetings) - len(kept_meetings)}
@@ -491,7 +494,7 @@ def build_draft(manifest, now=None, *, archive_public=False):
     lines.append("")
     if corrections:
         lines.append("## Corrections")
-        for day, title, note, link in corrections:
+        for day, title, note, link, _row in corrections:
             entry = f"- **{title}**: corrected {day.isoformat()}" + (f" — {note}" if note else "")
             entry += f" ([Read the finding]({link}))" if link.startswith("https://") else f" ({link})"
             lines.append(entry)
@@ -597,7 +600,36 @@ def build_draft(manifest, now=None, *, archive_public=False):
         result["corrections_listed"] = len(corrections)
     if archive_public:  # absent otherwise, so default, manifest and Worker callers are unchanged
         result["public_archive"] = {"schema_version": 1, "title": result["subject"], "body_md": public_markdown}
+    if provenance:  # DF1622-13: private; absent unless the caller asks, never rendered or copied to public_archive
+        result["provenance"] = _provenance(since_text=manifest.get("since") or None, built_at=now,
+                                           findings=[f for _, f in findings],
+                                           corrections=[c[4] for c in corrections], meetings=[m for _, m, _ in meetings])
     return result
+
+
+def _identity(row, key, label):
+    value = row.get(key)
+    if not isinstance(value, str) or not value or len(value) > 200:
+        raise DraftError(f"{label}.{key}: provenance needs a non-empty text {key}")
+    return value
+
+
+def _provenance(since_text, built_at, findings, corrections, meetings):
+    """The private provenance object (DF1622-13) from the very rows the draft counted or listed, before any display cap."""
+    entries = []
+    for section, rows in (("new", findings), ("correction", corrections)):
+        for row in rows:
+            label = f"{section} finding {str(row.get('title'))[:40]!r}"
+            entries.append({"id": _identity(row, "id", label), "slug": _identity(row, "slug", label),
+                            "published_at": row["published_at"], "section": section,
+                            "corrections": [{"date": c["date"], "note": c["note"]} for c in row.get("corrections") or []]})
+    upcoming = [{"id": _identity(m, "id", f"meeting {str(m.get('body'))[:40]!r}"), "starts_at": m["starts_at"],
+                 "agenda_url": m.get("agenda_url")} for m in meetings]
+    ids = [e["id"] for e in entries] + [e["id"] for e in upcoming]
+    if len(ids) != len(set(e["id"] for e in entries)) + len(set(e["id"] for e in upcoming)):
+        raise DraftError("provenance: duplicate finding or meeting id")
+    return {"schema_version": 1, "built_at": built_at.astimezone(timezone.utc).isoformat(), "since": since_text,
+            "findings": entries, "meetings": upcoming}
 
 
 def _wrap(name, body):

@@ -1,0 +1,164 @@
+{
+  "cases": {
+    "content": {
+      "archive_public": true,
+      "counts": {
+        "findings": 1,
+        "meetings": 2
+      },
+      "files": {
+        "newsletter-draft.html": "c8cfa773-312b55c4-b1095f24-220ff7e6-dc35d583-0296e7c3-57b09adb-7486aae1",
+        "newsletter-draft.json": "715f9fda-b44c7e61-33573447-99ab7d59-79d3dccc-c9cafbc9-c830ecb3-fd41865f",
+        "newsletter-draft.txt": "c50457b9-715f4771-2352c12b-62c9d862-369b9fc5-71c65a5a-81095fd1-83b76aa4"
+      },
+      "keys": [
+        "consent_footer",
+        "corrections_listed",
+        "counts",
+        "excluded",
+        "html",
+        "public_archive",
+        "subject",
+        "text"
+      ],
+      "manifest": {
+        "campaign": {
+          "base_url": "https://synthetic.example.invalid",
+          "county_name": "Synthetic",
+          "name": "Synthetic"
+        },
+        "decisions": [],
+        "findings": [
+          {
+            "classification": "documented_fact",
+            "confidence": "verified",
+            "corrected": false,
+            "corrections": [],
+            "path": "/findings/oak-retention.html",
+            "published_at": "2026-03-10T18:00:00+00:00",
+            "summary": "A synthetic record about oak-retention.",
+            "title": "Synthetic finding oak-retention"
+          },
+          {
+            "classification": "documented_fact",
+            "confidence": "verified",
+            "corrected": true,
+            "corrections": [
+              {
+                "date": "2026-03-03",
+                "note": "Fixed the policy date."
+              }
+            ],
+            "path": "/findings/cedar-policy.html",
+            "published_at": "2026-02-01T18:00:00+00:00",
+            "summary": "A synthetic record about cedar-policy.",
+            "title": "Synthetic finding cedar-policy"
+          }
+        ],
+        "meetings": [
+          {
+            "agenda_item": "Item for Synthetic Council Soon",
+            "agenda_url": "https://synthetic.example.invalid/agenda",
+            "body": "Synthetic Council Soon",
+            "participation": null,
+            "relevance": null,
+            "starts_at": "2026-05-20T18:00:00-07:00"
+          },
+          {
+            "agenda_item": "Item for Synthetic Council Late",
+            "agenda_url": "https://synthetic.example.invalid/agenda",
+            "body": "Synthetic Council Late",
+            "participation": null,
+            "relevance": null,
+            "starts_at": "2026-06-02T18:00:00-07:00"
+          }
+        ],
+        "records": [],
+        "requests": [],
+        "schema_version": 1,
+        "since": "2026-03-01T00:00:00+00:00"
+      }
+    },
+    "manifest": {
+      "archive_public": false,
+      "counts": {
+        "findings": 1,
+        "meetings": 1
+      },
+      "files": {
+        "newsletter-draft.html": "2e5c4481-bb83e3d5-cd28d005-9bb08a9f-43c0a6a6-536815b2-251ff2ca-2c1d9c5e",
+        "newsletter-draft.json": "31d84d1a-d557da62-1d3685d7-6b8031f4-2fb004d3-fca4609c-ae104f18-2a1b7b41",
+        "newsletter-draft.txt": "211bd8ee-db94aa01-5c74b088-7167f2cd-9796766b-cdb09190-e9871bd9-c59b4d3d"
+      },
+      "keys": [
+        "consent_footer",
+        "counts",
+        "excluded",
+        "html",
+        "subject",
+        "text"
+      ],
+      "manifest": {
+        "campaign": {
+          "base_url": "https://synthetic.example.invalid",
+          "county_name": "Synthetic",
+          "name": "Synthetic"
+        },
+        "findings": [
+          {
+            "classification": "documented_fact",
+            "confidence": "verified",
+            "corrected": false,
+            "path": "/findings/manual.html",
+            "published_at": "2026-04-01T00:00:00+00:00",
+            "summary": "A synthetic summary.",
+            "title": "Manual finding"
+          }
+        ],
+        "meetings": [
+          {
+            "agenda_item": "Item",
+            "agenda_url": null,
+            "body": "Synthetic Board",
+            "relevance": null,
+            "starts_at": "2026-06-01T18:00:00+00:00"
+          }
+        ],
+        "schema_version": 1,
+        "since": "2026-03-01T00:00:00+00:00"
+      }
+    },
+    "template": {
+      "archive_public": false,
+      "counts": {
+        "findings": 0,
+        "meetings": 0
+      },
+      "files": {
+        "newsletter-draft.html": "5cccf94c-ecdad674-bce4b207-46957f16-3e155b99-ea290945-f3083965-828d6af4",
+        "newsletter-draft.json": "1e03f280-fa8aed2a-1bec11a2-d168bac5-ab389c4a-d0417b1b-dae95a83-7e7a8329",
+        "newsletter-draft.txt": "914396e0-646627c5-123b9ee4-16db3833-c0c06da9-e373409c-cc8c041e-0de51c53"
+      },
+      "keys": [
+        "consent_footer",
+        "counts",
+        "excluded",
+        "html",
+        "subject",
+        "text"
+      ],
+      "manifest": {
+        "campaign": {
+          "base_url": null,
+          "county_name": "Synthetic",
+          "name": "Synthetic"
+        },
+        "findings": [],
+        "meetings": [],
+        "schema_version": 1,
+        "since": null
+      }
+    }
+  },
+  "now": "2026-05-01T12:00:00+00:00"
+}

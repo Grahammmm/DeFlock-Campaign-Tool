@@ -122,7 +122,7 @@ class FreshInitTests(HelpMapCase):
         public = root / "public"
         page = (public / "help-map.html").read_text(encoding="utf-8")
         self.assertEqual(page.count("[EDIT ME: verify for this campaign]"), 6)  # markers stay visible
-        self.assertFalse((public / "cameras.html").exists())
+        self.assertTrue((public / "cameras.html").is_file())  # always generated (empty page) per the current contract
         self.assertNotIn('href="/cameras.html"', page)
         self.assertTrue((public / "methods.html").is_file())
         self.assertIn('href="/help-map.html"', (public / "index.html").read_text(encoding="utf-8"))  # nav slot
