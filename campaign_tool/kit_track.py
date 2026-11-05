@@ -245,6 +245,11 @@ def _origin_ok(parts, entry):  # exactly one origin: a checked kit draft (no mar
             and bool(SHA256.fullmatch(entry["draft_sha256"])))
 
 
+def _covers_ok(entry):  # covers_through: a real day, 2000-01-01 through the sent day (the end of the range asked for)
+    day = _day(entry["covers_through"])
+    return day is not None and EARLIEST <= day <= _day(entry["sent_on"])
+
+
 def _entry_ok(key, entry):
     parts = _split(key)
     return (parts and kit.AGENCY_ID.match(parts[0]) and isinstance(entry, dict) and _day(entry.get("sent_on"))
@@ -254,6 +259,9 @@ def _entry_ok(key, entry):
                  and REFERENCE.fullmatch(entry["reference"]))
             and ("correspondence" not in entry or _corr_ok(entry["correspondence"]))
             and ("undo_ids" not in entry or _undo_ids_ok(entry["undo_ids"])) and _contacts_ok(entry)
+            and ("covers_through" not in entry or _covers_ok(entry))
+            and ("follows" not in entry or parts[1] != "main" and isinstance(entry["follows"], str)
+                 and bool(REQUEST.fullmatch(entry["follows"])) and entry["follows"] != parts[1])
             and ("request_url" not in entry or entry["channel"] == "muckrock" and _request_url(entry["request_url"])
                  or entry["channel"] == "portal" and _portal_url_ok(entry["request_url"])))
 
@@ -280,14 +288,41 @@ def read_sent(root):
     for agency_id, entry in document["requests"].items():
         if not _entry_ok(agency_id, entry):
             raise bad(f"malformed entry {agency_id!r}")
+    for agency_id, entry in document["requests"].items():  # a chain link: a recorded same-agency parent, no cycle
+        seen, current = {agency_id}, entry
+        while "follows" in current:
+            parent = _key(agency_id.partition("#")[0], current["follows"])
+            if parent in seen or parent not in document["requests"]:
+                raise bad(f"malformed entry {agency_id!r}")
+            seen.add(parent)
+            current = document["requests"][parent]
     return document["requests"]
 
 
-def _draft(root, agency_id, request="main"):
+def _draft_bytes(root, agency_id, request="main"):  # the draft's bytes, read once; None unless a regular file
     path = Path(root) / "kit" / _draft_path(agency_id, request)
-    if path.is_symlink() or not path.is_file():
+    return None if path.is_symlink() or not path.is_file() else path.read_bytes()
+
+
+def _draft(root, agency_id, request="main"):
+    data = _draft_bytes(root, agency_id, request)
+    return None if data is None else hashlib.sha256(data).hexdigest()
+
+
+def _covers_through(data, sent_on, given):  # the end day of the range asked for, or None when it cannot be said
+    if given is not None:
+        day = _day(given)
+        if day is None or not EARLIEST <= day <= _day(sent_on):
+            raise ValueError("--covers-through must be a real YYYY-MM-DD date from 2000-01-01 to the --date sent day")
+        return given
+    try:
+        found = kit.draft_range(data.decode("utf-8"))
+    except UnicodeDecodeError:
         return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    if found is None:
+        return None
+    end = sent_on if found[1] == "today" else found[1]  # the draft was fixed when it was recorded as sent
+    return end if _day(found[0]) <= _day(end) <= _day(sent_on) and _day(end) >= EARLIEST else None  # the reader's bounds
 
 
 def _check(root, agency, request):  # main: kit-check's own report; a named request: the same check on its draft
@@ -322,7 +357,7 @@ def _asked_scopes(root, law_base=None):
 
 
 def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=False, today=None, reference=None,
-                replace_reference=False, correspondence=(), request_url=None, law_base=None):
+                replace_reference=False, correspondence=(), request_url=None, law_base=None, covers_through=None):
     """Record one hand-sent request in kit/sent.json and return its entry."""
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
@@ -346,9 +381,10 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
         raise ValueError(f"kit/requests/{stem}.md is another agency's draft; choose another --request name")
     if (read_sent(root).get(_key(agency_id, request)) or {}).get("imported") is True:  # origin is immutable
         raise ValueError(f"{_label(agency_id, request)} was imported; imported requests cannot be replaced with kit-sent")
-    digest = _draft(root, agency_id, request)
-    if digest is None:
+    data = _draft_bytes(root, agency_id, request)  # one read: the hash and the range come from the same bytes
+    if data is None:
         raise ValueError(f"kit/requests/{stem}.md must be a regular file (not a symlink)")
+    digest = hashlib.sha256(data).hexdigest()
     check = _check(root, agency, request)
     if not check["ok"]:
         raise ValueError(f"kit/requests/{stem}.md still has {check.get('placeholder_count', 0)} unfilled "
@@ -372,11 +408,20 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
     if first_contact is not None and sent_on > first_contact:
         raise ValueError(f"{label} has a contact on {first_contact}, before --date {sent_on}; "
                          "a contact cannot come before the request was sent")
+    covers = _covers_through(data, sent_on, covers_through)
+    follows = None
+    if request != "main":
+        from . import kit_repeat  # local import: kit_repeat imports this module
+        follows = kit_repeat.bound_parent(root, agency_id, request, digest, requests)
     scopes = _asked_scopes(root, law_base)  # read on every call, so --replace re-reads the current kit
     entry = {"sent_on": sent_on, "channel": channel, "draft": draft, "draft_sha256": digest,
              "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "steps": []}
     if scopes:
         entry["scopes"] = scopes
+    if covers:  # recomputed on every call, so a --replace never keeps a stale boundary
+        entry["covers_through"] = covers
+    if follows:
+        entry["follows"] = follows
     if request_url:
         entry["request_url"] = request_url
     elif previous and previous.get("channel") == channel == "portal" and "request_url" in previous:
@@ -920,6 +965,8 @@ def status(root, today=None, law_base=None, *, request=None, owner=None):
         rows.append({"agency_id": agency_id, "request": name, "name": names.get(agency_id),
                      **({"owner": label} if label else {}),
                      "sent_on": entry["sent_on"], "channel": entry["channel"],
+                     **({"covers_through": entry["covers_through"]} if "covers_through" in entry else {}),
+                     **({"follows": entry["follows"]} if "follows" in entry else {}),
                      "draft_changed_since_sent": None if entry.get("imported") is True  # no draft was ever checked
                      else _draft(root, agency_id, name) != entry["draft_sha256"],
                      **({"imported": True} if entry.get("imported") is True else {}),
@@ -978,9 +1025,11 @@ def coverage(root):
     model = load_content(root)
     sources = [s["agency_id"] for s in model["sources"]] if model else []
     findings = [f["agency_id"] for f in model["findings"]] if model else []
-    named = {}  # selected agency -> its recorded named requests
-    for parts in filter(None, map(_split, requests)):
-        if parts[0] in selected and parts[1] != "main":
+    from . import kit_repeat
+    repeats = kit_repeat.read_repeats(root)  # private follow-on drafts: pending until recorded as sent
+    named = {}  # selected agency -> its recorded named requests (and pending follow-on drafts)
+    for parts in filter(None, map(_split, [*requests, *repeats])):
+        if parts[0] in selected and parts[1] != "main" and parts[1] not in named.get(parts[0], ()):
             named.setdefault(parts[0], []).append(parts[1])
     rows = []
     for agency_id, name in selected.items():
@@ -996,6 +1045,10 @@ def coverage(root):
                          "records": len({h for s in steps if s.get("kind") == "produced" for h in _step_records(s)}),
                          "sources": sources.count(agency_id), "findings": findings.count(agency_id),
                          "fee_state": _fee_state(steps), "scopes": _scope_summary(entry, steps),
+                         **{k: v for k, v in (("follows", entry.get("follows") or repeats.get(key, {}).get("follows")),
+                                              ("date_from", repeats.get(key, {}).get("date_from")),
+                                              ("date_to", repeats.get(key, {}).get("date_to")),
+                                              ("covers_through", entry.get("covers_through"))) if v},
                          "answered": bool(ANSWERED & {s.get("kind") for s in steps})})
     rows.sort(key=lambda row: (row["owner"] is not None, row["sent_on"] is not None, row["agency_id"], row["request"]))
 
@@ -1017,11 +1070,18 @@ def coverage(root):
     return {"rows": rows, "totals": totals, "note": note}
 
 
-def _cells(row):
+CHAIN_COLUMNS = ("follows", "date_from", "date_to", "covers_through")  # only when a row has chain/coverage data
+
+
+def _chain(report):
+    return any(key in row for row in report["rows"] for key in CHAIN_COLUMNS)
+
+
+def _cells(row, chain=False):
     step = row["last_step"] or {}
     return [row["agency_id"], row["name"], row["drafted"], row["sent_on"], row["channel"], step.get("on"),
             step.get("kind"), row["records"], row["sources"], row["findings"], row["fee_state"], row["scopes"],
-            row["request"], row["owner"]]
+            row["request"], row["owner"]] + ([row.get(key) for key in CHAIN_COLUMNS] if chain else [])
 
 
 def _csv_cell(value):
@@ -1033,18 +1093,23 @@ def format_coverage(report, as_csv=False):
     """The coverage report as a fixed-column table, or RFC 4180 CSV with a spreadsheet formula guard."""
     import csv
     import io
+    chain = _chain(report)
     if as_csv:
         out = io.StringIO()
         writer = csv.writer(out)
-        writer.writerow(CSV_HEADER)
+        writer.writerow(CSV_HEADER + (CHAIN_COLUMNS if chain else ()))
         for row in report["rows"]:
-            writer.writerow([_csv_cell(c) for c in _cells(row)])
+            writer.writerow([_csv_cell(c) for c in _cells(row, chain)])
         return out.getvalue()
     line = "{:<36} {:<40} {:<7} {:<10} {:<9} {:<10} {:<13} {:>7} {:>7} {:>8} {:<7} {:<14} {:<20} {}"
-    lines = [line.format("agency_id", "name", "drafted", "sent_on", "channel", "last_on", "last_kind", "records",
-                         "sources", "findings", "fee", "scopes", "request", "owner")]
+    head = ["agency_id", "name", "drafted", "sent_on", "channel", "last_on", "last_kind", "records",
+            "sources", "findings", "fee", "scopes", "request", "owner"]
+    if chain:  # follow-on drafts or recorded coverage: four more columns, otherwise the table is unchanged
+        line += " {:<20} {:<10} {:<10} {}"
+        head += list(CHAIN_COLUMNS)
+    lines = [line.format(*head)]
     for row in report["rows"]:
-        cells = _cells(row)
+        cells = _cells(row, chain)
         cells[1] = "".join(c if c.isprintable() else " " for c in cells[1])[:40]
         cells[2] = "yes" if cells[2] else "no"
         lines.append(line.format(*(("-" if c is None else c) for c in cells)))
