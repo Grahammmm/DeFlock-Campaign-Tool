@@ -194,6 +194,15 @@ DEFAULTS = {
     "agencies.glance_asked": "Records items asked",
     "agencies.glance_not_checked": "not checked", "agencies.glance_posted": "posted", "agencies.glance_checked": "checked {date}",
     "footer.requests": "What we have asked for",  # DF1103-13
+    "standings.heading": "Where things stand",  # DF1952-10
+    "standings.agencies": "Agencies we have asked for records",
+    "standings.answered": "Asked items answered or partly answered",
+    "standings.records": "Records in the public library",
+    "standings.findings": "Published findings",
+    "standings.cameras": "Community-mapped camera points; ownership unconfirmed",
+    "standings.none_yet": "none yet",
+    "standings.deadline": "Next verified written-comment deadline",
+    "cameras.empty": "No community-mapped points are listed yet.",
     "requests.title": "What we have asked for",
     "requests.description": ("Every records request this campaign has publicly listed for an agency, newest first, "
                              "with the state we last recorded."),
