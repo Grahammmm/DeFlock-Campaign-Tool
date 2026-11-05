@@ -660,6 +660,9 @@ def backup_diff_cmd(args, root):
 def meetings_cmd(args, root):
     from datetime import date
     from .meetings import CivicClerkClient, LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
+    if args.matters and args.platform != "legistar":
+        print("Stopped: --matters is Legistar only", file=sys.stderr)
+        raise SystemExit(1)
     zone = resolve_zone(args.tz)
     if zone is None:
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
@@ -673,6 +676,13 @@ def meetings_cmd(args, root):
         raise ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response")
     client = (CivicClerkClient if args.platform == "civicclerk" else LegistarClient)(args.client, opener=opener)
     since = date.fromisoformat(args.since) if args.since else None
+    if args.matters:
+        from .meetings import relevant_matters, write_matters
+        matters = relevant_matters(client, since=since)
+        target = write_matters(root, matters, args.client, since=since)
+        print(json.dumps({"client": args.client, "matched_matters": len(matters), "written": str(target),
+                          "note": "keyword hits on matter titles; verify on the official Legistar page before citing"}, indent=2))
+        return
     meetings = relevant_events(client, since=since, zone=zone)
     previous = _read_previous(root / "kit" / "meetings.json")
     changes = ({"previous": previous} if previous == "unreadable"
@@ -935,6 +945,7 @@ def main():
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
     meetings_p.add_argument("--platform", choices=("legistar", "civicclerk"), default="legistar", help="Agenda platform (default legistar)")
+    meetings_p.add_argument("--matters", action="store_true", help="List ALPR keyword matters (legislation, contracts) instead of events; writes kit/matters.json (Legistar only)")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
@@ -1403,6 +1414,10 @@ def main():
     for flag in ("--on", "--note", "--directory"):
         cr_decide.add_argument(flag, required=True)
     cr_cmds.add_parser("list", help="Open requests first, with days_open").add_argument("--directory", required=True)
+    cr_reply = cr_cmds.add_parser("reply", help="Write a private, never-sent reply draft from the recorded decision "
+                                  "(kit/corrections/replies/N.md; an existing draft is never replaced)")
+    cr_reply.add_argument("--id", type=int, required=True)
+    cr_reply.add_argument("--directory", required=True)
     today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
@@ -1809,11 +1824,13 @@ def main():
             try:
                 result = (cr.add(root, args.finding, args.received, args.summary) if args.cr_command == "add" else
                           cr.decide(root, args.id, args.decision, args.on, args.note) if args.cr_command == "decide"
-                          else cr.list_requests(root))
+                          else cr.reply(root, args.id) if args.cr_command == "reply" else cr.list_requests(root))
             except ValueError as exc:
                 fixes.emit(exc)
                 sys.exit(3)
-            print(json.dumps(result, indent=2, ensure_ascii=False) + "\nPrivate log only; nothing was sent or published.")
+            print(json.dumps(result, indent=2, ensure_ascii=False) + (
+                "\nPrivate draft only; nothing was sent or published." if args.cr_command == "reply"
+                else "\nPrivate log only; nothing was sent or published."))
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root, as_json=args.as_json)
