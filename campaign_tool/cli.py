@@ -994,13 +994,13 @@ def main():
         list_p.add_argument(flag, type=keep_count(KEEP_LIMITS[key]), help=f"Newest per {period}, most recent N (0-{KEEP_LIMITS[key]})")
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
-    meetings_p.add_argument("--client", help="Legistar client slug (the part after webapi.legistar.com/v1/); omit to scan every campaign.json meeting_sources entry")
-    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus"), default="legistar", help="Agenda platform (default legistar)")
+    meetings_p.add_argument("--client", help="Legistar client slug (the part after webapi.legistar.com/v1/); the <name>.granicus.com host for granicus; the AgendaCenter host for agendacenter; omit to scan every campaign.json meeting_sources entry")
+    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus", "agendacenter"), default="legistar", help="Agenda platform (default legistar)")
     meetings_p.add_argument("--matters", action="store_true", help="List ALPR keyword matters (legislation, contracts) instead of events; writes kit/matters.json (Legistar only)")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--view-id", type=int, help="Granicus view_id (--platform granicus; --client is then the <name>.granicus.com host)")
-    meetings_p.add_argument("--from-xml", help="Saved Granicus agenda RSS feed (offline)")
-    meetings_p.add_argument("--all-events", action="store_true", help="Also keep Granicus events with no text to scan, marked not_scanned")
+    meetings_p.add_argument("--from-xml", help="Saved Granicus or AgendaCenter agenda RSS feed (offline)")
+    meetings_p.add_argument("--all-events", action="store_true", help="Also keep Granicus/AgendaCenter events with no text to scan, marked not_scanned")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
     meetings_p.add_argument("--tz", default="America/Los_Angeles", help="IANA time zone for starts_at (default America/Los_Angeles)")
@@ -1282,6 +1282,8 @@ def main():
     search_log_p.add_argument("--agency", required=True, help="An agency_id in kit/agencies.json")
     search_log_p.add_argument("--json", dest="as_json", action="store_true", help="One JSON document instead of text")
     search_log_p.add_argument("--categories", help="Your own purpose term lists (JSON); replaces the default terms")
+    search_log_p.add_argument("--against-sharing", action="store_true", help="Also compare organization names with the agency's "
+                              "recorded sharing list in content/agencies.json (names only; a mismatch is a lead, not evidence)")
     for role in ("time", "reason", "org", "state"):
         search_log_p.add_argument(f"--{role}-col", metavar="HEADER", help=f"Exact header of the {role} column")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"

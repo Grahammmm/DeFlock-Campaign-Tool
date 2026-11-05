@@ -585,6 +585,21 @@ events before `--since` (default today) are skipped. Ids are `granicus-<name>-<e
 title sets `status: "cancelled"`; a link is kept only if `https://` on the same host. An item with no description has no text beyond its
 title: it is dropped unless `--all-events`, which keeps it as `not_scanned: true` with no matches, meaning nobody has checked its agenda.
 
+## CivicPlus AgendaCenter import (CLI)
+
+```
+python3 -m campaign_tool meetings --directory D --platform agendacenter --client <host> (--online | --from-xml FEED) [--all-events] [--since YYYY-MM-DD] [--tz ZONE]
+```
+
+The host is the domain of your city's AgendaCenter page (`https://<host>/AgendaCenter`), lowercase, with no port, user, path or IP address.
+Only the public feed `https://<host>/RSSFeed.aspx?ModID=65&CID=All-0` is read, with the same safe reader, `--from-xml` limits and
+DOCTYPE/ENTITY refusal as Granicus. **Only the feed text (title, category, description) is scanned**; the agenda PDF is recorded as
+`agenda_url` (kept only if `https://` on the same host under `/AgendaCenter/`) and is never fetched. The meeting date comes from the
+`_MMDDYYYY-` token in the item link, else from `pubDate`; an item with neither is dropped and counted (`dropped_no_date`). The body is the
+item `category`, else the title before ` - `. Ids are `agendacenter-<first host label>-<number at the end of the link>` (a hash of the
+link when there is none). An item with no description is dropped unless `--all-events`, which keeps it as `not_scanned: true`. Cancelled
+and changes rules, the 60-event cap and the keyword-lead, verify-by-hand rule are the same as for Legistar.
+
 ## Calendar feed
 
 A built site publishes `/meetings.ics` (RFC 5545), linked from the meetings page, so supporters can subscribe. It lists the
