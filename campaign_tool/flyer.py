@@ -7,6 +7,7 @@ from .cli import read_config
 from .content import _read_json, load_finding, load_site, utc_moment
 from .kit import _kit_folder, _write_text
 from .meeting_pack import _unlinked
+from .qr import CSS as QR_CSS, svg  # QR_CSS is emitted only when a base URL puts QR codes on the page
 from .site import CLASSIFICATION_LABELS, CONFIDENCE_LABELS
 
 
@@ -51,7 +52,7 @@ def _render(name, place, site, findings, truncated, logo_name):
                   '<style>@page { size: letter; margin: 0.5in } body { font: 12pt sans-serif; margin: 0 }',
                   'h1 { font-size: 26pt; margin: .2em 0 } h2 { font-size: 15pt; margin: .8em 0 .3em }',
                   'p { margin: .3em 0 } article { break-inside: avoid; margin: .5em 0 } img { max-height: 1in; width: auto }',
-                  '.small { font-size: 9pt } a { overflow-wrap: anywhere }</style><body>']
+                  '.small { font-size: 9pt } a { overflow-wrap: anywhere }' + (QR_CSS if base else '') + '</style><body>']
     text = []
     if logo_name:
         size = brand.get('logo_size')
@@ -68,7 +69,7 @@ def _render(name, place, site, findings, truncated, logo_name):
         text += ['', finding['title'], label]
         if base:
             url = f'{base}/findings/{finding["slug"]}.html'
-            html_parts.append(f'<p><a href="{e(url)}">{e(url)}</a></p>')
+            html_parts.append(f'<p><a href="{e(url)}">{e(url)}</a>{svg(url)}</p>')
             text.append(url)
         html_parts.append('</article>')
     if truncated:
@@ -76,7 +77,7 @@ def _render(name, place, site, findings, truncated, logo_name):
         html_parts.append(f'<p>{e(more)}</p>')
         text += ['', more]
     if base:
-        html_parts += ['<h2>Get involved</h2>', f'<p><a href="{e(base)}">{e(base)}</a></p>']
+        html_parts += ['<h2>Get involved</h2>', f'<p><a href="{e(base)}">{e(base)}</a>{svg(base)}</p>']
         text += ['', 'Get involved', base]
     html_parts.append(f'<p class="small">{e(site["not_legal_advice"])}</p></body></html>')
     text += ['', site['not_legal_advice']]

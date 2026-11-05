@@ -249,6 +249,17 @@ class MeetingPackUpcomingTests(unittest.TestCase):
             self.assertIn('{title}', item['reason'])
         self.assertFalse(self.packs.exists())
 
+    def test_oversized_finding_url_skips_that_meeting_while_independent_packs_build(self):
+        self.site['base_url'] = 'https://synthetic.invalid/' + 'z' * 180  # the site URL fits, a finding URL does not
+        self.write('site.json', self.site)
+        self.stage('big', at(1))  # has findings, so it needs finding URLs
+        self.stage('quiet', at(2), agency_id='ca-other-police')  # no findings: only the site URL is encoded
+        report = self.up()
+        self.assertEqual(self.ids(report), ['quiet'])
+        self.assertEqual(report['skipped'], [{'id': 'big', 'reason': 'QR URL exceeds 213-byte capacity (version 10, level M).'}])
+        self.assertEqual(sorted(p.name for p in self.packs.iterdir()), ['quiet'])
+        self.assertEqual((self.packs / 'quiet/handout.html').read_text().count('<svg'), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
