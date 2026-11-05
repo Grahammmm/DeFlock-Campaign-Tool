@@ -31,6 +31,16 @@ RULE = "ca-civ-1798.90.5-definitions"
 NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network access attempted"))
 FOOTER_FAQ = '<p><a href="/faq.html">FAQ</a></p>'
 
+# sha256 of every file the fictional example renders (today=2026-10-01, no faq.json) on origin/main daa479ec, which
+# already holds the glossary and source record pages: captured from an untouched detached worktree of that revision with
+# render-and-hash, never from this candidate. A later change to the generated site re-captures this table.
+# Camera GeoJSON digest refreshed from untouched origin/main 6daa8a2e4a7fe90d17b5f824170d1d7915c1ae7b;
+# the complete no-FAQ rendered inventory matches that independent render byte for byte.
+# Source-filter inventory and three digests refreshed from untouched origin/main
+# 6123a134c44a2f60934c063e814dafd9fc68db51 at TODAY; the candidate's complete
+# no-FAQ render is byte-identical to that independent main render.
+# Source-filter assets also verified against untouched origin/main 9d4417c64fb35ad91b60f132bbe504ff06f0fe06;
+# all no-FAQ rendered files match that independent fixed-date render, including sources/filter.js.
 # Fixed-day (2026-10-01) baseline independently rendered from main 53cdb59e
 # and requests head 1234c7d0: removing only the requests footer link and sitemap
 # entry restores main byte-for-byte; requests.html matches the immutable PR.

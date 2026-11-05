@@ -1,5 +1,6 @@
 """Synthetic offline flyer acceptance and refusal paths (copy of examples/fictional-campaign)."""
 import hashlib
+import html
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import zlib
 from pathlib import Path
 
 from campaign_tool.flyer import build
+from campaign_tool.qr import svg
 from campaign_tool.site import CLASSIFICATION_LABELS, CONFIDENCE_LABELS
 
 REPO = Path(__file__).resolve().parents[1]
@@ -313,6 +315,151 @@ class FlyerTests(unittest.TestCase):
         self.site({'brand': {'logo': 'plain.svg', 'logo_alt': 'Mark'}})
         self.assertEqual(self.cli('--replace').returncode, 0)
         self.assertEqual((self.folder / 'logo.svg').read_bytes(), data)
+
+    # DF0237-14: QR codes ride on base_url only. The digests below are sha256 of the bytes written by origin/main
+    # 42d6a576 (before any QR code) for the same fixtures, so "no base_url" is proven byte-identical to main.
+    NO_QR_DIGESTS = {  # public synthetic fixture digests, not credentials
+        ('null', 'truncated', 'html'): '8f17d64b992ac23cfde3124a4ee175e2ab7472a0ca156541fe822aaf2cb55d8f',  # pragma: allowlist secret
+        ('null', 'truncated', 'txt'): 'ba7c6e6e9f02c4b42bde8d0ea15811962e4dbe5529bb2bb70f94c227e2b63d75',  # pragma: allowlist secret
+        ('null', 'two', 'html'): '4f8c339d25d32d2acd6840b4d10a8891ab213e75710b6b1b2c5427d3ed4c0970',  # pragma: allowlist secret
+        ('null', 'two', 'txt'): 'c271dc3377b4ceac38847fc9c60affe9188bb7137957e7f5d93859d0eabbf04e',  # pragma: allowlist secret
+        ('null', 'empty', 'html'): 'a7b1277852e92450c5fb3ce2c5c238608d8ae739731f2c078f8f947528fc0d3b',  # pragma: allowlist secret
+        ('null', 'empty', 'txt'): '188cf8a29e9b137f7952750f79cd6eaa0220d25dbe5829f7851da424ff4e3f52',  # pragma: allowlist secret
+        ('null', 'logo', 'html'): 'afdd11615dc5b23c664225a2133edc12ceafa49ee9678fa5bdfde2a356a56ca3',  # pragma: allowlist secret
+        ('null', 'logo', 'txt'): 'd5d750dd9ced00ba38a049d16fa20ac2fb8850aa2ac1cb5fbed429e946cdcaa7',  # pragma: allowlist secret
+        ('base', 'truncated', 'txt'): '7e49eccc1e79120cf7249d3f7126dcac11bdbe9adee6af926cf9ef1085dedc59',  # pragma: allowlist secret
+        ('base', 'two', 'txt'): '5727d6cdeb6370564f1a5471c2a23cae563a3aea10594343e6ade47e6e48fb4d',  # pragma: allowlist secret
+        ('base', 'empty', 'txt'): '734aab57de9bea1f06e32921e72a86454022b79bd5a97d0a09369a5db4e01ded',  # pragma: allowlist secret
+        ('base', 'logo', 'txt'): '18dfa42140fd9f6b44ee7cc41a52baea79ef7d0d77277da1ab523eb34de51d89',  # pragma: allowlist secret
+    }
+
+    def flyer_cases(self):
+        """flyer.html / flyer.txt sha256 for four fixtures: cut off, two findings, none, and a PNG logo."""
+        sha = lambda name: hashlib.sha256((self.folder / name).read_bytes()).hexdigest()
+        out = {}
+
+        def run(case, *args):
+            build(self.root, *args, replace=True) if self.folder.exists() else build(self.root, *args)
+            out[case] = {'html': sha('flyer.html'), 'txt': sha('flyer.txt')}
+
+        self.finding(1, published='2026-01-01T00:00:00+00:00')
+        self.finding(2, published='2026-03-01T00:00:00+00:00')
+        run('truncated', 1)
+        run('two', 6)
+        for number in (1, 2):
+            (self.content / f'findings/f{number}.json').unlink()
+        run('empty', 3)
+        self.finding(1)
+        (self.content / 'public-assets').mkdir()
+        (self.content / 'public-assets/mark.png').write_bytes(png(120, 40))
+        self.site({'brand': {'logo': 'mark.png', 'logo_alt': 'Cedar "Watch" & co'}})
+        run('logo', 3)
+        return out
+
+    def test_no_base_outputs_are_byte_identical(self):
+        for mode in ('null', 'missing'):
+            with self.subTest(mode=mode):
+                shutil.rmtree(self.root / 'kit', ignore_errors=True)
+                document = json.loads((self.content / 'site.json').read_text())
+                document.pop('base_url', None)
+                document['base_url'] = None
+                if mode == 'missing':
+                    del document['base_url']
+                (self.content / 'site.json').write_text(json.dumps(document), encoding='utf-8')
+                cases = self.flyer_cases()
+                for case, digests in cases.items():
+                    for kind, digest in digests.items():
+                        self.assertEqual(digest, self.NO_QR_DIGESTS[('null', case, kind)], (mode, case, kind))
+                self.assertIn('<img src="logo.png"', (self.folder / 'flyer.html').read_text())  # the last case has a logo
+                for name in ('flyer.html', 'flyer.txt'):
+                    data = (self.folder / name).read_bytes()
+                    self.assertNotIn(b'<svg', data)
+                    self.assertNotIn(b'xmlns', data)
+                    self.assertNotIn(b'.qr', data)
+                first = (self.folder / 'flyer.html').read_bytes()
+                build(self.root, 3, replace=True)
+                self.assertEqual(first, (self.folder / 'flyer.html').read_bytes())  # deterministic repeated build
+                shutil.rmtree(self.content / 'findings')
+                (self.content / 'findings').mkdir()
+                shutil.rmtree(self.content / 'public-assets', ignore_errors=True)
+                self.site({'brand': {}})
+
+    def test_flyer_text_is_unchanged_by_qr_codes(self):
+        cases = self.flyer_cases()
+        for case, digests in cases.items():
+            self.assertEqual(digests['txt'], self.NO_QR_DIGESTS[('base', case, 'txt')], case)
+        self.assertNotIn('<svg', self.text())
+
+    def test_one_qr_beside_each_finding_url_and_the_site_url(self):
+        for number in (1, 2, 3):
+            self.finding(number, published=f'2026-0{number}-01T00:00:00+00:00')
+        build(self.root, 2)
+        page = self.html()
+        urls = [f'{BASE}/findings/finding-3.html', f'{BASE}/findings/finding-2.html']
+        for url in urls + [BASE]:
+            self.assertIn(f'<p><a href="{url}">{url}</a>{svg(url)}</p>', page)
+        self.assertEqual(page.count('<svg'), 3)  # not the truncation line, not finding 1
+        self.assertIn('<p>1 more on the site: ' + BASE + '</p>', page)
+        self.assertIn('.qr { display: inline-block', page)
+        self.assertEqual(page.count('class="qr"'), 3)
+        self.assertEqual(page.count('<article>'), 2)
+        for block in re.findall(r'<article>.*?</article>', page, re.S):
+            self.assertEqual(block.count('<svg'), 1)  # each QR stays inside its unbreakable article
+
+    def test_qr_encodes_the_raw_url_and_html_escapes_it_once(self):
+        base = 'https://synthetic.invalid/a?x=1&y=100%25_b'
+        self.site({'base_url': base + '/'})
+        self.finding(1)
+        build(self.root)
+        page = self.html()
+        url = base + '/findings/finding-1.html'
+        escaped = html.escape(url, quote=True)
+        self.assertIn('&amp;', escaped)
+        self.assertIn(f'<p><a href="{escaped}">{escaped}</a>{svg(url)}</p>', page)
+        self.assertIn(f'<p><a href="{html.escape(base)}">{html.escape(base)}</a>{svg(base)}</p>', page)  # trailing slash dropped
+        self.assertNotIn('&amp;amp;', page)
+        self.assertNotIn(base + '/<', page)
+        self.assertIn(url + '\n', self.text())  # flyer.txt carries the raw URL, never an escaped one
+
+    def test_no_findings_still_gets_one_site_qr(self):
+        build(self.root)
+        self.assertEqual(self.html().count('<svg'), 1)
+        self.assertIn(f'<p><a href="{BASE}">{BASE}</a>{svg(BASE)}</p>', self.html())
+
+    def test_qr_svg_adds_no_link_script_or_external_load(self):
+        self.finding(1)
+        build(self.root)
+        page = self.html()
+        for link in re.findall(r'href="([^"]*)"', page):
+            self.assertTrue(link == BASE or link.startswith(BASE + '/'), link)
+        self.assertNotRegex(page, r'<script|<image|foreignObject|<use|xlink|\bsrc=|url\(|@import|<link|<iframe')
+        for fragment in re.findall(r'<svg.*?</svg>', page, re.S):
+            self.assertNotIn('synthetic', fragment)  # numeric geometry only: no URL, title or id inside the graphic
+
+    def test_oversized_finding_refuses_before_writes(self):
+        self.finding(1)
+        self.site({'base_url': 'https://synthetic.invalid/' + 'z' * 180})  # the base fits, base + finding path does not
+        before = self.tree_state()
+        with self.assertRaises(ValueError) as caught:
+            build(self.root)
+        self.assertEqual(str(caught.exception), 'QR URL exceeds 213-byte capacity (version 10, level M).')
+        self.assertNotIn('synthetic', str(caught.exception))
+        self.assertEqual(before, self.tree_state())
+        self.assertFalse((self.root / 'kit').exists())
+        # --replace keeps every earlier file, its bytes and its mode
+        self.site({'base_url': BASE, 'brand': {'logo': 'mark.png', 'logo_alt': 'Mark'}})
+        (self.content / 'public-assets').mkdir()
+        (self.content / 'public-assets/mark.png').write_bytes(png(120, 40))
+        build(self.root)
+        self.site({'base_url': 'https://synthetic.invalid/' + 'z' * 180})
+        before = self.tree_state()
+        with self.assertRaises(ValueError):
+            build(self.root, replace=True)
+        self.assertEqual(before, self.tree_state())
+        result = self.cli('--replace')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('QR URL exceeds 213-byte capacity', result.stderr)
+        self.assertEqual(before, self.tree_state())
 
     def test_cli_prints_paths_and_private_notice(self):
         self.finding(1)

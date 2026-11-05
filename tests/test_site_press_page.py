@@ -471,12 +471,14 @@ class Collisions(PressBase):
 class Labels(PressBase):
     def test_press_labels_render_and_spanish_keys_complete(self):
         self.assertEqual(PRESS_KEYS, ["footer.press", "press.title", "press.description", "press.contact", "press.findings",
-                                      "press.logo", "press.data", "press.download_logo", "press.license_unspecified"])
+                                      "press.logo", "press.data", "press.download_logo", "press.license_unspecified",
+                                      "press.news"])
         markers = {key: f"X{key}X" for key in (*PRESS_KEYS, "finding.cite", "finding.corrected", "finding.published")}
         markers["finding.corrected"], markers["finding.published"] = "Xcorrected {date}X", "Xpublished {date}X"
         (self.content / "public-assets").mkdir()
         (self.content / "public-assets" / "logo.png").write_bytes(png(120, 40))
         (self.content / "labels.json").write_text(json.dumps({"schema_version": 1, "labels": markers}), encoding="utf-8")
+        (self.content / "coverage.json").write_text(json.dumps({"schema_version": 1, "entries": []}), encoding="utf-8")  # DF0022-03: press.news shows only with coverage
         self.build(press=PRESS, brand={"logo": "logo.png", "logo_alt": "Mark"})
         html = self.read("press.html")
         for key in PRESS_KEYS:

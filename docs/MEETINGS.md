@@ -250,6 +250,32 @@ Cancelled, past and stale kits stop: re-stage corrections with `meetings-stage -
 Use `--allow-past` for an archive, or `--replace` to regenerate an existing private pack.
 Nothing is sent or published. Review the print preview before handing it over.
 
+The three files are one pack, written as one prepared generation: the tool encodes and writes all three into a
+private `.M.new-<random>` directory beside the pack (0700 directory, 0600 files), then swaps that directory into
+`kit/meeting-packs/M`. A handled error (a full disk, a permission error) never leaves a new handout beside an old
+comment or sources sheet: a new pack is either complete or absent, and `--replace` moves the old directory to
+`.M.old-<random>`, promotes the new one, and puts the old one back if promotion fails. `--replace` refuses a pack that
+holds anything but the three expected regular files (an extra note, a subdirectory, a missing file, a link or a
+special file) with `meeting pack has unexpected contents; move it aside before regenerating`; it never deletes your
+files. If the old directory cannot be put back, the error names it (`previous pack retained at PATH`) and the next
+run refuses with `meeting pack recovery required; inspect PATH before rebuilding`: check which generation you want,
+then move or remove that `.M.old-*` directory yourself. If only the final removal of the old directory fails, the new
+pack is complete and the result carries `warnings` naming the retained copy; remove it after checking the new pack
+(`--replace` will not run until you do). An abandoned `.M.new-*` directory left by a killed process is never swept
+automatically; inspect it and remove it by hand. Not promised: durability after power loss, that the pack is
+invisible for the instant between the two renames, safety with two writers at once, or that `--upcoming` is
+all-or-nothing (packs finished before a later failure stay, and the error still stops the run).
+
+With `site.json.base_url` set, the handout prints a QR code beside each finding URL and one last link with a QR
+code to the campaign site, after the findings and before the record explainer (also when there are no findings).
+Codes are made offline by the tool itself (`campaign_tool/qr.py`, standard library only; byte mode, error
+correction level M, versions 1-10, four-module quiet zone) and encode exactly the URL printed beside them; the
+agenda link, the sources and the "N more on the site" line get none. A URL over 213 bytes stops that pack with
+"QR URL exceeds 213-byte capacity (version 10, level M)." before anything is written, `--replace` included, so
+an existing pack is left untouched; `--upcoming` lists that meeting as skipped with the same reason and builds
+the others. Without `base_url` there is no QR code and the handout is byte-identical to before.
+`comment.md` and `sources.csv` never change.
+
 The handout follows the campaign's language: `<html lang>` is `site.json.language`, and its fixed headings and notes
 (title, "What we found", the empty-state sentence, the source line, "corrected", the agenda link, "N more on the
 site", the record-number explainer, and the classification and confidence wording) come from `content/labels.json`
@@ -509,7 +535,19 @@ before this can be considered a supported live poll. No detail requests or new s
 ## Not done
 
 No RSVP collection (the `rsvp_count` column is
-reserved), and no other agenda platforms (Granicus, PrimeGov, CivicClerk). Each of those should keep the same keyword-lead, human-verify rule.
+reserved), and no other agenda platforms (Granicus, PrimeGov). Each of those should keep the same keyword-lead, human-verify rule.
+
+## CivicClerk import (CLI)
+
+```
+python3 -m campaign_tool meetings --directory D --platform civicclerk --client <slug> (--online | --from-json REC) [--since YYYY-MM-DD] [--tz ZONE]
+```
+
+`CivicClerkClient` reads `https://<slug>.api.civicclerk.com/v1/Events` (`startDateTime ge <since>`, at most 60 events;
+a `value` envelope or a bare list) and each event's agenda items from `/v1/Meetings/<agendaId>` (`items`, nested `childItems`,
+`agendaObjectItemName` and `agendaObjectItemDescription`). Same keyword filter, `kit/meetings.json` shape and change report as
+Legistar, with ids `civicclerk-<slug>-<event id>` and `source: "civicclerk"`. `startDateTime` (UTC) is shown in `--tz`; an agenda
+link is kept only if `https://` on `civicclerk.com`; a cancelled mark in the event name or notice sets `status: "cancelled"`.
 
 ## Calendar feed
 

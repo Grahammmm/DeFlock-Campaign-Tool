@@ -85,6 +85,8 @@ def fixture_opener(mapping):
 
 
 class LegistarClient:
+    source = "legistar"
+
     def __init__(self, client, opener=None, base=API_BASE):
         if not isinstance(client, str) or not CLIENT.fullmatch(client):
             raise MeetingsError("Legistar client must be a short lowercase slug (e.g. the city name)")
@@ -120,6 +122,71 @@ class LegistarClient:
         return self._get(f"events/{event_id}/eventitems")
 
 
+class CivicClerkClient(LegistarClient):
+    """CivicClerk public events API (``https://<client>.api.civicclerk.com/v1``), adapted to the Legistar-shaped keys."""
+    source = "civicclerk"
+
+    def __init__(self, client, opener=None):
+        super().__init__(client, opener=opener, base=f"https://{client}.api.civicclerk.com/v1")
+        self._agenda = {}
+
+    def _get(self, path, params=None):
+        url = f"{self.base}/{path}" + ("?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote) if params else "")
+        try:
+            payload = json.loads(self.opener(url).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise MeetingsError(f"{url}: not JSON ({exc})") from None
+        if isinstance(payload, dict) and "value" in payload:
+            payload = payload["value"]
+        if not isinstance(payload, (list, dict)) or (isinstance(payload, dict) and path == "Events"):
+            raise MeetingsError(f"{url}: expected a JSON list or a value envelope")
+        return payload
+
+    def _agenda_url(self, event):
+        for f in event.get("publishedFiles") or []:
+            if isinstance(f, dict) and f.get("type") == "Agenda":
+                url = f.get("url")
+                if isinstance(url, str) and "://" in url:
+                    host = urllib.parse.urlsplit(url).hostname or ""
+                    return url if url.startswith("https://") and (host == "civicclerk.com" or host.endswith(".civicclerk.com")) else None
+                if type(f.get("fileId")) is int:
+                    return f"{self.base}/Meetings/GetMeetingFileStream(fileId={f['fileId']},plainText=false)"
+        return None
+
+    def events(self, since=None, top=MAX_EVENTS):
+        since = since or date.today()
+        raw = self._get("Events", {"$filter": f"startDateTime ge {since.isoformat()}", "$orderby": "startDateTime asc",
+                                   "$top": str(min(int(top), MAX_EVENTS))})
+        out = []
+        for e in raw[:MAX_EVENTS]:
+            if not isinstance(e, dict) or type(e.get("id")) is not int or not isinstance(e.get("startDateTime"), str):
+                continue
+            start = e["startDateTime"]
+            if start[:10] < since.isoformat():
+                continue
+            self._agenda[e["id"]] = e.get("agendaId")
+            aware = start.endswith("Z") or "+" in start[10:]
+            out.append({"EventId": e["id"], "EventBodyName": e.get("categoryName") or e.get("eventName"),
+                        "EventStartUtc": start if aware else None, "EventDate": start,
+                        "EventComment": f"{e.get('eventName') or ''} {e.get('eventNotice') or ''}",
+                        "EventInSiteURL": self._agenda_url(e)})
+        return out
+
+    def event_items(self, event_id):
+        agenda = self._agenda.get(event_id)
+        if type(agenda) is not int or agenda <= 0:
+            return []
+        doc = self._get(f"Meetings/{agenda}")
+        items, stack = [], list(doc.get("items") or []) if isinstance(doc, dict) else list(doc)
+        while stack:
+            item = stack.pop(0)
+            if isinstance(item, dict):
+                stack = list(item.get("childItems") or []) + stack
+                items.append({"EventItemTitle": re.sub(r"<[^>]*>", " ", str(item.get("agendaObjectItemName") or "")),
+                              "EventItemMatterName": re.sub(r"<[^>]*>", " ", str(item.get("agendaObjectItemDescription") or ""))})
+        return items
+
+
 def resolve_zone(name):
     try:
         return ZoneInfo(name)
@@ -129,6 +196,12 @@ def resolve_zone(name):
 
 def _starts_at(event, zone):
     """(local time with the zone's offset for that date, time_known); None without a date."""
+    utc = event.get("EventStartUtc")
+    if isinstance(utc, str):  # CivicClerk: an absolute instant, shown in the --tz zone
+        try:
+            return datetime.fromisoformat(utc.replace("Z", "+00:00")).astimezone(zone).isoformat(timespec="seconds"), True
+        except ValueError:
+            return None
     day = str(event.get("EventDate") or "")[:10]
     try:
         date.fromisoformat(day)
@@ -204,14 +277,14 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None):
             agenda_url = None
         item_text, terms = hits[0]
         meetings.append({
-            "id": f"legistar-{client.client}-{event['EventId']}",
+            "id": f"{client.source}-{client.client}-{event['EventId']}",
             "body": _plain(body),
             "starts_at": starts[0],
             "time_known": starts[1],
             "agenda_url": agenda_url,
             "agenda_item": _plain(item_text),
             "relevance": "alpr_item",
-            "source": "legistar",
+            "source": client.source,
             "event_id": event["EventId"],
             "matched_terms": sorted({t for _, ts in hits for t in ts}),
             "matched_items": len(hits),
@@ -265,11 +338,11 @@ def compare_meetings(previous_doc, meetings, client, since):
     }
 
 
-def write_meetings(root, meetings, client_name, changes=None, zone=None):
+def write_meetings(root, meetings, client_name, changes=None, zone=None, source="legistar"):
     kit = root / "kit"
     _kit_folder(kit, mode=0o700)
     target = kit / "meetings.json"
-    document = {"schema_version": 1, "source": "legistar", "client": client_name,
+    document = {"schema_version": 1, "source": source, "client": client_name,
                 "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "time_zone": getattr(zone, "key", None) or DEFAULT_ZONE,
                 "keywords": KEYWORDS.pattern, "meetings": meetings,
