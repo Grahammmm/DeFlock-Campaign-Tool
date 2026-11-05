@@ -24,6 +24,29 @@ rule names are printed to stderr as `review-required` notes and nothing is block
 fresh version goes to `kit/press/letters.suggested/`. The letter record is `kit/press/letters/.written.json`, separate
 from the release draft's. Nothing is sent or published; the release `press draft` is unchanged.
 
+### Check existing press drafts
+
+`python3 -m campaign_tool press check --directory D [--json]` is a read-only, offline freshness check. It reads the
+direct `.md` files of exactly four folders: `kit/press`, `kit/press.suggested`, `kit/press/letters` and
+`kit/press/letters.suggested` (originals and organizer-edited twins alike; a missing folder is empty). It never
+regenerates, rewrites, sends or publishes, and it reads no `.written.json` record.
+
+Finding ids come only from the draft's own first line, `<!-- DRAFT: not sent. Review before any use. findings ID, ID -->`,
+and the file name must begin with a real `YYYY-MM-DD-`. A draft is `stale` when a cited finding is withdrawn
+(`private/withdrawn/` wins over a leftover public copy), is not published, or gained a correction dated AFTER the date
+in the file name (the dates are shown; the comparison is by date only, not by the correction text). A letter is also
+`stale` when the meeting named in its generated closing (`/meetings/ID.html`) is cancelled (`meeting_cancelled`), has
+started before now (`meeting_past`) or no longer exists (`meeting_missing`); the signup closing needs no meeting.
+A draft without that header line, with an unrecognized letter closing, or whose finding or meeting files cannot be
+trusted is `not checked`. A symlink, special file or unreadable/oversized file is named as `not regular` or `unreadable`
+and never followed. Content files that could not be indexed appear as extra `input` rows after the drafts.
+
+Text prints `PATH: ok` or `PATH: STATUS: reasons`; `--json` prints `{"drafts": [...], "problems": N}` alone (N counts
+non-ok rows). With nothing to check it prints `No private press drafts found.` The exit status is 0 when every row is
+`ok` and 3 otherwise (1 for a folder that is not a campaign). `ok` means only these checks passed: it does not detect a
+rescheduled meeting, a changed summary or a newly published finding the draft does not cite, and it is not factual or
+legal review. After a problem, review the draft by hand or delete it and run `press draft` or `press letter` again.
+
 How a finding goes from draft to the public site in the workspace Worker, and how it is
 corrected or withdrawn afterwards. Code: `workers/workspace/src/review_state.ts`,
 `publication.ts`, `manifest.ts`, `executors/publish_finding.ts`, `executors/deploy_site.ts`.
