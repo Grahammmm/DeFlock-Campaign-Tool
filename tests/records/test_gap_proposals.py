@@ -134,6 +134,16 @@ class PureTests(unittest.TestCase):
                       item(2, kind="extension", deadlines=[new], received_at="2026-11-04T00:00:00Z")])
         self.assertEqual([p for p in flat(report) if p["type"] == "promised_not_received"], [])
 
+    def test_unattributed_items_do_not_resolve_a_passed_date(self):
+        old = {"date": "2026-11-02", "date_text": "November 2", "page": 1, "quote": "reply by November 2", "year_inferred": False}
+        new = dict(old, date="2026-11-30", date_text="November 30", quote="reply by November 30")
+        report = run([item(1, kind="extension", request=None, deadlines=[old]),
+                      item(2, kind="extension", request=None, deadlines=[new], received_at="2026-11-04T00:00:00Z"),
+                      item(3, kind="records", request=None, received_at="2026-11-04T00:00:00Z")])
+        found = [p for p in flat(report) if p["type"] == "promised_not_received"]
+        self.assertTrue(found)
+        self.assertTrue(all(p["request_id"] is None for p in found))
+
     def test_future_stated_date_makes_no_proposal(self):
         future = {"date": "2026-12-01", "date_text": "December 1, 2026", "page": 1, "quote": "by December 1, 2026", "year_inferred": False}
         self.assertEqual(flat(run([item(1, kind="extension", deadlines=[future])])), [])

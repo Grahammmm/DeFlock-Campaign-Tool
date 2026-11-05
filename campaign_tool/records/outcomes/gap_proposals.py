@@ -186,7 +186,7 @@ def propose(received, page_text, package, *, run_id, requests=(), now=None, scor
                 def later(o):
                     a, b = _when(o.get("received_at")), _when(item.get("received_at"))
                     return a is not None and b is not None and a > b
-                answered = any(o["item_id"] != item["item_id"] and o.get("request_id") == item.get("request_id") and later(o)
+                answered = item.get("request_id") is not None and any(o["item_id"] != item["item_id"] and o.get("request_id") == item.get("request_id") and later(o)
                                and (o.get("kind") in FINAL_KINDS
                                     or any(d.get("date") and d["date"] > stated["date"] for d in o.get("deadlines", [])))
                                for o in agency_items)
