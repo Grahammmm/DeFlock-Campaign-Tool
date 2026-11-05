@@ -78,6 +78,31 @@ class HandoverGuideTests(unittest.TestCase):
             for word in ("git add", "scp", "rsync", "curl", "wget", "gh ", "rm "):
                 self.assertNotIn(word, body_text)
 
+    def test_incoming_checks_target_the_restored_directory(self):
+        # every incoming-machine command (tasks 5-10) names NEW_EMPTY_DIR, never the outgoing D
+        incoming = {"campaigns", "kit-status", "kit-due", "today", "finding", "personal-data", "doctor"}
+        text = read(GUIDE)
+        for kind, body, number in fences(text):
+            for line in command_lines(body):
+                argv = shlex.split(line)[3:]
+                if argv[0] in incoming and argv[:2] != ["campaigns", "list"]:
+                    self.assertIn("NEW_EMPTY_DIR", argv, f"line {number}: {line}")
+                    self.assertNotIn("D", argv, f"line {number}: {line}")
+                if argv[0] == "backup":
+                    self.assertEqual(argv[argv.index("--directory") + 1], "D")
+        # the final doctor sign-off is on the restored campaign
+        doctor = [c for c in commands() if c[1][0] == "doctor"]
+        self.assertEqual(len(doctor), 1)
+        self.assertEqual(doctor[0][1][doctor[0][1].index("--directory") + 1], MAPPING["NEW_EMPTY_DIR"])
+
+    def test_transfer_archive_is_always_encrypted(self):
+        backups = [c for c in commands() if c[1][0] == "backup"]
+        self.assertEqual(len(backups), 1)
+        self.assertIn("--encrypt-to", backups[0][1])
+        body = sections(read(GUIDE))[ORDER[1]]
+        self.assertIn("Do not copy or transfer an unencrypted archive", body)
+        self.assertNotIn("Run one of the two lines", body)
+
     def test_links_and_section_fragments_resolve(self):
         readme, text = read(README), read(GUIDE)
         self.assertEqual(readme.count("docs/HANDOVER.md"), 1)

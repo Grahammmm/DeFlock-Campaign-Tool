@@ -540,8 +540,8 @@ _MODULES = {
         map_survey meeting_outcome meeting_pack meeting_stage meetings newsletter.__main__ newsletter.archive
         newsletter.draft newsletter.sent outbox outbox_batch press recent site site_check social social_threads""",
     "other local files with no catalog store": """
-        agency_actions agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
-        kit_repeat law law_packet map_controller registry setup_cmd shell sources_cmd""",
+        agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
+        kit_preserve kit_repeat law law_packet map_controller registry search_log setup_cmd shell sources_cmd""",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -549,6 +549,7 @@ MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for modul
 MODULE_FUNCTIONS = {
     "map_survey": ("_install_new", "_write_checks", "render_csv", "survey_import"),
     'agency_actions': ('_install',),
+    'agency_brief': ('_write_file', 'build_brief',),
     'agency_cards': ('main',),
     'approval': ('verify',),
     'backup': (
@@ -573,6 +574,7 @@ MODULE_FUNCTIONS = {
     'kit_copy': ('_mail', '_write', 'copy',),
     'kit_export': ('status_csv', 'write_rows',),
     'kit_fees': ('write_csv',),
+    'kit_preserve': ('preserve_request',),
     'kit_repeat': ('_replace_store', 'repeat_request',),
     'kit_timing': ('write_csv',),
     'law': (
@@ -684,6 +686,7 @@ MODULE_FUNCTIONS = {
     'records.understanding.digest': ('commit_digest',),
     'records.worker_lifecycle': ('_Directory.write', 'supervise',),
     'registry': ('_store', '_transaction',),
+    'search_log': ('run_cli',),
     'setup_cmd': ('ask', 'ask.prompt',),
     'shell': ('main',),
     'site': ('_copy', '_csv_text', '_write', 'build_site', 'build_starter',),

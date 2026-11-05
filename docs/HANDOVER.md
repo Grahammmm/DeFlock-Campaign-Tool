@@ -22,16 +22,15 @@ Next: task 2.
 
 ## 2. Pause edits and make a fresh backup
 
-Agree, by word, that neither organizer edits `D` until the handover is signed off. No command locks the directory. Review the private inventory together (task 10 prints it), then on the outgoing machine:
+Agree, by word, that neither organizer edits `D` until the handover is signed off. No command locks the directory. Review the private inventory together (task 9 prints it), then on the outgoing machine:
 
 ```sh
-python3 -m campaign_tool backup --directory D --out ARCHIVE
 python3 -m campaign_tool backup --directory D --out ARCHIVE --encrypt-to KEY.pub
 ```
 
-Run one of the two lines. The second writes an encrypted archive for a public key that the incoming organizer made; no key material belongs in `D`. The output prints `manifest_sha256`: copy it as `DIGEST` into a place that is not the archive (a password manager, a private note on another device).
+`--encrypt-to` is required here: it writes an archive encrypted for a public key that the incoming organizer made, and no key material belongs in `D`. Do not copy or transfer an unencrypted archive. If the output does not name the key's fingerprint, or says unencrypted, do not transfer the file; make it again with `--encrypt-to`. The output prints `manifest_sha256`: copy it as `DIGEST` into a place that is not the archive (a password manager, a private note on another device).
 
-After the archive is copied over the approved encrypted channel, check it with the digest:
+After the encrypted archive is copied over the approved channel, check it with the digest:
 
 ```sh
 python3 -m campaign_tool verify --file ARCHIVE --expect-manifest-sha256 DIGEST
@@ -79,9 +78,11 @@ Next: task 6.
 
 ## 6. Open records requests
 
+On the incoming machine, against the restored campaign `NEW_EMPTY_DIR` (not `D`, which is the outgoing machine's directory):
+
 ```sh
-python3 -m campaign_tool kit-status --directory D
-python3 -m campaign_tool kit-due --directory D
+python3 -m campaign_tool kit-status --directory NEW_EMPTY_DIR
+python3 -m campaign_tool kit-due --directory NEW_EMPTY_DIR
 ```
 
 `kit-status` lists each request and its recorded state; `kit-due` lists the ones whose reminder date has passed and exits 3 when work is past due. Compare request names, recorded responses and who takes the next step, by role. A provisional date is a reminder, not a finding that any law was broken. Do not mark anything sent or answered, and do not regenerate kits, to make this list look clean. See [recording a hand-sent request](AGENCY-DISCOVERY.md#recording-a-hand-sent-request) and [several requests to one agency](AGENCY-DISCOVERY.md#several-requests-to-one-agency).
@@ -91,33 +92,33 @@ Next: task 7.
 ## 7. Staged meetings and written-comment deadlines
 
 ```sh
-python3 -m campaign_tool today --directory D
+python3 -m campaign_tool today --directory NEW_EMPTY_DIR
 ```
 
-`today` is a triage view, not a full meeting inventory: also open the staged files under `D/content/meetings/` yourself. For each meeting read the source, the UTC offset, any cancellation and any comment already recorded as submitted. No command guesses a deadline or submits a comment. See [participation (organizer-verified)](MEETINGS.md#participation-organizer-verified) and [recording a comment you submitted](MEETINGS.md#recording-a-comment-you-submitted).
+`today` is a triage view, not a full meeting inventory: also open the staged files under `NEW_EMPTY_DIR/content/meetings/` yourself. For each meeting read the source, the UTC offset, any cancellation and any comment already recorded as submitted. No command guesses a deadline or submits a comment. See [participation (organizer-verified)](MEETINGS.md#participation-organizer-verified) and [recording a comment you submitted](MEETINGS.md#recording-a-comment-you-submitted).
 
 Next: task 8.
 
 ## 8. Findings in review, their assignments and the reviewer roster
 
 ```sh
-python3 -m campaign_tool finding status --directory D
-python3 -m campaign_tool finding review-status DRAFT --directory D
-python3 -m campaign_tool finding reviewers list --directory D
+python3 -m campaign_tool finding status --directory NEW_EMPTY_DIR
+python3 -m campaign_tool finding review-status DRAFT --directory NEW_EMPTY_DIR
+python3 -m campaign_tool finding reviewers list --directory NEW_EMPTY_DIR
 ```
 
-Run `review-status` once for each outstanding draft, and print the roster only on a private screen. An assignment is a request to review, not a receipt, and a roster name or role is not authentication. Do not reassign, re-sign or publish as a handover shortcut. Compare the assignments, receipts and roster on the incoming machine with the outgoing machine's own files, not with a passing backup (task 3). See [offline review receipts](PUBLICATION.md#offline-review-receipts-cli), [the reviewer roster](PUBLICATION.md#reviewer-roster-role-assignment-not-authentication) and [what is not done](PUBLICATION.md#not-done).
+These run on the incoming machine against `NEW_EMPTY_DIR`. Run `review-status` once for each outstanding draft, and print the roster only on a private screen. An assignment is a request to review, not a receipt, and a roster name or role is not authentication. Do not reassign, re-sign or publish as a handover shortcut. Compare the assignments, receipts and roster on the incoming machine with the outgoing machine's own files in `D`, not with a passing backup (task 3). See [offline review receipts](PUBLICATION.md#offline-review-receipts-cli), [the reviewer roster](PUBLICATION.md#reviewer-roster-role-assignment-not-authentication) and [what is not done](PUBLICATION.md#not-done).
 
 Next: task 9.
 
 ## 9. The personal-data register
 
 ```sh
-python3 -m campaign_tool personal-data --directory D
-python3 -m campaign_tool personal-data --directory D --json
+python3 -m campaign_tool personal-data --directory NEW_EMPTY_DIR
+python3 -m campaign_tool personal-data --directory NEW_EMPTY_DIR --json
 ```
 
-Run one of the two lines. It lists the private files that can hold a person's name, email, phone or postal address, by kind, purpose and date, without printing any value. Discuss each kind, and each unknown kind, and why it is kept, together and privately. Never paste the output into an issue or a public document. It is not a retention or deletion policy and not an inventory of the whole host or of the backups; unknown files need an organizer's review and are never deleted automatically. See [the private personal-data register](DATA-HANDLING.md#private-personal-data-register).
+Run one of the two lines on the incoming machine; the outgoing organizer may run the same on `D` to compare. It lists the private files that can hold a person's name, email, phone or postal address, by kind, purpose and date, without printing any value. Discuss each kind, and each unknown kind, and why it is kept, together and privately. Never paste the output into an issue or a public document. It is not a retention or deletion policy and not an inventory of the whole host or of the backups; unknown files need an organizer's review and are never deleted automatically. See [the private personal-data register](DATA-HANDLING.md#private-personal-data-register).
 
 Next: task 10.
 
@@ -136,10 +137,10 @@ Name the person for each role below. Write only the role and a person, never a l
 
 See [accounts and costs](../README.md#accounts-and-costs) and [STATUS.md](STATUS.md). This guide provisions nothing, runs no worker or runner, and gives no standing permission to send.
 
-Check the incoming machine, then fill in the sign-off by hand:
+Check the restored campaign on the incoming machine (`NEW_EMPTY_DIR`), then fill in the sign-off by hand:
 
 ```sh
-python3 -m campaign_tool doctor --directory D --checklist
+python3 -m campaign_tool doctor --directory NEW_EMPTY_DIR --checklist
 ```
 
 - [ ] Custody reconciled, including the files outside the backup (task 3)
