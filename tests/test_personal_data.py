@@ -481,7 +481,7 @@ CATALOG_WRITERS = {
     "meeting_comments.record": "comments_sent",
     "correction_requests.add": "correction_requests", "correction_requests.decide": "correction_requests",
     "kit_track.record_sent": "contact_log", "kit_track.record_step": "contact_log",
-    "kit_track.record_contact": "contact_log", "kit_undo.undo_step": "contact_log",
+    "kit_track.record_contact": "contact_log", "kit_track.record_received": "contact_log", "kit_undo.undo_step": "contact_log",
     "kit_import_sent.import_sent": "contact_log", "kit_import_steps._write": "contact_log",
     "kit_import_steps.import_steps": "contact_log",
     "kit_assign.assign": "volunteer_assignments",
@@ -511,7 +511,7 @@ FUNCTION_UNKNOWN = {
        for name in ("_write_json", "_write_readme", "_write_text", "build_kit", "verify_agencies_csv", "verify_agency")},
     "correction_requests.reply": "unsent reply draft: ids, dates and the recorded note, no requester contact; listed unknown at runtime",
     **{f"kit_track.{name}": "unsent draft text, no personal-data store" for name in (
-        "denial_reply", "followup", "format_coverage")},
+        "denial_reply", "followup", "format_coverage", "scope_reply")},
 }
 FUNCTION_LEVEL_MODULES = {"findings", "kit", "kit_track", "kit_assign", "kit_undo", "kit_import_sent", "kit_import_steps",
                           "meeting_comments", "correction_requests", "supporters", "meeting_speakers"}

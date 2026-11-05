@@ -59,13 +59,14 @@ def _request_events(root, law_base):
     for row in report["requests"]:
         if row["closed"] or "withdrawn_on" in row:
             continue
+        counted = f" ({row['note']})" if "received_on" in row else ""  # provenance; the dates are unchanged
         answered = {s.get("kind") for s in steps.get((row["agency_id"], row["request"]), [])} & kit_track.ANSWERED
         if row["determination_due"] and not answered:
             events.append({"uid": _uid("determination", row), "day": row["determination_due"],
-                           "summary": "Records request: provisional determination date — " + _label(row)})
+                           "summary": "Records request: provisional determination date — " + _label(row) + counted})
         if row["stated_production_date"]:
             events.append({"uid": _uid("stated-production", row), "day": row["stated_production_date"],
-                           "summary": "Records request: agency's stated production date — " + _label(row)})
+                           "summary": "Records request: agency's stated production date — " + _label(row) + counted})
     return events, report["law_package_status"]
 
 

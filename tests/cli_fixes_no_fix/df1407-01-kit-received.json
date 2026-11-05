@@ -1,0 +1,11 @@
+{
+  "5 and 5 go together: give both or neither": "The message names both receipt options and tells the organizer to give both or neither.",
+  "5 must be one of name": "The message lists the accepted receipt evidence kinds directly.",
+  "5 must be a real YYYY-MM-DD date": "The message names the option and the required date format.",
+  "5 5 must be between 2000-01-01 and today": "The message names the option, the rejected value and the accepted range.",
+  "5 5 is before the request was sent on 5": "The message names the receipt date and the earlier sent date it conflicts with.",
+  "--received-on 5 is before --date 5": "The message names both dates and the two options in conflict.",
+  "5 has a receipt recorded on 5, before --date 5; correct the receipt first or pass --received-on and --receipt-evidence": "The message states the conflict and names the corrective options.",
+  "--on and --evidence are required": "The message names both required options.",
+  "5 already has a receipt recorded on 5 (5); use --replace to correct it": "The message states the recorded receipt and names --replace as the correction."
+}

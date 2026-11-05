@@ -87,6 +87,48 @@ def _day(value, pattern=kit.DATE, parse=date.fromisoformat):
         return None
 
 
+RECEIPT_EVIDENCE = ("portal", "acknowledgement", "return_receipt", "other")  # what showed the agency got the request
+
+
+def receipt_note(received_on, evidence):  # provenance only: the tool never verifies the evidence
+    return f"counted from receipt {received_on} ({evidence})"
+
+
+def _receipt_ok(entry):  # received_on and receipt_evidence: both absent, or both valid and not before the sent day
+    if "received_on" not in entry and "receipt_evidence" not in entry:
+        return True
+    day = _day(entry.get("received_on"))
+    return (day is not None and entry.get("receipt_evidence") in RECEIPT_EVIDENCE and EARLIEST <= day
+            and entry["received_on"] >= entry["sent_on"])
+
+
+def _receipt_pair(entry):  # {} when no receipt was recorded: such a request is counted from sent_on, as before
+    return {"received_on": entry["received_on"], "receipt_evidence": entry["receipt_evidence"]} \
+        if "received_on" in entry else {}
+
+
+def _count_from(entry):  # the day the provisional dates are counted from: the recorded receipt, else the sent day
+    return entry.get("received_on", entry["sent_on"])
+
+
+def _clean_receipt(received_on, evidence, sent_on, today, *, flags=True):  # (date, evidence) or None; refused before any read
+    if received_on is None and evidence is None:
+        return None
+    names = ("--received-on", "--receipt-evidence") if flags else ("--on", "--evidence")
+    if received_on is None or evidence is None:
+        raise ValueError(f"{names[0]} and {names[1]} go together: give both or neither")
+    if evidence not in RECEIPT_EVIDENCE:
+        raise ValueError(f"{names[1]} must be one of " + ", ".join(RECEIPT_EVIDENCE))
+    day = _day(received_on)
+    if day is None:
+        raise ValueError(f"{names[0]} must be a real YYYY-MM-DD date")
+    if day < EARLIEST or day > (today or date.today()):
+        raise ValueError(f"{names[0]} {received_on} must be between 2000-01-01 and today")
+    if sent_on is not None and received_on < sent_on:
+        raise ValueError(f"{names[0]} {received_on} is before the request was sent on {sent_on}")
+    return received_on, evidence
+
+
 REQUEST = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")  # several requests per agency; "main" is the original one
 
 
@@ -259,7 +301,7 @@ def _entry_ok(key, entry):
                  and REFERENCE.fullmatch(entry["reference"]))
             and ("correspondence" not in entry or _corr_ok(entry["correspondence"]))
             and ("undo_ids" not in entry or _undo_ids_ok(entry["undo_ids"])) and _contacts_ok(entry)
-            and ("covers_through" not in entry or _covers_ok(entry))
+            and ("covers_through" not in entry or _covers_ok(entry)) and _receipt_ok(entry)
             and ("follows" not in entry or parts[1] != "main" and isinstance(entry["follows"], str)
                  and bool(REQUEST.fullmatch(entry["follows"])) and entry["follows"] != parts[1])
             and ("request_url" not in entry or entry["channel"] == "muckrock" and _request_url(entry["request_url"])
@@ -357,10 +399,12 @@ def _asked_scopes(root, law_base=None):
 
 
 def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=False, today=None, reference=None,
-                replace_reference=False, correspondence=(), request_url=None, law_base=None, covers_through=None):
+                replace_reference=False, correspondence=(), request_url=None, law_base=None, covers_through=None,
+                received_on=None, receipt_evidence=None):
     """Record one hand-sent request in kit/sent.json and return its entry."""
     root, request = Path(root), _request(request)
     reference = _reference(reference, replace_reference)
+    receipt = _clean_receipt(received_on, receipt_evidence, None, today)  # a half pair or bad value stops here
     if request_url is not None and channel not in ("portal", "muckrock"):
         raise ValueError("--request-url is only for portal or muckrock requests")
     if channel == "muckrock" and request_url is None:
@@ -405,6 +449,13 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
     if previous and previous["steps"]:
         raise ValueError(f"{label} has recorded steps; its entry sent on {previous['sent_on']} cannot be replaced")
     first_contact = min((c["on"] for c in (previous or {}).get("contacts", ())), default=None)
+    kept = (previous["received_on"], previous["receipt_evidence"]) if previous and "received_on" in previous else None
+    if receipt and receipt[0] < sent_on:
+        raise ValueError(f"--received-on {receipt[0]} is before --date {sent_on}")
+    if not receipt and kept and kept[0] < sent_on:  # a --replace without receipt flags keeps the stored receipt
+        raise ValueError(f"{label} has a receipt recorded on {kept[0]}, before --date {sent_on}; "
+                         "correct the receipt first or pass --received-on and --receipt-evidence")
+    receipt = receipt or kept
     if first_contact is not None and sent_on > first_contact:
         raise ValueError(f"{label} has a contact on {first_contact}, before --date {sent_on}; "
                          "a contact cannot come before the request was sent")
@@ -420,6 +471,8 @@ def record_sent(root, agency_id, sent_on, channel, *, request="main", replace=Fa
         entry["scopes"] = scopes
     if covers:  # recomputed on every call, so a --replace never keeps a stale boundary
         entry["covers_through"] = covers
+    if receipt:
+        entry["received_on"], entry["receipt_evidence"] = receipt
     if follows:
         entry["follows"] = follows
     if request_url:
@@ -914,6 +967,35 @@ def record_contact(root, agency_id, on, channel, role, note, *, request="main", 
             "contact": {k: contact[k] for k in ("on", "channel", "role")}}
 
 
+def record_received(root, agency_id, on, evidence, *, request="main", replace=False, today=None):
+    """Record the day the agency received an already recorded sent request, and what showed it; nothing is sent.
+
+    Stored as the paired ``received_on`` and ``receipt_evidence`` on the sent entry only. An acknowledged step never
+    sets it, and a second value needs ``replace``."""
+    root, request = Path(root), _request(request)
+    if not isinstance(agency_id, str) or not kit.AGENCY_ID.fullmatch(agency_id):
+        raise ValueError(f"agency_id {agency_id!r} is not a valid agency id")
+    receipt = _clean_receipt(on, evidence, None, today, flags=False)
+    if receipt is None:
+        raise ValueError("--on and --evidence are required")
+    if (root / "kit").is_symlink():
+        raise ValueError("kit/ must not be a symlink")
+    requests = read_sent(root)
+    entry, label = requests.get(_key(agency_id, request)), _label(agency_id, request)
+    if entry is None:
+        raise ValueError(f"no sent request {label}; run kit-sent{'' if request == 'main' else ' --request ' + request} first")
+    if on < entry["sent_on"]:
+        raise ValueError(f"--on {on} is before the request was sent on {entry['sent_on']}")
+    if "received_on" in entry and not replace:
+        raise ValueError(f"{label} already has a receipt recorded on {entry['received_on']} ({entry['receipt_evidence']}); "
+                         "use --replace to correct it")
+    entry["received_on"], entry["receipt_evidence"] = receipt
+    document = {"schema_version": 1, "requests": dict(sorted(requests.items()))}
+    kit._write_json(root / "kit" / "sent.json", document)
+    return {"agency_id": agency_id, "request": request, "sent_on": entry["sent_on"], **_receipt_pair(entry),
+            "note": receipt_note(*receipt)}
+
+
 def status(root, today=None, law_base=None, *, request=None, owner=None):
     """Every recorded request (or only those named ``request`` and/or owned by ``owner``) with provisional
     determination dates (read-only). A row carries ``owner`` only when kit/assignments.json names one."""
@@ -958,13 +1040,15 @@ def status(root, today=None, law_base=None, *, request=None, owner=None):
         linked = sorted({digest for s in steps for digest in _step_records(s)})
         downloads = _downloads(steps, today or date.today())
         letters = sorted({*entry.get("correspondence", []), *(h for s in steps for h in s.get("correspondence", []))})
-        extended = law.deadline(package, entry["sent_on"], extension=True).isoformat() if package else None
-        due = (extended if "extension" in kinds else law.deadline(package, entry["sent_on"]).isoformat()) \
+        start = _count_from(entry)  # the recorded agency receipt, else the sent day
+        extended = law.deadline(package, start, extension=True).isoformat() if package else None
+        due = (extended if "extension" in kinds else law.deadline(package, start).isoformat()) \
             if package else None
         last_contact = _latest_contact(entry)
         rows.append({"agency_id": agency_id, "request": name, "name": names.get(agency_id),
                      **({"owner": label} if label else {}),
                      "sent_on": entry["sent_on"], "channel": entry["channel"],
+                     **_receipt_pair(entry),
                      **({"covers_through": entry["covers_through"]} if "covers_through" in entry else {}),
                      **({"follows": entry["follows"]} if "follows" in entry else {}),
                      "draft_changed_since_sent": None if entry.get("imported") is True  # no draft was ever checked
@@ -989,7 +1073,8 @@ def status(root, today=None, law_base=None, *, request=None, owner=None):
                      **({"downloads_pending": downloads} if downloads else {}),
                      **({"request_url": entry["request_url"]} if "request_url" in entry else {}),
                      **({"contacts": len(entry["contacts"]),  # the organizer's own contacts: a count and the latest, no note
-                         "last_contact": {k: last_contact[k] for k in ("on", "channel", "role")}} if last_contact else {})})
+                         "last_contact": {k: last_contact[k] for k in ("on", "channel", "role")}} if last_contact else {}),
+                     **({"note": receipt_note(*_receipt_pair(entry).values())} if "received_on" in entry else {})})
     waiting = any(row["waiting_on_you_since"] for row in rows)
     return {"requests": rows, "law_package_status": package_status, "note": NOTE + (WAIT_NOTE if waiting else "")}
 
@@ -1136,8 +1221,10 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None, owner=None
         base = {"agency_id": row["agency_id"], "request": row["request"], "name": row["name"],
                 **({"owner": row["owner"]} if "owner" in row else {}),
                 "sent_on": row["sent_on"], "reference": row["reference"],
-                **({"request_url": row["request_url"]} if "request_url" in row else {})}
+                **({"request_url": row["request_url"]} if "request_url" in row else {}),
+                **({k: row[k] for k in ("received_on", "receipt_evidence")} if "received_on" in row else {})}
         steps = entries.get((row["agency_id"], row["request"]), [])
+        counts = (len(open_rows), len(answered), len(stated_passed))
         if row["waiting_on_you_since"]:  # no claim that this pauses any legal clock; the provisional date stays shown
             since, due_on = row["waiting_on_you_since"], row["determination_due"]
             open_rows.append({**base, "due": due_on, "days": due_on and (date.fromisoformat(due_on) - day).days,
@@ -1166,6 +1253,10 @@ def due(root, as_of=None, *, today=None, law_base=None, request=None, owner=None
             open_rows.append({**base, "due": item["expires_on"], "days": item["days_left"], "kind": "download",
                               "state": "download_" + item["state"], "produced_on": item["produced_on"],
                               "note": item["line"]})
+        if "received_on" in row:  # provenance joins any note the row already has (waiting, download); dates unchanged
+            for added in (open_rows[counts[0]:], answered[counts[1]:], stated_passed[counts[2]:]):
+                for item_row in added:
+                    item_row["note"] = (item_row["note"] + " " if item_row.get("note") else "") + row["note"]
     open_rows.sort(key=lambda row: (row["due"] or "", row["agency_id"], row["request"]))
     waiting = sum(row["state"] == "waiting_on_you" for row in open_rows)  # never sets exit 3 by itself
     expired = sum(row["state"] == "download_expired" for row in open_rows)  # counts for exit 3 like past_due
@@ -1248,15 +1339,18 @@ def followup(root, agency_id, as_of=None, *, replace=False, law_base=None, today
         f"{day.isoformat()} we have no record of that installment.")
     cited = [f"On {contact['on']} we contacted the records office by {CONTACT_LABELS[contact['channel']]} "
              f"({contact['role']}).", ""] if contact else []
+    received = f" Provisional dates {receipt_note(entry['received_on'], entry['receipt_evidence'])}." \
+        if "received_on" in entry else ""  # provenance only: the tool did not verify the evidence
     lines = [f"# Follow-up draft: {name}{subject}", "", "DRAFT — NOT SENT. Review before sending it yourself.", "",
              f"To: {name}, records custodian", "", *([first, ""] if first else []),
-             f"On {entry['sent_on']} we sent a records request by {entry['channel']} to {name}. {told}",
+             f"On {entry['sent_on']} we sent a records request by {entry['channel']} to {name}. {told}{received}",
              "", *cited, f"Please tell us the status of the request under the {statute['name']}, {statute['citation']}, "
              "and when you expect to respond.", "", kit.DEFAULT_REQUESTER, "", "---", ""]
     if package["status"] != "reviewed":
         lines.append(f"Law package status: {package['status']} (not independently reviewed)")
     kit._write_text(target, "\n".join([*lines, law.HOLIDAY_NOTE]) + "\n")
-    return {"written": f"kit/followups/{target.name}", "due": row["due"], "days_past": -row["days"], "note": NOTE}
+    return {"written": f"kit/followups/{target.name}", "due": row["due"], "days_past": -row["days"], "note": NOTE + received,
+            **_receipt_pair(entry)}
 
 
 DENIAL_TEMPLATE = """# Denial reply draft: {name}{subject}
@@ -1333,6 +1427,74 @@ def denial_reply(root, agency_id, rules=(), *, replace=False, law_base=None):
         first_ask=ASK_REST if quoted else ASK_ALL,
         citations=f"\nRules we noted for this reply:\n{citations}" if rules else ""))
     return {"written": f"kit/followups/{target.name}", "rules": rules, "law_package_status": status}
+
+
+ASK_NO_RECORDS = ("Please tell us which offices, systems and accounts were searched, including any kept for the "
+                  "agency by a contractor or vendor. If such records existed earlier, please tell us whether they "
+                  "were removed and, if so, under which retention schedule.")
+ASK_UNANSWERED = "Please tell us whether responsive records exist for this part and when they will be produced."
+SCOPE_DISPOSITION_TEXT = {"produced": "produced", "partly_produced": "partly produced", "withheld": "withheld"}
+
+
+def scope_reply(root, agency_id, *, request="main", replace=False, law_base=None, today=None):
+    """Write a private, never-sent draft asking neutral questions about recorded per-scope gaps (kit/followups/)."""
+    from .cli import read_config  # local import: cli imports this module lazily
+    root, request, today = Path(root), _request(request), today or date.today()
+    label = _label(agency_id, request)
+    entry = read_sent(root).get(_key(agency_id, request)) if kit.AGENCY_ID.fullmatch(agency_id) else None
+    if entry is None:
+        raise ValueError(f"no hand-sent request recorded for {label}")
+    if "scopes" not in entry:
+        raise ValueError(f"no scopes recorded for {label}; nothing to ask about")
+    if not _scopes_ok(entry):
+        raise ValueError(f"kit/sent.json unreadable: malformed scopes for {label!r}")
+    validate_steps(entry, label, today=today)
+    steps = entry["steps"]
+    try:
+        package = law.load_package(kit._jurisdiction(read_config(root)), law_base)
+    except ValueError:
+        raise ValueError("no law package: scope titles cannot be named") from None
+    titles = {s["scope_id"]: s["title"] for s in package["request_scopes"]}
+    for scope_id in entry["scopes"]:
+        if scope_id not in titles:
+            raise ValueError(f"scope {scope_id} is not in the law package; its title cannot be named")
+    answers = _answers(steps)
+    produced_step = any(s.get("kind") in ("produced", "determination") for s in steps)
+    gaps, answered = [], []
+    for scope_id in entry["scopes"]:
+        said, on = answers.get(scope_id, (None, None))
+        if said == "no_records_stated":
+            gaps.append(f"{titles[scope_id]}: our record shows the agency stated on {on} that it has no records for "
+                        f"this part. {ASK_NO_RECORDS}")
+        elif said is None and produced_step:
+            gaps.append(f"{titles[scope_id]}: we have no recorded answer for this part. {ASK_UNANSWERED}")
+        elif said in SCOPE_DISPOSITION_TEXT:
+            answered.append(f"- {titles[scope_id]}: recorded as {SCOPE_DISPOSITION_TEXT[said]} on {on}")
+    if not gaps:
+        raise ValueError(f"no scope gap to ask about for {label}")
+    path = root / "kit" / "agencies.json"
+    names = {e["agency_id"]: e["name"] for e in kit._load_existing(path)} \
+        if path.is_file() and not path.is_symlink() else {}
+    name = names.get(agency_id) or agency_id
+    subject, first = draft_lines(entry)
+    stamp = today.isoformat()
+    lines = [f"# Scope questions draft: {name}{subject}", "", "DRAFT — NOT SENT. Review before sending it yourself.", "",
+             f"To: {name}, records custodian", "", *([first, ""] if first else []),
+             f"On {entry['sent_on']} we sent a records request by {entry['channel']} to {name}. We would like to "
+             "understand how each part of the request was handled. Draft generated " + stamp + ".", "",
+             "We have questions about these parts of the request:", "",
+             *(f"{number}. {text}" for number, text in enumerate(gaps, 1)), "",
+             *(["Parts recorded as answered (listed only; we make no statement about them here):", *answered, ""]
+               if answered else []),
+             "[EDIT ME: salutation]", "", "Thank you,", "", "[name]", "", "---",
+             "Draft only. Nothing was sent.", "Draft only. Not legal advice."]
+    if package["status"] != "reviewed":
+        lines.append(f"Law package status: {package['status']} (not independently reviewed)")
+    text = "\n".join(lines) + "\n"
+    target = _followup_target(root, f"{_stem(agency_id, request)}-scopes-{stamp}.md", replace)
+    kit._write_text(target, text)
+    return {"written": f"kit/followups/{target.name}", "gaps": len(gaps), "answered": len(answered),
+            "law_package_status": package["status"]}
 
 
 def withheld(root):

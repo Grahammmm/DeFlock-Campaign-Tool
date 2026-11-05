@@ -1,0 +1,850 @@
+{
+  "calendar": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//DeFlock Campaign Tool//kit calendar//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\nUID:determination-ca-grover-beach-police@campaign.invalid\r\nDTSTAMP:20260325T120000Z\r\nDTSTART;VALUE=DATE:20260312\r\nSUMMARY:Records request: provisional determination date \u2014 Grover Beach Po\r\n lice Department\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:determination-ca-arroyo-grande-police@campaign.invalid\r\nDTSTAMP:20260325T120000Z\r\nDTSTART;VALUE=DATE:20260320\r\nSUMMARY:Records request: provisional determination date \u2014 Arroyo Grande P\r\n olice Department\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:stated-production-ca-arroyo-grande-police#ans@campaign.invalid\r\nDTSTAMP:20260325T120000Z\r\nDTSTART;VALUE=DATE:20260320\r\nSUMMARY:Records request: agency's stated production date \u2014 Arroyo Grande \r\n Police Department (ans)\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:determination-ca-atascadero-police@campaign.invalid\r\nDTSTAMP:20260325T120000Z\r\nDTSTART;VALUE=DATE:20260329\r\nSUMMARY:Records request: provisional determination date \u2014 Atascadero Poli\r\n ce Department\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+  "calendar_no_law": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//DeFlock Campaign Tool//kit calendar//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\nUID:stated-production-ca-arroyo-grande-police#ans@campaign.invalid\r\nDTSTAMP:20260325T120000Z\r\nDTSTART;VALUE=DATE:20260320\r\nSUMMARY:Records request: agency's stated production date \u2014 Arroyo Grande \r\n Police Department (ans)\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+  "cli_due": [
+    3,
+    "{\n  \"as_of\": \"2026-03-25\",\n  \"law_package_status\": \"draft\",\n  \"open\": [\n    {\n      \"agency_id\": \"ca-grover-beach-police\",\n      \"request\": \"main\",\n      \"name\": \"Grover Beach Police Department\",\n      \"sent_on\": \"2026-03-02\",\n      \"reference\": null,\n      \"due\": \"2026-03-12\",\n      \"days\": -13,\n      \"state\": \"waiting_on_you\",\n      \"since\": \"2026-03-08\",\n      \"note\": \"waiting on you since 2026-03-08 (the agency asked to clarify or narrow the request)\"\n    },\n    {\n      \"agency_id\": \"ca-arroyo-grande-police\",\n      \"request\": \"main\",\n      \"name\": \"Arroyo Grande Police Department\",\n      \"sent_on\": \"2026-03-10\",\n      \"reference\": null,\n      \"due\": \"2026-03-20\",\n      \"days\": -5,\n      \"state\": \"past_due\"\n    },\n    {\n      \"agency_id\": \"ca-atascadero-police\",\n      \"request\": \"roll\",\n      \"name\": \"Atascadero Police Department\",\n      \"sent_on\": \"2026-03-02\",\n      \"reference\": null,\n      \"due\": \"2026-03-20\",\n      \"days\": -5,\n      \"state\": \"installment_passed\"\n    },\n    {\n      \"agency_id\": \"ca-grover-beach-police\",\n      \"request\": \"dl\",\n      \"name\": \"Grover Beach Police Department\",\n      \"sent_on\": \"2026-03-03\",\n      \"reference\": null,\n      \"due\": \"2026-03-22\",\n      \"days\": -3,\n      \"kind\": \"download\",\n      \"state\": \"download_expired\",\n      \"produced_on\": \"2026-03-10\",\n      \"note\": \"Download pending: produced 2026-03-10, link expired 2026-03-22: ask the agency for a new one\"\n    },\n    {\n      \"agency_id\": \"ca-atascadero-police\",\n      \"request\": \"main\",\n      \"name\": \"Atascadero Police Department\",\n      \"sent_on\": \"2026-03-05\",\n      \"reference\": null,\n      \"due\": \"2026-03-29\",\n      \"days\": 4,\n      \"state\": \"upcoming\"\n    },\n    {\n      \"agency_id\": \"ca-atascadero-police\",\n      \"request\": \"roll\",\n      \"name\": \"Atascadero Police Department\",\n      \"sent_on\": \"2026-03-02\",\n      \"reference\": null,\n      \"due\": \"2026-03-30\",\n      \"days\": 5,\n      \"kind\": \"download\",\n      \"state\": \"download_pending\",\n      \"produced_on\": \"2026-03-08\",\n      \"note\": \"Download pending: produced 2026-03-08, link expires 2026-03-30 (5 days left)\"\n    }\n  ],\n  \"answered\": [\n    {\n      \"agency_id\": \"ca-arroyo-grande-police\",\n      \"request\": \"ans\",\n      \"name\": \"Arroyo Grande Police Department\",\n      \"sent_on\": \"2026-03-01\",\n      \"reference\": null,\n      \"last_step\": {\n        \"on\": \"2026-03-06\",\n        \"kind\": \"fee_estimate\"\n      }\n    },\n    {\n      \"agency_id\": \"ca-grover-beach-police\",\n      \"request\": \"dl\",\n      \"name\": \"Grover Beach Police Department\",\n      \"sent_on\": \"2026-03-03\",\n      \"reference\": null,\n      \"last_step\": {\n        \"on\": \"2026-03-10\",\n        \"kind\": \"produced\"\n      }\n    }\n  ],\n  \"past_due\": 1,\n  \"stated_passed\": [\n    {\n      \"agency_id\": \"ca-arroyo-grande-police\",\n      \"request\": \"ans\",\n      \"name\": \"Arroyo Grande Police Department\",\n      \"sent_on\": \"2026-03-01\",\n      \"reference\": null,\n      \"state\": \"stated_date_passed\",\n      \"stated\": \"2026-03-20\",\n      \"days\": 5\n    }\n  ],\n  \"stated_date_passed\": 1,\n  \"installment_passed\": 1,\n  \"waiting_on_you\": 1,\n  \"download_expired\": 1,\n  \"note\": \"Provisional reminders only; the period runs from the agency's receipt. Provisional reminders only, not legal due dates. Business-day counts skip Saturday and Sunday only; public holidays are not modeled. Confirm actual receipt, applicable last-day holiday exclusions and lawful extension notice before any lateness conclusion. Stated date passed \\u2014 the agency's own date; provisional, not a legal deadline. Waiting on you: the agency asked to clarify or narrow the request; reply first. Not counted as past due; no claim that this pauses any legal period.\"\n}\n",
+    ""
+  ],
+  "cli_status_ans": [
+    0,
+    "{\n  \"requests\": [\n    {\n      \"agency_id\": \"ca-arroyo-grande-police\",\n      \"request\": \"ans\",\n      \"name\": \"Arroyo Grande Police Department\",\n      \"sent_on\": \"2026-03-01\",\n      \"channel\": \"email\",\n      \"draft_changed_since_sent\": null,\n      \"imported\": true,\n      \"determination_due\": \"2026-03-11\",\n      \"with_extension\": \"2026-03-25\",\n      \"steps\": 2,\n      \"extended\": false,\n      \"closed\": false,\n      \"last_step\": {\n        \"on\": \"2026-03-06\",\n        \"kind\": \"fee_estimate\"\n      },\n      \"records\": 0,\n      \"record_prefixes\": [],\n      \"fee_estimate\": \"$50.00\",\n      \"over_fee_cap\": null,\n      \"stated_production_date\": \"2026-03-20\",\n      \"waiting_on_you_since\": null,\n      \"producing\": false,\n      \"next_installment\": null,\n      \"reference\": null,\n      \"fee_state\": \"unpaid\",\n      \"fee_paid\": null,\n      \"withheld_basis\": [],\n      \"scopes\": null\n    }\n  ],\n  \"law_package_status\": \"draft\",\n  \"note\": \"Provisional reminders only; the period runs from the agency's receipt. Provisional reminders only, not legal due dates. Business-day counts skip Saturday and Sunday only; public holidays are not modeled. Confirm actual receipt, applicable last-day holiday exclusions and lawful extension notice before any lateness conclusion.\"\n}\n",
+    "ca-arroyo-grande-police/ans: fee estimate $50.00 is unpaid\n"
+  ],
+  "due": {
+    "answered": [
+      {
+        "agency_id": "ca-arroyo-grande-police",
+        "last_step": {
+          "kind": "fee_estimate",
+          "on": "2026-03-06"
+        },
+        "name": "Arroyo Grande Police Department",
+        "reference": null,
+        "request": "ans",
+        "sent_on": "2026-03-01"
+      },
+      {
+        "agency_id": "ca-grover-beach-police",
+        "last_step": {
+          "kind": "produced",
+          "on": "2026-03-10"
+        },
+        "name": "Grover Beach Police Department",
+        "reference": null,
+        "request": "dl",
+        "sent_on": "2026-03-03"
+      }
+    ],
+    "as_of": "2026-03-25",
+    "download_expired": 1,
+    "installment_passed": 1,
+    "law_package_status": "draft",
+    "note": "Provisional reminders only; the period runs from the agency's receipt. Provisional reminders only, not legal due dates. Business-day counts skip Saturday and Sunday only; public holidays are not modeled. Confirm actual receipt, applicable last-day holiday exclusions and lawful extension notice before any lateness conclusion. Stated date passed \u2014 the agency's own date; provisional, not a legal deadline. Waiting on you: the agency asked to clarify or narrow the request; reply first. Not counted as past due; no claim that this pauses any legal period.",
+    "open": [
+      {
+        "agency_id": "ca-grover-beach-police",
+        "days": -13,
+        "due": "2026-03-12",
+        "name": "Grover Beach Police Department",
+        "note": "waiting on you since 2026-03-08 (the agency asked to clarify or narrow the request)",
+        "reference": null,
+        "request": "main",
+        "sent_on": "2026-03-02",
+        "since": "2026-03-08",
+        "state": "waiting_on_you"
+      },
+      {
+        "agency_id": "ca-arroyo-grande-police",
+        "days": -5,
+        "due": "2026-03-20",
+        "name": "Arroyo Grande Police Department",
+        "reference": null,
+        "request": "main",
+        "sent_on": "2026-03-10",
+        "state": "past_due"
+      },
+      {
+        "agency_id": "ca-atascadero-police",
+        "days": -5,
+        "due": "2026-03-20",
+        "name": "Atascadero Police Department",
+        "reference": null,
+        "request": "roll",
+        "sent_on": "2026-03-02",
+        "state": "installment_passed"
+      },
+      {
+        "agency_id": "ca-grover-beach-police",
+        "days": -3,
+        "due": "2026-03-22",
+        "kind": "download",
+        "name": "Grover Beach Police Department",
+        "note": "Download pending: produced 2026-03-10, link expired 2026-03-22: ask the agency for a new one",
+        "produced_on": "2026-03-10",
+        "reference": null,
+        "request": "dl",
+        "sent_on": "2026-03-03",
+        "state": "download_expired"
+      },
+      {
+        "agency_id": "ca-atascadero-police",
+        "days": 4,
+        "due": "2026-03-29",
+        "name": "Atascadero Police Department",
+        "reference": null,
+        "request": "main",
+        "sent_on": "2026-03-05",
+        "state": "upcoming"
+      },
+      {
+        "agency_id": "ca-atascadero-police",
+        "days": 5,
+        "due": "2026-03-30",
+        "kind": "download",
+        "name": "Atascadero Police Department",
+        "note": "Download pending: produced 2026-03-08, link expires 2026-03-30 (5 days left)",
+        "produced_on": "2026-03-08",
+        "reference": null,
+        "request": "roll",
+        "sent_on": "2026-03-02",
+        "state": "download_pending"
+      }
+    ],
+    "past_due": 1,
+    "stated_date_passed": 1,
+    "stated_passed": [
+      {
+        "agency_id": "ca-arroyo-grande-police",
+        "days": 5,
+        "name": "Arroyo Grande Police Department",
+        "reference": null,
+        "request": "ans",
+        "sent_on": "2026-03-01",
+        "state": "stated_date_passed",
+        "stated": "2026-03-20"
+      }
+    ],
+    "waiting_on_you": 1
+  },
+  "due_no_law": {
+    "answered": [
+      {
+        "agency_id": "ca-arroyo-grande-police",
+        "last_step": {
+          "kind": "fee_estimate",
+          "on": "2026-03-06"
+        },
+        "name": "Arroyo Grande Police Department",
+        "reference": null,
+        "request": "ans",
+        "sent_on": "2026-03-01"
+      },
+      {
+        "agency_id": "ca-grover-beach-police",
+        "last_step": {
+          "kind": "produced",
+          "on": "2026-03-10"
+        },
+        "name": "Grover Beach Police Department",
+        "reference": null,
+        "request": "dl",
+        "sent_on": "2026-03-03"
+      }
+    ],
+    "as_of": "2026-03-25",
+    "download_expired": 1,
+    "installment_passed": 1,
+    "law_package_status": "missing",
+    "note": "No law package: determination dates cannot be computed. Provisional reminders only; the period runs from the agency's receipt. Provisional reminders only, not legal due dates. Business-day counts skip Saturday and Sunday only; public holidays are not modeled. Confirm actual receipt, applicable last-day holiday exclusions and lawful extension notice before any lateness conclusion. Stated date passed \u2014 the agency's own date; provisional, not a legal deadline. Waiting on you: the agency asked to clarify or narrow the request; reply first. Not counted as past due; no claim that this pauses any legal period.",
+    "open": [
+      {
+        "agency_id": "ca-arroyo-grande-police",
+        "days": null,
+        "due": null,
+        "name": "Arroyo Grande Police Department",
+        "reference": null,
+        "request": "main",
+        "sent_on": "2026-03-10",
+        "state": "no_law_package"
+      },
+      {
+        "agency_id": "ca-atascadero-police",
+        "days": null,
+        "due": null,
+        "name": "Atascadero Police Department",
+        "reference": null,
+        "request": "main",
+        "sent_on": "2026-03-05",
+        "state": "no_law_package"
+      },
+      {
+        "agency_id": "ca-grover-beach-police",
+        "days": null,
+        "due": null,
+        "name": "Grover Beach Police Department",
+        "note": "waiting on you since 2026-03-08 (the agency asked to clarify or narrow the request)",
+        "reference": null,
+        "request": "main",
+        "sent_on": "2026-03-02",
+        "since": "2026-03-08",
+        "state": "waiting_on_you"
+      },
+      {
+        "agency_id": "ca-atascadero-police",
+        "days": -5,
+        "due": "2026-03-20",
+        "name": "Atascadero Police Department",
+        "reference": null,
+        "request": "roll",
+        "sent_on": "2026-03-02",
+        "state": "installment_passed"
+      },
+      {
+        "agency_id": "ca-grover-beach-police",
+        "days": -3,
+        "due": "2026-03-22",
+        "kind": "download",
+        "name": "Grover Beach Police Department",
+        "note": "Download pending: produced 2026-03-10, link expired 2026-03-22: ask the agency for a new one",
+        "produced_on": "2026-03-10",
+        "reference": null,
+        "request": "dl",
+        "sent_on": "2026-03-03",
+        "state": "download_expired"
+      },
+      {
+        "agency_id": "ca-atascadero-police",
+        "days": 5,
+        "due": "2026-03-30",
+        "kind": "download",
+        "name": "Atascadero Police Department",
+        "note": "Download pending: produced 2026-03-08, link expires 2026-03-30 (5 days left)",
+        "produced_on": "2026-03-08",
+        "reference": null,
+        "request": "roll",
+        "sent_on": "2026-03-02",
+        "state": "download_pending"
+      }
+    ],
+    "past_due": 0,
+    "stated_date_passed": 1,
+    "stated_passed": [
+      {
+        "agency_id": "ca-arroyo-grande-police",
+        "days": 5,
+        "name": "Arroyo Grande Police Department",
+        "reference": null,
+        "request": "ans",
+        "sent_on": "2026-03-01",
+        "state": "stated_date_passed",
+        "stated": "2026-03-20"
+      }
+    ],
+    "waiting_on_you": 1
+  },
+  "followup_draft": "# Follow-up draft: Arroyo Grande Police Department\n\nDRAFT \u2014 NOT SENT. Review before sending it yourself.\n\nTo: Arroyo Grande Police Department, records custodian\n\nOn 2026-03-10 we sent a records request by email to Arroyo Grande Police Department. Its provisional determination date was 2026-03-20; the period runs from the agency's receipt of the request. As of 2026-03-25 we have no record of a determination, records produced or a denial.\n\nPlease tell us the status of the request under the California Public Records Act, Gov. Code \u00a7 7920.000 et seq. (recodified by AB 473, Stats. 2021, ch. 614; operative 2023-01-01), and when you expect to respond.\n\n[requester-approved contact details]\n\n---\n\nLaw package status: draft (not independently reviewed)\nProvisional reminders only, not legal due dates. Business-day counts skip Saturday and Sunday only; public holidays are not modeled. Confirm actual receipt, applicable last-day holiday exclusions and lawful extension notice before any lateness conclusion.\n",
+  "followup_result": {
+    "days_past": 5,
+    "due": "2026-03-20",
+    "note": "Provisional reminders only; the period runs from the agency's receipt. Provisional reminders only, not legal due dates. Business-day counts skip Saturday and Sunday only; public holidays are not modeled. Confirm actual receipt, applicable last-day holiday exclusions and lawful extension notice before any lateness conclusion.",
+    "written": "kit/followups/ca-arroyo-grande-police-2026-03-25.md"
+  },
+  "status": {
+    "law_package_status": "draft",
+    "note": "Provisional reminders only; the period runs from the agency's receipt. Provisional reminders only, not legal due dates. Business-day counts skip Saturday and Sunday only; public holidays are not modeled. Confirm actual receipt, applicable last-day holiday exclusions and lawful extension notice before any lateness conclusion. Waiting on you: the agency asked to clarify or narrow the request; reply first. Not counted as past due; no claim that this pauses any legal period.",
+    "requests": [
+      {
+        "agency_id": "ca-arroyo-grande-police",
+        "channel": "email",
+        "closed": false,
+        "determination_due": "2026-03-11",
+        "draft_changed_since_sent": null,
+        "extended": false,
+        "fee_estimate": "$50.00",
+        "fee_paid": null,
+        "fee_state": "unpaid",
+        "imported": true,
+        "last_step": {
+          "kind": "fee_estimate",
+          "on": "2026-03-06"
+        },
+        "name": "Arroyo Grande Police Department",
+        "next_installment": null,
+        "over_fee_cap": null,
+        "producing": false,
+        "record_prefixes": [],
+        "records": 0,
+        "reference": null,
+        "request": "ans",
+        "scopes": null,
+        "sent_on": "2026-03-01",
+        "stated_production_date": "2026-03-20",
+        "steps": 2,
+        "waiting_on_you_since": null,
+        "with_extension": "2026-03-25",
+        "withheld_basis": []
+      },
+      {
+        "agency_id": "ca-atascadero-police",
+        "channel": "email",
+        "closed": false,
+        "determination_due": "2026-03-12",
+        "downloads_pending": [
+          {
+            "days_left": 5,
+            "expires_on": "2026-03-30",
+            "line": "Download pending: produced 2026-03-08, link expires 2026-03-30 (5 days left)",
+            "produced_on": "2026-03-08",
+            "state": "pending"
+          }
+        ],
+        "draft_changed_since_sent": null,
+        "extended": false,
+        "fee_estimate": null,
+        "fee_paid": null,
+        "fee_state": null,
+        "imported": true,
+        "last_step": {
+          "kind": "produced",
+          "on": "2026-03-08"
+        },
+        "name": "Atascadero Police Department",
+        "next_installment": "2026-03-20",
+        "over_fee_cap": null,
+        "producing": true,
+        "record_prefixes": [],
+        "records": 0,
+        "reference": null,
+        "request": "roll",
+        "scopes": null,
+        "sent_on": "2026-03-02",
+        "stated_production_date": null,
+        "steps": 1,
+        "waiting_on_you_since": null,
+        "with_extension": "2026-03-26",
+        "withheld_basis": []
+      },
+      {
+        "agency_id": "ca-grover-beach-police",
+        "channel": "email",
+        "closed": false,
+        "determination_due": "2026-03-12",
+        "draft_changed_since_sent": false,
+        "extended": false,
+        "fee_estimate": null,
+        "fee_paid": null,
+        "fee_state": null,
+        "last_step": {
+          "kind": "clarification_requested",
+          "on": "2026-03-08"
+        },
+        "name": "Grover Beach Police Department",
+        "next_installment": null,
+        "over_fee_cap": null,
+        "producing": false,
+        "record_prefixes": [],
+        "records": 0,
+        "reference": null,
+        "request": "main",
+        "scopes": [
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "agreements"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "policies"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "sharing"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "audit-logs"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "compliance"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "hearing-records"
+          }
+        ],
+        "sent_on": "2026-03-02",
+        "stated_production_date": null,
+        "steps": 2,
+        "waiting_on_you_since": "2026-03-08",
+        "with_extension": "2026-03-26",
+        "withheld_basis": []
+      },
+      {
+        "agency_id": "ca-grover-beach-police",
+        "channel": "email",
+        "closed": false,
+        "determination_due": "2026-03-13",
+        "downloads_pending": [
+          {
+            "days_left": -3,
+            "expires_on": "2026-03-22",
+            "line": "Download pending: produced 2026-03-10, link expired 2026-03-22: ask the agency for a new one",
+            "produced_on": "2026-03-10",
+            "state": "expired"
+          }
+        ],
+        "draft_changed_since_sent": null,
+        "extended": false,
+        "fee_estimate": null,
+        "fee_paid": null,
+        "fee_state": null,
+        "imported": true,
+        "last_step": {
+          "kind": "produced",
+          "on": "2026-03-10"
+        },
+        "name": "Grover Beach Police Department",
+        "next_installment": null,
+        "over_fee_cap": null,
+        "producing": false,
+        "record_prefixes": [],
+        "records": 0,
+        "reference": null,
+        "request": "dl",
+        "scopes": null,
+        "sent_on": "2026-03-03",
+        "stated_production_date": null,
+        "steps": 1,
+        "waiting_on_you_since": null,
+        "with_extension": "2026-03-27",
+        "withheld_basis": []
+      },
+      {
+        "agency_id": "ca-atascadero-police",
+        "channel": "email",
+        "closed": false,
+        "determination_due": "2026-03-29",
+        "draft_changed_since_sent": false,
+        "extended": true,
+        "fee_estimate": null,
+        "fee_paid": null,
+        "fee_state": null,
+        "last_step": {
+          "kind": "extension",
+          "on": "2026-03-12"
+        },
+        "name": "Atascadero Police Department",
+        "next_installment": null,
+        "over_fee_cap": null,
+        "producing": false,
+        "record_prefixes": [],
+        "records": 0,
+        "reference": null,
+        "request": "main",
+        "scopes": [
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "agreements"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "policies"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "sharing"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "audit-logs"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "compliance"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "hearing-records"
+          }
+        ],
+        "sent_on": "2026-03-05",
+        "stated_production_date": null,
+        "steps": 1,
+        "waiting_on_you_since": null,
+        "with_extension": "2026-03-29",
+        "withheld_basis": []
+      },
+      {
+        "agency_id": "ca-arroyo-grande-police",
+        "channel": "email",
+        "closed": false,
+        "determination_due": "2026-03-20",
+        "draft_changed_since_sent": false,
+        "extended": false,
+        "fee_estimate": null,
+        "fee_paid": null,
+        "fee_state": null,
+        "last_step": null,
+        "name": "Arroyo Grande Police Department",
+        "next_installment": null,
+        "over_fee_cap": null,
+        "producing": false,
+        "record_prefixes": [],
+        "records": 0,
+        "reference": null,
+        "request": "main",
+        "scopes": [
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "agreements"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "policies"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "sharing"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "audit-logs"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "compliance"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "hearing-records"
+          }
+        ],
+        "sent_on": "2026-03-10",
+        "stated_production_date": null,
+        "steps": 0,
+        "waiting_on_you_since": null,
+        "with_extension": "2026-04-03",
+        "withheld_basis": []
+      }
+    ]
+  },
+  "status_no_law": {
+    "law_package_status": "missing",
+    "note": "Provisional reminders only; the period runs from the agency's receipt. Provisional reminders only, not legal due dates. Business-day counts skip Saturday and Sunday only; public holidays are not modeled. Confirm actual receipt, applicable last-day holiday exclusions and lawful extension notice before any lateness conclusion. Waiting on you: the agency asked to clarify or narrow the request; reply first. Not counted as past due; no claim that this pauses any legal period.",
+    "requests": [
+      {
+        "agency_id": "ca-arroyo-grande-police",
+        "channel": "email",
+        "closed": false,
+        "determination_due": null,
+        "draft_changed_since_sent": null,
+        "extended": false,
+        "fee_estimate": "$50.00",
+        "fee_paid": null,
+        "fee_state": "unpaid",
+        "imported": true,
+        "last_step": {
+          "kind": "fee_estimate",
+          "on": "2026-03-06"
+        },
+        "name": "Arroyo Grande Police Department",
+        "next_installment": null,
+        "over_fee_cap": null,
+        "producing": false,
+        "record_prefixes": [],
+        "records": 0,
+        "reference": null,
+        "request": "ans",
+        "scopes": null,
+        "sent_on": "2026-03-01",
+        "stated_production_date": "2026-03-20",
+        "steps": 2,
+        "waiting_on_you_since": null,
+        "with_extension": null,
+        "withheld_basis": []
+      },
+      {
+        "agency_id": "ca-atascadero-police",
+        "channel": "email",
+        "closed": false,
+        "determination_due": null,
+        "downloads_pending": [
+          {
+            "days_left": 5,
+            "expires_on": "2026-03-30",
+            "line": "Download pending: produced 2026-03-08, link expires 2026-03-30 (5 days left)",
+            "produced_on": "2026-03-08",
+            "state": "pending"
+          }
+        ],
+        "draft_changed_since_sent": null,
+        "extended": false,
+        "fee_estimate": null,
+        "fee_paid": null,
+        "fee_state": null,
+        "imported": true,
+        "last_step": {
+          "kind": "produced",
+          "on": "2026-03-08"
+        },
+        "name": "Atascadero Police Department",
+        "next_installment": "2026-03-20",
+        "over_fee_cap": null,
+        "producing": true,
+        "record_prefixes": [],
+        "records": 0,
+        "reference": null,
+        "request": "roll",
+        "scopes": null,
+        "sent_on": "2026-03-02",
+        "stated_production_date": null,
+        "steps": 1,
+        "waiting_on_you_since": null,
+        "with_extension": null,
+        "withheld_basis": []
+      },
+      {
+        "agency_id": "ca-grover-beach-police",
+        "channel": "email",
+        "closed": false,
+        "determination_due": null,
+        "draft_changed_since_sent": false,
+        "extended": false,
+        "fee_estimate": null,
+        "fee_paid": null,
+        "fee_state": null,
+        "last_step": {
+          "kind": "clarification_requested",
+          "on": "2026-03-08"
+        },
+        "name": "Grover Beach Police Department",
+        "next_installment": null,
+        "over_fee_cap": null,
+        "producing": false,
+        "record_prefixes": [],
+        "records": 0,
+        "reference": null,
+        "request": "main",
+        "scopes": [
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "agreements"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "policies"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "sharing"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "audit-logs"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "compliance"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "hearing-records"
+          }
+        ],
+        "sent_on": "2026-03-02",
+        "stated_production_date": null,
+        "steps": 2,
+        "waiting_on_you_since": "2026-03-08",
+        "with_extension": null,
+        "withheld_basis": []
+      },
+      {
+        "agency_id": "ca-grover-beach-police",
+        "channel": "email",
+        "closed": false,
+        "determination_due": null,
+        "downloads_pending": [
+          {
+            "days_left": -3,
+            "expires_on": "2026-03-22",
+            "line": "Download pending: produced 2026-03-10, link expired 2026-03-22: ask the agency for a new one",
+            "produced_on": "2026-03-10",
+            "state": "expired"
+          }
+        ],
+        "draft_changed_since_sent": null,
+        "extended": false,
+        "fee_estimate": null,
+        "fee_paid": null,
+        "fee_state": null,
+        "imported": true,
+        "last_step": {
+          "kind": "produced",
+          "on": "2026-03-10"
+        },
+        "name": "Grover Beach Police Department",
+        "next_installment": null,
+        "over_fee_cap": null,
+        "producing": false,
+        "record_prefixes": [],
+        "records": 0,
+        "reference": null,
+        "request": "dl",
+        "scopes": null,
+        "sent_on": "2026-03-03",
+        "stated_production_date": null,
+        "steps": 1,
+        "waiting_on_you_since": null,
+        "with_extension": null,
+        "withheld_basis": []
+      },
+      {
+        "agency_id": "ca-atascadero-police",
+        "channel": "email",
+        "closed": false,
+        "determination_due": null,
+        "draft_changed_since_sent": false,
+        "extended": true,
+        "fee_estimate": null,
+        "fee_paid": null,
+        "fee_state": null,
+        "last_step": {
+          "kind": "extension",
+          "on": "2026-03-12"
+        },
+        "name": "Atascadero Police Department",
+        "next_installment": null,
+        "over_fee_cap": null,
+        "producing": false,
+        "record_prefixes": [],
+        "records": 0,
+        "reference": null,
+        "request": "main",
+        "scopes": [
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "agreements"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "policies"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "sharing"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "audit-logs"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "compliance"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "hearing-records"
+          }
+        ],
+        "sent_on": "2026-03-05",
+        "stated_production_date": null,
+        "steps": 1,
+        "waiting_on_you_since": null,
+        "with_extension": null,
+        "withheld_basis": []
+      },
+      {
+        "agency_id": "ca-arroyo-grande-police",
+        "channel": "email",
+        "closed": false,
+        "determination_due": null,
+        "draft_changed_since_sent": false,
+        "extended": false,
+        "fee_estimate": null,
+        "fee_paid": null,
+        "fee_state": null,
+        "last_step": null,
+        "name": "Arroyo Grande Police Department",
+        "next_installment": null,
+        "over_fee_cap": null,
+        "producing": false,
+        "record_prefixes": [],
+        "records": 0,
+        "reference": null,
+        "request": "main",
+        "scopes": [
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "agreements"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "policies"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "sharing"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "audit-logs"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "compliance"
+          },
+          {
+            "answer": null,
+            "on": null,
+            "scope_id": "hearing-records"
+          }
+        ],
+        "sent_on": "2026-03-10",
+        "stated_production_date": null,
+        "steps": 0,
+        "waiting_on_you_since": null,
+        "with_extension": null,
+        "withheld_basis": []
+      }
+    ]
+  },
+  "timing": "Response times (calendar days; provisional; not a legal deadline)\nAs of 2026-03-25. This is an as-of projection of the history recorded today, not what was known on that date. Waits are shown as their own spans and are never subtracted from any other number.\nA dash means the step is not recorded. Open ages and open waits run to the as-of date and are censored observations, not completed turnaround.\n\nagency / request | name | sent | first step | determination | first production | final production | open age\nca-arroyo-grande-police/ans | Arroyo Grande Police Department | 2026-03-01 | 4 | 4 | - | - | 24\nca-arroyo-grande-police | Arroyo Grande Police Department | 2026-03-10 | - | - | - | - | 15\nca-atascadero-police | Atascadero Police Department | 2026-03-05 | 7 | - | - | - | 20\n    extension 2026-03-12 to open as of 2026-03-25: 13 days (open)\nca-atascadero-police/roll | Atascadero Police Department | 2026-03-02 | 6 | - | 6 | - | 23\nca-grover-beach-police/dl | Grover Beach Police Department | 2026-03-03 | 7 | - | 7 | 7 | -\nca-grover-beach-police | Grover Beach Police Department | 2026-03-02 | 2 | - | - | - | 23\n    clarification 2026-03-08 to open as of 2026-03-25: 17 days (open)\n\nPer agency: count and median (calendar days; provisional; not a legal deadline)\nca-arroyo-grande-police (Arroyo Grande Police Department), 2 request(s)\n    first_step_days: count 1, median 4\n    determination_days: count 1, median 4\n    first_production_days: count 0, median -\n    final_production_days: count 0, median -\n    open_age_days: count 2, median 19.5\n    extension_days: count 0, median -\n    clarification_days: count 0, median -\nca-atascadero-police (Atascadero Police Department), 2 request(s)\n    first_step_days: count 2, median 6.5\n    determination_days: count 0, median -\n    first_production_days: count 1, median 6\n    final_production_days: count 0, median -\n    open_age_days: count 2, median 21.5\n    extension_days: count 1, median 13; 1 open (censored)\n    clarification_days: count 0, median -\nca-grover-beach-police (Grover Beach Police Department), 2 request(s)\n    first_step_days: count 2, median 4.5\n    determination_days: count 0, median -\n    first_production_days: count 1, median 7\n    final_production_days: count 1, median 7\n    open_age_days: count 1, median 23\n    extension_days: count 0, median -\n    clarification_days: count 1, median 17; 1 open (censored)",
+  "today_json": "[\n  {\n    \"rank\": 1,\n    \"kind\": \"request_past_due\",\n    \"what\": \"Follow up with Arroyo Grande Police Department (ca-arroyo-grande-police): request sent 2026-03-10 passed its provisional determination date 2026-03-20 5 day(s) ago\",\n    \"due\": \"2026-03-20\",\n    \"command\": \"kit-status --directory <ROOT>\"\n  },\n  {\n    \"rank\": 2,\n    \"kind\": \"request_installment_passed\",\n    \"what\": \"Check on Atascadero Police Department (ca-atascadero-police/roll): the next installment the agency stated for 2026-03-20 is not recorded yet\",\n    \"due\": \"2026-03-20\",\n    \"command\": \"kit-status --directory <ROOT>\"\n  },\n  {\n    \"rank\": 3,\n    \"kind\": \"request_download_pending\",\n    \"what\": \"Download records from Atascadero Police Department (ca-atascadero-police/roll) before 2026-03-30 (5 days left)\",\n    \"due\": \"2026-03-30\",\n    \"command\": \"kit-status --directory <ROOT>\"\n  },\n  {\n    \"rank\": 4,\n    \"kind\": \"request_download_expired\",\n    \"what\": \"Grover Beach Police Department (ca-grover-beach-police/dl): link expired 2026-03-22: ask the agency for a new one\",\n    \"due\": \"2026-03-22\",\n    \"command\": \"kit-status --directory <ROOT>\"\n  }\n]",
+  "today_text": "1. [request_past_due] Follow up with Arroyo Grande Police Department (ca-arroyo-grande-police): request sent 2026-03-10 passed its provisional determination date 2026-03-20 5 day(s) ago \u2014 kit-status --directory <ROOT>\n2. [request_installment_passed] Check on Atascadero Police Department (ca-atascadero-police/roll): the next installment the agency stated for 2026-03-20 is not recorded yet \u2014 kit-status --directory <ROOT>\n3. [request_download_pending] Download records from Atascadero Police Department (ca-atascadero-police/roll) before 2026-03-30 (5 days left) \u2014 kit-status --directory <ROOT>\n4. [request_download_expired] Grover Beach Police Department (ca-grover-beach-police/dl): link expired 2026-03-22: ask the agency for a new one \u2014 kit-status --directory <ROOT>"
+}

@@ -30,12 +30,12 @@ tool ran, or the date anyone reviewed it legally. Do not move a `checked_on` for
 source that day. A field you have not checked is *absent*, which is different from a recorded zero or a recorded "not
 found": absent means "not looked at yet", never "none".
 
-**How old dates are named today.** `doctor --stale-days N` names inputs dated more than N days ago, but on this version
-only these inputs: meeting data, map data, the agency seed and the law package's source dates. It does **not** read a
-profile's `checked_on`, so it will not remind you that a policy or contract was last read long ago. What `doctor` does
-report from a profile is `contracts_ending`: contracts whose `end` is within 90 days (see the contract term section of
-[AGENCY-CARDS.md](AGENCY-CARDS.md#agency-contract-term)). Until profile freshness is added, task 12 below is a manual
-recheck. If a later version names profile dates, this guide and its test will need to change together.
+**How old dates are named today.** `doctor --stale-days N` names inputs dated more than N days ago, and it covers
+meeting data, map data, the agency seed, the law package's source dates and each dated object in the public
+`content/agencies.json` profile (named `content/agencies.json:<agency_id>.<field>`, see LAUNCH.md). It only reads and
+names; it never fetches a source or changes a date, so rechecking a policy or contract and updating `checked_on` stays
+a manual step (task 12 below). `doctor` also reports from a profile `contracts_ending`: contracts whose `end` is within
+90 days (see the contract term section of [AGENCY-CARDS.md](AGENCY-CARDS.md#agency-contract-term)).
 
 ## Practice setup
 
