@@ -15,7 +15,7 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from campaign_tool import cli, kit_calendar, law  # noqa: E402
+from campaign_tool import cli, kit_calendar, kit_track, law  # noqa: E402
 from tests.test_kit_check import ready_drafts  # noqa: E402
 
 NOW = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
@@ -264,6 +264,120 @@ class KitCalendarTests(unittest.TestCase):
         code, _, err = run("kit-calendar", "--directory", self.tmp / "plain", "--out", self.tmp / "p.ics")
         self.assertNotEqual(code, 0)
         self.assertFalse((self.tmp / "p.ics").exists())
+
+    # --- request-event identity: agency and request components stay separate (RF1100-22) ---
+
+    ACK = [{"kind": "acknowledged", "on": "2026-03-03"}]  # open request: a provisional determination event
+    STATED = [{"kind": "determination", "on": "2026-03-03", "expected_on": "2026-11-10"}]  # a stated production event
+
+    def write_sent(self, pairs, steps=None):
+        """Synthetic kit/sent.json for (agency, request[, sent_on]) pairs; the real validators must accept every key."""
+        requests = {}
+        for agency, request, *rest in pairs:
+            sent_on = rest[0] if rest else "2026-03-02"
+            made = json.loads(json.dumps(steps or self.ACK))
+            for step in made:
+                step["on"] = max(step["on"], sent_on)  # a step is never dated before its request was sent
+            requests[kit_track._key(agency, request)] = {
+                "sent_on": sent_on, "channel": "email",
+                "draft": kit_track._draft_path(agency, request), "draft_sha256": HASH,
+                "recorded_at": "2026-03-02T12:00:00+00:00", "steps": made}
+        path = self.root / "kit" / "sent.json"
+        path.write_text(json.dumps({"schema_version": 1, "requests": requests}), encoding="utf-8")
+        for key, entry in kit_track.read_sent(self.root).items():
+            kit_track.validate_steps(entry, key)
+        return path
+
+    def export(self, name):
+        out = self.tmp / name
+        report = kit_calendar.calendar(self.root, out, "2026-11-01", now=NOW)
+        return out, report, self.events(out.read_bytes())
+
+    def test_uid_main_and_named_hyphen_collision(self):
+        for steps, kind in ((self.ACK, "determination"), (self.STATED, "stated-production")):
+            sent = self.write_sent([("ca-example-records", "main"), ("ca-example", "records")], steps)
+            before = sent.read_bytes()
+            out, report, events = self.export(kind + ".ics")
+            self.assertEqual(report["events"], 2)
+            self.assertEqual([e["UID"] for e in events], [f"{kind}-ca-example#records@campaign.invalid",
+                                                          f"{kind}-ca-example-records@campaign.invalid"])
+            self.assertEqual([e["SUMMARY"].rsplit(" — ", 1)[1] for e in events],
+                             ["ca-example (records)", "ca-example-records"])
+            self.assertEqual(sent.read_bytes(), before)
+
+    def test_uid_two_named_hyphen_collision(self):
+        self.write_sent([("ca-example", "records-extra", "2026-03-02"), ("ca-example-records", "extra", "2026-03-09")])
+        out, report, events = self.export("two.ics")
+        self.assertEqual(report["events"], 2)
+        self.assertEqual([(e["UID"], e["DTSTART;VALUE=DATE"]) for e in events], [
+            ("determination-ca-example#records-extra@campaign.invalid", self.due("2026-03-02")),
+            ("determination-ca-example-records#extra@campaign.invalid", self.due("2026-03-09"))])
+        self.assertEqual([e["SUMMARY"].rsplit(" — ", 1)[1] for e in events],
+                         ["ca-example (records-extra)", "ca-example-records (extra)"])
+
+    def test_uid_tuple_boundaries_and_kind_are_unique(self):
+        agencies = ["ca-a", "ca-a-b", "ca-a-b-c", "ca-1", "ca-1-2", "ca-" + "x" * 36]
+        requests = ["main", "b", "b-c", "c", "1", "1-2", "2", "a-b", "x" * 40, "0---9"]
+        seen = {}
+        for kind in ("determination", "stated-production"):
+            for agency in agencies:
+                for request in requests:
+                    row = {"agency_id": agency, "request": request}
+                    uid = kit_calendar._uid(kind, row)
+                    self.assertEqual(uid, kit_calendar._uid(kind, dict(row)))
+                    self.assertNotIn(uid, seen, f"{(kind, agency, request)} collides with {seen.get(uid)}")
+                    seen[uid] = (kind, agency, request)
+                    self.assertTrue(uid.endswith("@campaign.invalid"))
+                    self.assertNotIn("%", uid)
+        self.assertEqual(len(seen), 2 * len(agencies) * len(requests))
+        self.assertEqual(kit_calendar._uid("determination", {"agency_id": "ca-a-b", "request": "main"}),
+                         "determination-ca-a-b@campaign.invalid")
+        self.assertEqual(kit_calendar._uid("stated-production", {"agency_id": "ca-a", "request": "1-2"}),
+                         "stated-production-ca-a#1-2@campaign.invalid")
+
+    def test_uid_stable_when_other_requests_and_display_values_change(self):
+        self.write_sent([("ca-example", "records-extra", "2026-03-02"), ("ca-example-records", "extra", "2026-03-09")])
+        _, _, first = self.export("first.ics")
+        kept = "determination-ca-example#records-extra@campaign.invalid"
+        self.assertIn(kept, [e["UID"] for e in first])
+        # one request gone, another added, the survivor's sent date moved and its agency renamed
+        self.write_sent([("ca-example", "records-extra", "2026-03-04"), ("ca-example-other", "main", "2026-03-05")])
+        path = self.root / "kit" / "agencies.json"
+        agencies = json.loads(path.read_text(encoding="utf-8"))
+        agencies.append({"agency_id": "ca-example", "name": "Renamed Synthetic Agency"})
+        path.write_text(json.dumps(agencies), encoding="utf-8")
+        _, _, second = self.export("second.ics")
+        self.assertEqual(sorted(e["UID"] for e in second),
+                         sorted([kept, "determination-ca-example-other@campaign.invalid"]))
+        moved = next(e for e in second if e["UID"] == kept)
+        self.assertEqual(moved["DTSTART;VALUE=DATE"], self.due("2026-03-04"))
+        self.assertIn("Renamed Synthetic Agency (records-extra)", moved["SUMMARY"])
+        for name in ("third.ics", "fourth.ics"):
+            kit_calendar.calendar(self.root, self.tmp / name, "2026-11-01", now=NOW)
+        self.assertEqual((self.tmp / "third.ics").read_bytes(), (self.tmp / "fourth.ics").read_bytes())
+
+    def test_named_uid_survives_folding_and_remains_private(self):
+        agency = "ca-" + "long-agency-" * 6 + "end"
+        request = "r" + "-segment" * 4 + "-" + "9" * 6
+        self.assertEqual(len(request), 40)
+        sent = self.write_sent([(agency, request)])
+        before = sent.read_bytes()
+        out, report, events = self.export("long.ics")
+        self.assertEqual(report["events"], 1)
+        uid = f"determination-{agency}#{request}@campaign.invalid"
+        self.assertGreater(len("UID:" + uid), 75)
+        self.assertEqual([e["UID"] for e in events], [uid])
+        data = out.read_bytes()
+        physical = data.split(b"\r\n")[:-1]
+        self.assertTrue(all(len(line) <= 75 for line in physical))
+        self.assertTrue(any(line.startswith(b" ") for line in physical))
+        self.assertIn("UID:" + uid, unfold(data))
+        self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o600)
+        text = data.decode("utf-8").replace("\r\n ", "")
+        for secret in (HASH, HASH[:12], "records@example.org", "sent.json", "requests/"):
+            self.assertNotIn(secret, text)
+        self.assertEqual(sent.read_bytes(), before)
+        self.assert_refused(out, "exists")
 
 
 if __name__ == "__main__":
