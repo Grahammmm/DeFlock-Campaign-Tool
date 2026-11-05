@@ -296,6 +296,16 @@ an existing pack is left untouched; `--upcoming` lists that meeting as skipped w
 the others. Without `base_url` there is no QR code and the handout is byte-identical to before.
 `comment.md` and `sources.csv` never change.
 
+**What members have said (DF1407-07).** When `content/statements.json` (see `docs/SITE-CONTENT.md`) holds statements for the
+meeting's `agency_id`, the handout gains a section after the findings: for each official of that body in
+`content/officials.json`, in roster order, at most their two newest statements (`said_on` descending, stored order on the
+same day), each printed as the member's name, the complete quote in quotation marks (never shortened, whitespace kept),
+`said_on`, the context and the source link. Officials without a statement are left out. Only then does `sources.csv` gain
+the columns `kind`, `said_on`, `source_url` (finding source rows get `source`; one `statement` row per printed quote, first
+six fields empty). With no statements file, no statement for the body, or a meeting without an `agency_id`, all three files
+are byte-identical to before. A malformed statements file, a name not on the roster, a missing roster or a quote that
+trips the full-hash check stops the pack and leaves an existing pack untouched. `comment.md` never changes.
+
 The handout follows the campaign's language: `<html lang>` is `site.json.language`, and its fixed headings and notes
 (title, "What we found", the empty-state sentence, the source line, "corrected", the agenda link, "N more on the
 site", the record-number explainer, and the classification and confidence wording) come from `content/labels.json`
