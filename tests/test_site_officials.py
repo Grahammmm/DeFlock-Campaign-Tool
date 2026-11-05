@@ -78,9 +78,10 @@ class OfficialsTests(unittest.TestCase):
         for page in (COUNCIL_PAGE, COUNCIL_MEETING):
             self.assertEqual(self.read(page).count(section), 1, page)
         after = self.snapshot()
-        self.assertEqual(set(after), set(before))
-        changed = {name for name in after if after[name] != before[name]}
-        self.assertEqual(changed, {COUNCIL_PAGE, COUNCIL_MEETING})
+        self.assertEqual(set(after) - set(before), {"data/officials.json", "data/officials.csv"})  # DF1622-11
+        self.assertEqual(set(before) - set(after), set())
+        changed = {name for name in before if after[name] != before[name]}
+        self.assertEqual(changed, {COUNCIL_PAGE, COUNCIL_MEETING, "agencies.html"})
         self.assertNotIn("who-decides", self.read(POLICE_PAGE))
 
     # labels: every officials.* string comes from Site.t(), so labels.json replaces each one

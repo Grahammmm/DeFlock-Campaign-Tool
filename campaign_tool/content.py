@@ -12,6 +12,7 @@ It refuses malformed or unreviewed input so the build stops instead of
 publishing it. Records originals, mail, subscribers and private analysis never
 belong in ``content/``.
 """
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,7 @@ from urllib.parse import urlsplit
 from . import finding_updates, law, map_controller
 from .agency_cards import text as plain_text, visible
 from .camera_direction import valid_direction
+from .privacy_patterns import categories as _privacy_categories
 from .review import CLASSIFICATIONS, review_blockers
 
 CONFIDENCE = ("verified", "likely", "needs_attorney_review")
@@ -689,7 +691,8 @@ def load_finding_preview(document, label, now=None):
 
 FINDING_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # public finding ids; distinct from a slug
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
-                "status", "participation", "outcome", "cited_findings", "cosigners", "cited_elsewhere"}
+                "status", "participation", "outcome", "cited_findings", "cosigners", "submitted_comment",
+                "cited_elsewhere"}
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 CONTINUATION_KEYS = ("continued_to", "continued_to_date")  # DF0022-07: where the official source says an item went
@@ -975,6 +978,53 @@ def load_cosigners(value, label):
             raise ContentError(f"{label}[{index}]: {supporter_id!r} is listed more than once")
     return list(value)
 
+COMMENT_CHANNELS = ("email", "portal", "mail", "in_person")  # as meeting_comments.CHANNELS (DF1407-06)
+COMMENT_MAX_BYTES = 16384
+COMMENT_PLACEHOLDER = re.compile(r"\[\s*(?:name|city)\s*\]|\[\s*edit me\b[^\]]*\]", re.I)
+SUBMITTED_COMMENT_KEYS = ("on", "channel", "text", "sha256")
+
+
+def comment_text_problems(text):
+    """DF1407-06: problems with a submitted comment's text; each names a rule, and a privacy hit only its line and
+    categories, never the text. [] when the text is publishable: 1 to 16384 UTF-8 bytes, not blank, no NUL, byte-order mark
+    or control character other than tab, CR and LF, no unfilled [name], [city] or [EDIT ME] placeholder, and no email,
+    phone or plate pattern (the shared lint, line by line; a clean result is not privacy clearance)."""
+    if not isinstance(text, str):
+        return ["text must be a string"]
+    try:
+        size = len(text.encode("utf-8"))
+    except UnicodeEncodeError:
+        return ["text is not valid UTF-8"]
+    problems = [] if 1 <= size <= COMMENT_MAX_BYTES and text.strip() else [
+        f"text must be 1 to {COMMENT_MAX_BYTES} bytes of UTF-8 with at least one character that is not a space"]
+    if any(char == "\ufeff" or (unicodedata.category(char) == "Cc" and char not in "\t\r\n") for char in text):
+        problems.append("text must be plain text: no byte-order mark, NUL or control characters except tab and line breaks")
+    if COMMENT_PLACEHOLDER.search(text):
+        problems.append("text still holds an unfilled [name], [city] or [EDIT ME] placeholder")
+    for number, line in enumerate(re.split(r"\r\n|\r|\n", text), 1):
+        if found := _privacy_categories(line):
+            problems.append(f"privacy lint: line {number}: {', '.join(found)}")
+    return problems
+
+
+def load_submitted_comment(value, label, today=None):
+    """DF1407-06: the optional ``submitted_comment`` of a meeting: exactly on, channel, text, sha256. The digest must be
+    that of the stored text's UTF-8 bytes. Nothing is fetched; no private ledger is read."""
+    _require_keys(value, set(SUBMITTED_COMMENT_KEYS), set(SUBMITTED_COMMENT_KEYS), label)
+    day = _timestamp(value["on"], f"{label}.on", date_only=True)
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day) or day > (today or date.today()).isoformat():
+        raise ContentError(f"{label}.on: must be a YYYY-MM-DD date that is not in the future")
+    if value["channel"] not in COMMENT_CHANNELS:
+        raise ContentError(f"{label}.channel: must be one of {', '.join(COMMENT_CHANNELS)}")
+    if problems := comment_text_problems(value["text"]):
+        raise ContentError(f"{label}.text: {'; '.join(problems)}")
+    digest = value["sha256"]
+    if not isinstance(digest, str) or not SHA256.fullmatch(digest):
+        raise ContentError(f"{label}.sha256: must be 64 lowercase hex characters")
+    if hashlib.sha256(value["text"].encode("utf-8")).hexdigest() != digest:
+        raise ContentError(f"{label}.sha256: does not match the text")
+    return {key: value[key] for key in SUBMITTED_COMMENT_KEYS}
+
 
 def _load_cited_elsewhere(value, label, today):
     from .meeting_elsewhere import load_cited_elsewhere  # local: meeting_elsewhere imports this module
@@ -1010,6 +1060,8 @@ def load_meeting(document, label, today=None):
            if "cited_findings" in document else {}),
         **({"cosigners": load_cosigners(document["cosigners"], f"{label}.cosigners")}
            if "cosigners" in document else {}),
+        **({"submitted_comment": load_submitted_comment(document["submitted_comment"], f"{label}.submitted_comment", today)}
+           if "submitted_comment" in document else {}),
         **({"cited_elsewhere": _load_cited_elsewhere(document["cited_elsewhere"], f"{label}.cited_elsewhere", today)}
            if "cited_elsewhere" in document else {}),  # DF1107-06
     }
@@ -1142,6 +1194,61 @@ def _calendar_day(value, label):
     return day
 
 
+ARCHIVE_KEYS = {"archived_url", "archived_on"}
+ARCHIVE_HOSTS = ("web.archive.org", "archive.ph", "archive.today")
+ARCHIVE_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+WAYBACK_PATH = re.compile(r"/web/([0-9]{14})/(https?)://([^/?#]+)(?:[/?#].*)?")
+
+
+def _archive_fields(value, label, today=None):
+    """DF0237-03: the optional organizer-recorded ``archived_url`` + ``archived_on`` pair of a source link object.
+
+    ``{}`` when neither key is present; otherwise both are required and returned exactly as written. The tool never
+    fetches or submits anything; an error names the field and the rule, never the value submitted.
+    """
+    if not ARCHIVE_KEYS & set(value):
+        return {}
+    for key in sorted(ARCHIVE_KEYS):
+        if not isinstance(value.get(key), str) or not value[key]:
+            raise ContentError(f"{label}.{key}: archived_url and archived_on go together, each a non-empty string")
+    url, name = value["archived_url"], f"{label}.archived_url"
+    _https(url, name)
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        raise ContentError(f"{name}: invalid URL host") from None
+    host = (parsed.hostname or "").lower()
+    if host not in ARCHIVE_HOSTS or port is not None or parsed.netloc.lower() != host:
+        raise ContentError(f"{name}: host must be exactly web.archive.org, archive.ph or archive.today")
+    stamp_day = None
+    if host == "web.archive.org":
+        found = WAYBACK_PATH.fullmatch(url[len("https://") + len(parsed.netloc):])
+        if not found:
+            raise ContentError(f"{name}: path must be /web/<14-digit timestamp>/<http:// or https:// address>")
+        target = found.group(3)
+        if "@" in target or not HOST.fullmatch(re.sub(r":[0-9]{1,5}$", "", target)):
+            raise ContentError(f"{name}: the archived address needs a host and no credentials")
+        try:
+            stamp_day = datetime.strptime(found.group(1), "%Y%m%d%H%M%S").date()
+        except ValueError:
+            raise ContentError(f"{name}: timestamp is not a real UTC date and time") from None
+    elif parsed.path in ("", "/"):
+        raise ContentError(f"{name}: needs the path of the archived copy")
+    on_label, on = f"{label}.archived_on", value["archived_on"]
+    try:
+        if not ARCHIVE_DAY.fullmatch(on):
+            raise ValueError
+        day = date.fromisoformat(on)
+    except ValueError:
+        raise ContentError(f"{on_label}: must be a real YYYY-MM-DD calendar date") from None
+    if day > (today or date.today()):
+        raise ContentError(f"{on_label}: must not be after the build date")
+    if stamp_day is not None and day != stamp_day:
+        raise ContentError(f"{on_label}: must equal the date of the archived_url timestamp")
+    return {"archived_url": url, "archived_on": on}
+
+
 def _contract_cost(value, label):
     """``profile.contract.cost``: an organizer-transcribed amount exactly as a document states it; never computed."""
     if not isinstance(value, dict) or set(value) != set(COST_KEYS):
@@ -1157,13 +1264,13 @@ def _contract_cost(value, label):
     return {"amount_usd": amount, "period": period, "as_stated_in": title}
 
 
-def _contract(value, label):
+def _contract(value, label, today=None):
     """An organizer-checked contract term (``profile.contract``) from its official source; never fetched."""
     if value is None:
         return None
     if isinstance(value, dict) and not {"source_url", "checked_on"} <= set(value):
         raise ContentError(f"{label}: needs source_url and checked_on")
-    _require_keys(value, CONTRACT_KEYS, CONTRACT_KEYS - {"renewal_note", "cost"}, label)
+    _require_keys(value, CONTRACT_KEYS | ARCHIVE_KEYS, CONTRACT_KEYS - {"renewal_note", "cost"}, label)
     vendor, note = _text(value, "vendor", label, allow_empty=False), _text(value, "renewal_note", label)
     for key, text, limit in (("vendor", vendor, 80), ("renewal_note", note, 200)):
         if len(text) > limit:
@@ -1177,6 +1284,7 @@ def _contract(value, label):
                 "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
     if "cost" in value:
         contract["cost"] = _contract_cost(value["cost"], f"{label}.cost")
+    contract.update(_archive_fields(value, label, today))
     return contract
 
 
@@ -1200,7 +1308,7 @@ def _funding(value, label, today=None):
         item = f"{label}[{index}]"
         if not isinstance(entry, dict):
             raise ContentError(f"{item}: expected an object")
-        if not FUNDING_REQUIRED <= set(entry) or set(entry) - FUNDING_KEYS:
+        if not FUNDING_REQUIRED <= set(entry) or set(entry) - FUNDING_KEYS - ARCHIVE_KEYS:
             raise ContentError(f"{item}: needs kind, name, as_stated_in, source_url and checked_on, and may add only "
                                "amount_usd with period, and fiscal_year")
         if entry["kind"] not in FUNDING_KINDS:
@@ -1232,6 +1340,7 @@ def _funding(value, label, today=None):
             clean.update(amount_usd=cost["amount_usd"], period=cost["period"])
         if "fiscal_year" in entry:
             clean["fiscal_year"] = year
+        clean.update(_archive_fields(entry, item, build_day))
         result.append(clean)
     return result
 
@@ -1267,7 +1376,7 @@ def _reports(value, label, today=None):
         item = f"{label}[{index}]"
         if not isinstance(entry, dict):
             raise ContentError(f"{item}: expected an object")
-        if not REPORT_REQUIRED <= set(entry) or set(entry) - REPORT_KEYS:
+        if not REPORT_REQUIRED <= set(entry) or set(entry) - REPORT_KEYS - ARCHIVE_KEYS:
             raise ContentError(f"{item}: needs title, kind, period_start, period_end, source_url and checked_on, "
                                "and may add only published_on")
         if not (isinstance(entry["kind"], str) and entry["kind"] in REPORT_KINDS):
@@ -1289,6 +1398,7 @@ def _reports(value, label, today=None):
             if _report_day(entry, "published_on", item) > checked:
                 raise ContentError(f"{item}.published_on: must not be after checked_on")
             clean["published_on"] = entry["published_on"]
+        clean.update(_archive_fields(entry, item, build_day))
         result.append(clean)
     # Two stable passes: title and source_url ascending first, then the period descending (reverse keeps ties in order).
     by_text = sorted(result, key=lambda r: (r["title"], r["source_url"]))
@@ -1298,13 +1408,13 @@ def _reports(value, label, today=None):
 ALPR_POLICY_KEYS = {"url", "source_url", "checked_on"}
 
 
-def _alpr_policy(value, label):
+def _alpr_policy(value, label, today=None):
     """A posted ALPR usage policy an organizer found (``profile.alpr_policy``); linked only, never fetched or judged."""
     if value is None:
         return None
     if isinstance(value, dict) and not ALPR_POLICY_KEYS <= set(value):
         raise ContentError(f"{label}: needs url, source_url and checked_on")
-    _require_keys(value, ALPR_POLICY_KEYS, ALPR_POLICY_KEYS, label)
+    _require_keys(value, ALPR_POLICY_KEYS | ARCHIVE_KEYS, ALPR_POLICY_KEYS, label)
     try:
         checked = _calendar_day(value["checked_on"], f"{label}.checked_on")
     except ContentError:
@@ -1312,7 +1422,8 @@ def _alpr_policy(value, label):
     if checked is None or checked > date.today():
         raise ContentError(f"{label}.checked_on: must be a YYYY-MM-DD date not after the build date")
     return {"url": _https(value["url"], f"{label}.url"),
-            "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"]}
+            "source_url": _https(value["source_url"], f"{label}.source_url"), "checked_on": value["checked_on"],
+            **_archive_fields(value, label, today)}
 
 
 POLICY_CHECK_KEYS = {"checked_on", "policy_url", "elements"}
@@ -1669,7 +1780,7 @@ def _transparency(value, label, slug, today=None):
     result = []
     for index, snapshot in enumerate(value):
         item = f"{label}[{index}]"
-        _require_keys(snapshot, {"checked_on", "source_url", *TRANSPARENCY_FIELDS}, {"checked_on", "source_url"}, item)
+        _require_keys(snapshot, {"checked_on", "source_url", *TRANSPARENCY_FIELDS, *ARCHIVE_KEYS}, {"checked_on", "source_url"}, item)
         if _calendar_day(snapshot["checked_on"], f"{item}.checked_on") > (today or date.today()):
             raise ContentError(f"{item}.checked_on: must not be after the build date")
         if result and snapshot["checked_on"] >= result[-1]["checked_on"]:
@@ -1686,6 +1797,7 @@ def _transparency(value, label, slug, today=None):
             if key == "retention_days" and number is not None and number > 3650:
                 raise ContentError(f"{item}.retention_days: at most 3650")
             clean[key] = number
+        clean.update(_archive_fields(snapshot, item, today))
         result.append(clean)
     return result
 
@@ -1787,9 +1899,9 @@ def load_agencies(document, label, today=None):
             "verification": _verification(entry, item),
             "asked": _asked(entry, f"{item}.asked", today) if label == "content/agencies.json" else [],
             "flock_transparency_url": _flock_url(entry, item),
-            "contract": (contract := _contract(profile.get("contract"), f"{item}.profile.contract")),  # kept out of card JS
+            "contract": (contract := _contract(profile.get("contract"), f"{item}.profile.contract", today)),  # kept out of card JS
             "contract_check": _contract_check(profile.get("contract_check"), contract, f"{item}.profile.contract_check", today),  # likewise
-            "alpr_policy": (alpr_policy := _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy")),  # likewise
+            "alpr_policy": (alpr_policy := _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy", today)),  # likewise
             "policy_check": _policy_check(profile.get("policy_check"), f"{item}.profile.policy_check", alpr_policy, today),  # likewise
             "pre_implementation_meeting": _pre_meeting(profile.get("pre_implementation_meeting"),  # likewise
                                                        f"{item}.profile.pre_implementation_meeting", today),
@@ -1814,14 +1926,14 @@ def load_agencies(document, label, today=None):
     return agencies
 
 
-def default_agencies(root):
+def default_agencies(root, today=None):
     """Selected kit agencies plus governing bodies, or [] when no kit exists."""
     kit_dir = Path(root) / "kit"
     agencies = []
     for name in ("agencies.json", "governing-bodies.json"):
         path = kit_dir / name
         if path.is_file():
-            agencies.extend(load_agencies(_read_json(path), "kit/" + name))
+            agencies.extend(load_agencies(_read_json(path), "kit/" + name, today))
     seen, unique = set(), []
     for agency in agencies:
         if agency["agency_id"] not in seen:
@@ -1835,7 +1947,7 @@ def load_campaign_agencies(root, today=None):
     path = Path(root) / "content" / "agencies.json"
     if path.is_file():
         return load_agencies(_read_json(path), "content/agencies.json", today)
-    return default_agencies(root)
+    return default_agencies(root, today)
 
 
 # --- map -------------------------------------------------------------------
@@ -2169,7 +2281,7 @@ def load_map(content_dir, sources=None, today=None):
 PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
 RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
                                        "agency-cards", "app", "data", "vendor", "meetings", "methods", "privacy", "search",
-                                       "press", "news", "requests"}  # generated top-level names (press: DF2207-10, news: DF0022-03, reserved even when disabled)
+                                       "press", "news", "requests", "cameras"}  # generated top-level names (press: DF2207-10, news: DF0022-03, reserved even when disabled)
 
 
 def _page_string(document, key, label, limit, required):

@@ -5,6 +5,7 @@ module, never a metadata value. A truncated or malformed structure is ``unreadab
 """
 import os
 import struct
+import zlib
 from pathlib import Path
 
 from .content import ContentError
@@ -86,24 +87,47 @@ def _jpeg(data):
         pos = end
 
 
+def _png_chunk(data, pos, size, count):
+    """Frame, type-check and CRC-check one chunk at ``pos``: ``(name, body_start, end)``; else ``Unreadable``."""
+    _need(count < MAX_PARTS and pos + 12 <= size)
+    length, name = int.from_bytes(data[pos:pos + 4], "big"), data[pos + 4:pos + 8]
+    end = pos + 12 + length
+    _need(length <= 2 ** 31 - 1 and end <= size)
+    _need(all(65 <= c <= 90 or 97 <= c <= 122 for c in name) and name[2] < 97)  # letters; reserved bit clear
+    _need(zlib.crc32(data[pos + 4:pos + 8 + length]) == int.from_bytes(data[end - 4:end], "big"))
+    return name, pos + 8, end
+
+
 def _png(data):
     _need(data.startswith(PNG_SIGNATURE))
     parts, pos, size = [(None, 0, 8)], 8, len(data)
+    seen, previous = [], None
     while True:
-        _need(len(parts) <= MAX_PARTS and pos + 12 <= size)
-        length, kind_name = int.from_bytes(data[pos:pos + 4], "big"), data[pos + 4:pos + 8]
-        end = pos + 12 + length
-        _need(length < 2 ** 31 and end <= size)
-        body, kind = data[pos + 8:pos + 8 + length], None
-        if kind_name == b"eXIf":
+        name, body_start, end = _png_chunk(data, pos, size, len(seen))
+        length = end - 12 - pos
+        if not seen:
+            _need(name == b"IHDR" and length == 13)
+        else:
+            _need(name != b"IHDR")
+        if name == b"PLTE":
+            _need(b"PLTE" not in seen and b"IDAT" not in seen and length % 3 == 0 and 3 <= length <= 768)
+        elif name == b"IDAT":
+            _need(previous == b"IDAT" or b"IDAT" not in seen)  # one contiguous run
+        elif name == b"IEND":
+            _need(length == 0 and b"IDAT" in seen)
+        elif name[0] < 97:  # critical, not one of the four known
+            _need(name == b"IHDR")
+        body, kind = data[body_start:end - 4], None
+        if name == b"eXIf":
             kind = _exif_kind(body)
-        elif kind_name == b"iTXt":
+        elif name == b"iTXt":
             kind = "XMP" if body.split(b"\0", 1)[0] == b"XML:com.adobe.xmp" else "text"
-        elif kind_name in (b"tEXt", b"zTXt"):
+        elif name in (b"tEXt", b"zTXt"):
             kind = "text"
         parts.append((kind, pos, end))
-        pos = end
-        if kind_name == b"IEND":
+        seen.append(name)
+        previous, pos = name, end
+        if name == b"IEND":
             return parts + ([("trailing data", pos, size)] if pos < size else [])
 
 

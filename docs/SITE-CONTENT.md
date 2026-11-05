@@ -26,7 +26,7 @@ when a line names no file, and the same exit codes, so an editor or CI step can 
 
 ## Content directory
 
-`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, a draft `pages/help-map.json`, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, draft `pages/help-map.json` and `pages/background.json` starter pages, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
 
 ### Help-map page starter
 
@@ -42,6 +42,28 @@ the three `nav` slots; set `"nav": false` or delete `content/pages/help-map.json
 fresh tree has none. `content init --from OLD` copies a source campaign's own pages as before and never adds this
 starter. Before publishing run `content-check` and `build --check` offline; the legal-claim guard stays advisory and
 does not scan page copy, so read the page yourself. The report's `placeholders` count includes this page's markers.
+
+### Background-reading page starter
+
+A fresh `content init` also writes `content/pages/background.json`, the page `/background.html` titled "Background
+reading": nine public California documents about ALPRs and the public records law, in three groups (audit and
+guidance; California statutes and public records; legislative background). Each entry gives the title as published,
+the publisher, a labeled date (published, issued, effective or operative, analysis or approved date as the document
+calls for), one `https://` link and one sentence on what the document covers. Only official publishers are listed (the
+State Auditor, the Attorney General's office, the Legislature's leginfo site). The page says it is background and not a
+finding about any agency or legal advice. It is read from the packaged copy of `examples/pages/background.json`, so it
+works from an installed wheel, and it is California-scoped for every campaign, whatever its state.
+
+This is a starter the organizer re-checks. The intro and every entry start `[EDIT ME: verify for this campaign]`, which
+stays visible on the page until you replace it. Before publishing, open each link and confirm the title, publisher and
+date, check whether a statute has been amended since the date shown, and delete entries you do not want. The shipped
+California law package stays a draft; this list does not review it. The page uses one of the three `nav` slots (with the
+help-map page it uses two); `"nav": false` only hides its navigation link; the page stays public at `background.html`. To omit it, delete `content/pages/background.json` and rebuild.
+`content init --from OLD` copies the source campaign's own `background.json` when it has one and never adds this starter.
+The renderer shows only `##` headings, so each entry title is a bold line. Run `content-check` and `build --check`
+offline before publishing. The tests check the committed citation structure, the official-host rule and the
+legal-claim guard on the page text; they do not fetch the links, so link freshness and legal correctness are the
+organizer's to confirm. The report's `placeholders` count includes this page's markers.
 
 ### Draft FAQ starter
 
@@ -314,6 +336,24 @@ absent shows nothing. `agencies.html` shows "Posted ALPR usage policy (checked
 <date>, where we found it)" on that agency's card only; neither URL is fetched.
 Linking a policy says only that it was posted; it is not a finding about compliance.
 
+### Archived copies of agency sources (optional)
+
+Five organizer-verified link objects may carry a manually checked archive copy: `profile.alpr_policy`,
+`profile.contract`, every `profile.transparency` snapshot, every `profile.funding` entry and every `profile.reports`
+entry. Add both keys or neither: `"archived_url": "https://web.archive.org/web/20261020120000/https://example.org/policy.pdf"`
+and `"archived_on": "2026-10-20"`. The host must be exactly `web.archive.org`, `archive.ph` or `archive.today` (https,
+no port, no credentials; subdomains, `archive.is` and any other host are refused). A Wayback URL must have the form
+`/web/<14-digit timestamp>/<http(s) address>`, the timestamp a real UTC date and time, and `archived_on` must equal
+that timestamp's date. `archive.ph` and `archive.today` links need a path; their `archived_on` is the day you saved or
+checked the copy. `archived_on` is a real date not after the build date. A bad host, timestamp or date stops the build
+and `content-check` names the field, for example `content/agencies.json[1].profile.funding[0].archived_url`.
+
+The card and page then show `archived copy (DATE)` (label `agency.archived_copy`) right after that source link, and
+`data/agencies.json` carries both fields (the CSV carries them inside the same nested cells; no new column). An older
+transparency snapshot is validated but only the newest is shown. The detail page also shows the policy and contract
+lines when they carry a pair. An archive link does not say the copy is authentic, current or legally sufficient. The tool
+fetches nothing and submits nothing to an archive.
+
 An agency's optional `profile.policy_check` records an organizer's reading of the posted `alpr_policy` against the
 draft checklist `jurisdictions/us-ca/policy-checklist.json` (bound to the law-package rule
 `ca-civ-1798.90.51-usage-and-privacy-policy`, Civ. Code § 1798.90.51(b); status `draft`, packaged byte-identical and
@@ -412,6 +452,24 @@ then "Latest report" (DF0237-02, see `profile.reports`).
 A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
 No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
 
+#### Where things stand (home strip)
+
+A content-backed home (DF1952-10) shows "Where things stand" after the map and before the agency cards, always, including
+when every count is zero; the no-content starter is unchanged. Five counts, in order, each linked to its page, a zero shown
+as "none yet" and never as 0: agencies we have asked (distinct agencies with a non-empty `asked` list, not list length,
+status or kit agencies; `/requests.html`); asked items answered or partly answered (individual `asked` entries in state
+`answered` or `partly_answered`, duplicates kept, no dates compared; `/requests.html`); records in the public library
+(`len(sources)`, library entries not citations or hashes, private-copy entries included; `/sources.html`); published
+findings (corrected ones once, no drafts or withdrawn; `/findings/`); and community-mapped camera points, labelled
+"Community-mapped camera points; ownership unconfirmed" (every validated Point feature in the configured public cameras
+GeoJSON, whatever the city boundaries or list caps; zero without a map; `/cameras.html`). A mapped point is not evidence
+of agency ownership. Without a map, `cameras.html` is an empty page with the same disclaimer so the link resolves, it is
+in the sitemap, and `cameras` is always a reserved page slug. One extra line, "Next verified written-comment deadline",
+shows the earliest `participation.written_comment.deadline` among noncancelled upcoming meetings that is strictly after
+the build date at 00:00 UTC (ties by meeting id), in its own UTC offset, linked to the meeting page; with none the line is
+absent. The strip reads only assembled public content and the configured public map, never `kit/`. Labels: `standings.*`
+and `cameras.empty`.
+
 #### What we have asked for (`requests.html`)
 
 `/requests.html` (DF1103-13, heading and title "What we have asked for") is always built for a content-backed campaign,
@@ -427,10 +485,23 @@ asked date or today's date. The lead gives the number of rows and a count for ea
 `awaiting_response`, `acknowledged`, `partly_answered`, `answered`, `declined_in_writing`, `withdrawn` (zero counts included),
 counted from the very rows shown; no state is inferred and nothing says a response is late. With no rows the page says "No
 public requests are listed yet." after the zero counts and shows no table. It reuses the `.glance-table` markup, so rows
-stack on phones with each cell's header, and adds no script, style, CSP rule or asset. It is linked as "What we have
+stack on phones with each cell's header, and adds no CSP rule (a script, style and asset only with the filter below). It is linked as "What we have
 asked for" in the footer between the findings feed and Corrections (on every page), is listed once in `sitemap.xml` (with
 `base_url`, no `lastmod`), `requests.html` is a generated path (`public-assets/requests.html` is refused) and `requests` is a
 reserved page slug. Labels: `requests.*` and `footer.requests`.
+
+**Agency and state filter (DF1622-08).** When the rows shown span two or more agencies or two or more request states (an
+agency with no asked row does not count; with none, one agency and one state the page, `style.css` and every other file stay
+byte-identical and no script is written), the page gains a form with an Agency select and a State select (State is the request
+workflow state, in the lead's order), a count line "Showing N of M" and a "No public request matches these filters." note, and
+loads `requests/filter.js`: first-party, ES5, no dependency, no network, cookies or storage, text and `hidden` only, so the
+CSP is unchanged. The full table always shows without JavaScript; the form and the note stay hidden until the script runs.
+Rows carry `data-agency` (the agency slug) and `data-state`; the two selects combine (both must match) and duplicates count
+as separate rows. The choice is kept in the address as `#agency=<slug>&state=<state>`; unknown keys, unknown values and bad
+escapes are ignored, and a copied link restores both selections. Printing shows every row. The labels are `js.requests_label`,
+`js.requests_agency`, `js.requests_state`, `js.requests_all_agencies`, `js.requests_all_states`, `js.requests_count`
+(`{shown}`, `{total}`) and `js.requests_empty`; they apply to this page only, never to `site-data.js` or other scripts.
+`requests` is a reserved top-level path, so `public-assets/requests/...` is refused.
 
 ### Contract cost as stated (`profile.contract.cost`)
 
@@ -637,6 +708,19 @@ it: re-check and update it. The body's agency page and each meeting page with it
 `agency_id` show a "Who decides" list (names linked to `profile_url` when given) with the
 newest `checked_on` and its source link. Labels: `officials.*`.
 
+**Officials as open data (DF1622-11).** When `content/officials.json` lists at least one person (a missing file or
+`"bodies": []` lists nobody), the build also writes `data/officials.json` (`schemas/officials-open-data.schema.json`) and
+`data/officials.csv`; with nobody listed neither file exists, a rebuild removes stale ones, and every other file is
+byte-identical. Every loaded body with people is exported, also one without an agency page, sorted by agency `name` then
+`agency_id`. Top level: `schema_version` 1, `campaign`, `generated_from` (`content/officials.json`), `base_url` (or null),
+`url_kind`, `bodies`, plus `license` and `license_url` only when `site.json` sets a licence. Each body has `agency_id`, `name`
+and `officials`; each official has exactly `name`, `role`, `profile_url` (null when absent), `source_url` and `checked_on`,
+in the roster's order, duplicates kept. The CSV is flattened from that checked JSON, one official per row, columns
+`agency_id,agency_name,name,role,profile_url,source_url,checked_on` (CRLF, UTF-8); a cell starting with `=`, `+`, `-`, `@`,
+tab or CR gets a leading apostrophe (the JSON does not). Votes stay only in `data/meetings.json`; contacts, notes and any
+other key are never exported (the build refuses with `data/officials.json: non-public key ...`). `agencies.html` links both
+files, and `press.html` lists them when press is configured. Label: `intro.officials_open_data`.
+
 `content/statements.json` (optional, never fetched) records what a listed decision maker said in public: a JSON
 array of 0 to 200 rows, newest shown first. Each row has `agency_id` (the body's id in `officials.json`, not its
 display name), `official` (the name exactly as stored there, matched letter for letter, case and spaces included, only
@@ -818,6 +902,38 @@ Questions an organizer has checked, in the order written, become `/faq.html`. Th
   or an unreadable file is refused, not skipped.
 - Labels: `faq.title`, `footer.faq`, `faq.findings`, `faq.terms`, `faq.rule` and `faq.law_status` (see Labels). The
   Spanish values in `examples/labels/es.json` are a machine-made draft like the rest of that file.
+
+### Plain-language check for pages, FAQ and glossary (advisory, never a gate)
+
+    python3 -m campaign_tool content check-plain --directory D [--json]
+
+Lists readability suggestions for site text an organizer wrote. It is read-only: it rewrites nothing, writes no report,
+receipt, cache or folder, and never builds or loads the whole of `content/`, so unrelated content problems or finding
+review status cannot stop it. `build`, publish, review receipts and content hashes never read it. It is different from
+`content-check`, which validates content for publication; this only suggests. For findings use
+[`finding check-plain`](PUBLICATION.md#plain-language-check-advisory-never-a-gate), which is unchanged.
+
+- **Checked:** `content/pages/*.json` (`title`, then `body_md`, files in name order), each `content/faq.json` entry
+  (`question`, then `answer_md`, in stored order) and each `content/glossary.json` term (`definition_md`, in stored
+  order). Page `description`, `notice_md`, glossary terms and aliases as prose, `site.json` and findings are not checked.
+  Missing files or folders mean nothing to check. Organizer placeholders and empty strings are checked like any text.
+- **Rules and counting:** the same three rules and counting as the finding check: a sentence over 30 words
+  (`long_sentence`), a paragraph over 150 words (`long_paragraph`) and an all-capital abbreviation of 2 to 6 letters
+  not spelled out earlier (`unexplained_abbreviation`). There is no `long_summary`. Text inside matched double quotes
+  is skipped but its words still count in a word's position number. Markdown is counted as written, not rendered.
+- **Spelled out earlier:** `expanded words (ABC)` or `ABC (expanded words)` earlier in the same page (title before
+  body) or the same FAQ entry (question before answer) explains it; nothing carries to the next page, entry or term. An
+  abbreviation listed as an alias (2 to 6 capitals) of any glossary term is never reported, anywhere.
+- **Output:** text is the finding heading, one line per suggestion `<file> <entry>: <field> paragraph P, sentence S,
+  word W: <rule> (...)`, then `<N> suggestion(s). Nothing was changed.` With `--json`, one object
+  `{"advisory": true, "warnings": [...]}` where each warning has `file` (`content/...`), `entry` (the page name,
+  `entries[N]` or `terms[N]`, zero-based as stored in the file) and then the finding check's keys. Paragraph, sentence
+  and word are one-based; `start` is a zero-based Unicode code-point offset in the field and `end` is exclusive. No
+  prose is printed.
+- **Exit codes:** 0 whenever the content can be read, with or without suggestions (the finding check exits 3 with
+  suggestions); 1 with a `Stopped:` line naming the file when a checked file is unreadable, a symlink, special file,
+  too large, not UTF-8 JSON or lacks the string fields above, and no report is printed; 2 for a usage error.
+- **Limits:** a heuristic only: no dictionary, no language detection, no readability score.
 
 ### In the news (`content/coverage.json`, optional)
 
@@ -1010,6 +1126,15 @@ person. The two files are replaced one after the other with a rollback on an ord
 until the saved pair of files is restored. There is no crash-atomic transaction and no concurrent writer support; run
 one writer. Evidence originals are never deleted.
 
+Staged meetings may carry `submitted_comment` `{on, channel, text, sha256}`, written by `meetings-comment-publish` (see
+`docs/MEETINGS.md`). `on` is a real date that is not in the future, `channel` one of `email|portal|mail|in_person`, `text`
+1 to 16384 UTF-8 bytes with no placeholder or email, phone or plate pattern, and `sha256` the digest of the text's UTF-8 bytes
+(the build recomputes it; no private ledger is read). The meeting page shows it as escaped plain text under
+`Our submitted comment (CHANNEL, DATE)` (labels `meeting.submitted_comment` with `{channel}` and `{date}`, and
+`meeting.submitted_comment_link`; Spanish drafts in `examples/labels/es.json`); an existing agency page links its past
+meeting to `#submitted-comment`; `data/meetings.json` gains `submitted_comment: {on, channel}` only (never the text or digest,
+and no CSV column).
+
 ### Campaign events (`content/events.json`, optional)
 
 The campaign's own forums, teach-ins and other public gatherings become `/events.html`. They are **not** governing-body
@@ -1123,6 +1248,12 @@ published finding or `sources.json` entry: its card facts and official links, it
 with 12-character hash prefixes and `sources.html#<fragment>` links, that body's upcoming meetings by `agency_id`,
 its findings feed when it has findings; linked as "Agency page" from `agencies.html` and from each of its finding
 pages, listed in the sitemap; other agencies get no page and no link; a `public-assets/agencies/` file is refused),
+`agencies/<slug>.ics` (one meetings calendar per agency that has an agency page and at least one staged meeting
+(any date or status); it holds that agency's upcoming, not cancelled, meetings by the build-day rule, written by the
+`meetings.ics` writer with the same `meeting-<id>@<host>` UIDs and event bytes, `X-WR-CALNAME` `<campaign> - <agency name>
+meetings`; an agency whose meetings are all past or cancelled keeps a valid empty calendar; linked as "Subscribe to this
+agency's meetings (.ics)" (label `agency.meetings_calendar`) after its upcoming meetings; no meeting, no file and no link;
+not in the sitemap; a static file, so rebuild to refresh it),
 `cameras.html` (only with a map: the no-JS list of mapped points, one section
 per picker city by name, each point in the first city boundary holding it by the counts' half-open rule, then the
 `group_label` section; manufacturer/operator or "not tagged", an OSM node link or "no OSM link"; over 2 000 points each
@@ -1211,6 +1342,26 @@ object (`asked` or `funding` items, `alpr_policy`, `contract`, `transparency`, a
 JSON (`{"checked_on":"2026-10-20","url":"..."}`), never spread over more columns. Encoding and the formula guard are those of
 `findings.csv`: UTF-8 without a byte-order mark, CRLF line ends, standard quoting, and a cell that begins with `=`, `+`, `-`, `@`,
 a tab or a carriage return is written with a leading `'` (interior characters are not touched; the JSON is not changed).
+`data.html` and `data/datapackage.json` (DF2207-12) are the open-data catalogue: the page lists, for each file the build
+wrote among the four JSON and four CSV documents, `data/cameras.geojson`, `data/county.geojson` and the city-boundary copy
+(files the build did not write are not listed; vendor files, assets, schemas and the two catalogue files never are), a fixed one-line
+description, the byte length, all 64 characters of the SHA-256 of the final written bytes, a schema link and the licence; the
+descriptor is a generic Frictionless Data Package (`profile: data-package`, name `campaign-open-data`, each resource with
+`path` relative to `data/`, `mediatype`, `bytes`, `hash: sha256:<hex>`, `schema` and `licenses`). Both are rendered last, from
+the staged bytes of every listed file, and compared with the preflight calculation before `public/` is swapped, so the hashes
+match what was written; `build --preview` calculates them from the planned bytes. JSON files link the raw
+`schemas/<name>-open-data.schema.json` URL; a CSV resource carries an inline Table Schema of its actual header (every column
+is text) and its page row links the JSON schema as the source-record schema; GeoJSON links the GeoJSON schema. `site.json.license`
+applies to the campaign JSON and CSV only. `cameras.geojson` is always ODbL-1.0 with the OpenStreetMap contributors attribution.
+A boundary file keeps only a licence its own top-level `license` member states (a known id); otherwise it says
+`licence not stated` (`licenses: []`). No package-wide licence is written. `build --check` first checks a catalogue already in
+`public/` (when `data.html` or `data/datapackage.json` exists) and refuses a listed file that is missing, changed (size or
+SHA-256), symlinked or outside `data/`, a malformed or duplicate-key descriptor, or a `data.html` row that differs, naming each
+path, before anything is rebuilt; it checks the fresh output again before it prints success. An ordinary build repairs old
+output. `data.html` is linked from the footer (its own paragraph before the final links paragraph) and, with a `base_url`,
+listed in `sitemap.xml`; `data.html` is a reserved name. Labels: `data.title`, `data.intro`, `data.csv_note`, `data.download`,
+`data.description`, `data.bytes`, `data.sha256`, `data.schema`, `data.schema_csv`, `data.license`, `data.license_unstated`,
+`data.package` and `footer.data`; the descriptions in the catalogue are fixed English like the other non-page outputs.
 `public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan
@@ -1364,7 +1515,9 @@ Meeting-pack handout (`handout.*`): `meeting-pack` (`docs/MEETINGS.md`) reads th
 ("Source: {title}, received {date}, record {record}"; `{title}` is the source title, `{record}` the 12-character
 prefix), `handout.not_recorded` (stands for `{date}` when the library has no received date), `handout.corrected`
 ("corrected {date}"), `handout.more_on_site` ("{count} more on the site") and `handout.record_explainer`; finding
-classification and confidence use `classification.<code>` and `confidence.<code>`. Placeholder values are escaped
+`handout.statements_heading` ("What members have said") and `handout.statements_note` (the line under it, only printed with
+statements), the statement quote, context and source wording reuse `statements.quote`, `statements.context_<code>` and `statements.source`; the
+three extra `sources.csv` columns appear because statements are printed, never because of a label; classification and confidence use `classification.<code>` and `confidence.<code>`. Placeholder values are escaped
 once and filled into the label only: a title that contains `{count}` prints as written. `comment.md` and
 `sources.csv` do not change with the labels.
 Scripts (`js.*`): the fixed text the generated JavaScript writes into the page. Defaults are the English the scripts
@@ -1574,6 +1727,55 @@ sends, publishes, builds and fetches nothing.
   `kit/briefs/` refuses even with `--replace`. Directories are created `0700` and files `0600`. The two files are replaced
   one after the other, not as a transaction: after an I/O failure the first file can already be new, the command says so
   and exits 1, and running it again with `--replace` repairs the pair.
+
+## External source links (`content link-check`)
+
+```
+python3 -m campaign_tool content link-check --directory CAMPAIGN [--online]
+```
+
+Without `--online` the command prints a deterministic inventory of the external `https://` URLs the public content cites and
+the line `Offline inventory; no URLs fetched.` It touches no network, DNS, cookie jar or cache, writes no file and changes no
+content; a missing `content/` is refused, never scaffolded. Only the validated public content is read (never `public/`,
+`kit/sent`, drafts or record bytes). Relative, `mailto:`, `http:`, `data:`, `file:` and `javascript:` references are not listed,
+nor are links to the host of `site.base_url` (when it is unset every absolute https reference is treated as external).
+
+Each URL is shown exactly as submitted with every `content/<file>:<field>` that cites it (repeated uses keep every locator).
+URLs that differ only by `#fragment` share one request. Cited fields:
+
+| Content | Fields |
+| --- | --- |
+| `agencies.json` (or `kit/agencies.json`) | `records_url`, `portal.url`, `verification.source_url`, the generated transparency URL, `profile.alpr_policy.url` and `.source_url`, `profile.policy_check.policy_url`, `profile.contract.source_url`, `profile.contract_check.contract_url`, `profile.pre_implementation_meeting.source_url`, `profile.transparency[].source_url`, `profile.funding[].source_url`, `profile.reports[].source_url`, `profile.sharing.source_url`, `agency-actions.json` `source_url` |
+| `sources.json` | `public_url` |
+| `meetings/*.json` | `agenda_url`, `participation.source_url`, `outcome.source_url`, `.minutes_url`, `.recording_url`, `.direction_source`, links in `comment_kit_md` |
+| `officials.json` | `profile_url`, `source_url` |
+| `statements.json` | `source_url` (stored row index) |
+| `body-schedules.json` | `source_url` (stored schedule index, not the sorted order) |
+| `events.json` | `url` and links in `description_md` |
+| Markdown | https links in `site.json` `mission_md` and `about_md`, finding `body_md`, `pages/*.json`, `topics/*.json` `intro_md`, FAQ answers, the glossary, and `elsewhere.json` `source_url` and `news_url` |
+
+When DF0237-03 recorded an `archived_url` and `archived_on` beside a link, they are printed under that link as
+`archive recorded at ...`, and the archive URL is itself an inventory entry. An archive is never fetched in place of a broken
+original and never hides its failure.
+
+With `--online` each distinct URL is requested once, one at a time, with `GET` (first 64 KiB only, never decoded or stored),
+no cookies, credentials, referrer or proxy, certificate verification on, 15 seconds per request, the fixed header
+`User-Agent: DeFlock-Campaign-Tool/link-check` and no retries. At most 5 redirects (301, 302, 303, 307, 308) are followed and
+every redirect target is shown; a redirect to a non-https URL, with credentials, with control characters, without a
+`Location`, in a loop or past the fifth is shown and reported as `error` without being requested. Results per URL:
+
+| Result | Meaning |
+| --- | --- |
+| `ok` | 2xx with no redirect |
+| `moved` | 2xx after one or more redirects |
+| `gone` | final status 404 or 410 (also after a redirect) |
+| `timeout` | the connection or read timed out |
+| `error` | TLS, DNS or connection failure, any other non-2xx status (403, 429 and 5xx are not `gone`), a refused redirect or a read failure |
+
+Exit code 0 when everything is `ok` or `moved` (or nothing is cited); 3 after all URLs are printed if any is `gone`, `error` or
+`timeout`; 1 when the content is missing or invalid. Failures print a category such as `TLS error`, never raw exception text.
+A reachable URL is not proof that the source is authentic, equivalent to what the content cites, factually correct or legally
+reviewed. The command never updates a URL, `checked_on` or `archived_on`.
 
 ## What is never rendered
 

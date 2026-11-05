@@ -3,6 +3,7 @@
 Find upcoming public meetings with license plate reader agenda items, record them, and build
 a public-comment kit from published findings. Code: `campaign_tool/meetings.py`,
 `workers/workspace/src/comment_kit.ts`, the Meetings screen in `views/screens.ts`.
+For the task order (find, stage, verify, comment, record, outcome) see the [meetings guide](MEETINGS-GUIDE.md); this file stays the reference.
 
 ## Legistar import (CLI)
 
@@ -309,6 +310,16 @@ an existing pack is left untouched; `--upcoming` lists that meeting as skipped w
 the others. Without `base_url` there is no QR code and the handout is byte-identical to before.
 `comment.md` and `sources.csv` never change.
 
+**What members have said (DF1407-07).** When `content/statements.json` (see `docs/SITE-CONTENT.md`) holds statements for the
+meeting's `agency_id`, the handout gains a section after the findings: for each official of that body in
+`content/officials.json`, in roster order, at most their two newest statements (`said_on` descending, stored order on the
+same day), each printed as the member's name, the complete quote in quotation marks (never shortened, whitespace kept),
+`said_on`, the context and the source link. Officials without a statement are left out. Only then does `sources.csv` gain
+the columns `kind`, `said_on`, `source_url` (finding source rows get `source`; one `statement` row per printed quote, first
+six fields empty). With no statements file, no statement for the body, or a meeting without an `agency_id`, all three files
+are byte-identical to before. A malformed statements file, a name not on the roster, a missing roster or a quote that
+trips the full-hash check stops the pack and leaves an existing pack untouched. `comment.md` never changes.
+
 The handout follows the campaign's language: `<html lang>` is `site.json.language`, and its fixed headings and notes
 (title, "What we found", the empty-state sentence, the source line, "corrected", the agenda link, "N more on the
 site", the record-number explainer, and the classification and confidence wording) come from `content/labels.json`
@@ -326,6 +337,14 @@ reason (cancelled, stale kit, pack exists, invalid id, symlinked or unreadable f
 the window are not listed. Exit 0 when nothing was skipped, 3 when something needs attention.
 `--allow-past` is refused with `--upcoming`. Nothing is sent or published.
 
+## Social drafts (never posted)
+
+Meeting announcements and outcome posts are private drafts written by `social --meetings` and `social --outcomes`; nothing
+is posted. Their rules (windows, platform lengths, kept edits, skipped counts) are in
+[PUBLICATION.md](PUBLICATION.md#social-drafts-for-meetings-never-posted) for meetings and
+[PUBLICATION.md](PUBLICATION.md#social-drafts-for-outcomes-never-posted) for outcomes, and stay there. The task order is in
+the [meetings guide](MEETINGS-GUIDE.md#6-draft-the-announcement-never-posted).
+
 ## Recording a comment you submitted
 
 After you have sent a written comment (or spoken one) yourself, record it with
@@ -341,6 +360,29 @@ no longer lists its `comment_deadline` item, and `meeting-pack` returns `"commen
 (`null` when none) and prints `Comment recorded as submitted on <on> (<channel>).`; the three pack files are
 unchanged. A malformed `kit/comments-sent.json` shows in `today` as one `unreadable` item (every deadline is
 still listed), `meeting-pack` treats it as no record, and `meetings-comment-sent` refuses until it is fixed.
+
+## Publishing the comment you submitted
+
+`python3 -m campaign_tool meetings-comment-publish --directory D --id M --file LETTER --signer-public [--replace]`
+stages the text you already submitted by hand as the public copy on the meeting's page. It sends and builds nothing: it
+writes `submitted_comment` into `content/meetings/<M>.json`, and the next normal `build` renders it.
+
+* `LETTER` must be byte for byte the file `meetings-comment-sent --file` recorded for this meeting: its SHA-256 and size
+  must equal the recorded `letter_sha256` and `letter_bytes`. A meeting recorded without `--file` cannot be published. Changing
+  even a newline makes it a different file. Nothing is normalized, redacted or filled in.
+* UTF-8 plain text of 1 to 16384 bytes (CRLF and non-ASCII allowed; no byte-order mark, NUL or other control characters),
+  with no unfilled `[name]`, `[city]` or `[EDIT ME]` placeholder. Other bracketed prose is fine.
+* The shared privacy lint (email, phone, plate) runs line by line; a hit refuses and names the line number and category only.
+  A clean result is not privacy clearance: the patterns have known blind spots. The legal-claim guard only prints
+  `review-required` notes (rule names) and never refuses.
+* `--signer-public` is your confirmation that whoever signed the comment agreed to be named publicly. The tool cannot check it.
+* The date and channel come from the private record, never from a flag. An existing public comment is kept unless `--replace`;
+  the private record is never changed.
+
+The meeting page then shows `Our submitted comment (CHANNEL, DATE)` as escaped plain text (anchor `#submitted-comment`),
+an existing agency page's past meeting links to it, and `data/meetings.json` carries only `submitted_comment: {on, channel}`
+(JSON only; no text, digest or CSV column). This is a recorded submission, not proof of delivery or a legal finding. Without
+the field every page and export is unchanged.
 
 ## Recording an outcome
 

@@ -5,6 +5,7 @@ the "At a glance" table gains a "Latest report" column; data/agencies.json carri
 report is required, late or missing. Offline, synthetic agencies, titles and URLs only.
 """
 import csv
+import hashlib
 import io
 import json
 import os
@@ -23,7 +24,7 @@ from campaign_tool import law
 from campaign_tool.content import REPORT_KINDS, ContentError, _reports, load_agencies
 from campaign_tool.content_check import content_problems
 from campaign_tool.labels import DEFAULTS
-from campaign_tool.site import PUBLIC_AGENCY_FIELDS, PUBLIC_REPORT_FIELDS, Site, build_site
+from campaign_tool.site import PUBLIC_AGENCY_FIELDS, PUBLIC_ARCHIVE_FIELDS, PUBLIC_REPORT_FIELDS, Site, build_site
 from campaign_tool.site_check import check_accessibility, check_links
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -416,7 +417,13 @@ class ReportsTests(unittest.TestCase):
         self.assertEqual(set(self.exported()), set(PUBLIC_AGENCY_FIELDS) | {"reports"})
         self.assertTrue(all(set(r) <= set(PUBLIC_REPORT_FIELDS) for r in self.exported()["reports"]))
         self.assertEqual({n for n in reported if reported[n] != plain.get(n)},
-                         {"agencies.html", "agencies/cedar.html", "data/agencies.json"})  # every other file is byte for byte as before
+                         {"agencies.html", "agencies/cedar.html", "data/agencies.json",
+                          "data.html", "data/datapackage.json"})  # derived catalogue and package list agencies.json's new bytes; all else is byte for byte as before
+        package = json.loads(reported["data/datapackage.json"])
+        resource = next(r for r in package["resources"] if r["path"] == "agencies.json")
+        self.assertEqual((resource["bytes"], resource["hash"]),
+                         (len(reported["data/agencies.json"]), "sha256:" + hashlib.sha256(reported["data/agencies.json"]).hexdigest()))
+        self.assertIn(hashlib.sha256(reported["data/agencies.json"]).hexdigest().encode(), reported["data.html"])
         self.assertEqual(reported["data/agencies.csv"], plain["data/agencies.csv"])  # no CSV column is added
         header = next(csv.reader(io.StringIO(self.read("data/agencies.csv"))))
         self.assertNotIn("reports", header)
@@ -442,7 +449,7 @@ class ReportsTests(unittest.TestCase):
         self.assertEqual((declared["reports"]["minItems"], declared["reports"]["maxItems"]), (1, 20))
         self.assertEqual(declared["report_entry"]["properties"]["title"], {"type": "string", "minLength": 1, "maxLength": 160})
         self.assertEqual(sorted(declared["report_entry"]["required"]), sorted(REPORT))
-        self.assertEqual(sorted(declared["report_entry"]["properties"]), sorted(PUBLIC_REPORT_FIELDS))
+        self.assertEqual(sorted(declared["report_entry"]["properties"]), sorted(PUBLIC_REPORT_FIELDS + PUBLIC_ARCHIVE_FIELDS))
         self.assertEqual(declared["report_entry"]["properties"]["kind"]["enum"], list(REPORT_KINDS))
         self.assertFalse(declared["report_entry"]["additionalProperties"])
         # a private nested key fails closed before anything is written

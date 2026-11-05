@@ -259,12 +259,13 @@ class LabelsTest(unittest.TestCase):
         # statements.*: the fixture has no statements.json (tests/test_site_statements.py covers those labels).
         # agency.action*: the fixture records no agency actions (test_agency_actions_labels_replace_every_fixed_string below).
         # agency.report*: the fixture records no reports (tests/test_agency_reports.py overrides every one).
+        # agency.archived_copy: the fixture records no archived copy (tests/test_agency_archives.py overrides it).
         absent = ["agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",
                   "agency.action_kind_contract_ended", "agency.action_kind_contract_paused",
                   "agency.action_kind_contract_renewed", "agency.action_kind_contract_signed", "agency.action_kind_other",
                   "agency.action_kind_policy_adopted", "agency.action_kind_policy_amended", "agency.action_kind_policy_posted",
                   "agency.action_kind_retention_changed", "agency.action_kind_sharing_ended",
-                  "agency.action_kind_sharing_started", "agency.action_line", "agency.actions_heading",
+                  "agency.action_kind_sharing_started", "agency.action_line", "agency.actions_heading", "agency.archived_copy",
                   "agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
                   "agency.cost_total", "agency.funding_fiscal_year", "agency.funding_kind_asset_forfeiture",
                   "agency.funding_kind_donation", "agency.funding_kind_general_fund", "agency.funding_kind_grant",
@@ -293,8 +294,12 @@ class LabelsTest(unittest.TestCase):
                   "finding.update", "finding.updates",
                   "footer.elsewhere", "footer.events", "footer.events_calendar", "footer.license", "footer.sharing",
                   "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
-                  "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.title",
+                  "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.statements_heading",
+                  "handout.statements_note", "handout.title",
                   "handout.what_we_found",
+                  "intro.officials_open_data",
+                  "js.requests_agency", "js.requests_all_agencies", "js.requests_all_states", "js.requests_count",
+                  "js.requests_empty", "js.requests_label", "js.requests_state",
                   "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
                   "license.about", "license.about_camera", "license.csv_note",
                   "map.check_duplicate", "map.check_earlier", "map.check_heading",
@@ -305,7 +310,7 @@ class LabelsTest(unittest.TestCase):
                   "meeting.comments_both", "meeting.comments_spoke", "meeting.comments_written",
                   "meeting.continued_from", "meeting.continued_to", "meeting.cosigned_many", "meeting.cosigned_one",
                   "meeting.minutes_confirmed", "meeting.minutes_pending", "meeting.recording", "meeting.recording_from",
-                  "meeting.staff_direction",
+                  "meeting.staff_direction", "meeting.submitted_comment", "meeting.submitted_comment_link",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
                   "officials.heading", "officials.listed", "officials.source", "press.download_logo", "press.logo",
                   "privacy.signup_policy",
@@ -323,6 +328,7 @@ class LabelsTest(unittest.TestCase):
                   "sharing.kind", "sharing.kind_federal", "sharing.kind_local", "sharing.kind_private", "sharing.kind_state",
                   "sharing.kind_unknown", "sharing.law_status", "sharing.lead", "sharing.out_of_state", "sharing.receiver",
                   "sharing.source_list", "sharing.sources", "sharing.state", "sharing.title",
+                  "standings.deadline",  # DF1952-10: only with a verified upcoming deadline (tests/test_site_standings.py)
                   "statements.campaign_context", "statements.checked", "statements.context_interview",
                   "statements.context_meeting", "statements.context_newsletter", "statements.context_other",
                   "statements.context_press_release", "statements.heading", "statements.line", "statements.quote",

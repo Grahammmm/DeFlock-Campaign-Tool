@@ -511,7 +511,10 @@ class Isolation(ThreadCase):
             build_thread_social(self.root, FID, ["mastodon", "bluesky"])
             self.assertEqual(self.run_thread("--platform", "mastodon").returncode, 0)
         self.assertEqual(legacy(), before)
-        self.assertEqual(check_social(self.root), check_before)
+        after = check_social(self.root)
+        folders = after.pop("folders")  # the thread folders are now named; the rest of the report is unchanged
+        self.assertEqual(sorted(set(folders) - set(check_before["folders"])), ["kit/social/threads/bluesky", "kit/social/threads/mastodon"])
+        self.assertEqual(after, {k: v for k, v in check_before.items() if k != "folders"})
         self.assertEqual({str(p): p.read_bytes() for p in self.content.rglob("*") if p.is_file()}, content_before)
         self.assertEqual(sorted(p.name for p in social.glob("*.md")), [f"{SLUG}.md"])
         # threads never reach the public build

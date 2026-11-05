@@ -401,8 +401,8 @@ class LogoAndData(PressBase):
         self.build()
         html = self.read("press.html")
         links = self.data_links(html)
-        self.assertEqual(links, sorted(f"/data/{n}.{e}" for n in ("agencies", "findings", "meetings", "sources")
-                                       for e in ("csv", "json")))
+        self.assertEqual(links, sorted([f"/data/{n}.{e}" for n in ("agencies", "findings", "meetings", "sources")
+                                        for e in ("csv", "json")] + ["/data/datapackage.json"]))
         for link in links:
             self.assertTrue((self.public / link[1:]).is_file(), link)
         self.assertNotIn("cameras.geojson", html)

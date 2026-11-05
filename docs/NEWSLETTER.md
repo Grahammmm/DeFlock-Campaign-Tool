@@ -142,6 +142,31 @@ in date order. A linked, non-regular or malformed `kit/newsletter-sent.json` is 
 explicit `--since` wins. The draft JSON output names where the window came from in `since_from`:
 `"record"`, `"flag"` or `null`. This is the offline counterpart of the hosted `campaign_sent` event.
 
+### Draft provenance and `--check` (DF1622-13)
+
+`--from-content` (only it) also saves a private `provenance` object in `kit/newsletter-draft.json`. It is never in
+`public_archive`, the `.html`, the `.txt`, the subject or any public file (a kept issue copy in `kit/newsletter-issues/` keeps it
+privately; the archive projection does not). Shape: `{schema_version: 1, built_at, since, findings: [...], meetings: [...]}`.
+`built_at` is the build's UTC instant and `since` the saved window start or `null`. Each `findings` entry has `id`, `slug`,
+`published_at`, `section` (`new` for every finding counted under New findings, including those folded into "and N more", or
+`correction` for each older finding listed under Corrections) and `corrections`, the finding's `[{date, note}]` exactly as loaded.
+Each `meetings` entry has the content meeting `id`, `starts_at` and `agenda_url` for every upcoming meeting the draft counts.
+`--manifest` drafts, the template draft and the runner's `build_draft` call carry no provenance: `build_draft(...,
+provenance=True)` is an explicit opt-in and the default output is byte-identical to before.
+
+`python3 -m campaign_tool.newsletter --directory D --check [--json]` reads that draft (a symlink or non-regular file is refused)
+and the current `content/`, and takes no action and no other flag. It names a listed finding now withdrawn or unpublished, whose
+corrections differ (dates added or removed shown, never the notes), or whose slug or published time changed; a listed meeting now
+cancelled, rescheduled (old and new start), removed, with a changed agenda link or already started; and a published finding
+inside the draft's `since` window (or corrected in it) and an upcoming non-cancelled meeting that the draft does not list. Each
+line ends with the rebuild command (`... --from-content`, plus the saved `--since`). With no difference it prints
+`draft matches current content (findings, corrections and meetings; requests, records, map and decisions not checked)` and exits 0.
+A draft without provenance, or with a `schema_version` other than 1, prints
+`not checked: this draft has no content provenance; rebuild it with newsletter --from-content` and exits 3, never the match line.
+Exit 3 is any difference; 1 is no draft, an unreadable or malformed draft, or unreadable content; 2 is a usage error. `--json`
+prints `{status: match|different|not_checked, message, differences: [{kind, id, reasons, rebuild_command}]}`. This compares
+content only: it does not prove the rendered text is unedited and checks nothing about requests, records, the map or decisions.
+
 ### Campaign events (DF1107-09)
 
 With `--from-content`, events from `content/events.json` (DF1107-08) get a `## Campaign events` section after the upcoming meetings. An event is listed when its start instant is at or after both the draft time and `--since` (or the day after the last recorded send), and at most 30 days after the draft time; both ends are inclusive. Events already started, past or later than 30 days are left out; end times play no part. Entries are soonest first (then by id), at most 50, each with title, date and time in the event's own UTC offset (`Wed Mar 10, 2027 19:00 UTC-08:00`), its venue or `Online`, and a link to its `events.html#event-<id>` anchor (absolute with `base_url`, otherwise the plain path). Descriptions, accessibility notes and registration links are never copied. HTML, text and the public archive carry the same entries.
