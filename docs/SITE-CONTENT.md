@@ -1598,6 +1598,9 @@ URLs that differ only by `#fragment` share one request. Cited fields:
 | `sources.json` | `public_url` |
 | `meetings/*.json` | `agenda_url`, `participation.source_url`, `outcome.source_url`, `.minutes_url`, `.recording_url`, `.direction_source`, links in `comment_kit_md` |
 | `officials.json` | `profile_url`, `source_url` |
+| `statements.json` | `source_url` (stored row index) |
+| `body-schedules.json` | `source_url` (stored schedule index, not the sorted order) |
+| `events.json` | `url` and links in `description_md` |
 | Markdown | https links in `site.json` `mission_md` and `about_md`, finding `body_md`, `pages/*.json`, `topics/*.json` `intro_md`, FAQ answers, the glossary, and `elsewhere.json` `source_url` and `news_url` |
 
 When DF0237-03 recorded an `archived_url` and `archived_on` beside a link, they are printed under that link as

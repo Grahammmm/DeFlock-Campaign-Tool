@@ -226,6 +226,39 @@ class InventoryTests(LinkCheckBase):
                     "https://coverage-only.example.org/c", "https://comment-only.example.org/c"):
             self.assertEqual(fetched.count(url), 1)
 
+    def test_statements_schedules_and_events_are_listed_with_stored_locators_and_fetched_online_only(self):
+        content = self.root / "content"
+        (content / "statements.json").write_text(json.dumps([{
+            "agency_id": "ca-cedar-police", "official": "Pat Example", "said_on": "2026-10-01", "quote": "A short quote.",
+            "context": "meeting", "source_url": "https://statement-only.example.org/s", "checked_on": "2026-10-02"}]), encoding="utf-8")
+
+        def schedule(body, url):
+            return {"body": body, "weekday": "tuesday", "ordinals": [1], "local_start_time": "18:00",
+                    "time_zone": "America/Los_Angeles", "source_url": url, "checked_on": "2026-10-01"}
+        (content / "body-schedules.json").write_text(json.dumps({"schema_version": 1, "schedules": [
+            schedule("Zed Board", "https://sched-zed.example.org/z"), schedule("Alpha Board", "https://sched-alpha.example.org/a")]}),
+            encoding="utf-8")
+        (content / "events.json").write_text(json.dumps([{
+            "id": "rally", "title": "Rally", "online": True, "starts_at": "2026-12-01T18:00:00-08:00", "ends_at": "2026-12-01T19:00:00-08:00",
+            "description_md": "Read [the notice](https://event-prose.example.org/n).",
+            "url": "https://event-url.example.org/u"}]), encoding="utf-8")
+        urls = self.by_url()
+        expected = {
+            "https://statement-only.example.org/s": "content/statements.json[0].source_url",
+            "https://sched-zed.example.org/z": "content/body-schedules.json:schedules[0].source_url",  # stored index, not sorted
+            "https://sched-alpha.example.org/a": "content/body-schedules.json:schedules[1].source_url",
+            "https://event-prose.example.org/n": "content/events.json[0].description_md[anchor 1]",
+            "https://event-url.example.org/u": "content/events.json[0].url"}
+        for url, locator in expected.items():
+            self.assertEqual(urls[url]["citations"], [locator])
+        with mock.patch.object(content_links, "real_opener", side_effect=AssertionError("opener built")):
+            content_links.run_cli(self.root, today=TODAY)
+        opener = FakeOpener({})
+        content_links.run_cli(self.root, True, opener=opener, today=TODAY)
+        fetched = [url for _, url, _, _ in opener.requests]
+        for url in expected:
+            self.assertEqual(fetched.count(url), 1)
+
     def test_published_only_and_archive_provenance(self):
         urls = self.by_url()
         self.assertEqual(urls[POLICY_URL]["archives"], [{

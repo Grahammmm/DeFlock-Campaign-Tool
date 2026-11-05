@@ -87,6 +87,15 @@ def _file_names(content_dir, folder, key):
     return names
 
 
+def _stored_schedule_positions(path):
+    """``{body: stored index}`` of body-schedules.json (the loader returns rows sorted by body)."""
+    try:
+        rows = json.loads(Path(path).read_text(encoding="utf-8")).get("schedules") or []
+        return {row["body"]: number for number, row in enumerate(rows) if isinstance(row, dict) and "body" in row}
+    except (OSError, ValueError, AttributeError, TypeError, KeyError):
+        return {}
+
+
 def collect_links(root, *, today=None):
     """Ordered external-link groups ``[{"url", "citations": [locator..], "archives": [{locator, archived_url, archived_on}]}]``.
 
@@ -171,6 +180,17 @@ def collect_links(root, *, today=None):
         cite(entry.get("url"), f"content/coverage.json:entries[{index}].url")
     for issue in model.get("newsletters") or []:
         prose(issue.get("body_md"), f"content/newsletters/{issue.get('sent_on')}.json:body_md")
+
+    for index, row in enumerate(model.get("statements") or []):  # stored order; the reader refuses rather than skips
+        cite(row.get("source_url"), f"content/statements.json[{index}].source_url")
+    stored = _stored_schedule_positions(content_dir / "body-schedules.json")
+    for schedule in model.get("body_schedules") or []:  # the loader sorts by body; the locator is the stored index
+        position = stored.get(schedule.get("body"))
+        where = f"schedules[{position}]" if position is not None else f"schedules[body {schedule.get('body')}]"
+        cite(schedule.get("source_url"), f"content/body-schedules.json:{where}.source_url")
+    for index, event in enumerate(model.get("events") or []):  # file order; the loader refuses rather than skips
+        prose(event.get("description_md"), f"content/events.json[{index}].description_md")
+        cite(event.get("url"), f"content/events.json[{index}].url")
 
     finding_files = _file_names(content_dir, "findings", "id")
     for finding in model["findings"]:
