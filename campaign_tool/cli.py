@@ -1032,6 +1032,20 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    add_p = commands.add_parser("meetings-add", help="Record an organizer-entered meeting for a body on no supported agenda platform "
+                                "(private kit/meetings-manual.json; nothing is fetched, sent or published)")
+    add_p.add_argument("--directory", required=True)
+    add_p.add_argument("--id", required=True, help="manual-SLUG (lowercase letters, digits, hyphens)")
+    for flag, text in (("--body", "Governing body, as the official agenda names it"), ("--agency-id", "The body's agency id"),
+                       ("--starts-at", "ISO start time with its UTC offset or Z"),
+                       ("--agenda-url", "Official https agenda page (your attestation; never fetched)"),
+                       ("--item-title", "Agenda item title"), ("--source-url", "https page where you checked the agenda"),
+                       ("--checked-on", "YYYY-MM-DD you checked the official agenda"),
+                       ("--on", "With --replace or --cancel: YYYY-MM-DD of the correction"),
+                       ("--reason", "With --replace or --cancel: why (kept privately; not printed)")):
+        add_p.add_argument(flag, help=text)
+    add_p.add_argument("--replace", action="store_true", help="Correct an existing manual meeting (needs --on and --reason)")
+    add_p.add_argument("--cancel", action="store_true", help="Mark a manual meeting cancelled (needs --on and --reason; no entry fields)")
     outcome_p = commands.add_parser("meetings-outcome", help="Record an organizer-verified outcome on a past staged meeting")
     for flag in ("--directory", "--id"):
         outcome_p.add_argument(flag, required=True)
@@ -1659,6 +1673,20 @@ def main():
                         "(or --from-request AGENCY)")
         elif args.request is not None or args.tz is not None:
             batch.error("--request and --tz are only for --from-request")
+    if args.command == "meetings-add":
+        entry_flags = {"--body": args.body, "--agency-id": args.agency_id, "--starts-at": args.starts_at,
+                       "--agenda-url": args.agenda_url, "--item-title": args.item_title,
+                       "--source-url": args.source_url, "--checked-on": args.checked_on}
+        if args.replace and args.cancel:
+            parser.error("--replace and --cancel cannot be combined")
+        if args.cancel and any(v is not None for v in entry_flags.values()):
+            parser.error("--cancel takes only --id, --on and --reason, no entry fields")
+        if not args.cancel and any(v is None for v in entry_flags.values()):
+            parser.error("meetings-add needs " + ", ".join(entry_flags) + " (or --cancel)")
+        if (args.replace or args.cancel) and (args.on is None or args.reason is None):
+            parser.error("--replace and --cancel need --on and --reason")
+        if not (args.replace or args.cancel) and (args.on is not None or args.reason is not None):
+            parser.error("--on and --reason are only for --replace or --cancel")
     if args.command in ("verify", "backup-drill", "backup-list"):
         try:
             {"verify": verify_cmd, "backup-drill": backup_drill_cmd, "backup-list": backup_list_cmd}[args.command](args)
@@ -1764,6 +1792,17 @@ def main():
                       f"({report['comment_sent']['channel']}).")
         elif args.command == "meetings-stage":
             meeting_stage_cmd(args, root)
+        elif args.command == "meetings-add":
+            from .meetings_manual import cancel_manual, record_manual
+            read_config(root)  # not a campaign folder: Stopped, before anything is read or written
+            if args.cancel:
+                result = cancel_manual(root, args.id, on=args.on, reason=args.reason)
+            else:
+                result = record_manual(root, args.id, body=args.body, agency_id=args.agency_id, starts_at=args.starts_at,
+                                       agenda_url=args.agenda_url, agenda_item=args.item_title, source_url=args.source_url,
+                                       checked_on=args.checked_on, replace=args.replace, on=args.on, reason=args.reason)
+            print(json.dumps(result, indent=2))
+            print("Recorded only. Nothing was sent or published.")
         elif args.command == "meetings-outcome":
             from .meeting_outcome import run_outcome_command
             print("\n".join(run_outcome_command(root, args)))

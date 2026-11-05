@@ -778,6 +778,10 @@ def _clean(text):
     return " ".join(str(text or "").replace("<", "").replace(">", "").split())
 
 
+def manual_note(meeting):
+    return f"Organizer-entered meeting; official agenda checked {_clean(meeting.get('checked_on'))}."
+
+
 ASK_COUNT_WORDS = {1: "One ask", 2: "Two asks", 3: "Three asks"}
 ASKS_ABOVE = {1: "the ask", 2: "the two asks", 3: "the three asks"}
 
@@ -846,6 +850,8 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
     lines.append(f"## Public comment: {_clean(meeting.get('body'))}, {when}")
     if meeting.get("agenda_item"):
         lines.append(f"Agenda item: {_clean(meeting['agenda_item'])}")
+    if meeting.get("source") == "manual":  # DF1103-09: an organizer-entered meeting says so
+        lines.append(manual_note(meeting))
     lines.append("")
     lines.append("## Two-minute comment")
     start = len(lines)

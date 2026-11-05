@@ -537,7 +537,7 @@ _MODULES = {
     "backup archives and keys": "backup backup_crypt",
     "generated drafts, exports and public content, no catalog store": """
         agency_brief content_init content_sharing coverage flyer kit_calendar kit_copy kit_export kit_fees kit_preserve kit_timing
-        map_survey meeting_outcome meeting_pack meeting_stage meetings newsletter.__main__ newsletter.archive
+        map_survey meeting_outcome meeting_pack meeting_stage meetings meetings_manual newsletter.__main__ newsletter.archive
         newsletter.draft newsletter.sent outbox outbox_batch press recent search_log site site_check social social_threads""",
     "other local files with no catalog store": """
         agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
@@ -594,6 +594,7 @@ MODULE_FUNCTIONS = {
     'meeting_pack': ('_commit_pack', '_discard', '_write_member', 'build',),
     'meeting_stage': ('stage',),
     'meetings': ('write_matters', 'write_meetings',),
+    'meetings_manual': ('_save',),  # private kit/meetings-manual.json, 0600 atomic write, organizer-entered meetings only
     'newsletter.__main__': ('main',),
     'newsletter.archive': ('publish_issue',),
     'newsletter.draft': ('write_draft',),
