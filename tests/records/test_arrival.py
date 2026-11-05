@@ -151,6 +151,20 @@ class PendingConsumeTests(ArrivalCase):
         os.symlink(self.tmp, path)
         self.assertEqual(self.code(arrival.pending, self.runtime), "ARRIVAL_STATE_UNSAFE")
 
+    def test_backlog_over_one_batch_drains_without_loss(self):
+        with mock.patch.object(arrival, "MAX_STAMPS", 4):
+            self.stamps(10)
+            self.assertEqual(len(arrival.pending(self.runtime)), 4)
+            self.assertTrue(arrival.has_work(self.runtime, stamps_only=True))
+            taken = []
+            for run in (RUN_1, RUN_2, "run_20261104T182000Z_89abcdef"):
+                batch = arrival.consume(self.runtime, run)
+                self.assertLessEqual(len(batch), 4)
+                taken.append(len(batch))
+            self.assertEqual(taken, [4, 4, 2])
+            self.assertFalse(arrival.has_work(self.runtime, stamps_only=True))
+            self.assertEqual(arrival.pending(self.runtime), [])
+
     def test_consume_claims_a_fixed_snapshot_and_is_idempotent(self):
         self.stamps(2)
         expected = arrival.pending(self.runtime)

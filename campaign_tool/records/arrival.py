@@ -235,9 +235,9 @@ def _stamp_files(arrival):
         if not STAMP_NAME_RE.match(entry):
             continue
         names.append(entry)
-    if len(names) > MAX_STAMPS:
-        raise ArrivalError("ARRIVAL_TOO_MANY")
-    return names
+    # A burst larger than one batch is not an error: the oldest MAX_STAMPS are
+    # returned and the rest stay in the queue for the next consume.
+    return names[:MAX_STAMPS]
 
 
 def pending(runtime_dir):
