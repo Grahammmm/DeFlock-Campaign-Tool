@@ -256,6 +256,8 @@ def content_problems(root, limit=LIMIT, faq_out=None, elsewhere_out=None, today=
     elsewhere = read_elsewhere(root, today, problems)  # DF1107-04: the build's own reader; names every independent problem
     if elsewhere_out is not None and elsewhere is not None:
         elsewhere_out.extend(elsewhere)
+    from .content_events import read_events  # local: content_events imports content
+    read_events(root, problems)  # DF1107-08: the build's own reader and privacy lint; it names every independent problem itself
     # DF0022-03: the build's own reader and refusal text; with a refused finding file ids are not matched (already named)
     _attempt(problems, "coverage.json", lambda: read_coverage(root, findings if findings_intact else None))
 
@@ -323,7 +325,7 @@ def content_problems(root, limit=LIMIT, faq_out=None, elsewhere_out=None, today=
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
 FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "pages/", "topics/", "kit/", "law/", "newsletters/",
                  "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json",
-                 "faq.json", "coverage.json", "body-schedules.json", "elsewhere.json")
+                 "faq.json", "coverage.json", "body-schedules.json", "elsewhere.json", "events.json")
 
 
 def problem_record(line):

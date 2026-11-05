@@ -45,7 +45,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq", "sharing", "elsewhere"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01 / DF0237-04 / DF1107-04: reserved even without content
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq", "sharing", "elsewhere", "events"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01 / DF0237-04 / DF1107-04 / DF1107-08: reserved even without content
 
 
 class ContentError(ValueError):
@@ -2929,6 +2929,10 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
     faq = read_faq(root, findings)  # DF0022-01: optional; None without the file
     if faq is not None:
         model["faq"] = faq
+    from .content_events import read_events  # local: content_events imports this module
+    events = read_events(root)  # DF1107-08: optional; None without the file, [] when present and empty
+    if events:
+        model["events"] = events
     coverage = read_coverage(root, findings, today=today)  # DF0022-03: optional; None without the file, [] when present and empty
     if coverage is not None:
         model["coverage"] = coverage

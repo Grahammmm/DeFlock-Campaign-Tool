@@ -254,6 +254,7 @@ class LabelsTest(unittest.TestCase):
         # agency.votes_*: the fixture records no votes (tests/test_site_member_votes.py covers those labels).
         # agency.contract_cost, agency.cost_*: the fixture has no contract cost (tests/test_agency_contract_cost.py covers those).
         # correction_counts.*: only a site that sets corrections.show_request_counts renders these (tests/test_site_correction_counts.py).
+        # events.*, footer.events: the fixture has no events.json (tests/test_site_events.py covers those labels).
         # agency.funding_*: the fixture records no funding (tests/test_agency_funding.py covers those).
         # agency.action*: the fixture records no agency actions (test_agency_actions_labels_replace_every_fixed_string below).
         absent = ["agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",
@@ -280,9 +281,12 @@ class LabelsTest(unittest.TestCase):
                   "elsewhere.kind.ended_contract", "elsewhere.kind.other", "elsewhere.kind.paused",
                   "elsewhere.kind.restricted_sharing", "elsewhere.news", "elsewhere.note", "elsewhere.source",
                   "elsewhere.title", "elsewhere.verified",
+                  "events.accessibility", "events.all", "events.as_of", "events.lead", "events.link", "events.next",
+                  "events.none_past", "events.none_upcoming", "events.online", "events.past", "events.title",
+                  "events.upcoming", "events.when", "events.where",
                   "finding.agency_response", "finding.quote_page", "finding.quote_transcribed", "finding.reply_declined", "finding.reply_no_response", "finding.reply_received",
                   "finding.update", "finding.updates",
-                  "footer.elsewhere", "footer.license", "footer.sharing",
+                  "footer.elsewhere", "footer.events", "footer.license", "footer.sharing",
                   "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
                   "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.title",
                   "handout.what_we_found",

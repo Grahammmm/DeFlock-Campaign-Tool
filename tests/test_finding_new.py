@@ -181,7 +181,7 @@ class FindingNewTests(unittest.TestCase):
     def test_title_empty_too_long_or_reserved_slug_refused(self):
         for title, pattern in (("", "--title must not be empty"), ("   ", "--title must not be empty"),
                                ("x" * 201, "longer than 200"), ("About", "'about', which is reserved"),
-                               ("Elsewhere", "'elsewhere', which is reserved"),
+                               ("Events", "'events', which is reserved"), ("Elsewhere", "'elsewhere', which is reserved"),
                                ("  Index!  ", "'index', which is reserved"), ("<b>Bold</b>", "angle brackets"),
                                ("2024 renewal", "start its slug with a letter"), ("!!!", "start its slug"),
                                ("a\nb", "control characters")):
