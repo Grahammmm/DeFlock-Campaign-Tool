@@ -430,6 +430,36 @@ class RootIdentityTests(RestoreTargetCase):
 
 
 class AbsentTargetTests(RestoreTargetCase):
+    def test_new_root_replaced_between_lstat_and_open_is_not_mutated(self):
+        for populated in (False, True):
+            with self.subTest(populated=populated):
+                target = self.base / f"open-race-{populated}"
+                moved = self.base / f"owned-root-{populated}"
+                replacement_ident = []
+
+                def swap(owner, name, message, dir_fd=None):
+                    if dir_fd is not None:
+                        return
+                    self.assertEqual(Path(name), target)
+                    os.rename(target, moved)
+                    target.mkdir()
+                    os.chmod(target, 0o755)
+                    replacement_ident.append(backup._identity(os.lstat(target)))
+                    if populated:
+                        self.sentinel(target)
+
+                before = self.open_fds()
+                with before_method("_open_dir", swap), patch.object(os, "fchmod", wraps=os.fchmod) as chmod:
+                    self.restore_fails(RESTORE_CHANGED, target)
+                self.assertEqual(backup._identity(os.lstat(target)), replacement_ident[0])
+                self.assertEqual(mode(target), 0o755)
+                self.assertEqual(files_under(target), {"sentinel.txt": b"unrelated synthetic bytes"} if populated else {})
+                if populated:
+                    self.assertEqual(mode(target / "sentinel.txt"), 0o640)
+                chmod.assert_not_called()
+                self.assertEqual(os.listdir(moved), [])
+                self.assertEqual(self.open_fds(), before)
+
     def test_absent_target_and_nested_parent_cleanup(self):
         nested = self.base / "new-parent" / "deeper" / "restored"
         backup.restore(self.archive, nested)

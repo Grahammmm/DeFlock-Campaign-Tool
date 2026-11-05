@@ -844,8 +844,15 @@ class _RestoreTarget:
             raise BackupError(_TARGET_CHANGED_VERIFY) from None
         self.root_created = True
         self.ident = _identity(os.lstat(self.root))
-        self.rootfd = self._open_dir(self.root, _TARGET_CHANGED_RESTORE)
-        os.fchmod(self.rootfd, 0o700)
+        fd = self._open_dir(self.root, _TARGET_CHANGED_RESTORE)
+        try:
+            if _identity(os.fstat(fd)) != self.ident:
+                raise BackupError(_TARGET_CHANGED_RESTORE)
+            os.fchmod(fd, 0o700)
+        except BaseException:
+            os.close(fd)
+            raise
+        self.rootfd = fd
 
     def _open_root(self):
         try:
