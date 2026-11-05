@@ -24,6 +24,7 @@ include = ["campaign_tool*"]
 [tool.setuptools.package-data]
 campaign_tool = ["assets/*.tmpl",
                  "_resources/data/agencies/us-ca.json",
+                 "_resources/data/meeting-keywords.json",
                  "_resources/schemas/agency-seed.schema.json",
                  "_resources/schemas/law-package.schema.json",
                  "_resources/jurisdictions/us-ca/package.json",

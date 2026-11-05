@@ -229,6 +229,7 @@ class DiskPreflightRenderTests(unittest.TestCase):
             "DOCKER_WAIT_DEADLINE": "600", "NOTIFY_TIMEOUT": "60",
             "RUN_BUDGET_SECONDS": "2640", "DEFAULT_TARGET": "TEST",
             "SCHEDULED_TARGET": "TEST", "RUN_RECORDS_SH": "/srv/runtime/run-records.sh",
+            "RECORDS_DROP_DIR": "/srv/records-drop",
             "STUB_FIXTURE": "/srv/fixture.json", "MIN_FREE_BYTES": "2147483648",
         }
         self.out = 0

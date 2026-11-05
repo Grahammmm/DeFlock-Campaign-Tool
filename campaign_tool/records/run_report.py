@@ -74,6 +74,20 @@ def check_refusals(block, extract_stage):
         raise ValueError("Unlisted refusal count exceeds input")
 
 
+def check_arrival_metadata(report):
+    """Calendar-validate arrival stamps and tie arrival mode to the arrival trigger."""
+    trigger = report.get("trigger")
+    if (report["mode"] == "arrival" and trigger not in (None, "arrival")) or (
+            trigger == "arrival" and report["mode"] != "arrival"):
+        raise ValueError("$.trigger: arrival mode and arrival trigger must agree")
+    for index, item in enumerate(report.get("arrivals", [])):
+        try:
+            datetime.strptime(item["seen_at"], "%Y-%m-%dT%H:%M:%S.%fZ" if "." in item["seen_at"]
+                              else "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            raise ValueError(f"$.arrivals[{index}].seen_at: not a calendar date") from None
+
+
 def validate_run_report(report, schema=None):
     """Raise ValueError when ``report`` does not satisfy run report v1."""
     schema = schema if schema is not None else load_schema()
@@ -88,6 +102,7 @@ def validate_run_report(report, schema=None):
     if "refusals" in report:
         check_refusals(report["refusals"], report["stages"][4])
 
+    check_arrival_metadata(report)
     started, finished = _parse_utc(report["started_at"]), _parse_utc(report["finished_at"])
     if finished < started:
         raise ValueError("$.finished_at: earlier than started_at")

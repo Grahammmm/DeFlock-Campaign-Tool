@@ -189,6 +189,7 @@ class RuntimeHarness(unittest.TestCase):
             "DOCKER_WAIT_DEADLINE": "30", "NOTIFY_TIMEOUT": "30",
             "RUN_BUDGET_SECONDS": "600", "DEFAULT_TARGET": "TEST",
             "SCHEDULED_TARGET": "TEST", "RUN_RECORDS_SH": str(self.runtime / "run-records.sh"),
+            "RECORDS_DROP_DIR": str(self.tmp / "drop"),
             "STUB_FIXTURE": str(self.fixture_path),
             # 64 MiB floor: any CI or dev host has that much free scratch space.
             "MIN_FREE_BYTES": str(64 * 1024 ** 2),
@@ -851,6 +852,7 @@ class RendererTests(unittest.TestCase):
             "DOCKER_WAIT_DEADLINE": "600", "NOTIFY_TIMEOUT": "60",
             "RUN_BUDGET_SECONDS": "2640", "DEFAULT_TARGET": "TEST",
             "SCHEDULED_TARGET": "TEST", "RUN_RECORDS_SH": "/srv/runtime/run-records.sh",
+            "RECORDS_DROP_DIR": "/srv/records-drop",
             "STUB_FIXTURE": "/srv/fixture.json", "MIN_FREE_BYTES": "2147483648",
         }
         self.targets = [("TEST", str(STUB_TEMPLATE))]
@@ -861,7 +863,8 @@ class RendererTests(unittest.TestCase):
 
     def test_suggested_values_render_three_pacific_slots(self):
         written = self.do_render()
-        self.assertEqual(sorted(written), ["records-run.service", "records-run.timer",
+        self.assertEqual(sorted(written), ["records-arrival.path", "records-arrival.service",
+                                           "records-run.service", "records-run.timer",
                                            "run-records.sh", "targets/TEST.json"])
         out = self.tmp / "out"
         timer = (out / "records-run.timer").read_text()
