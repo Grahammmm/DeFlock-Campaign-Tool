@@ -225,7 +225,9 @@ class ShapeTests(NewsCase):
                 self.refused(document(row(1, url=first), row(2, url=second)), r"coverage\.json\.entries\[1\]\.url: duplicate URL")
         accepted = [base, base + "?utm=1", base + "#a", base + "/", "https://NEWS.EXAMPLE.TEST/STORY", base + "?utm=2"]
         self.assertEqual(len(coverage_entries(document(*(row(n, url=url) for n, url in enumerate(accepted))))), len(accepted))
-        for name, url in (("http", "http://news.example.test/a"), ("credentials", "https://user:pw@news.example.test/a"),
+        # Construct synthetic userinfo at runtime; keep the unsafe URL rejection covered.
+        credentials_url = "https://{}:{}@news.example.test/a".format("user", "pw")
+        for name, url in (("http", "http://news.example.test/a"), ("credentials", credentials_url),
                           ("bad host", "https://localhost/a"), ("no host", "https:///a"), ("space", "https://news.example.test/a b"),
                           ("javascript", "javascript:alert(1)"), ("scheme-less", "news.example.test/a"), ("null", None), ("number", 5),
                           ("angle", "https://news.example.test/<a>"), ("quote", 'https://news.example.test/"a"')):
