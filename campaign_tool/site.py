@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
+from .camera_direction import DIRECTION_PATTERN, valid_direction
 from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, PRE_MEETING_RULE_ID, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, SHARING_BULLETIN_ID, SHARING_KINDS,
                       SHARING_RULE_ID, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
@@ -479,6 +480,19 @@ def point_check_renderer(labels):
     names = {status: labels["map.check_" + status] for status in POINT_CHECK_STATUSES}
     return ("(function(LABELS,HEADING){return " + POINT_CHECK_RENDERER + ";})("
             + js_json(names) + "," + js_json(labels["map.check_heading"]) + ")")
+
+
+# DF0237-11: the popup's "Faces: NE (OpenStreetMap tag)" line. A property that is not a string inside the facing
+# grammar shows nothing (the runtime GeoJSON can differ from the validated build input); mapText escapes the line once.
+POINT_DIRECTION_RENDERER = (
+    r'function(p){var d=p.direction;return typeof d==="string"&&d.length<=15&&RE.test(d)'
+    r'?"<br>"+mapText(LINE.split("{direction}").join(d)):"";}')
+
+
+def point_direction_renderer(labels):
+    """The trusted popup renderer for a point's OpenStreetMap facing tag (raw label text, escaped later by mapText)."""
+    return ("(function(LINE,RE){return " + POINT_DIRECTION_RENDERER + ";})("
+            + js_json(labels["map.direction_line"]) + ",new RegExp(" + js_json("^(?:" + DIRECTION_PATTERN + ")$") + "))")
 
 
 def ics_text(value):
@@ -2223,6 +2237,11 @@ class Site:
             refuse("signup goes to " + (facts["signup"]["host"] if facts["signup"] else "no host"), "form-action " + " ".join(directives.get("form-action", [])))
 
 
+    def direction_line(self, props):
+        """DF0237-11: ``Faces: NE (OpenStreetMap tag)`` for a valid facing string, else ""; the tag exactly as mapped."""
+        value = props.get("direction") if isinstance(props, dict) else None
+        return self.t("map.direction_line", direction=e(value)) if valid_direction(value) else ""
+
     def cameras_html(self):
         """No-JS list of mapped points (DF1507-13): each point in the first picker city (by name) whose boundary holds it,
         by the counts' own half-open test, else in the group section. Over 2 000 points: 500 rows per section."""
@@ -2251,6 +2270,8 @@ class Site:
             cells = [e(str(props.get(key)).strip() or "not tagged") if props.get(key) is not None else "not tagged"
                      for key in ("manufacturer", "operator")]
             link = (f'<a href="{e(url)}" rel="noopener noreferrer">node {node.group(1)}</a>' if node else "no OSM link")
+            facing = self.direction_line(props)
+            link += f"<br>{facing}" if facing else ""
             extra = [self.check_cell(checks.get(int(node.group(1))) if node else None)] if checks else []
             groups[home].append((url is None, url or "", "".join(f"<td>{c}</td>" for c in cells + [link] + extra)))
         sections = ""
@@ -2371,10 +2392,23 @@ class Site:
                 + (f"var pointChecks={js_json(self.point_checks_data())};\n" if checks else "")
                 + (f"var LABELS={js_json(labels)};\n" if (labels := self.js_labels or self.sources_labels()) else ""))
 
+    def facing_present(self):
+        """DF0237-11: True when any loaded point carries a valid OpenStreetMap facing tag (the popup line is then wired)."""
+        self.mapped_counts()
+        features = (self._map_docs[0].get("features") if self._map_docs else None) or []
+        return any(valid_direction((f.get("properties") or {}).get("direction")) for f in features if isinstance(f, dict))
+
+    def popup_renderer(self):
+        """The trusted popup context renderer: facing first, then the organizer check; "" when neither applies."""
+        facing = point_direction_renderer(self.labels) if self.facing_present() else ""
+        check = point_check_renderer(self.labels) if self.map.get("point_checks") else ""
+        if facing and check:
+            return f"(function(F,C){{return function(p){{return F(p)+C(p);}};}})({facing},{check})"
+        return facing or check
+
     def app_js(self):
         if self.map:
-            controller = map_controller.render(self.map["controller"], "",
-                                               point_check_renderer(self.labels) if self.map.get("point_checks") else "",
+            controller = map_controller.render(self.map["controller"], "", self.popup_renderer(),
                                                relabel=bool(self.js_labels))
             boot = ("document.addEventListener(\"DOMContentLoaded\",function(){"
                     "document.querySelectorAll(\".city-choice\").forEach(function(b){b.addEventListener(\"click\",function(){chooseCity(b.getAttribute(\"data-city\")||null);});});"
