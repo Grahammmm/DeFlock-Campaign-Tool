@@ -10,6 +10,7 @@ extraction membership with the same hash bindings as factsheets.collect.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 from pathlib import Path
@@ -50,7 +51,8 @@ PHRASES = {
     "extension": [re.compile(p, _I) for p in (
         r"\bwe (?:are|hereby) extending the (?:determination|response) period\b",
         r"\bwe (?:invoke|are invoking|hereby invoke) an extension\b",
-        r"\bthe (?:time|period) (?:to|for) (?:respond|response|determination) (?:is|has been) extended\b")],
+        r"\bthe (?:time|period) (?:to|for) (?:respond|response|determination) (?:is|has been) extended\b",
+        r"\bis exercising its authority under government code section 7922\.535\b[^.]{0,40}\bextend the time\b")],
     "denial": [re.compile(p, _I) for p in (
         r"\byour (?:(?:public )?records |cpra )?request (?:is|has been) denied\b",
         r"\bwe (?:deny|are denying) your (?:(?:public )?records |cpra )?request\b")],
@@ -85,6 +87,21 @@ def _rows(db, query, args=()):
     rows = db.execute(query, args).fetchmany(MAX_ROWS + 1)
     _need(len(rows) <= MAX_ROWS, "received_items_metadata_bound")
     return rows
+
+
+MAIL_TEXT_KINDS = frozenset({"email_body", "mime_part"})
+_BREAKS = re.compile(r"<\s*(?:br\s*/?|/div|/p|/tr|/li|/h[1-6])\s*>", _I)
+_TAGS = re.compile(r"<[^>]{0,2000}>")
+
+
+def _plain(text):
+    """Rendered text of an HTML mail body (one block per line); plain text is unchanged."""
+    if not re.match(r"\s*<(?:!doctype|html|div|body|p|br|table)\b", text[:200], _I):
+        return text
+    text = re.sub(r"(?is)<(?:script|style)\b.*?</(?:script|style)\s*>", "", text)
+    text = _TAGS.sub("", _BREAKS.sub("\n", text))
+    text = html.unescape(text).replace("\xa0", " ")
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
 
 def _canon(value):
@@ -240,9 +257,16 @@ def _current_units(db, processing, subject):
                                                separators=(",", ":"), ensure_ascii=False).encode()),
               "received_items_unit_binding")
         locator = payload["locator"]
+        text = payload["text"]
         pages = [locator[k] for k in ("page", "page_no") if k in locator]
+        if not pages and payload["kind"] in MAIL_TEXT_KINDS and set(locator) <= {"mime", "part"}:
+            # A mail body is one unpaginated part: cite it as page 1 of the message body
+            # (quote = a line of its rendered text), without a manifest page check.
+            units.append({"page": 1, "ordinal": ordinal, "unit_id": unit["id"], "text": _plain(text),
+                          "text_sha256": unit["text_sha256"], "payload_sha256": digest})
+            continue
         if not pages or any(type(p) is not int or p < 1 for p in pages) or len(set(pages)) != 1:
-            if "page_locator_unavailable" not in diagnostics:
+            if "page_locator_unavailable" not in diagnostics and payload["kind"] != "email_headers":
                 diagnostics.append("page_locator_unavailable")
             continue
         _need(any(p.get("page_no") == pages[0] for p in manifest.get("pages", []) if isinstance(p, dict)),

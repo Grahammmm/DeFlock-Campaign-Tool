@@ -23,7 +23,10 @@ the us-ca law package is draft and each finding says so.
   of a policy/contract/audit log). A non-`other` kind needs `kind_basis: {page, quote}` (positive page,
   exact source line). Negation, questions, quoted/forwarded history and bare words never qualify;
   two different specific kinds give `other` with `mixed_kind_candidates`; text without a real page
-  gives `other` with `page_locator_unavailable`. `kit_equivalent` is a read-only crosswalk to
+  gives `other` with `page_locator_unavailable`. A mail body or MIME part (locator `{mime, part}`, no page)
+  is cited as page 1, and an HTML body is first rendered to one text line per block, so the quote is a
+  line of the rendered body (the Caltrans portal wording "exercising its authority under Government Code
+  section 7922.535, to extend the time" is an `extension` phrase). `kit_equivalent` is a read-only crosswalk to
   `kit_track` kinds (extension, denied, fee_estimate, produced; response maps to acknowledged or determination).
 - `deadlines`: dates the item states for a response, extension or production ("by November 30"),
   with page and quote. A date without a year takes the year of `received_at` (`year_inferred: true`).

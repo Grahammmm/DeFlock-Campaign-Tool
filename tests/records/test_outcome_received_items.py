@@ -148,6 +148,26 @@ class ReceivedItemsTests(unittest.TestCase):
         self.assertIn("current_extraction_unavailable", missing["diagnostics"])
         self.assertIn("received_at_unavailable", missing["diagnostics"])
 
+    def test_html_mail_body_is_rendered_and_cited_as_page_one(self):
+        # Shape of the live Caltrans portal mail: one HTML block, locator {"mime","part"}, no page.
+        body = ("<html><body><div>RE: Request R054203-091026<div>&nbsp;</div><div>Dear Records,</div>"
+                "<div>Consequently, Caltrans is exercising its authority under Government Code section "
+                "7922.535, to extend the time to reply to a Public Records Act request.  You will receive "
+                "a further, more complete response no later than November 30, 2026</div>"
+                "<div>Sincerely,<br>Coordinator</div></div></body></html>")
+        plain = ri._plain(body)
+        self.assertNotIn("<", plain)
+        self.assertEqual(ri._plain("Plain text\nstays"), "Plain text\nstays")
+        units = [(1, 1, "u1", plain)]
+        kind, basis, _, _ = ri.classify(units)
+        self.assertEqual((kind, basis["page"]), ("extension", 1))
+        self.assertIn("7922.535", basis["quote"])
+        found = ri.deadlines(units, None)
+        self.assertEqual([(d["date"], d["page"]) for d in found], [("2026-11-30", 1)])
+        # A negated or quoted history line must still not classify.
+        self.assertEqual(ri.classify([(1, 1, "u", ri._plain("<div>If Caltrans is exercising its authority under "
+                                                           "Government Code section 7922.535 to extend the time</div>"))])[0], "other")
+
     def test_inventory_identity_exclusion_and_ambiguous_joins(self):
         kept, _ = self.document(["We deny your request."], "caltrans")
         excluded, _ = self.document(["We deny your request."], "caltrans", scope="out_of_scope")
