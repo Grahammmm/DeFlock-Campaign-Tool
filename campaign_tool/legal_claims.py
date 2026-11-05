@@ -150,6 +150,8 @@ def site_notes(root):
             direction = (meeting.get("outcome") or {}).get("direction")
             if direction is not None:
                 found += legal_notes([(f"meetings/{meeting.get('id', '?')}.outcome.direction", direction)])
+            if (meeting.get("submitted_comment") or {}).get("text") is not None:  # DF1407-06: hand-authored public copy, scanned raw
+                found += legal_notes([(f"meetings/{meeting.get('id', '?')}.submitted_comment.text", meeting["submitted_comment"]["text"])])
         # DF0237-01: hand-edited agency actions get the same note as `agency-action add`, located by their stored row
         from .agency_actions import LABEL, read_actions
         stored = read_actions(root, (model or {}).get("agencies", [])) or []

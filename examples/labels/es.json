@@ -292,6 +292,7 @@
     "meeting.minutes_pending": "Registrado por la campaña; acta aún sin aprobar",
     "meeting.continued_to": "Continuado al {date}",
     "meeting.continued_from": "Continuado desde el {date}",
+    "meeting.submitted_comment": "Nuestro comentario presentado ({channel}, {date})", "meeting.submitted_comment_link": "Nuestro comentario presentado",
     "meeting.cosigned_one": "Firmado también por {count} organización",
     "meeting.cosigned_many": "Firmado también por {count} organizaciones",
     "meeting.staff_direction": "Se indicó al personal que: {direction} (para el {date}, según consta en {source})",
@@ -570,6 +571,19 @@
     "privacy.signup": "Su dirección de correo electrónico se envía a {host} al enviar el formulario de suscripción; este sitio nunca la recibe.",
     "privacy.contact": "Contacto de privacidad:",
     "privacy.no_contact": "Esta campaña no ha publicado un contacto de privacidad.",
-    "privacy.notice": "Esta página se genera a partir de la configuración de compilación del sitio. No es asesoramiento legal ni una política de privacidad revisada."
+    "privacy.notice": "Esta página se genera a partir de la configuración de compilación del sitio. No es asesoramiento legal ni una política de privacidad revisada.",
+    "data.title": "Datos abiertos",
+    "data.intro": "Todos los archivos de datos abiertos que publica este sitio, con su tamaño y su suma SHA-256 para comprobar que una descarga está completa y sin cambios. La misma lista está disponible como Data Package legible por máquinas.",
+    "data.csv_note": "Los archivos CSV son copias planas de los archivos JSON: cada celda es texto, y las listas o valores anidados se unen o se escriben como JSON compacto. El Data Package indica las columnas de cada CSV; el esquema enlazado en una fila CSV describe los registros JSON de origen, no el CSV.",
+    "data.download": "Descargar",
+    "data.description": "Descripción",
+    "data.bytes": "Tamaño (bytes)",
+    "data.sha256": "Suma SHA-256",
+    "data.schema": "Esquema",
+    "data.schema_csv": "Esquema de los registros de origen (JSON)",
+    "data.license": "Licencia",
+    "data.license_unstated": "licencia no indicada",
+    "data.package": "Paquete de datos (datapackage.json)",
+    "footer.data": "Datos abiertos"
   }
 }

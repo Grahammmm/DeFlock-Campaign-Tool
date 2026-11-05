@@ -5,6 +5,7 @@ the "At a glance" table gains a "Latest report" column; data/agencies.json carri
 report is required, late or missing. Offline, synthetic agencies, titles and URLs only.
 """
 import csv
+import hashlib
 import io
 import json
 import os
@@ -416,7 +417,13 @@ class ReportsTests(unittest.TestCase):
         self.assertEqual(set(self.exported()), set(PUBLIC_AGENCY_FIELDS) | {"reports"})
         self.assertTrue(all(set(r) <= set(PUBLIC_REPORT_FIELDS) for r in self.exported()["reports"]))
         self.assertEqual({n for n in reported if reported[n] != plain.get(n)},
-                         {"agencies.html", "agencies/cedar.html", "data/agencies.json"})  # every other file is byte for byte as before
+                         {"agencies.html", "agencies/cedar.html", "data/agencies.json",
+                          "data.html", "data/datapackage.json"})  # derived catalogue and package list agencies.json's new bytes; all else is byte for byte as before
+        package = json.loads(reported["data/datapackage.json"])
+        resource = next(r for r in package["resources"] if r["path"] == "agencies.json")
+        self.assertEqual((resource["bytes"], resource["hash"]),
+                         (len(reported["data/agencies.json"]), "sha256:" + hashlib.sha256(reported["data/agencies.json"]).hexdigest()))
+        self.assertIn(hashlib.sha256(reported["data/agencies.json"]).hexdigest().encode(), reported["data.html"])
         self.assertEqual(reported["data/agencies.csv"], plain["data/agencies.csv"])  # no CSV column is added
         header = next(csv.reader(io.StringIO(self.read("data/agencies.csv"))))
         self.assertNotIn("reports", header)

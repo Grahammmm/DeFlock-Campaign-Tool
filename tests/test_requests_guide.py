@@ -396,8 +396,8 @@ class GuideTests(unittest.TestCase):
         self.assertEqual(mine["mailing_verification"]["checked_on"], "2026-10-01")
         for agency in agencies:  # the practice county's suggestions are not selected
             self.assertEqual(agency["selected"], agency["agency_id"] == AGENCY or agency["kind"] not in ("sheriff", "chp"))
-        walk.advance(match("kit-check"))  # exit 3 while the To: line is a placeholder
-        walk.advance(match("kit-check"))  # exit 0 after the guide's edit
+        walk.advance(match("kit-check"))  # exit 0: the verified mailing address already names the To: route
+        walk.advance(match("kit-check"))  # exit 0 after the guide's optional edit
         walk.advance(match("kit-copy"))
         outgoing = walk.root / "kit" / "outgoing"
         self.assertEqual(sorted(p.name for p in outgoing.iterdir()), [f"{AGENCY}.letter.html", f"{AGENCY}.letter.txt"])
@@ -550,7 +550,7 @@ class GuideTests(unittest.TestCase):
                   if q.startswith(("Stopped:", "line ", "recipient"))]
         self.assertGreaterEqual(len(quoted), 8)
         walk = Walk(self)
-        walk.advance(match("kit-check"))  # the placeholder refusal, exit 3
+        walk.advance(match("kit-check"))  # exit 0 here; the placeholder refusal is seen below with the unverified second agency
         seen = [walk.history[-1][2] + walk.history[-1][3]]
         walk.advance(match("kit-followup"))  # main has a partial production here; narrowed is past due
         d = ["--directory", walk.root, "--agency", AGENCY]

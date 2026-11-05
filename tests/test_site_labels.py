@@ -309,7 +309,7 @@ class LabelsTest(unittest.TestCase):
                   "meeting.comments_both", "meeting.comments_spoke", "meeting.comments_written",
                   "meeting.continued_from", "meeting.continued_to", "meeting.cosigned_many", "meeting.cosigned_one",
                   "meeting.minutes_confirmed", "meeting.minutes_pending", "meeting.recording", "meeting.recording_from",
-                  "meeting.staff_direction",
+                  "meeting.staff_direction", "meeting.submitted_comment", "meeting.submitted_comment_link",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
                   "officials.heading", "officials.listed", "officials.source", "press.download_logo", "press.logo",
                   "privacy.signup_policy",
