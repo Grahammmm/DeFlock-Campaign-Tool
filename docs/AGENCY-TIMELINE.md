@@ -561,3 +561,25 @@ clearing a request with no owner, writes nothing. Output ends `Recorded only. No
   `kit/`) stops the commands above, is never reset, and shows in `today` as one `unreadable` item naming the file.
   There is no notification, roster, bulk assignment, history or public owner list, and no protection against two people
   writing at once.
+
+## Reply to a recorded extension notice (kit-extension-reply)
+
+`kit-extension-reply --directory D --agency ID [--request NAME] [--replace]` writes one private Markdown draft,
+`kit/followups/<stem>-extension-<date>.md`, for a request whose recorded answer step is an extension (`kit-response
+--kind extension`, optionally with `--expected-on` and `--reason`). `<stem>` is the agency ID for `main` and
+`<agency>--<request>` for a named request; `<date>` is the extension step's own date, so a rerun targets the same file.
+The folder is mode 0700 and the file 0600. Nothing is sent, fetched or recorded: `kit/sent.json` and every other store
+stay as they were. Output is a small JSON report (`written`, `agency_id`, `request`, `extension_on`,
+`law_package_status`) and the line `Draft only. Nothing was sent.`
+
+The draft carries the stored reference and portal lines when present, the extension date as recorded, the agency's
+stated reason quoted as written (only when `--reason` was recorded), and three numbered asks: which circumstance the
+agency relies on under the package's determination-and-extension rule (cited by the package's own citation, with the
+package status and the rule's review note), the date the determination will be dispatched (asked when none was
+stated; otherwise "Your notice states DATE for dispatch of the determination; please confirm"), and any records ready
+now. A stated dispatch date is not a production date. The draft states no legal conclusion about the notice.
+
+It stops (exit 1, nothing written) with no recorded extension, after a determination, produced or denied step
+(partial production included), or a closed or withdrawn step, with no law package or no such rule in force on the
+extension date, and on malformed history. While a clarification is waiting on you it stops with exit 3. An existing
+draft is kept unless `--replace` is given; `--replace` skips only that check, and a symlinked target is always refused.

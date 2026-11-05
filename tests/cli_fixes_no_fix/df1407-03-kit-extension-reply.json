@@ -1,0 +1,9 @@
+{
+  "kit/followups/ is not owned by you; refusing to write drafts there": "refusal that already names the folder and why; the organizer must use their own folder; not in the table",
+  "request for 5 is closed; no extension reply drafted": "kit-extension-reply refusal that already names the request state that stops the draft; not in the table",
+  "request for 5 was withdrawn by us on 5; no extension reply drafted": "kit-extension-reply refusal that already names the request state that stops the draft; not in the table",
+  "request for 5 was answered (5 on 5); no extension reply drafted": "kit-extension-reply refusal that already names the request state that stops the draft; not in the table",
+  "no recorded extension for 5": "kit-extension-reply refusal that already names the request and the missing extension step; not in the table",
+  "no law package: the extension rule cannot be cited": "kit-extension-reply refusal that already names the missing law package; not in the table",
+  "the law package has no determination-and-extension rule in force on 5": "kit-extension-reply refusal that already names the missing rule and the date; not in the table"
+}
