@@ -270,6 +270,7 @@
     "agency.reports_heading": "Informes que esta agencia ha publicado sobre su uso de ALPR",
     "agency.report_period": "Período del informe {start} – {end}",
     "agency.report_published": "Publicado el {date}",
+    "agency.archived_copy": "copia archivada ({date})",
     "agency.report_checked": "verificado el {date}",
     "agency.report_kind_annual_report": "Informe anual",
     "agency.report_kind_audit_summary": "Resumen de auditoría",

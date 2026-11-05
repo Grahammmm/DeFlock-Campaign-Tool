@@ -52,7 +52,10 @@
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["url", "checked_on"],
+      "dependentRequired": {"archived_url": ["archived_on"], "archived_on": ["archived_url"]},
       "properties": {
+        "archived_url": {"$ref": "#/$defs/archived_url"},
+        "archived_on": {"$ref": "#/$defs/archived_on"},
         "url": {"type": "string", "pattern": "^https://"},
         "checked_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
       }
@@ -62,7 +65,10 @@
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["vendor", "start", "end", "source_url", "checked_on"],
+      "dependentRequired": {"archived_url": ["archived_on"], "archived_on": ["archived_url"]},
       "properties": {
+        "archived_url": {"$ref": "#/$defs/archived_url"},
+        "archived_on": {"$ref": "#/$defs/archived_on"},
         "vendor": {"type": "string", "minLength": 1},
         "start": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
         "end": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
@@ -70,6 +76,16 @@
         "checked_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
         "cost": {"$ref": "#/$defs/cost"}
       }
+    },
+    "archived_url": {
+      "description": "An archive copy of this source link that an organizer found or saved by hand; optional, only with archived_on. The host is web.archive.org (path /web/<14-digit timestamp>/<http(s) address>), archive.ph or archive.today. The build checks that the timestamp is a real UTC time. The tool fetches nothing and submits nothing to an archive; it does not vouch that the copy is authentic, current or complete.",
+      "type": "string",
+      "pattern": "^https://(web[.]archive[.]org/web/[0-9]{14}/https?://[^/?#@]+|archive[.](ph|today)/[^?#])"
+    },
+    "archived_on": {
+      "description": "The day the organizer recorded the archive copy, not after the build date; for a web.archive.org link it equals the date in the timestamp (checked by the build).",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
     },
     "cost": {
       "description": "The amount a contract document states, as the organizer transcribed it; never summed, ranked or divided. Its provenance is the enclosing contract's source_url and checked_on.",
@@ -93,8 +109,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["kind", "name", "as_stated_in", "source_url", "checked_on"],
-      "dependentRequired": {"amount_usd": ["period"], "period": ["amount_usd"]},
+      "dependentRequired": {"amount_usd": ["period"], "period": ["amount_usd"], "archived_url": ["archived_on"], "archived_on": ["archived_url"]},
       "properties": {
+        "archived_url": {"$ref": "#/$defs/archived_url"},
+        "archived_on": {"$ref": "#/$defs/archived_on"},
         "kind": {"enum": ["grant", "general_fund", "asset_forfeiture", "donation", "other"]},
         "name": {"type": "string", "minLength": 1, "maxLength": 120},
         "as_stated_in": {"type": "string", "minLength": 1, "maxLength": 120},
@@ -116,7 +134,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["title", "kind", "period_start", "period_end", "source_url", "checked_on"],
+      "dependentRequired": {"archived_url": ["archived_on"], "archived_on": ["archived_url"]},
       "properties": {
+        "archived_url": {"$ref": "#/$defs/archived_url"},
+        "archived_on": {"$ref": "#/$defs/archived_on"},
         "title": {"type": "string", "minLength": 1, "maxLength": 160},
         "kind": {"enum": ["annual_report", "audit_summary", "usage_statistics", "surveillance_report", "other"]},
         "period_start": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
@@ -150,7 +171,10 @@
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["source_url", "checked_on"],
+      "dependentRequired": {"archived_url": ["archived_on"], "archived_on": ["archived_url"]},
       "properties": {
+        "archived_url": {"$ref": "#/$defs/archived_url"},
+        "archived_on": {"$ref": "#/$defs/archived_on"},
         "cameras": {"type": "integer", "minimum": 0},
         "retention_days": {"type": "integer", "minimum": 0},
         "searches_last_30_days": {"type": "integer", "minimum": 0},

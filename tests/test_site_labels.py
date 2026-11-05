@@ -259,7 +259,8 @@ class LabelsTest(unittest.TestCase):
         # statements.*: the fixture has no statements.json (tests/test_site_statements.py covers those labels).
         # agency.action*: the fixture records no agency actions (test_agency_actions_labels_replace_every_fixed_string below).
         # agency.report*: the fixture records no reports (tests/test_agency_reports.py overrides every one).
-        absent = ["agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",
+        # agency.archived_copy: the fixture records no archived copy (tests/test_agency_archives.py overrides it).
+        absent = ["agency.archived_copy", "agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",
                   "agency.action_kind_contract_ended", "agency.action_kind_contract_paused",
                   "agency.action_kind_contract_renewed", "agency.action_kind_contract_signed", "agency.action_kind_other",
                   "agency.action_kind_policy_adopted", "agency.action_kind_policy_amended", "agency.action_kind_policy_posted",
