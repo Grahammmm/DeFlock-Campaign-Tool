@@ -238,6 +238,16 @@ class CheckTests(Base):
         self.assertEqual(self.rows()['kit/press/letters/2026-03-02-edited.md']['reasons'],
                          [{'code': 'meeting_missing', 'meeting_id': MEETING}])
 
+    def test_letter_duplicate_meeting_ids_not_checked(self):
+        letter = self.letter()
+        folder = self.root / 'content/meetings'
+        document = json.loads((folder / (MEETING + '.json')).read_text())
+        # a second file carrying the same id, scheduled in the future, must not make the letter ok
+        (folder / 'zz-copy.json').write_text(json.dumps(document), encoding='utf-8')
+        row = self.rows()[letter]
+        self.assertEqual(row['status'], 'not_checked')
+        self.assertEqual(row['reasons'], [{'code': 'not_checked', 'message': 'meeting file invalid or duplicated'}])
+
     def letter_signup(self):
         return build_letter(self.root, [SECOND], '2026-03-05', now=NOW)['path']
 

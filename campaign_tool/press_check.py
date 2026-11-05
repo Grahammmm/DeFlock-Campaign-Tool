@@ -268,7 +268,7 @@ def _meeting_reasons(text, index, now):
         return [], False
     ident = closings[0].group(1)
     state = index.meetings()
-    if ident in state['by_id']:
+    if ident in state['by_id'] and ident not in state['uncertain']:
         status, starts_at = state['by_id'][ident]
         reasons = []
         if status == 'cancelled':
