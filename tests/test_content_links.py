@@ -259,6 +259,35 @@ class InventoryTests(LinkCheckBase):
         for url in expected:
             self.assertEqual(fetched.count(url), 1)
 
+    def test_local_rule_sources_and_stored_report_positions(self):
+        content = self.root / "content"
+        agencies = agencies_document()
+        reports = agencies[0]["profile"]["reports"]
+        older = dict(reports[0], title="Older report", period_start="2024-01-01", period_end="2024-12-31",
+                     source_url="https://county.example.org/report-2024",
+                     archived_url=WB.replace("policy.pdf", "report-2024"), archived_on="2026-01-01")
+        agencies[0]["profile"]["reports"] = [older, reports[0]]  # stored oldest first; the loader returns newest first
+        (content / "agencies.json").write_text(json.dumps(agencies), encoding="utf-8")
+        def rule(rule_id, url, start):
+            return {"rule_id": rule_id, "citation": "Cedar Code", "duty": "Synthetic duty.", "source_url": url,
+                    "checked_on": "2026-10-01", "effective_from": start, "effective_to": None,
+                    "agency_ids": ["ca-cedar-police"]}
+        (self.root / "law").mkdir(exist_ok=True)
+        (self.root / "law" / "local-rules.json").write_text(json.dumps({"schema_version": 1, "jurisdiction": "us-ca", "rules": [
+            rule("local-us-ca-zed", "https://ordinance.example.org/zed", "2025-01-01"),
+            rule("local-us-ca-alpha", "https://ordinance.example.org/alpha", "2025-01-01")]}), encoding="utf-8")
+        urls = self.by_url()
+        base = "content/agencies.json:ca-cedar-sheriff.profile.reports"
+        self.assertEqual(urls["https://ordinance.example.org/zed"]["citations"], ["law/local-rules.json:rules[0].source_url"])
+        self.assertEqual(urls["https://ordinance.example.org/alpha"]["citations"], ["law/local-rules.json:rules[1].source_url"])
+        self.assertEqual(urls["https://county.example.org/report"]["citations"], [base + "[1].source_url"])
+        self.assertEqual(urls["https://county.example.org/report-2024"]["citations"], [base + "[0].source_url"])
+        self.assertEqual([a["locator"] for a in urls["https://county.example.org/report-2024"]["archives"]], [base + "[0].source_url"])
+        opener = FakeOpener({})
+        content_links.run_cli(self.root, True, opener=opener, today=TODAY)
+        fetched = [url for _, url, _, _ in opener.requests]
+        self.assertEqual(fetched.count("https://ordinance.example.org/zed"), 1)
+
     def test_published_only_and_archive_provenance(self):
         urls = self.by_url()
         self.assertEqual(urls[POLICY_URL]["archives"], [{

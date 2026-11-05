@@ -96,6 +96,42 @@ def _stored_schedule_positions(path):
         return {}
 
 
+def _read_json_quiet(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _stored_report_positions(path, agency_id, loaded):
+    """Stored profile.reports indexes for ``loaded`` (the loader returns them newest period first)."""
+    document = _read_json_quiet(path)
+    stored = []
+    for entry in document if isinstance(document, list) else []:
+        if isinstance(entry, dict) and entry.get("agency_id") == agency_id:
+            reports = (entry.get("profile") or {}).get("reports") if isinstance(entry.get("profile"), dict) else None
+            stored = reports if isinstance(reports, list) else []
+            break
+    keys = ("title", "kind", "period_start", "period_end", "source_url", "checked_on")
+    queues = {}
+    for number, row in enumerate(stored):
+        if isinstance(row, dict):
+            queues.setdefault(tuple(str(row.get(k)) for k in keys), []).append(number)
+    positions = []
+    for row in loaded:
+        queue = queues.get(tuple(str(row.get(k)) for k in keys))
+        positions.append(queue.pop(0) if queue else None)
+    return positions
+
+
+def _stored_local_rule_positions(root):
+    """``{(rule_id, effective_from): stored index}`` of law/local-rules.json (the loader sorts the versions)."""
+    document = _read_json_quiet(Path(root) / "law" / "local-rules.json")
+    rules = document.get("rules") if isinstance(document, dict) else None
+    return {(row.get("rule_id"), row.get("effective_from")): number
+            for number, row in enumerate(rules if isinstance(rules, list) else []) if isinstance(row, dict)}
+
+
 def collect_links(root, *, today=None):
     """Ordered external-link groups ``[{"url", "citations": [locator..], "archives": [{locator, archived_url, archived_on}]}]``.
 
@@ -151,11 +187,20 @@ def collect_links(root, *, today=None):
             cite(snapshot.get("source_url"), f"{base}.profile.transparency[{index}].source_url", snapshot)
         for index, entry in enumerate(agency.get("funding") or []):
             cite(entry.get("source_url"), f"{base}.profile.funding[{index}].source_url", entry)
-        for index, entry in enumerate(agency.get("reports") or []):
-            cite(entry.get("source_url"), f"{base}.profile.reports[{index}].source_url", entry)
+        reports = agency.get("reports") or []  # the loader sorts newest period first; the locator is the stored index
+        stored_reports = _stored_report_positions(root / agencies_file, agency["agency_id"], reports)
+        for index, entry in enumerate(reports):
+            where = f"[{stored_reports[index]}]" if stored_reports[index] is not None else f"[{entry.get('title')!r}]"
+            cite(entry.get("source_url"), f"{base}.profile.reports{where}.source_url", entry)
         cite((agency.get("sharing") or {}).get("source_url"), base + ".profile.sharing.source_url")
         for index, action in enumerate(agency.get("actions") or []):
             cite(action.get("source_url"), f"content/agency-actions.json:{agency['agency_id']}[{index}].source_url")
+
+    local_positions = _stored_local_rule_positions(root)
+    for rule in model.get("local_rules") or []:  # sorted by (rule_id, effective_from); the locator is the stored index
+        position = local_positions.get((rule.get("rule_id"), rule.get("effective_from")))
+        where = f"rules[{position}]" if position is not None else f"rules[{rule.get('rule_id')}]"
+        cite(rule.get("source_url"), f"law/local-rules.json:{where}.source_url")
 
     for index, entry in enumerate(model["sources"]):
         cite(entry.get("public_url"), f"content/sources.json[{index}].public_url")
