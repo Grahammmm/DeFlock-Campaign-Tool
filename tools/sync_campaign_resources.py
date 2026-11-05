@@ -8,6 +8,7 @@ from pathlib import Path
 
 RESOURCES = (
     "data/agencies/us-ca.json",
+    "data/meeting-keywords.json",
     "schemas/agency-seed.schema.json",
     "schemas/law-package.schema.json",
     "jurisdictions/us-ca/package.json",

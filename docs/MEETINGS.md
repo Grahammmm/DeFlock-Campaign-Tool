@@ -221,7 +221,11 @@ The four keyword alternatives live only in `data/meeting-keywords.json`
 `workers/shared/src/generated/meeting-keywords.ts` (`MEETING_KEYWORDS_SOURCE`, `MEETING_KEYWORDS`,
 `matchesMeetingKeywords`) for the Workers; nothing imports it yet.
 
-To change a keyword: edit the JSON, run `npm run sync` in `workers/`, commit both files, and add the
+The installed package reads its byte-equal mirror `campaign_tool/_resources/data/meeting-keywords.json`
+(shipped in the wheel; `python3 tools/sync_campaign_resources.py` fails while the two differ).
+
+To change a keyword: edit the JSON, run `npm run sync` in `workers/` and
+`python3 tools/sync_campaign_resources.py --write`, commit all three files, and add the
 new case to `tests/fixtures/meeting-keyword-parity.json`. `npm run sync:check` fails naming
 `meeting-keywords.ts` while they disagree. Alternatives may use only literal text, `[ -]`-style classes
 of literals, `\b` and `?`; the generator refuses anything else (`(?i)`, groups, `\p{..}`, backreferences)
