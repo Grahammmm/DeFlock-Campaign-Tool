@@ -32,6 +32,7 @@ PUBLISH_PATHS = (
            "findings/agency/<slug>.xml"),
     _entry("corrections-feed", "campaign_tool/site.py", "Site.corrections_feed_xml", "feed", "public", "privacy+legal", GATE, "site",
            "corrections.xml"),
+    _entry("events-calendar", "campaign_tool/site.py", "Site.events_ics", "feed", "public", "privacy", GATE, "site", "events.ics"),
     _entry("open-graph-meta", "campaign_tool/site.py", "Site.finding_html", "page", "public", "privacy+legal", GATE, "site",
            "og:/twitter: meta tags on each finding page"),
     _entry("agency-cards", "campaign_tool/agency_cards.py", "render", "card", "public", "privacy+legal", GATE, "site",

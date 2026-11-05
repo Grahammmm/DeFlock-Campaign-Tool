@@ -38,6 +38,7 @@ REVIEWED_NOT_PUBLISHING = {
     "campaign_tool/image_meta.py": "reads image metadata; the writer is the copy step in site.py",
     "campaign_tool/kit_calendar.py": "private .ics under kit/, refused inside public/",
     "campaign_tool/recent.py": "private recent-activity report under kit/",
+    "campaign_tool/finding_search_log.py": "composes a private draft from a verified summary; the only write is findings._write_draft into private/drafts",
     "campaign_tool/search_log.py": "read-only private stdout aggregates of a local search log; writes nothing",
     "campaign_tool/setup_cmd.py": "writes the starter config",
     "campaign_tool/site_check.py": "reads the built tree",
@@ -71,7 +72,7 @@ SKIP = re.compile(r"tools/(accept_|fc\d)|^campaign_tool/records/|^campaign_tool/
 PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name", "statement.quote", "statement.context_note",
                           "elsewhere.place", "elsewhere.body", "elsewhere.as_stated",
                           "event.title", "event.venue", "event.description_md", "event.accessibility_note"), "atom-feed": ("finding.summary",),
-          "agency-feeds": ("finding.summary",), "corrections-feed": ("finding.summary",), "open-graph-meta": ("finding.title",),
+          "events-calendar": ("event.title", "event.venue"), "agency-feeds": ("finding.summary",), "corrections-feed": ("finding.summary",), "open-graph-meta": ("finding.title",),
           "agency-cards": ("site.county_profile.summary", "agency.profile.summary"), "data-exports": ("source.title", "agency.name"),
           "map-geojson": ("map.cameras.geojson", "map.city-boundaries.geojson", "map.county.geojson")}
 TEXT_ONLY = {"flock-page", "flock-publish-brief", "flock-publish-stage"}  # these tools refuse without printing the category per value
