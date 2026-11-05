@@ -1319,6 +1319,11 @@ def main():
     denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
                           help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
     denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
+    scope_p = commands.add_parser("kit-scope-reply", help="Private draft asking about recorded per-scope gaps; never sent")
+    for flag in ("--directory", "--agency"):
+        scope_p.add_argument(flag, required=True)
+    scope_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    scope_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft written the same day")
     asked_p = commands.add_parser("kit-asked", help="Propose content/agencies.json 'asked' items from kit/sent.json "
                                   "(dry run by default); nothing is sent or published")
     asked_p.add_argument("--directory", required=True)
@@ -2302,6 +2307,10 @@ def main():
         elif args.command == "kit-denial-reply":
             from .kit_track import denial_reply
             print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent.")
+        elif args.command == "kit-scope-reply":
+            from .kit_track import scope_reply
+            print(json.dumps(scope_reply(root, args.agency, request=args.request, replace=args.replace), indent=2))
             print("Draft only. Nothing was sent.")
         elif args.command == "readiness":
             readiness(root, args.campaign_id, args.out, args.contact_max_age_days, args.stale_days)
