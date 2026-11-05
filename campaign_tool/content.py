@@ -689,7 +689,7 @@ def load_finding_preview(document, label, now=None):
 
 FINDING_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # public finding ids; distinct from a slug
 MEETING_KEYS = {"id", "body", "starts_at", "agenda_url", "agenda_item", "comment_kit_md", "location", "agency_id",
-                "status", "participation", "outcome", "cited_findings", "cosigners"}
+                "status", "participation", "outcome", "cited_findings", "cosigners", "cited_elsewhere"}
 MEETING_STATUSES = ("scheduled", "cancelled")
 OUTCOME_RESULTS = ("approved", "denied", "continued", "amended", "no_action", "informational")
 CONTINUATION_KEYS = ("continued_to", "continued_to_date")  # DF0022-07: where the official source says an item went
@@ -976,6 +976,11 @@ def load_cosigners(value, label):
     return list(value)
 
 
+def _load_cited_elsewhere(value, label, today):
+    from .meeting_elsewhere import load_cited_elsewhere  # local: meeting_elsewhere imports this module
+    return load_cited_elsewhere(value, label, today)
+
+
 def load_meeting(document, label, today=None):
     _require_keys(document, MEETING_KEYS, {"body", "starts_at"}, label)
     agency_id = document.get("agency_id")
@@ -1005,6 +1010,8 @@ def load_meeting(document, label, today=None):
            if "cited_findings" in document else {}),
         **({"cosigners": load_cosigners(document["cosigners"], f"{label}.cosigners")}
            if "cosigners" in document else {}),
+        **({"cited_elsewhere": _load_cited_elsewhere(document["cited_elsewhere"], f"{label}.cited_elsewhere", today)}
+           if "cited_elsewhere" in document else {}),  # DF1107-06
     }
 
 
@@ -2944,6 +2951,10 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
     elsewhere = read_elsewhere(root, today)  # DF1107-04: optional; None without the file, entries in stored order
     if elsewhere is not None:
         model["elsewhere"] = elsewhere
+    from .meeting_elsewhere import reference_problems  # local: meeting_elsewhere imports this module
+    cited = reference_problems([(f"meetings/{meeting_ids[m['id']]}", m) for m in meetings], elsewhere, _replacing_cosign_id)
+    if cited:  # DF1107-06: a staged kit's cited decision must still be in elsewhere.json (target-only skip on --replace)
+        raise ContentError(cited[0])
     if supporters is not None:  # DF2207-13: public rows only (never the private consent records)
         model["supporters"] = supporters
     from .content_statements import read_statements  # local: content_statements imports this module
