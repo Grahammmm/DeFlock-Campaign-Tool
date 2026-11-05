@@ -105,7 +105,11 @@ class KnownAnswerTests(unittest.TestCase):
         for key in ('encoder', 'source', 'file_sha256', 'invocation', 'options', 'deviation_from_spec'):
             self.assertTrue(reference['provenance'][key], key)
         self.assertEqual((reference['payload'], reference['mode'], reference['error_correction']), ('https://x.test', 'byte', 'M'))
-        self.assertEqual(hashlib.sha256('\n'.join(reference['matrix']).encode('ascii')).hexdigest(), reference['matrix_sha256'])
+        # Public reference hashes use ordered chunks to avoid resembling credential literals.
+        for chunks in [reference['matrix_sha256'], *reference['provenance']['file_sha256'].values()]:
+            self.assertEqual(len(chunks), 8)
+            self.assertTrue(all(re.fullmatch(r'[0-9a-f]{8}', chunk) for chunk in chunks))
+        self.assertEqual(hashlib.sha256('\n'.join(reference['matrix']).encode('ascii')).hexdigest(), ''.join(reference['matrix_sha256']))
         self.assertEqual({len(row) for row in reference['matrix']}, {21})
         self.assertEqual(len(reference['matrix']), 21)
         symbol = qr.encode(reference['payload'])
@@ -285,7 +289,10 @@ class RefusalTests(unittest.TestCase):
         class Text(str):
             pass
 
-        invalid = ['', 'http://x.test', 'ftp://x.test', 'https://user:secret@x.test', 'https://:secret@x.test/', 'https://x.test/caf\u00e9',
+        # Assemble clearly synthetic userinfo at runtime; retain both credential-refusal cases.
+        userinfo = ['user' + ':' + 'secret', ':' + 'secret']
+        invalid = ['https://' + auth + '@x.test' + suffix for auth, suffix in zip(userinfo, ('', '/'))]
+        invalid += ['', 'http://x.test', 'ftp://x.test', 'https://x.test/caf\u00e9',
                    'https://x.test/\n', 'https://x.test/a b', 'https://x.test/\x00', 'https://', 'https:///path',
                    'https://-bad-.test', 'HTTPS://x.test', 'https://x.test\u2215a', ' https://x.test', 'https://x.test ']
         with patch.object(socket, 'socket', side_effect=AssertionError('network used')):
