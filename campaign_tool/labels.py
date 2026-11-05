@@ -186,6 +186,7 @@ DEFAULTS = {
     "agency.action_kind_other": "Other",
     "agency.reports_heading": "Reports this agency has published about its ALPR use",
     "agency.report_period": "Reporting period {start} \u2013 {end}", "agency.report_published": "Published {date}",
+    "agency.archived_copy": "archived copy ({date})",
     "agency.report_checked": "checked {date}", "agency.report_kind_annual_report": "Annual report",
     "agency.report_kind_audit_summary": "Audit summary", "agency.report_kind_usage_statistics": "Usage statistics",
     "agency.report_kind_surveillance_report": "Surveillance report", "agency.report_kind_other": "Other",

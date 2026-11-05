@@ -247,6 +247,7 @@ PUBLIC_POLICY_FIELDS = ("url", "checked_on")
 PUBLIC_CONTRACT_FIELDS = ("vendor", "start", "end", "source_url", "checked_on")  # never renewal_note
 PUBLIC_COST_FIELDS = ("amount_usd", "period", "as_stated_in")  # contract.cost (DF1103-07): exactly these, when present
 PUBLIC_FUNDING_FIELDS = ("kind", "name", "as_stated_in", "source_url", "checked_on", "amount_usd", "period", "fiscal_year")  # DF2207-02
+PUBLIC_ARCHIVE_FIELDS = ("archived_url", "archived_on")  # DF0237-03: optional organizer-recorded archive pair
 PUBLIC_REPORT_FIELDS = ("title", "kind", "period_start", "period_end", "published_on", "source_url", "checked_on")  # DF0237-02
 PUBLIC_TRANSPARENCY_FIELDS = ("cameras", "retention_days", "searches_last_30_days", "hotlist_alerts",
                               "shared_with_agencies", "source_url", "checked_on")
@@ -374,10 +375,27 @@ def time_tag(value):
     return f'<time datetime="{e(value)}">{e(value)}</time>'
 
 
-def policy_line(policy):  # links a posted ALPR usage policy an organizer found; fixed wording only
+def _archived(entry):
+    """The archive pair keys a public object carries: both when recorded, none otherwise."""
+    return PUBLIC_ARCHIVE_FIELDS if "archived_url" in entry else ()
+
+
+def archive_copy(entry, template="archived copy ({date})"):
+    """DF0237-03: `` <a>archived copy (DATE)</a>`` for an organizer-recorded archive pair, escaped once; "" when absent.
+
+    Nothing is fetched or checked here; the link says only that the organizer saved or found this copy.
+    """
+    if not entry or "archived_url" not in entry:
+        return ""
+    label = html_text(template).format(date=e(entry["archived_on"]))
+    return f' <a href="{e(entry["archived_url"])}" rel="noopener noreferrer">{label}</a>'
+
+
+def policy_line(policy, archive_template="archived copy ({date})"):  # links a posted ALPR usage policy an organizer found; fixed wording only
     if not policy:
         return ""
-    return (f'<p class="policy-link"><a href="{e(policy["url"])}" rel="noopener noreferrer">Posted ALPR usage policy</a> '
+    return (f'<p class="policy-link"><a href="{e(policy["url"])}" rel="noopener noreferrer">Posted ALPR usage policy</a>'
+            f'{archive_copy(policy, archive_template)} '
             f'(checked {date_label(policy["checked_on"])}, <a href="{e(policy["source_url"])}" '
             'rel="noopener noreferrer">where we found it</a>)</p>')
 
@@ -1045,10 +1063,14 @@ class Site:
         """``$12,345.60`` from the transcribed decimal string; exact, never float-converted."""
         return "$" + format(Decimal(cost["amount_usd"]), ",.2f")
 
+    def archive_suffix(self, entry):
+        return archive_copy(entry, self.labels["agency.archived_copy"])
+
     def contract_cost_line(self, contract):
         """DF1103-07: the cost exactly as the document states it, with the contract's own source and checked date."""
         cost = contract["cost"]
-        source = (f'<a href="{e(contract["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>')
+        source = (f'<a href="{e(contract["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>'
+                  + self.archive_suffix(contract))
         return ('<p class="contract-cost">' + self.t("agency.contract_cost", amount=e(self.contract_cost_amount(cost)),
                 period=self.t("agency.cost_" + cost["period"]), document=e(cost["as_stated_in"]), source=source,
                 date=date_label(contract["checked_on"])) + "</p>")
@@ -1060,7 +1082,7 @@ class Site:
                 f'{time_tag(contract["end"])}' + (", " + self.t("agency.contract_ended") if contract["end"] < self.today.isoformat() else "")
                 + (f'. {e(contract["renewal_note"])}' if contract["renewal_note"] else "")
                 + f' ({self.t("agency.checked", date=date_label(contract["checked_on"]))} <a href="{e(contract["source_url"])}" '
-                  f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>).</p>'
+                  f'rel="noopener noreferrer">{self.t("agency.the_source")}</a>{self.archive_suffix(contract)}).</p>'
                 + (self.contract_cost_line(contract) if contract.get("cost") else ""))
 
     def funding_block(self, agency):
@@ -1077,7 +1099,8 @@ class Site:
                 parts.append(e(self.contract_cost_amount(entry)) + " " + self.t("agency.cost_" + entry["period"]))
             if "fiscal_year" in entry:
                 parts.append(self.t("agency.funding_fiscal_year", year=e(entry["fiscal_year"])))
-            source = f'<a href="{e(entry["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>'
+            source = (f'<a href="{e(entry["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>'
+                      + self.archive_suffix(entry))
             provenance = self.t("agency.funding_provenance", document=e(entry["as_stated_in"]), source=source,
                                 date=time_tag(entry["checked_on"]))
             items.append(f'<li>{" · ".join(parts)}. <span class="funding-provenance">{provenance}</span></li>')
@@ -1112,7 +1135,7 @@ class Site:
         """
         items = []
         for entry in agency.get("reports", []):
-            parts = [f'<a href="{e(entry["source_url"])}" rel="noopener noreferrer">{e(entry["title"])}</a>',
+            parts = [f'<a href="{e(entry["source_url"])}" rel="noopener noreferrer">{e(entry["title"])}</a>' + self.archive_suffix(entry),
                      self.t("agency.report_kind_" + entry["kind"]),
                      self.t("agency.report_period", start=time_tag(entry["period_start"]), end=time_tag(entry["period_end"]))]
             if "published_on" in entry:
@@ -1222,7 +1245,7 @@ class Site:
         return (f'<section class="agency-transparency"><{heading}>{self.t("agency.transparency_heading")}</{heading}>'
                 + (f'<ul>{"".join(lines)}</ul>' if lines else "")
                 + f'<p><a href="{e(newest["source_url"])}" rel="noopener noreferrer">'
-                + self.t("agency.transparency_checked", date=time_tag(newest["checked_on"])) + '</a></p></section>')
+                + self.t("agency.transparency_checked", date=time_tag(newest["checked_on"])) + '</a>' + self.archive_suffix(newest) + '</p></section>')
 
     def agency_mapped_reported_block(self, agency):
         """DF0022-13: the newest portal camera count beside the map's count for the same picker city, never compared.
@@ -1358,7 +1381,7 @@ class Site:
                     + self.agency_blocks(agency, findings)
                     + (f'<p>{self.t("agency.findings", count=len(findings))} ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
-                    + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"))
+                    + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"), self.labels["agency.archived_copy"])
                     + self.policy_check_section(agency)
                     + self.pre_meeting_section(agency)
                     + self.contract_line(agency["contract"]) + self.contract_check_block(agency) + self.funding_block(agency) + self.reports_block(agency, "h4") + self.transparency_block(agency) + self.sharing_section(agency)
@@ -1529,7 +1552,8 @@ class Site:
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
                 + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency) + self.pre_meeting_section(agency)
-                + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
+                + (policy_line(agency["alpr_policy"], self.labels["agency.archived_copy"]) if (agency.get("alpr_policy") or {}).get("archived_url") else "")
+                + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") or (agency["contract"] or {}).get("archived_url") else "")
                 + self.contract_check_block(agency, "h3")
                 + self.funding_block(agency) + self.actions_section(agency) + self.reports_block(agency) + self.transparency_block(agency, "h3") + self.sharing_section(agency) + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
                 + self.statements_section(aid)
@@ -2979,17 +3003,17 @@ class Site:
                 "url": self.base + self.agency_pages()[agency["agency_id"]],
                 "asked": [{"topic": a["topic"], "state": a["state"], "asked_on": a["asked_on"],
                            "updated_on": a.get("updated_on")} for a in asked],
-                "alpr_policy": {k: policy[k] for k in PUBLIC_POLICY_FIELDS} if policy else None,
-                "contract": ({**{k: contract[k] for k in PUBLIC_CONTRACT_FIELDS},
+                "alpr_policy": {k: policy[k] for k in PUBLIC_POLICY_FIELDS + _archived(policy)} if policy else None,
+                "contract": ({**{k: contract[k] for k in PUBLIC_CONTRACT_FIELDS + _archived(contract)},
                               **({"cost": {k: contract["cost"][k] for k in PUBLIC_COST_FIELDS}} if contract.get("cost") else {})}
                              if contract else None),
-                "transparency": ({k: newest[k] for k in PUBLIC_TRANSPARENCY_FIELDS if newest.get(k) is not None}
+                "transparency": ({k: newest[k] for k in PUBLIC_TRANSPARENCY_FIELDS + _archived(newest) if newest.get(k) is not None}
                                  if newest else None),
-                **({"funding": [{k: f[k] for k in PUBLIC_FUNDING_FIELDS if k in f} for f in agency["funding"]]}
+                **({"funding": [{k: f[k] for k in PUBLIC_FUNDING_FIELDS + PUBLIC_ARCHIVE_FIELDS if k in f} for f in agency["funding"]]}
                    if agency.get("funding") else {}),  # DF2207-02: only when the organizer recorded it
                 **({"actions": [{k: a[k] for k in PUBLIC_ACTION_FIELDS} for a in self.newest_actions(agency)]}
                    if agency.get("actions") else {}),  # DF0237-01: likewise, the page's order
-                **({"reports": [{k: r[k] for k in PUBLIC_REPORT_FIELDS if k in r} for r in agency["reports"]]}
+                **({"reports": [{k: r[k] for k in PUBLIC_REPORT_FIELDS + PUBLIC_ARCHIVE_FIELDS if k in r} for r in agency["reports"]]}
                    if agency.get("reports") else {}),  # DF0237-02: same order as the page, only when recorded
                 "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
 
@@ -3005,11 +3029,11 @@ class Site:
                        {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL + PUBLIC_AGENCY_ACTIONS + PUBLIC_AGENCY_JSON_ONLY,
                                      {"actions": (PUBLIC_ACTION_FIELDS, {}),
                                                             "asked": (PUBLIC_ASKED_FIELDS, {}),
-                                                            "alpr_policy": (PUBLIC_POLICY_FIELDS, {}),
-                                                            "contract": (PUBLIC_CONTRACT_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
-                                                            "funding": (PUBLIC_FUNDING_FIELDS, {}),
-                                                            "reports": (PUBLIC_REPORT_FIELDS, {}),
-                                                            "transparency": (PUBLIC_TRANSPARENCY_FIELDS, {})})})
+                                                            "alpr_policy": (PUBLIC_POLICY_FIELDS + PUBLIC_ARCHIVE_FIELDS, {}),
+                                                            "contract": (PUBLIC_CONTRACT_FIELDS + PUBLIC_ARCHIVE_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
+                                                            "funding": (PUBLIC_FUNDING_FIELDS + PUBLIC_ARCHIVE_FIELDS, {}),
+                                                            "reports": (PUBLIC_REPORT_FIELDS + PUBLIC_ARCHIVE_FIELDS, {}),
+                                                            "transparency": (PUBLIC_TRANSPARENCY_FIELDS + PUBLIC_ARCHIVE_FIELDS, {})})})
         return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
