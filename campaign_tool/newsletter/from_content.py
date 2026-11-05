@@ -15,6 +15,8 @@ full hash, ``note``, ``pages`` or ``public_copy``).
 group label and the cameras page path (nothing else from the map); without history the manifest has no ``map`` key.
 ``requests`` (DF1207-05) comes from each agency's public ``asked`` items only (never ``kit/``): the
 agency page's own state sentence (``site.asked_sentence``) and the agency page path.
+``events`` (DF1107-09) is added only when ``content/events.json`` holds events: id, title, starts_at, ends_at, venue or
+online and the ``/events.html#event-<id>`` path; never the description, accessibility note or details URL.
 """
 from datetime import datetime, timezone
 
@@ -48,6 +50,14 @@ def _records(model):
     return rows
 
 
+def _events(model):
+    """``{"events": [...]}`` from the validated public events, or ``{}`` without any (the manifest then has no key)."""
+    rows = [{"id": e["id"], "title": e["title"], "starts_at": e["starts_at"], "ends_at": e["ends_at"],
+             **({"online": True} if e.get("online") else {"venue": e["venue"]}), "path": f"/events.html#event-{e['id']}"}
+            for e in model.get("events") or ()]
+    return {"events": rows} if rows else {}
+
+
 def manifest_from_content(root, cfg, since=None, now=None):
     """Return a schema-1 manifest; ``since`` is an ISO timestamp with offset, or None; ``now`` dates the request sentences."""
     model = load_content(root)
@@ -75,4 +85,5 @@ def manifest_from_content(root, cfg, since=None, now=None):
     return {"schema_version": 1,
             "campaign": {"name": cfg["name"], "base_url": model["site"]["base_url"], "county_name": cfg["county"]},
             "since": since, "findings": findings, "meetings": meetings, "decisions": decisions,
-            "requests": _requests(model, (now or datetime.now(timezone.utc)).date()), "records": _records(model), **camera_map}
+            "requests": _requests(model, (now or datetime.now(timezone.utc)).date()), "records": _records(model), **camera_map,
+            **_events(model)}

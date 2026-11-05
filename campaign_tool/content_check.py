@@ -20,7 +20,8 @@ from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES,
 from .finding_law import check as check_law, jurisdiction, package_line
 from .doc_assets import check_asset as check_doc_asset
 from .image_meta import check_asset
-from .legal_claims import faq_notes, statement_notes
+from .content_elsewhere import read_elsewhere
+from .legal_claims import elsewhere_notes, faq_notes, statement_notes
 from .labels import MAX_LABELS_BYTES, load_labels
 from .newsletter.archive import FOLDER as NEWSLETTERS, issue_paths, load_public_issue
 from .redirects import check_file as check_redirects
@@ -190,11 +191,12 @@ def _asked_links(problems, root, document):
             problems.append(f"{label}: older than its request's latest step ({latest[0]} on {latest[1]}); run kit-asked")
 
 
-def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today=None):
+def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today=None, elsewhere_out=None):
     """Sorted, de-duplicated problem lines for ``root/content``; None when there is no content/.
 
     ``faq_out``: a list that receives the validated FAQ entries when content/faq.json is present and valid.
-    ``statements_out``: likewise for content/statements.json (DF1107-07). ``today``: the build day (default: today)."""
+    ``statements_out``: likewise for content/statements.json (DF1107-07). ``elsewhere_out``: the same for
+    content/elsewhere.json (DF1107-04). ``today``: the build day (default: today)."""
     root = Path(root)
     content_dir = root / "content"
     if not content_dir.is_dir():
@@ -252,6 +254,9 @@ def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today
     faq = read_faq(root, findings if findings_intact else None, problems)
     if faq_out is not None and faq is not None:
         faq_out.extend(faq)
+    elsewhere = read_elsewhere(root, today, problems)  # DF1107-04: the build's own reader; names every independent problem
+    if elsewhere_out is not None and elsewhere is not None:
+        elsewhere_out.extend(elsewhere)
     from .content_events import read_events  # local: content_events imports content
     read_events(root, problems)  # DF1107-08: the build's own reader and privacy lint; it names every independent problem itself
     # DF0022-03: the build's own reader and refusal text; with a refused finding file ids are not matched (already named)
@@ -341,7 +346,7 @@ def _statements(problems, root, agencies, out, today):
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
 FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "pages/", "topics/", "kit/", "law/", "newsletters/",
                  "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json",
-                 "faq.json", "coverage.json", "body-schedules.json", "statements.json", "officials.json", "events.json")
+                 "faq.json", "coverage.json", "body-schedules.json", "statements.json", "officials.json", "elsewhere.json", "events.json")
 
 
 def problem_record(line):
@@ -366,8 +371,8 @@ def _law_package(root):
 
 def run_cli(root, as_json=False):
     """Print ``content/: N problem(s)`` and one line each (or one ``content-check-v1`` JSON line); exit 3 when any."""
-    faq, statements = [], []
-    problems = content_problems(root, limit=None, faq_out=faq, statements_out=statements)
+    faq, statements, elsewhere = [], [], []
+    problems = content_problems(root, limit=None, faq_out=faq, statements_out=statements, elsewhere_out=elsewhere)
     if problems is None:
         if as_json:
             print(json.dumps({"schema": SCHEMA, "count": 0, "problems": [], "truncated": False,
@@ -388,6 +393,8 @@ def run_cli(root, as_json=False):
         for line in _cap(problems, LIMIT):
             print(line)
     for note in dict.fromkeys(faq_notes(faq) + statement_notes(statements)):  # DF0022-01 / DF1107-07: stderr only, advisory; the stdout schema, count and exit code are unchanged
+        print(note, file=sys.stderr)
+    for note in elsewhere_notes(elsewhere):  # DF1107-04: stderr only, advisory, like the FAQ notes above
         print(note, file=sys.stderr)
     if problems:
         raise SystemExit(3)

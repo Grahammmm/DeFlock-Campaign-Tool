@@ -550,6 +550,7 @@ MODULE_FUNCTIONS = {
     "map_survey": ("_install_new", "_write_checks", "render_csv", "survey_import"),
     'agency_brief': ('_write_file', 'build_brief',),  # private kit/briefs html+txt from published content; kept unless --replace
     'agency_actions': ('_install',),
+    'agency_brief': ('_write_file', 'build_brief',),
     'agency_cards': ('main',),
     'approval': ('verify',),
     'backup': (
@@ -558,7 +559,7 @@ MODULE_FUNCTIONS = {
     ),
     'backup_crypt': ('decrypted', 'encrypt', 'gpg_path',),
     'cli': (
-        '_store_bytes', 'backup_drill_cmd', 'finding_preview', 'initialize', 'main', 'meetings_cmd',
+        '_meetings_multi', '_store_bytes', 'backup_drill_cmd', 'finding_preview', 'initialize', 'main', 'meetings_cmd',
         'readiness', 'weight_budget'
     ),
     'content_init': ('_rename_noreplace', '_write', 'faq_document', 'init_content', 'init_from',),

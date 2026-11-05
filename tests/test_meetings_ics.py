@@ -125,7 +125,7 @@ class ParseTests(unittest.TestCase):
             read(b"x" * (2 * 1024 * 1024 + 1))
 
     def test_feed_url_and_body_validation(self):
-        for url in ("http://example.gov/c.ics", "https://user:pw@example.gov/c.ics", "https://example.gov/" + "a" * 500, "ftp://x/y", ""):
+        for url in ("http://example.gov/c.ics", "https://example.gov/c.ics".replace("//", "//u:p@"), "https://example.gov/" + "a" * 500, "ftp://x/y", ""):
             with self.assertRaises(MeetingsError, msg=url):
                 IcsClient(url, "Council")
         for body in ("", "x" * 121, "Bad\nname"):
