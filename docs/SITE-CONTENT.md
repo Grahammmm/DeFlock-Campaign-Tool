@@ -63,13 +63,13 @@ distinguishes unchanged bytes from authorship or truth; it is not authentication
 
 | Path | Required | Purpose |
 | --- | --- | --- |
-| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), `license` (below), optional `press` (below), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
+| `content/site.json` | yes | tagline, `mission_md`, `about_md`, `contact_email`, `signup`, `social[]`, `language`, `base_url`, `county_profile`, `source_link_label`, `font_family`, `not_legal_advice`, `privacy_contact`, `brand` (below), `license` (below), optional `press` (below), optional `corrections` (`{"show_request_counts": true|false}`, default off: publishes per-quarter correction-request counts only, see [CORRECTIONS-PROCESS.md](CORRECTIONS-PROCESS.md); a build with it on reads `private/correction-requests.json`, `content-check` never does), optional `comment_asks` (1 to 3 plain-text asks of 1 to 200 characters for staged comment kits, see [MEETINGS.md](MEETINGS.md); not published as data) |
 | `content/findings/*.json` | no | one published finding per file (schema below) |
 | `content/meetings/*.json` | no | `body`, `starts_at`, `agenda_url`, `agenda_item`, `location`, `comment_kit_md`, `agency_id`, optional `cited_findings` (1 to 3 unique finding ids, written by `meetings-stage`) |
 | `content/sources.json` | no | source-library entries: `sha256`, `title`, `agency_id`, `received_at`, `public_url` or null, `fragment`, `pages`, `note` |
 | `content/agencies.json` | no | override list; default is the selected entries of `kit/agencies.json` plus `kit/governing-bodies.json` |
 | `content/map/map-config.json` | no | controller settings (`schemas/map-controller.schema.json` keys) plus `county_bounds`, `style_url`, `tile_hosts`, `group_label`, `attribution` |
-| `content/map/cameras.geojson` | with map | Point features; properties `manufacturer`, `operator`, `url` (openstreetmap.org object URL or null) |
+| `content/map/cameras.geojson` | with map | Point features; properties `manufacturer`, `operator`, `url` (openstreetmap.org object URL or null) and optional `direction` (an OpenStreetMap facing tag string or null; see Map data) |
 | `content/map/<city-boundaries>.geojson` | with map | the file named by `city_boundaries_url` (`data/<file>.geojson`); features need `NAME` or `BASENAME` |
 | `content/map/county.geojson` | no | county outline, served as `/data/county.geojson` |
 | `content/map/cities.json` | no | `{slug: {bounds: [[w,s],[e,n]], name}}` for police/city_council agencies shown in the picker |
@@ -717,6 +717,58 @@ Questions an organizer has checked, in the order written, become `/faq.html`. Th
 - Labels: `faq.title`, `footer.faq`, `faq.findings`, `faq.terms`, `faq.rule` and `faq.law_status` (see Labels). The
   Spanish values in `examples/labels/es.json` are a machine-made draft like the rest of that file.
 
+### In the news (`content/coverage.json`, optional)
+
+Press coverage an organizer has read and typed in becomes `/news.html`. The tool stores only the outlet, the headline
+as published, the article link, its date, a kind and the findings the story reported; it never fetches an article,
+quotes it, summarizes it, shows its byline or image, or embeds it. **Listing a story is not verification of it and does
+not mean the outlet endorses the campaign.** Typing the headline exactly as published is the organizer's responsibility.
+```json
+{"schema_version": 1, "entries": [{"outlet": "Example News", "headline": "Published headline",
+  "url": "https://news.example.test/story", "published_on": "2026-11-01", "findings": ["F1"], "kind": "news"}]}
+```
+- Record and remove entries with the CLI; both need an existing `content/` with a valid `site.json`, never scaffold,
+  build, publish or use the network, and print `Nothing was built, published or sent.`:
+  `python3 -m campaign_tool content coverage add --directory D --outlet N --headline H --url U --published-on YYYY-MM-DD
+  [--finding ID ...] [--kind news|opinion|broadcast|other]` (`--finding` once per id) and
+  `python3 -m campaign_tool content coverage remove --directory D --url U`. Success prints
+  `{"action": "added"|"removed", "url": U}`; a refusal exits 2 and changes nothing. You can also edit the file by hand.
+- Envelope: exactly `schema_version` (the integer 1) and `entries` (a list of at most 1000). Each entry needs `outlet`,
+  `headline`, `url` and `published_on` and may have `findings` (default `[]`) and `kind` (default `news`); unknown keys,
+  `null`, booleans and wrong types are refused, not coerced. A file written by the CLI always shows the defaults.
+- `outlet` 1-80 and `headline` 1-200 characters of non-blank text with no `<`, `>`, control character or line break.
+  They are kept exactly as written (no trimming, rewriting or Markdown) and shown escaped.
+- `url`: an `https://` link by the same rule as other source links (a plain host, no credentials). **Duplicates are
+  decided by the exact text**: `https://x.test/a` and `https://x.test/a?utm=1` are two different entries; there is no
+  canonicalization, tracking-parameter stripping or redirect following. A repeat is refused as
+  `coverage.json.entries[N].url: duplicate URL`. There is no separate id: the URL identifies the entry.
+- `published_on`: a real calendar day written `YYYY-MM-DD`, not after today (`... published_on: must not be after
+  today`). It may be before or the same day as a finding's publication; no chronology is checked.
+- `kind`: exactly `news`, `opinion`, `broadcast` or `other`.
+- `findings`: 0 to 3 distinct exact ids of findings published in `content/findings/` (not slugs or prefixes; letters,
+  digits, `_` and `-`). A repeated, unknown, draft or withdrawn id is refused as
+  `coverage.json.entries[N].findings: must name at most 3 unique published finding IDs`. Drafts are never read.
+- Absent, empty and filled: without the file there is no page and no link, and every other output is byte-identical.
+  With the file, even `{"schema_version": 1, "entries": []}`, `news.html` exists (an empty notice when there are no
+  entries). Removing the last entry keeps the empty file; delete the file and rebuild to remove the page and every link
+  to it. A refused file leaves `public/` untouched; the input JSON is never copied into `public/`.
+- The page lists entries newest first (equal dates by URL), each with the outlet, the headline linking the article
+  (`rel="noopener noreferrer"`), the date, the kind and links to the findings it names. Each named finding page gets one
+  `Reported in: OUTLET (DATE)` paragraph per entry, outside its facts, citation and corrections. `press.html`, when it
+  exists, gets a separate paragraph linking `news.html`. `news.html` is linked once in the footer of every page and in
+  `sitemap.xml` (with `base_url`); there is no top-nav item, feed entry, search entry, JSON export or hash change.
+- Repair: if a cited finding is later withdrawn, the build and `content-check` name the entry
+  (`coverage.json.entries[N].findings: ...`). `coverage remove --url U` still removes that entry, but refuses while
+  another stale reference remains, so fix or remove those too; nothing is dropped silently.
+- `news` is a reserved page slug and `news.html` a generated top-level name with or without the file, so a
+  `content/pages/news.json`, a redirect or a `public-assets` file at that path is refused. `content-check` runs the
+  build's own reader and names problems as `coverage.json...`; a symlink (even dangling), folder or other non-regular
+  file, an oversize file (2 MiB), invalid UTF-8 or JSON is refused, not skipped.
+- Labels: `news.title`, `news.description`, `news.empty`, `news.findings`, `news.kind.news`, `news.kind.opinion`,
+  `news.kind.broadcast`, `news.kind.other`, `finding.reported_in` (`{outlet}` and `{date}`), `footer.news` and
+  `press.news`. The Spanish values in `examples/labels/es.json` are a machine-made draft like the rest of that file.
+  Default examples and `content init` do not enable coverage.
+
 ### Newsletter archive (`content/newsletters/<YYYY-MM-DD>.json`, optional)
 
 Written by `newsletter archive --date D --publish` (see NEWSLETTER.md); exactly `{"schema_version": 1, "sent_on", "title",
@@ -862,6 +914,7 @@ per picker city by name, each point in the first city boundary holding it by the
 section lists 500 rows, then "and N more on the map"; linked from the map fallback and footer, in `sitemap.xml`),
 `glossary.html` (only with a non-empty `content/glossary.json`: see Glossary),
 `faq.html` (only with a `content/faq.json`: see FAQ),
+`news.html` (only with a `content/coverage.json`: see In the news),
 `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
 (`agency_cards.render` output), `app.js` (map controller plus page bootstrap, or
@@ -1065,7 +1118,7 @@ A complete Spanish draft of every key is in [`examples/labels/es.json`](../examp
 Machine-made draft. A fluent Spanish reader must check every line before a campaign uses it; nothing here is reviewed.
 Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds
 `<`, `>` or a control character; a `{placeholder}` the key's default does not use (only `{name}`, `{county}`,
-`{state}`, `{count}`, `{date}` exist, plus `{shown}`/`{total}` in `js.filter_count` and `{evidence}`/`{source}` in
+`{state}`, `{count}`, `{date}` exist (plus `{outlet}` in `finding.reported_in`), plus `{shown}`/`{total}` in `js.filter_count` and `{evidence}`/`{source}` in
 `js.map_failed`/`js.data_failed`, and `{title}`/`{record}` in `handout.source_line`) or an unpaired brace; another top-level field, `schema_version` other than 1, a
 file over 64 KiB or a symlink. `content-check` names the same refusals, with the build's text, beside every other
 problem. Text is HTML-escaped once (`&`, `"`); `lang` still comes only from `site.json.language`.
@@ -1189,6 +1242,21 @@ that do not strictly increase, a negative or non-integer count, a symlink or a f
 and never its value; `content-check` lists the same line. With two or more records `cameras.html` shows "Mapped points
 over time", a plain table (date, total, added, removed, and per-city columns when every record has `by_city`); with
 none or one the built site is unchanged. A mapped point, and a rising count, is not evidence of agency ownership.
+
+**Facing tag (`direction`, optional).** `fetch_osm_alprs.py` keeps a node's `direction` tag (else its `camera:direction`
+tag; a present but unusable `direction` is never replaced by the other key) in `cameras.geojson` as
+`properties.direction`, exactly as tagged, when it is 1 to 4 values joined by `;` (no spaces, at most 15 characters)
+and each value is a whole number 0 to 359 (no sign, fraction or leading zero) or one of the 16 compass words N, NNE,
+NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW in any case. Anything else on a retained point is written
+as `null`, and the run prints `direction invalid=N` on stderr (a count only, never the tag text); a point without
+either tag gets no `direction` property, so a map fetched without any facing tag is byte-identical to before and a
+`cameras.geojson` without the property reads unchanged. `--check` treats a changed value as `retagged`, comparing
+the strings exactly (`NE` to `ne` or to `SW` is retagged; a missing property and `null` are both "unknown"). `build`
+and `content-check` refuse a hand-edited `direction` outside the grammar (`map/cameras.geojson.features[N].direction:
+expected an OpenStreetMap facing tag or null`, never the value). `cameras.html` adds `Faces: NE (OpenStreetMap tag)`
+under the OpenStreetMap link of a tagged point (label `map.direction_line`) and the map popup shows the same text;
+untagged points show nothing new. The value is a volunteer's tag: no bearing is converted, and nothing is inferred
+about a road, a plate, coverage, ownership or an independent check.
 
 `content/map/point-checks.json` (optional; organizer-edited by hand, never fetched or written by the tool) records what
 an organizer found at single mapped points: `{"schema_version": 1, "checks": [{"node": 123, "status": "seen_in_person",

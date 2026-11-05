@@ -68,6 +68,11 @@ def enrich(root, maplibre=False):
     _write(content / "faq.json", {  # DF0022-01: reaches every faq label (a cited finding, a law reference, a glossary term in the question)
         "schema_version": 1, "entries": [{"question": "Zq title question?", "answer_md": "Zq answer.",
                                           "finding_ids": ["fnd_0000000000000002"], "rule_id": "ca-civ-1798.90.5-definitions"}]})
+    news = [{"outlet": f"Zq outlet {kind}", "headline": f"Zq headline {kind}", "url": f"https://zq.example.test/{kind}",
+             "published_on": "2026-09-01", "findings": ["fnd_0000000000000002"], "kind": kind}
+            for kind in ("news", "opinion", "broadcast", "other")]
+    _write(content / "coverage.json", {  # DF0022-03: rich reaches every kind, the finding link and "Reported in"; late the empty state
+        "schema_version": 1, "entries": [] if maplibre else news})
     _write(content / "meetings" / "zq-cancelled.json", {
         "id": "zq-cancelled", "body": "Zq board", "starts_at": "2026-09-01T18:00:00-07:00", "status": "cancelled"})
     if maplibre:
@@ -238,6 +243,7 @@ class LabelsTest(unittest.TestCase):
         # map.history_*: the fixture has no map/history.json (tests/test_site_cameras_page.py covers those labels).
         # press.logo, press.download_logo: the fixture has no brand logo (tests/test_site_press_page.py covers those labels).
         # map.check_*: the fixture has no map/point-checks.json (tests/test_map_point_checks.py covers those labels).
+        # map.direction_line: the fixture has no facing tag (tests/test_camera_direction.py covers that label).
         # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
         # agency.mapped_reported_*: the fixture has no transparency snapshot (tests/test_agency_mapped_reported.py covers those).
         # schedule.*: the fixture has no body-schedules.json (tests/test_body_schedules.py covers those labels).
@@ -246,6 +252,7 @@ class LabelsTest(unittest.TestCase):
         # handout.*: only the private meeting-pack handout writes these (tests/test_meeting_pack.py covers them).
         # agency.votes_*: the fixture records no votes (tests/test_site_member_votes.py covers those labels).
         # agency.contract_cost, agency.cost_*: the fixture has no contract cost (tests/test_agency_contract_cost.py covers those).
+        # correction_counts.*: only a site that sets corrections.show_request_counts renders these (tests/test_site_correction_counts.py).
         # agency.funding_*: the fixture records no funding (tests/test_agency_funding.py covers those).
         # agency.report*: the fixture records no reports (tests/test_agency_reports.py overrides every one).
         absent = ["agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
@@ -261,6 +268,9 @@ class LabelsTest(unittest.TestCase):
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "agency.votes_heading", "agency.votes_more", "agency.votes_none", "agency.votes_source",
+                  "correction_counts.caption", "correction_counts.col_accepted", "correction_counts.col_declined",
+                  "correction_counts.col_open", "correction_counts.col_quarter", "correction_counts.col_received",
+                  "correction_counts.empty", "correction_counts.heading", "correction_counts.lead",
                   "finding.agency_response", "finding.quote_page", "finding.quote_transcribed", "finding.reply_declined", "finding.reply_no_response", "finding.reply_received",
                   "footer.license", "footer.sharing",
                   "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
@@ -270,6 +280,7 @@ class LabelsTest(unittest.TestCase):
                   "license.about", "license.about_camera", "license.csv_note",
                   "map.check_duplicate", "map.check_earlier", "map.check_heading",
                   "map.check_in_agency_record", "map.check_not_found_on_site", "map.check_seen_in_person",
+                  "map.direction_line",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
                   "meeting.comments_both", "meeting.comments_spoke", "meeting.comments_written",

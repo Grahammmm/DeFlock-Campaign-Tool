@@ -214,6 +214,13 @@ DEFAULTS = {
     "requests.caption": "Every public request across agencies, newest first",
     "requests.col_agency": "Agency", "requests.col_topic": "Topic", "requests.col_asked_on": "Asked on",
     "requests.col_state": "State", "requests.col_updated_on": "Updated on", "requests.not_recorded": "Not recorded",
+    "correction_counts.heading": "Correction requests we received",  # DF1103-14, only with corrections.show_request_counts
+    "correction_counts.lead": "Grouped by quarter received; decisions and still-open counts reflect the current log, not quarter-end totals.",
+    "correction_counts.caption": "Correction requests received, by quarter",
+    "correction_counts.col_quarter": "Quarter", "correction_counts.col_received": "Received",
+    "correction_counts.col_accepted": "Accepted", "correction_counts.col_declined": "Declined",
+    "correction_counts.col_open": "Still open",
+    "correction_counts.empty": "No correction requests have been logged yet.",
     "officials.heading": "Who decides", "officials.source": "source",
     "officials.listed": ("Listed from the body's official site ({source}), checked {date}. "
                          "Contact officials only through the channels on that site."),
@@ -229,6 +236,7 @@ DEFAULTS = {
     "map.check_heading": "Organizer check", "map.check_seen_in_person": "Seen in person",
     "map.check_in_agency_record": "Listed in an agency record", "map.check_not_found_on_site": "Not found on site",
     "map.check_duplicate": "Duplicate of another point", "map.check_earlier": "and {count} earlier",
+    "map.direction_line": "Faces: {direction} (OpenStreetMap tag)",
     "signup.email": "Email address", "signup.placeholder": "you@example.org",
     "signup.provider_note": "Submitting opens the provider's hosted confirmation page.",
     "signup.none": "No email addresses are collected by this site. Follow meetings and findings here or by feed.",
@@ -254,6 +262,14 @@ DEFAULTS = {
     "press.description": "Campaign background, press contact, recent findings with citation text, logo and open data for reporters.",
     "press.contact": "Press contact", "press.findings": "Recent findings", "press.logo": "Logo",
     "press.data": "Open data", "press.download_logo": "Download the logo", "press.license_unspecified": "License not specified",
+    # DF0022-03: /news.html, the finding "Reported in" line and the press-page link (optional content/coverage.json)
+    "news.title": "In the news",
+    "news.description": "Press coverage of this campaign's findings, recorded by the organizers. A story listed here is not "
+                        "verified by us and does not mean the outlet endorses the campaign.",
+    "news.empty": "No press coverage has been recorded yet.", "news.findings": "Related findings",
+    "news.kind.news": "News", "news.kind.opinion": "Opinion", "news.kind.broadcast": "Broadcast", "news.kind.other": "Other",
+    "finding.reported_in": "Reported in: {outlet} ({date})", "footer.news": "In the news",
+    "press.news": "Press coverage of the campaign",
 }
 # DF0137-14: fixed strings the generated scripts write into the page. Defaults are today's exact English; site.py
 # switches the scripts to LABELS lookups (site-data.js) only when a js.* key differs from its default.

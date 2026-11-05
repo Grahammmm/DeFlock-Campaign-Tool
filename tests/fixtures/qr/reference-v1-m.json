@@ -1,0 +1,51 @@
+{
+ "payload": "https://x.test",
+ "mode": "byte",
+ "error_correction": "M",
+ "version": 1,
+ "mask": 3,
+ "orientation": "rows[y][x] is the module in row y (top to bottom), column x (left to right); '1' dark; no quiet zone",
+ "matrix": [
+  "111111101011101111111",
+  "100000101111001000001",
+  "101110100010001011101",
+  "101110101100101011101",
+  "101110100101001011101",
+  "100000100010001000001",
+  "111111101010101111111",
+  "000000001001000000000",
+  "101101110111001001011",
+  "011111001011011111111",
+  "101010101100010001011",
+  "110001011101100101010",
+  "101010110010111011001",
+  "000000001010100010000",
+  "111111101011010010000",
+  "100000101111100111101",
+  "101110100110000010110",
+  "101110101100101100010",
+  "101110101001101100100",
+  "100000100111011110001",
+  "111111101101001011100"
+ ],
+ "sha256_representation": "SHA-256 values are eight ordered 8-character hex chunks; concatenate without a separator. Public reference checksums, not credentials.",
+ "matrix_sha256": ["b80da43c", "857d9ff7", "1804178d", "abe07dc6", "25ac2e66", "2d5f0a2f", "8bf15d29", "09a06517"],
+ "provenance": {
+  "encoder": "node-qrcode 1.5.4 (npm package 'qrcode', MIT), an independent encoder that shares no code with campaign_tool.qr",
+  "source": "https://github.com/soldair/node-qrcode (npm: https://www.npmjs.com/package/qrcode/v/1.5.4)",
+  "installed_copy": "node_modules/qrcode of the local Hermes agent install; nothing was downloaded for this card",
+  "file_sha256": {
+   "package.json": ["cbe26d72", "82c802f4", "ab9c1f79", "0c5d8450", "d2b5c82e", "8bb5f67e", "3a5c2641", "ea347d1d"],
+   "lib/core/qrcode.js": ["216e4909", "08ed95df", "74992a05", "d44efa35", "ea7bc8dc", "ab27b49b", "44672596", "4704e833"],
+   "lib/core/mask-pattern.js": ["c8cfdab7", "b8d8276f", "9c1128ab", "8e5d9307", "59df7594", "f03211f7", "2b80c300", "2af91aa9"],
+   "lib/core/reed-solomon-encoder.js": ["080273fc", "f5a73c23", "48330f3e", "db55f396", "8c78853e", "298dc55a", "074becd7", "cee3faa2"],
+   "lib/core/format-info.js": ["889b133c", "d6a86f40", "79a3a5d1", "dfd94c49", "5ca71d4f", "de4ec88c", "e9e9a5de", "358629d0"],
+   "lib/core/version.js": ["1221665a", "29e6927d", "3823912b", "de8bd711", "c114c611", "88d7ce86", "2997a33d", "47fcfba9"],
+   "lib/core/byte-data.js": ["24614cb9", "42165dcc", "5378117a", "951cc1d6", "8fbfc2e6", "00438301", "11ae9928", "3cd9aa94"]
+  },
+  "invocation": "require('qrcode/lib/core/qrcode.js').create([{data: Buffer.from('https://x.test','ascii'), mode: 'byte'}], {errorCorrectionLevel: 'M'}); matrix read as modules.get(row, col)",
+  "options": "one explicit byte segment, level M, version and mask left automatic, no error-correction boost",
+  "generated_once": "2026-11-04 on card t_33569c04",
+  "deviation_from_spec": "The spec names Project Nayuki QR-Code-generator v1.8.0; fetching it was not allowed on this card, so the locally installed independent node-qrcode 1.5.4 produced the matrix. A reviewer with network access may regenerate with Nayuki and compare every module and the mask."
+ }
+}

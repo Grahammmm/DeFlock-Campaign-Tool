@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
+from .camera_direction import DIRECTION_PATTERN, valid_direction
 from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, PRE_MEETING_RULE_ID, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, SHARING_BULLETIN_ID, SHARING_KINDS,
                       SHARING_RULE_ID, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
@@ -49,7 +50,7 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "sharing.html", "press.html", "requests.html"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "sharing.html", "press.html", "requests.html", "news.html"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
@@ -483,6 +484,19 @@ def point_check_renderer(labels):
             + js_json(names) + "," + js_json(labels["map.check_heading"]) + ")")
 
 
+# DF0237-11: the popup's "Faces: NE (OpenStreetMap tag)" line. A property that is not a string inside the facing
+# grammar shows nothing (the runtime GeoJSON can differ from the validated build input); mapText escapes the line once.
+POINT_DIRECTION_RENDERER = (
+    r'function(p){var d=p.direction;return typeof d==="string"&&d.length<=15&&RE.test(d)'
+    r'?"<br>"+mapText(LINE.split("{direction}").join(d)):"";}')
+
+
+def point_direction_renderer(labels):
+    """The trusted popup renderer for a point's OpenStreetMap facing tag (raw label text, escaped later by mapText)."""
+    return ("(function(LINE,RE){return " + POINT_DIRECTION_RENDERER + ";})("
+            + js_json(labels["map.direction_line"]) + ",new RegExp(" + js_json("^(?:" + DIRECTION_PATTERN + ")$") + "))")
+
+
 def ics_text(value):
     """RFC 5545 TEXT value: control characters (CR included) dropped, then \\ ; , and newline escaped."""
     value = re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", "", str(value))
@@ -504,8 +518,9 @@ def ics_fold(line):
 
 
 class Site:
-    def __init__(self, root, cfg, model, today=None):
+    def __init__(self, root, cfg, model, today=None, correction_counts=None):
         self.root = Path(root)
+        self.correction_counts = correction_counts  # DF1103-14: aggregate rows only, or None when not opted in
         self.cfg = cfg
         self.model = model
         self.today = today or date.today()  # build date: contract terms
@@ -621,6 +636,7 @@ class Site:
         # DF1952-04: content/glossary.json; an absent file or an empty terms list switches every glossary output off.
         self.glossary = model.get("glossary") if (model.get("glossary") or {}).get("terms") else None
         self.faq = model.get("faq") or None  # DF0022-01: content/faq.json entries; an absent file switches every FAQ output off
+        self.coverage = model.get("coverage")  # DF0022-03: None without content/coverage.json; [] (present, empty) keeps the page
         # DF1952-06: curated topics (slug order); each finding id -> the topics listing it. No topics key = none.
         self.topics = model.get("topics", [])
         self.supporters = model.get("supporters") or []  # DF2207-13: validated public rows; [] = no page, no link
@@ -799,6 +815,8 @@ class Site:
                      ' · <a href="/methods.html">How to read our findings</a></p>')
         if self.faq:  # DF0022-01: appended last, so every earlier footer paragraph is unchanged
             parts.append(f'<p><a href="/faq.html">{self.t("footer.faq")}</a></p>')
+        if self.coverage is not None:  # DF0022-03: appended after every other footer paragraph; no top-nav entry
+            parts.append(f'<p><a href="/news.html">{self.t("footer.news")}</a></p>')
         if self.sharing_rows:  # DF0237-04: after every other paragraph
             parts.append(f'<p><a href="/sharing.html">{self.t("footer.sharing")}</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
@@ -1560,7 +1578,8 @@ class Site:
         data = "".join(f'<li><a href="/{e(path)}">{e(path)}</a> · {self.press_license(path)}</li>' for path in data_paths)
         main = (f'    <section class="section finding-body" id="content"><h2>{self.t("press.title")}</h2>{about}{contact}'
                 f'<h3>{self.t("press.findings")}</h3>{recent}{logo}<h3>{self.t("press.data")}</h3><ul>{data}</ul>'
-                f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
+                + (f'<p><a href="/news.html">{self.t("press.news")}</a></p>' if self.coverage is not None else "")  # DF0022-03
+                + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("press", self.labels["press.title"], self.labels["press.description"], "/press.html", main)
 
     def supporters_html(self):
@@ -1781,12 +1800,44 @@ class Site:
                 + f'<p><a href="/corrections.html">{self.t("finding.all_corrections")}</a></p>'
                 + f'<p><a href="/corrections.html#request">{self.t("finding.ask_correction")}</a></p>'
                 + self.terms_used_html(finding)
+                + self.reported_in_html(finding)
 
                 + self.finding_meetings_html(finding)
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
         return self.page("findings", finding["title"], finding["summary"], finding_path(finding), main,
                          scripts=["/findings/cite.js"],
                          kind="article", published=finding["published_at"], modified=finding["updated_at"])
+
+    def sorted_coverage(self):
+        """The recorded coverage newest first, equal dates by URL ascending (the stored list and its order are untouched)."""
+        return sorted(sorted(self.coverage or [], key=lambda entry: entry["url"]), key=lambda entry: entry["published_on"], reverse=True)
+
+    def coverage_for_finding(self, finding):
+        """DF0022-03: the coverage entries that name this finding's exact id, newest first; [] without coverage."""
+        return [entry for entry in self.sorted_coverage() if finding["id"] in entry["findings"]]
+
+    def reported_in_html(self, finding):
+        """One ``Reported in: OUTLET (DATE)`` paragraph per entry, the outlet linking the article. Kept out of the factual
+        body, the citation and the corrections; "" (no markup) for a finding no entry names."""
+        return "".join(
+            '<p class="reported-in">' + self.t("finding.reported_in", outlet=f'<a href="{e(entry["url"])}" rel="noopener noreferrer">'
+                                              f'{e(entry["outlet"])}</a>', date=time_tag(entry["published_on"])) + "</p>"
+            for entry in self.coverage_for_finding(finding))
+
+    def news_html(self):
+        """``/news.html`` (DF0022-03): what the organizers recorded, newest first - the outlet, the headline as published
+        linking the article, the date, the kind and the findings it names. Nothing is quoted, summarized, fetched or embedded."""
+        items = []
+        for entry in self.sorted_coverage():
+            cited = "".join(f'<li><a href="{e(finding_path(self.finding_by_id[finding_id]))}">'
+                            f'{e(self.finding_by_id[finding_id]["title"])}</a></li>' for finding_id in entry["findings"])
+            items.append(f'<li class="news-item"><span class="news-outlet">{e(entry["outlet"])}</span> · '
+                         f'<a href="{e(entry["url"])}" rel="noopener noreferrer">{e(entry["headline"])}</a> · '
+                         f'{time_tag(entry["published_on"])} · <span class="news-kind">{self.t("news.kind." + entry["kind"])}</span>'
+                         + (f'<div><span>{self.t("news.findings")}</span><ul>{cited}</ul></div>' if cited else "") + "</li>")
+        body = f'<ul class="news-list">{"".join(items)}</ul>' if items else f'<p class="notice">{self.t("news.empty")}</p>'
+        main = f'    <section class="section finding-body" id="content"><h2>{self.t("news.title")}</h2>{body}</section>\n'
+        return self.page("news", self.labels["news.title"], self.labels["news.description"], "/news.html", main)
 
     def terms_used_html(self, finding):
         """DF1952-04: ``Terms used on this page`` links to the glossary entries the finding's title, summary or body use;
@@ -1882,6 +1933,21 @@ class Site:
         html = html.replace(main, main + '    <p class="draft-banner" role="note">Draft - not published</p>\n')
         return dict(page, html=html)
 
+    def correction_counts_html(self):
+        """DF1103-14: the opt-in quarterly table; \"\" when the site did not opt in. Aggregate columns only."""
+        if self.correction_counts is None:
+            return ""
+        heads = [self.t(f"correction_counts.col_{key}") for key in ("quarter", "received", "accepted", "declined", "open")]
+        body = "".join(f'<tr><th scope="row" data-label="{heads[0]}">{e(row["quarter"])}</th>'
+                       + "".join(f'<td data-label="{head}">{row[key]}</td>' for head, key in
+                                 zip(heads[1:], ("received", "accepted", "declined", "still_open"))) + "</tr>"
+                       for row in self.correction_counts)
+        table = (f'<table class="glance-table"><caption>{self.t("correction_counts.caption")}</caption><thead><tr>'
+                 + "".join(f'<th scope="col">{head}</th>' for head in heads) + "</tr></thead><tbody>" + body
+                 + "</tbody></table>") if self.correction_counts else f'<p>{self.t("correction_counts.empty")}</p>'
+        return (f'<section id="request-counts"><h3>{self.t("correction_counts.heading")}</h3>'
+                f'<p>{self.t("correction_counts.lead")}</p>{table}</section>')
+
     def corrections_html(self):
         rows = [(f, c, i) for f in self.model["findings"] for i, c in enumerate(f["corrections"])]
         rows.sort(key=lambda row: (row[0]["slug"], row[2]))
@@ -1892,7 +1958,7 @@ class Site:
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.findings")}</p>'
                 f'<h2>{self.t("heading.corrections")}</h2></div><p>{self.t("intro.corrections")}</p></div>'
                 + policy_html(self.site["contact_email"])
-                + (f'<ul>{items}</ul>' if items else f'<p>{self.t("notice.no_corrections")}</p>') + '</section>\n')
+                + (f'<ul>{items}</ul>' if items else f'<p>{self.t("notice.no_corrections")}</p>') + self.correction_counts_html() + '</section>\n')
         return self.page("findings", self.labels["title.corrections"], self.labels["title.corrections_description"], "/corrections.html", main)
 
     def not_found_html(self):
@@ -2248,6 +2314,11 @@ class Site:
             refuse("signup goes to " + (facts["signup"]["host"] if facts["signup"] else "no host"), "form-action " + " ".join(directives.get("form-action", [])))
 
 
+    def direction_line(self, props):
+        """DF0237-11: ``Faces: NE (OpenStreetMap tag)`` for a valid facing string, else ""; the tag exactly as mapped."""
+        value = props.get("direction") if isinstance(props, dict) else None
+        return self.t("map.direction_line", direction=e(value)) if valid_direction(value) else ""
+
     def cameras_html(self):
         """No-JS list of mapped points (DF1507-13): each point in the first picker city (by name) whose boundary holds it,
         by the counts' own half-open test, else in the group section. Over 2 000 points: 500 rows per section."""
@@ -2276,6 +2347,8 @@ class Site:
             cells = [e(str(props.get(key)).strip() or "not tagged") if props.get(key) is not None else "not tagged"
                      for key in ("manufacturer", "operator")]
             link = (f'<a href="{e(url)}" rel="noopener noreferrer">node {node.group(1)}</a>' if node else "no OSM link")
+            facing = self.direction_line(props)
+            link += f"<br>{facing}" if facing else ""
             extra = [self.check_cell(checks.get(int(node.group(1))) if node else None)] if checks else []
             groups[home].append((url is None, url or "", "".join(f"<td>{c}</td>" for c in cells + [link] + extra)))
         sections = ""
@@ -2396,10 +2469,23 @@ class Site:
                 + (f"var pointChecks={js_json(self.point_checks_data())};\n" if checks else "")
                 + (f"var LABELS={js_json(labels)};\n" if (labels := self.js_labels or self.sources_labels()) else ""))
 
+    def facing_present(self):
+        """DF0237-11: True when any loaded point carries a valid OpenStreetMap facing tag (the popup line is then wired)."""
+        self.mapped_counts()
+        features = (self._map_docs[0].get("features") if self._map_docs else None) or []
+        return any(valid_direction((f.get("properties") or {}).get("direction")) for f in features if isinstance(f, dict))
+
+    def popup_renderer(self):
+        """The trusted popup context renderer: facing first, then the organizer check; "" when neither applies."""
+        facing = point_direction_renderer(self.labels) if self.facing_present() else ""
+        check = point_check_renderer(self.labels) if self.map.get("point_checks") else ""
+        if facing and check:
+            return f"(function(F,C){{return function(p){{return F(p)+C(p);}};}})({facing},{check})"
+        return facing or check
+
     def app_js(self):
         if self.map:
-            controller = map_controller.render(self.map["controller"], "",
-                                               point_check_renderer(self.labels) if self.map.get("point_checks") else "",
+            controller = map_controller.render(self.map["controller"], "", self.popup_renderer(),
                                                relabel=bool(self.js_labels))
             boot = ("document.addEventListener(\"DOMContentLoaded\",function(){"
                     "document.querySelectorAll(\".city-choice\").forEach(function(b){b.addEventListener(\"click\",function(){chooseCity(b.getAttribute(\"data-city\")||null);});});"
@@ -2457,6 +2543,7 @@ class Site:
         paths += ["/supporters.html"] if self.supporters else []  # DF2207-13
         paths += ["/sharing.html"] if self.sharing_rows else []  # DF0237-04
         paths += ["/press.html"] if self.site.get("press") else []  # DF2207-10
+        paths += ["/news.html"] if self.coverage is not None else []  # DF0022-03
         if self.model.get("newsletters"):  # DF1952-09: only with public issues
             paths += ["/newsletters.html"] + [f'/newsletters/{i["sent_on"]}.html' for i in reversed(self.model["newsletters"])]
         paths += list(self.agency_pages().values())
@@ -2915,7 +3002,12 @@ def _plan_site(root, today=None, notes=None):
     if model is None:
         return None
     _privacy_gate(model, cfg)
-    site = Site(root, cfg, model, today=today or date.today())
+    day = today or date.today()
+    counts = None
+    if model["site"].get("corrections", {}).get("show_request_counts"):  # DF1103-14: the only place the private log is opened
+        from .correction_requests import quarterly_counts
+        counts = quarterly_counts(root, day)
+    site = Site(root, cfg, model, today=day, correction_counts=counts)
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
         "index.html": site.index_html(), "agencies.html": site.agencies_html(),
@@ -2936,6 +3028,8 @@ def _plan_site(root, today=None, notes=None):
         pages["glossary.html"] = site.glossary_html()
     if site.faq:  # DF0022-01: the slug is reserved, so no content page can already hold this name
         pages["faq.html"] = site.faq_html()
+    if site.coverage is not None:  # DF0022-03: the slug is reserved; a present empty file keeps the page with its empty notice
+        pages["news.html"] = site.news_html()
     if site.sharing_rows:  # DF0237-04: no lists, no page; the slug is reserved, so nothing else can own this path
         pages["sharing.html"] = site.sharing_html()
 
