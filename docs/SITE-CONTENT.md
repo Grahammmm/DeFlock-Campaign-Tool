@@ -1368,7 +1368,9 @@ Meeting-pack handout (`handout.*`): `meeting-pack` (`docs/MEETINGS.md`) reads th
 ("Source: {title}, received {date}, record {record}"; `{title}` is the source title, `{record}` the 12-character
 prefix), `handout.not_recorded` (stands for `{date}` when the library has no received date), `handout.corrected`
 ("corrected {date}"), `handout.more_on_site` ("{count} more on the site") and `handout.record_explainer`; finding
-classification and confidence use `classification.<code>` and `confidence.<code>`. Placeholder values are escaped
+`handout.statements_heading` ("What members have said") and `handout.statements_note` (the line under it, only printed with
+statements), the statement quote, context and source wording reuse `statements.quote`, `statements.context_<code>` and `statements.source`; the
+three extra `sources.csv` columns appear because statements are printed, never because of a label; classification and confidence use `classification.<code>` and `confidence.<code>`. Placeholder values are escaped
 once and filled into the label only: a title that contains `{count}` prints as written. `comment.md` and
 `sources.csv` do not change with the labels.
 Scripts (`js.*`): the fixed text the generated JavaScript writes into the page. Defaults are the English the scripts
