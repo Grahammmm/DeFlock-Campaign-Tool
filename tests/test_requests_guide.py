@@ -113,7 +113,8 @@ def root_parser():
         raise SystemExit(0)
 
     with mock.patch.object(sys, "argv", ["campaign_tool"]), mock.patch.object(argparse.ArgumentParser, "parse_args", capture):
-        cli.main()
+        with contextlib.suppress(SystemExit):
+            cli.main()
     assert original is not None
     return captured["parser"]
 
@@ -408,9 +409,9 @@ class GuideTests(unittest.TestCase):
         self.assertEqual((main["sent_on"], main["channel"], main["steps"]), ("2026-10-05", "mail", []))
         walk.advance(match("kit-assign"))
         self.assertEqual(json.loads(read(walk.root / "kit" / "assignments.json"))["assignments"], {AGENCY: "Team Blue"})
+        walk.advance(match("kit-response"))
         ack = hashlib.sha256((walk.files / "ack-letter.txt").read_bytes()).hexdigest()
         records = hashlib.sha256((walk.files / "records.txt").read_bytes()).hexdigest()
-        walk.advance(match("kit-response"))
         self.assertTrue(ack.startswith(walk.prefixes["ACK_PREFIX"]))
         self.assertTrue(records.startswith(walk.prefixes["RECORDS_PREFIX"]))
         step = walk.entry(AGENCY)["steps"][0]
@@ -435,8 +436,7 @@ class GuideTests(unittest.TestCase):
         code, out, _ = walk.advance(match("kit-due"))
         due = json.loads(out)
         self.assertEqual((code, due["past_due"]), (3, 1))
-        self.assertEqual([r["request"] for r in due["open"]], ["narrowed"])
-        self.assertEqual([r["request"] for r in due["answered"]], ["main"])
+        self.assertEqual({r["request"]: r["state"] for r in due["open"]}, {"main": "producing", "narrowed": "past_due"})
         walk.advance()
         narrowed = walk.entry(f"{AGENCY}#narrowed")
         self.assertEqual(narrowed["steps"][0]["records"], [records])
@@ -458,16 +458,16 @@ class GuideTests(unittest.TestCase):
         self.assertTrue(draft.is_file())
         self.assertEqual(stat.S_IMODE(draft.stat().st_mode), 0o600)
         self.assertEqual((walk.root / "kit" / "sent.json").read_bytes(), before)  # nothing sent, nothing recorded
-        # the answered main request is not eligible; nothing is written
+        # main has a partial production in progress, so it is not eligible; nothing is written
         err = walk.refused_unchanged("kit-followup", "--directory", walk.root, "--agency", AGENCY, "--as-of", "2026-10-30")
-        self.assertIn("was answered (determination on 2026-10-22); no follow-up drafted", err)
+        self.assertIn("records still coming: next installment not stated; not passed", err)
         self.assertEqual([p.name for p in draft.parent.iterdir()], [draft.name])
         # an existing draft is kept unless --replace
         kept = draft.read_bytes()
         walk.run("kit-followup", "--directory", walk.root, "--agency", AGENCY, "--request", "narrowed", "--as-of", "2026-10-30")
         self.assertEqual(draft.read_bytes(), kept)
         # a request name the agency never had is refused
-        self.assertIn("no sent request ca-example-police/nosuch", walk.refused_unchanged(
+        self.assertIn("no hand-sent request recorded for ca-example-police/nosuch", walk.refused_unchanged(
             "kit-followup", "--directory", walk.root, "--agency", AGENCY, "--request", "nosuch", "--as-of", "2026-10-30"))
         walk.advance(match("kit-response"))  # the narrowed answer
         self.assertEqual([s["kind"] for s in walk.entry(AGENCY)["steps"]],
@@ -531,16 +531,60 @@ class GuideTests(unittest.TestCase):
         self.assertFalse((walk.root / "kit" / "requests" / "ca-example-sheriff.md").exists())
         # the response import: a bad row refuses the file; the guide's file is previewed, then applied
         timeline = walk.files / "timeline.csv"
+        walk.advance(match("kit-response-import"))  # the preview
+        self.assertEqual((walk.root / "kit" / "sent.json").read_bytes(), again)
         broken = walk.files / "timeline-bad.csv"
         broken.write_text(read(timeline) + "2026-03-01,determination,,,,\n", encoding="utf-8")
         self.assertIn("line 4", walk.refused_unchanged(
             "kit-response-import", "--directory", walk.root, "--agency", "ca-example-sheriff", "--csv", broken, "--apply"))
         walk.advance(match("kit-response-import"))
-        self.assertEqual((walk.root / "kit" / "sent.json").read_bytes(), again)
-        walk.advance(match("kit-response-import"))
         self.assertEqual([s["kind"] for s in walk.entry("ca-example-sheriff")["steps"]], ["acknowledged", "determination"])
         # folder preservation is a different command and records no request
         self.assertNotIn("import-existing", " ".join(" ".join(a) for a, *_ in walk.history))
+
+    # --- the refusal table quotes real messages -------------------------------------------------------------------
+    def test_refusal_table_quotes_real_messages(self):
+        text = read(GUIDE)
+        table = text[text.index("## When a command refuses"):]
+        quoted = [q for row in table.splitlines() if row.startswith("| ") for q in re.findall(r"`([^`]+)`", row.split("|")[2])
+                  if q.startswith(("Stopped:", "line ", "recipient"))]
+        self.assertGreaterEqual(len(quoted), 8)
+        walk = Walk(self)
+        walk.advance(match("kit-check"))  # the placeholder refusal, exit 3
+        seen = [walk.history[-1][2] + walk.history[-1][3]]
+        walk.advance(match("kit-followup"))  # main has a partial production here; narrowed is past due
+        d = ["--directory", walk.root, "--agency", AGENCY]
+        walk.run("kit-agency", "add", "--directory", walk.root, "--id", "ca-example-two", "--name", "Example Two", "--kind", "police")
+        walk.run("kit", "--directory", walk.root)  # drafts the unverified second agency
+        seen.append("".join(walk.run("kit-check", "--directory", walk.root)[1:]))
+        bad = walk.files / "bad-row.csv"
+        bad.write_text("agency_id,request,sent_on,channel,reference,letter_record\n"
+                       f"{AGENCY},earlier-a,2026-03-02,email,,\n{AGENCY},earlier-b,2026-13-09,portal,,\n", encoding="utf-8")
+        for arguments in (["kit-copy", *d, "--for", "email"], ["kit-sent", *d, "--date", "2026-10-05", "--channel", "mail"],
+                          ["kit-response", *d, "--request", "nosuch", "--date", "2026-10-01", "--kind", "acknowledged"],
+                          ["kit-response", *d, "--date", "2026-09-01", "--kind", "determination"],
+                          ["kit-followup", *d, "--as-of", "2026-10-30"],
+                          ["kit-contact", *d, "--on", "2026-10-14", "--channel", "phone", "--with", "Jane Doe 555-123-4567",
+                           "--note", "x"],
+                          ["kit-sent-import", "--directory", walk.root, "--csv", bad]):
+            code, out, err = walk.run(*arguments)
+            self.assertNotEqual(code, 0, arguments)
+            seen.append(out + err)
+        everything = "\n".join(seen)
+        for quote in quoted:
+            self.assertIn(quote, everything, quote)
+        # the 'export already exists' row: a second kit-status --csv to the same file is refused by name
+        target = walk.files / "tracker.csv"
+        self.assertEqual(walk.run("kit-status", "--directory", walk.root, "--csv", target)[0], 0)
+        code, _, err = walk.run("kit-status", "--directory", walk.root, "--csv", target)
+        self.assertNotEqual(code, 0)
+        self.assertIn("tracker.csv", err)
+        # waiting on you: a clarification request makes kit-followup stop with exit 3 and write nothing
+        walk.run("kit-response", *d, "--request", "narrowed", "--date", "2026-10-12", "--kind", "clarification_requested")
+        before = sorted(p.name for p in (walk.root / "kit" / "followups").iterdir())
+        code, *_ = walk.run("kit-followup", *d, "--request", "narrowed", "--as-of", "2026-10-31", "--replace")
+        self.assertEqual(code, 3)
+        self.assertEqual(sorted(p.name for p in (walk.root / "kit" / "followups").iterdir()), before)
 
     # --- identifiers, network, wording ------------------------------------------------------------------------------
     def test_no_real_identifiers_or_network(self):

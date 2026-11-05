@@ -205,7 +205,7 @@ python3 -m campaign_tool kit-due --directory ../my-campaign --as-of 2026-10-30  
 python3 -m campaign_tool today --directory ../my-campaign --as-of 2026-10-30
 ```
 
-`kit-due` lists requests still waiting under `open`, with a provisional `due` date, `days` left (negative once past) and a `state`, and exits 3 when any is past due. In the example `main` is `answered` and `narrowed` is `past_due`. The dates come from the draft law package and the day you recorded as sent; the period really runs from the agency's receipt, so treat them as reminders, not as a finding that anyone is late. `today` is the daily to-do list. To get the same dates into your own calendar:
+`kit-due` lists requests still waiting under `open`, with a provisional `due` date, `days` left (negative once past) and a `state`, and exits 3 when any is past due. In the example `main` is `producing` (a partial production, so still open, with no due date) and `narrowed` is `past_due`. The dates come from the draft law package and the day you recorded as sent; the period really runs from the agency's receipt, so treat them as reminders, not as a finding that anyone is late. `today` is the daily to-do list. To get the same dates into your own calendar:
 
 ```bash
 python3 -m campaign_tool kit-calendar --directory ../my-campaign --out ../practice-files/open-requests.ics
@@ -221,7 +221,7 @@ A follow-up is offered only for a request that `kit-due` lists as `past_due`:
 python3 -m campaign_tool kit-followup --directory ../my-campaign --agency ca-example-police --request narrowed --as-of 2026-10-30
 ```
 
-It writes a private draft, `kit/followups/ca-example-police--narrowed-2026-10-30.md`, to review and send yourself; the tool sends nothing and `sent.json` is unchanged. It refuses a request that was answered or closed or is not past due (the table below), and stops with exit 3 while a clarification you owe is open. `--cite-contact` adds one line naming your latest recorded contact. Suppose the agency then answers the narrowed request with a record you ingest and link:
+It writes a private draft, `kit/followups/ca-example-police--narrowed-2026-10-30.md`, to review and send yourself; the tool sends nothing and `sent.json` is unchanged. It refuses a request that was answered or closed, is still being produced or is not past due (the table below), and stops with exit 3 while a clarification you owe is open. `--cite-contact` adds one line naming your latest recorded contact. Suppose the agency then answers the narrowed request with a record you ingest and link:
 
 ```sh
 python3 -m campaign_tool kit-response --directory ../my-campaign --agency ca-example-police --request narrowed --date 2026-11-02 --kind produced --record $RECORDS_PREFIX
@@ -310,7 +310,7 @@ Every refusal writes nothing. The messages below are the tool's own.
 | Request recorded twice | `Stopped: ca-example-police already recorded as sent on 2026-10-05; use --replace to correct it` | Use `--request NAME` for a further request |
 | Unknown request name | `Stopped: no sent request ca-example-police/nosuch; run kit-sent --request nosuch first` | Record it with `kit-sent --request` |
 | Date before the send date | `Stopped: --date 2026-09-01 is before the request was sent on 2026-10-05` | Check the date you were told |
-| Follow-up for an answered request | `Stopped: request for ca-example-police was answered (determination on 2026-10-22); no follow-up drafted` | Nothing to chase; read the answer |
+| Follow-up while records are still coming | `Stopped: records still coming: next installment not stated; not passed` | Wait for the next installment, or record it; a follow-up is for a request that is past due and unanswered |
 | Contact `--with` is a name or number | `Stopped: --with is a job title, not a person's name: no email address or phone number` | Use a job title |
 | Waiting on you (clarification requested) | `kit-followup` stops with exit 3 and writes nothing | Record your reply with `--kind clarified` |
 | Export file already exists | `kit-status --csv` refuses an existing file, naming it | Choose a new file name |
