@@ -158,7 +158,8 @@ def select_list(project, run_id):
     if run_id is not None:
         if not RUN_ID_PATTERN.fullmatch(run_id) or ".." in run_id:
             raise Refused("run_id_invalid")
-        path = runs / f"extract-{run_id}.json"
+        # Same file-name rule as the writer: a run ID starting "failures-" is stored as "run-failures-...".
+        path = runs / f"extract-{'run-' + run_id if run_id.startswith('failures-') else run_id}.json"
         if path.is_symlink() or not path.is_file():
             raise Refused("run_id_missing")
         return path

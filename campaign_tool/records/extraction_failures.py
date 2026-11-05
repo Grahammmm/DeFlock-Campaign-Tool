@@ -31,6 +31,8 @@ REASON_CODES = frozenset({
     "workbook_cached_values_and_objects_not_reviewed", "workbook_policy_refused", "image_resource_limit",
     "preserve_pending", "deferred_run_budget", "parser_missing", LEGACY, UNLISTED,
 })
+PRIORITY = ("ocr_runtime_unconfigured", "extraction_timeout", "aggregate_evidence_bound",
+            "page_eligibility_unresolved", "unresolved_extraction_evidence", "ocr_receipt_unverified")
 ACCEPT_STATUSES = frozenset({"blocked", "partial", "missing", "refused", "failed", "error", "pending",
                              "incomplete", "unlisted"})
 ACCEPT_PREFIX = "accept_status_"
@@ -39,7 +41,8 @@ DISPOSITIONS = ("retry", "deferred", "hold")
 MAX_ISSUE_CODES = 16
 MAX_PENDING_PAGES = 1000
 _NO_DETAIL_REASONS = {"PRESERVE_PENDING": "preserve_pending", "DEFERRED_RUN_BUDGET": "deferred_run_budget",
-                      "PARSER_MISSING": "parser_missing", "AWAITING_OCR": "ocr_runtime_unconfigured"}
+                      "PARSER_MISSING": "parser_missing", "AWAITING_OCR": "ocr_runtime_unconfigured",
+                      "DECODER_NEEDED": "decoder_needed"}
 
 
 def fixed_code(value):
@@ -87,7 +90,8 @@ def reason_code(outcome, detail):
         return code
     issues = [c for c in detail.get("issue_codes", ()) if c != UNLISTED]
     if issues:
-        return issues[0]
+        # The code that decided the outcome wins over incidental page-level codes.
+        return min(issues, key=lambda c: (PRIORITY.index(c) if c in PRIORITY else len(PRIORITY), c))
     if outcome in ("EXTRACT_ERROR", "EXTRACT_NOT_ACCEPTED") and not code:
         return LEGACY  # never guess a cause from a bare top-level count
     if outcome in _NO_DETAIL_REASONS:
@@ -127,6 +131,6 @@ def build_manifest(body):
         rows.append(item)
         by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
         by_reason[item["reason_code"]] = by_reason.get(item["reason_code"], 0) + 1
-    return {"schema": SCHEMA, "run_id": run_id if isinstance(run_id, str) and len(run_id) <= 128 else None,
+    return {"schema": SCHEMA, "extracted": len(body["documents"]) - len(rows), "run_id": run_id if isinstance(run_id, str) and len(run_id) <= 128 else None,
             "documents_listed": len(body["documents"]), "by_outcome": dict(sorted(by_outcome.items())),
             "by_reason": dict(sorted(by_reason.items())), "documents": rows}
