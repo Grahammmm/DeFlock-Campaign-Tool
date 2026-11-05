@@ -277,6 +277,24 @@ class BackupIntegrityTests(unittest.TestCase):
         self.assertFalse(target.exists())
         self.assertEqual(sentinel.read_bytes(), b"keep synthetic sentinel")
 
+    def test_restore_failure_after_extraction_removes_only_owned_entries(self):
+        backup.export(self.root, self.out)
+        failure = backup.BackupError("count_mismatch: synthetic")
+        absent = self.base / "absent-target"
+        with patch.object(backup._RestoreTarget, "finish", side_effect=failure):
+            with self.assertRaisesRegex(backup.BackupError, "count_mismatch"):
+                backup.restore(self.out, absent)
+        self.assertFalse(absent.exists())
+        empty = self.base / "empty-target"
+        empty.mkdir()
+        empty.chmod(0o755)
+        inode = empty.stat().st_ino
+        with patch.object(backup._RestoreTarget, "finish", side_effect=failure):
+            with self.assertRaisesRegex(backup.BackupError, "count_mismatch"):
+                backup.restore(self.out, empty)
+        self.assertEqual((list(empty.iterdir()), empty.stat().st_ino, empty.stat().st_mode & 0o777),
+                         ([], inode, 0o755))
+
     def test_hosted_byte_count_must_match(self):
         data = b"synthetic hosted"
         client = FakeWorkspace({hashlib.sha256(data).hexdigest(): data})

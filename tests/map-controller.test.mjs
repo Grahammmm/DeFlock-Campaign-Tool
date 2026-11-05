@@ -238,6 +238,44 @@ test('DF1422-11 popup adds one escaped organizer-check line only for a checked n
   assert.equal(click('https://www.openstreetmap.org/node/10').includes('Organizer check'),false);  // a status outside the enum draws nothing
 });
 
+test('DF0237-11 popup shows one escaped Faces line only for a valid facing tag, before any organizer check',async()=>{
+  const built=spawnSync('python3',['-B','tests/test_camera_direction.py','--popup-fixture'],{encoding:'utf8'});
+  assert.equal(built.status,0,built.stderr);
+  const fixtures=JSON.parse(built.stdout);
+  function harness(name){
+    const fixture=fixtures[name];
+    const {context:c}=setup(fixture.controller);vm.runInContext(fixture.site_data,c);c.setCityText=()=>{};
+    const events={};let html='';
+    class MapStub {on(n,...args){events[n]=args.at(-1);} addControl(){} addSource(){} addLayer(){} getLayer(){return true;} setFilter(){} fitBounds(){} resize(){}}
+    class PopupStub {on(){return this;}remove(){return this;}setLngLat(){return this;}setHTML(value){html=value;return this;}addTo(){return this;}}
+    c.window.maplibregl=c.maplibregl={Map:MapStub,Popup:PopupStub,NavigationControl:class{},AttributionControl:class{}};
+    c.ResizeObserver=class{observe(){}};c.document.querySelector=()=>null;c.fetch=async()=>({json:async()=>({features:[]})});
+    c.initMap();events.load();
+    return new Promise(resolve=>setImmediate(()=>resolve((props)=>{events.click({lngLat:[1,1],features:[{properties:{manufacturer:'Maker',operator:'Op',url:'https://www.openstreetmap.org/node/10',...props}}]});return html;})));
+  }
+  return (async()=>{
+    const click=await harness('facing');
+    assert.ok(click({direction:'NE'}).endsWith('View source record &nearr;</a><br>Faces: NE (OpenStreetMap tag)'));
+    assert.equal(click({direction:'NE'}).split('Faces:').length,2);
+    assert.ok(click({direction:'ne;SW;NW;3'}).includes('<br>Faces: ne;SW;NW;3 (OpenStreetMap tag)'));
+    assert.ok(click({direction:'359;359;359;359'}).includes('Faces: 359;359;359;359 '));
+    for(const bad of ['<img src=x onerror=bad>','north','360','00','NE;','N;E;S;W;N',' NE','NE\n','N'.repeat(16),'','\u0661\u0662',90,true,null,undefined,['NE'],{a:1}]){
+      const text=click({direction:bad});
+      assert.equal(text.includes('Faces'),false,JSON.stringify(bad));assert.equal(text.includes('<img'),false);
+    }
+    assert.equal(click({}).includes('Faces'),false);
+    const both=await harness('both');
+    const line=both({direction:'NE'});
+    assert.ok(line.endsWith('<br>Faces: NE (OpenStreetMap tag)<br>Organizer check: Seen in person, 2026-10-30'));
+    assert.ok(both({}).endsWith('<br>Organizer check: Seen in person, 2026-10-30'));
+    assert.equal(both({direction:'bad'}).includes('Faces'),false);
+    const custom=await harness('custom');
+    assert.ok(custom({direction:'NE'}).endsWith('<br>Mira NE &amp; más'));
+    const none=fixtures.none;  // no tagged point: the controller never carries the facing renderer
+    assert.equal(none.controller.includes('Faces'),false);assert.equal(none.controller.includes('direction'),false);
+  })();
+});
+
 // DF0137-14: a relabelled site's map controller (app.js) reads js.* labels from site-data.js; no English left.
 const ES={'js.mapped_point':'{count} punto mapeado','js.mapped_points':'{count} puntos mapeados',
   'js.map_failed':'El mapa no cargó. Elija un área, {evidence} o {source}.','js.map_evidence':'revise las notas',
