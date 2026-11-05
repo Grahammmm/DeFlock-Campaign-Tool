@@ -536,6 +536,8 @@
     "events.where": "Dónde",
     "events.link": "Detalles e inscripción",
     "events.accessibility": "Accesibilidad",
+    "events.subscribe": "Suscribirse al calendario de eventos de la campaña (.ics)",
+    "footer.events_calendar": "Calendario de eventos de la campaña (.ics)",
     "events.next": "Próximo evento de la campaña",
     "events.all": "Todos los eventos de la campaña",
     "privacy.title": "Privacidad",
