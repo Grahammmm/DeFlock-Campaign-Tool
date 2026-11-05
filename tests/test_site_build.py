@@ -58,6 +58,10 @@ class SiteBuildTests(unittest.TestCase):
         for page in PAGES:
             html = self.read(page)
             for tag in re.findall(r"<script\b[^>]*>.*?</script>", html, flags=re.S):
+                if tag.startswith('<script type="application/ld+json">'):  # DF1407-08: inert data, no src and no handler
+                    self.assertNotRegex(tag, r"<script[^>]*(?:src|on\w+)=")
+                    json.loads(tag[len('<script type="application/ld+json">'):-len("</script>")])
+                    continue
                 self.assertRegex(tag, r'^<script defer src="/(?:vendor/maplibre-gl|site-data|agency-cards|app|findings/cite|sources/filter)\.js"></script>$', page)
             self.assertEqual(html.count("<script"), html.count("</script>"), page)
             self.assertNotIn("<iframe", html)

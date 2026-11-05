@@ -1227,6 +1227,24 @@ legal and privacy review by two people other than the author. The definitions li
 the label tables; each badge on finding pages and the findings index links to its definition. It is in the footer and
 `sitemap.xml`; the slug `methods` and `public-assets/methods.html` are refused. `feed.xml` and `data/findings.json` keep plain labels.
 
+### Structured data (opt-in with `site.json.base_url`)
+
+With `base_url` set, each published finding page carries one inert `<script type="application/ld+json">` schema.org
+`Article` block and the home page one block with an `Organization` and a `WebSite` node. Without `base_url` no block is
+written and every page is byte-identical to before.
+
+- Article fields: `headline` (the title), `description` (the summary), `datePublished` (`published_at`), `dateModified`,
+  `url` (`base_url` plus the finding path), `isBasedOn` and `publisher` (an `Organization` with the campaign name and
+  `base_url`). `dateModified` is the latest correction date when the finding has corrections, otherwise `updated_at`,
+  otherwise `published_at`; no build clock is used.
+- `isBasedOn` lists only the `public_url` of source records this finding cites (first citation first, each URL once);
+  `[]` when none has one. No digests, local paths or uncited library entries.
+- Organization and WebSite carry only `@type`, the campaign name and `base_url`.
+- Drafts, previews, withdrawn findings, packets, lists, agency, source and meeting pages and `404.html` carry none.
+- Keys are sorted and `<`, `>` and `&` are written as `\u003c`, `\u003e` and `\u0026`, so no value can end the element. The
+  block is data, not script: `script-src 'self'` and the whole Content-Security-Policy are unchanged.
+- There is deliberately no `ClaimReview`, rating or fact-check type: the site publishes cited records, not verdicts.
+
 ### Search page
 `search.html` and `search.js` are always generated and are not editable (DF1207-15). The page has a search box, a result
 list and a count line; `search.js` fetches the already-published `/data/findings.json` and `/data/sources.json` once

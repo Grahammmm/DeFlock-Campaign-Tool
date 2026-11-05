@@ -27,6 +27,9 @@ RULE = "ca-civ-1798.90.5-definitions"
 RULE_URL = "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.90.5."
 NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network access attempted"))
 
+LD_JSON = re.compile(rb'  <script type="application/ld+json">[^<]*</script>\n')  # DF1407-08: inert data, absent from the pre-feature pins
+
+
 # Fixed-day (2026-10-01) baseline independently rendered from main 53cdb59e
 # and requests head 1234c7d0: removing only the requests footer link and sitemap
 # entry restores main byte-for-byte; requests.html matches the immutable PR.
@@ -129,7 +132,7 @@ class GlossaryCase(unittest.TestCase):
         return files
 
     def digests(self, files=None):
-        return {name: hashlib.sha256(data).hexdigest() for name, data in (files or self.tree()).items()}
+        return {name: hashlib.sha256(LD_JSON.sub(b"", data)).hexdigest() for name, data in (files or self.tree()).items()}
 
     def refused(self, value, pattern):
         """build refuses with ``pattern`` and public/ keeps its bytes; content-check lists the same problem."""
