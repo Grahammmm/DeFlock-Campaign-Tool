@@ -31,7 +31,9 @@ from .kit import _kit_folder, _write_text
 
 DEFAULT_ZONE = "America/Los_Angeles"
 API_BASE = "https://webapi.legistar.com/v1"
-KEYWORDS_FILE = Path(__file__).resolve().parents[1] / "data" / "meeting-keywords.json"
+# Packaged mirror of data/meeting-keywords.json (tools/sync_campaign_resources.py keeps the bytes equal),
+# so an installed wheel finds it too.
+KEYWORDS_FILE = Path(__file__).resolve().parent / "_resources" / "data" / "meeting-keywords.json"
 CLIENT = re.compile(r"[a-z0-9-]{2,64}")
 MAX_EVENTS = 60
 MAX_MATTERS = 100
