@@ -269,9 +269,32 @@ class RegisterTests(Base):
                             ("kit/sent.json", b'{"schema_version":1,"requests":{},"x":NaN}')],
             "volunteer_assignments": [("kit/assignments.json", {**good, "assignments": {"a": 5}}),
                                       ("kit/assignments.json", {**good, "assignments": {}, "extra": 1})],
-            "supporters_consent": [("kit/supporters-consent.json", {**good, "supporters": {"o": {"confirmed_on": None}}})],
+            "supporters_consent": [
+                ("kit/supporters-consent.json", {**good, "supporters": {"o": {"confirmed_on": None}}}),
+                ("kit/supporters-consent.json", {**good, "supporters": {"o": {"confirmed_on": "2026-02-04"}}}),
+                ("kit/supporters-consent.json", {**good, "supporters": {"o": {
+                    "organization": False, "confirmed_on": "2026-02-04", "how": "email", "public_sha256": SHA,
+                    "correspondence": None}}}),
+                ("kit/supporters-consent.json", {**good, "supporters": {"o": {
+                    "organization": True, "confirmed_on": "2026-02-04", "how": 5, "public_sha256": SHA,
+                    "correspondence": None}}}),
+                ("kit/supporters-consent.json", {**good, "supporters": {"o": {
+                    "organization": True, "confirmed_on": "2026-02-04", "how": "email", "public_sha256": "nope",
+                    "correspondence": None}}}),
+                ("kit/supporters-consent.json", {**good, "supporters": {"o": {
+                    "organization": True, "confirmed_on": "2026-02-04", "how": "email", "public_sha256": SHA,
+                    "correspondence": None, "cosign": "any"}}}),
+            ],
             "speaker_plans": [("kit/meetings/speakers/m.json", {**good, "meeting_id": "m", "kit_sha256": SHA,
-                                                                   "assignments": [{"label": "a"}]})],
+                                                                   "assignments": [{"label": "a"}]}),
+                             *[("kit/meetings/speakers/m.json", {**good, "meeting_id": "m", "kit_sha256": SHA,
+                                                                  "assignments": [item]})
+                               for item in ({"label": 5, "point": "ask:1"}, {"label": "a", "point": None},
+                                            {"label": "a", "point": ["x"]}, "a")],
+                             ("kit/meetings/speakers/m.json", {**good, "meeting_id": 7, "kit_sha256": SHA,
+                                                                "assignments": []}),
+                             ("kit/meetings/speakers/m.json", {**good, "meeting_id": "m", "kit_sha256": "zz",
+                                                                "assignments": []})],
         }
         for kind, variants in cases.items():
             for rel, content in variants:
@@ -513,7 +536,7 @@ _MODULES = {
     "backup archives and keys": "backup backup_crypt",
     "generated drafts, exports and public content, no catalog store": """
         content_init content_sharing coverage flyer kit_calendar kit_copy kit_export kit_fees kit_timing
-        meeting_outcome meeting_pack meeting_stage meetings newsletter.__main__ newsletter.archive
+        map_survey meeting_outcome meeting_pack meeting_stage meetings newsletter.__main__ newsletter.archive
         newsletter.draft newsletter.sent outbox outbox_batch press recent site site_check social social_threads""",
     "other local files with no catalog store": """
         agency_actions agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
@@ -521,20 +544,173 @@ _MODULES = {
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
+# Every write-capable function of a module with no catalog store, by identity; a new or renamed one fails until it is listed here.
+MODULE_FUNCTIONS = {
+    "map_survey": ("_install_new", "_write_checks", "render_csv", "survey_import"),
+    'agency_actions': ('_install',),
+    'agency_cards': ('main',),
+    'approval': ('verify',),
+    'backup': (
+        '_RestoreTarget.write_file', '_publish_archive', '_restore_tar', '_verify_tar', 'export',
+        'export.write_tar', 'export_hosted', 'export_into'
+    ),
+    'backup_crypt': ('decrypted', 'encrypt', 'gpg_path',),
+    'cli': (
+        '_store_bytes', 'backup_drill_cmd', 'finding_preview', 'initialize', 'main', 'meetings_cmd',
+        'readiness', 'weight_budget'
+    ),
+    'content_init': ('_rename_noreplace', '_write', 'faq_document', 'init_content', 'init_from',),
+    'content_sharing': ('import_sharing',),
+    'coverage': ('_write', 'add_coverage', 'remove_coverage',),
+    'finding_packet': ('_copy_hash', '_create', 'build_packet',),
+    'flyer': ('build',),
+    'image_meta': ('strip_file',),
+    'import_existing': ('_write_receipt', 'run',),
+    'kit_agencies': ('_save',),
+    'kit_asked': ('run_cli',),
+    'kit_calendar': ('calendar',),
+    'kit_copy': ('_mail', '_write', 'copy',),
+    'kit_export': ('status_csv', 'write_rows',),
+    'kit_fees': ('write_csv',),
+    'kit_repeat': ('_replace_store', 'repeat_request',),
+    'kit_timing': ('write_csv',),
+    'law': (
+        '_apply_sheet_output', '_review_sheet_output', '_write_private', 'main', 'write_review_sheet',
+        'write_sheet'
+    ),
+    'law_packet': ('build',),
+    'map_controller': ('main',),
+    "map_survey": ('_install_new', '_write_checks', 'render_csv', 'survey_import',),
+    'meeting_outcome': ('record_comment_counts', 'record_direction', 'record_minutes', 'record_outcome',),
+    'meeting_pack': ('_commit_pack', '_discard', '_write_member', 'build',),
+    'meeting_stage': ('stage',),
+    'meetings': ('write_meetings',),
+    'newsletter.__main__': ('main',),
+    'newsletter.archive': ('publish_issue',),
+    'newsletter.draft': ('write_draft',),
+    'newsletter.sent': ('record_sent',),
+    'outbox': ('main',),
+    'outbox_batch': ('_write', 'export',),
+    'press': ('build_letter', 'build_press',),
+    'recent': ('_write_new', 'run_cli',),
+    'records.agency_reconciliation': ('run',),
+    'records.bounded_resume': ('_worker',),
+    'records.catalog': ('capture_file', 'import_catalog',),
+    'records.catalog_links': ('_lock', '_write_new', 'run',),
+    'records.catalog_stage': ('CatalogAdapter.preserve_card',),
+    'records.contained_resume': ('run_contained',),
+    'records.container_host': (
+        'Journal._change', 'Journal.allocate', 'PrivateDir.write', 'admit', 'build_board', 'entry',
+        'postrun_entry'
+    ),
+    'records.export_clearance': ('clearance',),
+    'records.extract.ocr': (
+        '_hold', '_index', '_link_new', '_page_lock', '_prune_unrecorded', '_publish_blocked_disposition',
+        '_reconcile_page', '_write_new', 'extract_image_only_pages'
+    ),
+    'records.extract.vision': ('run_fallback',),
+    'records.extraction_ledger': ('store_blob',),
+    'records.extraction_routes': ('_child', '_run_image_ocr', '_run_page_ocr', '_write', 'extract',),
+    'records.gates.batch_report': ('main',),
+    'records.gates.collect_reviews': ('main',),
+    'records.gates.reconcile_coverage': ('main',),
+    'records.gates.safe_output': ('write_private',),
+    'records.gates.validate_findings': ('main',),
+    'records.intake.document_drop': ('capture',),
+    'records.intake.eml_export': ('_ensure_private', '_write_private', 'export_message',),
+    'records.intake.folder': (
+        'atomic', 'extract', 'inventory', 'inventory.record', 'report', 'seal_blob', 'worker', 'worker.child',
+        'worker.emit'
+    ),
+    'records.intake.local_capture': ('_store', 'capture',),
+    'records.intake.mail_delta': ('import_receipt', 'stage_source',),
+    'records.intake.mail_wire': ('store',),
+    'records.intake.repair_intake': ('run',),
+    'records.intake.scope_quarantine': ('quarantine',),
+    'records.ledger.reconcile': ('main',),
+    'records.ledger.store': ('capture_database', 'initialize',),
+    'records.ledger_catalog': ('_write_new', 'export',),
+    'records.ledger_catalog_acceptance': ('_connect', '_locked',),
+    'records.legacy_adoption': ('apply_batch', 'main', 'write_proposal',),
+    'records.mail_adoption': ('_snapshot_db',),
+    'records.mail_poll': ('_write_once', 'poll',),
+    'records.mail_resolution_census': ('inventory',),
+    'records.native_extract': ('_write_private', 'run', 'write_awaiting_ocr', 'write_private_list',),
+    'records.ocr_closure': ('load_cas_page', 'load_cas_vision',),
+    'records.ocr_review': ('export', 'mark',),
+    'records.ocr_stage': (
+        'OcrStage._publish', 'OcrStage.locked', 'OcrStage.process', '_copy_verified', '_publish_noreplace',
+        '_write_private', 'main', 'transcribe_png_main'
+    ),
+    'records.outcomes.comparison': ('write_run_comparison',),
+    'records.outcomes.factsheets': ('write_run_factsheets',),
+    'records.outcomes.reading': ('main',),
+    'records.outcomes.register': ('write_for_run',),
+    'records.outcomes.textstate': ('write_run_textstate',),
+    'records.portal.download': ('processing_lock',),
+    'records.portal.engine': ('_download',),
+    'records.portal.ledger_adapter': ('WP1LedgerAdapter._copy_cas',),
+    'records.portal.store': ('Queue.__init__', 'Queue.lock', 'Queue.promote',),
+    'records.publish': ('_apply', '_approve_locked', '_recover_proposals', '_restore', '_write', 'reopen',),
+    'records.queue_runtime': (
+        'QueueRuntime.__init__', 'QueueRuntime._lock', '_prepare_child', '_publish', '_write_new'
+    ),
+    'records.recovery.backup': ('backup', 'copy_exact', 'restore', 'snapshot_ledger', 'write_new',),
+    'records.recovery.backup_v2': ('_snapshot_quiescent', 'backup_v2', 'restore_v2',),
+    'records.recovery.publication': (
+        'PublicationOutbox.__init__', 'PublicationOutbox.execute', 'PublicationOutbox.lock',
+        'atomic_public_artifact'
+    ),
+    'records.review_bundle': ('_locked', '_new',),
+    'records.review_retirement': ('arm', 'finish', 'start',),
+    'records.run': (
+        'Pipeline._record_proposal', 'Pipeline._run_locked', 'Pipeline._run_locked_unchecked',
+        'Pipeline.stage_catalog', 'root_lock'
+    ),
+    'records.run_orchestrator': (
+        'atomic_write_json', 'cmd_abort', 'cmd_notify_fallback', 'execute', 'record_understanding_alerts',
+        'write_notify_alert'
+    ),
+    'records.run_stages': ('backup_adoption_dbs', 'stage_outputs',),
+    'records.runner.canonical_mail': ('CanonicalMailBackend._capture_verification',),
+    'records.runner.core': ('journal', 'run', 'writer_lock',),
+    'records.runner.export_proof': ('ExporterWrapper.prepare', 'export_lock',),
+    'records.runtime': ('check',),
+    'records.schedule': ('render',),
+    'records.systemd_control': ('_begin_locked', '_fence', '_prepare', 'stop_post',),
+    'records.unattended': ('UnattendedPipeline._save_advance_resume', '_private_bytes',),
+    'records.understanding.cli': ('_write', 'run',),
+    'records.understanding.digest': ('commit_digest',),
+    'records.worker_lifecycle': ('_Directory.write', 'supervise',),
+    'registry': ('_store', '_transaction',),
+    'setup_cmd': ('ask', 'ask.prompt',),
+    'shell': ('main',),
+    'site': ('_copy', '_csv_text', '_write', 'build_site', 'build_starter',),
+    'site_check': ('write_weights',),
+    'social': ('_write_drafts', 'build_meeting_social', 'build_outcome_social', 'build_social',),
+    'social_threads': ('build_thread_social',),
+    'sources_cmd': ('_batch_write', '_rewrite', '_write_atomic', 'add_source',),
+}
 
-def inventory_problems(detected):
-    """What is not pinned: a writer function or module the constants above do not classify, or a pin that is stale."""
+
+def inventory_problems(detected, module_functions=None):
+    """What is not pinned: a writer function the constants above do not classify by identity, a module with no
+    classification reason, or a pin that is stale."""
+    module_functions = MODULE_FUNCTIONS if module_functions is None else module_functions
     problems = []
     for module, functions in sorted(detected.items()):
-        if module in FUNCTION_LEVEL_MODULES:
-            for function in sorted(functions):
-                if f"{module}.{function}" not in CATALOG_WRITERS and f"{module}.{function}" not in FUNCTION_UNKNOWN:
-                    problems.append(f"unclassified writer {module}.{function}")
-        elif module not in MODULE_UNKNOWN:
+        if module not in FUNCTION_LEVEL_MODULES and module not in MODULE_UNKNOWN:
             problems.append(f"unclassified writer module {module}")
-    pinned = {f"{m}.{f}" for m, fs in detected.items() if m in FUNCTION_LEVEL_MODULES for f in fs}
-    problems += [f"stale pin {name}" for name in sorted((set(CATALOG_WRITERS) | set(FUNCTION_UNKNOWN)) - pinned)]
+        for function in sorted(functions):
+            name = f"{module}.{function}"
+            if name in CATALOG_WRITERS or name in FUNCTION_UNKNOWN or function in module_functions.get(module, ()):
+                continue
+            problems.append(f"unclassified writer {name}")
+    pinned = {f"{m}.{f}" for m, fs in detected.items() for f in fs}
+    listed = {f"{m}.{f}" for m, fs in module_functions.items() for f in fs}
+    problems += [f"stale pin {name}" for name in sorted((set(CATALOG_WRITERS) | set(FUNCTION_UNKNOWN) | listed) - pinned)]
     problems += [f"stale module pin {m}" for m in sorted(set(MODULE_UNKNOWN) - set(detected))]
+    problems += [f"module pinned twice {m}" for m in sorted(set(module_functions) & FUNCTION_LEVEL_MODULES)]
     return problems
 
 
@@ -556,9 +732,20 @@ class WriterInventoryTests(unittest.TestCase):
             self.assertTrue(any(literal in value for value in literals), f"{kind}: {literal!r} not in {module}.py")
         # Synthetic additions fail the same check (it is not a registry-only comparison).
         self.assertEqual(inventory_problems({**detected, "kit_brand_new": {"save"}}),
-                         ["unclassified writer module kit_brand_new"])
+                         ["unclassified writer module kit_brand_new",
+                          "unclassified writer kit_brand_new.save"])
         self.assertEqual(inventory_problems({**detected, "kit_track": detected["kit_track"] | {"record_note"}}),
                          ["unclassified writer kit_track.record_note"])
+        # A new or renamed writer inside an already classified module (here site, a module-level unknown) fails too.
+        self.assertIn("site", MODULE_FUNCTIONS)
+        grown = {**detected, "site": detected["site"] | {"brand_new_save"}}
+        self.assertEqual(inventory_problems(grown), ["unclassified writer site.brand_new_save"])
+        some = sorted(detected["site"])[0]
+        moved = {**detected, "site": (detected["site"] - {some}) | {some + "_renamed"}}
+        self.assertEqual(inventory_problems(moved),
+                         [f"unclassified writer site.{some}_renamed", f"stale pin site.{some}"])
+        self.assertEqual(inventory_problems(detected, {**MODULE_FUNCTIONS, "kit": ("x",)}),
+                         ["stale pin kit.x", "module pinned twice kit"])
         renamed = {**detected, "kit_assign": {"assign_owner"}}
         self.assertEqual(inventory_problems(renamed),
                          ["unclassified writer kit_assign.assign_owner", "stale pin kit_assign.assign"])

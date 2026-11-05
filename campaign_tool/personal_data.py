@@ -153,20 +153,53 @@ def _volunteers(data):
     return len(document["assignments"]), []
 
 
+_SHA = re.compile(r"[0-9a-f]{64}", re.ASCII)
+_CONSENT = {"organization", "confirmed_on", "how", "public_sha256", "correspondence"}
+_COSIGN = {"cosign", "cosign_confirmed_on", "cosign_how", "cosign_correspondence"}
+
+
+def _digest(value, nullable=False):
+    if value is None and nullable:
+        return
+    if not isinstance(value, str) or not _SHA.fullmatch(value):
+        raise _Bad
+
+
 def _consent(data):
     document = _document(data, ("schema_version", "supporters"), dict)
     days = []
     for record in document["supporters"].values():
-        if not isinstance(record, dict):
+        if not isinstance(record, dict) or not _CONSENT <= set(record) <= _CONSENT | _COSIGN:
             raise _Bad
-        days.append(_day(record.get("confirmed_on")))
+        grant = set(record) & _COSIGN
+        if grant and grant != _COSIGN:
+            raise _Bad
+        if record["organization"] is not True or not isinstance(record["how"], str):
+            raise _Bad
+        _digest(record["public_sha256"])
+        _digest(record["correspondence"], nullable=True)
+        days.append(_day(record["confirmed_on"]))
+        if grant:
+            _day(record["cosign_confirmed_on"])
+            scope = record["cosign"]
+            if not (scope == "any" and isinstance(scope, str)
+                    or isinstance(scope, list) and all(isinstance(item, str) for item in scope)):
+                raise _Bad
+            if not isinstance(record["cosign_how"], str):
+                raise _Bad
+            _digest(record["cosign_correspondence"], nullable=True)
     return len(days), days
 
 
 def _speakers(data):
     document = _document(data, ("schema_version", "assignments", "meeting_id", "kit_sha256"), list)
-    if not all(isinstance(item, dict) and set(item) == {"label", "point"} for item in document["assignments"]):
+    _digest(document["kit_sha256"])
+    if not isinstance(document["meeting_id"], str):
         raise _Bad
+    for item in document["assignments"]:
+        if (not isinstance(item, dict) or set(item) != {"label", "point"}
+                or not isinstance(item["label"], str) or not isinstance(item["point"], str)):
+            raise _Bad
     return len(document["assignments"]), []
 
 
