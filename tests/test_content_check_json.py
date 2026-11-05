@@ -87,6 +87,19 @@ class ContentCheckJsonTests(unittest.TestCase):
         doc = self.document(self.cli("--json"))
         self.assertEqual((doc["count"], len(doc["problems"]), doc["truncated"]), (LIMIT, LIMIT, False))
 
+    def test_agency_action_problem_names_its_file_row_and_field_only(self):
+        private_text = "ZQ-PRIVATE-STATEMENT-9f3"
+        self.write("content/agency-actions.json", {"schema_version": 1, "actions": [{
+            "agency_id": "ca-cedar-police", "on": "2026-09-01", "kind": "policy_adopted", "as_stated": private_text + " <b>",
+            "source_url": "https://example.invalid/p", "checked_on": "2026-10-01"}]})
+        result = self.cli("--json")
+        document = self.document(result)
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(document["problems"], [{
+            "file": "content/agency-actions.json.actions[0].as_stated",
+            "message": "must be plain text without angle brackets, control, invisible or line-separator characters"}])
+        self.assertNotIn(private_text, result.stdout)
+
     def test_line_without_a_path_prefix_has_no_file(self):
         (self.root / "content/map/cameras.geojson").unlink()
         doc = self.document(self.cli("--json"))
@@ -110,6 +123,16 @@ class ContentCheckJsonTests(unittest.TestCase):
                          {"file": "supporters.json", "message": "ab: no consent record"})  # DF2207-13 prefix
         self.assertEqual(problem_record("public-assets/a.png: has metadata: EXIF"),
                          {"file": "public-assets/a.png", "message": "has metadata: EXIF"})
+
+    def test_press_problems_are_records_with_their_files(self):
+        site = json.loads((self.root / "content/site.json").read_text(encoding="utf-8"))
+        self.write("content/site.json", {**site, "press": {"contact_role": "Press lead"}})  # no address to inherit
+        self.write("content/pages/press.json", {"title": "Mine", "body_md": "Text."})
+        doc = self.document(self.cli("--json"))
+        records = sorted((r["file"], r["message"]) for r in doc["problems"])
+        self.assertEqual(records, [("pages/press.json", "slug press is reserved"),
+                                   ("site.json.press.contact_email", "required when site.json.contact_email is not set")])
+        self.assertEqual(doc["count"], 2)
 
     def test_non_ascii_text_is_not_escaped(self):
         self.write("content/findings/se\u00f1or.json", "{not json")

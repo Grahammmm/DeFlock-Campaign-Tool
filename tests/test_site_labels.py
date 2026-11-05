@@ -14,6 +14,7 @@ from unittest import mock
 
 from campaign_tool import labels as labels_module
 from campaign_tool.cli import read_config
+from campaign_tool.agency_actions import ACTION_KINDS, add_action
 from campaign_tool.content import ContentError, load_content
 from campaign_tool.labels import DEFAULTS, JS_DEFAULTS, PLACEHOLDER, html_text, load_labels
 from campaign_tool.site import FILTER_JS, build_site, preview
@@ -34,6 +35,7 @@ def enrich(root, maplibre=False):
     content = root / "content"
     site = json.loads((content / "site.json").read_text(encoding="utf-8"))
     site.update(mission_md="", contact_email="zq-team@example.invalid",
+                press={"contact_role": "Zq press lead"},  # DF2207-10: inherits the address; reaches every press label but the logo ones
                 signup={"mode": "brevo_hosted", "form_html_allowlisted_url": "https://zq.sibforms.com/serve/zq",
                         "label": "Zq join", "note": "Zq note."})
     _write(content / "site.json", site)
@@ -67,6 +69,11 @@ def enrich(root, maplibre=False):
     _write(content / "faq.json", {  # DF0022-01: reaches every faq label (a cited finding, a law reference, a glossary term in the question)
         "schema_version": 1, "entries": [{"question": "Zq title question?", "answer_md": "Zq answer.",
                                           "finding_ids": ["fnd_0000000000000002"], "rule_id": "ca-civ-1798.90.5-definitions"}]})
+    news = [{"outlet": f"Zq outlet {kind}", "headline": f"Zq headline {kind}", "url": f"https://zq.example.test/{kind}",
+             "published_on": "2026-09-01", "findings": ["fnd_0000000000000002"], "kind": kind}
+            for kind in ("news", "opinion", "broadcast", "other")]
+    _write(content / "coverage.json", {  # DF0022-03: rich reaches every kind, the finding link and "Reported in"; late the empty state
+        "schema_version": 1, "entries": [] if maplibre else news})
     _write(content / "meetings" / "zq-cancelled.json", {
         "id": "zq-cancelled", "body": "Zq board", "starts_at": "2026-09-01T18:00:00-07:00", "status": "cancelled"})
     if maplibre:
@@ -235,15 +242,27 @@ class LabelsTest(unittest.TestCase):
         # Codes the fixture has no finding or agency for; they render through the same t("<family>." + code) call.
         # officials.*: the fixture has no officials.json (tests/test_site_officials.py covers those labels).
         # map.history_*: the fixture has no map/history.json (tests/test_site_cameras_page.py covers those labels).
+        # press.logo, press.download_logo: the fixture has no brand logo (tests/test_site_press_page.py covers those labels).
         # map.check_*: the fixture has no map/point-checks.json (tests/test_map_point_checks.py covers those labels).
+        # map.direction_line: the fixture has no facing tag (tests/test_camera_direction.py covers that label).
         # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
         # agency.mapped_reported_*: the fixture has no transparency snapshot (tests/test_agency_mapped_reported.py covers those).
+        # schedule.*: the fixture has no body-schedules.json (tests/test_body_schedules.py covers those labels).
+        # meeting.comments_*: the fixture records no public-comment counts (tests/test_meeting_comment_counts.py covers them).
         # meeting.votes*, vote.*: the fixture records no votes (tests/test_meeting_votes.py covers those labels).
         # handout.*: only the private meeting-pack handout writes these (tests/test_meeting_pack.py covers them).
         # agency.votes_*: the fixture records no votes (tests/test_site_member_votes.py covers those labels).
         # agency.contract_cost, agency.cost_*: the fixture has no contract cost (tests/test_agency_contract_cost.py covers those).
+        # correction_counts.*: only a site that sets corrections.show_request_counts renders these (tests/test_site_correction_counts.py).
         # agency.funding_*: the fixture records no funding (tests/test_agency_funding.py covers those).
-        absent = ["agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
+        # agency.action*: the fixture records no agency actions (test_agency_actions_labels_replace_every_fixed_string below).
+        absent = ["agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",
+                  "agency.action_kind_contract_ended", "agency.action_kind_contract_paused",
+                  "agency.action_kind_contract_renewed", "agency.action_kind_contract_signed", "agency.action_kind_other",
+                  "agency.action_kind_policy_adopted", "agency.action_kind_policy_amended", "agency.action_kind_policy_posted",
+                  "agency.action_kind_retention_changed", "agency.action_kind_sharing_ended",
+                  "agency.action_kind_sharing_started", "agency.action_line", "agency.actions_heading",
+                  "agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
                   "agency.cost_total", "agency.funding_fiscal_year", "agency.funding_kind_asset_forfeiture",
                   "agency.funding_kind_donation", "agency.funding_kind_general_fund", "agency.funding_kind_grant",
                   "agency.funding_kind_other", "agency.funding_provenance",
@@ -253,8 +272,12 @@ class LabelsTest(unittest.TestCase):
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "agency.votes_heading", "agency.votes_more", "agency.votes_none", "agency.votes_source",
+                  "correction_counts.caption", "correction_counts.col_accepted", "correction_counts.col_declined",
+                  "correction_counts.col_open", "correction_counts.col_quarter", "correction_counts.col_received",
+                  "correction_counts.empty", "correction_counts.heading", "correction_counts.lead",
                   "finding.agency_response", "finding.quote_page", "finding.quote_transcribed", "finding.reply_declined", "finding.reply_no_response", "finding.reply_received",
-                  "footer.license",
+                  "finding.update", "finding.updates",
+                  "footer.license", "footer.sharing",
                   "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
                   "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.title",
                   "handout.what_we_found",
@@ -262,13 +285,30 @@ class LabelsTest(unittest.TestCase):
                   "license.about", "license.about_camera", "license.csv_note",
                   "map.check_duplicate", "map.check_earlier", "map.check_heading",
                   "map.check_in_agency_record", "map.check_not_found_on_site", "map.check_seen_in_person",
+                  "map.direction_line",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
+                  "meeting.comments_both", "meeting.comments_spoke", "meeting.comments_written",
                   "meeting.continued_from", "meeting.continued_to", "meeting.cosigned_many", "meeting.cosigned_one",
                   "meeting.minutes_confirmed", "meeting.minutes_pending", "meeting.recording", "meeting.recording_from",
                   "meeting.staff_direction",
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
-                  "officials.heading", "officials.listed", "officials.source", "privacy.signup_policy",
+                  "officials.heading", "officials.listed", "officials.source", "press.download_logo", "press.logo",
+                  "privacy.signup_policy",
+                  "requests.caption", "requests.col_agency", "requests.col_asked_on", "requests.col_state",
+                  "requests.col_topic", "requests.col_updated_on", "requests.not_recorded",
+                  "requests.state_acknowledged", "requests.state_answered", "requests.state_awaiting_response",
+                  "requests.state_declined_in_writing", "requests.state_partly_answered", "requests.state_withdrawn",
+
+                  "schedule.join_many", "schedule.join_two", "schedule.ordinal_1", "schedule.ordinal_2",
+                  "schedule.ordinal_3", "schedule.ordinal_4", "schedule.ordinal_last", "schedule.rule",
+                  "schedule.stale", "schedule.usually", "schedule.weekday_friday", "schedule.weekday_monday",
+                  "schedule.weekday_saturday", "schedule.weekday_sunday", "schedule.weekday_thursday",
+                  "schedule.weekday_tuesday", "schedule.weekday_wednesday",
+                  "sharing.aliases", "sharing.checked", "sharing.count", "sharing.federal", "sharing.in_state",
+                  "sharing.kind", "sharing.kind_federal", "sharing.kind_local", "sharing.kind_private", "sharing.kind_state",
+                  "sharing.kind_unknown", "sharing.law_status", "sharing.lead", "sharing.out_of_state", "sharing.receiver",
+                  "sharing.source_list", "sharing.sources", "sharing.state", "sharing.title",
                   "supporters.description", "supporters.joined", "supporters.kind.business",
                   "supporters.kind.civil_liberties", "supporters.kind.community", "supporters.kind.faith",
                   "supporters.kind.labor", "supporters.kind.neighborhood", "supporters.kind.other", "supporters.title",
@@ -291,6 +331,26 @@ class LabelsTest(unittest.TestCase):
                 if len(chunk.split()) >= 2:
                     self.assertNotIn(chunk.strip(), page)
         self.assertIn('<a href="/supporters.html">Xsupporters.titleX</a>', (root / "public" / "index.html").read_text(encoding="utf-8"))
+
+    def test_agency_actions_labels_replace_every_fixed_string_when_actions_are_recorded(self):
+        markers = {key: f"X{key}X" for key in DEFAULTS}
+        # Keep interpolation so the nested kind labels remain observable.
+        markers["agency.action_line"] += " {on} {kind} {statement} {source} {checked}"
+        root = self.root("rich", labels=markers)
+        for kind in ACTION_KINDS:
+            add_action(root, "ca-cedar-police", on="2026-08-01", kind=kind, as_stated=f"Zq {kind} statement",
+                       source_url=f"https://example.invalid/zq-{kind}", checked_on="2026-09-01", today=SOON)
+        build_site(root, today=SOON)
+        page = (root / "public" / "agencies" / "cedar.html").read_text(encoding="utf-8")
+        keys = [key for key in DEFAULTS if key.startswith("agency.action")]
+        self.assertEqual(len(keys), 15)
+        for key in keys:
+            self.assertIn(f"X{key}X", page, key)
+        for text in (DEFAULTS[key] for key in keys):
+            for chunk in PLACEHOLDER.split(text):
+                if chunk.strip() and len(chunk.split()) >= 2:
+                    self.assertNotIn(chunk.strip(), page)
+        self.assertNotIn("Changes on record", page)
 
     def test_non_page_outputs_and_starter_ignore_labels(self):
         markers = {key: f"X{key}X" for key in DEFAULTS if key not in JS_DEFAULTS}  # no js.* key: scripts unchanged

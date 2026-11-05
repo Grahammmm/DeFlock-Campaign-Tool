@@ -14,7 +14,10 @@ It queries the Overpass API for nodes tagged ``man_made=surveillance`` and
 boundary relation id), and writes:
 
     <directory>/content/map/cameras.geojson   Point features with properties
-                                              manufacturer, operator, url
+                                              manufacturer, operator, url and, when the node has a
+                                              direction (else camera:direction) tag, direction: the tag as
+                                              written if it is 0-359, a 16-point compass word or up to 4 of
+                                              them joined by ";", else null (counted on stderr)
     <directory>/content/map/attribution.txt   the required attribution text
     <directory>/content/map/snapshot.json     the OpenStreetMap data time (osm_base) or null
     <directory>/content/map/history.json      one dated record per writing run (never --check): osm_base, total,
@@ -145,8 +148,21 @@ def _skip_reason(element, seen):
     return None
 
 
-def to_geojson(elements):
-    """Return (FeatureCollection, {skip reason: count}); bad and duplicate points are never written."""
+def _valid_direction(value):
+    """campaign_tool.camera_direction.valid_direction (DF0237-11), importable when run as a script."""
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from campaign_tool.camera_direction import valid_direction
+    return valid_direction(value)
+
+
+def to_geojson(elements, *, direction_counts=None):
+    """Return (FeatureCollection, {skip reason: count}); bad and duplicate points are never written.
+
+    DF0237-11: a point's ``direction`` tag (else ``camera:direction``; a present but invalid ``direction`` is never
+    replaced by the other key) is copied as tagged to properties.direction when it fits the facing grammar, else
+    written as null and counted once in ``direction_counts["invalid"]`` (a caller-owned dict). No tag: no property."""
     features, seen, skipped = [], set(), {}
     for element in elements:
         reason = _skip_reason(element, seen)
@@ -155,13 +171,20 @@ def to_geojson(elements):
             continue
         seen.add(element["id"])
         tags = element.get("tags") if isinstance(element.get("tags"), dict) else {}
+        properties: dict = {
+            "manufacturer": clean(tags.get("manufacturer")),
+            "operator": clean(tags.get("operator")),
+            "url": f"https://www.openstreetmap.org/node/{int(element['id'])}",
+        }
+        key = "direction" if "direction" in tags else "camera:direction" if "camera:direction" in tags else None
+        if key:
+            valid = _valid_direction(tags[key])
+            properties["direction"] = tags[key] if valid else None
+            if not valid and direction_counts is not None:
+                direction_counts["invalid"] = direction_counts.get("invalid", 0) + 1
         features.append({
             "type": "Feature",
-            "properties": {
-                "manufacturer": clean(tags.get("manufacturer")),
-                "operator": clean(tags.get("operator")),
-                "url": f"https://www.openstreetmap.org/node/{int(element['id'])}",
-            },
+            "properties": properties,
             "geometry": {"type": "Point", "coordinates": [float(element["lon"]), float(element["lat"])]},
         })
     features.sort(key=lambda f: f["properties"]["url"])
@@ -255,7 +278,11 @@ def _keyed(collection):
         point = (feature.get("geometry") if isinstance(feature.get("geometry"), dict) else {}).get("coordinates")
         valid = isinstance(point, list) and len(point) == 2 and _coordinate(point[0], 180) \
             and _coordinate(point[1], 90)
-        keyed[url] = (tuple(str(props.get(k) or "") for k in ("manufacturer", "operator")), point if valid else None)
+        facing = props.get("direction")  # DF0237-11: compared as written; absent and null are both unknown
+        if facing is not None and not isinstance(facing, str):
+            facing = ("not-text", json.dumps(facing, sort_keys=True, default=str))
+        keyed[url] = ((*(str(props.get(k) or "") for k in ("manufacturer", "operator")), facing),
+                      point if valid else None)
     return keyed, unkeyed
 
 
@@ -405,7 +432,10 @@ def main(argv=None):
     else:
         answer, source = fetch(query_for(args)), "overpass"
     elements = answer.get("elements", [])
-    collection, skipped = to_geojson(elements if isinstance(elements, list) else [])
+    direction_counts = {}
+    collection, skipped = to_geojson(elements if isinstance(elements, list) else [], direction_counts=direction_counts)
+    if direction_counts.get("invalid"):  # a count only: never the rejected tag text, a coordinate or the file
+        print(f"direction invalid={direction_counts['invalid']}", file=sys.stderr)
     if args.check:
         return print_check(diff(current, collection, 10.0 if args.move_metres is None else args.move_metres))
     snapshot = {"schema_version": 1, "osm_base": osm_base(answer), "source": source}
