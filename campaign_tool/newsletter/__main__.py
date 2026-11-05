@@ -20,6 +20,7 @@ from ..cli import read_config
 from ..content import ContentError
 from ..site_check import resolve
 from .archive import publish_issue
+from .check import check_draft, report_json, report_text
 from .draft import DraftError, build_draft, load_manifest, write_draft
 from .from_content import manifest_from_content
 from .sent import last_sent, record_sent
@@ -47,7 +48,27 @@ def main(argv=None):
                         help="Record that kit/newsletter-draft was sent by hand on this YYYY-MM-DD day; sends nothing")
     parser.add_argument("--since", type=_day, help="With --from-content: findings published on or after this UTC day")
     parser.add_argument("--site", metavar="PUBLIC", help="Built public/ folder; every campaign-site link must reach it")
+    parser.add_argument("--check", action="store_true",
+                        help="Read-only: does kit/newsletter-draft.json still match current content? Takes no other flag")
+    parser.add_argument("--json", action="store_true", help="With --check: print the report as JSON")
     args = parser.parse_args(argv)
+    if args.json and not args.check:
+        parser.error("--json belongs to --check")
+    if args.check:
+        used = [flag for flag, value in (("action", args.action), ("--manifest", args.manifest),
+                                         ("--from-content", args.from_content), ("--record-sent", args.record_sent),
+                                         ("--since", args.since), ("--site", args.site), ("--date", args.date),
+                                         ("--publish", args.publish)) if value]
+        if used:
+            parser.error("--check takes no other flag or action (found " + ", ".join(used) + ")")
+        root = Path(args.directory).expanduser().resolve()
+        try:
+            report = check_draft(root)
+        except (OSError, ValueError, KeyError, ContentError) as exc:  # CheckError is a ValueError
+            print("Stopped: " + str(exc), file=sys.stderr)
+            return 1
+        print(report_json(report) if args.json else report_text(report))
+        return 0 if report["status"] == "match" else 3
     if args.action is None and (args.date is not None or args.publish):
         parser.error("--date and --publish need the sent or archive action")
     if args.action is not None:
@@ -87,7 +108,7 @@ def main(argv=None):
             manifest = {"schema_version": 1, "campaign": {"name": cfg["name"], "base_url": None,
                                                           "county_name": cfg["county"]},
                         "since": None, "findings": [], "meetings": []}
-        draft = build_draft(manifest, now, archive_public=args.from_content)
+        draft = build_draft(manifest, now, archive_public=args.from_content, provenance=args.from_content)
         paths = write_draft(root, draft)
     except (OSError, ValueError, DraftError, ContentError, KeyError) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)
