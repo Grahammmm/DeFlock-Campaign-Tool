@@ -11,6 +11,8 @@ Drafts for slugs that are no longer published are listed as stale, never deleted
 (``post_length``) into ``kit/social/<platform>/``; ``check_social`` reads ``kit/social/`` only.
 ``build_meeting_social(root)`` drafts one post per scheduled, upcoming, organizer-verified staged meeting into
 ``kit/social/meetings/`` (same rules, never posted); finding drafts and ``check_social`` do not change.
+``build_event_social(root)`` drafts one post per campaign event (content/events.json) starting within N days into
+``kit/social/events/`` (never posted).
 ``build_outcome_social(root)`` drafts one post per meeting with a recorded outcome dated in the last N days into
 ``kit/social/outcomes/`` (result and vote quoted as recorded; never posted).
 """
@@ -23,6 +25,7 @@ from datetime import date, datetime, timedelta, timezone
 from itertools import chain
 
 from .content import ContentError, _read_json, _slug, load_content, load_meeting, load_site
+from .content_events import parse_moment, read_events
 from .kit import _kit_folder, _write_json, _write_text
 from .legal_claims import legal_notes
 from .privacy_patterns import refusal
@@ -448,3 +451,101 @@ def build_outcome_social(root, platforms=None, within_days=14, now=None):
             _kit_folder(folder)
         result = {"platforms": {p: _write_drafts(outcome_dir / p, outcome_dir / (p + ".suggested"), plan[p]) for p in platforms}}
     return {"outcomes": result, "skipped": skipped, "unreadable_files": unreadable, "posted": False}
+
+
+# --- campaign-event drafts (DF1407-10) ---------------------------------------
+
+def _event_when(stamp):
+    """``Wed Nov 11, 2026, 6:00 pm UTC-07:00``: the stored start's own local date, year, time and offset."""
+    moment = parse_moment(stamp)
+    offset = int(moment.utcoffset().total_seconds()) // 60
+    return (f"{WEEKDAYS[moment.weekday()][:3]} {MONTHS[moment.month - 1][:3]} {moment.day}, {moment.year}, "
+            f"{(moment.hour - 1) % 12 + 1}:{moment.minute:02d} {'am' if moment.hour < 12 else 'pm'} "
+            f"UTC{'-' if offset < 0 else '+'}{abs(offset) // 60:02d}:{abs(offset) % 60:02d}")
+
+
+def event_post_text(event, base_url, platform=None):
+    """Return the post for a campaign ``event``; only the title is shortened (``platform=None``: legacy ``len()`` cap)."""
+    tail = f". {event.get('venue') or 'Online'}. {base_url.rstrip('/')}/events.html#event-{event['id']}"
+    head = f" \u2014 {_event_when(event['starts_at'])}"
+    title = event["title"]
+    limit = PLATFORMS[platform][0] if platform is not None else SOCIAL_MAX_CHARS
+    for cut in range(len(title), 0, -1):
+        shown = title if cut == len(title) else title[:cut].rstrip() + "\u2026"
+        if shown == "\u2026":
+            continue
+        text = shown + head + tail
+        if (post_length(text, platform) if platform is not None else len(text)) <= limit:
+            return text
+    raise ValueError(f"event {event['id']}: post cannot fit {limit} characters" + (f" on {platform}" if platform else ""))
+
+
+def _event_draft(event, base_url, platform=None):
+    return f"<!-- DRAFT: not posted. Review before any use. event {event['id']} -->\n\n{event_post_text(event, base_url, platform)}\n"
+
+
+def _upcoming_events(root, within_days, now):
+    """Return ``(events, skipped, base_url)``: events starting from ``now`` to ``now + within_days``, both ends included."""
+    _check_window(within_days)
+    now = now or datetime.now(timezone.utc)
+    now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    content_dir = root / "content"
+    if not content_dir.is_dir():
+        raise ValueError("social drafts need a content/ directory")
+    try:
+        site_path = content_dir / "site.json"
+        base_url = load_site(_read_json(site_path), content_dir / "public-assets").get("base_url") if site_path.is_file() else None
+        if not base_url:
+            raise ValueError("social drafts need content/site.json base_url")
+        events = read_events(root) or []
+    except ContentError as exc:
+        raise ValueError(str(exc)) from None
+    skipped, kept = {"past": 0, "outside_window": 0}, []
+    for event in events:
+        starts = parse_moment(event["starts_at"])
+        if starts < now:
+            skipped["past"] += 1
+        elif starts > now + timedelta(days=within_days):
+            skipped["outside_window"] += 1
+        else:
+            kept.append(event)
+    kept.sort(key=lambda e: (parse_moment(e["starts_at"]).astimezone(timezone.utc), e["id"]))
+    return kept, skipped, base_url
+
+
+def event_review_notes(root, within_days=14, now=None):
+    """DF-4 alert-only: ``review-required`` notes for event posts whose wording asserts a violation. Never raises."""
+    try:
+        events, _, base_url = _upcoming_events(root, within_days, now)
+        return legal_notes((f"social/events/{e['id']}", event_post_text(e, base_url)) for e in events)
+    except Exception:  # noqa: BLE001 - alert-only; build_event_social reports its own refusals
+        return ["review-required: social: legal-claim wording (event posts could not be scanned; read them before use)"]
+
+
+def build_event_social(root, platforms=None, within_days=14, now=None):
+    """Write event drafts into ``kit/social/events/`` (``<platform>/`` each with ``platforms``) and return
+    ``{events, skipped, posted}``; ``events`` is ``build_social``'s dict (per platform with ``platforms``)."""
+    events, skipped, base_url = _upcoming_events(root, within_days, now)
+    kit_dir = root / "kit"
+    social_dir = kit_dir / "social"
+    event_dir = social_dir / "events"
+    if platforms is None:
+        drafts = {e["id"]: _event_draft(e, base_url) for e in events}
+        for folder in (kit_dir, social_dir, event_dir, social_dir / "events.suggested"):
+            if folder in (kit_dir, social_dir) or os.path.lexists(folder):
+                _kit_folder(folder)
+        result = _write_drafts(event_dir, social_dir / "events.suggested", drafts)
+    else:
+        platforms = list(dict.fromkeys(platforms))
+        unknown = [p for p in platforms if p not in PLATFORMS]
+        if unknown or not platforms:
+            raise ValueError(f"unknown platform: {', '.join(unknown) or 'none given'} (choose from {', '.join(PLATFORMS)})")
+        plan = {p: {e["id"]: _event_draft(e, base_url, p) for e in events} for p in platforms}
+        folders = [event_dir / name for p in platforms for name in (p, p + ".suggested")]
+        for folder in [kit_dir, social_dir, event_dir] + folders:
+            if os.path.lexists(folder):
+                _kit_folder(folder)
+        for folder in (kit_dir, social_dir, event_dir):
+            _kit_folder(folder)
+        result = {"platforms": {p: _write_drafts(event_dir / p, event_dir / (p + ".suggested"), plan[p]) for p in platforms}}
+    return {"events": result, "skipped": skipped, "posted": False}
