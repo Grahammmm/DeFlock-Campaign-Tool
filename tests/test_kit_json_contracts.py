@@ -21,9 +21,10 @@ DUE = json.loads((REPO_ROOT / "schemas" / "kit-due.schema.json").read_text(encod
 ROW = STATUS["properties"]["requests"]["items"]
 OPEN = DUE["properties"]["open"]["items"]
 CONDITIONAL = {"more", "correspondence", "correspondence_prefixes", "correspondence_more", "downloads_pending",
-               "contacts", "last_contact", "withdrawn_on", "received_on", "receipt_evidence", "note"}
+               "contacts", "last_contact", "withdrawn_on", "received_on", "receipt_evidence", "note",
+               "extension_expected_on", "extension_reason", "extension_note"}
 STATES = {"waiting_on_you", "producing", "installment_passed", "no_law_package", "past_due", "due_today", "upcoming",
-          "download_pending", "download_expired"}
+          "download_pending", "download_expired", "stated_extension_date_passed"}
 STAMP = "2026-03-01T00:00:00+00:00"
 FILLER = "abcd" * 16  # low-entropy synthetic sha256
 
@@ -117,6 +118,9 @@ class KitJsonContractTests(unittest.TestCase):
                                                      records=hashes(2, 500))]),
             (c, "rolling-later"): ("2026-03-02", {}, [step("2026-03-10", "produced", partial=True,
                                                            expected_on="2026-03-25")]),
+            (c, "noticed"): ("2026-03-10", {}, [step("2026-03-11", "extension", extension_expected_on="2026-03-12",
+                                                     extension_reason="Staff shortage")]),
+            (c, "later"): ("2026-03-10", {}, [step("2026-03-11", "extension", extension_expected_on="2026-12-31")]),
             (c, "closed"): ("2026-03-02", {}, [step("2026-03-03", "acknowledged"), step("2026-03-04", "closed")]),
             (c, "withdrawn"): ("2026-03-02", {}, [step("2026-03-03", "acknowledged"),
                                                   step("2026-03-04", "withdrawn", note="Sent twice; superseded")]),
@@ -152,9 +156,9 @@ class KitJsonContractTests(unittest.TestCase):
                 self.assertLessEqual(set(node.get("required", [])), set(node["properties"]))
         self.assertEqual(set(ROW["properties"]) - set(ROW["required"]), CONDITIONAL)
         self.assertEqual(set(OPEN["properties"]) - set(OPEN["required"]),
-                         {"since", "note", "kind", "produced_on", "received_on", "receipt_evidence"})
+                         {"since", "note", "kind", "produced_on", "received_on", "receipt_evidence", "with_extension"})
         self.assertEqual(set(STATUS["required"]), set(STATUS["properties"]))
-        self.assertEqual(set(DUE["properties"]) - set(DUE["required"]), {"download_expired"})
+        self.assertEqual(set(DUE["properties"]) - set(DUE["required"]), {"download_expired", "extension_date_passed"})
 
     def test_enums_match_the_code(self):
         self.assertEqual(set(ROW["properties"]["channel"]["enum"]), set(kit_track.CHANNELS))
@@ -178,14 +182,16 @@ class KitJsonContractTests(unittest.TestCase):
         document, stderr = self.status()
         law.validate(document, STATUS)
         check_keys(document, STATUS)
-        self.assertEqual(len(document["requests"]), 13)
+        self.assertEqual(len(document["requests"]), 15)
         extras = {(r["agency_id"], r["request"]): set(r) & CONDITIONAL for r in document["requests"]}
         self.assertEqual({k: v for k, v in extras.items() if v}, {
             (self.b, "main"): {"correspondence", "correspondence_prefixes"},
             (self.b, "bulk"): {"more"},
             (self.b, "letters"): {"correspondence", "correspondence_prefixes", "correspondence_more"},
             (self.a, "denied"): {"received_on", "receipt_evidence", "note"},
-            (self.c, "withdrawn"): {"withdrawn_on"}})
+            (self.c, "withdrawn"): {"withdrawn_on"},
+            (self.c, "noticed"): {"extension_expected_on", "extension_reason"},
+            (self.c, "later"): {"extension_expected_on", "extension_note"}})
         rows = {(r["agency_id"], r["request"]): r for r in document["requests"]}
         self.assertEqual((rows[(self.b, "bulk")]["more"], rows[(self.b, "bulk")]["records"]), (1, 51))
         self.assertEqual(len(rows[(self.b, "bulk")]["record_prefixes"]), kit_track.PREFIXES_MAX)
@@ -231,14 +237,20 @@ class KitJsonContractTests(unittest.TestCase):
         document = self.due()
         law.validate(document, DUE)
         check_keys(document, DUE)
-        states = {(r["agency_id"], r["request"]): r["state"] for r in document["open"]}
+        states = {(r["agency_id"], r["request"]): r["state"] for r in document["open"] if r.get("kind") is None}
         self.assertEqual(states, {
             (self.a, "main"): "past_due", (self.b, "main"): "due_today", (self.a, "over-cap"): "upcoming",
             (self.a, "paid"): "upcoming", (self.b, "letters"): "upcoming", (self.c, "main"): "waiting_on_you",
-            (self.c, "rolling"): "installment_passed", (self.c, "rolling-later"): "producing"})
+            (self.c, "rolling"): "installment_passed", (self.c, "rolling-later"): "producing",
+            (self.c, "noticed"): "upcoming", (self.c, "later"): "upcoming"})
+        (cue,) = [r for r in document["open"] if r.get("kind") == "extension"]
+        self.assertEqual((cue["request"], cue["state"], cue["due"]), ("noticed", "stated_extension_date_passed",
+                                                                      "2026-03-12"))
+        self.assertEqual(document["extension_date_passed"], 1)
         self.assertEqual({r["request"] for r in document["answered"]}, {"determined", "denied", "bulk"})
         self.assertEqual([r["state"] for r in document["stated_passed"]], ["stated_date_passed"])
-        self.assertEqual({r["request"] for r in document["open"] if "since" in r or "note" in r}, {"main"})
+        self.assertEqual({r["request"] for r in document["open"]
+                          if r.get("kind") is None and ("since" in r or "note" in r)}, {"main"})
         waiting = [r for r in document["open"] if r["state"] == "waiting_on_you"]
         self.assertEqual(len(waiting), 1)
         self.assertEqual(set(waiting[0]) - set(OPEN["required"]), {"since", "note"})

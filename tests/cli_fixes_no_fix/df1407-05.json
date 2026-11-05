@@ -1,0 +1,15 @@
+{
+  "--scope needs at least one scope id; leaving none would withdraw the whole request": "kit-clarify-reply message that already names the flag and the consequence; not in the table",
+  "--scope ids must not repeat": "kit-clarify-reply message that already names the flag and the rule; not in the table",
+  "--date-range must be FROM:TO, two real YYYY-MM-DD dates": "kit-clarify-reply message that already names the flag and the format; not in the table",
+  "--date-range FROM must not be after TO": "kit-clarify-reply message that already names the flag and the rule; not in the table",
+  "--date-range must not end after today": "kit-clarify-reply message that already names the flag and the rule; not in the table",
+  "no open clarification request to answer for 5": "kit-clarify-reply message that already says what is missing; nothing to fix but waiting for the agency",
+  "the scopes asked for are not recorded for 5; cannot say which to keep": "kit-clarify-reply message that already names the missing record and why",
+  "no law package: the request cannot be re-rendered": "kit-clarify-reply message that already names the missing law package",
+  "a scope asked for by 5 is no longer in the law package": "kit-clarify-reply message that already names the problem; the law package must be restored by the organizer",
+  "--scope 5 is not in the law package": "kit-clarify-reply message that already names the flag and the rule; not in the table",
+  "--scope 5 was not asked for by the request sent to 5": "kit-clarify-reply message that already names the flag and the rule; not in the table",
+  "5 is not in kit/agencies.json": "kit-clarify-reply message that already names the missing agency entry",
+  "kit/followups/5 is not a regular file": "kit-clarify-reply message that already names the file that blocks the draft"
+}

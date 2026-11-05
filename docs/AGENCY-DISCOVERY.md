@@ -441,6 +441,20 @@ is once only and not after `determination`, `produced` or `denied`. `determinati
 control characters, at most 200 characters); never paste record contents. `kit-status` then shows `extended`,
 `closed` and `last_step`, and `determination_due` uses the extension once one is recorded.
 
+An agency's written extension notice may state the day it will dispatch its determination and why. Record them on the
+extension step with `--expected-on YYYY-MM-DD` (not before the extension step's date; a future date is fine) and
+`--reason TEXT` (1 to 200 plain-text characters as the notice states it, kept exactly as given; no `<`, `>`, control
+characters or line breaks; extension steps only). Either may be given alone. They are the agency's own words, stored
+as `extension_expected_on` and `extension_reason` on that step, apart from `stated_production_date` and
+`next_installment` (which stay about production). `kit-status` shows them beside `with_extension`; when the stated
+date is later than that provisional date it also shows `extension_note`: "the agency's date is later than the
+provisional extended date; provisional, not a legal finding". `kit-due` and `today` list a "stated extension date
+passed" cue (`kind` `extension`, `state` `stated_extension_date_passed`; `extension_date_passed` counts them and makes
+`kit-due` exit 3) once the day after the stated date arrives while no determination, produced or denied step is
+recorded and the request is not closed or withdrawn. An advisory note (rule names only, never the text) appears if the
+reason uses legal-violation wording; it never blocks the record. These dates are provisional reminders, not a legal
+finding of lateness or a deadline; nothing is sent. An extension recorded without them reads and prints as before.
+
 When the agency quotes a fee, record it with `--kind fee_estimate --amount USD` (for example `245.50`: digits with
 at most two decimals, 0 to 100000; no sign, commas or exponent). `--amount` is required for `fee_estimate` and refused
 for any other kind; it is stored as whole `amount_cents`, and estimates may repeat. `kit-status` shows each request's
@@ -479,6 +493,22 @@ date; it is cited as `RULE_ID (law package status: draft): <the package's citati
 ids, `--rule` without a law package, and a request without a `denied` step are refused and nothing is written. Without
 `--rule` the draft has no citations. An existing draft is kept unless `--replace`; symlinks are refused. Nothing is sent
 and `sent.json` is not changed. The draft is not legal advice.
+
+`kit-clarify-reply --directory D --agency ID [--request NAME] [--scope ID ...] [--date-range FROM:TO] [--replace]`
+(for example `--agency ID` for the main request, or `--agency ID --request contract-2026` for a named one) writes a
+private draft `kit/followups/<agency_id>[--<request>]-clarify-<today>.md` (0600, folder 0700) answering the agency's
+open `clarification_requested` step: the reference and portal lines, `On D you asked us to clarify or narrow this
+request`, the request re-rendered from the law package with your request settings (requester block, fee cap) for the
+scopes you keep, and a `No longer requested` list naming every scope the sent request asked for that you left out
+(`None — all originally asked scopes are retained.` when none), so nothing is dropped silently. Without `--scope` all
+originally asked scopes are kept; only scopes recorded as asked by that sent request can be chosen (`--scope` takes
+several ids; unknown, unasked, repeated or empty selections are refused). `--date-range` is two real `YYYY-MM-DD` dates
+(FROM not after TO, neither after today); without it the range comes from `request-settings.json`, else the draft's
+visible placeholder. The original range is not stored, so check any narrowing against what was actually sent. It is
+refused when no clarification is open (never asked, or already clarified, closed or withdrawn). An existing draft is
+kept unless `--replace`; symlinks and non-file targets are refused. The draft ends with the `kit-response ... --kind
+clarified` command: run it only after you have sent the reply yourself, with `--date` set to the day you sent it.
+Nothing is sent, and `sent.json`, the recorded scopes and the original draft hash are not changed.
 
 `kit-scope-reply --directory D --agency ID [--request NAME] [--replace]` (default request `main`) writes a private draft
 `kit/followups/<stem>-scopes-<today>.md` (0600, folder 0700; `<stem>` is the agency id, or `<agency>--<name>` for a named

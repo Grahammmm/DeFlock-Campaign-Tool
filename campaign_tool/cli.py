@@ -1264,7 +1264,11 @@ def main():
                             help="any kind, repeatable: >= 12 hex of an ingested letter or confirmation; not records")
     response_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     response_p.add_argument("--expected-on", metavar="YYYY-MM-DD", help="determination or a later step: the agency's "
-                            "own stated production date (provisional, not a legal deadline)")
+                            "own stated production date (provisional, not a legal deadline); on an "
+                            "extension: the day its written notice says the determination will be dispatched (kept "
+                            "apart from production dates)")
+    response_p.add_argument("--reason", metavar="TEXT", help="extension only: the reason as the agency's written "
+                            "notice states it (1-200 plain-text characters; kept exactly as given)")
     response_p.add_argument("--reference", metavar="REF", help="The agency's own request number, stored once")
     response_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     response_p.add_argument("--partial", action="store_true", help="produced only: part of the records; the request "
@@ -1332,6 +1336,15 @@ def main():
     denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
                           help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
     denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
+    clarify_p = commands.add_parser("kit-clarify-reply", help="Private reply draft answering the agency's open request to "
+                                    "clarify or narrow; never sent, records nothing")
+    for flag in ("--directory", "--agency"):
+        clarify_p.add_argument(flag, required=True)
+    clarify_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    clarify_p.add_argument("--scope", nargs="+", action="append", metavar="ID", help="Keep only these scopes the sent "
+                           "request asked for (default all of them); every scope left out is listed as no longer requested")
+    clarify_p.add_argument("--date-range", metavar="FROM:TO", help="Two real YYYY-MM-DD dates, not after today")
+    clarify_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
     scope_p = commands.add_parser("kit-scope-reply", help="Private draft asking about recorded per-scope gaps; never sent")
     for flag in ("--directory", "--agency"):
         scope_p.add_argument(flag, required=True)
@@ -2263,7 +2276,7 @@ def main():
             report = kit_track_due(root, args.as_of, request=args.request, owner=args.owner)
             print(json.dumps(report, indent=2))
             if report["past_due"] + report["stated_date_passed"] + report["installment_passed"] \
-                    + report.get("download_expired", 0):
+                    + report.get("download_expired", 0) + report.get("extension_date_passed", 0):
                 sys.exit(3)
         elif args.command == "kit-assign":
             from .kit_assign import assign
@@ -2279,13 +2292,17 @@ def main():
                 sys.exit(3)
         elif args.command == "kit-response":
             from .kit_track import record_step
+            from .legal_claims import legal_notes
             print(json.dumps(record_step(root, args.agency, args.date, args.kind, note=args.note, records=args.record,
                                          request=args.request, amount=args.amount, expected_on=args.expected_on,
                                          reference=args.reference, replace_reference=args.replace_reference,
                                          partial=args.partial, correspondence=args.correspondence,
                                          withheld_basis=args.withheld_basis, scope_ids=args.scope,
-                                         disposition=args.disposition, download_expires_on=args.download_expires_on),
+                                         disposition=args.disposition, download_expires_on=args.download_expires_on,
+                                         reason=args.reason),
                              indent=2))
+            for line in legal_notes([("--reason (extension notice)", args.reason)] if args.reason else []):
+                print(line, file=sys.stderr)  # alert-only: rule names, never the reason text
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-response-undo":
             from .kit_undo import undo_step
@@ -2328,6 +2345,12 @@ def main():
             from .kit_track import denial_reply
             print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
             print("Draft only. Nothing was sent.")
+        elif args.command == "kit-clarify-reply":
+            from .kit_track import clarify_reply
+            chosen = [i for group in args.scope for i in group] if args.scope else None
+            print(json.dumps(clarify_reply(root, args.agency, request=args.request, scopes=chosen,
+                                           date_range=args.date_range, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent or recorded.")
         elif args.command == "kit-scope-reply":
             from .kit_track import scope_reply
             print(json.dumps(scope_reply(root, args.agency, request=args.request, replace=args.replace), indent=2))

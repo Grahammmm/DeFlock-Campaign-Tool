@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://deflock-campaign-tool.invalid/schemas/kit-due.schema.json",
   "title": "kit-due",
-  "description": "Printed by `kit-due` (campaign_tool.kit_track.due): one JSON document on stdout, read-only. open lists unanswered, unclosed requests with a state; answered lists requests with a determination, produced or denied step; stated_passed lists answered requests whose own stated production date has passed; closed requests are left out. The counts past_due, stated_date_passed, installment_passed and waiting_on_you are totals of the lists above (exit 3 when past_due + stated_date_passed + installment_passed is above zero). since and note appear only on an open row whose state is waiting_on_you. received_on, receipt_evidence and (on answered and stated_passed rows) note appear only for a request whose agency receipt was recorded (kit-received); its note reads 'counted from receipt D (KIND)'. Dates are provisional reminders, not legal due dates. Nothing is sent or published.",
+  "description": "Printed by `kit-due` (campaign_tool.kit_track.due): one JSON document on stdout, read-only. open lists unanswered, unclosed requests with a state; answered lists requests with a determination, produced or denied step; stated_passed lists answered requests whose own stated production date has passed; closed requests are left out. The counts past_due, stated_date_passed, installment_passed and waiting_on_you are totals of the lists above (exit 3 when past_due + stated_date_passed + installment_passed is above zero). since and note appear only on an open row whose state is waiting_on_you. received_on, receipt_evidence and (on answered and stated_passed rows) note appear only for a request whose agency receipt was recorded (kit-received); its note reads 'counted from receipt D (KIND)'. An open row with kind extension and state stated_extension_date_passed (note 'stated extension date passed', due = the agency's own stated determination dispatch date, optional with_extension = the provisional extended date) appears only while no determination, produced or denied step is recorded; extension_date_passed counts those rows, appears only when a request recorded such a date, and (unlike past_due) is its own exit 3 trigger. Dates are provisional reminders, not legal due dates. Nothing is sent or published.",
   "type": "object",
   "additionalProperties": false,
   "required": ["as_of", "law_package_status", "open", "answered", "past_due", "stated_passed",
@@ -26,9 +26,10 @@
           "days": {"type": ["integer", "null"]},
           "state": {
             "enum": ["waiting_on_you", "producing", "installment_passed", "no_law_package", "past_due",
-                     "due_today", "upcoming", "download_pending", "download_expired"]
+                     "due_today", "upcoming", "download_pending", "download_expired", "stated_extension_date_passed"]
           },
-          "kind": {"const": "download"},
+          "kind": {"enum": ["download", "extension"]},
+          "with_extension": {"$ref": "#/$defs/date"},
           "produced_on": {"$ref": "#/$defs/date"},
           "since": {"$ref": "#/$defs/date"},
           "note": {"type": "string", "minLength": 1},
@@ -90,6 +91,7 @@
     "installment_passed": {"type": "integer", "minimum": 0},
     "waiting_on_you": {"type": "integer", "minimum": 0},
     "download_expired": {"type": "integer", "minimum": 0},
+    "extension_date_passed": {"type": "integer", "minimum": 0},
     "note": {"type": "string", "minLength": 1}
   },
   "$defs": {
