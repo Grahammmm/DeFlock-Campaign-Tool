@@ -298,6 +298,8 @@ class LabelsTest(unittest.TestCase):
                   "handout.statements_note", "handout.title",
                   "handout.what_we_found",
                   "intro.officials_open_data",
+                  "js.requests_agency", "js.requests_all_agencies", "js.requests_all_states", "js.requests_count",
+                  "js.requests_empty", "js.requests_label", "js.requests_state",
                   "kind.campus_police", "kind.chp", "kind.county_board", "kind.district_attorney", "kind.other",
                   "license.about", "license.about_camera", "license.csv_note",
                   "map.check_duplicate", "map.check_earlier", "map.check_heading",
