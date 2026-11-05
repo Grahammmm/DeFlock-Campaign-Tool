@@ -11,6 +11,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import patch
 
+from campaign_tool.agency_actions import add_action
 from campaign_tool.cli import read_config
 from campaign_tool.content import ContentError, load_content
 from campaign_tool.site import Site, build_site
@@ -324,6 +325,22 @@ class TimelineTests(unittest.TestCase):
         self.assertIn(' · <a href="https://records.example.org/min?a=1&amp;b=2" rel="noopener noreferrer">official record</a></li>',
                       item)
         self.assertEqual(page.count("official record"), 1)
+
+    def test_agency_action_event_links_agency_page_and_source_and_adds_the_lead_note(self):
+        self.assertNotIn("Agency actions are transcribed", self.site().timeline_html()["html"])
+        add_action(self.root, "ca-cedar-police", on="2026-01-30", kind="policy_posted", as_stated="Fees & rates posted",
+                   source_url="https://records.example.org/policy?a=1&b=2", checked_on="2026-02-01", today=TODAY)
+        events = self.of_kind(self.site().timeline, "agency_action")
+        self.assertEqual(events, [{"date": "2026-01-30", "kind": "agency_action",
+                                   "text": "Cedar Police Department (fictional): Policy posted: Fees & rates posted",
+                                   "href": "/agencies/cedar.html", "source_url": "https://records.example.org/policy?a=1&b=2"}])
+        page = self.site().timeline_html()["html"]
+        self.assertIn(LEAD + " Agency actions are transcribed from their cited official sources.</p>", page)
+        match = re.search(r"<li><time[^>]*>2026-01-30</time> · <a href=\"/agencies/cedar.html\">.*?</li>", page)
+        self.assertIsNotNone(match)
+        self.assertIn("Policy posted: Fees &amp; rates posted</a> · <a href=\"https://records.example.org/policy?a=1&amp;b=2\" "
+                      "rel=\"noopener noreferrer\">official record</a></li>", match.group(0))
+        self.assertEqual(timeline_events(self.model(), TODAY)[-1]["kind"], "meeting")  # old kinds keep their order and place
 
     def test_requested_topic_is_escaped(self):
         self.ask(1, [{"topic": "Fees & rates", "asked_on": "2026-01-05", "state": "answered"}])

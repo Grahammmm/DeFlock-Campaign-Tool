@@ -57,6 +57,26 @@ cancelled meeting is never `agenda_changed`. `meetings-stage` refuses a cancelle
 writes nothing; a content meeting may set `status` (`scheduled` default, or `cancelled`), and the
 site never lists a cancelled meeting as upcoming: it stays under past meetings marked `Cancelled`.
 
+### Attachment links (never fetched)
+
+Each matched meeting and matter carries `attachments` (`name`, `url`, at most 20, de-duplicated by URL) from Legistar
+(`eventitems?Attachments=1`, `matters/<id>/attachments`) and `attachments_dropped`, the count of links refused. Only
+`https://` links on `*.legistar.com`, `legistar.granicus.com` or `legistar<N>.granicus.com` are kept (no port or
+credentials); the files themselves are never downloaded. The staged comment kit lists them under `## Read first`.
+A changed attachment list alone is never `agenda_changed`. Matters without a recorded attachment response get none.
+
+### Matters (`--matters`, Legistar only)
+
+`meetings --matters` lists contracts, ordinances and resolutions that may not be on an upcoming
+agenda yet. It runs **instead of** the events import and writes `kit/matters.json` (same
+`--online`/`--from-json` rule; `--platform civicclerk` stops with `--matters is Legistar only`).
+It reads `matters` filtered to `MatterLastModifiedUtc ge <--since>` (default today minus 365
+days, newest first, at most 100). Matters whose file number, name or title match the ALPR
+keywords are kept, newest `intro_date` first, with `id`, `file`, `title`, `type`, `status`,
+`body`, `intro_date`, `agenda_date`, `passed_date` (`YYYY-MM-DD` or `null`), `url` (the official
+`LegislationDetail.aspx` link, or `null` without a valid `MatterGuid`) and `matched_terms`. These
+are keyword leads, not confirmation of ALPR use: verify on the official Legistar page before citing.
+
 The CLI does not write to the hosted workspace. Organizers add the meetings they verified
 on the Meetings screen, or stage one verified entry for the offline site build
 ([SITE-CONTENT.md](SITE-CONTENT.md)) with
@@ -249,6 +269,22 @@ Sources use 12-character record fingerprints; a fingerprint is not proof of auth
 Cancelled, past and stale kits stop: re-stage corrections with `meetings-stage --id M --replace`.
 Use `--allow-past` for an archive, or `--replace` to regenerate an existing private pack.
 Nothing is sent or published. Review the print preview before handing it over.
+
+The three files are one pack, written as one prepared generation: the tool encodes and writes all three into a
+private `.M.new-<random>` directory beside the pack (0700 directory, 0600 files), then swaps that directory into
+`kit/meeting-packs/M`. A handled error (a full disk, a permission error) never leaves a new handout beside an old
+comment or sources sheet: a new pack is either complete or absent, and `--replace` moves the old directory to
+`.M.old-<random>`, promotes the new one, and puts the old one back if promotion fails. `--replace` refuses a pack that
+holds anything but the three expected regular files (an extra note, a subdirectory, a missing file, a link or a
+special file) with `meeting pack has unexpected contents; move it aside before regenerating`; it never deletes your
+files. If the old directory cannot be put back, the error names it (`previous pack retained at PATH`) and the next
+run refuses with `meeting pack recovery required; inspect PATH before rebuilding`: check which generation you want,
+then move or remove that `.M.old-*` directory yourself. If only the final removal of the old directory fails, the new
+pack is complete and the result carries `warnings` naming the retained copy; remove it after checking the new pack
+(`--replace` will not run until you do). An abandoned `.M.new-*` directory left by a killed process is never swept
+automatically; inspect it and remove it by hand. Not promised: durability after power loss, that the pack is
+invisible for the instant between the two renames, safety with two writers at once, or that `--upcoming` is
+all-or-nothing (packs finished before a later failure stay, and the error still stops the run).
 
 With `site.json.base_url` set, the handout prints a QR code beside each finding URL and one last link with a QR
 code to the campaign site, after the findings and before the record explainer (also when there are no findings).
@@ -519,7 +555,50 @@ before this can be considered a supported live poll. No detail requests or new s
 ## Not done
 
 No RSVP collection (the `rsvp_count` column is
-reserved), and no other agenda platforms (Granicus, PrimeGov, CivicClerk). Each of those should keep the same keyword-lead, human-verify rule.
+reserved), and no other agenda platforms (PrimeGov). Each of those should keep the same keyword-lead, human-verify rule.
+
+## CivicClerk import (CLI)
+
+```
+python3 -m campaign_tool meetings --directory D --platform civicclerk --client <slug> (--online | --from-json REC) [--since YYYY-MM-DD] [--tz ZONE]
+```
+
+`CivicClerkClient` reads `https://<slug>.api.civicclerk.com/v1/Events` (`startDateTime ge <since>`, at most 60 events;
+a `value` envelope or a bare list) and each event's agenda items from `/v1/Meetings/<agendaId>` (`items`, nested `childItems`,
+`agendaObjectItemName` and `agendaObjectItemDescription`). Same keyword filter, `kit/meetings.json` shape and change report as
+Legistar, with ids `civicclerk-<slug>-<event id>` and `source: "civicclerk"`. `startDateTime` (UTC) is shown in `--tz`; an agenda
+link is kept only if `https://` on `civicclerk.com`; a cancelled mark in the event name or notice sets `status: "cancelled"`.
+
+## Granicus import (CLI)
+
+```
+python3 -m campaign_tool meetings --directory D --platform granicus --client <name>.granicus.com --view-id N (--online | --from-xml FEED) [--all-events] [--since YYYY-MM-DD] [--tz ZONE]
+```
+
+Find the host and `view_id` in the address of your city's Granicus agenda page (`https://<name>.granicus.com/ViewPublisher.php?view_id=N`).
+Only the agendas in the public feed `https://<host>/ViewPublisherRSS.php?view_id=N&mode=agendas` are read (host must be `*.granicus.com`,
+`view_id` 1-9999; at most 60 events, the earliest by date, and the report says how many were cut). `--from-xml` reads a saved copy
+(a regular file, not a symlink, at most 2 MiB); a feed with a `<!DOCTYPE` or `<!ENTITY` (in any encoding), or one that is not well-formed, is refused
+and `kit/meetings.json` is left alone. Item title plus description is scanned with the same keyword list; the date comes from
+`pubDate`, or from the title (`Mon D, YYYY`) when `pubDate` is missing or invalid, with no time of day, in `--tz`;
+events before `--since` (default today) are skipped. Ids are `granicus-<name>-<event id>`; a cancelled mark in the
+title sets `status: "cancelled"`; a link is kept only if `https://` on the same host. An item with no description has no text beyond its
+title: it is dropped unless `--all-events`, which keeps it as `not_scanned: true` with no matches, meaning nobody has checked its agenda.
+
+## CivicPlus AgendaCenter import (CLI)
+
+```
+python3 -m campaign_tool meetings --directory D --platform agendacenter --client <host> (--online | --from-xml FEED) [--all-events] [--since YYYY-MM-DD] [--tz ZONE]
+```
+
+The host is the domain of your city's AgendaCenter page (`https://<host>/AgendaCenter`), lowercase, with no port, user, path or IP address.
+Only the public feed `https://<host>/RSSFeed.aspx?ModID=65&CID=All-0` is read, with the same safe reader, `--from-xml` limits and
+DOCTYPE/ENTITY refusal as Granicus. **Only the feed text (title, category, description) is scanned**; the agenda PDF is recorded as
+`agenda_url` (kept only if `https://` on the same host under `/AgendaCenter/`) and is never fetched. The meeting date comes from the
+`_MMDDYYYY-` token in the item link, else from `pubDate`; an item with neither is dropped and counted (`dropped_no_date`). The body is the
+item `category`, else the title before ` - `. Ids are `agendacenter-<first host label>-<number at the end of the link>` (a hash of the
+link when there is none). An item with no description is dropped unless `--all-events`, which keeps it as `not_scanned: true`. Cancelled
+and changes rules, the 60-event cap and the keyword-lead, verify-by-hand rule are the same as for Legistar.
 
 ## Calendar feed
 
@@ -528,3 +607,32 @@ upcoming, not cancelled meetings only (same split as the page: the build day cou
 omitted. Each event has `UID:meeting-<id>@<host of base_url>`, a UTC `DTSTART` converted from the meeting's offset, the
 agenda URL, location and agenda item when set, and a link back to the meeting on the page. The feed has no `DTEND`, and for
 one build day it is byte-identical. The `.ics` extension is on the runner's upload allowlist (`text/calendar`).
+
+## Private speaker plan
+
+`meetings-speakers --directory D --id ID (--add LABEL --point POINT | --remove LABEL | --list)` keeps a private plan of
+which volunteer label covers which point of a staged meeting's comment kit, in `kit/meetings/speakers/<id>.json` (mode 0600,
+folders 0700). It is never written to `content/` or `public/`, and never reaches the site, an export or a meeting pack. It
+sends nothing and changes no staging, request owner (`kit-assign`) or other store.
+
+- A **point** is `finding:ID` (an id the staged kit cites, taken from the staged `cited_findings`) or `ask:N` (the Nth
+  bullet of the kit's `One ask`/`Two asks`/`Three asks` section, counted from 1). Nothing else is accepted. A kit staged
+  before findings were recorded with it is refused: re-stage the meeting.
+- A **label** follows the `kit-assign` label rule: 1-40 characters, whitespace collapsed, case kept, no angle brackets,
+  control characters, `@` or phone-like numbers. It is a team alias, not a verified identity and not consent. Refusals name
+  the flag and never repeat the text.
+- Each `--add` records one label/point pair. Repeating an exact pair changes nothing. A label may cover several points
+  and several labels may cover one point (up to 200 pairs). `--remove LABEL` drops every pair of that label; an unknown
+  label changes nothing.
+- `--list` prints one JSON document: `id`, `speaker_minutes` (the organizer-verified per-speaker limit from the staged
+  `participation`, or `null` when unknown: nothing is assumed), `points` with their `speakers`, `uncovered` points and
+  `multiple_points` (labels on two or more points).
+- A cancelled meeting (staged or in `kit/meetings.json`), one that has started or is past, a symlink anywhere on the path
+  or an unknown point is refused.
+- The plan stores a SHA-256 of the staged kit text. If the meeting is re-staged with a different kit, `--list` and `--add`
+  refuse (`speaker plan is stale`) rather than silently re-map `ask:N`. Repair: `--remove` every label, then `--add` again.
+
+```
+campaign_tool meetings-speakers --directory campaign --id council-2099-01-05 --add "Volunteer A" --point ask:1
+campaign_tool meetings-speakers --directory campaign --id council-2099-01-05 --list
+```

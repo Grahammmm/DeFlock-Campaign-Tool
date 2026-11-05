@@ -112,8 +112,28 @@ def faq_notes(entries):
         return ["review-required: legal-claim wording (guard-error)"]
 
 
+def elsewhere_notes(entries):
+    """entries: the validated ``content/elsewhere.json`` entries -> review-required notes for EVERY as_stated (DF1107-04).
+    Alert-only like ``legal_notes``: the notes name ``elsewhere.json[N].as_stated`` and the rules, never the text."""
+    try:
+        return legal_notes((f"elsewhere.json[{n}].as_stated", entry["as_stated"]) for n, entry in enumerate(entries or []))
+    except Exception:  # noqa: BLE001
+        return ["review-required: legal-claim wording (guard-error)"]
+
+
+def statement_notes(rows):
+    """rows: validated ``content/statements.json`` rows -> review-required notes for each campaign ``context_note`` (DF1107-07).
+    The note is scanned raw, on its own; the attributed quote is the official's wording, not campaign text, and is not scanned.
+    Alert-only like ``legal_notes``: the notes name ``statements.json[N].context_note`` and the rules, never the text."""
+    try:
+        return legal_notes((f"statements.json[{n}].context_note", row["context_note"])
+                           for n, row in enumerate(rows or []) if row.get("context_note") is not None)
+    except Exception:  # noqa: BLE001
+        return ["review-required: legal-claim wording (guard-error)"]
+
+
 def site_notes(root):
-    """root: a campaign directory -> review-required notes for its finding content and meeting directions (the text the site build publishes).
+    """root: a campaign directory -> review-required notes for its finding content, meeting directions and agency action statements (the text the site build publishes).
     Used by the CLI build and the runner build_site job, so both carry the same flags to their human approval gate."""
     try:
         from .content import load_content
@@ -122,13 +142,18 @@ def site_notes(root):
             [t for x in v for t in walk(x)] if isinstance(v, (list, tuple)) else [v] if isinstance(v, str) else []
         asks = ((f"site.json.comment_asks[{n}]", ask) for n, ask in enumerate((model or {}).get("site", {}).get("comment_asks", []), 1))
         notes = (legal_notes([*((f"findings/{f.get('slug', '?')}", t) for f in (model or {}).get("findings", []) for t in walk(f)), *asks])
-                 + faq_notes((model or {}).get("faq")))  # DF0022-01: every FAQ answer, scanned on its own
+                 + faq_notes((model or {}).get("faq"))  # DF0022-01: every FAQ answer, scanned on its own
+                 + elsewhere_notes((model or {}).get("elsewhere")))  # DF1107-04: every as_stated, scanned on its own
         # DF0022-08: one call per meeting on the raw direction text (never the attributed page wording); identical notes once
         found = []
         for meeting in (model or {}).get("meetings", []):
             direction = (meeting.get("outcome") or {}).get("direction")
             if direction is not None:
                 found += legal_notes([(f"meetings/{meeting.get('id', '?')}.outcome.direction", direction)])
+        # DF0237-01: hand-edited agency actions get the same note as `agency-action add`, located by their stored row
+        from .agency_actions import LABEL, read_actions
+        stored = read_actions(root, (model or {}).get("agencies", [])) or []
+        found += legal_notes([(f"{LABEL}.actions[{n}].as_stated", row["as_stated"]) for n, row in enumerate(stored)])
         if any(a.get("sharing") for a in (model or {}).get("agencies", [])):  # DF0237-04: the generated /sharing.html wording, scanned only when the page exists
             try:
                 from .cli import read_config
@@ -136,6 +161,7 @@ def site_notes(root):
                 found += legal_notes([("sharing.html", Site(root, read_config(root), model).sharing_plaintext())])
             except Exception:  # noqa: BLE001 - alert-only, like the rest: a page that cannot be read is a flag, never a failure
                 found.append("review-required: sharing.html: legal-claim wording (guard-error)")
+        found += statement_notes((model or {}).get("statements"))  # DF1107-07: each campaign context note, raw
         return notes + list(dict.fromkeys(found))
     except Exception:  # noqa: BLE001 - alert-only: a scan that cannot run is itself a flag, never a failure
         return ["review-required: legal-claim wording (site content could not be scanned; read the findings before publishing)"]

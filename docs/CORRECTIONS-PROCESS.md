@@ -37,4 +37,41 @@ and later `decide --id N accepted|declined --on D --note T`; only `private/corre
 is refused until the finding has a correction dated on or after the request (`finding correct`);
 `doctor` names requests open over 14 days. Reply by hand; the tool sends and publishes nothing.
 
+### Drafting a reply (private, never sent)
+
+`correction-request reply --directory DIR --id N` writes `kit/corrections/replies/N.md` (mode 0600; missing
+`kit/`, `corrections/` and `replies/` folders are created 0700) from the request's recorded state only, and prints
+`{"written": "kit/corrections/replies/N.md", "id": N, "state": ...}` then `Private draft only; nothing was sent or published.`
+Every draft starts `DRAFT — NOT SENT. Review and edit before sending it yourself.` with generic
+`[EDIT ME: add greeting outside this repository]` and `[EDIT ME: sign-off]` markers; the tool stores and adds no requester
+name or address, and the log is never changed.
+
+- **open:** acknowledges receipt on the recorded received date and says the request is being reviewed; no deadline,
+  acceptance or takedown is promised.
+- **accepted:** states the decision date and your recorded note (quoted, unchanged). The correction date is taken from the
+  finding only when exactly one correction is dated from the received date through the decision date inclusive; with none or
+  several the draft says `[EDIT ME: confirm the correction date]`. The log keeps no link to a correction, so every accepted
+  draft also says `[EDIT ME: confirm the correction addressed this request]`.
+- **declined:** says the request was not accepted and quotes the recorded note as the reason.
+
+The finding URL (`base_url` + `/findings/<slug>.html`) appears only when the finding is currently published and
+`site.json` sets `base_url`; otherwise the draft says `[EDIT ME: add the finding URL]`. An unknown id, a missing or invalid
+log, unreadable public content, a link in the path or an existing draft is refused with nothing written; to change a kept
+draft, edit it by hand. Review the draft and send it yourself outside this tool; a draft is not evidence of delivery
+and not a new decision.
+
+### Optional: publish quarterly counts
+
+Off by default: the site build never opens the private log. To publish totals, set `content/site.json`
+`"corrections": {"show_request_counts": true}` (omitted, `{}` or false mean off; anything else is refused by field name).
+`corrections.html` then gains "Correction requests we received": one row per calendar quarter in which a request was
+received, newest first, with Received, Accepted, Declined and Still open. Requests are counted in the quarter they were
+received and by their current state, so a later decision changes the original quarter's row; these are not quarter-end
+totals. Only these counts leave the log: no summaries, notes, dates, finding or request ids, or anything about who asked.
+A missing log shows "No correction requests have been logged yet." A malformed, symlinked or unreadable log stops the build
+with `private/correction-requests.json: cannot publish correction request counts; check the private log` and no value.
+`content-check` validates the setting only and never reads the log; a build or preview with the flag on also validates it.
+Small counts can reveal that a request exists; you choose whether to publish, and there is no anonymity guarantee or
+minimum count.
+
 Out of scope: a web form, automatic replies, automatic retraction, legal obligations.

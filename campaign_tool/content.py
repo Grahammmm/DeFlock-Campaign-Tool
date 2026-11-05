@@ -21,7 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import law, map_controller
+from . import finding_updates, law, map_controller
 from .agency_cards import text as plain_text, visible
 from .camera_direction import valid_direction
 from .review import CLASSIFICATIONS, review_blockers
@@ -45,7 +45,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq", "sharing"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01 / DF0237-04: reserved even without content
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq", "sharing", "elsewhere", "events"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01 / DF0237-04 / DF1107-04 / DF1107-08: reserved even without content
 
 
 class ContentError(ValueError):
@@ -158,7 +158,7 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image", "license", "comment_asks", "press"}
+             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image", "license", "comment_asks", "press", "corrections"}
 # DF2207-10: the optional reporter page. contact_role is required; the address defaults to site.json.contact_email.
 PRESS_KEYS = {"contact_role", "contact_email", "about_md"}
 MAX_PRESS_ROLE, MAX_PRESS_ABOUT = 80, 1500
@@ -349,6 +349,22 @@ def load_comment_asks(value, label):
     return list(value)
 
 
+CORRECTIONS_KEYS = {"show_request_counts"}
+
+
+def load_corrections(value):
+    """DF1103-14: site.json.corrections is ``{"show_request_counts": <true|false>}``; refusals name the field, never a value."""
+    label = "site.json.corrections"
+    if not isinstance(value, dict):
+        raise ContentError(f"{label}: expected an object")
+    if set(value) - CORRECTIONS_KEYS:
+        raise ContentError(f"{label}: unknown field(s); only show_request_counts is allowed")
+    flag = value.get("show_request_counts", False)
+    if type(flag) is not bool:
+        raise ContentError(f"{label}.show_request_counts: must be true or false")
+    return {"show_request_counts": flag}
+
+
 def load_site(document, assets_dir=None):
     """``assets_dir`` (content/public-assets) lets ``brand`` check its logo and favicon files."""
     _require_keys(document, SITE_KEYS, {"schema_version", "tagline", "about_md"}, "site.json")
@@ -420,6 +436,7 @@ def load_site(document, assets_dir=None):
         **({"brand": load_brand(document["brand"], assets_dir)} if "brand" in document else {}),
         **({"share_image": load_share_image(document["share_image"], assets_dir)} if "share_image" in document else {}),
         **({"license": load_license(document["license"])} if "license" in document else {}),
+        **({"corrections": load_corrections(document["corrections"])} if "corrections" in document else {}),
         **({"press": load_press(document["press"], _email(document.get("contact_email"), "site.json.contact_email"))}
            if "press" in document else {}),
     }
@@ -430,7 +447,7 @@ def load_site(document, assets_dir=None):
 FINDING_KEYS = {"id", "title", "slug", "summary", "body_md", "classification", "confidence",
                 "event_date", "sources", "published_at", "updated_at", "corrections", "state",
                 "author", "limitations", "counterevidence", "agency_id", "rule_version",
-                "duty", "exceptions", "rule_ids", "also_agency_ids", "agency_response"}
+                "duty", "exceptions", "rule_ids", "also_agency_ids", "agency_response", "updates"}
 FINDING_REQUIRED = {"id", "title", "slug", "summary", "classification", "confidence",
                     "event_date", "sources", "published_at", "corrections", "state",
                     "author", "limitations", "counterevidence"}
@@ -641,6 +658,12 @@ def load_finding(document, label, *, known_agency_ids=None, today=None):
     if also_agency_ids is not None:  # absent stays absent: a primary-only finding keeps its exact shape
         loaded["also_agency_ids"] = also_agency_ids
     loaded.update(response)  # absent stays absent, like also_agency_ids: a finding with no reply keeps its exact shape
+    if "updates" in document:  # DF0022-06: absent stays absent; present (even []) is validated and kept in stored order
+        try:
+            loaded["updates"] = finding_updates.load_updates(document["updates"], published_at, today=today,
+                                                             label=f"{label}.updates")
+        except finding_updates.UpdateError as exc:
+            raise ContentError(str(exc)) from None
     if known_agency_ids is not None:
         check_finding_agencies(loaded, known_agency_ids, label)
     return loaded
@@ -653,9 +676,11 @@ def load_finding_preview(document, label, now=None):
     if not isinstance(document, dict):
         raise ContentError(f"{label}: expected an object")
     if document.get("state") != "published":
+        if "updates" in document and document["updates"] != []:  # DF0022-06: a draft has no history to preview
+            raise ContentError(f"{label}.updates: updates require an already published finding")
         when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         document = {key: value for key, value in document.items()
-                    if key not in ("state", "published_at", "updated_at", "corrections")}
+                    if key not in ("state", "published_at", "updated_at", "corrections", "updates")}
         document.update(state="published", published_at=when, corrections=[])
     return load_finding(document, label)
 
@@ -2832,6 +2857,11 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
 
     agencies = load_campaign_agencies(root, today)
     known_agencies = {agency["agency_id"] for agency in agencies}
+    from .agency_actions import by_agency, read_actions  # local: agency_actions imports this module
+    actions = by_agency(read_actions(root, agencies, today=today))  # DF0237-01: None without the file
+    for agency in agencies:  # only a nonempty store adds a key, so an absent or empty file leaves every agency unchanged
+        if actions.get(agency["agency_id"]):
+            agency["actions"] = actions[agency["agency_id"]]
     for finding in findings:  # DF1952-07: extra agencies of a multi-agency finding must be known agencies
         check_finding_agencies(finding, known_agencies, finding_files[finding["id"]])
 
@@ -2899,6 +2929,10 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
     faq = read_faq(root, findings)  # DF0022-01: optional; None without the file
     if faq is not None:
         model["faq"] = faq
+    from .content_events import read_events  # local: content_events imports this module
+    events = read_events(root)  # DF1107-08: optional; None without the file, [] when present and empty
+    if events:
+        model["events"] = events
     coverage = read_coverage(root, findings, today=today)  # DF0022-03: optional; None without the file, [] when present and empty
     if coverage is not None:
         model["coverage"] = coverage
@@ -2906,8 +2940,16 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
     # checked (and refused) by site against the pages it writes; without the file there is no key.
     if redirects_path.is_file() or redirects_path.is_symlink():
         model["redirects"] = _read_json(redirects_path)
+    from .content_elsewhere import read_elsewhere  # local: content_elsewhere imports this module
+    elsewhere = read_elsewhere(root, today)  # DF1107-04: optional; None without the file, entries in stored order
+    if elsewhere is not None:
+        model["elsewhere"] = elsewhere
     if supporters is not None:  # DF2207-13: public rows only (never the private consent records)
         model["supporters"] = supporters
+    from .content_statements import read_statements  # local: content_statements imports this module
+    statements = read_statements(root, officials, today or date.today())  # DF1107-07: None without the file
+    if statements:  # the key exists only with rows, so no file and [] leave every page byte-identical
+        model["statements"] = statements
     from .body_schedules import read_body_schedules  # local: body_schedules imports this module
     schedules = read_body_schedules(root, today=today)  # DF0022-10: optional; the key exists only with rows
     if schedules:

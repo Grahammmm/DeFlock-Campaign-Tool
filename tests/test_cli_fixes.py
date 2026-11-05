@@ -31,7 +31,7 @@ SAMPLES = (  # one exception per fix text, in table order
     ValueError("ledger has a journal or WAL file beside it; nothing was written"),
     ValueError("public tree check found 4 potential leak(s); fix content and rebuild"),
     ValueError("public tree check found 4 broken link(s); fix content and rebuild"),
-    ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response"),
+    ValueError("meetings needs --online to query the agenda platform, or a recorded response (--from-json; --from-xml for Granicus)"),
     ValueError("r.json exists; the drill never overwrites a receipt"), sqlite3.DatabaseError("file is not a database"),
     PermissionError(errno.EACCES, "m", "/t"), OSError(errno.ENOSPC, "m"))
 # Exception additions: add one uniquely named JSON object per work unit in

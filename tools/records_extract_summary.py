@@ -1,10 +1,14 @@
-"""Read-only summary of records-extract-outcomes-v1 files (RF0805-4). Usage: [--total] FILE... | --self-test
+"""Read-only summary of records-extract-outcomes-v1 files (RF0805-4). Usage: [--total | --unique] FILE... | --self-test
 One JSON line of counts per FILE; never a document hash, form, accept status, OCR page list, written_at or a path
 other than the basename. Writes nothing; wired into no stage. The extract stage (records.native_extract) owns the file.
 --total (RF0140-9) adds one last records-extract-summary-total-v1 line of counts and codes over all FILEs.
+--unique (RF1110-7) is exclusive: FILEs are listed oldest first, and each original_sha256 counts once, by its last
+observation in that caller order (not verified current state). One records-extract-summary-unique-v1 line, counts only,
+over the provided files only; the first refused input gives one error line with its 1-based ordinal and exit 1.
 """
 import json
 import os
+import re
 import stat
 import sys
 from collections import Counter
@@ -82,6 +86,73 @@ def total(results):
             "repeated_run_ids": sum(n - 1 for n in runs.values())}
 
 
+UNIQUE_SCHEMA = "records-extract-summary-unique-v1"
+SHA256 = re.compile(r"[0-9a-f]{64}")
+USAGE = "usage: records_extract_summary.py [--total | --unique] FILE... | --self-test"
+
+
+class UniqueRefused(Exception):
+    """A fixed error code and the 1-based ordinal of the refused input file; never content or a path."""
+
+    def __init__(self, code, ordinal):
+        super().__init__(code)
+        self.code, self.ordinal = code, ordinal
+
+
+def unique_winners(winners, data, ordinal):
+    """Fold one loaded file into winners (hash -> outcome and refusal_code only); nothing else is kept."""
+    if not isinstance(data, dict) or data.get("schema") != SCHEMA:
+        raise UniqueRefused("wrong-schema", ordinal)
+    documents = data.get("documents")
+    if not isinstance(documents, list) or not all(isinstance(d, dict) for d in documents):
+        raise UniqueRefused("bad-documents", ordinal)
+    seen = set()
+    for document in documents:
+        identity = document.get("original_sha256")
+        if not isinstance(identity, str) or not SHA256.fullmatch(identity):
+            raise UniqueRefused("bad-original-sha256", ordinal)
+        if identity in seen:
+            raise UniqueRefused("duplicate-original", ordinal)
+        seen.add(identity)
+    for document in documents:
+        outcome = document.get("outcome")
+        kept = {"outcome": outcome if isinstance(outcome, str) else None}
+        if "refusal_code" in document:
+            kept["refusal_code"] = document["refusal_code"]
+        winners[document["original_sha256"]] = kept
+    return len(documents)
+
+
+def unique_summary(winners, files, observations):
+    """One line over the winning rows only: counts and codes, no identity, name, run label or time."""
+    outcomes = dict.fromkeys(OUTCOMES, 0)
+    for row in winners.values():
+        if row["outcome"] in outcomes:
+            outcomes[row["outcome"]] += 1
+    histogram = refusal_code_histogram(list(winners.values()))
+    top = sorted(histogram.items(), key=lambda item: (-item[1], item[0]))[:3]
+    return {"schema": UNIQUE_SCHEMA, "selection": "last-input-wins", "scope": "provided-outcome-files-only",
+            "files": files, "observations": observations, "documents": len(winners),
+            "replaced_observations": observations - len(winners), "outcomes": outcomes,
+            "unknown_outcomes": len(winners) - sum(outcomes.values()), "extracted": outcomes[EXTRACTED],
+            "failed": sum(outcomes[c] for c in FAILED), "top_refusal_codes": [list(t) for t in top]}
+
+
+def run_unique(paths):
+    """(exit status, one line): files are read once each, in the order given; the first refusal ends the run."""
+    winners, observations = {}, 0
+    try:
+        for ordinal, path in enumerate(paths, 1):
+            try:
+                data = load(path)
+            except Refused as error:
+                raise UniqueRefused(str(error), ordinal) from None
+            observations += unique_winners(winners, data, ordinal)
+    except UniqueRefused as error:
+        return 1, {"schema": UNIQUE_SCHEMA, "error": error.code, "input": error.ordinal}
+    return 0, unique_summary(winners, len(paths), observations)
+
+
 def self_test():
     pairs = [(EXTRACTED, "b"), (sorted(FAILED)[0], "a"), ("NEW_CODE", "c"), (EXTRACTED, "d"), (EXTRACTED, "Bad!")]
     docs = [{"original_sha256": "ab" * 32, "form": "pdf", "outcome": o, "refusal_code": r} for o, r in pairs]
@@ -108,9 +179,17 @@ def self_test():
 def main(argv):
     if argv == ["--self-test"]:
         return self_test()
+    if "--unique" in argv:
+        files = [arg for arg in argv if arg != "--unique"]
+        if not files or argv.count("--unique") > 1 or any(arg.startswith("-") for arg in files):
+            print(USAGE, file=sys.stderr)
+            return 2
+        status, line = run_unique(files)
+        print(json.dumps(line, sort_keys=True))
+        return status
     files = [arg for arg in argv if arg != "--total"]
     if not files or argv.count("--total") > 1 or any(arg.startswith("-") for arg in files):
-        print("usage: records_extract_summary.py [--total] FILE... | --self-test", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 2
     results = [checked_full(lambda path=path: load(path), os.path.basename(path)) for path in files]
     lines = [line for line, _ in results] + ([total(results)] if "--total" in argv else [])

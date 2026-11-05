@@ -31,11 +31,14 @@ CLAIM_WORDING_BLOCKERS = {"campaign_tool/review.py", "tools/flock_dashboard.py",
 # Modules the walk below flags that were read and emit nothing a member of the public could read (reason each).
 REVIEWED_NOT_PUBLISHING = {
     "campaign_tool/content.py": "loads and validates content; its only writes are the scaffold helpers",
+    "campaign_tool/content_events.py": "validates content/events.json (shared privacy lint on every text field); it writes nothing",
     "campaign_tool/content_init.py": "writes the starter content/ templates for the organizer to edit",
+    "campaign_tool/content_statements.py": "reads and validates content/statements.json (its lint runs in the build); it writes nothing",
     "campaign_tool/finding_packet.py": "private reviewer packet; refuses to write inside public/ or content/",
     "campaign_tool/image_meta.py": "reads image metadata; the writer is the copy step in site.py",
     "campaign_tool/kit_calendar.py": "private .ics under kit/, refused inside public/",
     "campaign_tool/recent.py": "private recent-activity report under kit/",
+    "campaign_tool/search_log.py": "read-only private stdout aggregates of a local search log; writes nothing",
     "campaign_tool/setup_cmd.py": "writes the starter config",
     "campaign_tool/site_check.py": "reads the built tree",
     "campaign_tool/correction_requests.py": "private log; the site build never reads it",
@@ -65,8 +68,10 @@ MARK = re.compile(r"^(public|feed\.xml|agency-cards\.js|social|briefs|cards)$|^(
 USES = ("privacy_patterns", "flock_privacy")
 SKIP = re.compile(r"tools/(accept_|fc\d)|^campaign_tool/records/|^campaign_tool/(privacy_patterns|publish_paths)\.py$|^tools/(check_public_tree|ci_affected)")
 # What each site-driven entry is fed: the published field that reaches its artefact.
-PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name"), "atom-feed": ("finding.summary",),
-          "agency-feeds": ("finding.summary",), "open-graph-meta": ("finding.title",),
+PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name", "statement.quote", "statement.context_note",
+                          "elsewhere.place", "elsewhere.body", "elsewhere.as_stated",
+                          "event.title", "event.venue", "event.description_md", "event.accessibility_note"), "atom-feed": ("finding.summary",),
+          "agency-feeds": ("finding.summary",), "corrections-feed": ("finding.summary",), "open-graph-meta": ("finding.title",),
           "agency-cards": ("site.county_profile.summary", "agency.profile.summary"), "data-exports": ("source.title", "agency.name"),
           "map-geojson": ("map.cameras.geojson", "map.city-boundaries.geojson", "map.county.geojson")}
 TEXT_ONLY = {"flock-page", "flock-publish-brief", "flock-publish-stage"}  # these tools refuse without printing the category per value
@@ -257,6 +262,30 @@ class Drivers:
             document["features"][0].setdefault("properties", {})["how"] = value
             path.write_text(json.dumps(document), encoding="utf-8")
             return
+        if kind == "elsewhere":  # DF1107-04: a one-entry content/elsewhere.json whose one field holds the value
+            entry = {"place": "Fictional City", "state": "ZZ", "body": "Fictional City Council", "decided_on": "2026-01-02",
+                     "kind": "paused", "as_stated": "Fictional statement.", "source_url": "https://records.example.test/item",
+                     "checked_on": "2026-01-03", key: "Text %s end (fictional)" % value}
+            (root / "content" / "elsewhere.json").write_text(json.dumps([entry]), encoding="utf-8")
+            return
+        if kind == "statement":  # DF1107-07: a roster body plus one statement whose public field carries the value
+            from datetime import date
+            day = date.today().isoformat()
+            row = {"agency_id": "ca-cedar-city-council", "official": "Rowan Example", "said_on": day, "quote": "Plain words.",
+                   "context": "meeting", "source_url": "https://cedar.example/minutes", "checked_on": day}
+            row[key] = "Text %s end" % value
+            (root / "content" / "officials.json").write_text(json.dumps({"schema_version": 1, "bodies": [{
+                "agency_id": "ca-cedar-city-council", "officials": [{
+                    "name": "Rowan Example", "role": "Member", "source_url": "https://cedar.example/council", "checked_on": day}]}]}),
+                encoding="utf-8")
+            (root / "content" / "statements.json").write_text(json.dumps([row]), encoding="utf-8")
+            return
+        if kind == "event":  # DF1107-08: one synthetic campaign event with the probed field replaced
+            event = {"id": "forum", "title": "Teach-in", "starts_at": "2026-10-10T18:00:00Z", "ends_at": "2026-10-10T19:00:00Z",
+                     "venue": "Cedar Library", "description_md": "A synthetic gathering."}
+            event[key] = "Text %s end (fictional)" % value
+            (root / "content" / "events.json").write_text(json.dumps([event]), encoding="utf-8")
+            return
         path = {"finding": next((root / "content" / "findings").glob("*.json")), "site": root / "content" / "site.json",
                 "source": root / "content" / "sources.json", "agency": root / "content" / "agencies.json"}[kind]
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -344,6 +373,22 @@ class Drivers:
         case.approve(module.A, "N1", ref="ask " + value)
         code, out = case.brief()
         return out if code == 1 and not case.brief_md.exists() else None
+
+    def drive_agency_brief(self, entry, value, probe):
+        from datetime import datetime, timezone
+        from campaign_tool.agency_brief import build_brief
+        root = self.campaign()
+        path = root / "content" / "agencies.json"
+        agencies = json.loads(path.read_text(encoding="utf-8"))
+        agencies[1].update(verified=True, verification={"source_url": "https://example.invalid/verified", "checked_on": "2026-10-30"})
+        agencies[1]["profile"]["contract"] = {"vendor": "Synthetic vendor", "start": "2026-01-01", "end": "2027-01-01",
+                                              "renewal_note": "Note %s end" % value, "source_url": "https://example.invalid/c",
+                                              "checked_on": "2026-10-30"}
+        path.write_text(json.dumps(agencies), encoding="utf-8")
+        try:
+            build_brief(root, agencies[1]["agency_id"], now=datetime(2026, 11, 4, tzinfo=timezone.utc))
+        finally:
+            self.case.assertFalse((root / "kit").exists(), "a refused brief must write nothing")
 
     def drive_email(self, entry, value, probe):
         case = self.borrowed("test_email_lint", "EmailLintTests", "test_private_patterns_named_never_printed")
@@ -447,7 +492,7 @@ class RegistryTests(unittest.TestCase):
         planned = Drivers(self).campaign()
         build_site(planned)
         names = {p.relative_to(planned / "public").as_posix() for p in (planned / "public").rglob("*") if p.is_file()}
-        self.assertTrue({"feed.xml", "agency-cards.js", "data/findings.json"} <= names)
+        self.assertTrue({"feed.xml", "corrections.xml", "agency-cards.js", "data/findings.json"} <= names)
         self.assertTrue(any(n.startswith("findings/agency/") and n.endswith(".xml") for n in names))
         self.assertIn('property="og:', (next((planned / "public" / "findings").glob("cedar-*.html"))).read_text(encoding="utf-8"))
 
@@ -490,7 +535,8 @@ class RegistryTests(unittest.TestCase):
                                       ({"site": {"tagline": value}}, None, "site.tagline"),
                                       ({"site": {"county_profile": {"summary": value}}}, None, "site.county_profile.summary"),
                                       ({}, {"name": value}, "campaign.name"),
-                                      ({"supporters": [{"name": value}]}, None, "supporters[0].name")]:
+                                      ({"supporters": [{"name": value}]}, None, "supporters[0].name"),
+                                      ({"events": [{"venue": value}]}, None, "events[0].venue")]:
                 with self.assertRaises(ContentError) as raised:
                     _privacy_gate(model, cfg)
                 self.assertEqual(str(raised.exception), "privacy lint: %s: %s" % (where, category))

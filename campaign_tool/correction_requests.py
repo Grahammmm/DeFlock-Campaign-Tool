@@ -1,13 +1,16 @@
 """Private log of correction requests: private/correction-requests.json (0600). Records what was asked about which
-published finding and the decision, never who asked; nothing is sent, published or read by the site build."""
+published finding and the decision, never who asked; nothing is sent or published. The site build does not read it,
+with one explicit off-by-default exception: site.json corrections.show_request_counts true makes the build call
+``quarterly_counts``, which publishes per-quarter counts only (never text, ids, dates or anything about who asked)."""
 import json
 import os
 import re
+import stat
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from .content import load_content
-from .findings import _write_private
+from .content import ContentError, load_content
+from .findings import _read_json, _write_private
 from .privacy_patterns import EMAIL  # the shared pattern: everything the old local copy matched, plus the spelled-out forms
 
 NAME = "correction-requests.json"
@@ -62,6 +65,29 @@ def _check_request(index, item):
     return item["id"]
 
 
+def _validate_document(document, today=None):
+    """Pure whole-document check shared by the log commands and the counts. ``today`` (counts only) adds the strict
+    checks: integer schema_version, no date after today, decided_on not before received_on."""
+    if not isinstance(document, dict):
+        raise _unreadable("top level is not an object")
+    if unknown := [key for key in document if key not in ("schema_version", "requests")]:
+        raise _unreadable(f"unknown key {unknown[0]!r}")
+    if document.get("schema_version") != 1 or not isinstance(document.get("requests"), list):
+        raise _unreadable("needs schema_version 1 and a requests list")
+    if today is not None and type(document["schema_version"]) is not int:
+        raise _unreadable("needs schema_version 1 and a requests list")
+    ids = [_check_request(index, item) for index, item in enumerate(document["requests"])]
+    if ids != sorted(set(ids)) or (ids and ids[0] < 1):
+        raise _unreadable("ids must be unique, ascending and start at 1 or above")
+    if today is not None:
+        for index, item in enumerate(document["requests"]):
+            received = _date(item["received_on"])
+            decided = _date(item["decided_on"]) if "decided_on" in item else received
+            if received > today or decided > today or decided < received:
+                raise _unreadable(f"requests[{index}] has a future date or a decision before its receipt")
+    return document
+
+
 def _load(path):
     if not path.exists():
         return None
@@ -71,16 +97,7 @@ def _load(path):
         raise _unreadable(f"not valid JSON ({exc.__class__.__name__})") from None
     except OSError as exc:
         raise _unreadable(f"cannot read it ({exc.__class__.__name__})") from None
-    if not isinstance(document, dict):
-        raise _unreadable("top level is not an object")
-    if unknown := [key for key in document if key not in ("schema_version", "requests")]:
-        raise _unreadable(f"unknown key {unknown[0]!r}")
-    if document.get("schema_version") != 1 or not isinstance(document.get("requests"), list):
-        raise _unreadable("needs schema_version 1 and a requests list")
-    ids = [_check_request(index, item) for index, item in enumerate(document["requests"])]
-    if ids != sorted(set(ids)) or (ids and ids[0] < 1):
-        raise _unreadable("ids must be unique, ascending and start at 1 or above")
-    return document
+    return _validate_document(document)
 
 
 def _day(value, flag, today):
@@ -162,3 +179,184 @@ def open_overdue(root, today, days=14):
     if not os.path.lexists(Path(root) / "private" / NAME):
         return None
     return [r["id"] for r in list_requests(root, today) if r["state"] == "open" and r["days_open"] > days]
+
+
+COUNTS_REFUSAL = f"private/{NAME}: cannot publish correction request counts; check the private log"
+
+
+def _exists(path):
+    """False only when the path is genuinely absent (ENOENT); permission and other I/O errors propagate."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _counts_path(root):
+    """The log path, or None when the private directory or the log is absent; links and non-directories are refused."""
+    private = Path(root) / "private"
+    if not _exists(private):
+        return None
+    if os.path.islink(private) or not private.is_dir():
+        raise ValueError("private")
+    path = private / NAME
+    if not _exists(path):
+        return None
+    if os.path.islink(path):
+        raise ValueError("log")
+    return path
+
+
+def quarterly_counts(root, today=None):
+    """DF1103-14: ``[{quarter, received, accepted, declined, still_open}]``, newest quarter first, grouped by the quarter the
+    request was received; accepted, declined and still_open split that cohort by the CURRENT stored state. Nothing else
+    leaves this function. Missing storage is zero rows and is never created; any other failure is one fixed ContentError
+    that carries no private value, filename or cause."""
+    today = _today(today)
+    try:
+        path = _counts_path(root)
+        if path is None:
+            return []
+        document = _validate_document(_read_json(path, 4 * 1024 * 1024, "correction request log"), today)
+        cohorts = {}
+        for item in document["requests"]:
+            day = date.fromisoformat(item["received_on"])
+            row = cohorts.setdefault(f"{day.year}-Q{(day.month - 1) // 3 + 1}",
+                                     {"received": 0, "accepted": 0, "declined": 0, "open": 0})
+            row["received"] += 1
+            row[item["state"]] += 1
+    except Exception:  # every failure, including a bug, must not echo private text
+        raise ContentError(COUNTS_REFUSAL) from None
+    return [{"quarter": quarter, "received": row["received"], "accepted": row["accepted"],
+             "declined": row["declined"], "still_open": row["open"]}
+            for quarter, row in sorted(cohorts.items(), reverse=True)]
+
+
+# DF1952-13: private, never-sent reply drafts from the recorded disposition.
+REPLY_DIR = ("kit", "corrections", "replies")
+REPLY_BANNER = "DRAFT — NOT SENT. Review and edit before sending it yourself."
+_LOG_REFUSAL = f"private/{NAME} is missing, unreadable or invalid; no draft was written"
+_CONTENT_REFUSAL = "public content is unreadable; no draft was written (run content-check)"
+
+
+def _reply_request(root, request_id):
+    if type(request_id) is not int or request_id < 1:
+        raise ValueError("--id must be a positive whole number")
+    private = Path(root) / "private"
+    try:
+        path = private / NAME
+        if os.path.islink(private) or not private.is_dir() or not _exists(path):
+            raise ValueError
+        document = _validate_document(_read_json(path, 4 * 1024 * 1024, "correction request log"))
+    except Exception:  # fixed text only: no path, key or private value from the log
+        raise ValueError(_LOG_REFUSAL) from None
+    for item in document["requests"]:
+        if item["id"] == request_id:
+            return item
+    raise ValueError(f"no correction request {request_id}")
+
+
+def _reply_finding(root, finding_id):
+    """(finding or None, base_url or None). Missing content is absence; present but invalid content refuses."""
+    try:
+        try:
+            mode = os.lstat(Path(root) / "content").st_mode
+        except FileNotFoundError:
+            return None, None  # genuinely absent
+        if not stat.S_ISDIR(mode):  # a file, link or dangling link is present but invalid
+            raise ValueError
+        model = load_content(root)
+    except Exception:
+        raise ValueError(_CONTENT_REFUSAL) from None
+    if not model:
+        return None, None
+    found = next((f for f in model["findings"] if f["id"] == finding_id), None)
+    return found, model["site"].get("base_url")
+
+
+def _quote(note):
+    return "\n".join("> " + line for line in (note.splitlines() or [""]))
+
+
+def _render_reply(request, finding, base):
+    state, subject = request["state"], request["finding_id"]
+    url = (base.rstrip("/") + "/findings/" + finding["slug"] + ".html") if finding and base else None
+    lines = [f"# Draft reply to correction request {request['id']}", "", REPLY_BANNER, "",
+             "[EDIT ME: add greeting outside this repository]", "", f"Subject: finding {subject}", ""]
+    if state == "open":
+        lines += [f"We received your correction request about this finding on {request['received_on']}. "
+                  "It is being reviewed, and we will write again when a decision has been recorded."]
+    elif state == "accepted":
+        matches = [c["date"] for c in finding["corrections"]
+                   if request["received_on"] <= c["date"] <= request["decided_on"]] if finding else []
+        lines += ["We accepted your correction request about this finding.", "",
+                  f"Received on: {request['received_on']}", f"Decision date: {request['decided_on']}",
+                  "Correction date: " + (matches[0] if len(matches) == 1 else "[EDIT ME: confirm the correction date]"),
+                  "", "Recorded decision note:", _quote(request["note"]), "",
+                  "[EDIT ME: confirm the correction addressed this request]"]
+    else:
+        lines += ["We reviewed your correction request about this finding and did not accept it.", "",
+                  f"Received on: {request['received_on']}", f"Decision date: {request['decided_on']}", "",
+                  "Reason recorded:", _quote(request["note"])]
+    lines += ["", "Finding: " + (url or "[EDIT ME: add the finding URL]"), "", "[EDIT ME: sign-off]", ""]
+    return "\n".join(lines)
+
+
+def _reply_target(root, request_id):
+    """Preflight every component without creating anything; returns the target path."""
+    current, missing = Path(root), 0
+    for part in REPLY_DIR + (f"{request_id}.md",):
+        current = current / part
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            missing += 1
+            continue
+        except OSError:
+            raise ValueError(f"kit/corrections/replies/{request_id}.md: path could not be checked safely; "
+                             "nothing was written") from None
+        if missing or stat.S_ISLNK(mode) or (part != f"{request_id}.md" and not stat.S_ISDIR(mode)):
+            raise ValueError(f"kit/corrections/replies/{request_id}.md: path has a link or non-directory, or the draft already exists; "
+                             "nothing was written")
+        if part == f"{request_id}.md":
+            raise ValueError(f"kit/corrections/replies/{request_id}.md already exists; edit it by hand "
+                             "(an existing draft is never replaced)")
+    return current
+
+
+def reply(root, request_id):
+    """Write kit/corrections/replies/<id>.md from the recorded disposition; never overwrites, never sends."""
+    request = _reply_request(root, request_id)
+    finding, base = _reply_finding(root, request["finding_id"])
+    text = _render_reply(request, finding, base)
+    target = _reply_target(root, request_id)
+    rel = f"kit/corrections/replies/{request_id}.md"
+    root = Path(root)
+    made = []
+    try:
+        current = root
+        for part in REPLY_DIR:
+            current = current / part
+            if not _exists(current):
+                os.mkdir(current, 0o700)
+                os.chmod(current, 0o700)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        made.append(target)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as out:
+            os.fchmod(out.fileno(), 0o600)
+            out.write(text)
+            out.flush()
+            os.fsync(out.fileno())
+        made.clear()
+    except FileExistsError:
+        raise ValueError(f"{rel} already exists; edit it by hand (an existing draft is never replaced)") from None
+    except OSError:
+        raise ValueError(f"{rel} could not be written safely; nothing was sent") from None
+    finally:
+        for partial in made:
+            try:
+                os.unlink(partial)
+            except OSError:
+                pass
+    return {"written": rel, "id": request_id, "state": request["state"]}

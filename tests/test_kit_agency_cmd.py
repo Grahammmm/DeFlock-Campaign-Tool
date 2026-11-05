@@ -200,6 +200,18 @@ class KitAgencyTests(unittest.TestCase):
         self.assert_refused(self.add())
         self.assertEqual((tree_hash(suggested), tree_hash(requests)), before)
 
+    def test_add_requires_whole_literal_agency_id(self):
+        before = self.path.read_bytes()
+        with self.assertRaises(ValueError) as caught:
+            kit_agencies.add_agency(self.root, "ca-fictional-new-police\n", "Fictional New Police", "police")
+        self.assertIn("agency_id must be lowercase", str(caught.exception))
+        self.assert_refused(self.add("ca-fictional-new-police\n", "Fictional New Police", "police"),
+                            "agency_id must be lowercase")
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assert_refused(self.add("nv-fictional-new-police", "Fictional New Police", "police"), "must start with 'ca-'")
+        self.assertEqual(self.assert_ok(self.add("ca-fictional-new-1-police", "Fictional New Police", "police"))
+                         ["agency_id"], "ca-fictional-new-1-police")
+
     def test_help_names_next_kit_run(self):
         result = cli("kit-agency", "add", "--help")
         self.assertEqual(result.returncode, 0, result.stderr)
