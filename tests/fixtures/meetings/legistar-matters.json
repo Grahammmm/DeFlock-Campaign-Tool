@@ -1,0 +1,19 @@
+{
+  "/v1/examplecity/matters": [
+    {"MatterId": 501, "MatterGuid": "AAAAAAAA-1111-2222-3333-444444444444", "MatterFile": "26-0501",
+     "MatterName": "Flock Safety agreement", "MatterTitle": "Approve a contract renewal with Example Vendor for automated license plate readers",
+     "MatterTypeName": "Contract", "MatterStatusName": "Passed", "MatterBodyName": "Example City Council",
+     "MatterIntroDate": "2026-03-10T00:00:00", "MatterAgendaDate": "2026-04-14T00:00:00", "MatterPassedDate": "2026-04-14T00:00:00",
+     "MatterLastModifiedUtc": "2026-04-15T01:02:03.000"},
+    {"MatterId": 502, "MatterGuid": "bbbbbbbb-1111-2222-3333-444444444444", "MatterFile": "26-0620",
+     "MatterName": "Surveillance technology ordinance", "MatterTitle": "Ordinance establishing a surveillance technology use policy",
+     "MatterTypeName": "Ordinance", "MatterStatusName": "In Committee", "MatterBodyName": "Example City Council",
+     "MatterIntroDate": "2026-06-02T00:00:00", "MatterAgendaDate": null, "MatterPassedDate": null,
+     "MatterLastModifiedUtc": "2026-06-03T01:02:03.000"},
+    {"MatterId": 503, "MatterGuid": "cccccccc-1111-2222-3333-444444444444", "MatterFile": "26-0700",
+     "MatterName": "Park benches", "MatterTitle": "Purchase of park benches",
+     "MatterTypeName": "Resolution", "MatterStatusName": "Passed", "MatterBodyName": "Example City Council",
+     "MatterIntroDate": "2026-07-01T00:00:00", "MatterAgendaDate": "2026-07-08T00:00:00", "MatterPassedDate": "2026-07-08T00:00:00",
+     "MatterLastModifiedUtc": "2026-07-09T01:02:03.000"}
+  ]
+}
