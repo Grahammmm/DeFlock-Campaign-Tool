@@ -679,6 +679,8 @@ def meetings_cmd(args, root):
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
         raise SystemExit(2)
     cfg = read_config(root)
+    if args.platform != "ics" and (args.feed_url or args.body or args.from_ics):
+        raise MeetingsError("--feed-url, --body and --from-ics go with --platform ics")
     if args.client is None and args.platform != "ics":
         return _meetings_multi(args, root, cfg, zone)
     if args.from_json:
