@@ -130,7 +130,7 @@ class CamerasPageTests(unittest.TestCase):
             "{http://www.sitemaps.org/schemas/sitemap/0.9}loc")]
         self.assertEqual(locs, [BASE + p for p in ("/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html",
                                                    "/meetings.html", "/about.html", "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html",  # DF2037-14
-                                                   "/requests.html", "/cameras.html", "/agencies/cedar.html",  # DF1103-13 / DF1952-10 / DF2237-08
+                                                   "/requests.html", "/data.html", "/cameras.html", "/agencies/cedar.html",  # DF1103-13 / DF2207-12 / DF1952-10 / DF2237-08
                                                    "/findings/cedar-policy-posted.html",
                                                    "/meetings/cedar-council-2026-10.html",
                                                    "/sources/cafecafecafe.html", "/sources/beefbeefbeef.html")])  # DF1103-11, last

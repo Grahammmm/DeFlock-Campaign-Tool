@@ -1,5 +1,7 @@
 """Synthetic provenance wording, escaping and rendered-link contracts."""
 import copy
+import hashlib
+import json
 import re
 import shutil
 import tempfile
@@ -69,6 +71,14 @@ class ProvenancePagesTests(unittest.TestCase):
         self.assertIn("Every document we cite, and where it came from.", library)
         for path in public.rglob("*.html"):
             html = path.read_text()
+            if path == public / "data.html":
+                # Only independently rehashed public downloads may have full checksums; never source identities.
+                descriptor = json.loads((public / "data/datapackage.json").read_text())
+                for resource in descriptor["resources"]:
+                    digest = hashlib.sha256((public / "data" / resource["path"]).read_bytes()).hexdigest()
+                    self.assertEqual(resource["hash"], "sha256:" + digest)
+                    self.assertEqual(html.count(digest), 2)
+                    html = html.replace(digest, "PUBLIC-DOWNLOAD-CHECKSUM")
             self.assertNotRegex(html, r"[0-9a-fA-F]{40,}")
             for target in re.findall(r'href="(/sources/[0-9a-f]{12}\.html)"[^>]*>Record no\.', html):
                 self.assertTrue((public / target[1:]).is_file(), target)  # DF1103-11: each record link has a built page
