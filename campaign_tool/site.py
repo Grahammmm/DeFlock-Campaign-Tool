@@ -1014,11 +1014,56 @@ class Site:
         if due <= datetime(self.today.year, self.today.month, self.today.day, tzinfo=timezone.utc):
             text = "Written comment period closed"
         else:
-            offset = int(due.utcoffset().total_seconds()) // 60
-            text = (f'Written comments due {WEEKDAYS[due.weekday()]}, {MONTHS[due.month - 1]} {due.day}, {due.year}, '
-                    f'{(due.hour - 1) % 12 + 1}:{due.minute:02d} {"AM" if due.hour < 12 else "PM"} '
-                    f'(UTC{"-" if offset < 0 else "+"}{abs(offset) // 60:02d}:{abs(offset) % 60:02d})')
+            text = "Written comments due " + self._deadline_when(due)
         return f'<p class="comment-deadline"><time datetime="{e(written["deadline"])}">{text}</time></p>'
+
+    @staticmethod
+    def _deadline_when(due):
+        """The date, time and explicit original UTC offset of a deadline (shared by the meeting line and the home strip)."""
+        offset = int(due.utcoffset().total_seconds()) // 60
+        return (f'{WEEKDAYS[due.weekday()]}, {MONTHS[due.month - 1]} {due.day}, {due.year}, '
+                f'{(due.hour - 1) % 12 + 1}:{due.minute:02d} {"AM" if due.hour < 12 else "PM"} '
+                f'(UTC{"-" if offset < 0 else "+"}{abs(offset) // 60:02d}:{abs(offset) % 60:02d})')
+
+    def next_written_deadline(self):
+        """DF1952-10: ``(meeting, deadline text)`` for the earliest verified written-comment deadline strictly after the build
+        instant (``self.today`` at 00:00 UTC) among all noncancelled upcoming meetings, ties by meeting id; None without one."""
+        midnight = datetime(self.today.year, self.today.month, self.today.day, tzinfo=timezone.utc)
+        found = []
+        for meeting in self.upcoming:
+            written = (meeting.get("participation") or {}).get("written_comment") or {}
+            if written.get("deadline") and utc_moment(written["deadline"]) > midnight:
+                found.append((utc_moment(written["deadline"]), meeting["id"], meeting, written["deadline"]))
+        if not found:
+            return None
+        _, _, meeting, raw = min(found, key=lambda row: row[:2])
+        return meeting, raw
+
+    def standings_section(self):
+        """DF1952-10: "Where things stand", five counts from assembled public content and the configured public map only."""
+        agencies = self.model["agencies"]
+        asked = [item for agency in agencies for item in agency.get("asked", [])]
+        if not hasattr(self, "_map_docs"):
+            self.mapped_counts()
+        docs = getattr(self, "_map_docs", None)  # absent when mapped_counts is replaced (tests) or the map is off
+        points = len((docs[0] if docs else {}).get("features") or [])
+        metrics = (("agencies", sum(1 for agency in agencies if agency.get("asked")), "/requests.html"),
+                   ("answered", sum(1 for item in asked if item["state"] in ("answered", "partly_answered")), "/requests.html"),
+                   ("records", len(self.model["sources"]), "/sources.html"),
+                   ("findings", len(self.model["findings"]), "/findings/"),
+                   ("cameras", points, "/cameras.html"))
+        rows = "".join(f'<li><a href="{href}">{self.t("standings." + key)}</a>: '
+                       + (f"<strong>{count}</strong>" if count else f'<strong>{self.t("standings.none_yet")}</strong>') + "</li>"
+                       for key, count, href in metrics)
+        deadline = self.next_written_deadline()
+        line = ""
+        if deadline:
+            meeting, raw = deadline
+            line = (f'<p class="comment-deadline">{self.t("standings.deadline")}: '
+                    f'<a href="/meetings/{e(meeting["id"])}.html">{e(meeting["body"])}</a>, '
+                    f'<time datetime="{e(raw)}">{e(self._deadline_when(datetime.fromisoformat(raw.replace("Z", "+00:00"))))}</time></p>')
+        return (f'    <section class="section" id="standings"><div class="section-heading"><div>'
+                f'<h2>{self.t("standings.heading")}</h2></div></div><ul>{rows}</ul>{line}</section>\n')
 
     def submitted_comment_html(self, meeting):
         """DF1407-06: the comment the campaign submitted, as escaped plain text in a <pre>; "" without one."""
@@ -1337,7 +1382,7 @@ class Site:
         meetings = (f'    <section class="section" id="meetings"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p><h2>{self.t("heading.meetings_home")}</h2></div>'
                     f'<p><a href="/meetings.html">{self.t("intro.all_meetings")}</a></p></div><div class="meeting-list">'
                     + ("".join(self.meeting_item(m) for m in self.upcoming[:3]) or empty) + '</div></section>\n')
-        main = (self.map_section() + cards + self.contracts_section()
+        main = (self.map_section() + self.standings_section() + cards + self.contracts_section()
                 + f'    <section class="section" id="mission"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.mission")}</p>'
                   f'<h2>{e(self.site["tagline"])}</h2></div></div>{mission}</section>\n'
                 + f'    <section class="section" id="findings"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.latest_findings")}</p><h2>{self.t("heading.findings_home")}</h2></div>'
@@ -2528,6 +2573,13 @@ class Site:
     def cameras_html(self):
         """No-JS list of mapped points (DF1507-13): each point in the first picker city (by name) whose boundary holds it,
         by the counts' own half-open test, else in the group section. Over 2 000 points: 500 rows per section."""
+        if not self.map:  # DF1952-10: the strip's link target; the same disclaimer, no points
+            main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Mapped points</p>'
+                    '<h2>Community-mapped points; ownership unconfirmed.</h2></div>'
+                    '<p>Points are community reports from OpenStreetMap, not confirmed agency ownership.</p></div>'
+                    f'<p>{self.t("standings.none_yet").capitalize()}. {self.t("cameras.empty")}</p></section>\n')
+            return self.page("cameras", "Mapped points", "List of community-mapped points by city; ownership unconfirmed",
+                             "/cameras.html", main)
         self.mapped_counts()
         cameras, boundaries = self._map_docs
         picker = {agency["slug"] for agency in self.picker_cities()}
@@ -2740,7 +2792,7 @@ class Site:
         paths = ["/", "/agencies.html", "/findings/", "/corrections.html", "/sources.html", "/meetings.html", "/about.html",
                  "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html",
                  "/requests.html", "/data.html"]  # DF1103-13; DF2207-12
-        paths += ["/cameras.html"] if self.map else []
+        paths += ["/cameras.html"]  # DF1952-10: always, an empty page without a map
         paths += ["/glossary.html"] if self.glossary else []
         paths += ["/faq.html"] if self.faq else []  # DF0022-01
         paths += ["/events.html"] if self.events else []  # DF1107-08: the page only, never its fragment anchors
@@ -3337,10 +3389,9 @@ def _plan(root, today=None, notes=None):
     for agency in model["agencies"]:
         if agency["agency_id"] in site.agency_pages():
             pages[site.agency_pages()[agency["agency_id"]][1:]] = site.agency_html(agency)
-    if site.map:
-        if "cameras.html" in pages:  # content/pages/cameras.json would otherwise be silently replaced
-            raise ContentError("content/pages/cameras.json: collides with the generated cameras.html (the map's point list)")
-        pages["cameras.html"] = site.cameras_html()
+    if "cameras.html" in pages:  # content/pages/cameras.json would otherwise be silently replaced
+        raise ContentError("content/pages/cameras.json: collides with the generated cameras.html (the map's point list)")
+    pages["cameras.html"] = site.cameras_html()
     for source in model["sources"]:  # DF1103-11: one page per library entry; the prefixes were checked in Site()
         pages[site.record_pages()[source["sha256"]][1:]] = site.record_html(source)
     for finding in model["findings"]:
