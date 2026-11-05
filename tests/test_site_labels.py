@@ -248,10 +248,7 @@ class LabelsTest(unittest.TestCase):
         # agency.contract_cost, agency.cost_*: the fixture has no contract cost (tests/test_agency_contract_cost.py covers those).
         # correction_counts.*: only a site that sets corrections.show_request_counts renders these (tests/test_site_correction_counts.py).
         # agency.funding_*: the fixture records no funding (tests/test_agency_funding.py covers those).
-        absent = ["correction_counts.caption", "correction_counts.col_accepted", "correction_counts.col_declined",
-                  "correction_counts.col_open", "correction_counts.col_quarter", "correction_counts.col_received",
-                  "correction_counts.empty", "correction_counts.heading", "correction_counts.lead",
-                  "agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
+        absent = ["agency.contract_cost", "agency.cost_annual", "agency.cost_one_time", "agency.cost_source",
                   "agency.cost_total", "agency.funding_fiscal_year", "agency.funding_kind_asset_forfeiture",
                   "agency.funding_kind_donation", "agency.funding_kind_general_fund", "agency.funding_kind_grant",
                   "agency.funding_kind_other", "agency.funding_provenance",
@@ -261,6 +258,9 @@ class LabelsTest(unittest.TestCase):
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "agency.votes_heading", "agency.votes_more", "agency.votes_none", "agency.votes_source",
+                  "correction_counts.caption", "correction_counts.col_accepted", "correction_counts.col_declined",
+                  "correction_counts.col_open", "correction_counts.col_quarter", "correction_counts.col_received",
+                  "correction_counts.empty", "correction_counts.heading", "correction_counts.lead",
                   "finding.agency_response", "finding.quote_page", "finding.quote_transcribed", "finding.reply_declined", "finding.reply_no_response", "finding.reply_received",
                   "footer.license",
                   "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
