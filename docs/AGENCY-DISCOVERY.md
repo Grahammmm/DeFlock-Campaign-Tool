@@ -467,3 +467,8 @@ The report has three sections, each headed by the notice above: seed agencies th
 Atlas rows that match no seed agency; and every selected agency in `kit/agencies.json`, organizer-added ones included,
 that no Atlas row matched. The last list is not a finding about use. `--json` prints the same report as JSON and
 nothing else. Use `kit-agency select` yourself if a lead is worth a request; this command never does.
+
+## Count a saved ALPR search log (private, read-only)
+
+`kit-search-log --csv FILE --agency ID` counts a locally saved agency search log by month, organization and purpose category,
+without printing any purpose text. See [SEARCH-LOG.md](SEARCH-LOG.md).

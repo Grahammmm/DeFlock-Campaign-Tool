@@ -36,6 +36,7 @@ REVIEWED_NOT_PUBLISHING = {
     "campaign_tool/image_meta.py": "reads image metadata; the writer is the copy step in site.py",
     "campaign_tool/kit_calendar.py": "private .ics under kit/, refused inside public/",
     "campaign_tool/recent.py": "private recent-activity report under kit/",
+    "campaign_tool/search_log.py": "read-only private stdout aggregates of a local search log; writes nothing",
     "campaign_tool/setup_cmd.py": "writes the starter config",
     "campaign_tool/site_check.py": "reads the built tree",
     "campaign_tool/correction_requests.py": "private log; the site build never reads it",
