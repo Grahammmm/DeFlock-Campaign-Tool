@@ -509,7 +509,19 @@ before this can be considered a supported live poll. No detail requests or new s
 ## Not done
 
 No RSVP collection (the `rsvp_count` column is
-reserved), and no other agenda platforms (Granicus, PrimeGov, CivicClerk). Each of those should keep the same keyword-lead, human-verify rule.
+reserved), and no other agenda platforms (Granicus, PrimeGov). Each of those should keep the same keyword-lead, human-verify rule.
+
+## CivicClerk import (CLI)
+
+```
+python3 -m campaign_tool meetings --directory D --platform civicclerk --client <slug> (--online | --from-json REC) [--since YYYY-MM-DD] [--tz ZONE]
+```
+
+`CivicClerkClient` reads `https://<slug>.api.civicclerk.com/v1/Events` (`startDateTime ge <since>`, at most 60 events;
+a `value` envelope or a bare list) and each event's agenda items from `/v1/Meetings/<agendaId>` (`items`, nested `childItems`,
+`agendaObjectItemName` and `agendaObjectItemDescription`). Same keyword filter, `kit/meetings.json` shape and change report as
+Legistar, with ids `civicclerk-<slug>-<event id>` and `source: "civicclerk"`. `startDateTime` (UTC) is shown in `--tz`; an agenda
+link is kept only if `https://` on `civicclerk.com`; a cancelled mark in the event name or notice sets `status: "cancelled"`.
 
 ## Calendar feed
 

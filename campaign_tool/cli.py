@@ -658,7 +658,7 @@ def backup_diff_cmd(args, root):
 
 def meetings_cmd(args, root):
     from datetime import date
-    from .meetings import LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
+    from .meetings import CivicClerkClient, LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
     zone = resolve_zone(args.tz)
     if zone is None:
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
@@ -670,14 +670,14 @@ def meetings_cmd(args, root):
         opener = default_opener
     else:
         raise ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response")
-    client = LegistarClient(args.client, opener=opener)
+    client = (CivicClerkClient if args.platform == "civicclerk" else LegistarClient)(args.client, opener=opener)
     since = date.fromisoformat(args.since) if args.since else None
     meetings = relevant_events(client, since=since, zone=zone)
     previous = _read_previous(root / "kit" / "meetings.json")
     changes = ({"previous": previous} if previous == "unreadable"
                else compare_meetings(previous, meetings, args.client, since or date.today()))
-    target = write_meetings(root, meetings, args.client, None if previous is None else changes, zone=zone)
-    report = {"client": args.client, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
+    target = write_meetings(root, meetings, args.client, None if previous is None else changes, zone=zone, source=client.source)
+    report = {"client": args.client, "platform": client.source, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
               "cancelled_meetings": sum(m["status"] == "cancelled" for m in meetings)}
     if "added" in changes:
         report["changes"] = {k: len(changes[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
@@ -933,6 +933,7 @@ def main():
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
+    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk"), default="legistar", help="Agenda platform (default legistar)")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
