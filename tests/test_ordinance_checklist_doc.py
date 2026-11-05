@@ -20,6 +20,22 @@ COLUMNS = ["Element", "Question", "Example", "Citation", "Official code page", "
 # Hosts the author read by hand: Berkeley's city code host, Davis's eCode360 code, and the
 # American Legal Publishing code library that sf.gov names as San Francisco's official publisher.
 OFFICIAL_HOSTS = {"berkeley.municipal.codes", "ecode360.com", "codelibrary.amlegal.com"}
+# Exact locator each row must keep, so dropping a subsection (not just the section) is caught.
+LOCATORS = {
+    "Approval before acquisition": r"2\.99\.030\(1\)",
+    "Surveillance impact report": r"26\.07\.020.*\(a\)-\(g\)",
+    "Use policy": r"2\.99\.020\(4\)",
+    "Advance public posting": r"19B\.3\(b\)",
+    "Public hearing": r"26\.07\.030\(a\)-\(b\)",
+    "Standard for approval": r"2\.99\.060",
+    "Retention limits": r"2\.99\.020\(4\)\(g\)",
+    "Data-sharing limits": r"2\.99\.020\(4\)\(i\)",
+    "Outside agreements and data feeds": r"19B\.2\(a\)\(4\)-\(5\)",
+    "Annual report": r"2\.99\.070.*2\.99\.020\(2\)",
+    "Review of continued use": r"26\.07\.060\(a\)-\(b\)",
+    "Oversight and audit mechanisms": r"26\.07\.020.*\(j\)",
+    "Enforcement and remedies": r"26\.07\.070\(a\)-\(c\)",
+}
 DISCLAIMERS = ("draft reading aid", "not legal advice", "not a law package")
 
 
@@ -58,6 +74,8 @@ def check_document(text):
             problems.append("row '%s': attributed enacted example is missing" % name)
         if not re.search(r"\d+\.\d+|\b\d+[A-Z]?\.\d+", citation):
             problems.append("row '%s': citation has no section locator" % name)
+        elif name in LOCATORS and not re.search(LOCATORS[name], citation):
+            problems.append("row '%s': citation lacks its required subsection locator" % name)
         links = re.findall(r"\]\(([^)\s]*)\)", page)
         if len(links) != 1:
             problems.append("row '%s': needs exactly one code-page link" % name)
@@ -120,6 +138,18 @@ class OrdinanceChecklistTests(unittest.TestCase):
         self.assertEqual(problems, ["row 'Approval before acquisition': needs exactly one code-page link"])
         problems = self.mutated("Berkeley Municipal Code (BMC) 2.99.030(1)", "Berkeley Municipal Code")
         self.assertEqual(problems, ["row 'Approval before acquisition': citation has no section locator"])
+
+    def test_dropped_subsection_fails_naming_the_row(self):
+        cases = (
+            ("BMC) 2.99.030(1)", "BMC) 2.99.030", "Approval before acquisition"),
+            ("BMC 2.99.020(4)(g)", "BMC 2.99", "Retention limits"),
+            ("BMC 2.99.020(4)(i)", "BMC 2.99.020(4)", "Data-sharing limits"),
+            ("DMC 26.07.070(a)-(c)", "DMC 26.07.070", "Enforcement and remedies"),
+            ("DMC 26.07.030(a)-(b)", "DMC 26.07.030", "Public hearing"),
+        )
+        for old, new, row in cases:
+            self.assertEqual(self.mutated(old, new),
+                             ["row '%s': citation lacks its required subsection locator" % row], old)
 
     def test_http_empty_and_unpinned_hosts_fail(self):
         base = "https://berkeley.municipal.codes/BMC/2.99.030"
