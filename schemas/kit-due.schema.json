@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://deflock-campaign-tool.invalid/schemas/kit-due.schema.json",
   "title": "kit-due",
-  "description": "Printed by `kit-due` (campaign_tool.kit_track.due): one JSON document on stdout, read-only. open lists unanswered, unclosed requests with a state; answered lists requests with a determination, produced or denied step; stated_passed lists answered requests whose own stated production date has passed; closed requests are left out. The counts past_due, stated_date_passed, installment_passed and waiting_on_you are totals of the lists above (exit 3 when past_due + stated_date_passed + installment_passed is above zero). since and note appear only on an open row whose state is waiting_on_you. Dates are provisional reminders, not legal due dates. Nothing is sent or published.",
+  "description": "Printed by `kit-due` (campaign_tool.kit_track.due): one JSON document on stdout, read-only. open lists unanswered, unclosed requests with a state; answered lists requests with a determination, produced or denied step; stated_passed lists answered requests whose own stated production date has passed; closed requests are left out. The counts past_due, stated_date_passed, installment_passed and waiting_on_you are totals of the lists above (exit 3 when past_due + stated_date_passed + installment_passed is above zero). since and note appear only on an open row whose state is waiting_on_you. received_on, receipt_evidence and (on answered and stated_passed rows) note appear only for a request whose agency receipt was recorded (kit-received); its note reads 'counted from receipt D (KIND)'. Dates are provisional reminders, not legal due dates. Nothing is sent or published.",
   "type": "object",
   "additionalProperties": false,
   "required": ["as_of", "law_package_status", "open", "answered", "past_due", "stated_passed",
@@ -31,7 +31,9 @@
           "kind": {"const": "download"},
           "produced_on": {"$ref": "#/$defs/date"},
           "since": {"$ref": "#/$defs/date"},
-          "note": {"type": "string", "minLength": 1}
+          "note": {"type": "string", "minLength": 1},
+          "received_on": {"$ref": "#/$defs/date"},
+          "receipt_evidence": {"$ref": "#/$defs/receipt_evidence"}
         }
       }
     },
@@ -47,6 +49,9 @@
           "name": {"type": ["string", "null"]},
           "sent_on": {"$ref": "#/$defs/date"},
           "reference": {"type": ["string", "null"]},
+          "note": {"type": "string", "minLength": 1},
+          "received_on": {"$ref": "#/$defs/date"},
+          "receipt_evidence": {"$ref": "#/$defs/receipt_evidence"},
           "last_step": {
             "type": ["object", "null"],
             "additionalProperties": false,
@@ -74,7 +79,10 @@
           "reference": {"type": ["string", "null"]},
           "state": {"const": "stated_date_passed"},
           "stated": {"$ref": "#/$defs/date"},
-          "days": {"type": "integer", "minimum": 1}
+          "days": {"type": "integer", "minimum": 1},
+          "note": {"type": "string", "minLength": 1},
+          "received_on": {"$ref": "#/$defs/date"},
+          "receipt_evidence": {"$ref": "#/$defs/receipt_evidence"}
         }
       }
     },
@@ -85,6 +93,7 @@
     "note": {"type": "string", "minLength": 1}
   },
   "$defs": {
+    "receipt_evidence": {"enum": ["portal", "acknowledgement", "return_receipt", "other"]},
     "date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
     "date_or_null": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
   }

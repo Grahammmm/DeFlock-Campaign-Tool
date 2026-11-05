@@ -171,9 +171,13 @@ def _requests(root, as_of, directory, law_base, owner=None):
             continue
         if "owner" in row:
             what += f" [owner: {row['owner']}]"
-        items.append(_item("request_" + row["state"], what, command, row["due"],
-                           row["agency_id"] + (row["request"] if row.get("kind") == "download"
-                                               else "" if row["request"] == "main" else "#" + row["request"])))
+        extra = {k: row[k] for k in ("received_on", "receipt_evidence") if k in row}
+        if extra:  # counted from the recorded agency receipt: say so, never as a legal deadline
+            what += f" ({kit_track.receipt_note(row['received_on'], row['receipt_evidence'])})"
+        item = _item("request_" + row["state"], what, command, row["due"],
+                     row["agency_id"] + (row["request"] if row.get("kind") == "download"
+                                         else "" if row["request"] == "main" else "#" + row["request"]))
+        items.append({**item, **extra})
     return items
 
 

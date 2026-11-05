@@ -21,7 +21,7 @@ DUE = json.loads((REPO_ROOT / "schemas" / "kit-due.schema.json").read_text(encod
 ROW = STATUS["properties"]["requests"]["items"]
 OPEN = DUE["properties"]["open"]["items"]
 CONDITIONAL = {"more", "correspondence", "correspondence_prefixes", "correspondence_more", "downloads_pending",
-               "contacts", "last_contact", "withdrawn_on"}
+               "contacts", "last_contact", "withdrawn_on", "received_on", "receipt_evidence", "note"}
 STATES = {"waiting_on_you", "producing", "installment_passed", "no_law_package", "past_due", "due_today", "upcoming",
           "download_pending", "download_expired"}
 STAMP = "2026-03-01T00:00:00+00:00"
@@ -104,7 +104,8 @@ class KitJsonContractTests(unittest.TestCase):
                                              step("2026-03-12", "fee_estimate", amount_cents=5000),
                                              step("2026-03-13", "fee_paid", amount_cents=5000)]),
             (a, "determined"): ("2026-03-02", {}, [step("2026-03-05", "determination", expected_on="2026-03-10")]),
-            (a, "denied"): ("2026-03-02", {}, [step("2026-03-06", "denied", note="synthetic", withheld_basis=["Synthetic exemption"])]),
+            (a, "denied"): ("2026-03-02", {"received_on": "2026-03-03", "receipt_evidence": "return_receipt"},
+                            [step("2026-03-06", "denied", note="synthetic", withheld_basis=["Synthetic exemption"])]),
             (b, "main"): ("2026-03-05", {"correspondence": hashes(2, 900)},
                           [step("2026-03-06", "acknowledged", correspondence=hashes(1, 950))]),
             (b, "bulk"): ("2026-03-02", {}, [step("2026-03-05", "determination"),
@@ -150,7 +151,8 @@ class KitJsonContractTests(unittest.TestCase):
                 self.assertIs(node.get("additionalProperties"), False, sorted(node["properties"]))
                 self.assertLessEqual(set(node.get("required", [])), set(node["properties"]))
         self.assertEqual(set(ROW["properties"]) - set(ROW["required"]), CONDITIONAL)
-        self.assertEqual(set(OPEN["properties"]) - set(OPEN["required"]), {"since", "note", "kind", "produced_on"})
+        self.assertEqual(set(OPEN["properties"]) - set(OPEN["required"]),
+                         {"since", "note", "kind", "produced_on", "received_on", "receipt_evidence"})
         self.assertEqual(set(STATUS["required"]), set(STATUS["properties"]))
         self.assertEqual(set(DUE["properties"]) - set(DUE["required"]), {"download_expired"})
 
@@ -182,6 +184,7 @@ class KitJsonContractTests(unittest.TestCase):
             (self.b, "main"): {"correspondence", "correspondence_prefixes"},
             (self.b, "bulk"): {"more"},
             (self.b, "letters"): {"correspondence", "correspondence_prefixes", "correspondence_more"},
+            (self.a, "denied"): {"received_on", "receipt_evidence", "note"},
             (self.c, "withdrawn"): {"withdrawn_on"}})
         rows = {(r["agency_id"], r["request"]): r for r in document["requests"]}
         self.assertEqual((rows[(self.b, "bulk")]["more"], rows[(self.b, "bulk")]["records"]), (1, 51))

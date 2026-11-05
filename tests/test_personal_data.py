@@ -481,7 +481,7 @@ CATALOG_WRITERS = {
     "meeting_comments.record": "comments_sent",
     "correction_requests.add": "correction_requests", "correction_requests.decide": "correction_requests",
     "kit_track.record_sent": "contact_log", "kit_track.record_step": "contact_log",
-    "kit_track.record_contact": "contact_log", "kit_undo.undo_step": "contact_log",
+    "kit_track.record_contact": "contact_log", "kit_track.record_received": "contact_log", "kit_undo.undo_step": "contact_log",
     "kit_import_sent.import_sent": "contact_log", "kit_import_steps._write": "contact_log",
     "kit_import_steps.import_steps": "contact_log",
     "kit_assign.assign": "volunteer_assignments",
