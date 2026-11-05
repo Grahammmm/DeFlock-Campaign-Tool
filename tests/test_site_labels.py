@@ -275,6 +275,11 @@ class LabelsTest(unittest.TestCase):
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
                   "officials.heading", "officials.listed", "officials.source", "press.download_logo", "press.logo",
                   "privacy.signup_policy",
+                  "requests.caption", "requests.col_agency", "requests.col_asked_on", "requests.col_state",
+                  "requests.col_topic", "requests.col_updated_on", "requests.not_recorded",
+                  "requests.state_acknowledged", "requests.state_answered", "requests.state_awaiting_response",
+                  "requests.state_declined_in_writing", "requests.state_partly_answered", "requests.state_withdrawn",
+
                   "schedule.join_many", "schedule.join_two", "schedule.ordinal_1", "schedule.ordinal_2",
                   "schedule.ordinal_3", "schedule.ordinal_4", "schedule.ordinal_last", "schedule.rule",
                   "schedule.stale", "schedule.usually", "schedule.weekday_friday", "schedule.weekday_monday",
