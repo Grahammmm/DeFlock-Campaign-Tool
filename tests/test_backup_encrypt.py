@@ -153,6 +153,37 @@ class EncryptedBackupTests(unittest.TestCase):
         with self.assertRaisesRegex(backup.BackupError, "manifest_digest_mismatch"):
             backup.verify(enc, expected_manifest_sha256=original["manifest_sha256"], gnupg_home=self.home_a)
 
+    def test_encrypted_restore_uses_same_target_guard(self):
+        path, _ = self.encrypted()
+        before = self.decrypt_dirs()
+        raced = self.base / "raced"
+        real_verify = backup.verify
+
+        def arrive(archive, *args, **kwargs):
+            report = real_verify(archive, *args, **kwargs)
+            raced.mkdir()
+            (raced / "campaign.json").write_bytes(b"another process's campaign")
+            return report
+        with mock.patch.object(backup, "verify", arrive):
+            with self.assertRaisesRegex(backup.BackupError, "restore target changed during verification; nothing restored"):
+                backup.restore(path, raced, gnupg_home=self.home_a)
+        self.assertEqual([p.name for p in raced.iterdir()], ["campaign.json"])
+        self.assertEqual((raced / "campaign.json").read_bytes(), b"another process's campaign")
+        self.assertEqual(self.decrypt_dirs(), before)
+
+        late = self.base / "late"
+        real_finish = backup._RestoreTarget.finish
+
+        def arrive_late(owner):
+            (late / "foreign.txt").write_bytes(b"arrived after extraction")
+            return real_finish(owner)
+        with mock.patch.object(backup._RestoreTarget, "finish", arrive_late):
+            with self.assertRaisesRegex(backup.BackupError, "refusing unowned entries"):
+                backup.restore(path, late, gnupg_home=self.home_a)
+        self.assertEqual(sorted(p.name for p in late.iterdir()), ["foreign.txt"])
+        self.assertEqual((late / "foreign.txt").read_bytes(), b"arrived after extraction")
+        self.assertEqual(self.decrypt_dirs(), before)
+
     def test_wrong_key_cannot_decrypt_and_leaves_no_temp(self):
         path, _ = self.encrypted()
         before = self.decrypt_dirs()
