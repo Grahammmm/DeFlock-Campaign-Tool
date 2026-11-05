@@ -153,6 +153,14 @@ to the finding's `#corrections` section. The footer and each finding page link
 to it, and finding lists mark a corrected finding with a "Corrected" pill
 showing its latest correction date. The starter preview has no such page.
 
+`/corrections.xml` is an Atom feed of corrections alone, written only when at least one published finding has a correction
+(no correction, no file, and no discovery link or footer entry). It holds one entry per correction, newest first (same date:
+finding slug, then stored index), at most 50 across all findings. An entry id is `urn:deflock-correction:<finding id>:<stored
+index>` (the zero-based position in the finding's `corrections` array, so it survives newer corrections), its title is
+`Correction: <finding title>`, its summary is the correction note as plain text, and `updated` is the correction date at
+midnight UTC (never a build time). `updates` never appear in it. `/corrections.html` and each corrected finding page carry a
+`rel=alternate` link to it, and the footer names it (label `corrections.feed`).
+
 A finding with `updates` (`finding update`, see PUBLICATION.md) shows an **Updates** section (`#updates`) under its body,
 before the sources: each entry is the label `Update`, its date and its note as escaped literal text, newest date first
 (same date: the entry added last first). An update is not a correction: it adds no Corrected pill, no row on
