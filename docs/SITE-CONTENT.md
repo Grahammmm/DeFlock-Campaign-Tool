@@ -896,6 +896,59 @@ person. The two files are replaced one after the other with a rollback on an ord
 until the saved pair of files is restored. There is no crash-atomic transaction and no concurrent writer support; run
 one writer. Evidence originals are never deleted.
 
+### Campaign events (`content/events.json`, optional)
+
+The campaign's own forums, teach-ins and other public gatherings become `/events.html`. They are **not** governing-body
+meetings: no comment kit, no outcome, no RSVP, nothing is sent or fetched, and no attendee data is collected. The file is a
+JSON array of 0 to 50 objects, kept in the order written:
+
+```json
+[
+  {
+    "id": "records-teach-in",
+    "title": "Public records teach-in (fictional)",
+    "starts_at": "2026-10-10T18:00:00-07:00",
+    "ends_at": "2026-10-10T20:00:00-07:00",
+    "venue": "Cedar Library, meeting room B",
+    "description_md": "How to read a records response. **All welcome.**",
+    "url": "https://example.com/teach-in",
+    "accessibility_note": "Step-free entrance; captions on request."
+  },
+  {
+    "id": "online-forum",
+    "title": "Online forum (fictional)",
+    "starts_at": "2026-11-03T12:00:00Z",
+    "ends_at": "2026-11-03T13:00:00Z",
+    "online": true,
+    "description_md": "Join from anywhere; the link is on the details page."
+  }
+]
+```
+
+- Required: `id` (lowercase letters, digits and hyphens, starting with a letter, at most 64; unique in the file),
+  `title` (1 to 120 characters), `starts_at`, `ends_at`, `description_md` (1 to 1200 characters, the same safe Markdown
+  subset as pages; no raw HTML and no images). Optional: `venue`, `online`, `url`, `accessibility_note` (1 to 400
+  characters). Unknown fields are refused.
+- Location is exactly one of: a `venue` (1 to 160 characters, published as written) with `online` left out or `false`,
+  or `online: true` with no `venue`. A hybrid event names its venue and describes the online option in `description_md`.
+- `title`, `venue` and `accessibility_note` are plain text: no `<` or `>` and no control or invisible characters.
+- Times are `YYYY-MM-DDTHH:MM:SS` followed by `Z` or an offset such as `-07:00` (at most 14:00). A time without an
+  offset, a date alone, fractions of a second and impossible dates are refused. `ends_at` may equal `starts_at` but not
+  be earlier (compared as instants, not as text). Times are shown exactly as written, with their offsets.
+- `url` must be `https://`; it is linked, never fetched, and its safety or availability is not promised.
+- Every text field, including a Markdown link address, goes through the shared privacy lint (email, phone, plate). A
+  venue is not exempt. A refusal names the field and the category, never the text.
+- Upcoming means `starts_at` is at or after the build day at 00:00:00 UTC; everything else is past (an event already
+  underway at that moment counts as past). The page says it is current as of the build date, not a live clock. Upcoming
+  events come first (earliest first), then past events (latest first) in their own section; each event has the anchor
+  `#event-<id>`. The home page shows only the next upcoming event.
+- `events.html` joins the footer (last paragraph) and, with `base_url`, `sitemap.xml` (the page only, not anchors).
+  `events` is a reserved page and finding slug and `events.html` a generated top-level name with or without the file.
+  Without the file, or with `[]`, there is no page, link, home notice or sitemap entry and every other page is
+  byte-identical. Rebuild after every change; deleting the file removes the page on the next build.
+- `build` and `content-check` use the same reader, so they refuse the same things: a duplicate `id`, an `ends_at` before
+  `starts_at` and a non-https `url` are each named by field and position (`events.json[N].field`).
+
 ## Regular meeting schedules (`content/body-schedules.json`, optional)
 
 A source-backed rule for when a body usually meets, for bodies with or without a Legistar feed. Organizers write it by
@@ -954,6 +1007,7 @@ per picker city by name, each point in the first city boundary holding it by the
 section lists 500 rows, then "and N more on the map"; linked from the map fallback and footer, in `sitemap.xml`),
 `glossary.html` (only with a non-empty `content/glossary.json`: see Glossary),
 `faq.html` (only with a `content/faq.json`: see FAQ),
+`events.html` (only with a non-empty `content/events.json`: see Campaign events),
 `news.html` (only with a `content/coverage.json`: see In the news),
 `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
