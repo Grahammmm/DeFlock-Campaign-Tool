@@ -1406,6 +1406,10 @@ def main():
     sharing_p.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD", help="Day the organizer read the portal")
     sharing_p.add_argument("--source-url", required=True, help="https URL of the portal page (transparency.flocksafety.com)")
     sharing_p.add_argument("--replace", action="store_true", help="Overwrite an existing sharing list")
+    links_p = content_cmds.add_parser("link-check", help="List every external https URL the public content cites; with --online "
+                                      "also request each once (GET, first 64 KiB, no cookies, 15 s, 5 redirects). Writes nothing")
+    links_p.add_argument("--directory", required=True)
+    links_p.add_argument("--online", action="store_true", help="Touch the network; without it nothing is fetched")
     coverage_cmds = content_cmds.add_parser("coverage", help="Record press coverage in content/coverage.json for /news.html "
                                             "(typed by the organizer; nothing is fetched, quoted or published)"
                                             ).add_subparsers(dest="coverage_command", required=True)
@@ -2064,6 +2068,12 @@ def main():
                 done = agency_actions.remove_action(root, args.agency, agency_actions.parse_index(args.index))
                 print(f"Agency action removed: {done['agency_id']}, index {done['index']}.")
             print("Content only; nothing was built, sent or deployed.")
+        elif args.command == "content" and args.content_command == "link-check":
+            from .content_links import run_cli as link_check_cli
+            report, code = link_check_cli(root, args.online)
+            sys.stdout.write(report)
+            if code:
+                sys.exit(code)
         elif args.command == "content" and args.content_command == "agency-sharing":
             from .content_sharing import import_sharing
             print(json.dumps(import_sharing(root, args.agency, Path(args.csv).expanduser(), args.checked_on, args.source_url,
