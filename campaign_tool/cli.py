@@ -679,7 +679,7 @@ def meetings_cmd(args, root):
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
         raise SystemExit(2)
     cfg = read_config(root)
-    if args.client is None:
+    if args.client is None and args.platform != "ics":
         return _meetings_multi(args, root, cfg, zone)
     if args.from_json:
         opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
@@ -1572,8 +1572,6 @@ def main():
         if args.platform == "ics":
             if args.client or not args.feed_url or not args.body:
                 meetings_p.error("--platform ics needs --feed-url and --body and does not use --client")
-        elif not args.client:
-            meetings_p.error("the following arguments are required: --client")
     if args.command == "meetings-speakers" and (args.add is None) != (args.point is None):
         speakers_p.error("--point is required with --add and only allowed with --add")
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):

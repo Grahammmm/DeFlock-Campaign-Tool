@@ -199,10 +199,11 @@ class CliTests(unittest.TestCase):
             self.assertEqual(code, 1, extra)
         self.assertFalse(self.kit.exists())
 
-    def test_other_platforms_refuse_ics_flags_and_still_need_client(self):
+    def test_other_platforms_refuse_ics_flags_and_need_client_off_legistar(self):
         code, _, _ = self.run_cli("--platform", "legistar", "--feed-url", FEED, "--client", "x", platform=False)
         self.assertEqual(code, 1)
-        self.assertEqual(self.run_cli("--online", platform=False)[0], 2)
+        self.assertEqual(self.run_cli("--platform", "granicus", "--online", platform=False)[0], 1)
+        self.assertFalse(self.kit.exists())
 
     def test_oversize_and_too_many_events_write_nothing(self):
         big = self.tmp / "big.ics"
