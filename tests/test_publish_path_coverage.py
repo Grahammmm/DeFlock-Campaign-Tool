@@ -354,6 +354,22 @@ class Drivers:
         code, out = case.brief()
         return out if code == 1 and not case.brief_md.exists() else None
 
+    def drive_agency_brief(self, entry, value, probe):
+        from datetime import datetime, timezone
+        from campaign_tool.agency_brief import build_brief
+        root = self.campaign()
+        path = root / "content" / "agencies.json"
+        agencies = json.loads(path.read_text(encoding="utf-8"))
+        agencies[1].update(verified=True, verification={"source_url": "https://example.invalid/verified", "checked_on": "2026-10-30"})
+        agencies[1]["profile"]["contract"] = {"vendor": "Synthetic vendor", "start": "2026-01-01", "end": "2027-01-01",
+                                              "renewal_note": "Note %s end" % value, "source_url": "https://example.invalid/c",
+                                              "checked_on": "2026-10-30"}
+        path.write_text(json.dumps(agencies), encoding="utf-8")
+        try:
+            build_brief(root, agencies[1]["agency_id"], now=datetime(2026, 11, 4, tzinfo=timezone.utc))
+        finally:
+            self.case.assertFalse((root / "kit").exists(), "a refused brief must write nothing")
+
     def drive_email(self, entry, value, probe):
         case = self.borrowed("test_email_lint", "EmailLintTests", "test_private_patterns_named_never_printed")
         case.edit("Please reference", value + " Please reference")
