@@ -126,7 +126,7 @@ class ExtractOneBranchTests(unittest.TestCase):
         for reason, outcome in (('extraction_failed:extraction_error', ne.CORRUPT), ('extraction_partial:ocr_runtime_unconfigured', ne.AWAITING_OCR), ('extraction_blocked:extraction_timeout', ne.TIMEOUT), ('extraction_blocked:decoder_needed', ne.DECODER_NEEDED), ('extraction_partial:expansion_limit', ne.INCOMPLETE)):
             with self.subTest(reason=reason):
                 pipeline = FakePipeline(result={'status': 'blocked', 'reason': reason})
-                self.assertEqual(self.run_one(pipeline), (outcome, 'pdf', 0, 0, {}))
+                self.assertEqual(self.run_one(pipeline), (outcome, 'pdf', 0, 0, {'issue_codes': [reason.split(':')[1]]}))
                 self.assertEqual(pipeline.alerts, [], 'the pipeline wrote these holds itself')
 
 class AlertKeyCompatibilityTests(unittest.TestCase):

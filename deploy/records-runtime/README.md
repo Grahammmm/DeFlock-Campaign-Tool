@@ -513,3 +513,30 @@ wrapper into the private runtime, `systemctl --user daemon-reload`, enable
 `records-arrival.path`; stamps and the timer are unaffected. This change
 installs and starts nothing, and live end-to-end timing is not claimed until
 that attended step.
+
+## Attachment extraction, OCR and failure diagnostics (REC-AUTO-2)
+
+* **Target requirement.** An arrival run (`--arrival`) uses the scheduled target. Scanned PDFs
+  reach text only when an attended operator has selected an OCR-capable existing target
+  (`live-ocr*.json.in`: `--ocr`, document timeout 1200, page timeout 180). A native-only target
+  holds a scan as `AWAITING_OCR` with the named reason `ocr_runtime_unconfigured`; it is never
+  reported as processed. Switching the host's scheduled target is a separate attended step.
+* **Bounded resume.** A long scan is OCRed page by page within the per-document budget. Pages
+  already receipted are reused, child timeouts are never shortened, and a run that made page
+  progress is `DEFERRED_RUN_BUDGET` (no failed attempt) and continues on the next invocation.
+* **Exact-run manifest.** Every extract run writes `processing-v1/runs/extract-failures-<run-id>.json`
+  (`records-extract-failures-v1`, owner-only, atomic) from the same in-memory outcome list as
+  `extract-<run-id>.json`: every non-`EXTRACTED` row with a fixed `reason_code`, `disposition`
+  (`retry|deferred|hold`), safe refusal fields and page progress. No filenames, paths, headers,
+  exception text or tool output. If it cannot be written the stage fails with
+  `EXTRACT_FAILURE_MANIFEST_UNWRITABLE`. Rows with no stored subreason are
+  `legacy_failure_detail_unavailable` holds; unknown codes are `unlisted`.
+* **Reading it.** `scripts/extract_failure_manifest.py --project P [--run-id ID] [--include-holds]`;
+  the default output (newest list, FAILED outcomes only) is unchanged.
+* **Fixed holds** (operator decisions, not cleared by this code): `ocr_runtime_unconfigured`,
+  `page_eligibility_unresolved`, `unresolved_extraction_evidence`, `aggregate_evidence_bound`
+  (the 128 MiB bundle limit), `ocr_receipt_unverified`, `extraction_check_refused`,
+  `extraction_stage_error`, `no_text_after_ocr`, `confidence_unavailable`, `page_raster_bound`,
+  `fidelity_hold_requires_visual_comparison`, `local_ocr_timeout`,
+  `local_ocr_dependency_or_output_missing`. Requeueing a refusal, repairing host permissions,
+  changing evidence limits and replaying the live backlog are separate attended steps.

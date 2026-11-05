@@ -30,8 +30,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from campaign_tool.records import extraction_failures  # noqa: E402  (pure projection, no I/O)
 
 FAILED = ("CORRUPT_DOCUMENT", "EXTRACT_INCOMPLETE", "EXTRACT_TIMEOUT", "EXTRACT_NOT_ACCEPTED", "EXTRACT_ERROR")
 SENDER_CLASSES = ("government", "records_portal", "flock_vendor", "webmail", "organization", "commercial",
@@ -145,33 +149,70 @@ def receipt_sha256(con, sha):
     return sorted(values)[0] if len(values) == 1 else None
 
 
-def itemize(project):
-    project = Path(os.path.abspath(project))
-    ledger = project / "processing-v1" / "ledger.sqlite"
-    lists = sorted(glob.glob(str(project / "processing-v1" / "runs" / "extract-*.json")),
+RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
+
+
+def select_list(project, run_id):
+    """The newest outcome list, or exactly ``run_id``'s. Failure manifests are never inputs."""
+    runs = project / "processing-v1" / "runs"
+    if run_id is not None:
+        if not RUN_ID_PATTERN.fullmatch(run_id) or ".." in run_id:
+            raise Refused("run_id_invalid")
+        # Same file-name rule as the writer: a run ID starting "failures-" is stored as "run-failures-...".
+        path = runs / f"extract-{'run-' + run_id if run_id.startswith('failures-') else run_id}.json"
+        if path.is_symlink() or not path.is_file():
+            raise Refused("run_id_missing")
+        return path
+    lists = sorted((p for p in glob.glob(str(runs / "extract-*.json"))
+                    if not os.path.basename(p).startswith("extract-failures-")),
                    key=lambda p: (os.path.getmtime(p), p))
-    if not ledger.is_file():
-        raise Refused("ledger_missing")
     if not lists:
         raise Refused("extract_list_missing")
-    newest = lists[-1]
+    return Path(lists[-1])
+
+
+def itemize(project, run_id=None, include_holds=False):
+    project = Path(os.path.abspath(project))
+    ledger = project / "processing-v1" / "ledger.sqlite"
+    if not ledger.is_file():
+        raise Refused("ledger_missing")
+    newest = select_list(project, run_id)
     with open(newest, encoding="utf-8") as stream:
         body = json.load(stream)
     documents = body.get("documents") if isinstance(body, dict) else None
     if not isinstance(documents, list):
         raise Refused("extract_list_invalid")
+    if run_id is not None and body.get("run_id") != run_id:
+        raise Refused("run_id_mismatch")
+    projection = None
+    if include_holds:
+        try:
+            projection = extraction_failures.build_manifest(body)
+        except ValueError:
+            raise Refused("extract_list_invalid")
+        wanted = {d["original_sha256"]: d for d in projection["documents"] if d["original_sha256"]}
     con = sqlite3.connect(f"file:{ledger}?mode=ro&immutable=1", uri=True)
     con.row_factory = sqlite3.Row
     try:
         items = []
         for doc in documents:
-            if not isinstance(doc, dict) or doc.get("outcome") not in FAILED:
+            if not isinstance(doc, dict):
+                continue
+            if include_holds:
+                if doc.get("outcome") == "EXTRACTED":
+                    continue
+            elif doc.get("outcome") not in FAILED:
                 continue
             sha = doc.get("original_sha256")
             kinds = sorted({r[0] for r in con.execute("SELECT kind FROM occurrences WHERE original_sha256=?",
                                                       (sha,))})
             item = {"original_sha256": sha, "code": doc["outcome"], "form": doc.get("form"),
                     "occurrence_kinds": kinds, "mail": None}
+            if include_holds:
+                held = wanted.get(sha)
+                if held is None:
+                    continue
+                item.update({k: v for k, v in held.items() if k not in item and k != "original_sha256"})
             row, via = mail_of(con, sha)
             if row is not None:
                 try:
@@ -194,16 +235,23 @@ def itemize(project):
     by_code = {}
     for item in items:
         by_code[item["code"]] = by_code.get(item["code"], 0) + 1
-    return {"status": "ok", "extract_list_sha256": sha256_file(newest), "documents_listed": len(documents),
-            "by_code": by_code, "documents": items}
+    out = {"status": "ok", "extract_list_sha256": sha256_file(newest), "documents_listed": len(documents),
+           "by_code": by_code, "documents": items}
+    if projection is not None:
+        out.update(schema=projection["schema"], run_id=projection["run_id"],
+                   by_outcome=projection["by_outcome"], by_reason=projection["by_reason"])
+    return out
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--project", required=True, help="records project (only read)")
+    p.add_argument("--run-id", help="itemize exactly this run's outcome list instead of the newest")
+    p.add_argument("--include-holds", action="store_true",
+                   help="list every non-EXTRACTED row with its fixed reason_code and disposition")
     args = p.parse_args(argv)
     try:
-        line, code = itemize(args.project), 0
+        line, code = itemize(args.project, args.run_id, args.include_holds), 0
     except Refused as refusal:
         line, code = {"status": "refused", "code": str(refusal)}, 1
     except (OSError, sqlite3.Error, ValueError, KeyError):

@@ -741,13 +741,13 @@ class OutcomeContractTests(unittest.TestCase):
                 pipeline = FakePipeline({"status": "blocked", "reason": reason, **progress})
                 outcome, form, units, pages, detail = native_extract.extract_one(
                     pipeline, None, "a" * 64, form="pdf", timeout=budget)
-                self.assertEqual((outcome, units, pages, detail), (expected, 0, 0, progress))
+                self.assertEqual((outcome, units, pages, detail), (expected, 0, 0, {"issue_codes": ["extraction_timeout", "ocr_needed_or_blank_page"], **progress}))
                 self.assertEqual(pipeline.seen, limits)
                 self.assertEqual(pipeline.alerts, [], "extract_one adds no hold; the pipeline counted it")
         # A parse timeout (no page fields) stays the existing retryable timeout.
         pipeline = FakePipeline({"status": "blocked", "reason": "extraction_blocked:extraction_timeout"})
         self.assertEqual(native_extract.extract_one(pipeline, None, "a" * 64, form="pdf", timeout=120),
-                         ("EXTRACT_TIMEOUT", "pdf", 0, 0, {}))
+                         ("EXTRACT_TIMEOUT", "pdf", 0, 0, {"issue_codes": ["extraction_timeout"]}))
 
 
 if __name__ == "__main__":

@@ -178,6 +178,12 @@ def _reason_codes(reason):
     return {code for code in tail.split(",") if code}
 
 
+def _issue_detail(codes):
+    """Bounded fixed parser issue codes of a blocked result (``extraction_failures`` allowlists them)."""
+    kept = sorted(code for code in codes if REFUSAL_CODE_PATTERN.fullmatch(code))[:16]
+    return {"issue_codes": kept} if kept else {}
+
+
 def pending_subjects(pipeline):
     """``(subject, preserve_done)`` for in-scope originals whose extract is pending."""
     rows = pipeline._query(
@@ -349,27 +355,60 @@ def extract_one(pipeline, stage, subject, *, form, timeout):
         done = result.get("ocr_pages_done")
         if outcome == TIMEOUT and type(done) is int:
             detail = {"ocr_pages_done": done, "ocr_pages_pending": list(result.get("ocr_pages_pending") or [])}
-            return (DEFERRED if done >= 1 else TIMEOUT), form, 0, 0, detail
-        return outcome, form, 0, 0, {}
+            return (DEFERRED if done >= 1 else TIMEOUT), form, 0, 0, {**_issue_detail(_reason_codes(result["reason"])), **detail}
+        return outcome, form, 0, 0, _issue_detail(_reason_codes(result["reason"]))
     accept_status, code = accept_status_code(status)
     _hold(pipeline, subject, REFUSED_CODE + ":" + code)
     return NOT_ACCEPTED, form, 0, 0, refusal_detail(code, "accept_status", accept_status)
 
 
-def write_private_list(root, run_id, documents):
-    directory = Path(root) / "runs"
+class ManifestWriteError(Exception):
+    """The private exact-run failure manifest could not be written (fixed, metadata-free)."""
+
+
+def safe_run_name(run_id):
+    """The one run-ID sanitizer: the file-name part shared by the outcome list and the manifest."""
     name = "".join(ch for ch in run_id if ch.isalnum() or ch in "-_.") or "run"
+    # ``extract-failures-*`` files are manifests, never outcome inputs.
+    return "run-" + name if name.startswith("failures-") else name
+
+
+def write_private_list(root, run_id, documents):
+    """Write the per-document list and return its body (the manifest is projected from the same body)."""
+    directory = Path(root) / "runs"
+    name = safe_run_name(run_id)
     body = {"schema": "records-extract-outcomes-v1", "run_id": run_id,
             "written_at": datetime.now(timezone.utc).isoformat(), "documents": documents}
     _write_private(directory / f"extract-{name}.json", json.dumps(body, sort_keys=True) + "\n")
+    return body
+
+
+def write_failure_manifest(root, run_id, body):
+    """Atomically write ``runs/extract-failures-<run>.json`` (0600) from the in-memory outcome body."""
+    from . import extraction_failures
+
+    try:
+        manifest = extraction_failures.build_manifest(body)
+        _write_private(Path(root) / "runs" / f"extract-failures-{safe_run_name(run_id)}.json",
+                       json.dumps(manifest, sort_keys=True) + "\n")
+    except (OSError, ValueError) as error:
+        raise ManifestWriteError("extract_failure_manifest_unwritable") from error
+    return manifest
 
 
 def _write_private(target, text):
     temporary = target.with_name("." + target.name + ".tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        stream.write(text)
-    os.replace(temporary, target)
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            os.unlink(temporary)  # no partial JSON is left behind
+        except OSError:
+            pass
+        raise
 
 
 def awaiting_ocr_queue(pipeline, documents):
@@ -468,6 +507,8 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
                     outcome = held  # counted every run, never parsed again
                     if held == NOT_ACCEPTED:
                         detail = held_refusal_detail(held_key)
+                    elif held != ERROR:
+                        detail = _issue_detail(alert_codes(held_key))
                 elif remaining < MIN_DOCUMENT_SECONDS:
                     outcome = DEFERRED
                 else:
@@ -491,7 +532,8 @@ def run(root, *, run_id, deadline, max_documents=DEFAULT_MAX_DOCUMENTS,
         finally:
             if stage is not None:
                 pipeline._close_stage_run({"stage": "extract", "outcomes": outcomes})
-        write_private_list(pipeline.root.path, run_id, documents)
+        body = write_private_list(pipeline.root.path, run_id, documents)
+        write_failure_manifest(pipeline.root.path, run_id, body)
         queue, images = awaiting_ocr_queue(pipeline, documents)
         write_awaiting_ocr(pipeline.root.path, queue)
     return {"documents": len(subjects), "outcomes": outcomes, "missing_parsers": missing,

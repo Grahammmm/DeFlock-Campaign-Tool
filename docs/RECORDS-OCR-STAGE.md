@@ -7,9 +7,11 @@ connect a real queue and confirm the tools. Nothing here runs on a timer, touche
 the live container, or writes the canonical ledger.
 
 Status: implemented and tested with fake backends and synthetic scanned PDFs.
-Live wiring (T6) is not done. Until the pinned engine commit in
-`container/flock-ocr/pins.json` is bumped in a reviewed PR, the image does not
-carry this module.
+This is the legacy standalone queue stage. It is separate from the per-page
+route the scheduled `extract` stage already uses (`run_stages extract --ocr`:
+`extraction_routes` -> `extract/ocr.py`, one bound receipt per page, resumed over
+bounded runs). The engine pin bump to `de3563f` (`container/flock-ocr/pins.json`,
+PR #630) is merged; no live cutover or installed-image claim is made here.
 
 ## Pipeline
 
