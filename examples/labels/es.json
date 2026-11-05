@@ -287,6 +287,7 @@
     "agency.in_library": "En la biblioteca de fuentes",
     "agency.upcoming": "Reuniones próximas",
     "agency.no_upcoming": "No hay reuniones próximas en la lista para este organismo.",
+    "agency.meetings_calendar": "Suscribirse a las reuniones de esta agencia (.ics)",
     "agency.past_meetings": "Reuniones pasadas",
     "meeting.minutes_confirmed": "Confirmado en el acta aprobada el {date}",
     "meeting.minutes_pending": "Registrado por la campaña; acta aún sin aprobar",

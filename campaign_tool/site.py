@@ -682,6 +682,12 @@ class Site:
         """``{agency_id: "/agencies/<slug>.html"}`` for agencies with findings or sources, model order."""
         return self._agency_pages
 
+    def agency_calendar_paths(self):
+        """DF1622-10: ``{agency_id: "/agencies/<slug>.ics"}`` for agencies with a page and at least one staged meeting, model order."""
+        staged = {m.get("agency_id") for m in self.model["meetings"]}
+        return {a["agency_id"]: f'/agencies/{a["slug"]}.ics' for a in self.model["agencies"]
+                if a["agency_id"] in self._agency_pages and a["agency_id"] in staged}
+
     @staticmethod
     def _catalogue_record_pages(sources):
         """``{sha256: "/sources/<12-hex prefix>.html"}``; any two library entries sharing a prefix (a prefix
@@ -1565,6 +1571,8 @@ class Site:
                 + (f'<ul class="source-table">{records}</ul>' if records else f'<p>{self.t("notice.no_sources")}</p>')
                 + f'<h3>{self.t("agency.upcoming")}</h3>'
                 + f'<div class="meeting-list">{meetings or "<p>" + self.t("agency.no_upcoming") + "</p>"}</div>'
+                + (f'<p><a href="{e(self.agency_calendar_paths()[aid])}" type="text/calendar">{self.t("agency.meetings_calendar")}</a></p>'
+                   if aid in self.agency_calendar_paths() else "")
                 + (f'<h3>{self.t("agency.past_meetings")}</h3><div class="meeting-list">{past}</div>' if past else "")
                 + ('' if agency["verified"] else f'<p class="archive-hint">{self.t("agency.unverified")}</p>')
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
@@ -2786,13 +2794,24 @@ class Site:
         lines.append("END:VCALENDAR")
         return "".join(ics_fold(line) + "\r\n" for line in lines)
 
-    def meetings_ics(self):
-        """Upcoming (not cancelled) meetings as an RFC 5545 calendar; deterministic for one build day."""
+    def agency_meetings_ics(self):
+        """DF1622-10: ``{"agencies/<slug>.ics": calendar}``, the meetings.ics writer limited to one agency_id (same UIDs and event bytes)."""
+        files = {}
+        for agency in self.model["agencies"]:
+            if agency["agency_id"] in self.agency_calendar_paths():
+                own = [m for m in self.upcoming if m.get("agency_id") == agency["agency_id"]]
+                files[f'agencies/{agency["slug"]}.ics'] = self.meetings_ics(own, self.cfg["name"] + " - " + agency["name"] + " meetings")
+        return files
+
+    def meetings_ics(self, meetings=None, calendar_name=None):
+        """Upcoming (not cancelled) meetings as an RFC 5545 calendar; deterministic for one build day.
+        ``meetings``/``calendar_name`` (DF1622-10, per agency): None keeps the campaign calendar; an empty list stays empty."""
+        meetings = self.upcoming if meetings is None else meetings
         host = urlsplit(self.base).hostname if self.base else "deflock-campaign.invalid"
         stamp = self.today.strftime("%Y%m%d") + "T000000Z"
         lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DeFlock Campaign Tool//meetings//EN", "CALSCALE:GREGORIAN",
-                 "X-WR-CALNAME:" + ics_text(self.cfg["name"] + " meetings")]
-        for meeting in self.upcoming:
+                 "X-WR-CALNAME:" + ics_text(calendar_name or self.cfg["name"] + " meetings")]
+        for meeting in meetings:
             start = datetime.fromisoformat(meeting["starts_at"].replace("Z", "+00:00")).astimezone(timezone.utc)
             lines += ["BEGIN:VEVENT", f'UID:meeting-{meeting["id"]}@{host}', "DTSTAMP:" + stamp,
                       "DTSTART:" + start.strftime("%Y%m%dT%H%M%SZ"), "SUMMARY:" + ics_text(meeting["body"])]
@@ -3306,6 +3325,7 @@ def _plan_site(root, today=None, notes=None):
     if site.sources_filter():  # DF1103-12: written only when sources.html loads it; an empty library leaves no stale asset
         files["sources/filter.js"] = site.sources_filter_js()
     files.update(site.agency_feeds())
+    files.update(site.agency_meetings_ics())  # DF1622-10: only agencies with a page and a staged meeting; none, no file
     if site.events:  # DF1107-10: no events file or [] means no calendar (the tree swap drops a stale one)
         files["events.ics"] = site.events_ics()
     if model["meetings"]:  # DF1103-10: no staged meetings, no feed (the tree swap drops a stale one)

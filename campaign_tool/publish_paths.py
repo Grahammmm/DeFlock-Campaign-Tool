@@ -30,6 +30,8 @@ PUBLISH_PATHS = (
     _entry("atom-feed", "campaign_tool/site.py", "Site.feed_xml", "feed", "public", "privacy+legal", GATE, "site", "feed.xml"),
     _entry("agency-feeds", "campaign_tool/site.py", "Site.agency_feeds", "feed", "public", "privacy+legal", GATE, "site",
            "findings/agency/<slug>.xml"),
+    _entry("agency-meetings-calendars", "campaign_tool/site.py", "Site.meetings_ics", "feed", "public", "privacy", GATE, "site",
+           "agencies/<slug>.ics"),
     _entry("corrections-feed", "campaign_tool/site.py", "Site.corrections_feed_xml", "feed", "public", "privacy+legal", GATE, "site",
            "corrections.xml"),
     _entry("events-calendar", "campaign_tool/site.py", "Site.events_ics", "feed", "public", "privacy", GATE, "site", "events.ics"),

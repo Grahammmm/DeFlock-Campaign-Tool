@@ -1163,6 +1163,12 @@ published finding or `sources.json` entry: its card facts and official links, it
 with 12-character hash prefixes and `sources.html#<fragment>` links, that body's upcoming meetings by `agency_id`,
 its findings feed when it has findings; linked as "Agency page" from `agencies.html` and from each of its finding
 pages, listed in the sitemap; other agencies get no page and no link; a `public-assets/agencies/` file is refused),
+`agencies/<slug>.ics` (one meetings calendar per agency that has an agency page and at least one staged meeting
+(any date or status); it holds that agency's upcoming, not cancelled, meetings by the build-day rule, written by the
+`meetings.ics` writer with the same `meeting-<id>@<host>` UIDs and event bytes, `X-WR-CALNAME` `<campaign> - <agency name>
+meetings`; an agency whose meetings are all past or cancelled keeps a valid empty calendar; linked as "Subscribe to this
+agency's meetings (.ics)" (label `agency.meetings_calendar`) after its upcoming meetings; no meeting, no file and no link;
+not in the sitemap; a static file, so rebuild to refresh it),
 `cameras.html` (only with a map: the no-JS list of mapped points, one section
 per picker city by name, each point in the first city boundary holding it by the counts' half-open rule, then the
 `group_label` section; manufacturer/operator or "not tagged", an OSM node link or "no OSM link"; over 2 000 points each
