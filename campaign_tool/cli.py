@@ -537,6 +537,9 @@ def _site_claim_notes(root):
 def build(root, check=False, budget=None, weights_out=None, weights_baseline=None):
     from .site import build_site
     public = root / "public"
+    if check and any(os.path.lexists(public / name) for name in ("data.html", "data/datapackage.json")):
+        from .site_check import check_data_catalogue  # DF2207-12: refuse an already-missing or changed listed file first
+        check_data_catalogue(public)
     notes = []
     written = build_site(root, notes=notes)
     for note in notes:  # informational: the exit code is unchanged
@@ -553,7 +556,9 @@ def build(root, check=False, budget=None, weights_out=None, weights_baseline=Non
     for note in _site_claim_notes(root):  # DF-4 alert-only: notes for the publish gate, never an error or an exit code
         print(note)
     if check:
-        from .site_check import check_accessibility, check_links
+        from .site_check import check_accessibility, check_data_catalogue, check_links
+        if content_mode:
+            check_data_catalogue(public)  # DF2207-12: the fresh output, before any success line
         hits = check_public_tree(public)
         for path, line, label in hits:
             print(f"public/{path}:{line}: {label}", file=sys.stderr)
@@ -1082,6 +1087,12 @@ def main():
     sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail", "in_person"))
     sent_p.add_argument("--file", help="The letter you sent: only its SHA-256 and size are kept, never its text or path")
     sent_p.add_argument("--replace", action="store_true", help="Overwrite an existing record for this meeting")
+    publish_p = commands.add_parser("meetings-comment-publish", help="Stage the exact comment you recorded as submitted as the "
+                                    "public copy on its meeting page (content/meetings/<id>.json); sends nothing")
+    for flag in ("--directory", "--id", "--file"):
+        publish_p.add_argument(flag, required=True)
+    publish_p.add_argument("--signer-public", action="store_true", help="Confirm that whoever signed the comment agreed to be named publicly")
+    publish_p.add_argument("--replace", action="store_true", help="Overwrite an already staged submitted comment")
     speakers_p = commands.add_parser("meetings-speakers", help="Private plan: which volunteer label covers which point of a "
                                      "staged meeting's comment kit (kit/meetings/speakers/<id>.json); sends nothing")
     speakers_p.add_argument("--directory", required=True)
@@ -1840,6 +1851,13 @@ def main():
                      **({"letter_sha256_prefix": entry["letter_sha256"][:12]} if "letter_sha256" in entry else {})}
             print(json.dumps(shown, indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "meetings-comment-publish":
+            from .meeting_comment_publish import publish
+            comment, notes = publish(root, args.id, args.file, signer_public=args.signer_public, replace=args.replace)
+            print(json.dumps({"id": args.id, "on": comment["on"], "channel": comment["channel"], "bytes": len(comment["text"].encode("utf-8"))}, indent=2))
+            for note in notes:
+                print(note, file=sys.stderr)
+            print("Staged only: a later site build shows it. Nothing was sent or published; a clean lint is not privacy clearance.")
         elif args.command == "meetings-speakers":
             from .meeting_speakers import list_plan, update_plan
             # The guards must see the unresolved directory so a campaign-root or ancestor symlink is refused.

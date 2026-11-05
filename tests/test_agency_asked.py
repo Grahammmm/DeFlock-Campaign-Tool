@@ -208,6 +208,16 @@ class AgencyAskedTests(unittest.TestCase):
         self.assertIn("data/findings.json", exported)
         self.assertIn("feed.xml", exported)
         for name in exported:
+            if name == "data/datapackage.json":
+                old, new = json.loads(before[name]), json.loads(after[name])
+                for left, right in zip(old["resources"], new["resources"], strict=True):
+                    if left["path"] in ("agencies.json", "agencies.csv"):
+                        for key in ("bytes", "hash"):
+                            self.assertNotEqual(left[key], right[key])
+                            left.pop(key)
+                            right.pop(key)
+                self.assertEqual(old, new)  # all other descriptor metadata stays identical
+                continue
             if name in ("data/agencies.json", "data/agencies.csv"):  # DF1422-12/DF2207-11: exported here, and only here
                 continue
             self.assertEqual(before[name], after[name], name)

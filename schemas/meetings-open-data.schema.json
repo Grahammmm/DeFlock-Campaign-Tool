@@ -26,7 +26,18 @@
         "status": {"enum": ["scheduled", "cancelled"]},
         "agenda_url": {"type": ["string", "null"]},
         "url": {"type": "string", "pattern": "^/meetings/.+\\.html$"},
-        "outcome": {"$ref": "#/$defs/outcome"}
+        "outcome": {"$ref": "#/$defs/outcome"},
+        "submitted_comment": {"$ref": "#/$defs/submitted_comment"}
+      }
+    },
+    "submitted_comment": {
+      "description": "When and how the campaign submitted a comment on this meeting, as recorded by the organizer; the text is on the meeting page only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["on", "channel"],
+      "properties": {
+        "on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "channel": {"enum": ["email", "portal", "mail", "in_person"]}
       }
     },
     "outcome": {

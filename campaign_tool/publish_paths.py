@@ -65,6 +65,10 @@ PUBLISH_PATHS = (
     _entry("agency-brief", "campaign_tool/agency_brief.py", "build_brief", "brief", "pre-public", "privacy+legal",
            ("refusal(", "legal_notes("), "agency_brief",
            "kit/briefs/: private printable meeting brief from published content; linted per row and on both outputs before any write"),
+    _entry("meeting-comment-publish", "campaign_tool/meeting_comment_publish.py", "publish", "page", "pre-public", "privacy+legal",
+           "comment_text_problems(", "meeting_comment",
+           "content/meetings/<id>.json submitted_comment: the exact recorded text, linted per line before the one atomic write; "
+           "the site-pages gate covers the final page"),
     _entry("readiness-snapshot", "campaign_tool/cli.py", "readiness", "report", "pre-public", "privacy", "categories(sentence)",
            "readiness", "readiness JSON: next-action sentences are linted"),
     _entry("worker-site-upload", "workers/workspace/src/runner.ts", "PUBLIC_BUCKET.put", "page", "public", "upstream",
@@ -92,6 +96,7 @@ EMISSION_SITES = (
     ("newsletter-draft", "campaign_tool/newsletter/draft.py", "write_draft"),
     ("social-drafts", "campaign_tool/social.py", "_write_drafts"),
     ("agency-brief", "campaign_tool/agency_brief.py", "_write_file"),
+    ("meeting-comment-publish", "campaign_tool/meeting_comment_publish.py", "publish"),
     ("readiness-snapshot", "campaign_tool/cli.py", "readiness"),
     ("flock-email", "tools/flock_email.py", "draft"),
     ("flock-page", "tools/flock_page.py", "build"),

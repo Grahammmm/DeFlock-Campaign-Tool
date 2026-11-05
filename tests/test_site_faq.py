@@ -578,7 +578,22 @@ def run_cli_quiet(root, as_json):
 class AbsenceTests(FaqCase):
     def test_absent_bytes_removal_and_check_reproducibility(self):
         files = self.build()
-        self.assertEqual(self.digests(files), {k: v for k, v in BASELINE.items()})  # pinned pre-feature bytes
+        # DF2207-12 adds exactly two catalogue outputs, one footer paragraph and one sitemap URL.
+        # Retain every pre-feature digest; normalize only those independently named additions.
+        self.assertEqual(set(files) - set(BASELINE), {"data.html", "data/datapackage.json"})
+        legacy = {}
+        data_link = b'<p><a href="/data.html">Open data</a></p>'
+        data_url = b'<url><loc>https://cedar-records.example.invalid/data.html</loc></url>'
+        for name in BASELINE:
+            data = files[name]
+            self.assertEqual(data.count(data_link), 1 if name.endswith(".html") else 0, name)
+            if name.endswith(".html"):
+                data = data.replace(data_link, b"", 1)
+            if name == "sitemap.xml":
+                self.assertEqual(data.count(data_url), 1)
+                data = data.replace(data_url, b"", 1)
+            legacy[name] = data
+        self.assertEqual(self.digests(legacy), BASELINE)  # original pinned bytes, not refreshed from candidate
         self.assertNotIn("faq.html", files)
         self.assertNotIn("/faq.html", b"".join(files.values()).decode("utf-8", "ignore"))
         self.assertNotIn("faq", files["sitemap.xml"].decode())

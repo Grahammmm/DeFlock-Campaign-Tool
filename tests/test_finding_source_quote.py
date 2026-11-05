@@ -218,7 +218,7 @@ class QuoteRenderTests(QuoteCase):
         with mock.patch.object(socket.socket, "connect", side_effect=AssertionError("network")):
             quoted_files = self.build()
         changed = sorted(n for n in set(plain_files) | set(quoted_files) if plain_files.get(n) != quoted_files.get(n))
-        self.assertEqual(changed, ["data/findings.json", f"findings/{SLUG}.html", "findings/packet-all.html"])
+        self.assertEqual(changed, ["data.html", "data/datapackage.json", "data/findings.json", f"findings/{SLUG}.html", "findings/packet-all.html"])
         after_inputs = {p.relative_to(self.root).as_posix(): p.read_bytes()
                         for p in self.root.rglob("*") if p.is_file() and "public" not in p.relative_to(self.root).parts}
         self.assertEqual(after_inputs, before_inputs)  # a build rewrites no legacy file and reads no private kit
