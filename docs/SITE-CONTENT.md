@@ -1228,7 +1228,7 @@ under the OpenStreetMap link of a tagged point (label `map.direction_line`) and 
 untagged points show nothing new. The value is a volunteer's tag: no bearing is converted, and nothing is inferred
 about a road, a plate, coverage, ownership or an independent check.
 
-`content/map/point-checks.json` (optional; organizer-edited by hand, never fetched or written by the tool) records what
+`content/map/point-checks.json` (optional; organizer-edited by hand, never fetched; the tool writes it only through `map survey-import --apply`) records what
 an organizer found at single mapped points: `{"schema_version": 1, "checks": [{"node": 123, "status": "seen_in_person",
 "checked_on": "2026-11-01", "source": "<12-hex library prefix or https:// URL>", "note": "optional, 200 characters"}]}`.
 `node` must be an OpenStreetMap node id present in `cameras.geojson` (its `.../node/N` URL); `status` is
@@ -1242,6 +1242,22 @@ refused entry. With the file, `cameras.html` gains an "Organizer check" column (
 (the note and the source stay off the popup and out of `site-data.js`). Without the file nothing is built differently.
 A check never removes or edits a point and never writes to OpenStreetMap: `duplicate` and `not_found_on_site` points stay
 on the map and in every count. `in_agency_record` says an agency record lists the point; it is never ownership.
+
+**Field survey (DF0237-13).** `map survey-sheet --city NAME --directory D` writes a private, printable
+`kit/survey/<city-slug>-<date>.html` and a matching `.csv` (0600, folders 0700; never overwritten, so the same city and
+day again refuses) listing every mapped point inside the boundary named exactly NAME (case-sensitive; an unknown name is
+refused): node URL, latitude, longitude, manufacturer, operator, direction and the latest organizer check, then four blank
+columns `status`, `checked_on`, `source`, `note` for a new observation. Cells that a spreadsheet would run as a formula
+(a leading `=`, `+`, `-`, `@`, tab or carriage return, including a negative longitude) get one leading apostrophe. A point
+without a node URL inside the city is refused by feature index. `map survey-import --csv FILLED --directory D [--apply]`
+skips a row whose four columns are all blank; every other row needs `status`, `checked_on` and `source`, where `source` is
+the volunteer's own evidence (an `https://` URL without userinfo, at most 500 characters, or a 12-hex library prefix that
+matches exactly one `sources.json` entry). The tool never fills in, defaults, copies or infers a source (the sheet's
+`latest_source` column is not read). The merged document (existing checks plus the new ones) must pass the same validator
+as `build`; a missing or invalid field, an edited node URL, an unmapped node or a duplicate of an existing check is named by
+row (the header is row 1) and field, never its value, and refuses the whole import. Without `--apply` it only prints the
+checks it would add; with `--apply` it writes `content/map/point-checks.json` atomically (fresh temp file; a symlink is
+refused). Nothing is published until the next `build`.
 
 The build never downloads MapLibre. To enable the interactive map, copy the
 library into `content/vendor/maplibre-gl.js` and `content/vendor/maplibre-gl.css`
