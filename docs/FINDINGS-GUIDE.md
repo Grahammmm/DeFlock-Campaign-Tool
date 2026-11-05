@@ -239,3 +239,5 @@ python3 -m campaign_tool build --directory "$CAMPAIGN" --check
 ```
 
 When the page is wrong in a way you can fix, correct it (step 9); withdraw when it should not stand. Deploying or removing the site on the internet, and sending any draft, are outside this guide and need the campaign's own approval.
+
+Private gap and possible-misuse proposals from records runs are described in [RECORDS-GAP-PROPOSALS.md](RECORDS-GAP-PROPOSALS.md).

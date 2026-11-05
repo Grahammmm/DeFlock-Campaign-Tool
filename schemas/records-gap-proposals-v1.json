@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "records-gap-proposals-v1",
+  "description": "Private per-run gap and possible-misuse proposals (run-outputs/<run_id>/outcomes/gap-proposals.json). Every entry is a question for a reviewer, never a legal conclusion; never published.",
+  "type": "object",
+  "required": ["schema", "run_id", "publishable", "review_required", "legal_conclusion", "law_package_status", "disclaimer", "received_items_sha256", "agencies", "counts", "unlinked_items", "review_list", "model_log", "diagnostics", "limits"],
+  "properties": {
+    "schema": {"const": "records-gap-proposals-v1"},
+    "run_id": {"type": "string"},
+    "publishable": {"const": false},
+    "review_required": {"const": true},
+    "legal_conclusion": {"const": false},
+    "law_package_status": {"type": "string"},
+    "disclaimer": {"type": "string"},
+    "received_items_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "agencies": {"type": "array", "items": {
+      "type": "object", "required": ["agency_id", "requests"],
+      "properties": {"agency_id": {"type": "string"}, "requests": {"type": "array", "items": {
+        "type": "object", "required": ["request_id", "scope", "proposals"],
+        "properties": {"request_id": {"type": ["string", "null"]}, "scope": {"enum": ["request", "agency_wide"]},
+                       "proposals": {"type": "array", "items": {"$ref": "#/$defs/proposal"}}}}}}}},
+    "counts": {"type": "object", "required": ["policy_gap", "misuse_lead", "by_confidence", "not_proposed"]},
+    "unlinked_items": {"type": "integer", "minimum": 0},
+    "review_list": {"type": "array", "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+    "model_log": {"type": "array", "items": {
+      "type": "object", "required": ["proposal_id", "source", "answer", "p_yes", "question", "logprobs"],
+      "properties": {"source": {"enum": ["model", "deterministic"]}, "answer": {"enum": ["yes", "no", null]},
+                     "p_yes": {"type": "number", "minimum": 0, "maximum": 1}}}},
+    "diagnostics": {"type": "array"},
+    "limits": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "proposal": {
+      "type": "object",
+      "required": ["proposal_id", "agency_id", "request_id", "type", "confidence", "confidence_basis", "item_id", "source_id", "evidence_kind", "page", "quote", "rule_ref", "policy_section", "flags", "reason", "question", "review_bucket", "review_reasons", "score", "review_required", "legal_conclusion", "law_package_status"],
+      "properties": {
+        "proposal_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "type": {"enum": ["policy_gap", "misuse_lead", "promised_not_received", "deadline_passed_no_answer", "exemption_without_citation", "fee_review", "missing_field"]},
+        "confidence": {"enum": ["high", "medium", "low"]},
+        "evidence_kind": {"enum": ["document", "ledger_field"]},
+        "page": {"type": ["integer", "null"]},
+        "quote": {"type": "string", "maxLength": 600},
+        "policy_section": {"type": ["object", "null"]},
+        "review_bucket": {"enum": ["proposal", "review_list"]},
+        "review_required": {"const": true},
+        "legal_conclusion": {"const": false}
+      }
+    }
+  }
+}
