@@ -5,7 +5,8 @@
   check --cards C --sources S --location L --thread T --base-sources N --story F [--not-posted ID..] [--not-posted-title T..]
   check … --json  prints one flock-page-check-v1 document (state, differing_keys, counts, errors, superseded); same exit
 build turns a model-written CARDS.json plus G3's SOURCES.json into <slug>-story.json (the keys of the site's morrobay-story.mjs),
-numbering cites after the page's N base sources; it lints its own result first and writes nothing on any error. lint checks story,
+numbering cites after the page's N base sources; a source number or extra-source key defined twice or not a positive int / nonblank string
+refuses build and check before any numbering (R7); it lints its own result first and writes nothing on any error. lint checks story,
 thread and location against site rules 1, 2, 3, 4, 7, 8, 9 and the draft tone; it prints `<area> <index>: <rule> <reason>` errors
 and counts (sources = numbered extraSources), never card text. No network. Exit 0 ok, 1 validation/lint/IO, 2 usage. Output is
 private (0600); site adoption and publication are a separate operator + G card."""
@@ -153,9 +154,25 @@ def source_line(entry, docs):
     req, pages = req or doc.get("request"), [str(p) for p in entry.get("pages") or ()]
     where = ", page%s %s" % ("s" * (len(pages) > 1), ", ".join(pages)) if pages else ""
     return "%s%s%s; inventory document %s." % ("Request %s, " % req if req else "", doc["title"], where, doc["document_id"])
+def identities(sources, extra):  # RF1110-8: every source number and x: key must identify exactly one definition; first fault in input order
+    seen = set()
+    for i, e in enumerate(sources):
+        ok = isinstance(e, dict) and type(e.get("n")) is int and e["n"] > 0  # exact int: bool, 1.0, "1", null, missing are refused
+        if not ok or e["n"] in seen:
+            raise Fail("sources %d: R7 %s source number" % (i, "duplicate" if ok else "invalid"))
+        seen.add(e["n"])
+    if extra is not None and not isinstance(extra, list):
+        raise Fail("cards.extra_sources 0: R7 invalid source list")
+    seen = set()
+    for i, x in enumerate(extra or ()):
+        ok = isinstance(x, dict) and isinstance(x.get("key"), str) and x["key"].strip() != ""  # literal key: no strip, no casefold
+        if not ok or x["key"] in seen:
+            raise Fail("cards.extra_sources %d: R7 %s source key" % (i, "duplicate" if ok else "invalid"))
+        seen.add(x["key"])
 def assemble(cards, sources, location, base):
     if cards.get("schema") != 1 or not re.fullmatch(r"[a-z0-9-]+", str(cards.get("slug", ""))):
         raise Fail("cards 0: schema must be 1 with a lowercase slug")
+    identities(sources, cards.get("extra_sources"))
     meta, by_n = cards["meta"], {e["n"]: e for e in sources}
     extra, docs = {x["key"]: x["text"] for x in cards.get("extra_sources") or ()}, {d["document_id"]: d for d in location["documents"]}
     missing = [k for k in META if k not in meta]
