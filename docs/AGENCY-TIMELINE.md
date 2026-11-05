@@ -292,6 +292,11 @@ keep only the agency's stated production date) and a timed event for each staged
 written-comment deadline on or after `--as-of`. It holds ids, dates, agency or body names and the official source
 link only. It is refused inside the campaign's `public/` or `content/` and never overwrites: re-run into a new file.
 
+Request event UIDs keep agency and request identifiers separate. Named requests now use # before the request name.
+Earlier imported named-request events use old UIDs; remove those events or import into a fresh private calendar
+before importing the new file. Main-request and meeting UIDs are unchanged. This export does not update or remove
+events already imported by a calendar app.
+
 ## Requests filed on MuckRock (kit requests)
 
 `kit-sent --channel muckrock --request-url https://www.muckrock.com/foi/.../<name>-<id>` records a request you filed
@@ -471,3 +476,32 @@ Supervisor" --note "Asked when to expect a determination"`.
 - `kit-response-undo` leaves contacts untouched. `kit-sent --replace` (only while no step is recorded) keeps them, and
   refuses a corrected sent date later than any contact. There is no contact undo or export. A malformed `contacts`
   list makes `kit/sent.json` unreadable rather than being dropped. Nothing is fetched or sent.
+
+## Who owns a request (kit-assign)
+
+`kit-assign --directory D --agency ID [--request NAME] (--to NAME | --clear)` records which teammate is handling one
+recorded request, in the private `kit/assignments.json` (mode 0600, written atomically as `{"schema_version": 1,
+"assignments": {KEY: LABEL}}`, KEY being the `kit/sent.json` key). `--request` defaults to `main`; exactly one of `--to`
+and `--clear` is required. The agency must be in `kit/agencies.json` and the request must already be recorded (by
+`kit-sent` or `kit-sent-import`; a closed or imported request qualifies, an unsent draft does not); otherwise the command
+stops with exit 1 and writes nothing. A label is an alias the team chose, not a verified identity: 1-40 characters after
+collapsing whitespace, case kept, compared exactly. Angle brackets, control or format characters, any `@` and seven or
+more decimal digits (any script) are refused, and the refused text is never echoed. Assigning the same owner again, or
+clearing a request with no owner, writes nothing. Output ends `Recorded only. Nothing was sent.`
+
+- `kit-status` (also with `--csv`), `kit-due` and `today` take `--owner NAME` and keep only that person's requests; the
+  filter is applied before counts, the waiting-on-you note and the `kit-due` exit 3, so another person's past-due
+  request never changes your result. `--owner` and `--request` intersect; an owner nobody holds gives an empty list
+  (exit 0), and an unknown `--request` is still refused. `today` filters only request work: meetings, findings,
+  contracts and contacts stay listed, and its `kit-status` suggestion carries `--owner` (quoted).
+- `owner` appears only on rows of assigned requests (every `kit-due` collection and download row too), as the last
+  `kit-status --csv` column (blank when unassigned), and as ` [owner: LABEL]` at the end of a `today` request line. A
+  named request never inherits `main`'s owner, and `today` names a named request as `(AGENCY/NAME)`.
+- `kit-coverage` has one row per selected agency's `main` request and per recorded named request, with `request` and
+  `owner` columns, and lists unassigned requests first (see `docs/AGENCY-DISCOVERY.md`).
+- An assignment never changes a due date, a response step or any other store; `kit-sent --replace` and
+  `kit-response-undo` leave it alone. An assignment whose request no longer exists stays in the file and is ignored.
+  An unreadable `kit/assignments.json` (not JSON, repeated key, wrong schema, over 1 MiB, a symlink or a symlinked
+  `kit/`) stops the commands above, is never reset, and shows in `today` as one `unreadable` item naming the file.
+  There is no notification, roster, bulk assignment, history or public owner list, and no protection against two people
+  writing at once.

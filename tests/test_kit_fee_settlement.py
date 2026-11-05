@@ -101,10 +101,12 @@ class FeeSettlementTests(unittest.TestCase):
         code, out, _ = run("kit-coverage", "--directory", self.root, "--csv")
         self.assertEqual(code, 0)
         coverage_rows = {r[0]: r for r in csv.reader(out.splitlines())}
-        self.assertEqual((coverage_rows["agency_id"][-2], coverage_rows[self.agency][-2]), ("fee", "paid"))
+        self.assertEqual((coverage_rows["agency_id"][-4], coverage_rows[self.agency][-4]), ("fee", "paid"))
         scopes = json.loads(self.sent.read_text())["requests"][self.agency]["scopes"]
-        self.assertEqual((coverage_rows["agency_id"][-1], coverage_rows[self.agency][-1]),
+        self.assertEqual((coverage_rows["agency_id"][-3], coverage_rows[self.agency][-3]),
                          ("scopes", f"0/{len(scopes)} answered"))
+        self.assertEqual((coverage_rows["agency_id"][-2:], coverage_rows[self.agency][-2:]),
+                         (["request", "owner"], ["main", ""]))
 
     def test_waived_and_amount_on_waived_refused(self):
         self.ok("2026-03-05", "fee_estimate", "--amount", "20")
@@ -186,11 +188,11 @@ class FeeSettlementTests(unittest.TestCase):
         self.assertEqual(err, f"{self.agency}: fee estimate $245.50 is unpaid\n")
         cells, values = self.csv_row("legacy")
         self.assertEqual(values[2:13], GOLDEN_CSV)
-        self.assertEqual(values[13:], ["$245.50", "unpaid", "", ""])
+        self.assertEqual(values[13:], ["$245.50", "unpaid", "", "", ""])  # fee columns, then request_url and owner
         cover, totals = self.coverage()
         self.assertEqual((cover["fee_state"], totals["fee_unpaid"]), ("unpaid", 1))
         table = kit_track.format_coverage(kit_track.coverage(self.root))
-        self.assertEqual(table.splitlines()[0].split()[-2:], ["fee", "scopes"])
+        self.assertEqual(table.splitlines()[0].split()[-4:], ["fee", "scopes", "request", "owner"])
         self.assertIn("fee_unpaid 1", table)
         self.assertEqual(self.sent.read_bytes(), before)
 
@@ -214,7 +216,7 @@ class FeeSettlementTests(unittest.TestCase):
         self.ok("2026-03-06", "fee_paid", "--amount", "5")
         cells, values = self.csv_row("guard")
         self.assertEqual(cells["name"], "'=HYPERLINK(\"x\")")
-        self.assertEqual(values[13:], ["$5.00", "paid", "$5.00", ""])
+        self.assertEqual(values[13:], ["$5.00", "paid", "$5.00", "", ""])
 
 
 if __name__ == "__main__":

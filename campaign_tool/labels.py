@@ -126,6 +126,21 @@ DEFAULTS = {
     "meeting.continued_to": "Continued to {date}", "meeting.continued_from": "Continued from {date}",
     "meeting.cosigned_one": "Co-signed by {count} organization", "meeting.cosigned_many": "Co-signed by {count} organizations",
     "meeting.staff_direction": "Staff were directed to: {direction} (by {date}, as stated in {source})",
+
+    "schedule.usually": "Usually meets: {rule} ({source}, checked {date})",
+    "schedule.stale": "Stale schedule: re-check the source",
+    "schedule.ordinal_1": "first", "schedule.ordinal_2": "second", "schedule.ordinal_3": "third",
+    "schedule.ordinal_4": "fourth", "schedule.ordinal_last": "last",
+    "schedule.weekday_monday": "Monday", "schedule.weekday_tuesday": "Tuesday", "schedule.weekday_wednesday": "Wednesday",
+    "schedule.weekday_thursday": "Thursday", "schedule.weekday_friday": "Friday", "schedule.weekday_saturday": "Saturday",
+    "schedule.weekday_sunday": "Sunday",
+    "schedule.rule": "{ordinals} {weekday} at {time} ({zone})",
+    "schedule.join_two": "{first} and {last}", "schedule.join_many": "{prefix}, and {last}",
+
+    "meeting.comments_both": "{spoke} people spoke and {written} written comments were received, as stated in {source}",
+    "meeting.comments_spoke": "{spoke} people spoke, as stated in {source}",
+    "meeting.comments_written": "{written} written comments were received, as stated in {source}",
+
     "vote.absent": "Absent", "vote.recused": "Recused",
     "agency.votes_heading": "How members voted", "agency.votes_none": "No recorded vote",
     "agency.votes_source": "Official record", "agency.votes_more": "\u2026 and {count} earlier votes on the meeting pages",
@@ -178,6 +193,21 @@ DEFAULTS = {
     "agencies.glance_contract": "Contract ends", "agencies.glance_cost": "Contract cost as stated",
     "agencies.glance_asked": "Records items asked",
     "agencies.glance_not_checked": "not checked", "agencies.glance_posted": "posted", "agencies.glance_checked": "checked {date}",
+    "footer.requests": "What we have asked for",  # DF1103-13
+    "requests.title": "What we have asked for",
+    "requests.description": ("Every records request this campaign has publicly listed for an agency, newest first, "
+                             "with the state we last recorded."),
+    "requests.lead": "{total} requests listed. By state:",
+    "requests.count": "{state} ({count})",
+    "requests.state_awaiting_response": "Awaiting response", "requests.state_acknowledged": "Acknowledged",
+    "requests.state_partly_answered": "Partly answered", "requests.state_answered": "Answered",
+    "requests.state_declined_in_writing": "Declined in writing", "requests.state_withdrawn": "Withdrawn",
+    "requests.note": ("Each row is a request we have listed on an agency's page, in the state we last recorded. "
+                      "This page does not say any response is late."),
+    "requests.empty": "No public requests are listed yet.",
+    "requests.caption": "Every public request across agencies, newest first",
+    "requests.col_agency": "Agency", "requests.col_topic": "Topic", "requests.col_asked_on": "Asked on",
+    "requests.col_state": "State", "requests.col_updated_on": "Updated on", "requests.not_recorded": "Not recorded",
     "officials.heading": "Who decides", "officials.source": "source",
     "officials.listed": ("Listed from the body's official site ({source}), checked {date}. "
                          "Contact officials only through the channels on that site."),
@@ -197,6 +227,17 @@ DEFAULTS = {
     "signup.email": "Email address", "signup.placeholder": "you@example.org",
     "signup.provider_note": "Submitting opens the provider's hosted confirmation page.",
     "signup.none": "No email addresses are collected by this site. Follow meetings and findings here or by feed.",
+    "sharing.title": "Who receives data from our agencies",
+    "sharing.lead": ("These are receiving agencies named in organizer-transcribed vendor transparency lists. "
+                     "A listing does not establish that a transfer occurred."),
+    "sharing.out_of_state": "Out of state", "sharing.federal": "Federal", "sharing.in_state": "In state",
+    "sharing.receiver": "Receiving agency", "sharing.state": "State", "sharing.kind": "Kind",
+    "sharing.count": "Campaign agencies listing it", "sharing.sources": "Source lists", "sharing.source_list": "source list",
+    "sharing.checked": "checked {date}", "sharing.aliases": "Also transcribed as: {names}",
+    "sharing.law_status": "Law package: {status}.",
+    "sharing.kind_local": "Local", "sharing.kind_state": "State", "sharing.kind_federal": "Federal",
+    "sharing.kind_private": "Private", "sharing.kind_unknown": "Unknown",
+    "footer.sharing": "Data-sharing lists",
     "supporters.title": "Supporting organizations",
     "supporters.description": ("Organizations that have confirmed they support this campaign. A listing is not a legal "
                                "endorsement and does not let anyone speak for the organization."),
@@ -204,6 +245,10 @@ DEFAULTS = {
     "supporters.kind.civil_liberties": "Civil liberties", "supporters.kind.community": "Community",
     "supporters.kind.faith": "Faith", "supporters.kind.labor": "Labor", "supporters.kind.neighborhood": "Neighborhood",
     "supporters.kind.business": "Business", "supporters.kind.other": "Other",
+    "footer.press": "Press", "press.title": "Press",
+    "press.description": "Campaign background, press contact, recent findings with citation text, logo and open data for reporters.",
+    "press.contact": "Press contact", "press.findings": "Recent findings", "press.logo": "Logo",
+    "press.data": "Open data", "press.download_logo": "Download the logo", "press.license_unspecified": "License not specified",
 }
 # DF0137-14: fixed strings the generated scripts write into the page. Defaults are today's exact English; site.py
 # switches the scripts to LABELS lookups (site-data.js) only when a js.* key differs from its default.

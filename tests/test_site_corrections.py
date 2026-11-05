@@ -21,7 +21,7 @@ EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 BUILD_DAY = date(2026, 10, 20)
 ROWS = re.compile(r'<li><time datetime="([^"]+)">\1</time> · <a href="/findings/([^"]+)\.html#corrections">([^<]*)</a>: ([^<]*)</li>')
 PILL = re.compile(r'<span class="status-pill">Corrected <time datetime="([^"]+)">\1</time></span>')
-FOOTER_LINKS = ('<p><a href="/feed.xml">Findings feed</a> · <a href="/meetings.xml">Meetings feed</a> · <a href="/search.html">Search</a> · <a href="/corrections.html">Corrections</a> · '
+FOOTER_LINKS = ('<p><a href="/feed.xml">Findings feed</a> · <a href="/meetings.xml">Meetings feed</a> · <a href="/search.html">Search</a> · <a href="/requests.html">What we have asked for</a> · <a href="/corrections.html">Corrections</a> · '
                 '<a href="/sitemap.xml">Sitemap</a> · <a href="/methods.html">How to read our findings</a></p>')
 
 

@@ -31,21 +31,20 @@ RULE = "ca-civ-1798.90.5-definitions"
 NO_SOCKETS = mock.patch("socket.socket", side_effect=AssertionError("network access attempted"))
 FOOTER_FAQ = '<p><a href="/faq.html">FAQ</a></p>'
 
-# sha256 of every file the fictional example renders (today=2026-10-01, no faq.json) on origin/main daa479ec, which
-# already holds the glossary and source record pages: captured from an untouched detached worktree of that revision with
-# render-and-hash, never from this candidate. A later change to the generated site re-captures this table.
-# Camera GeoJSON digest refreshed from untouched origin/main 6daa8a2e4a7fe90d17b5f824170d1d7915c1ae7b;
-# the complete no-FAQ rendered inventory matches that independent render byte for byte.
+# Fixed-day (2026-10-01) baseline independently rendered from main 53cdb59e
+# and requests head 1234c7d0: removing only the requests footer link and sitemap
+# entry restores main byte-for-byte; requests.html matches the immutable PR.
+# Source-filter assets and every other byte remain exact.
 BASELINE = {
-    "404.html": "b2991c912cf60b9f6da98217067eb5de2346263569dccb68e458107bdb4c2819",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "404.html": "c3c1d0f6b15f02c00d984a856cf8f0192d2b2afd1f37274dafa4030e79baf1e0",  # pragma: allowlist secret -- public rendered-file SHA-256
     "_headers": "d8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "about.html": "877208df0c2ce6c5ec765b7bd3e9868089aef85f91133a5b11d2a5e095a81e93",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "agencies.html": "15d474ba517c2b78a387ee4450f57e48576a49df5a0ca148e924a3e597470b17",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "agencies/cedar.html": "bd1c188e41b7e3fff1cf52d2d76d503b630a99f551827f3a56e6a15de8d9df24",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "about.html": "cb7121e49682e9bf5178067565ddfed22a566d0fed8efa0a2c03494117068a14",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "agencies.html": "807b2980e7a8f2fc68982e94ef04c18a3a10dddb821f9c1df708b52ac63a5cf3",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "agencies/cedar.html": "6464eea041a55efddd7b311b5952125442adc510834cd5db97d1e70749f82f41",  # pragma: allowlist secret -- public rendered-file SHA-256
     "agency-cards.js": "95d2218da220b6ec4ecd303342c0aaa090f5ea4999b0ffd05b3454c46719ca00",  # pragma: allowlist secret -- public rendered-file SHA-256
     "app.js": "ab63767de14fee8703a11531e24ebcfc4a8b845f986208772f242ef8d447db9e",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "cameras.html": "81f8b49cc1683925d34c09019c0081dcc6d4f8bb94843ac6b13d8dda360ca058",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "corrections.html": "0665ddcbcc6daa72939be2ada54a0fb422cfe2f735222efcd08d9bc9f213399f",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "cameras.html": "d454810e5f695aa3e647fc638f6042a3cb8dd6823519f783608ae5eb080b8b52",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "corrections.html": "7a600018a0407f23fb08634a97228f9fb87807cc80321f72b78a08128b2eee4e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/agencies.csv": "de226f37600fdaac36bacba18473551b0a724fa89dcd3c8a743a7442cf1bb477",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/agencies.json": "9c3dd727cbd33c726007e50c84daab6bd9d38cffa53e4941aefdff67a707f7bb",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/cameras.geojson": "5f3c2ce066666761f6c940d1c2e1c33ccd8cc5275df5431084c1bfb7a4cdc146",  # pragma: allowlist secret -- public rendered-file SHA-256
@@ -58,27 +57,29 @@ BASELINE = {
     "data/sources.json": "be46346e4e80de79575cc5250b27a921b329f22ffd8dd3a81b18a4a1bc603caf",  # pragma: allowlist secret -- public rendered-file SHA-256
     "feed.xml": "e6c4da912d1ea1bee41a34396d0dfb0187aeed960758830ad033f74afcbabf54",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/agency/cedar.xml": "555f536dddc3d3c6134c4b69ce281cc387f75efafbdb1d2ea0dc1dc9fda45414",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "findings/cedar-policy-posted.html": "a03ab8b2374800cfb6d0ef8e1ced0226a26e45959fa744dfeef9024ac18d37f3",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "findings/cedar-policy-posted.html": "8eb698695d210661b270d99bb46b8347bcfaa42dcfc6db2ae4490cd27d6e8193",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/cite.js": "13f4d137f53aaa98bcc1cf1662769871f5629dda97e5700cf97727fca110cb47",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "findings/index.html": "05999d5f47c3c227b347ccb52169a21bb113020c5a84a991075f8271d95b9274",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "findings/packet-all.html": "eb5bded12f202b5cd07cdc05c7bdb1da2bb6eea90d19ae467a4ce5607e592425",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "index.html": "08a7c582920d9da0bac01a4f219d1df3510280e93b96163dab10bfaab6b15b6e",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "meetings.html": "c8f6ae859113114dbe0721d8037959c6b995c9061f8df14f0134da64e31d5152",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "findings/index.html": "219c1d11be554b1833ca8bf3e40a75b5902cf56e7297d06362b1cc94ed070336",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "findings/packet-all.html": "ac543df536e443ca8928f91ffbabf54f67db7787be449df76153818ba89dc94e",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "index.html": "42cda83c1a99b40c35d802d1bfe9ce6ce0b32e306b318391e5114eca3c820cad",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "meetings.html": "bf6ea4ed6353fe1a7004b5e76c52cb9fa454e72f4d1efa73618b3ac3af3c751e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.ics": "dd19281997628992288aaccd1a377c0b0b41c72d2110b15a641cd7a813191ae5",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.xml": "2af1fa8b795edc83edc9c854e689411875b401b940c3cc99569311f182b41e5e",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "meetings/cedar-council-2026-10.html": "83f216c765c4715208ee7f29bffc99e51f19ecb0abdbed82b8113cbd1c301186",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "methods.html": "758c47e4ddedadd0561a44ba8986b67972edbe0307f6932f777b7a2b0860f990",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "privacy.html": "5a49de0a555a916830993a4f532de2012a1dda696612132a2c46a4d32c65c0bc",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "meetings/cedar-council-2026-10.html": "e43a29de5123ca5239a1de5cc2d59a5d0b6899c02f32be60bae469f42450c958",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "methods.html": "5ac87dc0dcffc7a245c9dd6402856419ec0234612e38acd2d5c2e5065cba8bfc",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "privacy.html": "58cea24c7b36fc5e65943fcb3d9a30b17e36cdf6d59c653f038d56b41c2e3966",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "requests.html": "ad23b0a218102cabb384cccc6720af415302409a170d47dbb6171e135c75f6c8",  # pragma: allowlist secret -- public rendered-file SHA-256
     "robots.txt": "f520ce90da728c1ea72afb9c9f22a0976b5e2c16ac6aa7256e1218479b4f2b80",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "search.html": "94d7901059876ce0e2b21209916607a5e039a4fa45dcb29d9846fb20de64710e",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "search.html": "a1a4e2d553b81fbe6724b36848a33c889050b10702cfe3cce7400d50c1009c45",  # pragma: allowlist secret -- public rendered-file SHA-256
     "search.js": "0f6185d1995caa68bb3292cf15417996ee917bf5b3c48c81d05cbd057d0da1f6",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "site-data.js": "bbce3111f93457ba0bc47b04ba0876e13bbcafa57305f61a9b046e72d62c0541",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "sitemap.xml": "ab05fa8c7d57a393d8997b194fcef21e0e444f2f4eef751c101df532b9fd522e",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "sources.html": "9efaaba42f6ba6d532fa33fff2cc51d65bd4dbda95e3192457393aeaed862eb2",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "sources/beefbeefbeef.html": "fe3419b37acf26a42df77207a223a0fcbfed04b9567a32b4c44f113f0cda6772",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "sources/cafecafecafe.html": "c22983ff1eae601a774dc1b391063605d10cf8cf7719aca954fdef5dc4e300fb",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "style.css": "640f0eb310ea16f07977566cd01d4298d73fed80b89603ce3d711072ec4aabc0",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "timeline.html": "48af0aaa960234edcc8eac283c91e470c9136bfbc329cfa75e71e78757b41415",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "site-data.js": "992aa92b3f544c4deaba28d2661f8b9ed995939a7da592540f269f0fb0a23e7e",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "sitemap.xml": "13968bbc2dd16a0d1295c61187ba2b7fd519a9687ab4503f94864e4627f28bb1",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "sources.html": "3fc11c218c6585b0c966218667821a67473dfefbe792de6802a6cd822f812225",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "sources/beefbeefbeef.html": "f84e097cb3b699c340ab62bea10019d5b100177229a2af78e9c44feef91a10ca",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "sources/cafecafecafe.html": "c58e3acd89f74e25df5637cf21c39aeb5dea06b0134c71e8c7e673d4ded470b7",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "sources/filter.js": "4880474e6f4e552946692df7bbadbf9341d0c383f081b873d776d1cbc1070b2a",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "style.css": "2dc934dbebe30b0c6c11780789a53d1a4c853f7cbbd5ff5b27cb347bed933bf4",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "timeline.html": "24f32c6b737b64f07b29b318e2baa5816c5431a741d399af57776aa3cf9867c5",  # pragma: allowlist secret -- public rendered-file SHA-256
 }
 
 

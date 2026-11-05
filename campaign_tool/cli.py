@@ -969,6 +969,9 @@ def main():
     outcome_p.add_argument("--direction", metavar="TEXT", help="A direction the body gave its staff, as the official source states it (1-200 plain-text characters; needs --return-by; alone it updates a recorded outcome)")
     outcome_p.add_argument("--return-by", metavar="YYYY-MM-DD", help="The date the official source says staff should report back (on or after the meeting)")
     outcome_p.add_argument("--direction-source", metavar="URL", help="https URL where the direction is stated (default: the outcome's --source)")
+    outcome_p.add_argument("--spoke", metavar="N", help="How many members of the public spoke on the item, as the official minutes or record state (0-999; alone with --written or --comment-source it updates a recorded outcome)")
+    outcome_p.add_argument("--written", metavar="M", help="How many written comments the official record says were received on the item (0-999)")
+    outcome_p.add_argument("--comment-source", metavar="URL", help="https URL of the record that states the counts (default: the outcome's minutes URL, else its --source)")
     sent_p = commands.add_parser("meetings-comment-sent", help="Record a comment you submitted by hand on a staged "
                                  "meeting in kit/comments-sent.json; sends nothing")
     for flag in ("--directory", "--id", "--on"):
@@ -1032,6 +1035,7 @@ def main():
     status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
+    status_p.add_argument("--owner", metavar="NAME", help="Only requests assigned to this teammate label (kit-assign)")
     status_p.add_argument("--csv", metavar="FILE", help="Write a new private .csv tracker (0600) outside public/ and content/")
     fees_p = commands.add_parser("kit-fees", help="Fee estimates, payments and waivers across every recorded request, "
                                  "with exact totals (read-only)")
@@ -1055,6 +1059,18 @@ def main():
     due_p.add_argument("--directory", required=True)
     due_p.add_argument("--as-of", help="YYYY-MM-DD to count from (default today)")
     due_p.add_argument("--request", help="Only requests with this name (refused when none is recorded)")
+    due_p.add_argument("--owner", metavar="NAME", help="Only requests assigned to this teammate label (kit-assign)")
+    assign_p = commands.add_parser("kit-assign", help="Record which teammate owns a recorded request (private "
+                                   "kit/assignments.json; nothing is sent)",
+                                   description="Assign a recorded request to a teammate's label, or clear it. A label "
+                                   "is an alias, not a verified identity. Dates and request state never change.")
+    assign_p.add_argument("--directory", required=True)
+    assign_p.add_argument("--agency", required=True, help="Agency ID in kit/agencies.json")
+    assign_p.add_argument("--request", default="main", help="Name of the recorded request (default main)")
+    assign_action = assign_p.add_mutually_exclusive_group(required=True)
+    assign_action.add_argument("--to", metavar="NAME", help="The teammate's label, 1-40 characters; not an email "
+                               "address or phone number")
+    assign_action.add_argument("--clear", action="store_true", help="Remove the request's owner")
     timing_p = commands.add_parser("kit-timing", help="Private response-time report from kit/sent.json: calendar days "
                                    "between recorded steps (read-only; provisional, not a legal deadline)",
                                    description="Calendar days between recorded steps; provisional; not a legal deadline. "
@@ -1322,6 +1338,8 @@ def main():
     today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
+    today_p.add_argument("--owner", metavar="NAME", help="Only the request work assigned to this teammate label; "
+                         "meetings, findings, contracts and contacts are still listed")
     today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
     from .today import CONTRACT_DAYS, REVIEW_DAYS, contract_days, review_days
     today_p.add_argument("--contract-days", type=contract_days, default=CONTRACT_DAYS, metavar="N", help="Contracts "
@@ -1770,11 +1788,11 @@ def main():
             kit_copy_cli(root, args.agency, args.copy_for, as_json=args.as_json)
         elif args.command == "kit-status" and args.csv:
             from .kit_export import status_csv
-            print(json.dumps(status_csv(root, args.csv, request=args.request), indent=2))
+            print(json.dumps(status_csv(root, args.csv, request=args.request, owner=args.owner), indent=2))
             print("Private file; nothing was sent or published.")
         elif args.command == "kit-status":
             from .kit_track import OVER_CAP, status as kit_track_status
-            report = kit_track_status(root, request=args.request)
+            report = kit_track_status(root, request=args.request, owner=args.owner)
             print(json.dumps(report, indent=2))
             for row in report["requests"]:  # a reminder on stderr; stdout stays one JSON document
                 label = row["agency_id"] + ("" if row["request"] == "main" else "/" + row["request"])
@@ -1812,7 +1830,7 @@ def main():
         elif args.command == "today":
             from .today import run_cli as today_cli
             read_config(root)  # not a campaign folder: Stopped, before any source is read
-            print(today_cli(root, args.as_of, args.as_json, args.contract_days, args.review_days))
+            print(today_cli(root, args.as_of, args.as_json, args.contract_days, args.review_days, owner=args.owner))
         elif args.command == "recent":
             from .recent import run_cli as recent_cli
             read_config(root)
@@ -1822,11 +1840,16 @@ def main():
 
         elif args.command == "kit-due":
             from .kit_track import due as kit_track_due
-            report = kit_track_due(root, args.as_of, request=args.request)
+            report = kit_track_due(root, args.as_of, request=args.request, owner=args.owner)
             print(json.dumps(report, indent=2))
             if report["past_due"] + report["stated_date_passed"] + report["installment_passed"] \
                     + report.get("download_expired", 0):
                 sys.exit(3)
+        elif args.command == "kit-assign":
+            from .kit_assign import assign
+            print(json.dumps(assign(root, args.agency, request=args.request, to=args.to, clear=args.clear),
+                             indent=2, ensure_ascii=False))
+            print("Recorded only. Nothing was sent.")
         elif args.command == "kit-calendar":
             from .kit_calendar import calendar
             try:
