@@ -1335,6 +1335,74 @@ def denial_reply(root, agency_id, rules=(), *, replace=False, law_base=None):
     return {"written": f"kit/followups/{target.name}", "rules": rules, "law_package_status": status}
 
 
+ASK_NO_RECORDS = ("Please tell us which offices, systems and accounts were searched, including any kept for the "
+                  "agency by a contractor or vendor. If such records existed earlier, please tell us whether they "
+                  "were removed and, if so, under which retention schedule.")
+ASK_UNANSWERED = "Please tell us whether responsive records exist for this part and when they will be produced."
+SCOPE_DISPOSITION_TEXT = {"produced": "produced", "partly_produced": "partly produced", "withheld": "withheld"}
+
+
+def scope_reply(root, agency_id, *, request="main", replace=False, law_base=None, today=None):
+    """Write a private, never-sent draft asking neutral questions about recorded per-scope gaps (kit/followups/)."""
+    from .cli import read_config  # local import: cli imports this module lazily
+    root, request, today = Path(root), _request(request), today or date.today()
+    label = _label(agency_id, request)
+    entry = read_sent(root).get(_key(agency_id, request)) if kit.AGENCY_ID.fullmatch(agency_id) else None
+    if entry is None:
+        raise ValueError(f"no hand-sent request recorded for {label}")
+    if "scopes" not in entry:
+        raise ValueError(f"no scopes recorded for {label}; nothing to ask about")
+    if not _scopes_ok(entry):
+        raise ValueError(f"kit/sent.json unreadable: malformed scopes for {label!r}")
+    validate_steps(entry, label, today=today)
+    steps = entry["steps"]
+    try:
+        package = law.load_package(kit._jurisdiction(read_config(root)), law_base)
+    except ValueError:
+        raise ValueError("no law package: scope titles cannot be named") from None
+    titles = {s["scope_id"]: s["title"] for s in package["request_scopes"]}
+    for scope_id in entry["scopes"]:
+        if scope_id not in titles:
+            raise ValueError(f"scope {scope_id} is not in the law package; its title cannot be named")
+    answers = _answers(steps)
+    produced_step = any(s.get("kind") in ("produced", "determination") for s in steps)
+    gaps, answered = [], []
+    for scope_id in entry["scopes"]:
+        said, on = answers.get(scope_id, (None, None))
+        if said == "no_records_stated":
+            gaps.append(f"{titles[scope_id]}: our record shows the agency stated on {on} that it has no records for "
+                        f"this part. {ASK_NO_RECORDS}")
+        elif said is None and produced_step:
+            gaps.append(f"{titles[scope_id]}: we have no recorded answer for this part. {ASK_UNANSWERED}")
+        elif said in SCOPE_DISPOSITION_TEXT:
+            answered.append(f"- {titles[scope_id]}: recorded as {SCOPE_DISPOSITION_TEXT[said]} on {on}")
+    if not gaps:
+        raise ValueError(f"no scope gap to ask about for {label}")
+    path = root / "kit" / "agencies.json"
+    names = {e["agency_id"]: e["name"] for e in kit._load_existing(path)} \
+        if path.is_file() and not path.is_symlink() else {}
+    name = names.get(agency_id) or agency_id
+    subject, first = draft_lines(entry)
+    stamp = today.isoformat()
+    lines = [f"# Scope questions draft: {name}{subject}", "", "DRAFT — NOT SENT. Review before sending it yourself.", "",
+             f"To: {name}, records custodian", "", *([first, ""] if first else []),
+             f"On {entry['sent_on']} we sent a records request by {entry['channel']} to {name}. We would like to "
+             "understand how each part of the request was handled. Draft generated " + stamp + ".", "",
+             "We have questions about these parts of the request:", "",
+             *(f"{number}. {text}" for number, text in enumerate(gaps, 1)), "",
+             *(["Parts recorded as answered (listed only; we make no statement about them here):", *answered, ""]
+               if answered else []),
+             "[EDIT ME: salutation]", "", "Thank you,", "", "[name]", "", "---",
+             "Draft only. Nothing was sent.", "Draft only. Not legal advice."]
+    if package["status"] != "reviewed":
+        lines.append(f"Law package status: {package['status']} (not independently reviewed)")
+    text = "\n".join(lines) + "\n"
+    target = _followup_target(root, f"{_stem(agency_id, request)}-scopes-{stamp}.md", replace)
+    kit._write_text(target, text)
+    return {"written": f"kit/followups/{target.name}", "gaps": len(gaps), "answered": len(answered),
+            "law_package_status": package["status"]}
+
+
 def withheld(root):
     """Every recorded withheld basis, grouped by the Gov. Code section numbers found in its own text (read-only)."""
     rows = []

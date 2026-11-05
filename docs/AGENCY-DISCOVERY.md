@@ -431,6 +431,18 @@ ids, `--rule` without a law package, and a request without a `denied` step are r
 `--rule` the draft has no citations. An existing draft is kept unless `--replace`; symlinks are refused. Nothing is sent
 and `sent.json` is not changed. The draft is not legal advice.
 
+`kit-scope-reply --directory D --agency ID [--request NAME] [--replace]` (default request `main`) writes a private draft
+`kit/followups/<stem>-scopes-<today>.md` (0600, folder 0700; `<stem>` is the agency id, or `<agency>--<name>` for a named
+request) for a request with recorded scopes. One numbered paragraph per asked scope, named by its law-package title and in
+asked order: a scope whose latest recorded answer is `no_records_stated` (asks which offices, systems and accounts were
+searched, including any kept for the agency by a contractor or vendor, and whether such records existed earlier and under
+which retention schedule they were removed), and a scope with no recorded answer once a `produced` or `determination`
+step exists (asks whether records exist and when they will be produced). Scopes last answered `produced`,
+`partly_produced` or `withheld` are only listed as answered. The questions never say a search was inadequate. Refused,
+with nothing written: scopes not recorded, no scope with a gap, no law package, or an unknown request. An existing draft is
+kept unless `--replace`; symlinks are refused. Nothing is sent and `sent.json` is not changed. Review and edit it yourself;
+it is not legal advice.
+
 On a `produced` step, link the ingested records the agency sent with `--record PREFIX` (repeatable, at most 200):
 at least 12 lowercase hex of each record's SHA-256 in the private ledger. Every prefix must match exactly one
 ingested record and none may already be linked to the request; otherwise nothing is written. Full hashes stay in
