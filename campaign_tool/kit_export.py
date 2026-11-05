@@ -9,7 +9,7 @@ from . import kit_track
 
 HEADER = ("agency_id", "name", "sent_on", "channel", "provisional_determination_due", "provisional_with_extension",
           "extended", "closed", "steps", "last_step_on", "last_step_kind", "linked_records",
-          "draft_changed_since_sent", "fee_estimate", "fee_state", "fee_paid", "request_url")
+          "draft_changed_since_sent", "fee_estimate", "fee_state", "fee_paid", "request_url", "owner")
 FORMULA_START = ("=", "+", "-", "@", "\t", "\r")  # a spreadsheet would run these as a formula
 
 
@@ -29,7 +29,7 @@ def _cells(row):
         row["agency_id"], row["name"], row["sent_on"], row["channel"], row["determination_due"],
         row["with_extension"], row["extended"], row["closed"], row["steps"], step.get("on"), step.get("kind"),
         row["records"], row["draft_changed_since_sent"], row["fee_estimate"], row["fee_state"], row["fee_paid"],
-        row.get("request_url"))]
+        row.get("request_url"), row.get("owner"))]
 
 
 def _target(root, out):
@@ -74,10 +74,12 @@ def write_rows(target, out, header, rows):
         raise
 
 
-def status_csv(root, out, today=None, law_base=None, *, request=None):
-    """Write one CSV row per recorded request (kit-status order) to a new private file; return a summary."""
+def status_csv(root, out, today=None, law_base=None, *, request=None, owner=None):
+    """Write one CSV row per recorded request (kit-status order) to a new private file; return a summary.
+
+    The store and every filter are read before the file is created, so a refusal leaves no CSV behind."""
     target = _target(root, out)
-    report = kit_track.status(root, today, law_base, request=request)
+    report = kit_track.status(root, today, law_base, request=request, owner=owner)
     write_rows(target, out, HEADER, [_cells(row) for row in report["requests"]])
     return {"written": str(target), "rows": len(report["requests"]),
             "law_package_status": report["law_package_status"], "note": report["note"]}

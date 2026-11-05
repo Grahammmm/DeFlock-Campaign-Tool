@@ -14,14 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 class CampaignResourceTests(unittest.TestCase):
     def test_bundled_inputs_match_canonical_bytes(self):
         self.assertEqual(sync(ROOT), [])
-        self.assertEqual(len(RESOURCES), 7)
+        self.assertEqual(len(RESOURCES), 8)
 
     def test_packaging_declares_exact_resource_paths(self):
         config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         declared = config["tool"]["setuptools"]["package-data"]["campaign_tool"]
         resources = [name for name in declared if name.startswith("_resources/")]
         self.assertCountEqual(resources, ["_resources/" + name for name in RESOURCES])
-        self.assertEqual(len(resources), 7)
+        self.assertEqual(len(resources), 8)
 
     def make_synthetic_bundle(self, root):
         for name in RESOURCES:

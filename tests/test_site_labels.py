@@ -239,8 +239,10 @@ class LabelsTest(unittest.TestCase):
         # map.history_*: the fixture has no map/history.json (tests/test_site_cameras_page.py covers those labels).
         # press.logo, press.download_logo: the fixture has no brand logo (tests/test_site_press_page.py covers those labels).
         # map.check_*: the fixture has no map/point-checks.json (tests/test_map_point_checks.py covers those labels).
+        # map.direction_line: the fixture has no facing tag (tests/test_camera_direction.py covers that label).
         # agency.transparency_*: the fixture has no transparency snapshot (tests/test_agency_transparency.py covers those).
         # agency.mapped_reported_*: the fixture has no transparency snapshot (tests/test_agency_mapped_reported.py covers those).
+        # schedule.*: the fixture has no body-schedules.json (tests/test_body_schedules.py covers those labels).
         # meeting.comments_*: the fixture records no public-comment counts (tests/test_meeting_comment_counts.py covers them).
         # meeting.votes*, vote.*: the fixture records no votes (tests/test_meeting_votes.py covers those labels).
         # handout.*: only the private meeting-pack handout writes these (tests/test_meeting_pack.py covers them).
@@ -265,7 +267,7 @@ class LabelsTest(unittest.TestCase):
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "agency.votes_heading", "agency.votes_more", "agency.votes_none", "agency.votes_source",
                   "finding.agency_response", "finding.quote_page", "finding.quote_transcribed", "finding.reply_declined", "finding.reply_no_response", "finding.reply_received",
-                  "footer.license",
+                  "footer.license", "footer.sharing",
                   "handout.agenda", "handout.corrected", "handout.more_on_site", "handout.not_recorded",
                   "handout.nothing_published", "handout.record_explainer", "handout.source_line", "handout.title",
                   "handout.what_we_found",
@@ -273,6 +275,7 @@ class LabelsTest(unittest.TestCase):
                   "license.about", "license.about_camera", "license.csv_note",
                   "map.check_duplicate", "map.check_earlier", "map.check_heading",
                   "map.check_in_agency_record", "map.check_not_found_on_site", "map.check_seen_in_person",
+                  "map.direction_line",
                   "map.history_added", "map.history_date", "map.history_note", "map.history_removed",
                   "map.history_title", "map.history_total",
                   "meeting.comments_both", "meeting.comments_spoke", "meeting.comments_written",
@@ -282,6 +285,20 @@ class LabelsTest(unittest.TestCase):
                   "meeting.votes", "meeting.votes_member", "meeting.votes_source", "meeting.votes_vote",
                   "officials.heading", "officials.listed", "officials.source", "press.download_logo", "press.logo",
                   "privacy.signup_policy",
+                  "requests.caption", "requests.col_agency", "requests.col_asked_on", "requests.col_state",
+                  "requests.col_topic", "requests.col_updated_on", "requests.not_recorded",
+                  "requests.state_acknowledged", "requests.state_answered", "requests.state_awaiting_response",
+                  "requests.state_declined_in_writing", "requests.state_partly_answered", "requests.state_withdrawn",
+
+                  "schedule.join_many", "schedule.join_two", "schedule.ordinal_1", "schedule.ordinal_2",
+                  "schedule.ordinal_3", "schedule.ordinal_4", "schedule.ordinal_last", "schedule.rule",
+                  "schedule.stale", "schedule.usually", "schedule.weekday_friday", "schedule.weekday_monday",
+                  "schedule.weekday_saturday", "schedule.weekday_sunday", "schedule.weekday_thursday",
+                  "schedule.weekday_tuesday", "schedule.weekday_wednesday",
+                  "sharing.aliases", "sharing.checked", "sharing.count", "sharing.federal", "sharing.in_state",
+                  "sharing.kind", "sharing.kind_federal", "sharing.kind_local", "sharing.kind_private", "sharing.kind_state",
+                  "sharing.kind_unknown", "sharing.law_status", "sharing.lead", "sharing.out_of_state", "sharing.receiver",
+                  "sharing.source_list", "sharing.sources", "sharing.state", "sharing.title",
                   "supporters.description", "supporters.joined", "supporters.kind.business",
                   "supporters.kind.civil_liberties", "supporters.kind.community", "supporters.kind.faith",
                   "supporters.kind.labor", "supporters.kind.neighborhood", "supporters.kind.other", "supporters.title",

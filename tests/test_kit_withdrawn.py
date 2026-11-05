@@ -334,7 +334,7 @@ class WithdrawnReadersTests(Base):
         self.assertEqual([(r["request"], r["state"]) for r in report["open"]], [("live", "past_due")])
         items = today.todo(self.root, date(2026, 6, 1))
         self.assertEqual([i["kind"] for i in items], ["comment_deadline", "request_past_due"], items)
-        self.assertEqual(sum(f"({self.a})" in i["what"] for i in items), 1)  # only the live request
+        self.assertEqual(sum(f"({self.a}/live)" in i["what"] for i in items), 1)  # only the live request
         self.add("live", [withdrawn()])
         self.assertEqual([i["kind"] for i in today.todo(self.root, date(2026, 6, 1))], ["comment_deadline"])
 

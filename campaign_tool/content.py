@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from . import law, map_controller
 from .agency_cards import text as plain_text, visible
+from .camera_direction import valid_direction
 from .review import CLASSIFICATIONS, review_blockers
 
 CONFIDENCE = ("verified", "likely", "needs_attorney_review")
@@ -44,7 +45,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01: reserved even without content
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq", "sharing"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01 / DF0237-04: reserved even without content
 
 
 class ContentError(ValueError):
@@ -1783,6 +1784,9 @@ def _validate_cameras(document, label):
                 if value is not None and (not isinstance(value, str) or
                                           not re.fullmatch(r"https://www\.openstreetmap\.org/(?:node|way)/\d+", value)):
                     raise ContentError(f"{label}.features[{index}].url: must be an openstreetmap.org object URL")
+            elif key == "direction":  # DF0237-11: an OpenStreetMap facing tag as tagged, or null; never echoed back
+                if value is not None and not valid_direction(value):
+                    raise ContentError(f"{label}.features[{index}].direction: expected an OpenStreetMap facing tag or null")
             elif isinstance(value, str) and not plain_text(value):
                 raise ContentError(f"{label}.features[{index}].{key}: plain text only")
             elif not isinstance(value, (str, int, float, bool)) and value is not None:
@@ -2072,7 +2076,7 @@ def load_map(content_dir, sources=None, today=None):
 PAGE_KEYS, MAX_PAGES, MAX_NAV_PAGES = {"title", "description", "body_md", "nav"}, 50, 3
 RESERVED_PAGE_SLUGS = STARTER_SLUGS | {"404", "corrections", "feed", "sitemap", "robots", "style", "site-data",
                                        "agency-cards", "app", "data", "vendor", "meetings", "methods", "privacy", "search",
-                                       "press"}  # generated top-level names (press: DF2207-10, reserved even when disabled)
+                                       "press", "requests"}  # generated top-level names (press: DF2207-10, reserved even when disabled)
 
 
 def _page_string(document, key, label, limit, required):
@@ -2787,4 +2791,8 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
         model["redirects"] = _read_json(redirects_path)
     if supporters is not None:  # DF2207-13: public rows only (never the private consent records)
         model["supporters"] = supporters
+    from .body_schedules import read_body_schedules  # local: body_schedules imports this module
+    schedules = read_body_schedules(root, today=today)  # DF0022-10: optional; the key exists only with rows
+    if schedules:
+        model["body_schedules"] = schedules
     return model

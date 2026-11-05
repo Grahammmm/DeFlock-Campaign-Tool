@@ -10,6 +10,7 @@ import os
 import sys
 from pathlib import Path
 
+from .body_schedules import read_body_schedules
 from .content import (ASKED_REQUEST, CITY_KINDS, LOCAL_ASSET, MAX_GEOJSON_BYTES, SOURCES_UNKNOWN, ContentError, _alpr_policy, _asked, _bounds, _contract, _contract_check, _policy_check, _pre_meeting, _read_json,
                       _require_keys, _slug, _text, _validate_cameras, check_finding_agencies, check_source_pages, continuation_problems,
                       default_agencies,
@@ -245,6 +246,7 @@ def content_problems(root, limit=LIMIT, faq_out=None):
         _attempt(problems, "labels.json", lambda: load_labels(_read_json(labels_path, MAX_LABELS_BYTES)))
 
     read_glossary(root, problems)  # DF1952-04: the build's own reader; it names every independent problem itself
+    _attempt(problems, "body-schedules.json", lambda: read_body_schedules(root))  # DF0022-10: the build's own reader
     # DF0022-01: the build's own reader; with a refused finding file ids are not matched (that file is already named)
     faq = read_faq(root, findings if findings_intact else None, problems)
     if faq_out is not None and faq is not None:
@@ -314,7 +316,7 @@ def content_problems(root, limit=LIMIT, faq_out=None):
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
 FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "pages/", "topics/", "kit/", "law/", "newsletters/",
                  "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json",
-                 "faq.json")
+                 "faq.json", "body-schedules.json")
 
 
 def problem_record(line):
