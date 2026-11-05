@@ -57,6 +57,14 @@ cancelled meeting is never `agenda_changed`. `meetings-stage` refuses a cancelle
 writes nothing; a content meeting may set `status` (`scheduled` default, or `cancelled`), and the
 site never lists a cancelled meeting as upcoming: it stays under past meetings marked `Cancelled`.
 
+### Attachment links (never fetched)
+
+Each matched meeting and matter carries `attachments` (`name`, `url`, at most 20, de-duplicated by URL) from Legistar
+(`eventitems?Attachments=1`, `matters/<id>/attachments`) and `attachments_dropped`, the count of links refused. Only
+`https://` links on `*.legistar.com`, `legistar.granicus.com` or `legistar<N>.granicus.com` are kept (no port or
+credentials); the files themselves are never downloaded. The staged comment kit lists them under `## Read first`.
+A changed attachment list alone is never `agenda_changed`. Matters without a recorded attachment response get none.
+
 ### Matters (`--matters`, Legistar only)
 
 `meetings --matters` lists contracts, ordinances and resolutions that may not be on an upcoming

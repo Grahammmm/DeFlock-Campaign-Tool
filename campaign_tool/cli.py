@@ -1101,6 +1101,11 @@ def main():
         copy_p.add_argument(flag, required=True)
     copy_p.add_argument("--for", dest="copy_for", required=True, choices=("portal", "email", "mail"))
     copy_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
+    brief_p = commands.add_parser("agency-brief", help="Private printable meeting brief for one agency from published content "
+                                  "only: kit/briefs/<agency-slug>-<date>.html and .txt; sends and publishes nothing")
+    brief_p.add_argument("--directory", required=True)
+    brief_p.add_argument("--agency", required=True)
+    brief_p.add_argument("--replace", action="store_true", help="Overwrite an existing brief pair (regular files only)")
     coverage_p = commands.add_parser("kit-coverage", help="One row per selected agency: draft, sent, last step, "
                                      "records, sources, findings (read-only)")
     coverage_p.add_argument("--directory", required=True)
@@ -1220,10 +1225,23 @@ def main():
                                   "(dry run by default); nothing is sent or published")
     asked_p.add_argument("--directory", required=True)
     asked_p.add_argument("--apply", action="store_true", help="Write the proposal (validated, one atomic write)")
+    personal_p = commands.add_parser("personal-data", help="List the private files that can hold a person's name, email, "
+                                     "phone or address: counts and dates only, never values (read-only)")
+    personal_p.add_argument("--directory", required=True)
+    personal_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
                                      "section number in the agency's own words (read-only)")
     withheld_p.add_argument("--directory", required=True)
     withheld_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
+    search_log_p = commands.add_parser("kit-search-log", help="Private counts from a locally saved ALPR search log CSV: months, "
+                                       "organizations, purpose categories (read-only; purposes are counted, never shown)")
+    search_log_p.add_argument("--directory", required=True)
+    search_log_p.add_argument("--csv", required=True, help="The agency's log as saved, UTF-8 CSV, at most 100 MiB")
+    search_log_p.add_argument("--agency", required=True, help="An agency_id in kit/agencies.json")
+    search_log_p.add_argument("--json", dest="as_json", action="store_true", help="One JSON document instead of text")
+    search_log_p.add_argument("--categories", help="Your own purpose term lists (JSON); replaces the default terms")
+    for role in ("time", "reason", "org", "state"):
+        search_log_p.add_argument(f"--{role}-col", metavar="HEADER", help=f"Exact header of the {role} column")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -1564,6 +1582,15 @@ def main():
     if args.command == "law":
         from .law_packet import main as law_packet_main
         sys.exit(law_packet_main(args))
+    if args.command == "personal-data":  # the folder is not resolved: the register refuses a symlinked root itself
+        from .personal_data import PersonalDataError, exit_code, personal_data_register, render_text
+        try:
+            report = personal_data_register(Path(args.directory).expanduser())
+        except PersonalDataError as exc:
+            print("Stopped: " + str(exc), file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
+        sys.exit(exit_code(report))
     root = Path(args.directory).expanduser().resolve()
     try:
         if args.command == "init":
@@ -1941,6 +1968,9 @@ def main():
             print(render(result))
             print("Recorded only. Nothing was fetched or sent." if result["applied"] else
                   "Checked only; nothing was written, fetched or sent.")
+        elif args.command == "agency-brief":
+            from .agency_brief import run_cli as agency_brief_cli
+            agency_brief_cli(root, args.agency, replace=args.replace)
         elif args.command == "kit-check":
             from .kit_check import run_cli as kit_check_cli
             kit_check_cli(root, as_json=args.as_json)
@@ -2039,6 +2069,9 @@ def main():
             code = kit_asked_cli(root, args.apply)
             if code:
                 sys.exit(code)
+        elif args.command == "kit-search-log":
+            from .search_log import run_cli as search_log_cli
+            search_log_cli(root, args)
         elif args.command == "kit-withheld":
             from .kit_track import format_withheld, withheld
             report = withheld(root)

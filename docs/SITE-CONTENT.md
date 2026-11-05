@@ -904,6 +904,59 @@ person. The two files are replaced one after the other with a rollback on an ord
 until the saved pair of files is restored. There is no crash-atomic transaction and no concurrent writer support; run
 one writer. Evidence originals are never deleted.
 
+### Campaign events (`content/events.json`, optional)
+
+The campaign's own forums, teach-ins and other public gatherings become `/events.html`. They are **not** governing-body
+meetings: no comment kit, no outcome, no RSVP, nothing is sent or fetched, and no attendee data is collected. The file is a
+JSON array of 0 to 50 objects, kept in the order written:
+
+```json
+[
+  {
+    "id": "records-teach-in",
+    "title": "Public records teach-in (fictional)",
+    "starts_at": "2026-10-10T18:00:00-07:00",
+    "ends_at": "2026-10-10T20:00:00-07:00",
+    "venue": "Cedar Library, meeting room B",
+    "description_md": "How to read a records response. **All welcome.**",
+    "url": "https://example.com/teach-in",
+    "accessibility_note": "Step-free entrance; captions on request."
+  },
+  {
+    "id": "online-forum",
+    "title": "Online forum (fictional)",
+    "starts_at": "2026-11-03T12:00:00Z",
+    "ends_at": "2026-11-03T13:00:00Z",
+    "online": true,
+    "description_md": "Join from anywhere; the link is on the details page."
+  }
+]
+```
+
+- Required: `id` (lowercase letters, digits and hyphens, starting with a letter, at most 64; unique in the file),
+  `title` (1 to 120 characters), `starts_at`, `ends_at`, `description_md` (1 to 1200 characters, the same safe Markdown
+  subset as pages; no raw HTML and no images). Optional: `venue`, `online`, `url`, `accessibility_note` (1 to 400
+  characters). Unknown fields are refused.
+- Location is exactly one of: a `venue` (1 to 160 characters, published as written) with `online` left out or `false`,
+  or `online: true` with no `venue`. A hybrid event names its venue and describes the online option in `description_md`.
+- `title`, `venue` and `accessibility_note` are plain text: no `<` or `>` and no control or invisible characters.
+- Times are `YYYY-MM-DDTHH:MM:SS` followed by `Z` or an offset such as `-07:00` (at most 14:00). A time without an
+  offset, a date alone, fractions of a second and impossible dates are refused. `ends_at` may equal `starts_at` but not
+  be earlier (compared as instants, not as text). Times are shown exactly as written, with their offsets.
+- `url` must be `https://`; it is linked, never fetched, and its safety or availability is not promised.
+- Every text field, including a Markdown link address, goes through the shared privacy lint (email, phone, plate). A
+  venue is not exempt. A refusal names the field and the category, never the text.
+- Upcoming means `starts_at` is at or after the build day at 00:00:00 UTC; everything else is past (an event already
+  underway at that moment counts as past). The page says it is current as of the build date, not a live clock. Upcoming
+  events come first (earliest first), then past events (latest first) in their own section; each event has the anchor
+  `#event-<id>`. The home page shows only the next upcoming event.
+- `events.html` joins the footer (last paragraph) and, with `base_url`, `sitemap.xml` (the page only, not anchors).
+  `events` is a reserved page and finding slug and `events.html` a generated top-level name with or without the file.
+  Without the file, or with `[]`, there is no page, link, home notice or sitemap entry and every other page is
+  byte-identical. Rebuild after every change; deleting the file removes the page on the next build.
+- `build` and `content-check` use the same reader, so they refuse the same things: a duplicate `id`, an `ends_at` before
+  `starts_at` and a non-https `url` are each named by field and position (`events.json[N].field`).
+
 ## Regular meeting schedules (`content/body-schedules.json`, optional)
 
 A source-backed rule for when a body usually meets, for bodies with or without a Legistar feed. Organizers write it by
@@ -962,6 +1015,7 @@ per picker city by name, each point in the first city boundary holding it by the
 section lists 500 rows, then "and N more on the map"; linked from the map fallback and footer, in `sitemap.xml`),
 `glossary.html` (only with a non-empty `content/glossary.json`: see Glossary),
 `faq.html` (only with a `content/faq.json`: see FAQ),
+`events.html` (only with a non-empty `content/events.json`: see Campaign events),
 `news.html` (only with a `content/coverage.json`: see In the news),
 `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
@@ -1369,6 +1423,43 @@ the static fallback and the picker still drives the agency cards. The map style
 (`style_url`) and tiles come from a provider the campaign chooses; their terms
 and attribution are the campaign's responsibility, and the CSP names only the
 hosts you declare in `style_url` and `tile_hosts`.
+
+## Private agency meeting brief (`agency-brief`)
+
+`python3 -m campaign_tool agency-brief --agency ID --directory D [--replace]` writes a private, printable handout for a
+meeting with officials: `kit/briefs/<agency-slug>-<YYYY-MM-DD>.html` and its `.txt` twin (the UTC date of the run). It
+sends, publishes, builds and fetches nothing.
+
+- **Inputs are the organizer's published `content/` only.** `content/agencies.json` must be a real file (a missing one
+  refuses; `kit/agencies.json` is never a fallback) and the agency must be selected and organizer-verified there; an
+  unknown or unverified ID is refused by name before anything is written. "Published" means the organizer's content
+  inputs (including staged meetings), not that the website is deployed, and the brief does not authenticate private
+  review receipts. No draft, request, sent record, note or private file is read for it, and `asked[].request`, contact
+  emails and the free-text profile summary, facts and flags are never copied.
+- **Every line names its source.** A factual row shows a public URL and/or a `content/<file>:<field>` locator, and the
+  date recorded with it (`checked`, `asked`, `published`, `starts`); a missing record prints `Not recorded` with its
+  locator, which is not a claim that nothing exists. The preparation date is shown once and is never used as a checked
+  date. Costs and funding keep their stated amount and period (nothing is added up or annualised); a zero stays `0` and a
+  missing portal number stays `not recorded`.
+- **Sections:** agency; profile facts (policy link and checklist, contract term and cost, funding, newest portal
+  numbers, transcribed sharing count); requests the campaign made and their recorded state; published findings (the
+  agency as primary or `also_agency_ids`, linked absolute with `base_url`, root-relative without); local rules and recorded
+  actions; the governing body with its recorded votes and upcoming staged meetings; the campaign's own asks
+  (`site.json` `comment_asks`, shown as the campaign's asks, never agency statements; `Campaign asks not recorded`
+  without them) and limitations.
+- **The governing body is never guessed.** A `city_council` or `county_board` is its own body. For any other agency the body
+  is the one named in a `found` `pre_implementation_meeting.body` with an official source, matched literally to exactly one
+  council or board of the same `jurisdiction_name`. Otherwise the brief says `Governing body not established by published
+  content` and lists only staged meetings tagged directly with the agency ID, labelled as such. Cancelled meetings are
+  omitted; a meeting at or after the run instant is upcoming.
+- **Privacy and wording gates.** Every row and both finished files are checked with the shared email, phone and plate lint
+  before anything is written (a hit refuses, naming the row and category, never the value). Legal-claim wording is an
+  alert only: it prints `review-required` notes on stderr and does not change or block the brief.
+- **Safe files.** The HTML is inert (escaped text, no script, form, external load; CSP `default-src 'none'`). An existing
+  `.html` or `.txt` keeps both unchanged unless `--replace`; a symlink, hard link, FIFO, directory or unsafe `kit/` or
+  `kit/briefs/` refuses even with `--replace`. Directories are created `0700` and files `0600`. The two files are replaced
+  one after the other, not as a transaction: after an I/O failure the first file can already be new, the command says so
+  and exits 1, and running it again with `--replace` repairs the pair.
 
 ## What is never rendered
 
