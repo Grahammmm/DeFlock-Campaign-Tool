@@ -698,7 +698,7 @@ MODULE_FUNCTIONS = {
     'shell': ('main',),
     'site': ('_copy', '_csv_text', '_write', 'build_site', 'build_starter',),
     'site_check': ('write_weights',),
-    'social': ('_write_drafts', 'build_meeting_social', 'build_outcome_social', 'build_social',),
+    'social': ('_write_drafts', 'build_event_social', 'build_meeting_social', 'build_outcome_social', 'build_social',),
     'social_threads': ('build_thread_social',),
     'sources_cmd': ('_batch_write', '_rewrite', '_write_atomic', 'add_source',),
 }
