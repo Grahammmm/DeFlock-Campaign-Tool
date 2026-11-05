@@ -83,6 +83,9 @@ class StarterTests(HelpMapCase):
         self.assertIn("Community-mapped points; ownership unconfirmed.", body)
         for code in ("seen_in_person", "in_agency_record", "not_found_on_site", "duplicate"):
             self.assertIn(f"`{code}`", body)
+        self.assertIn("`not_found_on_site` records that an organizer did not find a camera at the surveyed location", body)
+        self.assertIn("`duplicate` flags that the point appears to be a duplicate of another mapped point", body)
+        self.assertIn("neither check removes the point: both keep it on the map and in every count.", body)
         self.assertEqual(re.findall(r"\]\((?!https://)[^)]*\)", body), [])  # markdown_lite drops relative links
         self.assertIn("methods.html", body)  # named in words, not linked
         self.assertNotIn("cameras.html", body)
