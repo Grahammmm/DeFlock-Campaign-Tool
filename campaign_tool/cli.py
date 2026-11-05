@@ -1374,6 +1374,10 @@ def main():
     )
     content_init.add_argument("--directory", required=True)
     content_init.add_argument("--from", dest="source_campaign")
+    content_plain_p = content_cmds.add_parser("check-plain", help="Advisory plain-language check of content/pages, faq.json and "
+                                              "glossary.json (read-only, never a gate; exit 0 with suggestions)")
+    content_plain_p.add_argument("--directory", required=True)
+    content_plain_p.add_argument("--json", dest="as_json", action="store_true", help="Print the report as one JSON object")
     strip_p = content_cmds.add_parser("strip-metadata", help="Write <name>.clean<ext> beside a JPEG/PNG/WebP without "
                                       "its EXIF, GPS, XMP, IPTC, comment or text metadata (no re-encode)")
     strip_p.add_argument("file")
@@ -2041,6 +2045,10 @@ def main():
                                            records_email=args.records_email, records_url=args.records_url,
                                            portal=args.portal, mailing_address=args.mailing_address), indent=2))
             print("Nothing was sent.")
+        elif args.command == "content" and args.content_command == "check-plain":
+            from .content_plain import run_cli as content_plain_cli
+            read_config(root)
+            content_plain_cli(root, args.as_json)
         elif args.command == "content" and args.content_command == "strip-metadata":
             from .image_meta import strip_file
             print(json.dumps(strip_file(args.file, args.out), indent=2))

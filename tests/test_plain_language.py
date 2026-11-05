@@ -359,7 +359,7 @@ class CommandTests(Case):
         # only the checker's own command and the preview advisory import it: no build, publish, review or hash code
         users = sorted(p.name for p in (REPO_ROOT / "campaign_tool").glob("*.py")
                        if p.name != "plain_language.py" and "plain_language" in p.read_text(encoding="utf-8"))
-        self.assertEqual(users, ["cli.py"])
+        self.assertEqual(users, ["cli.py", "content_plain.py"])
         cli_text = (REPO_ROOT / "campaign_tool" / "cli.py").read_text(encoding="utf-8")
         self.assertEqual(cli_text.count("plain_language"), 2)
         source = (REPO_ROOT / "campaign_tool" / "plain_language.py").read_text(encoding="utf-8")
