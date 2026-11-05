@@ -11,6 +11,7 @@ fetched unless the caller passes ``--online``.
 workspace generator: a two-minute public comment, three asks and a source list
 built from published findings only, in the ``markdown_lite`` subset.
 """
+import hashlib
 import json
 import os
 import re
@@ -128,7 +129,12 @@ class LegistarClient:
     def event_items(self, event_id):
         if type(event_id) is not int or event_id < 0:
             raise MeetingsError("event id must be an integer")
-        return self._get(f"events/{event_id}/eventitems")
+        return self._get(f"events/{event_id}/eventitems", {"Attachments": "1"})
+
+    def matter_attachments(self, matter_id):
+        if type(matter_id) is not int or matter_id < 0:
+            raise MeetingsError("matter id must be an integer")
+        return self._get(f"matters/{matter_id}/attachments")
 
     def matters(self, since=None, top=MAX_MATTERS):
         """Matters modified on or after ``since`` (date, default today minus 365 days), newest first."""
@@ -221,6 +227,20 @@ def read_feed_file(path):
     return data
 
 
+def parse_feed(data, label="feed"):
+    """Root element of an RSS feed; DOCTYPE/ENTITY declarations (any encoding) and malformed XML are refused."""
+    def refuse(*_):
+        raise MeetingsError(f"{label}: DOCTYPE and ENTITY declarations are refused")
+    # Pre-pass with expat in any encoding (UTF-16 included): a DTD or entity declaration is refused before ElementTree sees it.
+    scan = expat.ParserCreate()
+    scan.StartDoctypeDeclHandler = scan.EntityDeclHandler = refuse
+    try:
+        scan.Parse(data, True)
+        return ET.fromstring(data)
+    except (expat.ExpatError, ET.ParseError) as exc:
+        raise MeetingsError(f"{label}: not well-formed XML ({exc})") from None
+
+
 class GranicusClient:
     """Granicus ViewPublisher agenda RSS (``https://<host>/ViewPublisherRSS.php?view_id=<n>&mode=agendas``), Legistar-shaped."""
     source = "granicus"
@@ -254,18 +274,7 @@ class GranicusClient:
     def events(self, since=None, top=MAX_EVENTS):
         url = f"https://{self.host}/ViewPublisherRSS.php?view_id={self.view_id}&mode=agendas"
         since = since or date.today()
-        data = self.opener(url)
-
-        def refuse(*_):
-            raise MeetingsError(f"{self.label}: DOCTYPE and ENTITY declarations are refused")
-        # Pre-pass with expat in any encoding (UTF-16 included): a DTD or entity declaration is refused before ElementTree sees it.
-        scan = expat.ParserCreate()
-        scan.StartDoctypeDeclHandler = scan.EntityDeclHandler = refuse
-        try:
-            scan.Parse(data, True)
-            root = ET.fromstring(data)
-        except (expat.ExpatError, ET.ParseError) as exc:
-            raise MeetingsError(f"{self.label}: not well-formed XML ({exc})") from None
+        root = parse_feed(self.opener(url), self.label)
         events = []
         for item in root.iter("item"):
             def field(name):
@@ -299,15 +308,117 @@ class GranicusClient:
         return self._scanned.get(event_id, False)
 
 
+AGENDACENTER_HOST = re.compile(r"[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){1,5}")
+AGENDACENTER_DATE = re.compile(r"_(\d{2})(\d{2})(\d{4})-")
+AGENDACENTER_ID = re.compile(r"-(\d{1,12})/?$")
+
+
+class AgendaCenterClient:
+    """CivicPlus AgendaCenter public RSS (``https://<host>/RSSFeed.aspx?ModID=65&CID=All-0``), Legistar-shaped.
+
+    Only the feed text (title, category, description) is scanned; agenda PDF links are recorded, never fetched.
+    """
+    source = "agendacenter"
+
+    def __init__(self, host, opener=None, label="feed"):
+        # 2-6 lowercase DNS labels; an all-digit last label is an IP literal; ports, userinfo and paths never match.
+        if (not isinstance(host, str) or not AGENDACENTER_HOST.fullmatch(host) or len(host) > 253
+                or host.rsplit(".", 1)[1].isdigit()):
+            raise MeetingsError("AgendaCenter host must be a lowercase DNS name (2-6 labels), no IP, port, user or path")
+        self.host, self.label = host, label
+        self.client = host.split(".")[0]
+        self.opener = opener or default_opener
+        self.cut = 0
+        self.dropped_no_date = 0
+        self._scanned = {}
+        self._events = {}
+
+    @staticmethod
+    def _date(link, pub):
+        m = AGENDACENTER_DATE.search(urllib.parse.urlsplit(link).path)
+        if m:
+            try:
+                return date(int(m.group(3)), int(m.group(1)), int(m.group(2))).isoformat()
+            except ValueError:
+                pass  # an impossible link date falls back to pubDate
+        try:
+            if pub:
+                return parsedate_to_datetime(pub).date().isoformat()
+        except (TypeError, ValueError, IndexError):
+            pass
+        return None
+
+    def events(self, since=None, top=MAX_EVENTS):
+        since = since or date.today()
+        root = parse_feed(self.opener(f"https://{self.host}/RSSFeed.aspx?ModID=65&CID=All-0"), self.label)
+        events, seen = [], set()
+        self.dropped_no_date = 0
+        for item in root.iter("item"):
+            def field(name):
+                node = item.find(name)
+                return " ".join((node.text or "").split()) if node is not None else ""
+            title, link, category = field("title"), field("link"), field("category")
+            day = self._date(link, field("pubDate"))
+            if not day:
+                self.dropped_no_date += 1
+                continue
+            if day < since.isoformat():
+                continue
+            m = AGENDACENTER_ID.search(urllib.parse.urlsplit(link).path)
+            ident = int(m.group(1)) if m else int(hashlib.sha256((link or title).encode("utf-8")).hexdigest()[:12], 16)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            parts = urllib.parse.urlsplit(link)
+            ok = (parts.scheme == "https" and (parts.hostname or "").lower() == self.host and not parts.username
+                  and parts.path.startswith("/AgendaCenter/"))
+            description = _clean(re.sub(r"<[^>]*>", " ", field("description")))
+            self._scanned[ident] = bool(description)
+            body = category or re.split(r" [-\u2013] ", title, maxsplit=1)[0]
+            events.append({"EventId": ident, "EventBodyName": body, "EventDate": day, "EventComment": title,
+                           "EventInSiteURL": link if ok else None, "_title": title, "_description": description})
+        events.sort(key=lambda e: (e["EventDate"], e["EventId"]))
+        self.cut = max(0, len(events) - min(top, MAX_EVENTS))
+        self._events = {e["EventId"]: e for e in events}
+        return events[:min(top, MAX_EVENTS)]
+
+    def event_items(self, event_id):
+        e = self._events.get(event_id, {})
+        if not e.get("_description"):
+            return []  # nothing but a title: not scanned, never a match
+        return [{"EventItemTitle": e["_title"], "EventItemMatterName": e["_description"]}]
+
+    def scanned(self, event_id):
+        return self._scanned.get(event_id, False)
+
+
 def feed_opener(path):
     return lambda url: read_feed_file(path)
 
 
 def make_client(args, opener):
     """The agenda-platform client for the ``meetings`` command; refuses flags that belong to another platform."""
-    granicus = args.platform == "granicus"
-    if granicus and (args.from_json or (args.online and args.from_xml)) or (args.from_xml or args.view_id is not None or args.all_events) and not granicus:
-        raise MeetingsError("--view-id, --from-xml and --all-events go with --platform granicus (which reads --online or --from-xml, not --from-json)")
+    if args.platform == "ics":  # DF1422-09: one public iCalendar feed; --client, --from-json, --from-xml and the Granicus flags do not apply
+        if args.client or args.from_json or args.from_xml or args.view_id is not None or args.all_events or args.matters:
+            raise MeetingsError("--platform ics takes --feed-url and --body with --online or --from-ics; not --client, --from-json, --from-xml, --view-id, --all-events or --matters")
+        if not getattr(args, "feed_url", None) or not getattr(args, "body", None):
+            raise MeetingsError("--platform ics needs --feed-url and --body")
+        from .meetings_ics import IcsClient
+        return IcsClient(args.feed_url, args.body, opener=opener, label=getattr(args, "from_ics", None) or "feed")
+    if getattr(args, "feed_url", None) or getattr(args, "body", None) or getattr(args, "from_ics", None):
+        raise MeetingsError("--feed-url, --body and --from-ics go with --platform ics")
+    granicus, center = args.platform == "granicus", args.platform == "agendacenter"
+    feed = granicus or center
+    if (feed and (args.from_json or (args.online and args.from_xml))
+            or (args.from_xml or args.all_events) and not feed
+            or args.view_id is not None and not granicus):
+        raise MeetingsError("--from-xml and --all-events go with --platform granicus or agendacenter (which read --online or --from-xml, not --from-json); "
+                            "--view-id goes with granicus")
+    if center:
+        client = AgendaCenterClient(args.client, opener=opener, label=args.from_xml or "feed")
+        client.report_extra = lambda found: {"not_scanned": sum(bool(m.get("not_scanned")) for m in found),
+                                             "cut_by_item_cap": client.cut, "dropped_no_date": client.dropped_no_date}
+        return client
     if granicus:
         client = GranicusClient(args.client, args.view_id, opener=opener, label=args.from_xml or "feed")
         client.report_extra = lambda found: {"not_scanned": sum(bool(m.get("not_scanned")) for m in found), "cut_by_item_cap": client.cut}
@@ -363,6 +474,41 @@ def _item_text(item):
     return " ".join(parts)
 
 
+MAX_ATTACHMENTS = 20
+ATTACHMENT_HOST = re.compile(r"(?:[a-z0-9-]+\.)+legistar\.com|legistar\.granicus\.com|legistar\d+\.granicus\.com")
+ATTACHMENT_BAD = re.compile(r"[\s<>\"'\\\x00-\x1f\x7f]")
+
+
+def _attachment(obj):
+    """DF2022-13: ``{"name", "url"}`` for one Legistar attachment object, or None when its link is not an official https Legistar URL."""
+    url = obj.get("MatterAttachmentHyperlink") if isinstance(obj, dict) else None
+    if not isinstance(url, str) or len(url) > 500 or ATTACHMENT_BAD.search(url) or not url.startswith("https://"):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.username is not None or parts.password is not None or port is not None or not ATTACHMENT_HOST.fullmatch(parts.hostname or ""):
+        return None
+    name = obj.get("MatterAttachmentName")
+    name = " ".join(_plain(name if isinstance(name, str) else "").replace("[", "").replace("]", "").split())[:200]
+    return {"name": name or "Attachment", "url": url.replace("(", "%28").replace(")", "%29")}
+
+
+def _attachments(objects):
+    """(kept, dropped): de-duplicated by URL, at most MAX_ATTACHMENTS; dropped counts the links refused. Never fetched."""
+    kept, seen, dropped = [], set(), 0
+    for obj in objects:
+        found = _attachment(obj)
+        if found is None:
+            dropped += 1
+        elif found["url"] not in seen and len(kept) < MAX_ATTACHMENTS:
+            seen.add(found["url"])
+            kept.append(found)
+    return kept, dropped
+
+
 def match_items(items):
     """Return ``[(item_text, [terms])]`` for agenda items matching the ALPR keywords."""
     hits = []
@@ -389,11 +535,14 @@ def event_status(event):
 
 def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_events=False):
     """Upcoming events with at least one ALPR-related agenda item, as meeting dicts."""
+    if hasattr(client, "relevant"):  # a platform that reads whole documents (iCalendar) builds its own meeting dicts
+        return client.relevant(since=since, zone=zone)
     meetings = []
     for event in client.events(since=since, top=max_events)[:max_events]:
         if not isinstance(event, dict) or type(event.get("EventId")) is not int:
             continue
-        hits = match_items(client.event_items(event["EventId"]))
+        items = client.event_items(event["EventId"])
+        hits = match_items(items)
         unscanned = not hits and all_events and hasattr(client, "scanned") and not client.scanned(event["EventId"])
         if not hits and not unscanned:
             continue
@@ -405,6 +554,9 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_ev
         if not isinstance(agenda_url, str) or not agenda_url.startswith("https://"):
             agenda_url = None
         item_text, terms = hits[0] if hits else ("", [])
+        matched = [i for i in items if isinstance(i, dict) and match_items([i])]
+        attached, dropped = _attachments(a for i in matched for a in (i.get("EventItemMatterAttachments") or [])
+                                         if isinstance(i.get("EventItemMatterAttachments"), list))
         meetings.append({
             "id": f"{client.source}-{client.client}-{event['EventId']}",
             "body": _plain(body),
@@ -418,6 +570,8 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_ev
             "matched_terms": sorted({t for _, ts in hits for t in ts}),
             "matched_items": len(hits),
             "status": event_status(event),
+            "attachments": attached,
+            "attachments_dropped": dropped,
             **({"not_scanned": True, "relevance": "not_scanned"} if unscanned else {}),
         })
     meetings.sort(key=lambda m: m["starts_at"])
@@ -446,7 +600,7 @@ def compare_meetings(previous_doc, meetings, client, since):
         return {"previous": "unreadable"}
     if previous_doc.get("client") != client:
         return {"previous": "other_client", "previous_client": str(previous_doc.get("client"))[:64]}
-    before = {m["id"]: m for m in old}
+    before = {m["id"]: m for m in old}  # attachments are not compared: a changed list alone is never agenda_changed
     after = {m["id"]: m for m in meetings}
     cutoff = since.isoformat()
     gone = sorted(set(before) - set(after))
@@ -468,7 +622,74 @@ def compare_meetings(previous_doc, meetings, client, since):
     }
 
 
-def write_meetings(root, meetings, client_name, changes=None, zone=None, source="legistar"):
+MAX_SOURCES = 12
+SOURCE_KEYS = {"platform", "client", "label"}
+
+
+def load_sources(cfg):
+    """DF1507-08: validated ``campaign.json`` ``meeting_sources`` (1-12 Legistar bodies); [] when absent. ValueError names the index."""
+    raw = cfg.get("meeting_sources")
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_SOURCES:
+        raise ValueError(f"meeting_sources: give 1 to {MAX_SOURCES} entries")
+    out, seen = [], set()
+    for i, entry in enumerate(raw):
+        where = f"meeting_sources[{i}]"
+        if not isinstance(entry, dict) or set(entry) - SOURCE_KEYS or not {"platform", "client"} <= set(entry):
+            raise ValueError(f"{where}: use only platform, client and label")
+        client, label = entry["client"], entry.get("label", entry["client"])
+        if entry["platform"] != "legistar":
+            raise ValueError(f"{where}: platform must be legistar")
+        if not isinstance(client, str) or not CLIENT.fullmatch(client):
+            raise ValueError(f"{where}: client must be a short lowercase slug")
+        if client in seen:
+            raise ValueError(f"{where}: duplicate client {client}")
+        if not isinstance(label, str) or not label.strip() or len(label) > 80 or _plain(label) != label:
+            raise ValueError(f"{where}: label must be plain text of 1 to 80 characters (no < or >)")
+        seen.add(client)
+        out.append({"platform": "legistar", "client": client, "label": label.strip()})
+    return out
+
+
+def _previous_subset(previous, client):
+    """The previous document's meetings for ``client`` as a single-client document; None when it did not cover that client."""
+    if not isinstance(previous, dict) or not isinstance(previous.get("meetings"), list):
+        return previous  # None / "unreadable" / malformed: compare_meetings names it
+    prior_client = previous.get("client")
+    if prior_client == client:
+        return previous
+    if prior_client != "multi" or client not in (previous.get("clients") or []):
+        return None
+    return dict(previous, client=client,
+                meetings=[m for m in previous["meetings"] if isinstance(m, dict) and m.get("client") == client])
+
+
+def scan_sources(sources, opener_for, since, zone, previous=None):
+    """Scan every source on its own: ``(meetings, report, changes)``. A failing source keeps its previous meetings
+    (marked ``stale``) and is named in ``report``; ``changes`` covers the sources that succeeded."""
+    since = since or date.today()
+    meetings, report, changes = [], [], {}
+    for source in sources:
+        client, label = source["client"], source["label"]
+        subset = _previous_subset(previous, client)
+        try:
+            found = relevant_events(LegistarClient(client, opener=opener_for(client)), since=since, zone=zone)
+        except Exception as exc:  # network, JSON, a missing recorded response: this source only
+            old = subset.get("meetings") if isinstance(subset, dict) and subset.get("schema_version") == 1 else None
+            kept = [dict(m, client=client, source_label=label, stale=True) for m in old or [] if isinstance(m, dict)]
+            report.append({"client": client, "label": label, "status": "failed", "kept_previous_meetings": len(kept),
+                           "error": f"{type(exc).__name__}: {exc}"[:120]})
+            meetings.extend(kept)
+            continue
+        changes[client] = compare_meetings(subset, found, client, since)
+        report.append({"client": client, "label": label, "status": "ok", "meetings": len(found)})
+        meetings.extend(dict(m, client=client, source_label=label) for m in found)
+    meetings.sort(key=lambda m: (str(m.get("starts_at")), str(m.get("id"))))
+    return meetings, report, changes
+
+
+def write_meetings(root, meetings, client_name, changes=None, zone=None, source="legistar", extra=None):
     kit = root / "kit"
     _kit_folder(kit, mode=0o700)
     target = kit / "meetings.json"
@@ -480,6 +701,7 @@ def write_meetings(root, meetings, client_name, changes=None, zone=None, source=
                         "Verify the posted agenda before publishing a meeting."}
     if changes is not None:
         document["changes"] = changes
+    document.update(extra or {})
     _write_text(target, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
     return target
 
@@ -510,11 +732,17 @@ def relevant_matters(client, since=None):
         guid = raw.get("MatterGuid")
         url = (f"https://{client.client}.legistar.com/LegislationDetail.aspx?ID={raw['MatterId']}&GUID={guid}"
                if isinstance(guid, str) and GUID.fullmatch(guid) else None)
+        try:
+            listed = client.matter_attachments(raw["MatterId"])
+        except MeetingsError:
+            listed = []
+        attached, dropped = _attachments(listed if isinstance(listed, list) else [])
         out.append({"id": f"{client.source}-{client.client}-matter-{raw['MatterId']}",
                     "file": clean("MatterFile"), "title": clean("MatterTitle") or clean("MatterName"),
                     "type": clean("MatterTypeName"), "status": clean("MatterStatusName"), "body": clean("MatterBodyName"),
                     "intro_date": _matter_date(raw.get("MatterIntroDate")), "agenda_date": _matter_date(raw.get("MatterAgendaDate")),
-                    "passed_date": _matter_date(raw.get("MatterPassedDate")), "url": url, "matched_terms": terms})
+                    "passed_date": _matter_date(raw.get("MatterPassedDate")), "url": url, "matched_terms": terms,
+                    "attachments": attached, "attachments_dropped": dropped})
     out.sort(key=lambda r: r["id"])
     out.sort(key=lambda r: r["intro_date"] or "", reverse=True)
     return out
@@ -550,6 +778,10 @@ def _clean(text):
     return " ".join(str(text or "").replace("<", "").replace(">", "").split())
 
 
+def manual_note(meeting):
+    return f"Organizer-entered meeting; official agenda checked {_clean(meeting.get('checked_on'))}."
+
+
 ASK_COUNT_WORDS = {1: "One ask", 2: "Two asks", 3: "Three asks"}
 ASKS_ABOVE = {1: "the ask", 2: "the two asks", 3: "the three asks"}
 
@@ -571,7 +803,22 @@ def default_asks(meeting):
             "Answer in writing which agencies can query this data today and under what written agreement."]
 
 
-def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None, cosign_names=None):
+def elsewhere_block(entries):
+    """DF1107-06: the plain ``Elsewhere:`` paragraph, one ``PLACE, STATE: BODY, DECIDED_ON: as_stated (source)`` line per
+    stored snapshot, in the order given. Markup characters are backslash-escaped so the text shows literally."""
+    if not (isinstance(entries, (list, tuple)) and 1 <= len(entries) <= 3 and all(isinstance(e, dict) for e in entries)):
+        raise MeetingsError("--elsewhere: give 1 to 3 elsewhere entries")
+    rows = ["Elsewhere:"]
+    for entry in entries:
+        row = _MARKUP.sub(r"\\\1", f"{entry['place']}, {entry['state']}: {entry['body']}, {entry['decided_on']}: "
+                                      f"{entry['as_stated']} ({entry['source_url']})")
+        if row.startswith("- "):
+            raise MeetingsError("--elsewhere: a citation line must not start with '- ' (it would read as a finding bullet)")
+        rows.append(row)
+    return rows
+
+
+def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None, cosign_names=None, elsewhere=None):
     """Markdown comment kit; ``findings`` are published finding dicts with title, summary,
     classification, confidence, path and sources[{title, locator, sha256}].
 
@@ -581,7 +828,11 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
     ``cosign_names`` (DF2207-14): 1-30 consenting organization names, rendered by ``cosign_block_md`` after the
     signature of the written letter only. The roster is a separate bounded block: it is not counted in the 400-word
     letter body and never displaces a finding bullet. Without a real letter (no written comment, or the over-cap
-    advisory) the call raises MeetingsError rather than claim a co-signed letter. None leaves the kit unchanged."""
+    advisory) the call raises MeetingsError rather than claim a co-signed letter. None leaves the kit unchanged.
+
+    ``elsewhere`` (DF1107-06): 1-3 stored snapshots of decisions by other governments, cited in an ``Elsewhere:`` paragraph
+    after the findings in the two-minute, spoken and written bodies. The lines are never dropped or cut: a budget they do
+    not fit raises MeetingsError. None leaves the kit byte-identical."""
     if cosign_names is not None and not (isinstance(cosign_names, (list, tuple)) and 1 <= len(cosign_names) <= 30
                                          and all(isinstance(name, str) and name.strip() for name in cosign_names)):
         raise MeetingsError("co-signers: give 1 to 30 organization names")
@@ -589,6 +840,7 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
         from .content import load_comment_asks
         asks = load_comment_asks(asks, "asks")
     resolved = list(asks) if asks is not None else default_asks(meeting)
+    cited = elsewhere_block(elsewhere) if elsewhere is not None else []
     def fixed(finding):  # latest correction date; "" when the finding was never corrected
         dates = [str(c.get("date") or "") for c in finding.get("corrections") or [] if isinstance(c, dict)]
         return _clean(max(dates, default=""))
@@ -598,6 +850,8 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
     lines.append(f"## Public comment: {_clean(meeting.get('body'))}, {when}")
     if meeting.get("agenda_item"):
         lines.append(f"Agenda item: {_clean(meeting['agenda_item'])}")
+    if meeting.get("source") == "manual":  # DF1103-09: an organizer-entered meeting says so
+        lines.append(manual_note(meeting))
     lines.append("")
     lines.append("## Two-minute comment")
     start = len(lines)
@@ -615,6 +869,7 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
     else:
         lines.append("We have requested the policy, the vendor agreement and the sharing records and will "
                      "publish what we receive with source hashes.")
+    lines.extend(cited)
     lines.append("We are not asking you to take our word for it. Every claim links to the record it came "
                  "from. Please read them before this item moves forward.")
     lines.append("")
@@ -626,6 +881,8 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
         words = lambda rows: sum(len(row.split()) for row in rows)  # noqa: E731
         while words(body) > budget and any(row.startswith("- ") for row in body):  # whole bullets, from the end
             del body[max(i for i, row in enumerate(body) if row.startswith("- "))]
+        if cited and words(body) > budget:
+            raise MeetingsError(f"--elsewhere: the {minutes}-minute spoken comment ({budget} words) cannot hold the citations")
         lines.append(f"## Spoken comment ({minutes} minute{'' if minutes == 1 else 's'}, about {budget} words)")
         if words(body) > budget:
             lines.append("The speaker limit is too short for this kit; use the first sentence and one ask.")
@@ -662,12 +919,15 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
             title, note = _clean(finding.get("title")), fixed(finding)
             letter.append(f"- {title + ': ' if title else ''}{_clean(finding.get('summary'))}"
                           + (f" ({refs})" if refs else "") + (f" (corrected {note})" if note else ""))
+        letter.extend(cited)
         letter.append("I ask you to:")
         letter.extend(f"{n}. {ask}" for n, ask in enumerate(resolved, 1))
         letter.extend(["Sincerely,", "[name]", "[city]"])
         words = lambda rows: sum(len(row.split()) for row in rows)  # noqa: E731
         while words(letter) > 400 and any(row.startswith("- ") for row in letter):  # whole bullets, from the end
             del letter[max(i for i, row in enumerate(letter) if row.startswith("- "))]
+        if cited and words(letter) > 400:
+            raise MeetingsError("--elsewhere: the 400-word written comment cannot hold the citations")
         if words(letter) > 400:  # body, agenda item or campaign name alone over the cap: no letter, say so
             letter = letter[:2] + ["The letter would be over 400 words for this meeting; write a short one by "
                                    f"hand from {ASKS_ABOVE[len(resolved)] if asks is not None else 'the three asks'} above."]
@@ -694,6 +954,11 @@ def comment_kit_md(meeting, findings, campaign_name, base_url=None, *, asks=None
             lines.append(f"- Written comment: {_clean(written.get('how'))}" + (f", by {due}" if due else ""))
         lines.append(f"Source: {_clean(part.get('source_url'))} (checked {_clean(part.get('verified_at'))})")
     lines.append("")
+    attachments = [a for a in meeting.get("attachments") or [] if isinstance(a, dict) and str(a.get("url")).startswith("https://")]
+    if attachments:  # DF2022-13: official agenda-system links, never fetched
+        lines.append("## Read first")
+        lines.extend(f"- [{_clean(a.get('name') or 'Attachment').replace('[', '').replace(']', '')}]({a['url']})" for a in attachments)
+        lines.extend(["Attachments are official links from the agenda system; read them before you speak.", ""])
     lines.append("## Sources")
     if not findings:
         lines.append("- No published findings yet; cite the records request itself and its date.")

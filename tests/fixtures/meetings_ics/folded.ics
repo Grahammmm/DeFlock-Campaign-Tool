@@ -1,0 +1,11 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:fold-1@example.gov
+SUMMARY:Council\, special session\; closed
+DESCRIPTION:Agenda\nALPR con
+ tract\, phase 2\; approve\\ret
+	urn
+DTSTART;TZID=America/Los_Angeles:20261112T180000
+END:VEVENT
+END:VCALENDAR

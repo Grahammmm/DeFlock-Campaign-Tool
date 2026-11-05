@@ -116,7 +116,7 @@ class MetadataKindsTests(unittest.TestCase):
         cases = {
             "jpeg without EOI": (jpeg()[:-2], ".jpg"), "jpeg segment past end": (b"\xff\xd8\xff\xe0\x00\x40JFIF", ".jpg"),
             "png chunk length past end": (png()[:-12] + (99).to_bytes(4, "big") + b"IEND\0\0\0\0", ".png"),
-            "png 10 001 chunks": (image_meta.PNG_SIGNATURE + IHDR + filler * 9999 + IEND, ".png"),
+            "png 10 001 chunks": (image_meta.PNG_SIGNATURE + IHDR + filler * 9998 + IDAT + IEND, ".png"),
             "png without IEND": (png()[:-12], ".png"), "not a png": (b"\x89PNG", ".png"),
             "webp riff size past end": (webp()[:-1], ".webp"), "jpeg exif bad tiff": (jpeg(segment(0xE1, b"Exif\0\0XX")), ".jpg"),
             "too large": (b"\xff\xd8" + bytes(ASSET_MAX_BYTES), ".jpg"),
@@ -125,7 +125,7 @@ class MetadataKindsTests(unittest.TestCase):
             self.assertEqual(metadata_kinds(data, suffix), [UNREADABLE], name)
             with self.assertRaisesRegex(ValueError, "^unreadable image$"):
                 strip(data, suffix)
-        self.assertEqual(metadata_kinds(image_meta.PNG_SIGNATURE + IHDR + filler * 9998 + IEND, ".png"), [])
+        self.assertEqual(metadata_kinds(image_meta.PNG_SIGNATURE + IHDR + filler * 9997 + IDAT + IEND, ".png"), [])
         for data, suffix in ((jpeg(*JPEG_META.values()), ".jpg"), (png(chunk(b"eXIf", tiff())), ".png"),
                              (webp(riff(b"EXIF", tiff())), ".webp")):
             for cut in range(len(data)):  # every truncation answers with a list, never an exception

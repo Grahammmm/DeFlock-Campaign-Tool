@@ -29,7 +29,7 @@ import json
 import os
 import re
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 
@@ -43,9 +43,14 @@ UNSUBSCRIBE_PLACEHOLDER = "{{ unsubscribe }}"
 MAX_FINDINGS = 12
 MAX_MEETINGS = 8
 MAX_CORRECTIONS = 50
+MAX_EVENTS = 50
+EVENT_HORIZON_DAYS = 30
 NOTE_LIMIT = 200
 _PATH = re.compile(r"/[A-Za-z0-9._/-]{0,200}")
 _AGENCY_PATH = re.compile(r"/[A-Za-z0-9._/-]{0,200}(?:#[A-Za-z0-9_-]{1,80})?")
+# DF1107-09: the one fragment-aware path, exactly what /events.html builds for an event (never a generic path relaxation).
+EVENT_ID = re.compile(r"[a-z][a-z0-9-]{0,63}")
+EVENT_PATH = re.compile(r"/events\.html#event-[a-z][a-z0-9-]{0,63}")
 _PREFIX = re.compile(r"[0-9a-f]{12}")
 _HTTPS = re.compile(r"https://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[A-Za-z0-9._~/?#&=%-]*)?")
 # Patterns that must never appear in a draft: emails and phone-like numbers
@@ -329,6 +334,58 @@ def _link(base_url, path, label):
     return path
 
 
+def _literal(text):
+    """Backslash-escape the Markdown the draft renderer acts on inside a line, so a title or venue stays literal text."""
+    return re.sub(r"([\\*\[\]])", r"\\\1", text)
+
+
+def _events(raw, base_url, since, now):
+    """DF1107-09: validate the optional manifest ``events``; return ``(chosen, outside, upcoming)``.
+
+    ``chosen`` is ``[(index, event, start)]`` soonest first (then id) for starts from max(since, now) to now + 30 days,
+    both inclusive; ``outside`` counts every other event once; ``upcoming`` says some event starts at or after ``now``."""
+    if raw is None:
+        return [], 0, False
+    if not isinstance(raw, list) or len(raw) > MAX_EVENTS:
+        raise DraftError(f"events: a list of at most {MAX_EVENTS} events required")
+    seen, rows = set(), []
+    for index, event in enumerate(_entries(raw, "events")):
+        label = f"events[{index}]"
+        ident = event.get("id")
+        if not isinstance(ident, str) or not EVENT_ID.fullmatch(ident):
+            raise DraftError(f"{label}.id: lowercase id of 1 to 64 letters, digits and hyphens required")
+        if ident in seen:
+            raise DraftError(f"{label}.id: duplicate event id")
+        seen.add(ident)
+        if event.get("path") != f"/events.html#event-{ident}" or not EVENT_PATH.fullmatch(event["path"]):
+            raise DraftError(f"{label}.path: must be /events.html#event-<id>")
+        start, end = _date(event.get("starts_at"), label + ".starts_at"), _date(event.get("ends_at"), label + ".ends_at")
+        if end < start:
+            raise DraftError(f"{label}.ends_at: before starts_at")
+        if not _clean(event.get("title"), label + ".title", 120):
+            raise DraftError(f"{label}.title: required")
+        online = event.get("online")
+        if online not in (None, True, False):
+            raise DraftError(f"{label}.online: true or false required")
+        if online is True and event.get("venue") is not None:
+            raise DraftError(f"{label}.venue: must be left out when online is true")
+        if online is not True and not _clean(event.get("venue"), label + ".venue", 160):
+            raise DraftError(f"{label}.venue: required unless online is true")
+        rows.append((start, ident, index, event))
+    horizon = now + timedelta(days=EVENT_HORIZON_DAYS)
+    floor = max(now, since) if since else now
+    chosen = [(index, event, start) for start, ident, index, event in sorted(rows, key=lambda r: (r[0], r[1]))
+              if floor <= start <= horizon]
+    return chosen, len(rows) - len(chosen), any(start >= now for start, _, _, _ in rows)
+
+
+def _event_when(start):
+    offset = start.utcoffset()
+    minutes = int(offset.total_seconds() // 60)
+    sign, minutes = ("-" if minutes < 0 else "+"), abs(minutes)
+    return f"{start.strftime('%a %b %d, %Y %H:%M')} UTC{sign}{minutes // 60:02d}:{minutes % 60:02d}"
+
+
 def _period_label(since, now):
     if since:
         return f"since {since.date().isoformat()}"
@@ -342,7 +399,7 @@ CONSENT_FOOTER_TEMPLATE_MARKER = "[TEMPLATE CONSENT FOOTER: replace with the cam
 DEFAULT_CONSENT_FOOTER = "You receive this because you signed up for {name} updates. Unsubscribe at any time."
 
 
-def build_draft(manifest, now=None, *, archive_public=False):
+def build_draft(manifest, now=None, *, archive_public=False, provenance=False):
     """Return ``{"subject", "html", "text", "counts", "excluded", "consent_footer"}``.
 
     Only findings published at or after ``since`` and meetings starting at or
@@ -360,6 +417,9 @@ def build_draft(manifest, now=None, *, archive_public=False):
     ``{"schema_version": 1, "title": SUBJECT, "body_md": PUBLIC_MARKDOWN}``: the Markdown
     exactly as assembled before the consent footer, so no footer, sender or unsubscribe
     wording, review flag or count can be in it. HTML and text are unchanged.
+
+    ``provenance=True`` (DF1622-13, only ``--from-content``) adds a private ``provenance`` object (see
+    docs/NEWSLETTER.md) from the rows ``id``/``slug`` carry; it is never rendered nor copied to ``public_archive``.
     """
     if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
         raise DraftError("manifest.schema_version must be 1")
@@ -380,6 +440,7 @@ def build_draft(manifest, now=None, *, archive_public=False):
     requests = _requests(manifest.get("requests"), since, now, base_url)
     records = _records(manifest.get("records"), since, now, base_url)
     camera_map = _map(manifest.get("map"), since, now, base_url)
+    events, events_outside, events_upcoming = _events(manifest.get("events"), base_url, since, now)
     # The engine applies the documented window itself: findings published since the
     # last send, meetings that have not started yet (soonest first). Labels keep the
     # manifest index so a bad entry is named where the organizer can find it.
@@ -399,11 +460,13 @@ def build_draft(manifest, now=None, *, archive_public=False):
             day, _, note = max(recent)
             label = f"findings[{i}]"
             corrections.append((day, _clean(finding.get("title") or finding.get("summary"), label + ".title", 200),
-                                _note(note), _link(base_url, finding.get("path"), label + ".path")))
+                                _note(note), _link(base_url, finding.get("path"), label + ".path"), finding))
     corrections.sort(key=lambda c: (-c[0].toordinal(), c[1]))
     excluded = {"findings_before_since": len(findings) - len(kept_findings) - len(corrections),
                 "meetings_past": len(meetings) - len(kept_meetings)}
     findings, meetings = kept_findings, kept_meetings
+    if events or (events_outside and events_upcoming):  # absent for none/all-past, so those drafts stay byte-identical
+        excluded["events_outside_window"] = events_outside
 
     lines = [f"## {name}: {_period_label(since, now)}"]
     lines.append("")
@@ -431,7 +494,7 @@ def build_draft(manifest, now=None, *, archive_public=False):
     lines.append("")
     if corrections:
         lines.append("## Corrections")
-        for day, title, note, link in corrections:
+        for day, title, note, link, _row in corrections:
             entry = f"- **{title}**: corrected {day.isoformat()}" + (f" — {note}" if note else "")
             entry += f" ([Read the finding]({link}))" if link.startswith("https://") else f" ({link})"
             lines.append(entry)
@@ -475,6 +538,17 @@ def build_draft(manifest, now=None, *, archive_public=False):
             if "participation" in meeting:  # Worker manifests carry no such key and render as before
                 lines.append(_participation(meeting["participation"], starts, now, label + ".participation", excluded))
         lines.append("")
+    if events:
+        lines.append("## Campaign events")
+        for index, event, starts in events:
+            label = f"events[{index}]"
+            title = _literal(_clean(event.get("title"), label + ".title", 120))
+            where = "Online" if event.get("online") is True else _literal(_clean(event.get("venue"), label + ".venue", 160))
+            link = _link(base_url, event["path"].split("#")[0], label + ".path") + "#" + event["path"].split("#")[1]
+            entry = f"- **{title}**, {_event_when(starts)}, {where}"
+            entry += f" [Event details]({link})" if link.startswith("https://") else f" {link}"
+            lines.append(entry)
+        lines.append("")
     if base_url:
         lines.append(f"Read everything, with source hashes, at [{base_url}]({base_url}).")
     lines.append("Findings describe records and published rules as of the event date. This is not legal advice.")
@@ -517,7 +591,8 @@ def build_draft(manifest, now=None, *, archive_public=False):
                          **({"requests": len(requests)} if requests else {}),
                          **({"records": len(records)} if records else {}),
                          **({"map": 1} if camera_map else {}),
-                         **({"decisions": len(decisions)} if decisions else {})}, "excluded": excluded,
+                         **({"decisions": len(decisions)} if decisions else {}),
+                         **({"events": len(events)} if events else {})}, "excluded": excluded,
               "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
     if review_flags:  # absent otherwise, so unflagged drafts stay byte-identical (same convention as corrections_listed)
         result["review_flags"] = review_flags
@@ -525,7 +600,36 @@ def build_draft(manifest, now=None, *, archive_public=False):
         result["corrections_listed"] = len(corrections)
     if archive_public:  # absent otherwise, so default, manifest and Worker callers are unchanged
         result["public_archive"] = {"schema_version": 1, "title": result["subject"], "body_md": public_markdown}
+    if provenance:  # DF1622-13: private; absent unless the caller asks, never rendered or copied to public_archive
+        result["provenance"] = _provenance(since_text=manifest.get("since") or None, built_at=now,
+                                           findings=[f for _, f in findings],
+                                           corrections=[c[4] for c in corrections], meetings=[m for _, m, _ in meetings])
     return result
+
+
+def _identity(row, key, label):
+    value = row.get(key)
+    if not isinstance(value, str) or not value or len(value) > 200:
+        raise DraftError(f"{label}.{key}: provenance needs a non-empty text {key}")
+    return value
+
+
+def _provenance(since_text, built_at, findings, corrections, meetings):
+    """The private provenance object (DF1622-13) from the very rows the draft counted or listed, before any display cap."""
+    entries = []
+    for section, rows in (("new", findings), ("correction", corrections)):
+        for row in rows:
+            label = f"{section} finding {str(row.get('title'))[:40]!r}"
+            entries.append({"id": _identity(row, "id", label), "slug": _identity(row, "slug", label),
+                            "published_at": row["published_at"], "section": section,
+                            "corrections": [{"date": c["date"], "note": c["note"]} for c in row.get("corrections") or []]})
+    upcoming = [{"id": _identity(m, "id", f"meeting {str(m.get('body'))[:40]!r}"), "starts_at": m["starts_at"],
+                 "agenda_url": m.get("agenda_url")} for m in meetings]
+    ids = [e["id"] for e in entries] + [e["id"] for e in upcoming]
+    if len(ids) != len(set(e["id"] for e in entries)) + len(set(e["id"] for e in upcoming)):
+        raise DraftError("provenance: duplicate finding or meeting id")
+    return {"schema_version": 1, "built_at": built_at.astimezone(timezone.utc).isoformat(), "since": since_text,
+            "findings": entries, "meetings": upcoming}
 
 
 def _wrap(name, body):

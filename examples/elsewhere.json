@@ -1,0 +1,102 @@
+[
+  {
+    "place": "Mountain View",
+    "state": "CA",
+    "body": "City Council",
+    "decided_on": "2026-02-24",
+    "kind": "ended_contract",
+    "as_stated": "Council voted unanimously to terminate the City's contract with Flock Safety as vendor for its ALPR pilot program.",
+    "source_url": "https://www.mountainview.gov/Home/Components/News/News/1211/284",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "place": "Los Altos Hills",
+    "state": "CA",
+    "body": "City Council",
+    "decided_on": "2026-01-15",
+    "kind": "ended_contract",
+    "as_stated": "At the January 15th, 2026 City Council Meeting, City Council voted to terminate the contract with Flock.",
+    "source_url": "https://losaltoshills.ca.gov/455/Automatic-License-Plate-Readers-ALPR",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "place": "Lakewood",
+    "state": "CA",
+    "body": "City Council",
+    "decided_on": "2026-03-24",
+    "kind": "declined",
+    "as_stated": "After much discussion, the City Council voted 3-2 not to move forward with the proposed agreement.",
+    "source_url": "https://www.lakewoodca.gov/News/Council-Recap-and-related-news/Council-Recap-for-March-24",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "place": "Flagstaff",
+    "state": "AZ",
+    "body": "City Council",
+    "decided_on": "2025-12-16",
+    "kind": "ended_contract",
+    "as_stated": "The City Council voted to cancel the City's current contract with Flock Safety for ALPR technology during the Dec. 16 Council Meeting.",
+    "source_url": "https://flagstaff.az.gov/m/newsflash/home/detail/2202",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "place": "Redmond",
+    "state": "WA",
+    "body": "City Council",
+    "decided_on": "2025-11-12",
+    "kind": "paused",
+    "as_stated": "City Council voted 5-0 in favor of officially suspending the ALPR program pending further discussion.",
+    "source_url": "https://www.redmond.gov/2400/Automated-License-Plate-Reader-Program",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "place": "Redmond",
+    "state": "WA",
+    "body": "City Council",
+    "decided_on": "2026-07-21",
+    "kind": "ended_contract",
+    "as_stated": "City Council voted 7-0 in favor of terminating the City's contract with Flock Safety and ending the ALPR program.",
+    "source_url": "https://www.redmond.gov/2400/Automated-License-Plate-Reader-Program",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "place": "Fitchburg",
+    "state": "WI",
+    "body": "Common Council",
+    "decided_on": "2026-05-26",
+    "kind": "other",
+    "as_stated": "Resolution R-112-26 declares the City's intent to discontinue use of ALPR services provided through Flock Safety, subject to the existing agreement.",
+    "source_url": "https://agendas.fitchburgwi.gov/OnBaseAgendaOnline/Documents/ViewDocument/Resolution%20for%20-%20Resolution%20R-112-26%20%2886385%29.pdf?documentType=Agenda&isSection=false&itemId=86424&meetingId=3729&publishId=92527",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "place": "Liberty Hill",
+    "state": "TX",
+    "body": "City Council",
+    "decided_on": "2026-09-09",
+    "kind": "ended_contract",
+    "as_stated": "At its September 9 meeting, the City Council voted unanimously, 7-0, to end the City's use of Flock Safety ALPR cameras.",
+    "source_url": "https://www.libertyhilltx.gov/m/newsflash/home/detail/395",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "place": "Frankfort",
+    "state": "KY",
+    "body": "Board of Commissioners",
+    "decided_on": "2026-10-12",
+    "kind": "ended_contract",
+    "as_stated": "The Board voted unanimously not to renew the City's contract with Flock Group, Inc. when it expires in January 2027.",
+    "source_url": "https://frankfort.ky.gov/m/newsflash/home/detail/274",
+    "checked_on": "2026-11-04"
+  },
+  {
+    "place": "Durham",
+    "state": "NC",
+    "body": "City Council",
+    "decided_on": "2026-06-15",
+    "kind": "other",
+    "as_stated": "Resolution adopted 7-0: the City shall not deploy new ALPR systems for law enforcement purposes without prior Council review and approval.",
+    "source_url": "https://cityordinances.durhamnc.gov/OnBaseAgendaOnline/Documents/DownloadFileBytes/Final-Published%20Attachment%20-%2019853%20-%204%20-%20RESOLUTION%20-%20REVISED%20RESOLUTION%20-%206.pdf?documentType=1&isAttachment=True&isSection=False&itemId=48176&meetingId=752&publishId=278666",
+    "checked_on": "2026-11-04"
+  }
+]

@@ -15,6 +15,7 @@ RESOURCES = (
     "templates/records-request.md",
     "checklists/contract-checklist.json",
     "examples/faq.json",
+    "examples/pages/background.json",
     "examples/pages/help-map.json",
 )
 

@@ -85,10 +85,10 @@ python3 -m campaign_tool kit --directory ../my-campaign
 `kit/requests/ca-example-police.md` is the draft. The first check lists what is still unfinished:
 
 ```sh
-python3 -m campaign_tool kit-check --directory ../my-campaign  # exit 3
+python3 -m campaign_tool kit-check --directory ../my-campaign
 ```
 
-Output ends `1 of 1 drafts need attention`; the line 6 it names is the `To:` line, still `[official records custodian - verify on the agency's website]`. Edit it in a text editor, replacing line 6 of the draft with:
+Because step 3 recorded a verified mailing address, line 6 of the draft is the `To:` line `To: by post to the verified mailing address (kit-copy --for mail)`, not a placeholder, so the check prints `ca-example-police: OK`. (An agency with no verified portal or postal record keeps `[official records custodian - verify on the agency's website]` there and `kit-check` exits 3.) You may name the unit in a text editor by replacing line 6 of the draft with:
 
 ```text replace-line-6 ../my-campaign/kit/requests/ca-example-police.md
 To: Records Unit, Example Police Department (SYNTHETIC)

@@ -1,0 +1,11 @@
+{
+  "without --client only the Legistar events in meeting_sources are scanned; pass --client for other options": "the message names the option to pass for a non-Legistar platform",
+  "add meeting_sources to campaign.json or pass --client": "the message names both the file entry to add and the option to pass instead",
+  "meetings needs --online to query the agenda platform, or a recorded response (--from-json)": "the message names both options that satisfy it",
+  "meeting_sources: give 1 to 5 entries": "the message states the allowed count of meeting_sources entries",
+  "5: use only platform, client and label": "the message names the allowed keys and the entry index",
+  "5: platform must be legistar": "the message names the only allowed platform and the entry index",
+  "5: client must be a short lowercase slug": "the message states the required form and the entry index",
+  "5: duplicate client 5": "the message names the repeated client and the entry index",
+  "5: label must be plain text of 1 to 80 characters (no < or >)": "the message states the label rule and the entry index"
+}
