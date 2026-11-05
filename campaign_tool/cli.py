@@ -1332,6 +1332,15 @@ def main():
     denial_p.add_argument("--rule", action="append", default=[], metavar="RULE_ID",
                           help="Repeatable: a law-package rule_id in force on the denial date, cited with its status")
     denial_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same denial")
+    clarify_p = commands.add_parser("kit-clarify-reply", help="Private reply draft answering the agency's open request to "
+                                    "clarify or narrow; never sent, records nothing")
+    for flag in ("--directory", "--agency"):
+        clarify_p.add_argument(flag, required=True)
+    clarify_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    clarify_p.add_argument("--scope", nargs="+", action="append", metavar="ID", help="Keep only these scopes the sent "
+                           "request asked for (default all of them); every scope left out is listed as no longer requested")
+    clarify_p.add_argument("--date-range", metavar="FROM:TO", help="Two real YYYY-MM-DD dates, not after today")
+    clarify_p.add_argument("--replace", action="store_true", help="Rewrite an existing draft for the same day")
     scope_p = commands.add_parser("kit-scope-reply", help="Private draft asking about recorded per-scope gaps; never sent")
     for flag in ("--directory", "--agency"):
         scope_p.add_argument(flag, required=True)
@@ -2328,6 +2337,12 @@ def main():
             from .kit_track import denial_reply
             print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))
             print("Draft only. Nothing was sent.")
+        elif args.command == "kit-clarify-reply":
+            from .kit_track import clarify_reply
+            chosen = [i for group in args.scope for i in group] if args.scope else None
+            print(json.dumps(clarify_reply(root, args.agency, request=args.request, scopes=chosen,
+                                           date_range=args.date_range, replace=args.replace), indent=2))
+            print("Draft only. Nothing was sent or recorded.")
         elif args.command == "kit-scope-reply":
             from .kit_track import scope_reply
             print(json.dumps(scope_reply(root, args.agency, request=args.request, replace=args.replace), indent=2))
