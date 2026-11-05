@@ -82,11 +82,20 @@ class RegisterTests(unittest.TestCase):
         self.assertEqual(ap.report(good)["agencies"], ["example-pd"])
         json.dumps(ap.report(bad))
 
+    def test_multiline_quote_preserved_and_line_numbers_physical(self):
+        p = self.d / "m.csv"
+        multi = ('"example-pd","Policy 900","900.5(e)","first line\nsecond line",'
+                 '"' + SHA + '","2","2024-01-15"')
+        p.write_text(HEAD + "\n" + multi + "\n" + row(section="") + "\n", encoding="utf-8")
+        rows, problems = ap.load(p)
+        self.assertEqual(rows[0]["quote"], "first line\nsecond line")
+        self.assertEqual([x["line"] for x in problems], [4])
+
     def test_file_sha256(self):
         f = self.d / "doc.bin"
         f.write_bytes(b"abc")
         self.assertEqual(ap.file_sha256(f),
-                         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+                         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")  # pragma: allowlist secret
 
 
 if __name__ == "__main__":

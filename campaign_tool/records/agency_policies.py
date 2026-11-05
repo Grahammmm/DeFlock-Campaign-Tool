@@ -12,6 +12,7 @@ produced it; every other column is required.
 """
 import argparse
 import csv
+import io
 import hashlib
 import json
 import re
@@ -80,13 +81,17 @@ def load(path):
         text = p.read_bytes().decode("utf-8-sig")
     except (OSError, UnicodeDecodeError):
         return [], [_problem(0, "file", "unreadable or not UTF-8")]
-    reader = csv.reader(text.splitlines(), strict=True)
+    reader = csv.reader(io.StringIO(text, newline=""), strict=True)
     try:
         header = next(reader, None)
         if header != HEADER:
             return [], [_problem(0, "header", "must be exactly: " + ",".join(HEADER))]
         rows, problems, seen = [], [], {}
-        for n, cells in enumerate(reader, start=2):
+        while True:
+            n = reader.line_num + 1  # physical line where this record starts
+            cells = next(reader, None)
+            if cells is None:
+                break
             if not cells:
                 continue
             if len(cells) != len(HEADER):
