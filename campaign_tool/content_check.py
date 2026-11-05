@@ -251,6 +251,8 @@ def content_problems(root, limit=LIMIT, faq_out=None):
     faq = read_faq(root, findings if findings_intact else None, problems)
     if faq_out is not None and faq is not None:
         faq_out.extend(faq)
+    from .content_events import read_events  # local: content_events imports content
+    read_events(root, problems)  # DF1107-08: the build's own reader and privacy lint; it names every independent problem itself
     # DF0022-03: the build's own reader and refusal text; with a refused finding file ids are not matched (already named)
     _attempt(problems, "coverage.json", lambda: read_coverage(root, findings if findings_intact else None))
 
@@ -287,6 +289,9 @@ def content_problems(root, limit=LIMIT, faq_out=None):
         for label, finding in labelled:
             _attempt(problems, label, lambda: check_finding_agencies(finding, known, label))
 
+    from .agency_actions import action_problems  # local: agency_actions imports content
+    problems.extend(action_problems(root, agencies))  # DF0237-01: the build's own reader; None agencies skips only the id check
+
     # DF1952-01: the law check follows agency loading so a local overlay's agency_ids are judged against loaded agencies
     # (None, when agencies are themselves refused and named, skips only that scope check).
     _attempt(problems, "campaign.json", lambda: problems.extend(check_law(root, findings, agencies)[0]))
@@ -315,7 +320,7 @@ def content_problems(root, limit=LIMIT, faq_out=None):
 # Leading paths the problem lines start with (``_attempt`` labels, the loaders' own names, build's file names).
 FILE_PREFIXES = ("content/", "public-assets/", "map/", "findings/", "meetings/", "pages/", "topics/", "kit/", "law/", "newsletters/",
                  "site.json", "sources.json", "labels.json", "agencies.json", "campaign.json", "redirects.json", "glossary.json", "supporters.json",
-                 "faq.json", "coverage.json", "body-schedules.json")
+                 "faq.json", "coverage.json", "body-schedules.json", "events.json")
 
 
 def problem_record(line):

@@ -42,6 +42,7 @@
         "limitations": {"type": "array", "items": {"type": "string"}},
         "counterevidence": {"type": "array", "items": {"type": "string"}},
         "corrections": {"type": "array", "items": {"$ref": "#/$defs/correction"}},
+        "updates": {"type": "array", "items": {"$ref": "#/$defs/update"}},
         "url": {"type": "string", "pattern": "^(https?://.+)?/findings/[^/]+\\.html$"},
         "citation": {"type": "string", "minLength": 1},
         "agency_response": {"$ref": "#/$defs/agency_response"}
@@ -72,6 +73,16 @@
         "rule_id": {"type": ["string", "null"]},
         "page": {"type": "integer", "minimum": 1, "maximum": 100000},
         "quote": {"type": "string", "minLength": 1, "maxLength": 400}
+      }
+    },
+    "update": {
+      "description": "Optional list on a finding. New information dated after publication that does not change what the finding says; a correction is listed under corrections instead. Stored order.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["date", "note"],
+      "properties": {
+        "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "note": {"type": "string", "minLength": 1, "maxLength": 400}
       }
     },
     "correction": {

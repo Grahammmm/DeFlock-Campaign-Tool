@@ -24,12 +24,13 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
-from . import agency_cards, camera_counts, finding_law, image_meta, law, map_controller
+from . import agency_cards, camera_counts, finding_law, finding_updates, image_meta, law, map_controller
 from .camera_direction import DIRECTION_PATTERN, valid_direction
 from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, PRE_MEETING_RULE_ID, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, SHARING_BULLETIN_ID, SHARING_KINDS,
                       SHARING_RULE_ID, TRANSPARENCY_FIELDS,
                       ContentError, _read_json, check_finding_agencies, continuation_back_links, continuation_targets,
                       finding_agency_ids, glossary_terms_used, load_content, utc_moment)
+from .content_events import build_cutoff, partition as partition_events
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
@@ -50,7 +51,7 @@ SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmp
 GENERATED_TOP_LEVEL = {"index.html", "agencies.html", "sources.html", "meetings.html", "about.html", "corrections.html",
                        "timeline.html", "404.html", "cameras.html", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
                        "site-data.js", "agency-cards.js", "app.js", "findings", "data", "vendor", "meetings", "agencies", "sources",
-                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "sharing.html", "press.html", "requests.html", "news.html"}
+                       "_redirects", "methods.html", "privacy.html", "glossary.html", "faq.html", "search.html", "search.js", "supporters.html", "newsletters.html", "newsletters", "meetings.xml", "corrections.xml", "sharing.html", "press.html", "requests.html", "news.html", "events.html"}
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
@@ -211,6 +212,7 @@ PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classific
                          "counterevidence", "corrections", "url", "citation", "also_agency_ids", "agency_response")
 PUBLIC_SOURCE_FIELDS = ("sha256_prefix", "title", "locator", "rule_id", "page", "quote")
 PUBLIC_CORRECTION_FIELDS = ("date", "note")
+PUBLIC_UPDATE_FIELDS = ("date", "note")  # DF0022-06: optional "updates" key of a finding; not a CSV column, so no-update bytes are unchanged
 # DF1103-08: only a received, declined or no_response reply is public; pending never is.
 PUBLIC_RESPONSE_FIELDS = ("status", "asked_on", "reply_by", "on", "text", "record_sha256_prefix")
 PUBLIC_TOP_LEVEL_FIELDS = ("schema_version", "campaign", "generated_from", "base_url", "url_kind", "findings")
@@ -233,7 +235,11 @@ SOURCES_CSV_COLUMNS = tuple(c for key in PUBLIC_LIBRARY_FIELDS
 # data/agencies.json (DF1422-12): what each agency card and page already show; never contacts, kit data or notes.
 PUBLIC_AGENCY_TOP_LEVEL = {"schema_version", "campaign", "generated_from", "base_url", "url_kind", "agencies"}
 PUBLIC_AGENCY_FIELDS = ("agency_id", "name", "kind", "url", "asked", "alpr_policy", "contract", "transparency", "camera_count")
-PUBLIC_AGENCY_OPTIONAL = ("funding",)  # DF2207-02: present only when the organizer recorded it (also a data/agencies.csv column)
+PUBLIC_AGENCY_OPTIONAL = ("funding",)  # DF2207-02: present only when the organizer recorded it
+# DF0237-01: `actions` is present only when the organizer recorded one. It stays out of PUBLIC_AGENCY_OPTIONAL because
+# that tuple also names the data/agencies.csv columns, whose header is pinned and must not change with the data.
+PUBLIC_AGENCY_ACTIONS = ("actions",)
+PUBLIC_ACTION_FIELDS = ("on", "kind", "as_stated", "source_url", "checked_on")
 PUBLIC_AGENCY_JSON_ONLY = ("reports",)  # DF0237-02: recorded reports go to data/agencies.json only; the CSV header is unchanged
 PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
 PUBLIC_POLICY_FIELDS = ("url", "checked_on")
@@ -459,10 +465,11 @@ def _day(value):
 
 
 def finding_updated(finding):
-    """Latest of updated_at, published_at and each correction date (a date read as midnight UTC), as the winner's
-    own string; a tie keeps that order."""
+    """Latest of updated_at, published_at, each correction date and each update date (a date read as midnight UTC), as
+    the winner's own string; a tie keeps that order."""
     candidates = [finding["updated_at"], finding["published_at"]]
     candidates += [_day(c["date"]) + "T00:00:00+00:00" for c in finding["corrections"]]
+    candidates += [_day(u["date"]) + "T00:00:00+00:00" for u in finding.get("updates", ())]
     return max((value for value in candidates if value), key=utc_moment)
 
 
@@ -628,7 +635,8 @@ class Site:
             check_finding_agencies(finding, self.agencies_by_id, f'findings/{finding["slug"]}.json')
         self.multi_agency = any(f.get("also_agency_ids") for f in model["findings"])
         qualifying = ({aid for f in model["findings"] for aid in finding_agency_ids(f)}
-                      | {s["agency_id"] for s in model["sources"]})
+                      | {s["agency_id"] for s in model["sources"]}
+                      | {a["agency_id"] for a in model["agencies"] if a.get("actions")})  # DF0237-01: a recorded action
         self._agency_pages = {a["agency_id"]: f'/agencies/{a["slug"]}.html'
                               for a in model["agencies"] if a["agency_id"] in qualifying}
         self._record_pages = self._catalogue_record_pages(model["sources"])  # DF1103-11: refuses a shared 12-char prefix
@@ -636,6 +644,9 @@ class Site:
         # DF1952-04: content/glossary.json; an absent file or an empty terms list switches every glossary output off.
         self.glossary = model.get("glossary") if (model.get("glossary") or {}).get("terms") else None
         self.faq = model.get("faq") or None  # DF0022-01: content/faq.json entries; an absent file switches every FAQ output off
+        # DF1107-08: content/events.json; no file or [] switches every events output off. Start-based split at the build day (UTC).
+        self.events = model.get("events") or None
+        self.events_upcoming, self.events_past = partition_events(self.events or (), build_cutoff(self.today))
         self.coverage = model.get("coverage")  # DF0022-03: None without content/coverage.json; [] (present, empty) keeps the page
         # DF1952-06: curated topics (slug order); each finding id -> the topics listing it. No topics key = none.
         self.topics = model.get("topics", [])
@@ -808,10 +819,11 @@ class Site:
                      + (f' · <a href="/glossary.html">{self.t("footer.glossary")}</a>' if self.glossary else "") + '</p>')
         sitemap = f' · <a href="/sitemap.xml">{self.t("footer.sitemap")}</a>' if self.base else ""  # none without base_url
         meetings_feed = f' · <a href="/meetings.xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else ""  # DF1103-10
+        corrections_feed = f' · <a href="/corrections.xml">{self.t("corrections.feed")}</a>' if self.correction_entries() else ""  # DF0237-09
         archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
         parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a>{meetings_feed} · <a href="/search.html">{self.t("footer.search")}</a>'
                      f' · <a href="/requests.html">{self.t("footer.requests")}</a>'  # DF1103-13: between the feed and Corrections
-                     f' · <a href="/corrections.html">{self.t("nav.corrections")}</a>{sitemap}{archive}'
+                     f' · <a href="/corrections.html">{self.t("nav.corrections")}</a>{corrections_feed}{sitemap}{archive}'
                      ' · <a href="/methods.html">How to read our findings</a></p>')
         if self.faq:  # DF0022-01: appended last, so every earlier footer paragraph is unchanged
             parts.append(f'<p><a href="/faq.html">{self.t("footer.faq")}</a></p>')
@@ -819,6 +831,8 @@ class Site:
             parts.append(f'<p><a href="/news.html">{self.t("footer.news")}</a></p>')
         if self.sharing_rows:  # DF0237-04: after every other paragraph
             parts.append(f'<p><a href="/sharing.html">{self.t("footer.sharing")}</a></p>')
+        if self.events:  # DF1107-08: appended last, so every earlier footer paragraph is unchanged
+            parts.append(f'<p><a href="/events.html">{self.t("footer.events")}</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def share(self, title, description, path, kind, published, modified):
@@ -866,6 +880,8 @@ class Site:
                 + f'  <link rel="alternate" type="application/atom+xml" title="{self.t("title.feed")}" href="/feed.xml">\n'
                 + (f'  <link rel="alternate" type="application/atom+xml" title="{self.t("title.meetings_feed")}" href="/meetings.xml">\n'
                    if self.model["meetings"] and (path == "/meetings.html" or path.startswith("/meetings/")) else "")
+                + (f'  <link rel="alternate" type="application/atom+xml" title="{self.t("corrections.feed")}" href="/corrections.xml">\n'
+                   if self.correction_entries() and (path == "/corrections.html" or path in self.corrected_paths()) else "")
                 + canonical + extra)
 
     def page(self, current, title, description, path, main, scripts=(), stylesheets=(),
@@ -1059,6 +1075,27 @@ class Site:
             items.append(f'<li>{" · ".join(parts)}. <span class="funding-provenance">{provenance}</span></li>')
         return f'<ul class="agency-funding">{"".join(items)}</ul>' if items else ""
 
+    @staticmethod
+    def newest_actions(agency):
+        """DF0237-01: the agency's recorded actions, newest ``on`` first; equal days keep their stored order."""
+        return sorted(agency.get("actions", []), key=lambda action: action["on"], reverse=True)
+
+    def actions_section(self, agency):
+        """DF0237-01: ``Changes on record``, one line per organizer-transcribed action as ``D: kind: T (source, checked DATE)``.
+
+        The statement is the official source's wording, escaped once; nothing is inferred, credited or explained.
+        ``""`` when the agency has none, so a page without actions is byte-identical to before."""
+        items = []
+        for action in self.newest_actions(agency):
+            source = (f'<a href="{e(action["source_url"])}" rel="noopener noreferrer">{self.t("agency.cost_source")}</a>')
+            items.append("<li>" + self.t("agency.action_line", on=time_tag(action["on"]),
+                                         kind=self.t("agency.action_kind_" + action["kind"]),
+                                         statement=e(action["as_stated"]), source=source,
+                                         checked=time_tag(action["checked_on"])) + "</li>")
+        if not items:
+            return ""
+        return f'<h3>{self.t("agency.actions_heading")}</h3><ul class="agency-actions">{"".join(items)}</ul>'
+
     def reports_block(self, agency, heading="h3"):
         """DF0237-02: the ALPR usage reports the agency itself published, newest reporting period first; "" when none.
 
@@ -1233,7 +1270,7 @@ class Site:
                 + f'    <section class="section" id="findings"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.latest_findings")}</p><h2>{self.t("heading.findings_home")}</h2></div>'
                   f'<p><a href="/findings/">{self.t("intro.all_findings")}</a> · <a href="/feed.xml">{self.t("intro.atom_feed")}</a></p></div>'
                 + self.findings_list(self.model["findings"][:5]) + '</section>\n'
-                + self.signup_section() + meetings)
+                + self.signup_section() + meetings + self.next_event_section())
         scripts = (["/vendor/maplibre-gl.js"] if self.map and self.maplibre else []) + ["/site-data.js", "/agency-cards.js", "/app.js"]
         stylesheets = ["/vendor/maplibre-gl.css"] if self.map and "maplibre-gl.css" in self.model["vendor"] else []
         return self.page("index", self.labels["title.home"], self.site["tagline"], "/", main, scripts, stylesheets)
@@ -1462,7 +1499,7 @@ class Site:
                 + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency) + self.pre_meeting_section(agency)
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") else "")
                 + self.contract_check_block(agency, "h3")
-                + self.funding_block(agency) + self.reports_block(agency) + self.transparency_block(agency, "h3") + self.sharing_section(agency) + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
+                + self.funding_block(agency) + self.actions_section(agency) + self.reports_block(agency) + self.transparency_block(agency, "h3") + self.sharing_section(agency) + self.agency_mapped_reported_block(agency) + self.who_decides(aid) + self.votes_section(aid)
                 + self.local_rules_section(agency)
                 + f'<h3>{self.t("agency.published_findings")}</h3>' + self.findings_list(findings, self.t("agency.no_findings"))
                 + (f'<p><a href="/findings/agency/{e(agency["slug"])}.xml" type="application/atom+xml">{self.t("agency.feed")}</a></p>'
@@ -1755,6 +1792,16 @@ class Site:
         return (f'<blockquote class="source-quote"><p>{e(quote)}</p></blockquote>'
                 f'<p class="source-quote-note">{self.t("finding.quote_transcribed")}{shown}</p>')
 
+    def updates_html(self, finding):
+        """DF0022-06: ``Updates`` under the body, newest date first (ties: newest entry first), each note as escaped literal
+        text. Empty without updates; never a correction badge, correction row or corrected feed lead."""
+        items = finding_updates.newest_first(finding.get("updates", ()))
+        if not items:
+            return ""
+        label = self.t("finding.update")
+        rows = "".join(f'<li>{label} · <time datetime="{e(u["date"])}">{e(u["date"])}</time>: {e(u["note"])}</li>' for u in items)
+        return f'<h3 id="updates">{self.t("finding.updates")}</h3><ul>{rows}</ul>'
+
     def finding_html(self, finding):
         sources = []
         for source in finding["sources"]:
@@ -1792,6 +1839,7 @@ class Site:
                 f'<p><a href="{e(finding_path(finding))}">Share this finding</a></p>'
                 + self.cite_html(finding)
                 + (self.md(finding["body_md"]) if finding["body_md"] else "")
+                + self.updates_html(finding)
                 + f'<h3>{self.t("finding.sources")}</h3><ul class="source-table">{"".join(sources)}</ul>'
                 + f'<p class="provenance-note">{e(EXPLAINER)}</p>' + self.legal_basis(finding)
                 + f'<h3>{self.t("finding.limitations")}</h3><ul>{limits}</ul><h3>{self.t("finding.counterevidence")}</h3><ul>{counter}</ul>'
@@ -1892,6 +1940,45 @@ class Site:
         main = '    <section class="section finding-body" id="content">' + "".join(entries) + '</section>\n'
         return self.page("faq", self.labels["faq.title"], self.labels["faq.title"], "/faq.html", main)
 
+    def event_when(self, event):
+        """Both full timestamps exactly as supplied (original zone offsets), no conversion."""
+        return self.t("events.when", start=time_tag(event["starts_at"]), end=time_tag(event["ends_at"]))
+
+    def event_where(self, event):
+        return self.t("events.online") if event.get("online") else e(event["venue"])
+
+    def next_event_section(self):
+        """DF1107-08: the first upcoming campaign event on the home page; "" without one (a past-only file adds nothing)."""
+        if not self.events_upcoming:
+            return ""
+        event = self.events_upcoming[0]
+        return (f'    <section class="section" id="next-event"><div class="section-heading"><div><h2>{self.t("events.next")}</h2></div>'
+                f'<p><a href="/events.html">{self.t("events.all")}</a></p></div>'
+                f'<p><a href="/events.html#event-{e(event["id"])}">{e(event["title"])}</a></p>'
+                f'<p>{self.event_when(event)}</p><p>{self.event_where(event)}</p></section>\n')
+
+    def event_html(self, event):
+        parts = [f'<article id="event-{e(event["id"])}"><h3>{e(event["title"])}</h3>',
+                 f'<p>{self.event_when(event)}</p>',
+                 f'<p>{self.t("events.where")}: {self.event_where(event)}</p>',
+                 markdown(event["description_md"])]
+        if event.get("url"):
+            parts.append(f'<p><a href="{e(event["url"])}" rel="noopener noreferrer">{self.t("events.link")}</a></p>')
+        if event.get("accessibility_note"):
+            parts.append(f'<p>{self.t("events.accessibility")}: {e(event["accessibility_note"])}</p>')
+        return "".join(parts) + '</article>'
+
+    def events_html(self):
+        """``/events.html`` (DF1107-08): upcoming events first, then past ones, each with a stable ``event-<id>`` anchor."""
+        def section(heading_id, label, rows, empty):
+            return (f'<section id="{heading_id}"><h2>{self.t(label)}</h2>'
+                    + ("".join(self.event_html(event) for event in rows) or f'<p>{self.t(empty)}</p>') + '</section>')
+        main = ('    <section class="section finding-body" id="content">'
+                f'<p>{self.t("events.lead")}</p><p>{self.t("events.as_of", date=e(self.today.isoformat()))}</p>'
+                + section("upcoming-events", "events.upcoming", self.events_upcoming, "events.none_upcoming")
+                + section("past-events", "events.past", self.events_past, "events.none_past") + '</section>\n')
+        return self.page("events", self.labels["events.title"], self.labels["events.lead"], "/events.html", main)
+
     def agency_response_html(self, finding):
         """The agency's reply (or silence) under "Agency response" as escaped plain text, never Markdown; "" when
         the finding has no reply or only a prepared (pending) request. The record shows as its 12-character prefix."""
@@ -1949,9 +2036,7 @@ class Site:
                 f'<p>{self.t("correction_counts.lead")}</p>{table}</section>')
 
     def corrections_html(self):
-        rows = [(f, c, i) for f in self.model["findings"] for i, c in enumerate(f["corrections"])]
-        rows.sort(key=lambda row: (row[0]["slug"], row[2]))
-        rows.sort(key=lambda row: row[1]["date"], reverse=True)  # stable: same-date rows keep slug/index order
+        rows = self.correction_entries()
         items = "".join(f'<li><time datetime="{e(c["date"])}">{e(c["date"])}</time> · '
                         f'<a href="/findings/{e(f["slug"])}.html#corrections">{e(f["title"])}</a>: {e(c["note"])}</li>'
                         for f, c, _ in rows)
@@ -2537,6 +2622,7 @@ class Site:
         paths += ["/cameras.html"] if self.map else []
         paths += ["/glossary.html"] if self.glossary else []
         paths += ["/faq.html"] if self.faq else []  # DF0022-01
+        paths += ["/events.html"] if self.events else []  # DF1107-08: the page only, never its fragment anchors
         if self.topics:  # DF1952-06: the index file topics/index.html is served at /topics/
             paths += ["/topics/"] + [f'/topics/{t["slug"]}.html' for t in self.topics]
         paths += [f'/{p["slug"]}.html' for p in self.model.get("pages", [])]
@@ -2626,6 +2712,42 @@ class Site:
         lines.append("END:VCALENDAR")
         return "".join(ics_fold(line) + "\r\n" for line in lines)
 
+    def correction_entries(self):
+        """DF0237-09: ``(finding, correction, stored_index)`` for every correction on a published finding, newest first
+        (date descending, slug, stored index). Never reads updates; the index is the stored array position."""
+        rows = [(f, c, i) for f in self.model["findings"] for i, c in enumerate(f["corrections"])]
+        rows.sort(key=lambda row: (row[0]["slug"], row[2]))
+        rows.sort(key=lambda row: row[1]["date"], reverse=True)
+        return rows
+
+    def corrected_paths(self):
+        return {finding_path(f) for f in self.model["findings"] if f["corrections"]}
+
+    def corrections_feed_xml(self):
+        """``corrections.xml`` (DF0237-09): Atom with one entry per correction (newest 50), or None without any."""
+        rows = self.correction_entries()
+        if not rows:
+            return None
+        ns = "http://www.w3.org/2005/Atom"
+        ET.register_namespace("", ns)
+        midnight = lambda c: _day(c["date"]) + "T00:00:00+00:00"
+        feed = ET.Element(f"{{{ns}}}feed")
+        ET.SubElement(feed, f"{{{ns}}}title").text = self.cfg["name"] + " corrections"
+        campaign_urn = "urn:deflock-campaign:" + re.sub(r"[^a-z0-9]+", "-", self.cfg["name"].lower())
+        ET.SubElement(feed, f"{{{ns}}}id").text = (self.base + "/corrections.xml") if self.base else campaign_urn + ":corrections"
+        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + "/corrections.xml", rel="self", type="application/atom+xml")
+        ET.SubElement(feed, f"{{{ns}}}link", href=self.base + "/corrections.html", rel="alternate")
+        ET.SubElement(feed, f"{{{ns}}}updated").text = midnight(rows[0][1])
+        ET.SubElement(ET.SubElement(feed, f"{{{ns}}}author"), f"{{{ns}}}name").text = self.cfg["name"]
+        for finding, correction, index in rows[:50]:
+            entry = ET.SubElement(feed, f"{{{ns}}}entry")
+            ET.SubElement(entry, f"{{{ns}}}title").text = "Correction: " + finding["title"]
+            ET.SubElement(entry, f"{{{ns}}}id").text = f'urn:deflock-correction:{finding["id"]}:{index}'
+            ET.SubElement(entry, f"{{{ns}}}link", href=self.base + finding_path(finding) + "#corrections", rel="alternate")
+            ET.SubElement(entry, f"{{{ns}}}updated").text = midnight(correction)
+            ET.SubElement(entry, f"{{{ns}}}summary", type="text").text = correction["note"]
+        return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(feed, encoding="unicode") + "\n"
+
     def meetings_feed_entries(self):
         """DF1103-10: the staged meetings the feed lists, newest ``updated`` first, one per id, as plain dicts.
 
@@ -2697,6 +2819,8 @@ class Site:
                              **({"quote": s["quote"]} if s.get("quote") else {})}  # DF1952-08: optional, absent stays absent
                             for s in finding["sources"]]
         value["corrections"] = [{"date": c["date"], "note": c["note"]} for c in finding["corrections"]]
+        if "updates" in finding:  # DF0022-06: optional, copied through an explicit allowlist; absent stays absent
+            value["updates"] = [{key: u[key] for key in PUBLIC_UPDATE_FIELDS} for u in finding["updates"]]
         value["url"] = f'{self.base}/findings/{finding["slug"]}.html'
         value["citation"] = citation(finding, self.cfg["name"], self.base)
         reply = finding.get("agency_response")
@@ -2719,8 +2843,9 @@ class Site:
         doc = {"schema_version": 1, "campaign": self.cfg["name"], "generated_from": "content/findings",
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "findings": [self._public_finding(f) for f in self.model["findings"]]}
-        finding = (PUBLIC_FINDING_FIELDS, {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {}),
-                                           "agency_response": (PUBLIC_RESPONSE_FIELDS, {})})
+        finding = (PUBLIC_FINDING_FIELDS + ("updates",),
+                   {"sources": (PUBLIC_SOURCE_FIELDS, {}), "corrections": (PUBLIC_CORRECTION_FIELDS, {}),
+                    "updates": (PUBLIC_UPDATE_FIELDS, {}), "agency_response": (PUBLIC_RESPONSE_FIELDS, {})})
         _assert_public(doc, "data/findings.json", PUBLIC_TOP_LEVEL_FIELDS + self.license_top(), {"findings": finding})
         return self.stamp_license(doc)
 
@@ -2792,6 +2917,8 @@ class Site:
                                  if newest else None),
                 **({"funding": [{k: f[k] for k in PUBLIC_FUNDING_FIELDS if k in f} for f in agency["funding"]]}
                    if agency.get("funding") else {}),  # DF2207-02: only when the organizer recorded it
+                **({"actions": [{k: a[k] for k in PUBLIC_ACTION_FIELDS} for a in self.newest_actions(agency)]}
+                   if agency.get("actions") else {}),  # DF0237-01: likewise, the page's order
                 **({"reports": [{k: r[k] for k in PUBLIC_REPORT_FIELDS if k in r} for r in agency["reports"]]}
                    if agency.get("reports") else {}),  # DF0237-02: same order as the page, only when recorded
                 "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
@@ -2805,8 +2932,9 @@ class Site:
                "base_url": self.base or None, "url_kind": "absolute" if self.base else "relative",
                "agencies": [self._public_agency(a, cities) for a in listed]}
         _assert_public(doc, "data/agencies.json", PUBLIC_AGENCY_TOP_LEVEL | set(self.license_top()),
-                       {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL + PUBLIC_AGENCY_JSON_ONLY,
-                                     {"asked": (PUBLIC_ASKED_FIELDS, {}),
+                       {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL + PUBLIC_AGENCY_ACTIONS + PUBLIC_AGENCY_JSON_ONLY,
+                                     {"actions": (PUBLIC_ACTION_FIELDS, {}),
+                                                            "asked": (PUBLIC_ASKED_FIELDS, {}),
                                                             "alpr_policy": (PUBLIC_POLICY_FIELDS, {}),
                                                             "contract": (PUBLIC_CONTRACT_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
                                                             "funding": (PUBLIC_FUNDING_FIELDS, {}),
@@ -2945,7 +3073,7 @@ def _asset_plan(model):
     return plan
 
 
-PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map")
+PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "map", "events")
 # Fields an organizer fills with a contact on purpose, or that are never published: not scanned. A library entry is scanned
 # through its public projection only (never note, fragment or the full hash); an agency without its private contact and notes.
 PRIVACY_GATE_SKIP = {"how", "contact_email", "privacy_contact"}
@@ -3028,6 +3156,8 @@ def _plan_site(root, today=None, notes=None):
         pages["glossary.html"] = site.glossary_html()
     if site.faq:  # DF0022-01: the slug is reserved, so no content page can already hold this name
         pages["faq.html"] = site.faq_html()
+    if site.events:  # DF1107-08: the slug is reserved, so no content page can already hold this name
+        pages["events.html"] = site.events_html()
     if site.coverage is not None:  # DF0022-03: the slug is reserved; a present empty file keeps the page with its empty notice
         pages["news.html"] = site.news_html()
     if site.sharing_rows:  # DF0237-04: no lists, no page; the slug is reserved, so nothing else can own this path
@@ -3081,6 +3211,9 @@ def _plan_site(root, today=None, notes=None):
     files.update(site.agency_feeds())
     if model["meetings"]:  # DF1103-10: no staged meetings, no feed (the tree swap drops a stale one)
         files["meetings.xml"] = site.meetings_feed_xml()
+    corrections_text = site.corrections_feed_xml()  # DF0237-09: no correction, no file (the tree swap drops a stale one)
+    if corrections_text is not None:
+        files["corrections.xml"] = corrections_text
     plan = []
     map_data = []  # DF2207-10: the map files copied under data/ (county and city boundaries), for the press page
     if model["map"]:

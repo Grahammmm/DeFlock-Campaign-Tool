@@ -208,6 +208,70 @@ class KitAgencyImportTests(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(self.digest(), after)
 
+    def snapshot(self):
+        """Roster bytes + mode, the rest of kit/ and any leftover temp file."""
+        kit_dir = self.path.parent
+        tree = {str(p.relative_to(kit_dir)): (p.read_bytes() if p.is_file() else None)
+                for p in sorted(kit_dir.rglob("*"))}
+        return (self.path.read_bytes(), self.path.stat().st_mode & 0o777, tree)
+
+    def assert_refused_everywhere(self, text, words):
+        """API apply, API check and CLI apply/check all refuse; nothing in kit/ changes."""
+        before = self.snapshot()
+        for check in (False, True):
+            with self.subTest(surface="api", check=check):
+                self.assertIn(words, self.refused(text, check=check))
+                self.assertEqual(self.snapshot(), before)
+            with self.subTest(surface="cli", check=check):
+                extra = ["--check"] if check else []
+                result = cli("kit-agency", "import", "--directory", self.root, "--csv", self.csv(text), *extra)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertTrue(result.stderr.startswith("Stopped: "), result.stderr)
+                self.assertIn(words, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(self.snapshot(), before)
+        self.assertEqual([p.name for p in self.path.parent.iterdir() if p.name.endswith(".tmp")], [])
+
+    def test_unterminated_quoted_note_refused_all_or_nothing(self):
+        row = "ca-fictional-a,Fictional A,police,\"unfinished"
+        for tail in ("", "\n"):
+            with self.subTest(tail=tail):
+                text = HEADER + "ca-fictional-good,Fictional Good,police,\n" + row + tail
+                self.assert_refused_everywhere(text, "csv line 3:")
+
+    def test_text_after_closing_quote_refused_all_or_nothing(self):
+        text = HEADER + "ca-fictional-good,Fictional Good,police,\nca-fictional-a,Fictional A,police,\"note\"junk\n"
+        self.assert_refused_everywhere(text, "csv line 3:")
+        self.assert_refused_everywhere(HEADER + "ca-fictional-a,Fictional A,police,\"note\"junk\n", "csv line 2:")
+
+    def test_quoted_newline_id_is_not_a_valid_literal_id(self):
+        good = "ca-fictional-good,Fictional Good,police,\n"
+        for suffix in ("\n", "\r\n", " ", "\t", "\x00", "\x1f"):
+            with self.subTest(suffix=repr(suffix)):
+                text = HEADER + good + f"\"ca-fictional-a{suffix}\",Fictional A,police,\n"
+                self.assert_refused_everywhere(text, "line 3: agency_id must be lowercase")
+
+    def test_valid_csv_quoting_round_trips(self):
+        seed = json.loads(self.path.read_text())
+        text = ("\ufeff" + HEADER.replace("\n", "\r\n")
+                + "ca-fictional-a,\"Fictional, A \"\"North\"\" Police\",police,\r\n"
+                + "ca-fictional-b,Fictional B,sheriff,\"one, \"\"two\"\"\nthree\"")
+        self.assertEqual(self.run_import(text)["added"], ["ca-fictional-a", "ca-fictional-b"])
+        added = json.loads(self.path.read_text())[len(seed):]
+        self.assertEqual(added[0]["name"], 'Fictional, A "North" Police')
+        self.assertNotIn("note", added[0])
+        self.assertEqual(added[1]["note"], 'one, "two"\nthree')
+        self.assertEqual(added[1]["added_by"], "organizer")
+        self.assertIs(added[1]["selected"], True)
+
+    def test_multiline_note_preserves_next_row_start_line(self):
+        good = "ca-fictional-a,Fictional A,police,\"line one\nline two\"\n"
+        message = self.refused(HEADER + good + "ca-fictional-b,Fictional B,mayor,\n")
+        self.assertIn("line 4: kind must be one of", message)
+        self.assertNotIn("line 2:", message)
+        message = self.refused(HEADER + good + "ca-fictional-b,Fictional B,police,\"open\nmore\nmore\n")
+        self.assertIn("csv line 4:", message)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -107,7 +107,7 @@ class ContentPagesTests(unittest.TestCase):
     def test_reserved_and_finding_slugs_refused_and_public_unchanged(self):
         build_site(self.root)
         before = self.snapshot()
-        for slug in ("about", "404", "feed", "meetings", "corrections", "sitemap", "style", "index", "supporters", "sharing", "press", FINDING_SLUG):
+        for slug in ("about", "404", "feed", "meetings", "corrections", "sitemap", "style", "index", "supporters", "sharing", "press", "events", FINDING_SLUG):
             with self.subTest(slug=slug):
                 path = self.page(f"{slug}.json")
                 self.assert_refused(rf"^pages/{slug}\.json: slug {slug} is reserved$")

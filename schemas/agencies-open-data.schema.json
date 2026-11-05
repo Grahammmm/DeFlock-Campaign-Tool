@@ -31,6 +31,7 @@
         "contract": {"$ref": "#/$defs/contract"},
         "funding": {"$ref": "#/$defs/funding"},
         "reports": {"$ref": "#/$defs/reports"},
+        "actions": {"$ref": "#/$defs/actions"},
         "transparency": {"$ref": "#/$defs/transparency"},
         "camera_count": {"type": ["string", "null"]}
       }
@@ -122,6 +123,25 @@
         "period_end": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
         "published_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
         "source_url": {"type": "string", "pattern": "^https://"},
+        "checked_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
+      }
+    },
+    "actions": {
+      "description": "Actions an agency took outside a recorded meeting outcome, as an organizer transcribed them from the agency's own official source; present only when recorded, newest first. Nothing is inferred or credited. The build checks the calendar days (on is not after checked_on, which is not in the future), the plain-text rule and the 50-per-agency limit.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {"$ref": "#/$defs/action"}
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["on", "kind", "as_stated", "source_url", "checked_on"],
+      "properties": {
+        "on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "kind": {"enum": ["policy_adopted", "policy_amended", "policy_posted", "sharing_started", "sharing_ended", "retention_changed", "contract_signed", "contract_renewed", "contract_ended", "contract_paused", "cameras_added", "cameras_removed", "other"]},
+        "as_stated": {"type": "string", "minLength": 1, "maxLength": 200},
+        "source_url": {"type": "string", "pattern": "^https://", "maxLength": 500},
         "checked_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
       }
     },

@@ -151,6 +151,21 @@ WAL-mode ledger, SQLite can create its own `-shm` sidecar and an empty
 `-wal` file next to the database. The main file bytes, inode and logical
 content stay unchanged, and the tests assert this.
 
+## Preservation request draft (kit-preserve)
+
+`kit-preserve --directory D --agency ID [--request NAME]` (NAME defaults to `main`) writes a private, never-sent
+`kit/preservation/ID--NAME.md` asking the agency to keep, until that recorded request is answered, the search audit
+logs, hot-list alert logs, sharing and access logs and system settings the request already covers and its own schedule
+may delete. It never asks for raw plate reads or images, extra categories or a date range. It needs a hand-sent request
+(`kit-sent`) that is not closed, withdrawn or answered (a rolling production still open counts as unanswered), and the
+original draft in `kit/requests/` must still match the hash recorded when it was sent. The letter names the sent date
+and the agency reference when recorded. The retention period appears only as you recorded it in the newest transparency
+snapshot (`retention_days` with its checked date and source); with none it carries
+`[EDIT ME: agency retention period and date checked]`. The wording asks and states no legal duty; a letter containing
+"required to", "must preserve", "obligated" or "spoliation" is refused before anything is written. The folder is
+`0700`, the file `0600`; an existing file, a symlink or a non-private folder is refused and nothing is overwritten.
+It sends nothing and changes no status, coverage or export.
+
 ## Stated production date (kit requests)
 
 `kit-response --kind determination --expected-on YYYY-MM-DD` (or a later step, such as `fee_estimate`, that
@@ -211,6 +226,23 @@ not cover. `kit-withheld --directory D [--json]` lists every recorded basis acro
 section number found in the agency's own text (`Gov. Code § 7923.600`, `Government Code section 7927.705(a)`,
 `GC 7922.000`; a basis naming two sections appears under both; none: `no section number stated`). It is read-only and
 adds no legal reading. Older `kit/sent.json` files with no `withheld_basis` read unchanged.
+
+## Follow-on requests (kit-repeat)
+
+`kit-sent` also stores `covers_through`, the last day of records that request asked for: the end of the one whole line
+`The date range for this request is FROM through TO.` in the draft it records (`today` becomes the sent date, because the
+draft is fixed when it is recorded as sent), or an explicit `--covers-through D` (a real date from 2000-01-01, not after
+`--date`). A missing, edited, repeated or placeholder line stores nothing; nothing is guessed from settings, summary or
+the sent date, and older `kit/sent.json` files read unchanged.
+`kit-repeat --directory D --agency ID --request NAME --as NEW [--through D] [--from D]` drafts an unsent follow-on at
+`kit/requests/<agency>--<NEW>.md`: the earlier draft's scope sections and requester text unchanged, with an explicit
+range from the day after the earlier `covers_through` through `--through` (default today, written as a date). A delayed
+send does not skip days: a range through 2026-09-30 sent on 2026-10-15 gives a follow-on starting 2026-10-01. An earlier
+request with no `covers_through` (legacy, imported or unknown) needs `--from D`; an unsent request, a used name, a
+`--through` after today or a start after the end is refused, and nothing is written. The link to the earlier request is
+kept in private `kit/repeat-drafts.json`; `kit-sent` on the follow-on records `follows` and its own `covers_through`
+(an edited follow-on draft is refused until restored). `kit-status` shows both fields, and `kit-coverage` and the status
+CSV add chain columns only when some request has them. Nothing is sent; no owner, reference or step is copied.
 
 ## Per-scope answers (kit requests)
 

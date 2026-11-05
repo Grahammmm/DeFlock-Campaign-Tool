@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import fixes, registry
+from .agency_actions import ACTION_KINDS
 from .supporters import HOWS as SUPPORTER_HOWS, KINDS as SUPPORTER_KINDS
 
 MAX_BYTES = 50 * 1024 * 1024
@@ -25,7 +26,7 @@ def now():
 
 def read_config(root):
     cfg = json.loads((root / "campaign.json").read_text(encoding="utf-8"))
-    if cfg.get("schema_version") != 1:
+    if not isinstance(cfg, dict) or cfg.get("schema_version") != 1:
         raise ValueError("Unsupported campaign schema version")
     for key in ("name", "county", "state"):
         if not isinstance(cfg.get(key), str) or not cfg[key].strip():
@@ -659,6 +660,10 @@ def backup_diff_cmd(args, root):
 def meetings_cmd(args, root):
     from datetime import date
     from .meetings import CivicClerkClient, LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
+    from .meetings import feed_opener, make_client
+    if args.matters and args.platform != "legistar":
+        print("Stopped: --matters is Legistar only", file=sys.stderr)
+        raise SystemExit(1)
     zone = resolve_zone(args.tz)
     if zone is None:
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
@@ -668,17 +673,27 @@ def meetings_cmd(args, root):
         opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
     elif args.online:
         opener = default_opener
+    elif args.from_xml:
+        opener = feed_opener(args.from_xml)
     else:
-        raise ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response")
-    client = (CivicClerkClient if args.platform == "civicclerk" else LegistarClient)(args.client, opener=opener)
+        raise ValueError("meetings needs --online to query the agenda platform, or a recorded response (--from-json; --from-xml for Granicus)")
+    client = make_client(args, opener)
     since = date.fromisoformat(args.since) if args.since else None
-    meetings = relevant_events(client, since=since, zone=zone)
+    if args.matters:
+        from .meetings import relevant_matters, write_matters
+        matters = relevant_matters(client, since=since)
+        target = write_matters(root, matters, args.client, since=since)
+        print(json.dumps({"client": args.client, "matched_matters": len(matters), "written": str(target),
+                          "note": "keyword hits on matter titles; verify on the official Legistar page before citing"}, indent=2))
+        return
+    meetings = relevant_events(client, since=since, zone=zone, all_events=args.all_events)
     previous = _read_previous(root / "kit" / "meetings.json")
     changes = ({"previous": previous} if previous == "unreadable"
                else compare_meetings(previous, meetings, args.client, since or date.today()))
     target = write_meetings(root, meetings, args.client, None if previous is None else changes, zone=zone, source=client.source)
     report = {"client": args.client, "platform": client.source, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
               "cancelled_meetings": sum(m["status"] == "cancelled" for m in meetings)}
+    report.update(getattr(client, "report_extra", lambda m: {})(meetings))
     if "added" in changes:
         report["changes"] = {k: len(changes[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
     print(json.dumps(dict(report, note="keyword hits only; verify the posted agenda before publishing"), indent=2))
@@ -840,7 +855,7 @@ def main():
                          help="Fall back to the Census geocoder when the seed cannot resolve the location")
     kit_cmd.add_argument("--include", action="append",
                          help="Agency kind to include (repeatable): sheriff, police, county_board, "
-                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in), school_police (opt-in), district_police (opt-in)")
+                              "city_council, district_attorney, chp, campus_police (opt-in), ccd_police (opt-in), school_police (opt-in), district_police (opt-in), fusion_center (opt-in)")
     kit_cmd.add_argument("--scope", action="append", help="Law-package request scope id to draft (repeatable; default all)")
     social_p = commands.add_parser("social", help="Draft one private post per published finding in kit/social; posts nothing")
     social_p.add_argument("--directory", required=True)
@@ -933,8 +948,12 @@ def main():
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
-    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk"), default="legistar", help="Agenda platform (default legistar)")
+    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus"), default="legistar", help="Agenda platform (default legistar)")
+    meetings_p.add_argument("--matters", action="store_true", help="List ALPR keyword matters (legislation, contracts) instead of events; writes kit/matters.json (Legistar only)")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
+    meetings_p.add_argument("--view-id", type=int, help="Granicus view_id (--platform granicus; --client is then the <name>.granicus.com host)")
+    meetings_p.add_argument("--from-xml", help="Saved Granicus agenda RSS feed (offline)")
+    meetings_p.add_argument("--all-events", action="store_true", help="Also keep Granicus events with no text to scan, marked not_scanned")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
     meetings_p.add_argument("--tz", default="America/Los_Angeles", help="IANA time zone for starts_at (default America/Los_Angeles)")
@@ -980,6 +999,15 @@ def main():
     sent_p.add_argument("--channel", required=True, choices=("email", "portal", "mail", "in_person"))
     sent_p.add_argument("--file", help="The letter you sent: only its SHA-256 and size are kept, never its text or path")
     sent_p.add_argument("--replace", action="store_true", help="Overwrite an existing record for this meeting")
+    speakers_p = commands.add_parser("meetings-speakers", help="Private plan: which volunteer label covers which point of a "
+                                     "staged meeting's comment kit (kit/meetings/speakers/<id>.json); sends nothing")
+    speakers_p.add_argument("--directory", required=True)
+    speakers_p.add_argument("--id", required=True, help="Staged upcoming meeting id")
+    speakers_action = speakers_p.add_mutually_exclusive_group(required=True)
+    speakers_action.add_argument("--add", metavar="LABEL", help="Volunteer label (1-40 characters, no email or phone) for --point")
+    speakers_action.add_argument("--remove", metavar="LABEL", help="Remove every point of this label")
+    speakers_action.add_argument("--list", dest="list_plan", action="store_true", help="Points, speakers, gaps and overloaded labels")
+    speakers_p.add_argument("--point", metavar="POINT", help="With --add: finding:ID (a finding the kit cites) or ask:N")
     content_check_p = commands.add_parser("content-check", help="List every content/ problem build would refuse (read-only; exit 3)")
     content_check_p.add_argument("--directory", required=True)
     content_check_p.add_argument("--json", dest="as_json", action="store_true", help="JSON report instead of text")
@@ -1018,6 +1046,11 @@ def main():
             agency_p.add_argument("--kind", required=True, help="sheriff, police, chp, county_board, city_council, "
                                   "district_attorney or other")
             agency_p.add_argument("--note", default=None, help="Up to 300 characters")
+    atlas_text = "Cross-check a local Atlas CSV (private, read-only). An Atlas listing is a lead, not evidence."
+    atlas_p = agency_cmds.add_parser("atlas", help=atlas_text, description=atlas_text, allow_abbrev=False)
+    atlas_p.add_argument("--csv", required=True, help="A saved Atlas of Surveillance export (UTF-8, at most 10 MiB)")
+    atlas_p.add_argument("--directory", required=True)
+    atlas_p.add_argument("--json", action="store_true", dest="as_json", help="Print the report as JSON")
     from .kit_track import CHANNELS as kit_track_channels
     sent_p = commands.add_parser("kit-sent", help="Record a request the organizer sent by hand in kit/sent.json; sends nothing")
     for flag in ("--directory", "--agency", "--date"):
@@ -1033,6 +1066,17 @@ def main():
     sent_p.add_argument("--replace-reference", action="store_true", help="Change a different stored --reference")
     sent_p.add_argument("--correspondence", action="append", default=[], metavar="PREFIX",
                         help="Repeatable: >= 12 hex of the ingested sent message or confirmation; not records")
+    sent_p.add_argument("--covers-through", metavar="D", help="YYYY-MM-DD: the last day of records this request asked "
+                        "for, when the draft's 'The date range for this request is FROM through TO.' line is missing "
+                        "or edited (not after --date); kit-repeat starts the follow-on the day after")
+    repeat_p = commands.add_parser("kit-repeat", help="Draft a follow-on request for the records created since an "
+                                   "earlier sent request (private, unsent; nothing is sent)")
+    for flag in ("--directory", "--agency", "--request", "--as"):
+        repeat_p.add_argument(flag, required=True, dest="new_request" if flag == "--as" else None,
+                              help="Name of the new request" if flag == "--as" else None)
+    repeat_p.add_argument("--through", metavar="D", help="YYYY-MM-DD last day to ask for (default today, written as a date)")
+    repeat_p.add_argument("--from", dest="date_from", metavar="D", help="YYYY-MM-DD first day, required when the "
+                          "earlier request has no recorded coverage end (sent before this feature, imported or unknown)")
     status_p = commands.add_parser("kit-status", help="List recorded requests with provisional due dates (read-only)")
     status_p.add_argument("--directory", required=True)
     status_p.add_argument("--request", help="Only requests with this name (main is the first one)")
@@ -1157,6 +1201,10 @@ def main():
                            "wrote to (1-60 characters), not a person's name; no email address or phone number")
     contact_p.add_argument("--note", required=True, help="1-500 characters of plain text; no personal details")
     contact_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    preserve_p = commands.add_parser("kit-preserve", help="Private preservation-request draft for a sent, unanswered request; never sent")
+    for flag in ("--directory", "--agency"):
+        preserve_p.add_argument(flag, required=True)
+    preserve_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     denial_p = commands.add_parser("kit-denial-reply", help="Private reply draft after a recorded denied step; never sent")
     for flag in ("--directory", "--agency"):
         denial_p.add_argument(flag, required=True)
@@ -1167,10 +1215,23 @@ def main():
                                   "(dry run by default); nothing is sent or published")
     asked_p.add_argument("--directory", required=True)
     asked_p.add_argument("--apply", action="store_true", help="Write the proposal (validated, one atomic write)")
+    personal_p = commands.add_parser("personal-data", help="List the private files that can hold a person's name, email, "
+                                     "phone or address: counts and dates only, never values (read-only)")
+    personal_p.add_argument("--directory", required=True)
+    personal_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
                                      "section number in the agency's own words (read-only)")
     withheld_p.add_argument("--directory", required=True)
     withheld_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
+    search_log_p = commands.add_parser("kit-search-log", help="Private counts from a locally saved ALPR search log CSV: months, "
+                                       "organizations, purpose categories (read-only; purposes are counted, never shown)")
+    search_log_p.add_argument("--directory", required=True)
+    search_log_p.add_argument("--csv", required=True, help="The agency's log as saved, UTF-8 CSV, at most 100 MiB")
+    search_log_p.add_argument("--agency", required=True, help="An agency_id in kit/agencies.json")
+    search_log_p.add_argument("--json", dest="as_json", action="store_true", help="One JSON document instead of text")
+    search_log_p.add_argument("--categories", help="Your own purpose term lists (JSON); replaces the default terms")
+    for role in ("time", "reason", "org", "state"):
+        search_log_p.add_argument(f"--{role}-col", metavar="HEADER", help=f"Exact header of the {role} column")
     sources = commands.add_parser("sources", help="Manage content/sources.json (the public source library)"
                                   ).add_subparsers(dest="sources_command", required=True)
     sources_add = sources.add_parser(
@@ -1223,6 +1284,22 @@ def main():
     strip_p.add_argument("file")
     strip_p.add_argument("--out", default=None, help="Default <stem>.clean<suffix> beside FILE; never overwritten")
     strip_p.set_defaults(directory=".")
+    action_cmds = content_cmds.add_parser(
+        "agency-action", help="Record or remove an action an agency took outside a meeting, as its official source states it "
+        "(content/agency-actions.json only; nothing is built, sent or deployed)").add_subparsers(
+        dest="agency_action_command", required=True)
+    action_add = action_cmds.add_parser("add", help="Append one organizer-verified action; refuses a duplicate agency, date, kind and source")
+    for flag, text in (("--directory", "Campaign directory (required)"), ("--agency", "Agency id from the loaded agencies"),
+                       ("--on", "YYYY-MM-DD the action took effect"),
+                       ("--as-stated", "1-200 plain-text characters exactly as the official source states it"),
+                       ("--source-url", "https:// address of that official source (recorded, never fetched)"),
+                       ("--checked-on", "YYYY-MM-DD you checked the source (not before --on, not in the future)")):
+        action_add.add_argument(flag, required=True, help=text)
+    action_add.add_argument("--kind", required=True, choices=ACTION_KINDS, help="What kind of action it was")
+    action_remove = action_cmds.add_parser("remove", help="Remove one action by its 1-based position in the agency's stored order")
+    action_remove.add_argument("--directory", required=True, help="Campaign directory (required)")
+    action_remove.add_argument("--agency", required=True)
+    action_remove.add_argument("--index", required=True, help="1-based position among that agency's actions in the file, not the page order")
     sharing_p = content_cmds.add_parser("agency-sharing", help="Record the agencies the vendor transparency portal names as receiving data, "
                                         "as the organizer transcribed them (CSV header name,state,kind; 1-2000 rows, all or none; never fetched)")
     sharing_p.add_argument("--directory", required=True)
@@ -1309,6 +1386,12 @@ def main():
         correct_p.add_argument(flag, required=True)
     correct_p.add_argument("--from", dest="from_draft", metavar="DRAFT", help="Reviewed draft with the corrected text")
     correct_p.add_argument("--approved-by", help="Named person approving this correction (the publication gate refuses without one)")
+    update_p = finding_cmds.add_parser("update", help="Append a dated Update to a published finding for new information "
+                                       "that does not change what it says (no build; not a correction)")
+    update_p.add_argument("id", metavar="ID")
+    for flag in ("--directory", "--on", "--note"):
+        update_p.add_argument(flag, required=True)
+    update_p.add_argument("--approved-by", help="Named person approving this update (the publication gate refuses without one)")
     withdraw_p = finding_cmds.add_parser("withdraw", help="Move a published finding to private/withdrawn/ (no notice page, no build)")
     withdraw_p.add_argument("id", metavar="ID")
     for flag in ("--directory", "--reason"):
@@ -1351,6 +1434,10 @@ def main():
     for flag in ("--on", "--note", "--directory"):
         cr_decide.add_argument(flag, required=True)
     cr_cmds.add_parser("list", help="Open requests first, with days_open").add_argument("--directory", required=True)
+    cr_reply = cr_cmds.add_parser("reply", help="Write a private, never-sent reply draft from the recorded decision "
+                                  "(kit/corrections/replies/N.md; an existing draft is never replaced)")
+    cr_reply.add_argument("--id", type=int, required=True)
+    cr_reply.add_argument("--directory", required=True)
     today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
@@ -1391,6 +1478,15 @@ def main():
     flyer.add_argument("--directory", required=True)
     flyer.add_argument("--max-findings", type=int, choices=range(1, 7), default=3)
     flyer.add_argument("--replace", action="store_true")
+    map_p = commands.add_parser("map", help="Private camera field survey: a printable sheet and a sourced re-import")
+    map_cmds = map_p.add_subparsers(dest="map_command", required=True)
+    sheet_p = map_cmds.add_parser("survey-sheet", help="Write kit/survey/<city>-<date>.html and .csv; publishes nothing")
+    sheet_p.add_argument("--city", required=True, help="Exact boundary name (case-sensitive)")
+    sheet_p.add_argument("--directory", required=True)
+    import_p = map_cmds.add_parser("survey-import", help="Add the filled rows of a survey CSV to content/map/point-checks.json")
+    import_p.add_argument("--csv", required=True, metavar="FILLED")
+    import_p.add_argument("--directory", required=True)
+    import_p.add_argument("--apply", action="store_true", help="Write the file (default: only print the checks)")
     _campaign_option(parser)
     campaigns = commands.add_parser("campaigns", help="A named register of campaign directories; names and paths only"
                                     ).add_subparsers(dest="campaigns_command", required=True)
@@ -1410,6 +1506,8 @@ def main():
     if args.command == "meeting-pack" and (args.within_days is not None or args.upcoming):
         if not args.upcoming or args.allow_past or args.within_days not in (None, *range(1, 91)):
             pack.error("--within-days must be 1..90 with --upcoming; --allow-past is only for --id")
+    if args.command == "meetings-speakers" and (args.add is None) != (args.point is None):
+        speakers_p.error("--point is required with --add and only allowed with --add")
     if getattr(args, "finding_command", None) == "diff" and len(args.inputs) != (1 if args.from_draft else 2):
         diff_p.error("use either ID --from DRAFT, or OLD NEW")
     if getattr(args, "finding_command", None) == "new":
@@ -1474,6 +1572,15 @@ def main():
     if args.command == "law":
         from .law_packet import main as law_packet_main
         sys.exit(law_packet_main(args))
+    if args.command == "personal-data":  # the folder is not resolved: the register refuses a symlinked root itself
+        from .personal_data import PersonalDataError, exit_code, personal_data_register, render_text
+        try:
+            report = personal_data_register(Path(args.directory).expanduser())
+        except PersonalDataError as exc:
+            print("Stopped: " + str(exc), file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
+        sys.exit(exit_code(report))
     root = Path(args.directory).expanduser().resolve()
     try:
         if args.command == "init":
@@ -1534,6 +1641,12 @@ def main():
             from .flyer import build as flyer_build
             print(json.dumps(flyer_build(Path(args.directory).expanduser(), args.max_findings, replace=args.replace)))
             print("Private file; nothing was printed, sent or published.")
+        elif args.command == "map":
+            from . import map_survey
+            if args.map_command == "survey-sheet":
+                print(json.dumps(map_survey.survey_sheet(root, args.city)))
+            else:
+                print(json.dumps(map_survey.survey_import(root, args.csv, apply=args.apply), indent=2, ensure_ascii=False))
         elif args.command == "meeting-pack" and args.upcoming:
             from .meeting_pack import build_upcoming
             report = build_upcoming(Path(args.directory).expanduser(), args.within_days or 14,
@@ -1564,6 +1677,15 @@ def main():
                      **({"letter_sha256_prefix": entry["letter_sha256"][:12]} if "letter_sha256" in entry else {})}
             print(json.dumps(shown, indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "meetings-speakers":
+            from .meeting_speakers import list_plan, update_plan
+            # The guards must see the unresolved directory so a campaign-root or ancestor symlink is refused.
+            root = Path(args.directory).expanduser()
+            if args.list_plan:
+                print(json.dumps(list_plan(root, args.id), indent=2, ensure_ascii=False))
+            else:
+                print(json.dumps(update_plan(root, args.id, add=args.add, point=args.point, remove=args.remove)))
+                print("Recorded only. Nothing was sent.", file=sys.stderr)
         elif args.command == "supporters":
             from .supporters import add_supporter, remove_supporter, set_cosign_consent
             if args.supporters_command == "consent":
@@ -1676,6 +1798,13 @@ def main():
                 print(json.dumps(findings.correct(root, args.id, args.date, args.note, args.from_draft, None, args.approved_by)))
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 return
+            if args.finding_command == "update":
+                from .legal_claims import legal_notes
+                print(json.dumps(findings.update(root, args.id, args.on, args.note, None, args.approved_by)))
+                for line in legal_notes([("--note", args.note)]):  # alert-only: rule names, never the note
+                    print(line, file=sys.stderr)
+                print("Not built or deployed. Run build, then review the site before any deploy.")
+                return
             if args.finding_command == "withdraw":
                 print(json.dumps(findings.withdraw(root, args.id, args.reason)))
                 print("Run build to remove it from public/. Nothing was deployed.")
@@ -1715,11 +1844,13 @@ def main():
             try:
                 result = (cr.add(root, args.finding, args.received, args.summary) if args.cr_command == "add" else
                           cr.decide(root, args.id, args.decision, args.on, args.note) if args.cr_command == "decide"
-                          else cr.list_requests(root))
+                          else cr.reply(root, args.id) if args.cr_command == "reply" else cr.list_requests(root))
             except ValueError as exc:
                 fixes.emit(exc)
                 sys.exit(3)
-            print(json.dumps(result, indent=2, ensure_ascii=False) + "\nPrivate log only; nothing was sent or published.")
+            print(json.dumps(result, indent=2, ensure_ascii=False) + (
+                "\nPrivate draft only; nothing was sent or published." if args.cr_command == "reply"
+                else "\nPrivate log only; nothing was sent or published."))
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root, as_json=args.as_json)
@@ -1753,6 +1884,18 @@ def main():
         elif args.command == "content" and args.content_command == "strip-metadata":
             from .image_meta import strip_file
             print(json.dumps(strip_file(args.file, args.out), indent=2))
+        elif args.command == "content" and args.content_command == "agency-action":
+            from . import agency_actions
+            if args.agency_action_command == "add":
+                done = agency_actions.add_action(root, args.agency, on=args.on, kind=args.kind, as_stated=args.as_stated,
+                                                 source_url=args.source_url, checked_on=args.checked_on)
+                for note in done["notes"]:  # alert-only legal-claim notes: stderr, never the supplied text, exit unchanged
+                    print(note, file=sys.stderr)
+                print(f"Agency action added: {done['agency_id']}, index {done['index']}.")
+            else:
+                done = agency_actions.remove_action(root, args.agency, agency_actions.parse_index(args.index))
+                print(f"Agency action removed: {done['agency_id']}, index {done['index']}.")
+            print("Content only; nothing was built, sent or deployed.")
         elif args.command == "content" and args.content_command == "agency-sharing":
             from .content_sharing import import_sharing
             print(json.dumps(import_sharing(root, args.agency, Path(args.csv).expanduser(), args.checked_on, args.source_url,
@@ -1771,6 +1914,10 @@ def main():
             from .content_init import init_content
             print(json.dumps(init_content(root, args.source_campaign), indent=2))
             print(f"content/ written from {Path(args.source_campaign).name}. Review every copied page and replace anything specific to the other locality; nothing was built or deployed." if args.source_campaign is not None else 'content/ written. Replace every "[EDIT ME: ...]" before you publish; nothing was built or deployed.')
+        elif args.command == "kit-agency" and args.agency_command == "atlas":
+            from . import kit_atlas
+            report = kit_atlas.compare_atlas(root, Path(args.csv).expanduser())
+            print(json.dumps(report, indent=2, ensure_ascii=False) if args.as_json else kit_atlas.render_atlas(report))
         elif args.command == "kit-agency":
             from . import kit_agencies
             print(json.dumps(kit_agencies.add_agency(root, args.agency_id, args.name, args.kind, note=args.note)
@@ -1785,8 +1932,14 @@ def main():
             print(json.dumps(record_sent(root, args.agency, args.date, args.channel, request=args.request,
                                          replace=args.replace, reference=args.reference,
                                          replace_reference=args.replace_reference,
-                                         correspondence=args.correspondence, request_url=args.request_url), indent=2))
+                                         correspondence=args.correspondence, request_url=args.request_url,
+                                         covers_through=args.covers_through), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-repeat":
+            from .kit_repeat import repeat_request
+            print(json.dumps(repeat_request(root, args.agency, args.request, args.new_request, through=args.through,
+                                            date_from=args.date_from), indent=2))
+            print("Unsent draft written. Review it, then kit-check and kit-sent. Nothing was sent.")
         elif args.command == "kit-sent-import":
             from .kit_import_sent import import_sent
             print(json.dumps(import_sent(root, Path(args.csv).expanduser(), apply=args.apply), indent=2))
@@ -1903,6 +2056,9 @@ def main():
             code = kit_asked_cli(root, args.apply)
             if code:
                 sys.exit(code)
+        elif args.command == "kit-search-log":
+            from .search_log import run_cli as search_log_cli
+            search_log_cli(root, args)
         elif args.command == "kit-withheld":
             from .kit_track import format_withheld, withheld
             report = withheld(root)
@@ -1922,6 +2078,10 @@ def main():
             print(json.dumps(record_contact(root, args.agency, args.on, args.channel, args.role, args.note,
                                             request=args.request), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-preserve":
+            from .kit_preserve import preserve_request
+            print(json.dumps(preserve_request(Path(args.directory).expanduser(), args.agency, request=args.request), indent=2))
+            print("Draft only. Nothing was sent.")
         elif args.command == "kit-denial-reply":
             from .kit_track import denial_reply
             print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))

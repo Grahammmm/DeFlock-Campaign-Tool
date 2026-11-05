@@ -26,7 +26,22 @@ when a line names no file, and the same exit codes, so an editor or CI step can 
 
 ## Content directory
 
-`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+`python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, a draft `pages/help-map.json`, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
+
+### Help-map page starter
+
+A fresh `content init` also writes `content/pages/help-map.json`, the page `/help-map.html` titled "Help map the cameras":
+six short sections on recognizing a possible plate reader, staying on public property and never photographing people or
+plates, adding a missing camera or correcting an existing point on OpenStreetMap or the DeFlock reporting page (with the
+tags `man_made=surveillance` and `surveillance:type=ALPR` that the map fetcher reads, linked to the OpenStreetMap wiki),
+what "ownership unconfirmed" means, and what the four point-check codes mean. It is read from the packaged copy of
+`examples/pages/help-map.json`, so it works from an installed wheel. Every section starts `[EDIT ME: verify for this
+campaign]`: the marker stays visible on the page until you replace it and is not an approval gate. The page uses one of
+the three `nav` slots; set `"nav": false` or delete `content/pages/help-map.json` to publish no such page. It names
+`methods.html` in words because Markdown links must be absolute `https://` URLs, and it links to no map page since a
+fresh tree has none. `content init --from OLD` copies a source campaign's own pages as before and never adds this
+starter. Before publishing run `content-check` and `build --check` offline; the legal-claim guard stays advisory and
+does not scan page copy, so read the page yourself. The report's `placeholders` count includes this page's markers.
 
 ### Draft FAQ starter
 
@@ -152,6 +167,21 @@ first (same date: by finding slug, then the order in the finding), each linking
 to the finding's `#corrections` section. The footer and each finding page link
 to it, and finding lists mark a corrected finding with a "Corrected" pill
 showing its latest correction date. The starter preview has no such page.
+
+`/corrections.xml` is an Atom feed of corrections alone, written only when at least one published finding has a correction
+(no correction, no file, and no discovery link or footer entry). It holds one entry per correction, newest first (same date:
+finding slug, then stored index), at most 50 across all findings. An entry id is `urn:deflock-correction:<finding id>:<stored
+index>` (the zero-based position in the finding's `corrections` array, so it survives newer corrections), its title is
+`Correction: <finding title>`, its summary is the correction note as plain text, and `updated` is the correction date at
+midnight UTC (never a build time). `updates` never appear in it. `/corrections.html` and each corrected finding page carry a
+`rel=alternate` link to it, and the footer names it (label `corrections.feed`).
+
+A finding with `updates` (`finding update`, see PUBLICATION.md) shows an **Updates** section (`#updates`) under its body,
+before the sources: each entry is the label `Update`, its date and its note as escaped literal text, newest date first
+(same date: the entry added last first). An update is not a correction: it adds no Corrected pill, no row on
+`/corrections.html` and no `Corrected` feed lead, and the labels `finding.updates` and `finding.update` can be
+overridden in `labels.json`. `data/findings.json` carries `updates` (`date`, `note`) in stored order only on a finding
+that has them; `data/findings.csv` has no such column, so a campaign without updates builds byte-identical files.
 
 A finding page also lists, under **Discussed at public meetings**, the staged meetings whose
 `cited_findings` include its id (DF2207-06): newest first, each linking `meetings/<id>.html` with the body,
@@ -434,6 +464,53 @@ The site says nothing about a donor beyond the name in the document. Labels: `ag
 `agency.funding_fiscal_year`, `agency.funding_kind_grant`, `agency.funding_kind_general_fund`,
 `agency.funding_kind_asset_forfeiture`, `agency.funding_kind_donation`, `agency.funding_kind_other`. A profile without
 `funding` reads and renders exactly as before.
+
+### Agency actions outside a meeting (`content/agency-actions.json`)
+
+What an agency's own official source says it changed outside a recorded meeting outcome (a policy posted, sharing ended, a
+contract signed) can be transcribed by an organizer, one dated action at a time. The file holds exactly
+`{"schema_version": 1, "actions": [ROW, ...]}` (an empty list is valid; no file means no section, no page and no event) and each
+ROW has exactly `agency_id` (one of this campaign's selected agencies, matched exactly), `on` (the day it took effect), `kind`
+(`policy_adopted`, `policy_amended`, `policy_posted`, `sharing_started`, `sharing_ended`, `retention_changed`,
+`contract_signed`, `contract_renewed`, `contract_ended`, `contract_paused`, `cameras_added`, `cameras_removed` or `other`),
+`as_stated` (1 to 200 characters exactly as the official source states it, already trimmed; no angle brackets, control,
+invisible or line-separator characters; accents, apostrophes and ampersands are kept as written), `source_url` (an https
+address of that source, 1 to 500 characters; recorded, never fetched) and `checked_on` (the day the organizer checked the
+source). Dates are real `YYYY-MM-DD` days with `on` not after `checked_on` and `checked_on` not in the future. An agency has at
+most 50 actions, and the same agency + `on` + `kind` + `source_url` twice is refused, whatever the statement or checked date.
+
+```
+python3 -m campaign_tool content agency-action add --directory DIR --agency ID --on 2026-09-01 --kind policy_posted \
+    --as-stated "Use policy posted on the department website" --source-url https://example.org/policy --checked-on 2026-10-01
+python3 -m campaign_tool content agency-action remove --directory DIR --agency ID --index 2
+```
+
+Both commands need `--directory` and an existing `content/`; `add` needs every flag and has no replace or update form, and
+neither creates `content/` or touches any other file. They print `Agency action added: ID, index N.` or
+`Agency action removed: ID, index N.` and `Content only; nothing was built, sent or deployed.`; a refusal exits 1 (a missing or
+unknown flag exits 2). `--index` is the 1-based position among that agency's actions in the **file** (insertion order), not the
+page's newest-first order, and is the `N` that `add` prints; removing the last action leaves a valid empty file. The whole
+file is checked before and after a change and written with one rename, so a refusal or a failed write leaves the old bytes;
+links, hard links, special files and a file that changed meanwhile are refused. Only one organizer should edit at a time.
+Problems name `content/agency-actions.json.actions[N].FIELD` (N counts from 0 in file order, as the other content messages do)
+and never repeat a statement, address or unknown key, from `build` (exit 1) and `content-check` (exit 3) alike.
+
+The agency's own page then shows **Changes on record** after its funding and before the transparency block, newest `on` first
+(same-day actions keep file order), one line each: `D: <kind label>: T (source, checked DATE)` with the source link. An agency
+with an action has a page even without a finding or source. `timeline.html` lists each as kind `agency_action`
+(`AGENCY: KIND: T`, linked to the agency page with its official record) and, only when there is one, appends "Agency actions are
+transcribed from their cited official sources." to its lead. `data/agencies.json` carries an optional `actions` array (omitted
+when none; `on`, `kind`, `as_stated`, `source_url`, `checked_on`, newest first, 1 to 50). It is not in `data/agencies.csv`, whose
+header never changes with the data. Labels: `agency.actions_heading`, `agency.action_line` (`{on}`, `{kind}`, `{statement}`,
+`{source}`, `{checked}`; the source word is `agency.cost_source`) and `agency.action_kind_<KIND>`; `examples/labels/es.json` has
+unreviewed Spanish drafts.
+
+**The organizer is responsible for the transcription.** The software does not fetch, read or confirm the source, and it infers
+nothing: a policy that is posted is not a finding that it is followed, and no sentence says the campaign or anyone else caused
+a change. An alert-only legal-claim check runs on each statement: `add` prints a `review-required` note on stderr (location and
+rule names, never the text) and still succeeds, and the build's review notes cover hand-edited rows the same way. The note is
+for a human at the publish gate and is never an error. Meeting decisions stay separate (`meetings/*.json` outcomes); nothing is
+merged with, or removed because of, a meeting.
 
 ### Reports the agency has published about its ALPR use (`profile.reports`)
 
@@ -856,6 +933,59 @@ person. The two files are replaced one after the other with a rollback on an ord
 until the saved pair of files is restored. There is no crash-atomic transaction and no concurrent writer support; run
 one writer. Evidence originals are never deleted.
 
+### Campaign events (`content/events.json`, optional)
+
+The campaign's own forums, teach-ins and other public gatherings become `/events.html`. They are **not** governing-body
+meetings: no comment kit, no outcome, no RSVP, nothing is sent or fetched, and no attendee data is collected. The file is a
+JSON array of 0 to 50 objects, kept in the order written:
+
+```json
+[
+  {
+    "id": "records-teach-in",
+    "title": "Public records teach-in (fictional)",
+    "starts_at": "2026-10-10T18:00:00-07:00",
+    "ends_at": "2026-10-10T20:00:00-07:00",
+    "venue": "Cedar Library, meeting room B",
+    "description_md": "How to read a records response. **All welcome.**",
+    "url": "https://example.com/teach-in",
+    "accessibility_note": "Step-free entrance; captions on request."
+  },
+  {
+    "id": "online-forum",
+    "title": "Online forum (fictional)",
+    "starts_at": "2026-11-03T12:00:00Z",
+    "ends_at": "2026-11-03T13:00:00Z",
+    "online": true,
+    "description_md": "Join from anywhere; the link is on the details page."
+  }
+]
+```
+
+- Required: `id` (lowercase letters, digits and hyphens, starting with a letter, at most 64; unique in the file),
+  `title` (1 to 120 characters), `starts_at`, `ends_at`, `description_md` (1 to 1200 characters, the same safe Markdown
+  subset as pages; no raw HTML and no images). Optional: `venue`, `online`, `url`, `accessibility_note` (1 to 400
+  characters). Unknown fields are refused.
+- Location is exactly one of: a `venue` (1 to 160 characters, published as written) with `online` left out or `false`,
+  or `online: true` with no `venue`. A hybrid event names its venue and describes the online option in `description_md`.
+- `title`, `venue` and `accessibility_note` are plain text: no `<` or `>` and no control or invisible characters.
+- Times are `YYYY-MM-DDTHH:MM:SS` followed by `Z` or an offset such as `-07:00` (at most 14:00). A time without an
+  offset, a date alone, fractions of a second and impossible dates are refused. `ends_at` may equal `starts_at` but not
+  be earlier (compared as instants, not as text). Times are shown exactly as written, with their offsets.
+- `url` must be `https://`; it is linked, never fetched, and its safety or availability is not promised.
+- Every text field, including a Markdown link address, goes through the shared privacy lint (email, phone, plate). A
+  venue is not exempt. A refusal names the field and the category, never the text.
+- Upcoming means `starts_at` is at or after the build day at 00:00:00 UTC; everything else is past (an event already
+  underway at that moment counts as past). The page says it is current as of the build date, not a live clock. Upcoming
+  events come first (earliest first), then past events (latest first) in their own section; each event has the anchor
+  `#event-<id>`. The home page shows only the next upcoming event.
+- `events.html` joins the footer (last paragraph) and, with `base_url`, `sitemap.xml` (the page only, not anchors).
+  `events` is a reserved page and finding slug and `events.html` a generated top-level name with or without the file.
+  Without the file, or with `[]`, there is no page, link, home notice or sitemap entry and every other page is
+  byte-identical. Rebuild after every change; deleting the file removes the page on the next build.
+- `build` and `content-check` use the same reader, so they refuse the same things: a duplicate `id`, an `ends_at` before
+  `starts_at` and a non-https `url` are each named by field and position (`events.json[N].field`).
+
 ## Regular meeting schedules (`content/body-schedules.json`, optional)
 
 A source-backed rule for when a body usually meets, for bodies with or without a Legistar feed. Organizers write it by
@@ -914,6 +1044,7 @@ per picker city by name, each point in the first city boundary holding it by the
 section lists 500 rows, then "and N more on the map"; linked from the map fallback and footer, in `sitemap.xml`),
 `glossary.html` (only with a non-empty `content/glossary.json`: see Glossary),
 `faq.html` (only with a `content/faq.json`: see FAQ),
+`events.html` (only with a non-empty `content/events.json`: see Campaign events),
 `news.html` (only with a `content/coverage.json`: see In the news),
 `site-data.js` (`CITIES`, `COUNTY_BOUNDS`, `MAP_STYLE`,
 `CAMERA_DATA_URL`, `BOUNDARY_DATA_URL`), `agency-cards.js`
@@ -975,8 +1106,9 @@ and `agencies`; per agency `agency_id`, `name`, `kind`, `url` (the page path, wi
 has one, `cost`: `amount_usd`, `period`, `as_stated_in`) or null, `transparency`
 (the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, an optional
 `funding` array (only when recorded: `kind`, `name`, `as_stated_in`, `source_url`, `checked_on` and, when given,
-`amount_usd` with `period`, and `fiscal_year`), an optional `reports` array (only when recorded; JSON only, see
-`profile.reports`), and `camera_count`
+`amount_usd` with `period`, and `fiscal_year`), an optional `actions` array (only when recorded, DF0237-01: `on`, `kind`,
+`as_stated`, `source_url`, `checked_on`, newest first; see "Agency actions outside a meeting"), an optional `reports` array
+(only when recorded; JSON only, see `profile.reports`), and `camera_count`
 (the card's camera-count sentence) or null. It never includes `records_email`, `records_url`, `portal`, the asked-item
 `note`, the contract `renewal_note`, kit files, notes or any other key; the build refuses with
 `data/agencies.json: non-public key ...` and writes nothing.
@@ -985,7 +1117,7 @@ to the matching JSON (`agencies.html`, `meetings.html` and `about.html`; label `
 Each is read back from the JSON text the build has already rendered and checked, so columns contain only allowlisted public
 JSON fields, and there is no CSV without its JSON. The header includes required and optional public record keys in the order
 the JSON file writes them (alphabetical), for no records too. In particular, agencies always have a `funding` column, even
-when no agency has recorded funding. A key a record lacks (including `funding` or a meeting's `outcome`) or a null is an empty
+when no agency has recorded funding (`actions` is JSON-only: no column, so the header never changes). A key a record lacks (including `funding` or a meeting's `outcome`) or a null is an empty
 cell, never a missing column;
 then one row per record in the JSON array's order. Text stays as it is, a number keeps its JSON spelling, `true`/`false` stay
 `true`/`false`, a list is joined with `; ` in stored order (a string item as text, any other item as compact JSON), and an
@@ -1258,7 +1390,7 @@ under the OpenStreetMap link of a tagged point (label `map.direction_line`) and 
 untagged points show nothing new. The value is a volunteer's tag: no bearing is converted, and nothing is inferred
 about a road, a plate, coverage, ownership or an independent check.
 
-`content/map/point-checks.json` (optional; organizer-edited by hand, never fetched or written by the tool) records what
+`content/map/point-checks.json` (optional; organizer-edited by hand, never fetched; the tool writes it only through `map survey-import --apply`) records what
 an organizer found at single mapped points: `{"schema_version": 1, "checks": [{"node": 123, "status": "seen_in_person",
 "checked_on": "2026-11-01", "source": "<12-hex library prefix or https:// URL>", "note": "optional, 200 characters"}]}`.
 `node` must be an OpenStreetMap node id present in `cameras.geojson` (its `.../node/N` URL); `status` is
@@ -1272,6 +1404,22 @@ refused entry. With the file, `cameras.html` gains an "Organizer check" column (
 (the note and the source stay off the popup and out of `site-data.js`). Without the file nothing is built differently.
 A check never removes or edits a point and never writes to OpenStreetMap: `duplicate` and `not_found_on_site` points stay
 on the map and in every count. `in_agency_record` says an agency record lists the point; it is never ownership.
+
+**Field survey (DF0237-13).** `map survey-sheet --city NAME --directory D` writes a private, printable
+`kit/survey/<city-slug>-<date>.html` and a matching `.csv` (0600, folders 0700; never overwritten, so the same city and
+day again refuses) listing every mapped point inside the boundary named exactly NAME (case-sensitive; an unknown name is
+refused): node URL, latitude, longitude, manufacturer, operator, direction and the latest organizer check, then four blank
+columns `status`, `checked_on`, `source`, `note` for a new observation. Cells that a spreadsheet would run as a formula
+(a leading `=`, `+`, `-`, `@`, tab or carriage return, including a negative longitude) get one leading apostrophe. A point
+without a node URL inside the city is refused by feature index. `map survey-import --csv FILLED --directory D [--apply]`
+skips a row whose four columns are all blank; every other row needs `status`, `checked_on` and `source`, where `source` is
+the volunteer's own evidence (an `https://` URL without userinfo, at most 500 characters, or a 12-hex library prefix that
+matches exactly one `sources.json` entry). The tool never fills in, defaults, copies or infers a source (the sheet's
+`latest_source` column is not read). The merged document (existing checks plus the new ones) must pass the same validator
+as `build`; a missing or invalid field, an edited node URL, an unmapped node or a duplicate of an existing check is named by
+row (the header is row 1) and field, never its value, and refuses the whole import. Without `--apply` it only prints the
+checks it would add; with `--apply` it writes `content/map/point-checks.json` atomically (fresh temp file; a symlink is
+refused). Nothing is published until the next `build`.
 
 The build never downloads MapLibre. To enable the interactive map, copy the
 library into `content/vendor/maplibre-gl.js` and `content/vendor/maplibre-gl.css`

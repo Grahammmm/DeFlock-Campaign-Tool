@@ -21,7 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import law, map_controller
+from . import finding_updates, law, map_controller
 from .agency_cards import text as plain_text, visible
 from .camera_direction import valid_direction
 from .review import CLASSIFICATIONS, review_blockers
@@ -45,7 +45,7 @@ MAX_FEATURES = 20000
 # structural ones must all be clear.
 RECEIPT_BLOCKERS = {"missing_factual_review", "missing_legal_review",
                     "missing_privacy_review", "need_two_independent_reviewers"}
-STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq", "sharing"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01 / DF0237-04: reserved even without content
+STARTER_SLUGS = {"index", "agencies", "findings", "sources", "meetings", "about", "glossary", "supporters", "newsletters", "faq", "sharing", "events"}  # DF1952-04 / DF2207-13 / DF1952-09 / DF0022-01 / DF0237-04 / DF1107-08: reserved even without content
 
 
 class ContentError(ValueError):
@@ -447,7 +447,7 @@ def load_site(document, assets_dir=None):
 FINDING_KEYS = {"id", "title", "slug", "summary", "body_md", "classification", "confidence",
                 "event_date", "sources", "published_at", "updated_at", "corrections", "state",
                 "author", "limitations", "counterevidence", "agency_id", "rule_version",
-                "duty", "exceptions", "rule_ids", "also_agency_ids", "agency_response"}
+                "duty", "exceptions", "rule_ids", "also_agency_ids", "agency_response", "updates"}
 FINDING_REQUIRED = {"id", "title", "slug", "summary", "classification", "confidence",
                     "event_date", "sources", "published_at", "corrections", "state",
                     "author", "limitations", "counterevidence"}
@@ -658,6 +658,12 @@ def load_finding(document, label, *, known_agency_ids=None, today=None):
     if also_agency_ids is not None:  # absent stays absent: a primary-only finding keeps its exact shape
         loaded["also_agency_ids"] = also_agency_ids
     loaded.update(response)  # absent stays absent, like also_agency_ids: a finding with no reply keeps its exact shape
+    if "updates" in document:  # DF0022-06: absent stays absent; present (even []) is validated and kept in stored order
+        try:
+            loaded["updates"] = finding_updates.load_updates(document["updates"], published_at, today=today,
+                                                             label=f"{label}.updates")
+        except finding_updates.UpdateError as exc:
+            raise ContentError(str(exc)) from None
     if known_agency_ids is not None:
         check_finding_agencies(loaded, known_agency_ids, label)
     return loaded
@@ -670,9 +676,11 @@ def load_finding_preview(document, label, now=None):
     if not isinstance(document, dict):
         raise ContentError(f"{label}: expected an object")
     if document.get("state") != "published":
+        if "updates" in document and document["updates"] != []:  # DF0022-06: a draft has no history to preview
+            raise ContentError(f"{label}.updates: updates require an already published finding")
         when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         document = {key: value for key, value in document.items()
-                    if key not in ("state", "published_at", "updated_at", "corrections")}
+                    if key not in ("state", "published_at", "updated_at", "corrections", "updates")}
         document.update(state="published", published_at=when, corrections=[])
     return load_finding(document, label)
 
@@ -2910,6 +2918,11 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
 
     agencies = load_campaign_agencies(root, today)
     known_agencies = {agency["agency_id"] for agency in agencies}
+    from .agency_actions import by_agency, read_actions  # local: agency_actions imports this module
+    actions = by_agency(read_actions(root, agencies, today=today))  # DF0237-01: None without the file
+    for agency in agencies:  # only a nonempty store adds a key, so an absent or empty file leaves every agency unchanged
+        if actions.get(agency["agency_id"]):
+            agency["actions"] = actions[agency["agency_id"]]
     for finding in findings:  # DF1952-07: extra agencies of a multi-agency finding must be known agencies
         check_finding_agencies(finding, known_agencies, finding_files[finding["id"]])
 
@@ -2977,6 +2990,10 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
     faq = read_faq(root, findings)  # DF0022-01: optional; None without the file
     if faq is not None:
         model["faq"] = faq
+    from .content_events import read_events  # local: content_events imports this module
+    events = read_events(root)  # DF1107-08: optional; None without the file, [] when present and empty
+    if events:
+        model["events"] = events
     coverage = read_coverage(root, findings, today=today)  # DF0022-03: optional; None without the file, [] when present and empty
     if coverage is not None:
         model["coverage"] = coverage

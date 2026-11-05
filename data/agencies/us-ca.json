@@ -13299,6 +13299,36 @@
           ]
         },
         {
+          "agency_id": "ca-orange-county-intelligence-assessment-center-fusion-center-orange",
+          "name": "Orange County Intelligence Assessment Center",
+          "kind": "fusion_center",
+          "jurisdiction_name": "Orange County Intelligence Assessment Center",
+          "place_fips": null,
+          "records_url": null,
+          "records_email": null,
+          "portal": {
+            "vendor": "unknown",
+            "url": null
+          },
+          "flock_transparency_slug": null,
+          "muckrock_agency_id": null,
+          "verified": false,
+          "sources": [
+            {
+              "title": "Fusion center service area; serves Orange County; this official page states the county; verify the records custodian",
+              "url": "https://www.dhs.gov/see-something-say-something/reporting/california/ociac",
+              "accessed": "2026-11-04",
+              "checked_on": "2026-11-04"
+            },
+            {
+              "title": "Fusion center; host or governing agency: Orange County Sheriff's Department; this official page states the host; verify the records custodian",
+              "url": "https://www.ocsheriff.gov/commands-divisions/investigations-special-operations-command/operations-support-intelligence-0",
+              "accessed": "2026-11-04",
+              "checked_on": "2026-11-04"
+            }
+          ]
+        },
+        {
           "agency_id": "ca-aliso-viejo-city-council",
           "name": "Aliso Viejo City Council",
           "kind": "city_council",
