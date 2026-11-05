@@ -87,7 +87,7 @@ Next: Copy `kit/requests/<agency_id>.md`, replace the bracketed cap with the amo
 Message opening: `date range missing`
 Source: [campaign_tool/kit_check.py](../campaign_tool/kit_check.py)
 Meaning: The draft's line `The date range for this request is FROM through TO.` is unfilled or was edited away.
-Next: Copy the draft, write the dates your campaign wants in that line, then run `python3 -m campaign_tool kit-check --directory ../my-campaign`.
+Next: Copy the draft and replace every date-range placeholder with the dates your campaign wants: the one in the `Subject:` line and the one in the body sentence. Then run `python3 -m campaign_tool kit-check --directory ../my-campaign`.
 
 ### The recipient is not verified
 Message opening: `recipient not verified`
