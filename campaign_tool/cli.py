@@ -660,6 +660,7 @@ def backup_diff_cmd(args, root):
 def meetings_cmd(args, root):
     from datetime import date
     from .meetings import CivicClerkClient, LegistarClient, compare_meetings, default_opener, fixture_opener, relevant_events, resolve_zone, write_meetings
+    from .meetings import feed_opener, make_client
     if args.matters and args.platform != "legistar":
         print("Stopped: --matters is Legistar only", file=sys.stderr)
         raise SystemExit(1)
@@ -672,9 +673,11 @@ def meetings_cmd(args, root):
         opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8")))
     elif args.online:
         opener = default_opener
+    elif args.from_xml:
+        opener = feed_opener(args.from_xml)
     else:
-        raise ValueError("meetings needs --online to query the Legistar Web API, or --from-json with a recorded response")
-    client = (CivicClerkClient if args.platform == "civicclerk" else LegistarClient)(args.client, opener=opener)
+        raise ValueError("meetings needs --online to query the agenda platform, or a recorded response (--from-json; --from-xml for Granicus)")
+    client = make_client(args, opener)
     since = date.fromisoformat(args.since) if args.since else None
     if args.matters:
         from .meetings import relevant_matters, write_matters
@@ -683,13 +686,14 @@ def meetings_cmd(args, root):
         print(json.dumps({"client": args.client, "matched_matters": len(matters), "written": str(target),
                           "note": "keyword hits on matter titles; verify on the official Legistar page before citing"}, indent=2))
         return
-    meetings = relevant_events(client, since=since, zone=zone)
+    meetings = relevant_events(client, since=since, zone=zone, all_events=args.all_events)
     previous = _read_previous(root / "kit" / "meetings.json")
     changes = ({"previous": previous} if previous == "unreadable"
                else compare_meetings(previous, meetings, args.client, since or date.today()))
     target = write_meetings(root, meetings, args.client, None if previous is None else changes, zone=zone, source=client.source)
     report = {"client": args.client, "platform": client.source, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
               "cancelled_meetings": sum(m["status"] == "cancelled" for m in meetings)}
+    report.update(getattr(client, "report_extra", lambda m: {})(meetings))
     if "added" in changes:
         report["changes"] = {k: len(changes[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
     print(json.dumps(dict(report, note="keyword hits only; verify the posted agenda before publishing"), indent=2))
@@ -944,9 +948,12 @@ def main():
     meetings_p = commands.add_parser("meetings", help="Find upcoming ALPR agenda items on Legistar; writes kit/meetings.json")
     meetings_p.add_argument("--directory", required=True)
     meetings_p.add_argument("--client", required=True, help="Legistar client slug (the part after webapi.legistar.com/v1/)")
-    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk"), default="legistar", help="Agenda platform (default legistar)")
+    meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus"), default="legistar", help="Agenda platform (default legistar)")
     meetings_p.add_argument("--matters", action="store_true", help="List ALPR keyword matters (legislation, contracts) instead of events; writes kit/matters.json (Legistar only)")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
+    meetings_p.add_argument("--view-id", type=int, help="Granicus view_id (--platform granicus; --client is then the <name>.granicus.com host)")
+    meetings_p.add_argument("--from-xml", help="Saved Granicus agenda RSS feed (offline)")
+    meetings_p.add_argument("--all-events", action="store_true", help="Also keep Granicus events with no text to scan, marked not_scanned")
     meetings_p.add_argument("--from-json", help="Recorded responses keyed by URL path (offline)")
     meetings_p.add_argument("--since", help="Earliest event date, YYYY-MM-DD (default today)")
     meetings_p.add_argument("--tz", default="America/Los_Angeles", help="IANA time zone for starts_at (default America/Los_Angeles)")
@@ -1194,6 +1201,10 @@ def main():
                            "wrote to (1-60 characters), not a person's name; no email address or phone number")
     contact_p.add_argument("--note", required=True, help="1-500 characters of plain text; no personal details")
     contact_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
+    preserve_p = commands.add_parser("kit-preserve", help="Private preservation-request draft for a sent, unanswered request; never sent")
+    for flag in ("--directory", "--agency"):
+        preserve_p.add_argument(flag, required=True)
+    preserve_p.add_argument("--request", default="main", help="Which sent request to this agency (default main)")
     denial_p = commands.add_parser("kit-denial-reply", help="Private reply draft after a recorded denied step; never sent")
     for flag in ("--directory", "--agency"):
         denial_p.add_argument(flag, required=True)
@@ -2042,6 +2053,10 @@ def main():
             print(json.dumps(record_contact(root, args.agency, args.on, args.channel, args.role, args.note,
                                             request=args.request), indent=2))
             print("Recorded only. Nothing was sent.")
+        elif args.command == "kit-preserve":
+            from .kit_preserve import preserve_request
+            print(json.dumps(preserve_request(Path(args.directory).expanduser(), args.agency, request=args.request), indent=2))
+            print("Draft only. Nothing was sent.")
         elif args.command == "kit-denial-reply":
             from .kit_track import denial_reply
             print(json.dumps(denial_reply(root, args.agency, args.rule, replace=args.replace), indent=2))

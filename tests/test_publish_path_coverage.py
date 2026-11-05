@@ -68,7 +68,7 @@ SKIP = re.compile(r"tools/(accept_|fc\d)|^campaign_tool/records/|^campaign_tool/
 # What each site-driven entry is fed: the published field that reaches its artefact.
 PROBES = {"site-pages": ("finding.summary", "site.tagline", "source.title", "agency.name", "event.title", "event.venue",
                          "event.description_md", "event.accessibility_note"), "atom-feed": ("finding.summary",),
-          "agency-feeds": ("finding.summary",), "open-graph-meta": ("finding.title",),
+          "agency-feeds": ("finding.summary",), "corrections-feed": ("finding.summary",), "open-graph-meta": ("finding.title",),
           "agency-cards": ("site.county_profile.summary", "agency.profile.summary"), "data-exports": ("source.title", "agency.name"),
           "map-geojson": ("map.cameras.geojson", "map.city-boundaries.geojson", "map.county.geojson")}
 TEXT_ONLY = {"flock-page", "flock-publish-brief", "flock-publish-stage"}  # these tools refuse without printing the category per value
@@ -455,7 +455,7 @@ class RegistryTests(unittest.TestCase):
         planned = Drivers(self).campaign()
         build_site(planned)
         names = {p.relative_to(planned / "public").as_posix() for p in (planned / "public").rglob("*") if p.is_file()}
-        self.assertTrue({"feed.xml", "agency-cards.js", "data/findings.json"} <= names)
+        self.assertTrue({"feed.xml", "corrections.xml", "agency-cards.js", "data/findings.json"} <= names)
         self.assertTrue(any(n.startswith("findings/agency/") and n.endswith(".xml") for n in names))
         self.assertIn('property="og:', (next((planned / "public" / "findings").glob("cedar-*.html"))).read_text(encoding="utf-8"))
 

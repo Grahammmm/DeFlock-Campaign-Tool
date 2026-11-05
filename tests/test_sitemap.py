@@ -120,7 +120,7 @@ class SitemapTests(unittest.TestCase):
                 for name, text in files.items():
                     self.assertNotIn("sitemap.xml", text, name)
                 self.assertNotIn("Sitemap:", files["robots.txt"])
-                self.assertIn('<a href="/corrections.html">Corrections</a> · <a href="/methods.html">How to read our findings</a></p>',
+                self.assertIn('<a href="/corrections.html">Corrections</a> · <a href="/corrections.xml">Corrections feed</a> · <a href="/methods.html">How to read our findings</a></p>',
                               files["index.html"])
         self.base_url(BASE)
         self.assertEqual(self.build(), "")

@@ -151,6 +151,21 @@ WAL-mode ledger, SQLite can create its own `-shm` sidecar and an empty
 `-wal` file next to the database. The main file bytes, inode and logical
 content stay unchanged, and the tests assert this.
 
+## Preservation request draft (kit-preserve)
+
+`kit-preserve --directory D --agency ID [--request NAME]` (NAME defaults to `main`) writes a private, never-sent
+`kit/preservation/ID--NAME.md` asking the agency to keep, until that recorded request is answered, the search audit
+logs, hot-list alert logs, sharing and access logs and system settings the request already covers and its own schedule
+may delete. It never asks for raw plate reads or images, extra categories or a date range. It needs a hand-sent request
+(`kit-sent`) that is not closed, withdrawn or answered (a rolling production still open counts as unanswered), and the
+original draft in `kit/requests/` must still match the hash recorded when it was sent. The letter names the sent date
+and the agency reference when recorded. The retention period appears only as you recorded it in the newest transparency
+snapshot (`retention_days` with its checked date and source); with none it carries
+`[EDIT ME: agency retention period and date checked]`. The wording asks and states no legal duty; a letter containing
+"required to", "must preserve", "obligated" or "spoliation" is refused before anything is written. The folder is
+`0700`, the file `0600`; an existing file, a symlink or a non-private folder is refused and nothing is overwritten.
+It sends nothing and changes no status, coverage or export.
+
 ## Stated production date (kit requests)
 
 `kit-response --kind determination --expected-on YYYY-MM-DD` (or a later step, such as `fee_estimate`, that

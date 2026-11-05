@@ -27,6 +27,7 @@
     "license.about": "Los textos y datos de este sitio se publican bajo la licencia {license}.",
     "license.about_camera": "Puntos de cámaras: © {osm}, {odbl}.",
     "footer.feed": "Canal de hallazgos",
+    "corrections.feed": "Canal de correcciones",
     "meeting.feed": "Canal de reuniones",
     "title.meetings_feed": "Canal Atom de reuniones",
     "footer.sitemap": "Mapa del sitio",
