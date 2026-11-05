@@ -200,8 +200,11 @@ class ReceivedItemsTests(unittest.TestCase):
         refs = {f["comparison_ref"]["field"]: f["policy_ref"]
                 for i in report["items"] for f in i["findings"]}
         self.assertEqual(refs["audit_process"]["document_sha256"], policy)
-        for field in ("public_comment", "access_logs", "safeguards"):
-            self.assertIsNone(refs[field], field)
+        for field in ("public_comment", "access_logs", "safeguards", "retention"):
+            self.assertNotIn(field, refs, field)
+        for i in report["items"]:
+            self.assertIn("policy_source_unestablished", i["diagnostics"])
+            self.assertNotEqual(i["comparison_status"], "mapped")
         self.assertIn("policy_source_unestablished", report["diagnostics"])
 
     def test_inventory_identity_exclusion_and_ambiguous_joins(self):

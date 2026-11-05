@@ -426,6 +426,7 @@ def _project(report, comparison, by_original):
         report["diagnostics"].append("comparison_unavailable")
         return
     unresolved_agencies = set()
+    policy_gap_items = set()
     for index, row in enumerate(comparison["rows"]):
         agency, field = row.get("agency_id"), row.get("field")
         evidence = row.get("evidence") if isinstance(row.get("evidence"), list) else []
@@ -456,6 +457,9 @@ def _project(report, comparison, by_original):
                     policy = dict(cite)
                 else:
                     report["diagnostics"].append("policy_source_unestablished")
+                    item["diagnostics"] = sorted(set(item["diagnostics"]) | {"policy_source_unestablished"})
+                    policy_gap_items.add(digest)
+                    break
             if policy is not None:
                 for key in ("policy_version", "policy_modality"):
                     if isinstance(observed.get(key), str):
@@ -479,7 +483,8 @@ def _project(report, comparison, by_original):
         item = info["item"]
         item["findings"].sort(key=lambda f: f["finding_id"])
         if item["findings"]:
-            item["comparison_status"] = "partial" if item["agency_id"] in unresolved_agencies else "mapped"
+            item["comparison_status"] = ("partial" if item["agency_id"] in unresolved_agencies\
+                                        or item["original_sha256"] in policy_gap_items else "mapped")
 
 
 def _safe_dir(path):
