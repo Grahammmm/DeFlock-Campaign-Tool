@@ -86,6 +86,13 @@ class RuntimeTests(unittest.TestCase):
         if platform.system() != "Linux":
             self.assertEqual(report["failure_code"], "unsupported_records_runtime")
 
+    def test_panel_dispatch_is_lazy_and_help_starts_nothing(self):
+        self.assertEqual(cli.COMMANDS["panel"], ("admin_panel", "main"))
+        result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "panel", "--help"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("RECORDS-ADMIN-PANEL.md", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
