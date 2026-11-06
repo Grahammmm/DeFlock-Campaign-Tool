@@ -416,6 +416,27 @@ def write_change(project, ident, now=None):
     return {"id": ident, "file": f"{OUT}/{name}", "result": "written"}
 
 
+def pending(project, now=None):
+    """Pending metadata only; no content, events or journal writes (an absent journal is empty)."""
+    now = time.time() if now is None else now
+    with _Locked(project) as lock:
+        rows = fold(lock.events())
+        out = []
+        for row in rows.values():
+            view = _view(row, now)
+            if view["status"] not in ("proposed", "approved"):
+                continue
+            packet = row["packet"]
+            out.append({k: view[k] for k in ("id", "revision", "status", "kind", "agency_key", "title")} | {
+                "request_id": packet.get("request_id") or "", "source": packet["source"],
+                "proposed_at": _iso(row["proposed_ts"]), "age_hours": max(0, int((now - row["proposed_ts"]) // 3600)),
+                "expires_at": _iso(row["proposed_ts"] + EXPIRY_SECONDS),
+                "hours_to_expiry": max(0, int((row["proposed_ts"] + EXPIRY_SECONDS - now) // 3600)),
+                "approved_at": _iso(row["approved_ts"]) if "approved_ts" in row else None,
+                "signed_by": row.get("signed_by")})
+        return out
+
+
 def status(project, now=None):
     now = time.time() if now is None else now
     with _Locked(project) as lock:

@@ -228,7 +228,7 @@ def lines_in(model, state):
 
 # ---- rendering ---------------------------------------------------------------------------------------
 
-NAV = ('<nav aria-label="Pages"><a href="/">Dashboard</a> <a href="/board">Board</a> <a href="/oversight">Oversight</a> '
+NAV = ('<nav aria-label="Pages"><a href="/">Home</a> <a href="/dashboard">Dashboard</a> <a href="/board">Board</a> <a href="/oversight">Oversight</a> '
        '<a href="/public-updates">Public updates</a> <a href="/documents">Documents</a> '
        '<a href="/next-steps">Drafts and next steps</a></nav>')
 

@@ -354,7 +354,7 @@ class ServerCase(Base):
 
 class LiveFormTests(ServerCase):
     def test_get_page_has_token_forms_and_security_headers(self):
-        status, headers, body = self.http.send("GET", "/?action=approve&id=x", headers={"Content-Length": None,
+        status, headers, body = self.http.send("GET", "/dashboard?action=approve&id=x", headers={"Content-Length": None,
                                                                                    "Content-Type": None})
         self.assertEqual(status, 200)
         self.assertIn(self.tok, body)
@@ -403,7 +403,7 @@ class LiveFormTests(ServerCase):
         after = tree_state(self.project)
         self.assertEqual({k for k in after if after[k] != before.get(k)}, {str(self.queue)})
         # the page shows the persisted state and the audit line
-        page = self.http.send("GET", "/", headers={"Content-Length": None, "Content-Type": None})[2]
+        page = self.http.send("GET", "/dashboard", headers={"Content-Length": None, "Content-Type": None})[2]
         self.assertIn("approved (revision", page)
         self.assertIn("last action by operator-1", page)
 
@@ -548,7 +548,7 @@ class NextStepsPageTests(ServerCase):
         self.assertIn("agency-wide", html)
         self.assertEqual(sum(1 for f in parse(html).forms if f["action"] == "/approvals/reject"), 3)
         self.assertEqual(sum(1 for f in parse(html).forms if f["action"] == "/approvals/approve"), 3)
-        self.assertIn('href="/next-steps"', self.get("/")[2])
+        self.assertIn('href="/next-steps"', self.get("/dashboard")[2])
         before = journal(self.project)
         self.get()
         self.assertEqual(journal(self.project), before)  # GET never creates or changes drafts
@@ -634,7 +634,7 @@ class MailboxPanelTests(ServerCase):
         self.addCleanup(patch.stop)
 
     def page(self, server):
-        return Http(server.server_address[1]).send("GET", "/", headers={"Content-Length": None,
+        return Http(server.server_address[1]).send("GET", "/dashboard", headers={"Content-Length": None,
                                                                         "Content-Type": None})[2]
 
     def approve(self, server):
@@ -806,7 +806,7 @@ class SendPanelTests(ServerCase):
         self.stop.chmod(0o600)
 
     def page(self, server):
-        return Http(server.server_address[1]).send("GET", "/", headers={"Content-Length": None,
+        return Http(server.server_address[1]).send("GET", "/dashboard", headers={"Content-Length": None,
                                                                         "Content-Type": None})[2]
 
     def fields(self, server, **over):
