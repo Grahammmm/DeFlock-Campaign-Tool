@@ -16,3 +16,7 @@ Check a file (read only; exit 0 clean, 1 with problems named by line and field):
 
 Python: `agency_policies.load(path)` returns `(rows, problems)`; `sections`, `find` and `cite` look rows up.
 Nothing is sent, posted or published. Filling in real rows is REC-DATA-2.
+
+## SLO pilot rows (REC-DATA-2)
+
+`data/slo-pilot/agency-policies.csv` holds the pilot's rows: Sheriff Policy 466 (466.5(e) audits, 466.5(d) sharing, 466.5(f) logging, 466.4 retention), Grover Beach 428, Arroyo Grande 461, Morro Bay 435 and Paso Robles 435. `page` is the PDF page of the stored copy; `doc_sha256` is the hash of that copy. `adopted_date` is blank everywhere: a Lexipol footer date is not an adoption date and no agency has produced one. SLO PD Policy 503 is not included: no stored copy exists yet to hash.
