@@ -192,7 +192,7 @@ def git_exposure_row(directory):
     engine = engine_checkout_root()
     in_engine, note, missing, names, tracked = False, None, False, [], set()
     try:
-        resolved = Path(directory).resolve(strict=False)
+        resolved = Path(directory).expanduser().resolve(strict=False)
         if engine is not None:
             in_engine = _inside(resolved, engine.resolve(strict=False))
         if not _find_marker(resolved) and not in_engine:

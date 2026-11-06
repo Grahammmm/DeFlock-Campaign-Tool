@@ -1,5 +1,6 @@
 """git exposure row and engine-local init refusal. Temporary synthetic repos only; nothing touches the network."""
 
+import io
 import itertools
 import json
 import os
@@ -121,6 +122,25 @@ class RowTests(Base):
                     for n in NAMES:
                         self.assertEqual(f"/{n}/" in row["next"], n in missing, (ignored, row["next"]))
                     self.assertIn("separate lines" if len(missing) > 1 else "as a line", row["next"])
+
+    def test_cli_checklist_expands_tilde_directory(self):
+        root = self.tree([])
+        from campaign_tool import cli
+        init = ["init", "--directory", str(root / "campaign"), "--county", "X", "--state", "CA", "--name", "N"]
+        with mock.patch.object(git_exposure, "engine_checkout_root", return_value=None), \
+                mock.patch.object(sys, "argv", ["campaign_tool", *init]), mock.patch.object(sys, "stdout"):
+            cli.main()
+        argv = ["doctor", "--directory", "~/campaign", "--checklist"]
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": str(root)}), \
+                mock.patch.object(git_exposure, "engine_checkout_root", return_value=None), \
+                mock.patch.object(sys, "argv", ["campaign_tool", *argv]), \
+                mock.patch.object(sys, "stdout", out), mock.patch.object(sys, "stderr"):
+            try:
+                cli.main()
+            except SystemExit:
+                pass
+        self.assertIn("Campaign files may be included in git", out.getvalue())
 
     def test_text_json_and_counts_agree(self):
         root = self.tree(["/kit/"])
