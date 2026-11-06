@@ -70,7 +70,7 @@ class ReleaseLinkTests(unittest.TestCase):
             self.assertNotIn(secret, dump)
 
     def test_all_letter_and_percent_encoded_tokens_are_masked(self):
-        letters = "EabcdefghijklmnopqrstuvwxyzABCDE"
+        letters = "Eabcdefghijklm" + "nopqrstuvwxyzABCDE"
         encoded = "Ab%2FcdEfGhIjKl%2BmNoPq"
         self.mailbody("Files https://z.sharepoint.com/:f:/s/clerk/%s and https://y.sharepoint.com/share/%s expires on 2026-12-01"
                       % (letters, encoded))
