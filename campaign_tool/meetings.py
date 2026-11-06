@@ -91,7 +91,7 @@ def fixture_opener(mapping):
         path = urllib.parse.urlsplit(url).path
         for key, value in mapping.items():
             if url == key or path.endswith(key):
-                return json.dumps(value).encode("utf-8")
+                return (value if isinstance(value, str) else json.dumps(value)).encode("utf-8")
         raise MeetingsError(f"no recorded response for {url}")
     return opener
 
@@ -398,6 +398,26 @@ def feed_opener(path):
     return lambda url: read_feed_file(path)
 
 
+def client_for(entry, opener, label="feed"):
+    """Construct a supported agenda client without fetching; shared by CLI and multi-source validation."""
+    platform, name = entry["platform"], entry.get("client")
+    if platform == "ics":
+        from .meetings_ics import IcsClient
+        return IcsClient(entry.get("feed_url"), entry.get("label"), opener=opener, label=label)
+    if platform == "agendacenter":
+        client = AgendaCenterClient(name, opener=opener, label=label)
+        client.report_extra = lambda found: {"not_scanned": sum(bool(m.get("not_scanned")) for m in found),
+                                             "cut_by_item_cap": client.cut, "dropped_no_date": client.dropped_no_date}
+        return client
+    if platform == "granicus":
+        client = GranicusClient(name, entry.get("view_id"), opener=opener, label=label)
+        client.report_extra = lambda found: {"not_scanned": sum(bool(m.get("not_scanned")) for m in found), "cut_by_item_cap": client.cut}
+        return client
+    if platform not in ("legistar", "civicclerk"):
+        raise MeetingsError("platform must be legistar, civicclerk, granicus, agendacenter or ics")
+    return (CivicClerkClient if platform == "civicclerk" else LegistarClient)(name, opener=opener)
+
+
 def make_client(args, opener):
     """The agenda-platform client for the ``meetings`` command; refuses flags that belong to another platform."""
     if args.platform == "ics":  # DF1422-09: one public iCalendar feed; --client, --from-json, --from-xml and the Granicus flags do not apply
@@ -405,8 +425,8 @@ def make_client(args, opener):
             raise MeetingsError("--platform ics takes --feed-url and --body with --online or --from-ics; not --client, --from-json, --from-xml, --view-id, --all-events or --matters")
         if not getattr(args, "feed_url", None) or not getattr(args, "body", None):
             raise MeetingsError("--platform ics needs --feed-url and --body")
-        from .meetings_ics import IcsClient
-        return IcsClient(args.feed_url, args.body, opener=opener, label=getattr(args, "from_ics", None) or "feed")
+        return client_for({"platform": "ics", "feed_url": args.feed_url, "label": args.body}, opener,
+                          label=getattr(args, "from_ics", None) or "feed")
     if getattr(args, "feed_url", None) or getattr(args, "body", None) or getattr(args, "from_ics", None):
         raise MeetingsError("--feed-url, --body and --from-ics go with --platform ics")
     granicus, center = args.platform == "granicus", args.platform == "agendacenter"
@@ -416,16 +436,8 @@ def make_client(args, opener):
             or args.view_id is not None and not granicus):
         raise MeetingsError("--from-xml and --all-events go with --platform granicus or agendacenter (which read --online or --from-xml, not --from-json); "
                             "--view-id goes with granicus")
-    if center:
-        client = AgendaCenterClient(args.client, opener=opener, label=args.from_xml or "feed")
-        client.report_extra = lambda found: {"not_scanned": sum(bool(m.get("not_scanned")) for m in found),
-                                             "cut_by_item_cap": client.cut, "dropped_no_date": client.dropped_no_date}
-        return client
-    if granicus:
-        client = GranicusClient(args.client, args.view_id, opener=opener, label=args.from_xml or "feed")
-        client.report_extra = lambda found: {"not_scanned": sum(bool(m.get("not_scanned")) for m in found), "cut_by_item_cap": client.cut}
-        return client
-    return (CivicClerkClient if args.platform == "civicclerk" else LegistarClient)(args.client, opener=opener)
+    return client_for({"platform": args.platform, "client": args.client, "view_id": args.view_id}, opener,
+                      label=args.from_xml or "feed")
 
 
 def resolve_zone(name):
@@ -625,11 +637,21 @@ def compare_meetings(previous_doc, meetings, client, since):
 
 
 MAX_SOURCES = 12
-SOURCE_KEYS = {"platform", "client", "label"}
+SOURCE_KEYS = {"platform", "client", "label", "view_id", "feed_url"}
+
+
+def source_key(entry):
+    """Keep legacy Legistar keys; namespace other bodies, including separate Granicus views and ICS feeds."""
+    platform = entry["platform"]
+    if platform == "legistar":
+        return entry["client"]
+    if platform == "ics":
+        return "ics:" + entry["feed_url"]
+    return platform + ":" + entry["client"] + (":" + str(entry["view_id"]) if platform == "granicus" else "")
 
 
 def load_sources(cfg):
-    """DF1507-08: validated ``campaign.json`` ``meeting_sources`` (1-12 Legistar bodies); [] when absent. ValueError names the index."""
+    """DF1507-08: validated ``campaign.json`` ``meeting_sources`` (1-12 supported agenda bodies); [] when absent. ValueError names the index."""
     raw = cfg.get("meeting_sources")
     if raw is None:
         return []
@@ -638,19 +660,30 @@ def load_sources(cfg):
     out, seen = [], set()
     for i, entry in enumerate(raw):
         where = f"meeting_sources[{i}]"
-        if not isinstance(entry, dict) or set(entry) - SOURCE_KEYS or not {"platform", "client"} <= set(entry):
-            raise ValueError(f"{where}: use only platform, client and label")
-        client, label = entry["client"], entry.get("label", entry["client"])
-        if entry["platform"] != "legistar":
-            raise ValueError(f"{where}: platform must be legistar")
-        if not isinstance(client, str) or not CLIENT.fullmatch(client):
-            raise ValueError(f"{where}: client must be a short lowercase slug")
-        if client in seen:
-            raise ValueError(f"{where}: duplicate client {client}")
+        if not isinstance(entry, dict) or set(entry) - SOURCE_KEYS or "platform" not in entry:
+            raise ValueError(f"{where}: use only platform, client, label, view_id and feed_url")
+        platform = entry["platform"]
+        if platform not in ("legistar", "civicclerk", "granicus", "agendacenter", "ics"):
+            raise ValueError(f"{where}: platform must be legistar, civicclerk, granicus, agendacenter or ics")
+        required = {"platform", "feed_url", "label"} if platform == "ics" else {"platform", "client"}
+        if platform == "granicus":
+            required.add("view_id")
+        allowed = required | {"label"}
+        if not required <= set(entry) or set(entry) - allowed:
+            raise ValueError(f"{where}: {platform} needs {', '.join(sorted(required))}; optional label only")
+        label = entry.get("label", entry.get("client"))
         if not isinstance(label, str) or not label.strip() or len(label) > 80 or _plain(label) != label:
             raise ValueError(f"{where}: label must be plain text of 1 to 80 characters (no < or >)")
-        seen.add(client)
-        out.append({"platform": "legistar", "client": client, "label": label.strip()})
+        normalized = dict(entry, label=label.strip())
+        try:
+            client_for(normalized, None)  # constructors validate only; no I/O
+        except MeetingsError as exc:
+            raise ValueError(f"{where}: {exc}") from None
+        key = source_key(normalized)
+        if key in seen:
+            raise ValueError(f"{where}: duplicate client {key}")
+        seen.add(key)
+        out.append(normalized)
     return out
 
 
@@ -673,10 +706,10 @@ def scan_sources(sources, opener_for, since, zone, previous=None):
     since = since or date.today()
     meetings, report, changes = [], [], {}
     for source in sources:
-        client, label = source["client"], source["label"]
+        client, label = source_key(source), source["label"]
         subset = _previous_subset(previous, client)
         try:
-            found = relevant_events(LegistarClient(client, opener=opener_for(client)), since=since, zone=zone)
+            found = relevant_events(client_for(source, opener_for(client)), since=since, zone=zone)
         except Exception as exc:  # network, JSON, a missing recorded response: this source only
             old = subset.get("meetings") if isinstance(subset, dict) and subset.get("schema_version") == 1 else None
             kept = [dict(m, client=client, source_label=label, stale=True) for m in old or [] if isinstance(m, dict)]
