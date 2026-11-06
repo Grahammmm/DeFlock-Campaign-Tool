@@ -132,6 +132,10 @@ class RowTests(Base):
             cli.main()
         argv = ["doctor", "--directory", "~/campaign", "--checklist"]
         out = io.StringIO()
+        outside = self.base / "outside"  # cwd outside any work tree: only the expanded path reveals the repo
+        outside.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(outside)
         with mock.patch.dict(os.environ, {"HOME": str(root)}), \
                 mock.patch.object(git_exposure, "engine_checkout_root", return_value=None), \
                 mock.patch.object(sys, "argv", ["campaign_tool", *argv]), \
