@@ -40,7 +40,7 @@ def h(n):
 
 class TextStateTests(unittest.TestCase):
     def setUp(self):
-        work = Path(__file__).resolve().parents[2] / "build" / "outcome-textstate" / "test-workspaces"
+        work = Path(tempfile.gettempdir()) / "outcome-textstate" / "test-workspaces"
         work.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(prefix="textstate-", dir=work)
         self.addCleanup(self.temp.cleanup)
