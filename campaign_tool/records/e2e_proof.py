@@ -32,9 +32,9 @@ from . import approval_queue, arrival, arrival_summary, notify_text, run_orchest
 
 SCHEMA = "records-e2e-proof-v1"
 MARKER = run_stages.SANDBOX_MARKER
-PAGES = (("inbox", "/", "Inbox: mail received"), ("documents", "/documents", "Documents"),
-         ("run_health", "/", "Stage status and run health"), ("findings", "/", "Findings"),
-         ("deadlines", "/", "Deadlines"), ("drafts", "/", "Drafts"), ("next_steps", "/next-steps", "Next steps"))
+PAGES = (("inbox", "/dashboard", "Inbox: mail received"), ("documents", "/documents", "Documents"),
+         ("run_health", "/dashboard", "Stage status and run health"), ("findings", "/dashboard", "Findings"),
+         ("deadlines", "/dashboard", "Deadlines"), ("drafts", "/dashboard", "Drafts"), ("next_steps", "/next-steps", "Next steps"))
 NEXT_KINDS = ("next-social-post", "next-site-update", "next-followup-probe")
 ARRIVAL_DONE = ("sync", "delta", "adoption", "portal")  # the live mailbox-side stages; a replay starts after them
 
