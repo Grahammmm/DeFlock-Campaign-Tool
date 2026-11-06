@@ -18,6 +18,7 @@ RESOURCES = (
     "examples/faq.json",
     "examples/pages/background.json",
     "examples/pages/help-map.json",
+    "playbooks/records-alpr-v1.json",
 )
 
 
