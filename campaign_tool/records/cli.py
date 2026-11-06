@@ -5,6 +5,7 @@ import os
 import sys
 
 COMMANDS = {
+    "events-import": ("events_import", "main"),
     "doctor": ("runtime", "main"),
     "validate-findings": "gates.validate_findings",
     "reconcile-coverage": "gates.reconcile_coverage",

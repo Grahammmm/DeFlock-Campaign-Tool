@@ -84,6 +84,12 @@ def append(project, run_id, actor, key, fields, now=None):
                  actor=actor, summary=summary)
     if corrects:
         event["corrects"] = corrects
+    append_events(project, [event], reject_conflicts=True)
+    return event
+
+
+def append_events(project, incoming, *, reject_conflicts=False):
+    """Append a batch once under the private journal lock; return added/present counts."""
     # Reuse the approval store's private, symlink-safe lock; never append to its journal.
     with aq._Store(project, True):
         root = aq._open_chain(project)
@@ -98,17 +104,22 @@ def append(project, run_id, actor, key, fields, now=None):
             _require(info.st_size <= tl.MAX_INPUT_BYTES, 503)
             raw = os.read(fd, tl.MAX_INPUT_BYTES + 1)
             _require(not raw or raw.endswith(b"\n"), 503)
-            # The reader validates the entire existing journal before any new append.
             events = tl.read_manual_events(Path(project) / "manual-events.jsonl")
-            previous = next((e for e in events if e["event_id"] == ident), None)
-            if previous is not None:
-                _require(previous == event, 409)
-                return event
-            _require(len(events) < tl.MAX_MANUAL, 503)
-            if corrects:
-                _require(any(e["event_id"] == corrects and e["agency_id"] == agency
-                             and e["request_id"] == request for e in events), 409)
-            data = (aq._canon(event) + "\n").encode()
+            known = {e["event_id"]: e for e in events}
+            added, present = [], 0
+            for event in incoming:
+                ident = event["event_id"]
+                if ident in known:
+                    _require(not reject_conflicts or known[ident] == event, 409)
+                    present += 1
+                    continue
+                if event.get("corrects"):
+                    _require(any(e["event_id"] == event["corrects"] and e["agency_id"] == event["agency_id"]
+                                 and e["request_id"] == event["request_id"] for e in known.values()), 409)
+                known[ident] = event
+                added.append(event)
+            _require(len(known) <= tl.MAX_MANUAL, 503)
+            data = "".join(aq._canon(event) + "\n" for event in added).encode()
             _require(info.st_size + len(data) <= tl.MAX_INPUT_BYTES, 503)
             view = memoryview(data)
             while view:
@@ -121,7 +132,7 @@ def append(project, run_id, actor, key, fields, now=None):
             if fd is not None:
                 os.close(fd)
             os.close(root)
-    return event
+    return {"added": len(added), "already_present": present}
 
 
 def serve(handler):
