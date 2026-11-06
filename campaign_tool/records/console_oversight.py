@@ -21,7 +21,7 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, pipeline_health
+from . import approval_queue, pipeline_health, public_packets
 from . import public_updates as pu
 from . import console_board as cb
 from .outcomes import release_links as _rl
@@ -31,7 +31,6 @@ STUCK_HOURS = 72
 EXPIRING_DAYS = cb.EXPIRING_DAYS
 RUN_WINDOW_HOURS = 24
 STATES = ("proposed", "holding", "posted", "retracted")
-PACKET_KINDS = ("public-update-packet", "update-packet")  # packets arrive with REC-PUB-2; none exist before it
 LABEL = "Private; review required. Stuck and overdue are arithmetic on our records, not a legal finding."
 ROUTES = {"/public-updates/retract": ("csrf_token", "id"), "/public-updates/off": ("csrf_token",),
           "/public-updates/kill": ("csrf_token",)}
@@ -146,7 +145,7 @@ def load(project, run_id, run_report_path=None, now=None):
     target = _target(run_report_path)
     return {"run_id": run_id, "now": now, "timeline": board["timeline"], "links": board["links"], "tiers": board["tiers"],
             "runs": _load_runs(target, now), "health": _load_health(project, target, now),
-            "queue": _load_queue(project), "public": _load_public(project)}
+            "queue": _load_queue(project), "public": _load_public(project), "project": project}
 
 
 def sources(model):
@@ -360,14 +359,13 @@ def render_public(model, token):
     if pub["alerts"]:
         out.append(_table("Oversight alerts", ("Code", "Agency", "When"), [(a["code"], a["agency_key"], a["at"]) for a in pub["alerts"]]))
     out.append("<h2>Approval packets awaiting G</h2>")
-    if model["queue"]["state"] != "ok":
-        out.append("<p>Unavailable.</p>")
-    else:
-        packets = [p for p in pending_approvals(model)
-                   if p["kind"] in PACKET_KINDS]
-        out.append(_table("Pending update packets", ("Draft", "Kind", "Agency", "Waiting"),
-                          [(p["id"][:12], p["kind"], p["agency"], _ago(p["age_hours"])) for p in packets])
-                   + '<p><a href="/next-steps">Approve with G\'s signature in the approval queue</a></p>')
+    try:
+        packets = public_packets.pending(model["project"], model["now"].timestamp())
+        out.append(_table("Pending update packets", ("Packet", "Kind", "Agency", "Waiting"),
+                          [(p["id"][:12], p["kind"], p["agency_key"], _ago(p["age_hours"])) for p in packets])
+                   + '<p><a href="/packets">Review packets with G\'s signature</a></p>')
+    except (public_packets.PacketError, OSError, ValueError, KeyError, TypeError):
+        out.append("<p>Packets: unavailable.</p>")
     return "\n".join(out + ["</body></html>"]) + "\n"
 
 

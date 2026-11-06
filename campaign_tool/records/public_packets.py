@@ -354,11 +354,11 @@ def payload(project, ident):
         return _payload(project, _get(fold(lock.events()), ident))
 
 
-def approve(project, ident, signature, now=None):
+def approve(project, ident, signature, now=None, *, revision=None):
     now = time.time() if now is None else now
     _need(isinstance(signature, str) and signature, "approval_required")
     with _Locked(project) as lock:
-        row = _get(fold(lock.events()), ident)
+        row = _get(fold(lock.events()), ident, revision)
         _need(row["status"] == "proposed", "packet_not_open")
         _need(not _expired(row, now), "packet_expired")
         _lint(row["packet"]["title"], row["packet"]["text"])
@@ -370,14 +370,17 @@ def approve(project, ident, signature, now=None):
     return {"id": ident, "signed_by": who}
 
 
-def decide(project, ident, how, actor, now=None):
+def decide(project, ident, how, actor, now=None, *, revision=None, reason=None):
     """how: ``reject`` (before or after approval) or ``cancel`` (the proposer withdraws). Neither works once written."""
     now = time.time() if now is None else now
     _need(how in ("rejected", "cancelled"), "decision_invalid")
+    _need(reason is None or (isinstance(reason, str) and 0 < len(reason.strip()) <= 500
+                            and len(reason) <= 500 and all(ord(c) >= 32 and ord(c) != 127 for c in reason)), "reason_invalid")
     with _Locked(project) as lock:
-        row = _get(fold(lock.events()), ident)
+        row = _get(fold(lock.events()), ident, revision)
         _need(row["status"] in ("proposed", "approved"), "packet_not_open")
-        lock.append(how, now, id=ident, revision=row["revision"], actor=_actor(actor))
+        lock.append(how, now, id=ident, revision=row["revision"], actor=_actor(actor),
+                    **({"reason": reason} if reason is not None else {}))
     return {"id": ident, "result": how}
 
 
