@@ -681,3 +681,79 @@ class StaticAndCliTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SendPanelTests(ServerCase):
+    """The Approve and send control and POST /send refusals. Nothing here reaches a mailbox or SMTP."""
+
+    def setUp(self):
+        super().setUp()
+        ident = self.draft_row["id"]
+        self.sig = self.signer.sign(aq.approval_payload(self.project, ident))
+        aq.approve(self.project, ident, {"kind": "ssh", "signature": self.sig})
+        rev = self.row()["revision"]
+        path = self.project / "approvals" / "mail-drafts.jsonl"
+        path.write_text(json.dumps({"schema": md.SCHEMA, "queue_id": ident, "revision": rev, "state": "placed",
+                                    "message_id": "<rec-x@c.example>", "folder": "Drafts", "fingerprint": "f" * 64,
+                                    "threaded": True, "thread_reason": None, "at": "2026-11-05T00:00:00Z"}) + "\n")
+        path.chmod(0o600)
+        private = Path(self.tmp.name) / "private"
+        private.mkdir(mode=0o700)
+        self.send = private / "send.json"
+        self.send.write_text(json.dumps({
+            "enabled": True, "smtp_host": "smtp.example.invalid", "smtp_user": "u", "smtp_password_file": "/nope",
+            "imap_config": "/nope", "outbox_path": str(Path(self.tmp.name) / "outbox" / "outbox.sqlite")}))
+        self.send.chmod(0o600)
+        self.stop = self.project / "approvals" / "SEND-STOP"
+        self.stop.write_text("")
+        self.stop.chmod(0o600)
+
+    def page(self, server):
+        return Http(server.server_address[1]).send("GET", "/", headers={"Content-Length": None,
+                                                                        "Content-Type": None})[2]
+
+    def fields(self, server, **over):
+        base = {"csrf_token": server.csrf_token, "id": self.draft_row["id"], "fingerprint": "f" * 64,
+                "signature": "sig", "to": "", "confirm": ""}
+        base.update(over)
+        return base
+
+    def test_button_is_disabled_with_the_reason_while_the_kill_file_exists(self):
+        server = self.start(send_config=str(self.send))
+        page = self.page(server)
+        self.assertIn("<button type=\"button\" disabled>Approve and send</button>", page)
+        self.assertIn("The kill switch file is present", page)
+        self.assertNotIn('action="/send"', page)
+        status, _, body = Http(server.server_address[1]).post("/send", self.fields(server))
+        self.assertEqual(status, 409)
+        self.assertIn("kill_switch", body)
+        status, _, body = Http(server.server_address[1]).send("GET", "/send?id=" + self.draft_row["id"], headers={
+            "Content-Length": None, "Content-Type": None})
+        self.assertIn("Not sendable: kill_switch", body)
+
+    def test_button_appears_only_when_on_and_never_in_a_static_snapshot(self):
+        self.stop.unlink()
+        server = self.start(send_config=str(self.send))
+        page = self.page(server)
+        self.assertIn('<form method="get" action="/send">', page)
+        self.assertEqual(page.count('action="/send"'), 1)  # one draft, one button; no send-all
+        self.assertNotIn("Approve and send", ap.render_dashboard(self.load(send_config=str(self.send))))
+        plain = self.start()
+        self.assertNotIn("Approve and send", self.page(plain))
+
+    def test_post_send_is_strict_and_needs_a_configured_console(self):
+        server = self.start(send_config=str(self.send))
+        http = Http(server.server_address[1])
+        self.assertEqual(http.post("/send", self.fields(server, csrf_token="wrong"))[0], 403)
+        short = self.fields(server)
+        del short["confirm"]
+        self.assertEqual(http.post("/send", short)[0], 400)
+        self.assertEqual(http.post("/send", dict(self.fields(server), extra="1"))[0], 400)
+        self.assertEqual(http.post("/send", self.fields(server, id="zz"))[0], 400)
+        self.assertEqual(http.post("/send", self.fields(server), headers={"Origin": "http://evil.example"})[0], 403)
+        plain = self.start()
+        self.assertEqual(Http(plain.server_address[1]).post("/send", self.fields(plain))[0], 404)
+        self.assertEqual(Http(plain.server_address[1]).send("GET", "/send?id=" + self.draft_row["id"], headers={
+            "Content-Length": None, "Content-Type": None})[0], 404)
+        # none of the strict refusals reached the send path, so nothing was logged
+        self.assertFalse((self.project / "approvals" / "mail-send.jsonl").exists())
