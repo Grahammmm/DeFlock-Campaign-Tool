@@ -109,7 +109,7 @@ def result(status, counts, error_code=None, **extra):
     out = {"stage_result_version": 1, "status": status,
            "counts": {key: int(counts.get(key, 0)) for key in ("input", "output", "failed", "skipped")},
            "error_code": error_code}
-    for key in ("new_data", "review_required", "needs_g", "outcomes"):
+    for key in ("new_data", "review_required", "needs_g", "outcomes", "arrival_summary"):
         if extra.get(key):
             out[key] = extra[key]
     return out
@@ -986,6 +986,14 @@ def stage_outputs(args):
         raise
     except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
         warning = "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE"
+    # Shadow-only model advice (REC-H2O-1): off unless the campaign enables it; never changes another output.
+    try:
+        from .model_advice import write_run_model_advice
+        write_run_model_advice(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
+        warning = warning or "OUTPUTS_MODEL_ADVICE_UNAVAILABLE"
     # The additive register must never suppress the counts snapshot or the digest.
     try:
         from .outcomes.register import write_for_run
@@ -1056,6 +1064,38 @@ def stage_outputs(args):
 HANDLERS = {"sync": stage_sync, "delta": stage_delta, "adoption": stage_adoption,
             "portal": stage_portal, "extract": stage_extract,
             "digest_gates": stage_digest_gates, "outputs": stage_outputs}
+
+
+def arrival_run():
+    """True only for an arrival-triggered run (the orchestrator exports its validated trigger)."""
+    return os.environ.get("RECORDS_RUN_TRIGGER") == "arrival"
+
+
+def arrival_baseline(args):
+    """REC-AUTO-6: first thing in sync, before any intake: remember which originals already exist."""
+    if not arrival_run():
+        return
+    from . import arrival_summary
+    try:
+        arrival_summary.capture_baseline(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - the run goes on; counts then read as unavailable
+        pass
+
+
+def arrival_projection(args, line):
+    """REC-AUTO-6: attach the metadata-only arrival summary to a finished outputs result."""
+    if not arrival_run() or line.get("status") not in ("ok", "warn"):
+        return line
+    from . import arrival_summary
+    try:
+        line["arrival_summary"] = arrival_summary.summarize(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - a summary failure never changes the stage outcome
+        pass
+    return line
 
 
 def parser():
@@ -1157,7 +1197,11 @@ def main(argv=None):
     signal.signal(signal.SIGALRM, on_alarm)
     signal.alarm(args.timeout)
     try:
+        if args.stage == "sync":
+            arrival_baseline(args)
         line, code = HANDLERS[args.stage](args)
+        if args.stage == "outputs":
+            line = arrival_projection(args, line)
     except StageTimeout:
         line, code = result("fail", {"failed": 1}, "STAGE_CONTAINER_TIMEOUT"), 1
     except Exception:  # noqa: BLE001 - never print exception text (may hold private values)

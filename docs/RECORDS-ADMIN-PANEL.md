@@ -67,3 +67,7 @@ deterministic output.
 
 Unknown draft 404, invalid transition 409, missing/invalid signature 403, malformed source 503; failed requests append
 nothing and reflect no input.
+
+## Next steps
+
+The `/next-steps` page lists recommended social, site and follow-up drafts with Approve and Deny; see [RECORDS-NEXT-STEPS.md](RECORDS-NEXT-STEPS.md). Static `--render` includes the same sections without forms.

@@ -1,0 +1,13 @@
+{"schema": "records-followup-case-v1",
+ "agency": {"id": "arroyo-grande-pd", "name": "Arroyo Grande Police Department"},
+ "request_id": "26-139", "request_date": "2026-07-30", "response_date": "2026-09-15",
+ "response_type": "no_records", "contact": "Mr. Matson", "sender": "DeFlock SLO Records Project",
+ "subject": "Request 26-139: search of the hosted ALPR system and the vendor agreement",
+ "policy": {"policy_id": "Policy 461", "section": "461.5(c)"},
+ "asks": [
+  {"ask_id": "a-vendor", "number": 7, "text": "The vendor agreement and incorporated documents", "rating": "no_records_stated"},
+  {"ask_id": "a-sharing", "number": 4, "text": "The data-sharing list, outbound and inbound", "rating": "no_records_stated"},
+  {"ask_id": "a-audits", "number": 3, "text": "Completed audits of ALPR use", "rating": "no_records_stated"},
+  {"ask_id": "a-logs", "number": 2, "text": "Access and search logs for 1 January to 30 June 2026", "rating": "no_records_stated"},
+  {"ask_id": "a-policy", "number": 1, "text": "The current ALPR policy", "rating": "answered", "produced": [{"file": "Policy 461.pdf", "page": 1}]}
+ ]}

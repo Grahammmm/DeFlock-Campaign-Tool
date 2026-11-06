@@ -19,7 +19,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, run_report, schedule
+from . import approval_queue, console_documents, draft_templates, mail_drafts, run_report, schedule
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -31,6 +31,11 @@ ROW_LIMIT = 500
 STAGE_LIMIT = 20000
 SOCKET_TIMEOUT = 10
 DEFAULT_TIMERS = ("records-run.timer",)
+RETURNS = ("/", "/next-steps")  # the only places a decision may send the browser back to
+NEXT_SECTIONS = (("social", "Draft social media post", "next-social-post", "approved-to-publish"),
+                 ("site", "Proposed website update (diff)", "next-site-update", "approved-to-publish"),
+                 ("followup", "Follow-up to the agency (probe)", "next-followup-probe", "approved-to-send"))
+NEXT_CAVEAT = "Approving records your decision on this draft only. Nothing is posted, published, edited or sent."
 SECTIONS = (("mail", "Inbox: mail received"), ("documents", "Documents"), ("stages", "Stage status and run health"),
             ("findings", "Findings"), ("deadlines", "Deadlines"), ("drafts", "Drafts"))
 # Upstream codes are content-free; only these are ever shown.
@@ -228,6 +233,15 @@ def _load_queue(project):
     return {"state": "ok", "drafts": drafts}
 
 
+def _load_mail_drafts(project):
+    try:
+        return {"state": "ok", "rows": mail_drafts.placements(project)}
+    except mail_drafts.MailDraftError as error:
+        return _diag(error.code)
+    except OSError:
+        return _diag("journal_io")
+
+
 def _timer_state(unit):
     try:
         done = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True, timeout=3)
@@ -291,6 +305,7 @@ def load_dashboard(project, run_id, *, run_report_path=None, kit_root=None, as_o
              "ledger": _load_ledger(processing / "ledger.sqlite"),
              "report": _load_report(run_report_path, run_id), "received": _load_received(project, run_id),
              "kit": _load_kit(kit_root, day), "queue": _load_queue(project),
+             "mail_drafts": _load_mail_drafts(project),
              "health": _load_health(processing, now),
              "system": _load_system(project, timers) if system else None}
     return model
@@ -476,10 +491,114 @@ def _deadlines_section(model):
     return "".join(out)
 
 
-def _form(action, token, ident, label, field_html, button):
+def _form(action, token, ident, label, field_html, button, back=None):
+    ret = '<input type="hidden" name="return" value="%s">' % esc(back) if back else ""
     return ('<form method="post" action="%s"><input type="hidden" name="csrf_token" value="%s">'
-            '<input type="hidden" name="id" value="%s">%s<button type="submit">%s</button></form>'
-            % (esc(action), esc(token), esc(ident), field_html, esc(button)))
+            '<input type="hidden" name="id" value="%s">%s%s<button type="submit">%s</button></form>'
+            % (esc(action), esc(token), esc(ident), ret, field_html, esc(button)))
+
+
+def _next_label(d, approved_word):
+    return {"pending": "proposed", "approved": approved_word, "rejected": "denied"}.get(d["status"], d["status"])
+
+
+def _next_row(d, approved_word, token, project_live):
+    i = esc(d["id"])
+    request = d["request_id"] if d["request_id"] != "agency-wide" else "agency-wide"
+    ev = d.get("evidence") if isinstance(d.get("evidence"), dict) else {}
+    out = ['<article class="draft" aria-label="Next step %s"><h3>%s, request: %s</h3>' % (i[:12], esc(d["agency_id"]), esc(request))]
+    out.append("<dl><dt>Status</dt><dd>%s</dd><dt>Why recommended</dt><dd>%s</dd><dt>Wording</dt><dd>%s</dd>" % (
+        esc(_next_label(d, approved_word)), esc(_text(ev.get("why"), 400)),
+        esc("Template draft" if ev.get("wording") == "template" else "Draft: model-assisted wording, review required")))
+    if d.get("reason"):
+        out.append("<dt>Denial reason</dt><dd>%s</dd>" % esc(d["reason"]))
+    if d.get("approved_by"):
+        out.append("<dt>Decided by</dt><dd>%s at %s</dd>" % (esc(d["approved_by"]), esc(d["updated_at"])))
+    elif d["status"] == "rejected":
+        out.append("<dt>Decided by</dt><dd>%s at %s</dd>" % (esc(d["actor"]), esc(d["updated_at"])))
+    out.append("<dt>Source finding(s)</dt><dd>")
+    for p in ev.get("proposals") or []:
+        if isinstance(p, dict):
+            out.append("<p>%s on page %s, record %s: <q>%s</q></p>" % (esc(_text(p.get("type"), 40)), esc(p.get("page")),
+                                                                        esc(_text(p.get("item_id"), 80)),
+                                                                        esc(_text(p.get("quote"), 600))))
+    out.append("</dd><dt>Text</dt><dd><pre>%s</pre></dd></dl>" % esc(d["body"]))
+    if project_live and d["status"] == "pending":
+        out.append("<p>%s</p>" % esc(NEXT_CAVEAT))
+        if d.get("payload") is not None:
+            out.append("<p>To approve, sign this exact payload with the approver key "
+                       "(<code>ssh-keygen -Y sign -n deflock-approval</code>) and paste the signature.</p><pre>%s</pre>"
+                       % esc(d["payload"]))
+            out.append(_form("/approvals/approve", token, d["id"], "", (
+                '<label for="sig-%s">Detached SSH signature</label><textarea id="sig-%s" name="signature" rows="6" '
+                'required></textarea>' % (i[:12], i[:12])), "Approve (%s only)" % approved_word, "/next-steps"))
+        out.append(_form("/approvals/reject", token, d["id"], "", (
+            '<label for="rej-%s">Denial reason (required)</label><input type="text" id="rej-%s" name="reason" '
+            'required maxlength="2000">' % (i[:12], i[:12])), "Deny", "/next-steps"))
+    out.append("</article>")
+    return "".join(out)
+
+
+def _next_sections(model, token):
+    """The three Next Steps sections (stable ids social, site, followup) from the queue's current rows."""
+    q = model["queue"]
+    out = ["<p>%s</p>" % esc(NEXT_CAVEAT), _source_note("Approval queue", q)]
+    if q["state"] != "ok":
+        return "".join(out)
+    for ident, title, kind, approved_word in NEXT_SECTIONS:
+        rows = [d for d in q["drafts"] if d["kind"] == kind][:ROW_LIMIT]
+        out.append('<section id="%s"><h2>%s</h2>' % (ident, esc(title)))
+        out.append("".join(_next_row(d, approved_word, token, token is not None) for d in rows)
+                   or "<p>No recommendations of this kind.</p>")
+        out.append("</section>")
+    return "".join(out)
+
+
+def render_next_steps(model, *, csrf_token=None):
+    """Next Steps page. csrf_token=None renders the static, non-actionable snapshot (no forms, no token)."""
+    mode = ("Live: a decision is recorded only; nothing is sent or published." if csrf_token is not None
+            else "Static snapshot — decisions unavailable")
+    return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            '<meta name="robots" content="noindex,nofollow"><title>Next steps</title><style>' + STYLE + "</style></head><body><header>"
+            '<p class="notice">' + esc(BANNER) + '</p><h1>Next steps</h1><p class="notice">' + esc(mode) + "</p>"
+            '<nav aria-label="Pages"><a href="/">Dashboard</a></nav></header><main id="content">'
+            + _next_sections(model, csrf_token) + '</main><footer><p class="notice">' + esc(BANNER)
+            + "</p></footer></body></html>\n")
+
+
+def _mailbox_cell(model, d):
+    """Mailbox state of one draft from the placement journal. Nothing here sends or contacts a server."""
+    mb = model.get("mail_drafts")
+    if mb is None:
+        return ""
+    if mb.get("state") != "ok":
+        return "<dt>Mailbox</dt><dd>Placement state unavailable: %s</dd>" % esc(mb.get("code", "unknown"))
+    mine = {r["revision"]: r for r in mb["rows"] if r["queue_id"] == d["id"]}
+    now = mine.get(d["revision"])
+    if d["status"] != "approved":
+        earlier = [r for r in mine.values() if r["state"] in ("placed", "found_existing")]
+        if not earlier:
+            return ""
+        return ("<dt>Mailbox</dt><dd>Earlier revision %s is in Drafts; the edited text is not placed until it is "
+                "approved. Draft only. Nothing has been sent.</dd>" % esc(max(r["revision"] for r in earlier)))
+    lines = []
+    if now is None:
+        lines.append("Not placed yet")
+    elif now["state"] == "failed":
+        lines.append("Placement failed: %s" % esc(now.get("code", "unknown")))
+    else:
+        mid = str(now.get("message_id") or "")
+        lines.append("In Drafts (%s)" % ("threaded" if now.get("threaded")
+                                         else "not threaded: " + esc(now.get("thread_reason") or "thread_not_found")))
+        lines.append('<a href="mid:%s">open by Message-ID</a> <code>%s</code>' % (
+            esc(urllib.parse.quote(mid.strip("<>"), safe="@")), esc(mid)))
+        lines.append("Text fingerprint <code>%s</code>" % esc(now.get("fingerprint") or ""))
+    for r in sorted(mine.values(), key=lambda r: r["revision"]):
+        if r["state"] == "superseded":
+            lines.append("Revision %s superseded by revision %s" % (esc(r["revision"]), esc(r.get("superseded_by"))))
+    lines.append("Draft only. Nothing has been sent.")
+    return "<dt>Mailbox</dt><dd>%s</dd>" % "<br>".join(lines)
 
 
 def _drafts_section(model, token):
@@ -505,6 +624,7 @@ def _drafts_section(model, token):
             out.append("<dt>Rejection reason</dt><dd>%s</dd>" % esc(d["reason"]))
         if d.get("approved_by"):
             out.append("<dt>Approved by</dt><dd>%s</dd>" % esc(d["approved_by"]))
+        out.append(_mailbox_cell(model, d))
         out.append("<dt>Text</dt><dd><pre>%s</pre></dd></dl>" % esc(d["body"]))
         if live and d["status"] == "pending":
             pid = "sig-" + i[:12]
@@ -543,11 +663,14 @@ def render_dashboard(model, *, csrf_token=None):
            "separate sources.</p>" % (esc(model["run_id"]), esc(model["captured_at"]), esc(model["as_of"])),
            '<nav aria-label="Dashboard sections">']
     out += ['<a href="#%s">%s</a>' % (i, esc(t)) for i, t in SECTIONS]
+    out.append('<a href="/next-steps">Next steps</a>' if live else '<a href="#social">Next steps</a>')
     out.append('</nav></header><main id="content" tabindex="-1">')
     if not model["run_outputs_present"]:
         out.append('<p class="diag" role="status">Selected run outputs unavailable (run_outputs_missing).</p>')
     for ident, title in SECTIONS:
         out.append('<section id="%s"><h2>%s</h2>%s</section>' % (ident, esc(title), sections[ident]))
+    if not live:
+        out.append(_next_sections(model, None))
     out.append('</main><footer><p class="notice">' + esc(BANNER) + "</p></footer></body></html>")
     return "\n".join(out) + "\n"
 
@@ -609,6 +732,18 @@ SECURITY = (("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff")
                                         "base-uri 'none'; frame-ancestors 'none'"))
 
 
+def _place_after_approve(project, config_path, ident):
+    """Draft-only placement of the one approved row. A failure is journaled and shown; it never undoes the approval."""
+    try:
+        mail_drafts.place(project, mail_drafts.load_config(config_path), only_id=ident)
+    except Exception as error:  # nothing here may break the approval that already happened
+        code = error.code if isinstance(error, mail_drafts.MailDraftError) else "placement_failed"
+        try:
+            mail_drafts.record_failure(project, ident, code)
+        except Exception:
+            pass
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     server_version = "RecordsPanel"
     sys_version = ""
@@ -644,13 +779,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._host_ok():
             return self._fail(403)
-        if self.path.split("?", 1)[0] != "/":
+        if console_documents.serve(self):  # Screen C
+            return
+        route = self.path.split("?", 1)[0]
+        if route not in RETURNS:
             return self._fail(404)
         try:
-            model = load_dashboard(**self.server.options)
+            if route == "/next-steps":
+                model = {"queue": _load_queue(self.server.options["project"])}
+            else:
+                model = load_dashboard(**self.server.options)
         except PanelError:
             return self._fail(503)
-        self._send(200, render_dashboard(model, csrf_token=self.server.csrf_token))
+        render = render_next_steps if route == "/next-steps" else render_dashboard
+        self._send(200, render(model, csrf_token=self.server.csrf_token))
 
     def _refuse_method(self):
         self._fail(405)
@@ -701,10 +843,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if isinstance(fields, int):
             return self._fail(fields)
         action, names = route
+        back = fields.pop("return", "/")  # optional; it only chooses the 303 target
         if set(fields) != set(names):
             return self._fail(400)
         if not hmac.compare_digest(fields["csrf_token"].encode("utf-8"), self.server.csrf_token.encode("ascii")):
             return self._fail(403)
+        if back not in RETURNS:
+            return self._fail(400)
         ident = fields["id"]
         if not DRAFT_ID.fullmatch(ident):
             return self._fail(400)
@@ -712,10 +857,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not value.strip():
             return self._fail(400)
         project, actor = self.server.options["project"], self.server.actor
+        hook = False
         try:
             if action == "approve":
                 approval_queue.approve(project, ident, {"kind": "ssh", "signature": value})
                 expected = {"approved"}
+                hook = True
             elif action == "reject":
                 approval_queue.reject(project, ident, actor, value)
                 expected = {"rejected"}
@@ -729,11 +876,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(503)
         if rows.get(ident, {}).get("status") not in expected:  # never claim success from a return value alone
             return self._fail(503)
-        self._send(303, "", location="/")
+        if hook and self.server.mail_drafts_config and rows[ident].get("kind") not in draft_templates.NEXT_STEP_KINDS:
+            _place_after_approve(project, self.server.mail_drafts_config, ident)
+        self._send(303, "", location=back)
 
 
 def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
-                 timers=DEFAULT_TIMERS, system=True):
+                 timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None):
     """Unstarted loopback-only server; the caller serves and closes it."""
     check_run_id(run_id)
     check_actor(actor)
@@ -743,6 +892,7 @@ def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_ro
     server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
     server.csrf_token = secrets.token_urlsafe(32)
     server.actor = actor
+    server.mail_drafts_config = mail_drafts_config
     server.options = {"project": os.path.abspath(project), "run_id": run_id, "run_report_path": run_report_path,
                       "kit_root": kit_root, "as_of": as_of, "timers": tuple(timers), "system": system}
     return server
@@ -764,6 +914,8 @@ def main(argv=None):
     parser.add_argument("--render", metavar="OUT.html", help="write a static, non-actionable snapshot and exit")
     parser.add_argument("--timer-unit", action="append", help="systemd user timer to report (repeatable)")
     parser.add_argument("--no-system", action="store_true", help="skip timer and disk checks")
+    parser.add_argument("--mail-drafts-config", metavar="FILE",
+                        help="owner-only mailbox config: after Approve, place that one draft in the Drafts folder")
     args = parser.parse_args(argv)
     timers = tuple(args.timer_unit) if args.timer_unit else DEFAULT_TIMERS
     try:
@@ -780,11 +932,16 @@ def main(argv=None):
             return 0
         if not args.actor:
             raise PanelError("actor_required")
+        if args.mail_drafts_config:
+            try:
+                mail_drafts.load_config(args.mail_drafts_config)
+            except mail_drafts.MailDraftError:
+                raise PanelError("mail_drafts_config_invalid") from None
         if not 1 <= args.port <= 65535:
             raise PanelError("port_invalid")
         server = build_server(args.project, args.run_id, actor=args.actor, port=args.port,
                               run_report_path=args.run_report, kit_root=args.kit_root, as_of=args.as_of,
-                              timers=timers, system=not args.no_system)
+                              timers=timers, system=not args.no_system, mail_drafts_config=args.mail_drafts_config)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required")) else 1
