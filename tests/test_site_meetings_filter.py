@@ -25,8 +25,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 TODAY = date(2026, 11, 1)
 AGENCY = "ca-cedar-city-council"
-# Digest of every public file captured from detached main d2470763 (fixed-date fixtures below); mixed drops the two
-# files this feature may change. Recapture from a new main, never from this feature's output.
+# Digest of every public file on main d2470763 (fixed-date fixtures below), captured in an independent detached
+# worktree after DF1622-09 merged; mixed still drops only the two filter files. Recapture from main, not this PR.
 ROOTS = {"empty": "f174f11766b31f1fe42b6a22d9c0d308f75e0df6c38e45a7b1e6f83c8d1dbe30",  # pragma: allowlist secret
          "one-body": "f2a31292279262074fe50e447814b147ea78744d8b310a71165c39e74cdbcfd0",  # pragma: allowlist secret
          "mixed": "0b9321d1445080e45c9887d5af413fe7d7c4da1c352dbba7ada7c615bbbf5292"}  # pragma: allowlist secret
