@@ -380,6 +380,15 @@ def kill(project, actor, now=None):
         return _retract_waiting(lock, now, "kill", actor)
 
 
+def _observe_kill(lock, now):
+    """A kill file seen by ``advance`` (made by hand): persist a killed switch event and disable the switch file,
+    so deleting the kill file later leaves the switch OFF until a fresh signed ON."""
+    if (fold(lock.events())[1] or {}).get("state") != "killed":
+        lock.append("switch", now, state="killed", actor="system")
+    _replace(lock.path(SWITCH), b'{"enabled": false}\n')
+    return _retract_waiting(lock, now, "kill", "system")
+
+
 def _retract_waiting(lock, now, reason, actor):
     lines, _, _ = fold(lock.events())
     gone = [row["id"] for row in lines.values() if row["state"] in ("proposed", "holding")]
@@ -433,7 +442,7 @@ def advance(project, now=None):
     with _Locked(project) as lock:
         state = result["state"] = _switch_state(lock, lock.events())
         if state == "KILLED":
-            result["retracted"] = _retract_waiting(lock, now, "kill", "system")
+            result["retracted"] = _observe_kill(lock, now)
             return result
         if state != "ON":
             return result
@@ -445,7 +454,7 @@ def advance(project, now=None):
             if row["state"] != "holding" or row["hold_until"] > now:
                 continue
             if os.path.lexists(lock.path(KILL)):  # checked before every post
-                result["retracted"] += _retract_waiting(lock, now, "kill", "system")
+                result["retracted"] += _observe_kill(lock, now)
                 result["state"] = "KILLED"
                 break
             posted = [r for r in fold(lock.events())[0].values()
