@@ -107,6 +107,36 @@ class BaselineTests(unittest.TestCase):
             summary.load_baseline(self.project, RUN)
 
 
+    def test_symlinked_ancestors_are_unavailable_without_traversal(self):
+        outside = Path(self.tmp.name) / "outside"
+        outside.mkdir()
+        # symlinked run-outputs/<run> directory
+        (outside / "arrival-baseline.json").write_text("{}")
+        runs = self.project / "run-outputs"
+        runs.mkdir()
+        (runs / RUN).symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(summary.ArrivalSummaryError):
+            summary.load_baseline(self.project, RUN)
+        with self.assertRaises(summary.ArrivalSummaryError):
+            summary.capture_baseline(self.project, RUN)
+        self.assertEqual(sorted(p.name for p in outside.iterdir()), ["arrival-baseline.json"])
+
+    def test_symlinked_outcomes_dir_is_unavailable(self):
+        summary.capture_baseline(self.project, RUN)
+        outside = Path(self.tmp.name) / "outside2"
+        outside.mkdir()
+        (self.project / "run-outputs" / RUN / "outcomes").symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(summary.ArrivalSummaryError):
+            summary.new_counts(self.project, RUN)
+
+    def test_symlinked_processing_dir_is_not_an_empty_root(self):
+        outside = Path(self.tmp.name) / "outside3"
+        outside.mkdir()
+        (self.project / "processing-v1").symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(summary.ArrivalSummaryError):
+            summary.capture_baseline(self.project, RUN)
+
+
 class CountTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
