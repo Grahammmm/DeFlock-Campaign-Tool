@@ -519,7 +519,7 @@ _MODULES = {
     "records pipeline: ledger, objects, review queues, runner state; listed unknown at runtime": """
         records.admin_panel records.agency_reconciliation records.approval_queue records.arrival records.bounded_resume records.catalog records.catalog_links
         records.catalog_stage records.contained_resume records.container_host records.export_clearance
-        records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes
+        records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes records.first_request
         records.gates.batch_report records.gates.collect_reviews records.gates.reconcile_coverage
         records.gates.safe_output records.gates.validate_findings records.intake.document_drop
         records.intake.eml_export records.intake.folder records.intake.local_capture records.intake.mail_delta
@@ -616,6 +616,7 @@ MODULE_FUNCTIONS = {
         'postrun_entry'
     ),
     'records.export_clearance': ('clearance',),
+    'records.first_request': ('main',),  # prints a draft to stdout; --queue appends only via the approval journal
     'records.extract.ocr': (
         '_hold', '_index', '_link_new', '_page_lock', '_prune_unrecorded', '_publish_blocked_disposition',
         '_reconcile_page', '_write_new', 'extract_image_only_pages'
