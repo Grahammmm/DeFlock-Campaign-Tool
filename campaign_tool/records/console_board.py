@@ -23,7 +23,7 @@ FILTERS = {"all": "All", "overdue": "Overdue", "waiting": "Waiting on agency", "
 OURS = ("G", "coordinator")
 CONTACT_SOURCES = ("received_item", "outbox_receipt", "manual")
 # Drafts are ours; a promised date is a date the agency stated, not a contact on that day.
-NOT_CONTACT = ("draft", "promised date")
+NOT_CONTACT = ("draft", "promised date", "hand note")
 EXPIRING_DAYS = 14
 LABEL = "Private; review required. Overdue marks are arithmetic on our records, not a legal finding."
 
@@ -288,6 +288,7 @@ def render_agency(model, agency):
             out.append("<h3>Asked items</h3><ul>%s</ul>" % "".join(
                 "<li>tier %s %s &mdash; %s: %s</li>" % (esc(a["tier"] or "-"), esc(a["tier_name"] or ""), esc(a["state"]),
                                                        esc((a["text"] or "")[:200])) for a in v["asks"]))
+        out.append('<p><a href="/manual-event?%s">Add manual event</a></p>' % esc(urllib.parse.urlencode({"agency": agency, "request": v["request_id"]})))
         out.append("<h3>Events, oldest first</h3>")
         if not v["events"]:
             out.append("<p>None recorded.</p>")
