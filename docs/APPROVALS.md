@@ -199,3 +199,11 @@ there is no SMTP call in `campaign_tool/records/mail_drafts.py`. Sending is a se
 - If the text is edited and approved again, the new revision is placed as a new draft and the older
   placement is marked `superseded` in the journal and on the page. The code never deletes, flags or moves
   mailbox messages, so remove the superseded draft in the mail client.
+
+## Records console: Approve and send
+
+A records draft goes queue-approved (REC-AUTO-4 signature), is placed in the Drafts mailbox (REC-SEND-1), and is sent
+only by a separate click on the console with a **second**, outbox-specific signature (`ssh-keygen -Y sign -n
+deflock-approval` over the payload the send page shows). The two signatures are not interchangeable. See the
+"Records console send path" section of `docs/OUTBOX.md` for the switches (shipped off, kill file present), the daily
+cap, the fingerprint check and the log. Start the console with `--send-config FILE` to show the button at all.

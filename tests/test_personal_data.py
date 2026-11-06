@@ -525,7 +525,7 @@ _MODULES = {
         records.intake.eml_export records.intake.folder records.intake.local_capture records.intake.mail_delta
         records.intake.mail_wire records.intake.repair_intake records.intake.scope_quarantine
         records.ledger.reconcile records.ledger.store records.ledger_catalog records.ledger_catalog_acceptance
-        records.legacy_adoption records.mail_adoption records.mail_drafts records.mail_poll records.mail_resolution_census records.model_advice
+        records.legacy_adoption records.mail_adoption records.mail_drafts records.mail_poll records.mail_send records.mail_resolution_census records.model_advice
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
         records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register
         records.outcomes.textstate records.pipeline_health records.portal.download records.portal.engine records.portal.ledger_adapter
@@ -652,6 +652,7 @@ MODULE_FUNCTIONS = {
     'records.legacy_adoption': ('apply_batch', 'main', 'write_proposal',),
     'records.mail_adoption': ('_snapshot_db',),
     'records.mail_drafts': ('_Journal.append',),  # approvals/mail-drafts.jsonl placement journal, 0600 append-only; sends nothing
+    'records.mail_send': ('_Dir.append', 'init',),  # approvals/mail-send.jsonl attempt log + send.json/SEND-STOP at setup; 0600, owner-only
     'records.mail_poll': ('_write_once', 'poll',),
     'records.mail_resolution_census': ('inventory',),
     'records.native_extract': ('_write_private', 'run', 'write_awaiting_ocr', 'write_failure_manifest', 'write_private_list',),

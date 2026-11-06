@@ -1,4 +1,5 @@
-"""Private local records dashboard with draft decisions. Nothing here sends, publishes or runs anything.
+"""Private local records dashboard with draft decisions. Nothing here publishes or runs anything, and it sends
+only through the opt-in, switched-off-by-default Approve and send path in ``mail_send`` (``--send-config``).
 
 Read model over the canonical ledger, an explicit run report, one run's received items, an optional kit
 root and the approval queue; see docs/RECORDS-ADMIN-PANEL.md. Stdlib only, loopback only.
@@ -19,7 +20,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, console_documents, draft_templates, mail_drafts, run_report, schedule
+from . import approval_queue, console_documents, draft_templates, mail_drafts, mail_send, run_report, schedule
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -289,7 +290,7 @@ def check_run_id(run_id):
 
 
 def load_dashboard(project, run_id, *, run_report_path=None, kit_root=None, as_of=None, timers=DEFAULT_TIMERS,
-                   system=True):
+                   system=True, send_config=None):
     """Read-only. Every source fails independently; nothing is created or written."""
     check_run_id(run_id)
     now, day = parse_as_of(as_of)
@@ -306,6 +307,8 @@ def load_dashboard(project, run_id, *, run_report_path=None, kit_root=None, as_o
              "report": _load_report(run_report_path, run_id), "received": _load_received(project, run_id),
              "kit": _load_kit(kit_root, day), "queue": _load_queue(project),
              "mail_drafts": _load_mail_drafts(project),
+             "send": mail_send.switch_state(project, send_config, now=now) if send_config else None,
+             "mail_send": mail_send.results(project) if send_config else None,
              "health": _load_health(processing, now),
              "system": _load_system(project, timers) if system else None}
     return model
@@ -625,6 +628,7 @@ def _drafts_section(model, token):
         if d.get("approved_by"):
             out.append("<dt>Approved by</dt><dd>%s</dd>" % esc(d["approved_by"]))
         out.append(_mailbox_cell(model, d))
+        out.append(mail_send.send_cell(model, d, live))
         out.append("<dt>Text</dt><dd><pre>%s</pre></dd></dl>" % esc(d["body"]))
         if live and d["status"] == "pending":
             pid = "sig-" + i[:12]
@@ -727,6 +731,7 @@ def check_actor(actor):
 ROUTES = {"/approvals/approve": ("approve", ("csrf_token", "id", "signature")),
           "/approvals/reject": ("reject", ("csrf_token", "id", "reason")),
           "/approvals/edit": ("edit", ("csrf_token", "id", "body"))}
+SEND_ROUTE = ("send", ("csrf_token", "id", "fingerprint", "signature", "to", "confirm"))
 SECURITY = (("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"),
             ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
                                         "base-uri 'none'; frame-ancestors 'none'"))
@@ -781,7 +786,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(403)
         if console_documents.serve(self):  # Screen C
             return
-        route = self.path.split("?", 1)[0]
+        path, _, query = self.path.partition("?")
+        if path == "/send":
+            return self._prepare_send(query)
+        route = path
         if route not in RETURNS:
             return self._fail(404)
         try:
@@ -793,6 +801,32 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(503)
         render = render_next_steps if route == "/next-steps" else render_dashboard
         self._send(200, render(model, csrf_token=self.server.csrf_token))
+
+    def _prepare_send(self, query):
+        """Review page behind Approve and send: read-only, contacts the Drafts mailbox only when sending is on."""
+        path = self.server.options.get("send_config")
+        args = urllib.parse.parse_qs(query, keep_blank_values=True)
+        ident = (args.get("id") or [""])[0]
+        if path is None or not DRAFT_ID.fullmatch(ident) or len(args.get("to", [])) > 1:
+            return self._fail(404 if path is None else 400)
+        hooks = self.server.send_hooks
+        info = mail_send.prepare(self.server.options["project"], path, ident, to=(args.get("to") or [None])[0],
+                                 imap_factory=hooks.get("imap_factory", mail_send.mail_poll.default_connect))
+        if info["code"] == "recipient_missing":
+            return self._send(200, mail_send.render_need_to(ident))
+        self._send(200, mail_send.render_prepare(info, self.server.csrf_token))
+
+    def _post_send(self, fields):
+        path = self.server.options.get("send_config")
+        if path is None:
+            return self._fail(404)
+        hooks = self.server.send_hooks
+        result = mail_send.send_one(
+            self.server.options["project"], path, fields["id"], actor=self.server.actor,
+            page_fingerprint=fields["fingerprint"], signature=fields["signature"].replace("\r\n", "\n"),
+            to=fields["to"], confirm=fields["confirm"], imap_factory=hooks.get("imap_factory", mail_send.mail_poll.default_connect),
+            smtp_factory=hooks.get("smtp_factory"))
+        self._send(409 if result["state"] == "refused" else 200, mail_send.render_result(result))
 
     def _refuse_method(self):
         self._fail(405)
@@ -833,7 +867,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok():
             return self._fail(403)
-        route = ROUTES.get(self.path)
+        route = ROUTES.get(self.path) or (SEND_ROUTE if self.path == "/send" else None)
         if route is None:
             return self._fail(404)
         origins = self.headers.get_all("Origin") or []
@@ -853,6 +887,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         ident = fields["id"]
         if not DRAFT_ID.fullmatch(ident):
             return self._fail(400)
+        if action == "send":  # one message per POST; nothing else is read from the body
+            return self._post_send(fields)
         value = fields[names[2]].replace("\r\n", "\n")
         if not value.strip():
             return self._fail(400)
@@ -882,7 +918,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
-                 timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None):
+                 timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None):
     """Unstarted loopback-only server; the caller serves and closes it."""
     check_run_id(run_id)
     check_actor(actor)
@@ -893,8 +929,10 @@ def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_ro
     server.csrf_token = secrets.token_urlsafe(32)
     server.actor = actor
     server.mail_drafts_config = mail_drafts_config
+    server.send_hooks = {}  # tests inject imap_factory / smtp_factory; production uses the real ones
     server.options = {"project": os.path.abspath(project), "run_id": run_id, "run_report_path": run_report_path,
-                      "kit_root": kit_root, "as_of": as_of, "timers": tuple(timers), "system": system}
+                      "kit_root": kit_root, "as_of": as_of, "timers": tuple(timers), "system": system,
+                      "send_config": send_config}
     return server
 
 
@@ -916,6 +954,8 @@ def main(argv=None):
     parser.add_argument("--no-system", action="store_true", help="skip timer and disk checks")
     parser.add_argument("--mail-drafts-config", metavar="FILE",
                         help="owner-only mailbox config: after Approve, place that one draft in the Drafts folder")
+    parser.add_argument("--send-config", metavar="FILE",
+                        help="owner-only send.json: enables the Approve and send button (still off until enabled)")
     args = parser.parse_args(argv)
     timers = tuple(args.timer_unit) if args.timer_unit else DEFAULT_TIMERS
     try:
@@ -941,15 +981,17 @@ def main(argv=None):
             raise PanelError("port_invalid")
         server = build_server(args.project, args.run_id, actor=args.actor, port=args.port,
                               run_report_path=args.run_report, kit_root=args.kit_root, as_of=args.as_of,
-                              timers=timers, system=not args.no_system, mail_drafts_config=args.mail_drafts_config)
+                              timers=timers, system=not args.no_system, mail_drafts_config=args.mail_drafts_config,
+                              send_config=args.send_config)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required")) else 1
     except OSError:
         print("panel_start_failed", file=sys.stderr)
         return 1
-    print("Records dashboard on http://127.0.0.1:%d/ (loopback only). Nothing is sent." % server.server_address[1],
-          flush=True)
+    print("Records dashboard on http://127.0.0.1:%d/ (loopback only). %s" % (
+        server.server_address[1], "Approve and send is configured (off until enabled)." if args.send_config
+        else "Nothing is sent."), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
