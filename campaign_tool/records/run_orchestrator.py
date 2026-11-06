@@ -378,7 +378,7 @@ def _elapsed(started_at, finished_at):
 
 
 def build_report(run_id, mode, started_at, stages, new_data, review_required, needs_g, *, ocr=None, refusals=None,
-                 trigger=None, arrivals=None):
+                 trigger=None, arrivals=None, arrival_summary=None):
     finished_at = utc_now()
     report = {
         "schema_version": 1,
@@ -395,7 +395,8 @@ def build_report(run_id, mode, started_at, stages, new_data, review_required, ne
         "notify_failed": False,
         "needs_g": needs_g,
     }
-    report.update({k: dict(v) for k, v in (("ocr", ocr), ("refusals", refusals)) if v is not None})
+    report.update({k: dict(v) for k, v in (("ocr", ocr), ("refusals", refusals), ("arrival_summary", arrival_summary))
+                   if v is not None})
     if trigger is not None:
         report["trigger"] = trigger
         report["arrivals"] = [dict(item) for item in (arrivals or [])]
@@ -452,8 +453,13 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
     schema = load_stage_result_schema()
     env = dict(os.environ if env is None else env)
     env.update({"RECORDS_RUN_ID": run_id, "RECORDS_RUN_TARGET": config["target"]})
+    # Stages learn the validated trigger from here, never from their own arguments.
+    env.pop("RECORDS_RUN_TRIGGER", None)
+    if trigger is not None:
+        env["RECORDS_RUN_TRIGGER"] = trigger
     stages, new_data, needs_g = [], {}, {}
     extract_blocks = {}
+    arrival_summary = None
     review_required = 0
     blocked_by = None
     for entry in config["stages"]:
@@ -485,6 +491,8 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
         if result:
             if name == "extract":
                 extract_blocks = {k: result[k] for k in ("ocr", "refusals") if k in result}
+            if name == "outputs" and trigger == "arrival" and "arrival_summary" in result:
+                arrival_summary = result["arrival_summary"]
             for key, value in result.get("new_data", {}).items():
                 new_data[key] = new_data.get(key, 0) + value
             review_required += result.get("review_required", 0)
@@ -499,7 +507,8 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
             blocked_by = "UPSTREAM_FAILED"
     stages.append(pending_notify())
     report = build_report(run_id, mode, started_at, stages, new_data, review_required,
-                          list(needs_g.values()), trigger=trigger, arrivals=arrivals, **extract_blocks)
+                          list(needs_g.values()), trigger=trigger, arrivals=arrivals,
+                          arrival_summary=arrival_summary, **extract_blocks)
     atomic_write_json(report_path, report)
     return first_failed_exit(stages)
 
