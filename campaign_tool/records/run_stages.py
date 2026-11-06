@@ -1016,6 +1016,13 @@ def stage_outputs(args):
         raise
     except Exception:  # noqa: BLE001 - isolate rating errors; never expose private exception text
         warning = warning or "OUTPUTS_RESPONSE_ITEMS_UNAVAILABLE"
+    try:  # Per-run request timeline (REC-TL-1): own code; reads the files written above.
+        from .outcomes.timeline import write_run_timeline
+        write_run_timeline(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - isolate timeline errors; never expose private exception text
+        warning = warning or "OUTPUTS_TIMELINE_UNAVAILABLE"
     produced = 1
     if prepared_digest is not None:
         try:
