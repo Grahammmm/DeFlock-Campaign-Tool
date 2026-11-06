@@ -174,3 +174,27 @@ not send, lift agency/fee caps or reconcile uncertainty. An independently verifi
 not-delivered reconciliation needs a subsequent fresh approval. Do not alter the
 canonical key or request scope to escape an unresolved effect. The CLI's ordinary
 `approve` remains proposed-only; no approval, first or retry, accepts a typed name.
+
+## Records console send path (`records mail-send`, ships switched off)
+
+The records console can send **one** already-placed follow-up draft per click, through this outbox and `send_email`
+(`campaign_tool/records/mail_send.py`). Merging it sends nothing: `records mail-send init --project DIR ...` writes
+`approvals/send.json` with `"enabled": false` **and** creates the kill file `approvals/SEND-STOP`. Nothing in code ever
+removes a kill file; turning sending on is a manual act by G (set `enabled` true and delete the kill file). Any of
+`approvals/SEND-STOP`, `<project>/modes/RECORDS-SEND-STOP` or the `kill_file` named in `send.json` stops every send;
+the console then shows a disabled button with the reason.
+
+Per click, in order: console POST (csrf, loopback) with the fingerprint the page showed; switches; the draft re-read
+from the Drafts mailbox read-only (SELECT readonly, SEARCH, FETCH BODY.PEEK) and compared byte for byte with the
+placement fingerprint; recipient (the thread's reply address, otherwise typed on the page; an address not on the
+thread and not in `agency_addresses` needs a typed confirmation); the daily cap (`daily_cap`, default 5, 1 to 20, per
+campaign per `America/Los_Angeles` day, on top of the outbox's one-per-agency-per-UTC-day cap); then
+`Outbox.propose`, `Outbox.approve` with G's *outbox* SSH signature over the exact payload shown (a queue signature, a
+typed name or an untrusted key is refused) and `Outbox.send`. The kill switch is checked before approval and again
+immediately before the send. An edited draft has a new revision and fingerprint, so it needs a new click.
+Every attempt, success or refusal, is one row of `approvals/mail-send.jsonl` (actor, UTC time, text fingerprint,
+approver, outbox key, message id, stable refusal code); it is the decision and audit record. After a send the draft
+stays in Drafts (this unit never writes to the mailbox); the console shows `Sent <time>` instead of the button.
+`AmbiguousFailure` leaves the outbox row in `sending`: the console says "delivery unknown", a second click refuses, and
+the operator runs `python3 -m campaign_tool.outbox --journal ... reconcile KEY delivered|not_delivered --by NAME`.
+There is no CLI send and no bulk send. Social posts and website updates are never sent here.
