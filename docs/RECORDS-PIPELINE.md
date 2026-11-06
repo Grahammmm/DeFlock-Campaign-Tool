@@ -117,3 +117,29 @@ detection, and supplemental positive-baseline tests with exact rejection reasons
 The original 23 gate tests remain byte-for-byte intact. CI installs the intake
 test requirements only when that separate slice is present. Final independent
 review and CI results are recorded on the PR, not implied by this description.
+
+## Model advice (shadow)
+
+A campaign may turn on advice from the local H2O model (`records model-advice`). It is **shadow only**: the
+answers are recorded beside the rules and nothing acts on them. No rule kind, draft, hold, deadline or ledger
+row changes because of a model answer, and nothing is sent, spent or published.
+
+- **Off by default.** Create `<project>/model-advice.json` (owner-only, mode 0600):
+  `{"enabled": true, "endpoint": "http://127.0.0.1:8091/v1/systemone", "timeout_seconds": 10}`. An absent file or
+  `enabled: false` means off. The endpoint must be plain `http` on `127.0.0.1`, `::1` or `localhost`.
+- **Questions** (`records-v1`, `h2o_questions.py`): document type, deadline stated, completeness, private
+  information present, urgency and follow-up needed. Per-page OCR routing and open-request matching are not asked.
+- **Thresholds.** An answer counts as confident only at p >= 0.90; a yes/no of exactly 0.801 or 0.199 (the
+  service's unsure floor) never does. Private information is flagged at P(true) >= 0.50 or 0.801. Below the
+  threshold the item is simply unsure and the rules stand.
+- **Long text** over 32,000 characters is asked in at most four chunks (document type and urgency per chunk, the
+  most severe answer kept).
+- **Fallback.** Service down, timeout, bad reply, refused endpoint or the 120 s run budget leave the item
+  `unavailable` with a code; the rules and drafts are exactly as without the feature. The stage reports a failure
+  of the feature itself only as the warning `OUTPUTS_MODEL_ADVICE_UNAVAILABLE`.
+- **Files** (per run, `outcomes/`, mode 0600, answers and probabilities only, no record text):
+  `model-advice.json` (`records-model-advice-v1`) and `model-advice-agreement.json` (rule kind against model
+  kind, agreement rate, private-information flags, possible deadlines, follow-up suggested against drafts present).
+  The agreement file is the input for the shadow measurement; no override rule is evaluated or enabled here.
+- `records model-advice run --project DIR --run-id ID` records advice for one run; `records model-advice health
+  --project DIR` checks the service through the same loopback rule. Neither installs or restarts anything.
