@@ -20,7 +20,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, console_board, console_documents, console_home, console_manual_events, console_oversight, draft_templates, mail_drafts, mail_send, run_report, schedule
+from . import approval_queue, console_board, console_documents, console_home, console_manual_events, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -784,6 +784,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._host_ok():
             return self._fail(403)
+        if console_packets.serve(self):
+            return
         if console_home.serve(self):
             return
         if console_manual_events.serve(self):
@@ -875,6 +877,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok():
             return self._fail(403)
+        if console_packets.post(self):
+            return
         if console_oversight.post(self):  # Screen F: Undo, OFF and kill only
             return
         route = ROUTES.get(self.path) or (SEND_ROUTE if self.path == "/send" else console_manual_events.ROUTE if self.path == "/manual-event" else None)

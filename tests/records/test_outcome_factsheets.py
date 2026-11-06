@@ -21,8 +21,8 @@ FIXTURE = Path(__file__).parent / "fixtures" / "outcome_factsheets" / "produced.
 
 class FactSheetsTests(unittest.TestCase):
     def setUp(self):
-        # Keep generated synthetic work inside this clone, outside frozen fixtures.
-        workspaces = Path(__file__).resolve().parents[2] / "build" / "outcome-factsheets" / "test-workspaces"
+        # Keep synthetic writes outside the clone's preservation snapshot.
+        workspaces = Path(tempfile.gettempdir()) / "outcome-factsheets" / "test-workspaces"
         workspaces.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(prefix="factsheets-", dir=workspaces)
         self.addCleanup(self.temp.cleanup)

@@ -90,7 +90,7 @@ def decision_rows(model, today):
             continue
         add(packet["id"], "site-update" if packet["kind"] == "site_update" else "packet", packet["kind"],
             packet["agency_key"], packet["request_id"], "%s %s" % (packet["source"], packet["request_id"]),
-            packet["age_hours"], "/public-updates", "packets", packet["hours_to_expiry"])
+            packet["age_hours"], "/packets", "packets", packet["hours_to_expiry"])
 
     def urgency(row):
         overdue, hours, age = row["overdue_days"], row["hours_left"], row["age_hours"]
