@@ -19,7 +19,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, mail_drafts, run_report, schedule
+from . import approval_queue, draft_templates, mail_drafts, run_report, schedule
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -874,7 +874,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(503)
         if rows.get(ident, {}).get("status") not in expected:  # never claim success from a return value alone
             return self._fail(503)
-        if hook and self.server.mail_drafts_config:
+        if hook and self.server.mail_drafts_config and rows[ident].get("kind") not in draft_templates.NEXT_STEP_KINDS:
             _place_after_approve(project, self.server.mail_drafts_config, ident)
         self._send(303, "", location=back)
 

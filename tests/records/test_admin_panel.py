@@ -669,6 +669,19 @@ class MailboxPanelTests(ServerCase):
         self.assertEqual(self.appended, [])
         self.assertIn("Placement failed: config_unavailable", self.page(server))
 
+    def test_next_steps_approval_never_places_a_mail_draft(self):
+        evidence = {"wording": "template", "why": "W", "proposals": []}
+        step = aq.add_draft(self.project, item_id=sha(90), kind="next-social-post", agency_id="caltrans",
+                            request_id="agency-wide", body="BODY-social", evidence=evidence, source_run_id=RUN)
+        server = self.start(mail_drafts_config=str(self.cfg))
+        sig = self.signer.sign(aq.approval_payload(self.project, step["id"]))
+        status, _, _ = Http(server.server_address[1]).post("/approvals/approve", {
+            "csrf_token": server.csrf_token, "id": step["id"], "signature": sig})
+        self.assertEqual(status, 303)
+        self.place_mock.assert_not_called()
+        self.assertEqual(self.appended, [])
+        self.assertFalse((self.project / "approvals" / "mail-drafts.jsonl").exists())
+
     def test_without_the_flag_no_placement_is_attempted(self):
         server = self.start()
         self.assertEqual(self.approve(server)[0], 303)
