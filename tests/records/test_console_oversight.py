@@ -210,3 +210,12 @@ class Server(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_controls_work_with_panel_actor_labels_the_journal_would_reject(self):
+        self.server.actor = "Graham (operator)"
+        ids = self.put_lines(candidate())
+        self.assertEqual(self.post("/public-updates/retract", id=ids[0])[0], 303)
+        self.assertEqual(co.lines_in(self.model(), "retracted")[0]["retract_reason"], "undo")
+        self.assertEqual(self.post("/public-updates/off")[0], 303)
+        self.assertEqual(self.post("/public-updates/kill")[0], 303)
+        self.assertEqual(self.model()["public"]["switch"], "KILLED")

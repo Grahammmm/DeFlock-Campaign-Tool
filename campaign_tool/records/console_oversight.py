@@ -392,6 +392,18 @@ def serve(handler):
     return True
 
 
+def _journal_actor(label):
+    """Fit any panel-accepted actor label to the journal's stricter actor syntax.
+
+    The panel allows any printable label up to 80 characters (e.g. "Graham (operator)");
+    the journal allows [A-Za-z0-9 ._@-], 64 characters. Disallowed characters become "-"
+    so the label stays recognisable and Undo/OFF/kill never fail on the label alone.
+    """
+    text = re.sub(r"[^A-Za-z0-9 ._@-]", "-", str(label)).strip()
+    text = re.sub(r"^[^A-Za-z0-9]+", "", text)[:64]
+    return text or "console"
+
+
 def post(handler):
     """Called by admin_panel's POST handler. Returns True when the path is one of ours (answered either way)."""
     if handler.path not in ROUTES:
@@ -410,7 +422,7 @@ def post(handler):
     if not hmac.compare_digest(fields["csrf_token"].encode("utf-8"), handler.server.csrf_token.encode("ascii")):
         handler._fail(403)
         return True
-    project, actor = handler.server.options["project"], handler.server.actor
+    project, actor = handler.server.options["project"], _journal_actor(handler.server.actor)
     try:
         if handler.path == "/public-updates/retract":
             if not re.fullmatch(r"[0-9a-f]{16}", fields["id"]):
