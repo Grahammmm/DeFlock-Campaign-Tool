@@ -182,6 +182,32 @@ class ScreenC(unittest.TestCase):
         self.assertEqual(src["received"]["state"], "ok")
         cd.render(m, NOW)
 
+    def test_malformed_scalar_fields_isolate_one_source(self):
+        cases = [
+            ("received-items.json", lambda d: d["items"][0].__setitem__("findings", 1), "received"),
+            ("received-items.json", lambda d: d["items"][0].__setitem__("original_sha256", []), "received"),
+            ("received-items.json", lambda d: d["items"][0].__setitem__("item_id", []), "received"),
+            ("gap-proposals.json", lambda d: d["agencies"][0]["requests"][0]["proposals"][0].__setitem__("confidence", []),
+             "proposals"),
+            ("response-items.json", lambda d: d["requests"][0].__setitem__("agency_key", []), "tiers"),
+            ("response-items.json", lambda d: d["requests"][0]["asks"][0].__setitem__("evidence", 1), "tiers"),
+        ]
+        for name, fn, source in cases:
+            with self.subTest(file=name, source=source):
+                tmp = tempfile.TemporaryDirectory()
+                self.addCleanup(tmp.cleanup)
+                project = Path(tmp.name)
+                build(project)
+                path = project / "run-outputs" / RUN / "outcomes" / name
+                doc = json.loads(path.read_text())
+                fn(doc)
+                put(path, doc)
+                m = cd.load(project, RUN, pages=False)
+                self.assertEqual(cd.sources(m)[source]["code"], "shape_invalid")
+                page = cd.render(m, NOW)
+                self.assertIn(source + ": unavailable (shape_invalid)", page)
+                self.assertIn("alpha-pd", page)
+
     def test_symlinked_source_is_refused(self):
         build(self.project)
         out = self.project / "run-outputs" / RUN / "outcomes"

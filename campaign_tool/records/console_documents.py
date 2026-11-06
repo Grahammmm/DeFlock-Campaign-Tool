@@ -69,7 +69,11 @@ def _opt_str(value):
 def _shape_ok(key, doc):
     """True when the fields this screen consumes have the expected types; a bad source degrades alone."""
     if key == "received":
-        return _dicts(doc, "items") and all(_opt_str(i.get("agency_id")) for i in doc.get("items", []))
+        return _dicts(doc, "items") and all(
+            all(_opt_str(i.get(k)) for k in ("agency_id", "item_id", "received_at", "original_sha256", "kind",
+                                              "request_id", "ocr_review_status", "extraction_status"))
+            and (i.get("findings") is None or type(i.get("findings")) is list)
+            for i in doc.get("items", []))
     if key == "links":
         if not _dicts(doc, "links"):
             return False
@@ -86,7 +90,9 @@ def _shape_ok(key, doc):
         if not _dicts(doc, "agencies"):
             return False
         return all(_opt_str(b.get("agency_id")) and _dicts(b, "requests")
-                   and all(_dicts(r, "proposals") for r in b.get("requests", []))
+                   and all(_dicts(r, "proposals") and all(
+                       _opt_str(p.get("confidence")) and _opt_str(p.get("proposal_id"))
+                       for p in r.get("proposals", [])) for r in b.get("requests", []))
                    for b in doc.get("agencies", []))
     if key == "response":
         return _dicts(doc, "requests") and all(_dicts(r, "asks") for r in doc.get("requests", []))
@@ -103,8 +109,18 @@ def _tiers_ok(report):
     for r in report["requests"]:
         if type(r) is not dict or type(r.get("asks")) is not list or type(r.get("logs_and_audits")) is not dict:
             return False
+        if not _opt_str(r.get("agency_key")) or not _opt_str(r.get("request_id")):
+            return False
+        if type(r["logs_and_audits"].get("line")) is not str:
+            return False
         for a in r["asks"]:
             if type(a) is not dict or not all(k in a for k in ("ask_id", "state", "tier", "tier_name", "text")):
+                return False
+            if type(a["ask_id"]) is not str or type(a["state"]) is not str or not _opt_str(a["tier_name"]):
+                return False
+            if not (a.get("evidence") is None or type(a.get("evidence")) is list):
+                return False
+            if any(type(ev) is dict and not _opt_str(ev.get("item_id")) for ev in a.get("evidence") or []):
                 return False
             if type(a["text"]) is not str or not (a.get("evidence") is None or type(a.get("evidence")) is list):
                 return False
