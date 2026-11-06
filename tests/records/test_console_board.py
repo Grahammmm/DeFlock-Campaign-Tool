@@ -187,6 +187,9 @@ class Boards(unittest.TestCase):
                 ("event type", lambda d: d["requests"][0]["events"][0].__setitem__("type", 5)),
                 ("new_dates", lambda d: d["requests"][0]["events"][0].__setitem__("new_dates", [1])),
                 ("mark", lambda d: d["requests"][0].__setitem__("overdue_marks", [None])),
+                ("mark missing label", lambda d: d["requests"][0].__setitem__("overdue_marks", [{"kind": "statutory"}])),
+                ("mark null label", lambda d: d["requests"][0].__setitem__("overdue_marks", [{"kind": "statutory", "label": None}])),
+                ("chain new_dates", lambda d: d["requests"][0].__setitem__("extension_chain", {"new_dates": [1]})),
                 ("clocks", lambda d: d["requests"][0].__setitem__("clocks", [])),
                 ("source", lambda d: d["requests"][0]["events"][0].__setitem__("source", "x"))):
             with self.subTest(name):

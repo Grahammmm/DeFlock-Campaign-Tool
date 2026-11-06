@@ -44,7 +44,8 @@ def _event_ok(e):
 
 
 def _mark_ok(m):
-    return type(m) is dict and all(_str_or_none(m.get(k)) for k in ("kind", "label", "date", "basis"))
+    return (type(m) is dict and all(_str_or_none(m.get(k)) for k in ("kind", "date", "basis"))
+            and type(m.get("label")) is str)
 
 
 def _request_ok(r):
@@ -54,6 +55,9 @@ def _request_ok(r):
     for key in ("clocks", "extension_chain"):
         if not (r.get(key) is None or type(r.get(key)) is dict):
             return False
+    dates = (r.get("extension_chain") or {}).get("new_dates")
+    if not (dates is None or (type(dates) is list and all(type(d) is str for d in dates))):
+        return False
     if not (r.get("issues") is None or type(r.get("issues")) is list):
         return False
     action = r.get("next_action")
