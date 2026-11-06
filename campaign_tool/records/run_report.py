@@ -103,6 +103,8 @@ def validate_run_report(report, schema=None):
         check_refusals(report["refusals"], report["stages"][4])
 
     check_arrival_metadata(report)
+    if "arrival_summary" in report and report.get("trigger") != "arrival":
+        raise ValueError("$.arrival_summary: only an arrival-triggered run carries an arrival summary")
     started, finished = _parse_utc(report["started_at"]), _parse_utc(report["finished_at"])
     if finished < started:
         raise ValueError("$.finished_at: earlier than started_at")

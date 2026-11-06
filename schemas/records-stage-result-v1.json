@@ -27,6 +27,23 @@
         "unlisted": {"$ref": "#/$defs/count"}
       }
     },
+    "arrival_summary": {
+      "type": "object", "additionalProperties": false,
+      "description": "Arrival runs only: new received items by kind this run, and drafts pending now. null means unavailable, never zero.",
+      "required": ["received_by_kind", "pending_drafts"],
+      "properties": {
+        "received_by_kind": {
+          "type": ["object", "null"], "additionalProperties": false,
+          "required": ["response", "extension", "denial", "fee", "records", "other"],
+          "properties": {
+            "response": {"$ref": "#/$defs/count"}, "extension": {"$ref": "#/$defs/count"},
+            "denial": {"$ref": "#/$defs/count"}, "fee": {"$ref": "#/$defs/count"},
+            "records": {"$ref": "#/$defs/count"}, "other": {"$ref": "#/$defs/count"}
+          }
+        },
+        "pending_drafts": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
     "stage_result_version": {"const": 1},
     "status": {"type": "string", "enum": ["ok", "warn", "fail", "skipped"]},
     "counts": {
