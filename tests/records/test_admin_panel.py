@@ -513,6 +513,90 @@ class LiveFormTests(ServerCase):
         err.write.assert_not_called()
 
 
+class NextStepsPageTests(ServerCase):
+    KINDS = (("next-social-post", "social"), ("next-site-update", "site"), ("next-followup-probe", "followup"))
+
+    def setUp(self):
+        super().setUp()
+        self.steps = {}
+        for n, (kind, _) in enumerate(self.KINDS, 10):
+            evidence = {"wording": "template", "why": "WHY-" + kind,
+                        "proposals": [{"proposal_id": sha(n), "item_id": sha(n + 50), "page": 3, "type": "policy_gap",
+                                       "quote": "QUOTE <b>x</b>"}]}
+            self.steps[kind] = aq.add_draft(self.project, item_id=sha(n), kind=kind, agency_id="caltrans",
+                                            request_id="agency-wide", body="BODY-" + kind, evidence=evidence,
+                                            source_run_id=RUN)
+
+    def get(self, path="/next-steps"):
+        return self.http.send("GET", path, headers={"Content-Length": None, "Content-Type": None})
+
+    def post(self, route, ident, **fields):
+        return self.http.post(route, {"csrf_token": self.tok, "id": ident, **fields})
+
+    def test_page_has_three_sections_and_forms_only_on_pending_rows(self):
+        status, headers, html = self.get()
+        self.assertEqual(status, 200)
+        self.assertIn("default-src 'none'", headers["content-security-policy"])
+        self.assertEqual({"social", "site", "followup"} - parse(html).ids, set())
+        for kind, _ in self.KINDS:
+            self.assertIn("BODY-" + kind, html)
+            self.assertIn("WHY-" + kind, html)
+        self.assertIn("QUOTE &lt;b&gt;x&lt;/b&gt;", html)
+        self.assertNotIn("BODY-reply-extension", html)
+        self.assertIn("Template draft", html)
+        self.assertIn("Approving records your decision on this draft only. Nothing is posted, published, edited or sent.", html)
+        self.assertIn("agency-wide", html)
+        self.assertEqual(sum(1 for f in parse(html).forms if f["action"] == "/approvals/reject"), 3)
+        self.assertEqual(sum(1 for f in parse(html).forms if f["action"] == "/approvals/approve"), 3)
+        self.assertIn('href="/next-steps"', self.get("/")[2])
+        before = journal(self.project)
+        self.get()
+        self.assertEqual(journal(self.project), before)  # GET never creates or changes drafts
+
+    def test_approve_and_deny_return_to_the_page_and_change_status(self):
+        social, followup = (self.steps[k]["id"] for k in ("next-social-post", "next-followup-probe"))
+        sig = self.signer.sign(aq.approval_payload(self.project, social))
+        status, headers, _ = self.post("/approvals/approve", social, signature=sig, **{"return": "/next-steps"})
+        self.assertEqual((status, headers["location"]), (303, "/next-steps"))
+        status, headers, _ = self.post("/approvals/reject", followup, reason="not now", **{"return": "/next-steps"})
+        self.assertEqual((status, headers["location"]), (303, "/next-steps"))
+        html = self.get()[2]
+        self.assertIn("<dt>Status</dt><dd>approved-to-publish</dd>", html)
+        self.assertIn("<dt>Status</dt><dd>denied</dd>", html)
+        self.assertIn("not now", html)
+        self.assertIn("proposed", html)  # the site update is untouched
+        self.assertEqual(sum(1 for f in parse(html).forms if f["action"] == "/approvals/reject"), 1)
+        self.assertEqual(self.http.send("GET", "/", headers={"Content-Length": None, "Content-Type": None})[0], 200)
+        # no return field keeps the old target
+        other = self.steps["next-site-update"]["id"]
+        self.assertEqual(self.post("/approvals/reject", other, reason="x")[1]["location"], "/")
+
+    def test_refusals_never_append(self):
+        ident = self.steps["next-site-update"]["id"]
+        size = len(journal(self.project))
+        self.assertEqual(self.post("/approvals/reject", ident, reason=" ", **{"return": "/next-steps"})[0], 400)
+        for bad in ("/other", "//evil.invalid", "http://evil.invalid/", ""):
+            self.assertEqual(self.post("/approvals/reject", ident, reason="r", **{"return": bad})[0], 400, bad)
+        self.assertEqual(self.http.post("/approvals/reject", {"csrf_token": "wrong", "id": ident, "reason": "r",
+                                                               "return": "/next-steps"})[0], 403)
+        self.assertEqual(self.http.post("/approvals/reject", {"csrf_token": self.tok, "id": ident, "reason": "r",
+                                                               "return": "/next-steps"}, host="evil.invalid")[0], 403)
+        self.assertEqual(self.http.post("/approvals/reject", {"csrf_token": self.tok, "id": ident, "reason": "r",
+                                                               "return": "/next-steps"},
+                                        headers={"Origin": "http://evil.invalid"})[0], 403)
+        self.assertEqual(len(journal(self.project)), size)
+        self.assertEqual(self.http.send("POST", "/next-steps")[0], 404)
+
+    def test_static_render_has_the_sections_and_no_forms_or_token(self):
+        html = ap.render_dashboard(self.load())
+        self.assertEqual({"social", "site", "followup"} - parse(html).ids, set())
+        self.assertIn("BODY-next-site-update", html)
+        self.assertNotIn("<form", html)
+        self.assertNotIn("csrf", html)
+        page = ap.render_next_steps(self.load())
+        self.assertNotIn("<form", page)
+        self.assertNotIn("csrf", page)
+
 class MailboxPanelTests(ServerCase):
     """The Mailbox cell and the optional post-approve placement hook (fake IMAP, nothing is sent)."""
 
@@ -584,6 +668,19 @@ class MailboxPanelTests(ServerCase):
         self.assertEqual(self.row()["status"], "approved")
         self.assertEqual(self.appended, [])
         self.assertIn("Placement failed: config_unavailable", self.page(server))
+
+    def test_next_steps_approval_never_places_a_mail_draft(self):
+        evidence = {"wording": "template", "why": "W", "proposals": []}
+        step = aq.add_draft(self.project, item_id=sha(90), kind="next-social-post", agency_id="caltrans",
+                            request_id="agency-wide", body="BODY-social", evidence=evidence, source_run_id=RUN)
+        server = self.start(mail_drafts_config=str(self.cfg))
+        sig = self.signer.sign(aq.approval_payload(self.project, step["id"]))
+        status, _, _ = Http(server.server_address[1]).post("/approvals/approve", {
+            "csrf_token": server.csrf_token, "id": step["id"], "signature": sig})
+        self.assertEqual(status, 303)
+        self.place_mock.assert_not_called()
+        self.assertEqual(self.appended, [])
+        self.assertFalse((self.project / "approvals" / "mail-drafts.jsonl").exists())
 
     def test_without_the_flag_no_placement_is_attempted(self):
         server = self.start()
