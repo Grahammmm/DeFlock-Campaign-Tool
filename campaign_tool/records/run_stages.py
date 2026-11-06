@@ -984,6 +984,14 @@ def stage_outputs(args):
         raise
     except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
         warning = "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE"
+    # Shadow-only model advice (REC-H2O-1): off unless the campaign enables it; never changes another output.
+    try:
+        from .model_advice import write_run_model_advice
+        write_run_model_advice(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
+        warning = warning or "OUTPUTS_MODEL_ADVICE_UNAVAILABLE"
     # The additive register must never suppress the counts snapshot or the digest.
     try:
         from .outcomes.register import write_for_run
