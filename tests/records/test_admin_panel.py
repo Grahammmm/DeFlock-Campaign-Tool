@@ -26,7 +26,7 @@ EXAMPLE = REPO / "examples" / "run-report" / "records-run-report-v1.synthetic.js
 RUN = "run_20260101T060000Z_0a1b2c3d"
 AS_OF = "2026-11-05"
 EML, ATT, DOC = "e" * 64, "a" * 64, "d" * 64
-SECRET = "HEADERSECRET-x9"
+HDR_MARK = "HEADER-MARK-x9"
 EVIDENCE = {"findings": [], "deadlines": []}
 
 
@@ -78,12 +78,12 @@ class Base(unittest.TestCase):
                 con.execute("INSERT INTO originals(sha256,bytes,mime_detected,first_seen_at,role,scope,"
                             "preservation_status,provenance_json) VALUES(?,?,?,?,?,?,?,?)",
                             (digest, size, mime, seen, "agency_original", "in_scope", "verified",
-                             json.dumps({"secret": SECRET})))
+                             json.dumps({"note": HDR_MARK})))
             con.execute("INSERT INTO occurrences VALUES('o1',?,'mail','m',NULL,NULL,'t','{}')", (EML,))
             con.execute("INSERT INTO occurrences VALUES('o2',?,'attachment','/home/x/private-name.pdf','o1',NULL,'t','{}')",
                         (ATT,))
             con.execute("INSERT INTO mail_messages VALUES('msg-1','acct','INBOX',1,1,?,?,?,?,'x')",
-                        ("<id@x>", EML, json.dumps({"fields": [["Subject", SECRET]]}), "2026-11-02T18:59:00Z"))
+                        ("<id@x>", EML, json.dumps({"fields": [["Subject", HDR_MARK]]}), "2026-11-02T18:59:00Z"))
             for digest, stage, status, reason in ((ATT, "extract", "blocked", "EXTRACT_ERROR"),
                                                   (ATT, "preserve", "pending", None),
                                                   (DOC, "extract", "blocked", "AWAITING_OCR")):
@@ -153,7 +153,7 @@ class ReadTests(Base):
         self.assertIn("Messages in ledger: 1", html)
         self.assertIn("Documents in ledger: 3", html)
         self.assertIn("<td>1</td>", html)
-        for leaked in (SECRET, "private-name.pdf", "/home/x"):
+        for leaked in (HDR_MARK, "private-name.pdf", "/home/x"):
             self.assertNotIn(leaked, html)
         self.assertNotIn("<form", html)
         self.assertIn("Static snapshot — decisions unavailable", html)
@@ -250,6 +250,11 @@ class ReadTests(Base):
         self.assertLess(html.index(">a1<"), html.index(">a2<"))  # overdue first, undated last
         self.assertGreater(html.index(">a3<"), html.index(">a2<"))
         self.assertIn("a4", html)
+        # a stated production date that has passed shows its date and a negative (overdue) day count, ahead of upcoming rows
+        self.assertIn("2026-10-01", html)
+        self.assertIn('<span class="overdue">-35</span>', html)
+        self.assertNotIn(">35<", html)
+        self.assertLess(html.index(">a4<"), html.index(">a2<"))
         self.assertNotIn("Campaign deadlines not configured", html)
         self.assertNotIn("legal clock is paused", html)
         # dates stated in received mail: passed first, never a legal deadline

@@ -448,8 +448,12 @@ def _deadlines_section(model):
         out.append(_source_note("Campaign deadlines", kit))
     if kit["state"] == "ok":
         due = kit["due"]
+        # stated_passed rows carry the agency's stated date ("stated") and a positive count of days past it;
+        # show the date and a negative (overdue) day count so they sort and render as overdue, not as future days.
         rows = [(r.get("days"), r.get("due"), r.get("state"), r.get("agency_id"), r.get("request"), r.get("note"))
-                for r in list(due["open"]) + list(due["stated_passed"])]
+                for r in due["open"]]
+        rows += [(-abs(r["days"]) if isinstance(r.get("days"), int) else None, r.get("stated"), r.get("state"),
+                  r.get("agency_id"), r.get("request"), r.get("note")) for r in due["stated_passed"]]
         rows.sort(key=lambda r: (r[0] is None, r[0] if r[0] is not None else 0))
         out.append("<p>Law package: %s. %s</p>" % (esc(due["law_package_status"]), esc(due["note"])))
         out.append(_table(("Days (negative is overdue)", "Due", "State", "Agency", "Request", "Note"),
