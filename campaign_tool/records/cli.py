@@ -28,6 +28,7 @@ COMMANDS = {
     "release-links": ("outcomes.release_links", "main"),
     "playbook": ("playbook", "main"),
     "items": ("item_tiers", "main"),
+    "followup-draft": ("followup_drafter", "main"),
     "precedent": ("precedent", "main"),
     "agency-policies": ("agency_policies", "main"),
     "first-request": ("first_request", "main"),

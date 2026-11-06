@@ -1,0 +1,13 @@
+{"schema": "records-followup-case-v1",
+ "agency": {"id": "slo-county-sheriff", "name": "SLO County Sheriff"},
+ "request_id": "PRA 26-348", "request_date": "2026-08-24", "response_date": "2026-09-12",
+ "response_type": "denial", "contact": "Ms. Porter", "sender": "DeFlock SLO Records Project",
+ "subject": "PRA 26-348: narrowing offer for use logs and request for completed annual audits",
+ "policy": {"policy_id": "Policy 466", "section": "466.5(e)"}, "precedent": true,
+ "asks": [
+  {"ask_id": "a-contracts", "number": 9, "text": "Contracts, order forms and invoices for the ALPR vendor", "rating": "answered",
+   "produced": [{"file": "Flock agreement.pdf", "page": 1}]},
+  {"ask_id": "a-sharing", "number": 8, "text": "The data-sharing list and executed MOUs", "rating": "missing"},
+  {"ask_id": "a-audits", "number": 7, "text": "Completed audits of ALPR use since 2022", "rating": "exemption_cited"},
+  {"ask_id": "a-logs", "number": 6, "text": "Native ALPR access/search log export for 1 January to 30 June 2026", "rating": "withheld"}
+ ]}
