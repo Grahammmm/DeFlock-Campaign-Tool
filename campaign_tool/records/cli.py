@@ -20,6 +20,7 @@ COMMANDS = {
     "approve": ("publish", "approve_main"),
     "approvals": "approval_queue",
     "followups": "followup_clock",
+    "mail-drafts": ("mail_drafts", "main"),
     "publish": ("publish", "publish_main"),
     "reopen": ("publish", "reopen_main"),
     "health": ("schedule", "health_main"),
