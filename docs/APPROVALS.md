@@ -176,3 +176,26 @@ group/world-readable, oversized, duplicate-key or unknown-value file is refused 
   legal determination.
 - `python -m campaign_tool.records followups plan|rows --project DIR --run-id RID` prints the planned drafts
   or the Deadlines and Overdue rows, read-only.
+
+## Drafts mailbox (REC-SEND-1)
+
+Approving a records reply draft in the console can also put the same text in the campaign's outbound
+mailbox Drafts folder, so it can be read in the mail client. **This only places a draft. Nothing is sent**;
+there is no SMTP call in `campaign_tool/records/mail_drafts.py`. Sending is a separate, later step.
+
+- Config (per campaign, owner-only, same shape as `records mail-poll`'s) must name the Drafts folder with
+  `"folder"` (for example `"Drafts"`; `INBOX` and a missing folder are refused). The From address is the
+  config `user`. The password stays in `password_file`; it is read only by `mail_poll` at connect time.
+- `records mail-drafts place --project DIR --config FILE [--dry-run]` places every approved, not yet placed
+  row and prints counts only. `records mail-drafts list --project DIR` prints the journal without text.
+  `records panel ... --mail-drafts-config FILE` places the one draft right after a successful Approve; a
+  placement failure is shown on the page and never undoes the approval.
+- The draft is threaded (`In-Reply-To`, `References`, `To` from `Reply-To`/`From`) when the ledger links the
+  received item to a stored agency message; otherwise it is placed unthreaded, `To` empty, and the page says
+  why. A thread is never guessed from subject text.
+- Running it twice makes one draft: each draft has a Message-ID derived from the queue id and revision, the
+  mailbox is searched for it before appending, and `approvals/mail-drafts.jsonl` (0600, append-only) records
+  the message id, folder and a fingerprint (sha256 of the exact message bytes).
+- If the text is edited and approved again, the new revision is placed as a new draft and the older
+  placement is marked `superseded` in the journal and on the page. The code never deletes, flags or moves
+  mailbox messages, so remove the superseded draft in the mail client.

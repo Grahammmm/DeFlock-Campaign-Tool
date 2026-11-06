@@ -20,6 +20,7 @@ COMMANDS = {
     "approve": ("publish", "approve_main"),
     "approvals": "approval_queue",
     "followups": "followup_clock",
+    "mail-drafts": ("mail_drafts", "main"),
     "publish": ("publish", "publish_main"),
     "reopen": ("publish", "reopen_main"),
     "health": ("schedule", "health_main"),
@@ -27,10 +28,13 @@ COMMANDS = {
     "release-links": ("outcomes.release_links", "main"),
     "playbook": ("playbook", "main"),
     "items": ("item_tiers", "main"),
+    "followup-draft": ("followup_drafter", "main"),
+    "precedent": ("precedent", "main"),
     "agency-policies": ("agency_policies", "main"),
     "first-request": ("first_request", "main"),
     "model-advice": ("model_advice", "main"),
     "panel": ("admin_panel", "main"),
+    "documents": ("console_documents", "main"),
     "schedule": ("schedule", "schedule_main"),
 }
 
