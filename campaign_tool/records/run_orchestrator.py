@@ -171,6 +171,25 @@ def stage_argv(config, entry):
     return argv
 
 
+TRIGGER_ENV = "RECORDS_RUN_TRIGGER"
+
+
+def forward_trigger(argv, trigger):
+    """Carry the validated arrival trigger across a ``docker exec`` boundary.
+
+    ``docker exec`` does not pass the client environment, so the host-side variable never reaches a
+    containerized stage. Plans run ``docker exec ... CONTAINER env KEY=VAL ... python``; add the
+    variable right after that ``env``. Only the fixed value ``arrival`` is ever forwarded.
+    """
+    if trigger != "arrival" or "exec" not in argv:
+        return argv
+    start = argv.index("exec")
+    if "env" not in argv[start:]:
+        return argv
+    at = start + argv[start:].index("env") + 1
+    return argv[:at] + [f"{TRIGGER_ENV}={trigger}"] + argv[at:]
+
+
 def expand_argv(argv, run_id, target):
     values = {"{run_id}": run_id, "{target}": target}
     out = []
@@ -475,7 +494,7 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
             stages.append(stage_entry(name, "fail", seconds=0, code="RUN_DEADLINE_REACHED"))
             blocked_by = "UPSTREAM_FAILED"
             continue
-        argv = expand_argv(stage_argv(config,entry), run_id, config["target"])
+        argv = forward_trigger(expand_argv(stage_argv(config,entry), run_id, config["target"]), trigger)
         try:
             status, counts, code, result, seconds = run_stage(
                 argv, min(entry["timeout_seconds"], remaining), schema, work_dir, env)

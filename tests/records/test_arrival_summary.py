@@ -291,5 +291,29 @@ class ComposeTests(unittest.TestCase):
         self.assertNotIn("Came in", text)
 
 
+class TriggerCrossesContainerTests(unittest.TestCase):
+    """The arrival trigger must reach stages run through ``docker exec`` (it is not inherited)."""
+
+    def test_every_shipped_container_plan_gets_the_trigger_after_env(self):
+        from campaign_tool.records import run_orchestrator as orch
+        plans = sorted((REPO / "deploy" / "records-runtime" / "targets").glob("*-container.json.in"))
+        self.assertTrue(plans)
+        for plan in plans:
+            for stage in json.loads(plan.read_text(encoding="utf-8"))["stages"]:
+                argv = orch.forward_trigger(orch.expand_argv(stage["argv"], RUN, "T"), "arrival")
+                at = argv.index("env")
+                self.assertEqual(argv[at + 1], "RECORDS_RUN_TRIGGER=arrival", (plan.name, stage["name"]))
+                self.assertEqual(argv.count("RECORDS_RUN_TRIGGER=arrival"), 1)
+                self.assertTrue(argv[at + 2].startswith("PYTHONPATH="))
+
+    def test_other_triggers_and_non_container_argv_are_untouched(self):
+        from campaign_tool.records import run_orchestrator as orch
+        argv = ["docker", "exec", "c", "env", "PYTHONPATH=/e", "python3"]
+        for trigger in (None, "scheduled", "manual", "arrival; rm"):
+            self.assertEqual(orch.forward_trigger(list(argv), trigger), argv)
+        plain = ["python3", "-m", "x"]
+        self.assertEqual(orch.forward_trigger(list(plain), "arrival"), plain)
+
+
 if __name__ == "__main__":
     unittest.main()
