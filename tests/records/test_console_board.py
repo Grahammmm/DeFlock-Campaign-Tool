@@ -156,6 +156,48 @@ class Boards(unittest.TestCase):
         r2 = [r for r in cb.board_rows(self.model(), TODAY) if r["request_id"] == "R-2"][0]
         self.assertEqual((r2["overdue"], r2["clock_unknown"]), ([], True))
 
+    def test_agency_page_renders_unknown_clock_without_overdue_assertion(self):
+        path = self.project / "run-outputs" / RUN / "outcomes" / "timeline.json"
+        doc = json.loads(path.read_text())
+        doc["requests"][1]["overdue_marks"] = [{"kind": "unknown", "date": None, "basis": "unknown", "label": "no date"}]
+        put(path, doc)
+        page = cb.render_agency(self.model(), "alpha-pd")
+        self.assertIn("Clock unknown: no date", page)
+        self.assertNotIn("<strong>OVERDUE</strong> unknown", page)
+
+    def test_documents_links_work_for_tracker_keys(self):
+        m = self.model()
+        plain = cb.render_agency(m, "alpha-pd")
+        self.assertIn('href="/documents?agency=alpha-pd"', plain)
+        page = cb.render_agency(m, "tracker:beta sheriff / coroner")
+        self.assertIn('href="/documents"', page)
+        self.assertNotIn("/documents?agency=tracker", page)
+
+    def test_last_contact_ignores_promised_dates(self):
+        row_ = {"events": [
+            {"type": "received", "date": "2026-10-01", "source": {"kind": "received_item"}},
+            {"type": "promised date", "date": "2026-11-03", "new_dates": ["2026-11-03"], "source": {"kind": "received_item"}}]}
+        self.assertEqual(cb._last_contact(row_, TODAY), 35)
+
+    def test_malformed_nested_timeline_fields_degrade_as_unavailable(self):
+        path = self.project / "run-outputs" / RUN / "outcomes" / "timeline.json"
+        base = json.loads(path.read_text())
+        for name, mutate in (
+                ("null event", lambda d: d["requests"][0].__setitem__("events", [None])),
+                ("event type", lambda d: d["requests"][0]["events"][0].__setitem__("type", 5)),
+                ("new_dates", lambda d: d["requests"][0]["events"][0].__setitem__("new_dates", [1])),
+                ("mark", lambda d: d["requests"][0].__setitem__("overdue_marks", [None])),
+                ("clocks", lambda d: d["requests"][0].__setitem__("clocks", [])),
+                ("source", lambda d: d["requests"][0]["events"][0].__setitem__("source", "x"))):
+            with self.subTest(name):
+                doc = json.loads(json.dumps(base))
+                mutate(doc)
+                put(path, doc)
+                m = self.model()
+                self.assertEqual(m["timeline"], {"state": "unavailable", "code": "shape_invalid"})
+                self.assertIn("No timeline", cb.render_board(m, TODAY))
+                self.assertIn("timeline: unavailable", cb.render_agency(m, "alpha-pd"))
+
     def test_panel_routes(self):
         server = ap.build_server(self.project, RUN, actor="op", system=False)
         threading.Thread(target=server.serve_forever, daemon=True).start()

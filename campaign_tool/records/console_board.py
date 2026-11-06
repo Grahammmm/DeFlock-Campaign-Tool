@@ -22,8 +22,49 @@ FILTERS = {"all": "All", "overdue": "Overdue", "waiting": "Waiting on agency", "
            "closed": "Closed"}
 OURS = ("G", "coordinator")
 CONTACT_SOURCES = ("received_item", "outbox_receipt", "manual")
+# Drafts are ours; a promised date is a date the agency stated, not a contact on that day.
+NOT_CONTACT = ("draft", "promised date")
 EXPIRING_DAYS = 14
 LABEL = "Private; review required. Overdue marks are arithmetic on our records, not a legal finding."
+
+
+def _str_or_none(value):
+    return value is None or type(value) is str
+
+
+def _event_ok(e):
+    if type(e) is not dict or type(e.get("type")) is not str:
+        return False
+    if not all(_str_or_none(e.get(k)) for k in ("date", "summary", "draft_status")):
+        return False
+    if not (e.get("source") is None or type(e.get("source")) is dict):
+        return False
+    dates = e.get("new_dates")
+    return dates is None or (type(dates) is list and all(type(d) is str for d in dates))
+
+
+def _mark_ok(m):
+    return type(m) is dict and all(_str_or_none(m.get(k)) for k in ("kind", "label", "date", "basis"))
+
+
+def _request_ok(r):
+    if type(r) is not dict or not all(_str_or_none(r.get(k)) for k in (
+            "agency_key", "agency", "request_id", "ledger_request_id", "stage")):
+        return False
+    for key in ("clocks", "extension_chain"):
+        if not (r.get(key) is None or type(r.get(key)) is dict):
+            return False
+    if not (r.get("issues") is None or type(r.get("issues")) is list):
+        return False
+    action = r.get("next_action")
+    return (type(r.get("events")) is list and all(_event_ok(e) for e in r["events"])
+            and type(r.get("overdue_marks")) is list and all(_mark_ok(m) for m in r["overdue_marks"])
+            and type(action) is dict and _str_or_none(action.get("owner")) and _str_or_none(action.get("action")))
+
+
+def _timeline_ok(doc):
+    """The fields Screens A and B consume have the expected types; a bad timeline degrades alone."""
+    return type(doc.get("requests")) is list and all(_request_ok(r) for r in doc["requests"])
 
 
 def load(project, run_id):
@@ -31,10 +72,7 @@ def load(project, run_id):
     run_dir = cd._check_run(project, run_id)
     timeline = cd._read(run_dir / "outcomes" / "timeline.json", _tl.SCHEMA)
     doc = timeline.get("doc")
-    if doc is not None and (doc.get("run_id") != run_id or type(doc.get("requests")) is not list
-                            or not all(type(r) is dict and type(r.get("events")) is list
-                                       and type(r.get("overdue_marks")) is list
-                                       and type(r.get("next_action")) is dict for r in doc["requests"])):
+    if doc is not None and (doc.get("run_id") != run_id or not _timeline_ok(doc)):
         timeline = {"state": "unavailable", "code": "run_mismatch" if doc.get("run_id") != run_id else "shape_invalid"}
     model = cd.load(project, run_id, pages=False)
     return {"run_id": run_id, "timeline": timeline, "links": model["links"], "tiers": model["tiers"]}
@@ -66,7 +104,7 @@ def _live(row):
 
 def _last_contact(row, today):
     days = [_day(e.get("date")) for e in _live(row)
-            if (e.get("source") or {}).get("kind") in CONTACT_SOURCES and e.get("type") != "draft"]
+            if (e.get("source") or {}).get("kind") in CONTACT_SOURCES and e.get("type") not in NOT_CONTACT]
     days = [d for d in days if d and d <= today]
     return (today - max(days)).days if days else None
 
@@ -170,6 +208,13 @@ def _head(title, model):
                 esc(model["run_id"]), esc(LABEL))] + notes
 
 
+def _documents_href(agency):
+    """Screen C accepts only plain ids; tracker keys with spaces or slashes link to its all-agencies page."""
+    if type(agency) is str and cd.AGENCY.fullmatch(agency):
+        return "/documents?agency=" + urllib.parse.quote(agency, safe="")
+    return "/documents"
+
+
 def _ago(days):
     return "no contact recorded" if days is None else ("today" if days == 0 else "%d days ago" % days)
 
@@ -209,8 +254,8 @@ def render_board(model, today, which="all"):
 def render_agency(model, agency):
     views = agency_view(model, agency)
     out = _head("Agency timeline: %s" % (views[0]["agency"] if views else agency), model)
-    q = urllib.parse.quote(agency, safe="")
-    out.append('<p><a href="/documents?agency=%s">Documents and findings</a> <a href="/next-steps">Drafts</a></p>' % esc(q))
+    docs_href = _documents_href(agency)
+    out.append('<p><a href="%s">Documents and findings</a> <a href="/next-steps">Drafts</a></p>' % esc(docs_href))
     if model["timeline"]["state"] != "ok":
         out.append("<p>No timeline for this run.</p>")
     elif not views:
@@ -224,6 +269,9 @@ def render_agency(model, agency):
                        esc(", ".join(v["extension_chain"].get("new_dates") or []) or c.get("extended_due") or "none recorded"), esc(", ".join(v["promised"]) or "none"),
                        esc(c.get("due") or "unknown")))
         for m in v["overdue_marks"]:
+            if m.get("kind") == "unknown":
+                out.append('<p class="clock-unknown">Clock unknown: %s</p>' % esc(m.get("label") or "no statutory date is recorded"))
+                continue
             out.append('<p class="overdue"><strong>OVERDUE</strong> %s: %s%s</p>' % (
                 esc(m.get("kind")), esc(m.get("label")), esc(" (%s, basis %s)" % (m["date"], m.get("basis")) if m.get("date") else "")))
         chain = v["extension_chain"]
@@ -247,19 +295,19 @@ def render_agency(model, agency):
                 if e.get("superseded"):
                     summary += " (superseded by a correction)"
                 out.append("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
-                    esc(e.get("date") or "undated"), esc(e["type"]), esc(summary), _source(e.get("source") or {}, q)))
+                    esc(e.get("date") or "undated"), esc(e["type"]), esc(summary), _source(e.get("source") or {}, docs_href)))
             out.append("</tbody></table>")
         out.append("</section>")
     return "\n".join(out + ["</body></html>"]) + "\n"
 
 
-def _source(src, q):
+def _source(src, docs_href):
     kind = src.get("kind")
     if kind == "outbox_receipt" and src.get("message_id"):
         mid = str(src["message_id"])
         return 'message <a href="mid:%s">%s</a>' % (esc(urllib.parse.quote(mid.strip("<>"), safe="@")), esc(mid))
     if kind == "received_item":
-        return 'received item <a href="/documents?agency=%s">%s</a>' % (esc(q), esc(src.get("item_id")))
+        return 'received item <a href="%s">%s</a>' % (esc(docs_href), esc(src.get("item_id")))
     if kind == "manual":
         return "manual entry %s by %s" % (esc(src.get("event_id")), esc(src.get("actor")))
     if kind == "approval_journal":
