@@ -19,7 +19,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, run_report, schedule
+from . import approval_queue, mail_drafts, run_report, schedule
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -233,6 +233,15 @@ def _load_queue(project):
     return {"state": "ok", "drafts": drafts}
 
 
+def _load_mail_drafts(project):
+    try:
+        return {"state": "ok", "rows": mail_drafts.placements(project)}
+    except mail_drafts.MailDraftError as error:
+        return _diag(error.code)
+    except OSError:
+        return _diag("journal_io")
+
+
 def _timer_state(unit):
     try:
         done = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True, timeout=3)
@@ -296,6 +305,7 @@ def load_dashboard(project, run_id, *, run_report_path=None, kit_root=None, as_o
              "ledger": _load_ledger(processing / "ledger.sqlite"),
              "report": _load_report(run_report_path, run_id), "received": _load_received(project, run_id),
              "kit": _load_kit(kit_root, day), "queue": _load_queue(project),
+             "mail_drafts": _load_mail_drafts(project),
              "health": _load_health(processing, now),
              "system": _load_system(project, timers) if system else None}
     return model
@@ -557,6 +567,40 @@ def render_next_steps(model, *, csrf_token=None):
             + "</p></footer></body></html>\n")
 
 
+def _mailbox_cell(model, d):
+    """Mailbox state of one draft from the placement journal. Nothing here sends or contacts a server."""
+    mb = model.get("mail_drafts")
+    if mb is None:
+        return ""
+    if mb.get("state") != "ok":
+        return "<dt>Mailbox</dt><dd>Placement state unavailable: %s</dd>" % esc(mb.get("code", "unknown"))
+    mine = {r["revision"]: r for r in mb["rows"] if r["queue_id"] == d["id"]}
+    now = mine.get(d["revision"])
+    if d["status"] != "approved":
+        earlier = [r for r in mine.values() if r["state"] in ("placed", "found_existing")]
+        if not earlier:
+            return ""
+        return ("<dt>Mailbox</dt><dd>Earlier revision %s is in Drafts; the edited text is not placed until it is "
+                "approved. Draft only. Nothing has been sent.</dd>" % esc(max(r["revision"] for r in earlier)))
+    lines = []
+    if now is None:
+        lines.append("Not placed yet")
+    elif now["state"] == "failed":
+        lines.append("Placement failed: %s" % esc(now.get("code", "unknown")))
+    else:
+        mid = str(now.get("message_id") or "")
+        lines.append("In Drafts (%s)" % ("threaded" if now.get("threaded")
+                                         else "not threaded: " + esc(now.get("thread_reason") or "thread_not_found")))
+        lines.append('<a href="mid:%s">open by Message-ID</a> <code>%s</code>' % (
+            esc(urllib.parse.quote(mid.strip("<>"), safe="@")), esc(mid)))
+        lines.append("Text fingerprint <code>%s</code>" % esc(now.get("fingerprint") or ""))
+    for r in sorted(mine.values(), key=lambda r: r["revision"]):
+        if r["state"] == "superseded":
+            lines.append("Revision %s superseded by revision %s" % (esc(r["revision"]), esc(r.get("superseded_by"))))
+    lines.append("Draft only. Nothing has been sent.")
+    return "<dt>Mailbox</dt><dd>%s</dd>" % "<br>".join(lines)
+
+
 def _drafts_section(model, token):
     q = model["queue"]
     live = token is not None
@@ -580,6 +624,7 @@ def _drafts_section(model, token):
             out.append("<dt>Rejection reason</dt><dd>%s</dd>" % esc(d["reason"]))
         if d.get("approved_by"):
             out.append("<dt>Approved by</dt><dd>%s</dd>" % esc(d["approved_by"]))
+        out.append(_mailbox_cell(model, d))
         out.append("<dt>Text</dt><dd><pre>%s</pre></dd></dl>" % esc(d["body"]))
         if live and d["status"] == "pending":
             pid = "sig-" + i[:12]
@@ -685,6 +730,18 @@ ROUTES = {"/approvals/approve": ("approve", ("csrf_token", "id", "signature")),
 SECURITY = (("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"),
             ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
                                         "base-uri 'none'; frame-ancestors 'none'"))
+
+
+def _place_after_approve(project, config_path, ident):
+    """Draft-only placement of the one approved row. A failure is journaled and shown; it never undoes the approval."""
+    try:
+        mail_drafts.place(project, mail_drafts.load_config(config_path), only_id=ident)
+    except Exception as error:  # nothing here may break the approval that already happened
+        code = error.code if isinstance(error, mail_drafts.MailDraftError) else "placement_failed"
+        try:
+            mail_drafts.record_failure(project, ident, code)
+        except Exception:
+            pass
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -798,10 +855,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not value.strip():
             return self._fail(400)
         project, actor = self.server.options["project"], self.server.actor
+        hook = False
         try:
             if action == "approve":
                 approval_queue.approve(project, ident, {"kind": "ssh", "signature": value})
                 expected = {"approved"}
+                hook = True
             elif action == "reject":
                 approval_queue.reject(project, ident, actor, value)
                 expected = {"rejected"}
@@ -815,11 +874,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(503)
         if rows.get(ident, {}).get("status") not in expected:  # never claim success from a return value alone
             return self._fail(503)
+        if hook and self.server.mail_drafts_config:
+            _place_after_approve(project, self.server.mail_drafts_config, ident)
         self._send(303, "", location=back)
 
 
 def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
-                 timers=DEFAULT_TIMERS, system=True):
+                 timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None):
     """Unstarted loopback-only server; the caller serves and closes it."""
     check_run_id(run_id)
     check_actor(actor)
@@ -829,6 +890,7 @@ def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_ro
     server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
     server.csrf_token = secrets.token_urlsafe(32)
     server.actor = actor
+    server.mail_drafts_config = mail_drafts_config
     server.options = {"project": os.path.abspath(project), "run_id": run_id, "run_report_path": run_report_path,
                       "kit_root": kit_root, "as_of": as_of, "timers": tuple(timers), "system": system}
     return server
@@ -850,6 +912,8 @@ def main(argv=None):
     parser.add_argument("--render", metavar="OUT.html", help="write a static, non-actionable snapshot and exit")
     parser.add_argument("--timer-unit", action="append", help="systemd user timer to report (repeatable)")
     parser.add_argument("--no-system", action="store_true", help="skip timer and disk checks")
+    parser.add_argument("--mail-drafts-config", metavar="FILE",
+                        help="owner-only mailbox config: after Approve, place that one draft in the Drafts folder")
     args = parser.parse_args(argv)
     timers = tuple(args.timer_unit) if args.timer_unit else DEFAULT_TIMERS
     try:
@@ -866,11 +930,16 @@ def main(argv=None):
             return 0
         if not args.actor:
             raise PanelError("actor_required")
+        if args.mail_drafts_config:
+            try:
+                mail_drafts.load_config(args.mail_drafts_config)
+            except mail_drafts.MailDraftError:
+                raise PanelError("mail_drafts_config_invalid") from None
         if not 1 <= args.port <= 65535:
             raise PanelError("port_invalid")
         server = build_server(args.project, args.run_id, actor=args.actor, port=args.port,
                               run_report_path=args.run_report, kit_root=args.kit_root, as_of=args.as_of,
-                              timers=timers, system=not args.no_system)
+                              timers=timers, system=not args.no_system, mail_drafts_config=args.mail_drafts_config)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required")) else 1

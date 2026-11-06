@@ -18,6 +18,7 @@ from unittest import mock
 
 from campaign_tool.records import admin_panel as ap
 from campaign_tool.records import approval_queue as aq
+from campaign_tool.records import mail_drafts as md
 from campaign_tool.records.ledger import store
 from tests.approval_signing import Signer
 
@@ -595,6 +596,108 @@ class NextStepsPageTests(ServerCase):
         page = ap.render_next_steps(self.load())
         self.assertNotIn("<form", page)
         self.assertNotIn("csrf", page)
+
+class MailboxPanelTests(ServerCase):
+    """The Mailbox cell and the optional post-approve placement hook (fake IMAP, nothing is sent)."""
+
+    def setUp(self):
+        super().setUp()
+        private = Path(self.tmp.name) / "private"
+        private.mkdir(mode=0o700)
+        pw = private / "pw"
+        pw.write_text("synthetic-secret\n")
+        pw.chmod(0o600)
+        self.cfg = private / "mail.json"
+        self.cfg.write_text(json.dumps({"host": "imap.example.invalid", "user": "records@campaign.example",
+                                        "password_file": str(pw), "folder": "Drafts"}))
+        self.cfg.chmod(0o600)
+        self.appended = []
+        outer = self
+
+        class Fake:
+            def select(self, folder, readonly=False):
+                return "OK", [b"1"]
+
+            def uid(self, command, *args):
+                return "OK", [b""]
+
+            def append(self, folder, flags, date, raw):
+                outer.appended.append((folder, flags, raw))
+                return "OK", [b"done"]
+
+            def logout(self):
+                return "BYE", []
+        real = md.place
+        patch = mock.patch.object(md, "place", side_effect=lambda *a, **k: real(
+            *a, factory=lambda config, password: Fake(), **k))
+        self.place_mock = patch.start()
+        self.addCleanup(patch.stop)
+
+    def page(self, server):
+        return Http(server.server_address[1]).send("GET", "/", headers={"Content-Length": None,
+                                                                        "Content-Type": None})[2]
+
+    def approve(self, server):
+        ident = self.draft_row["id"]
+        if getattr(self, "sig", None) is None:
+            self.sig = self.signer.sign(aq.approval_payload(self.project, ident))
+        sig = self.sig
+        return Http(server.server_address[1]).post("/approvals/approve", {
+            "csrf_token": server.csrf_token, "id": ident, "signature": sig})
+
+    def test_approve_places_one_draft_and_the_cell_shows_it(self):
+        server = self.start(mail_drafts_config=str(self.cfg))
+        self.assertNotIn("<dt>Mailbox</dt>", self.page(server))  # pending, nothing placed
+        status, headers, _ = self.approve(server)
+        self.assertEqual((status, headers["location"]), (303, "/"))
+        self.assertEqual(self.row()["status"], "approved")
+        self.assertEqual(len(self.appended), 1)
+        self.assertEqual((self.appended[0][0], self.appended[0][1]), ('"Drafts"', "(\\Draft)"))
+        page = self.page(server)
+        self.assertIn("In Drafts (not threaded: thread_not_found)", page)
+        self.assertIn("Draft only. Nothing has been sent.", page)
+        self.assertIn(md.placements(self.project)[0]["fingerprint"], page)
+        self.assertIn('href="mid:rec-', page)
+        # replaying the same signature makes no second draft
+        self.assertEqual(self.approve(server)[0], 303)
+        self.assertEqual(len(self.appended), 1)
+
+    def test_placement_failure_keeps_the_approval_and_is_shown(self):
+        server = self.start(mail_drafts_config=str(self.cfg.parent / "missing.json"))
+        self.assertEqual(self.approve(server)[0], 303)
+        self.assertEqual(self.row()["status"], "approved")
+        self.assertEqual(self.appended, [])
+        self.assertIn("Placement failed: config_unavailable", self.page(server))
+
+    def test_without_the_flag_no_placement_is_attempted(self):
+        server = self.start()
+        self.assertEqual(self.approve(server)[0], 303)
+        self.assertEqual(self.row()["status"], "approved")
+        self.place_mock.assert_not_called()
+        self.assertFalse((self.project / "approvals" / "mail-drafts.jsonl").exists())
+        self.assertIn("Not placed yet", self.page(server))
+
+    def test_cell_for_each_journal_state(self):
+        ident = self.draft_row["id"]
+        self.approve(self.start())
+        base = {"schema": md.SCHEMA, "queue_id": ident, "at": "2026-11-05T00:00:00Z"}
+        rev = self.row()["revision"]
+        rows = [dict(base, revision=rev, state="placed", message_id="<rec-x@c.example>", folder="Drafts",
+                     fingerprint="f" * 64, threaded=True, thread_reason=None),
+                dict(base, revision=rev - 1, state="superseded", superseded_by=rev)]
+        path = self.project / "approvals" / "mail-drafts.jsonl"
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        path.chmod(0o600)
+        page = ap.render_dashboard(self.load())
+        self.assertIn("In Drafts (threaded)", page)
+        self.assertIn("superseded by revision %d" % rev, page)
+        # an edited (pending) row says its earlier revision is in Drafts and that the new text is not placed
+        aq.edit(self.project, ident, "op", "newer text")
+        self.assertIn("is in Drafts; the edited text is not placed until it is approved",
+                      ap.render_dashboard(self.load()))
+        # a corrupt journal is a named, content-free diagnostic and does not hide the queue
+        path.write_text("{bad")
+        self.assertIn("journal_invalid", ap.render_dashboard(self.load()))
 
 
 class StaticAndCliTests(Base):
