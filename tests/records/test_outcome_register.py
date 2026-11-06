@@ -250,6 +250,42 @@ class RegisterTests(unittest.TestCase):
         self.assertEqual(good["base_due"], "2030-01-11")
 
 
+class PromisedDateTests(unittest.TestCase):
+    """REC-AUTO-7: the agency's own promised date, additive to the statutory clock."""
+
+    def build(self, **values):
+        tracker = [{"agency": "Fable Bay Police", "request_id": "FB-09", "submitted_at": "2030-01-01",
+                    "asked": "Audit logs", "source": {"file": "t.csv", "row": 2}, **values}]
+        return register.build_register(data(), tracker, as_of=TODAY)["requests"]
+
+    def promised(self, **values):
+        return next(r for r in self.build(**values) if r["request_id"] == "FB-09")
+
+    def test_states_alias_and_markdown_clause(self):
+        for text, state in (("2030-01-11", "passed"), ("2030-01-12", "due_today"), ("2030-01-13", "upcoming")):
+            self.assertEqual(self.promised(promised_at=text)["promised"], {"state": state, "date": text})
+        row = self.promised(promised_at="2030-01-11", production_at="2030-01-11")
+        self.assertEqual(row["promised"], {"state": "none", "date": "2030-01-11"})
+        self.assertEqual(self.promised()["promised"], {"state": "none", "date": None})
+        self.assertEqual(self.promised()["request_date"], "2030-01-01")
+        _, tracker_gaps = register.read_tracker(FIXTURE)
+        self.assertNotIn("tracker_column_missing:promised_at", tracker_gaps)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.csv"
+            path.write_text("Agency,Request ID,Agency Promised Date\nFable Bay Police,FB-09,2030-01-11\n")
+            self.assertEqual(register.read_tracker(path)[0][0]["promised_at"], "2030-01-11")
+        report = lambda **v: register.build_register(data(), [{"agency": "Fable Bay Police", "request_id": "FB-09",
+                                                               "submitted_at": "2030-01-01", "source": {"file": "t", "row": 2}, **v}],
+                                                     as_of=TODAY)
+        self.assertIn("; promised 2030-01-11 (passed)", register.markdown(report(promised_at="2030-01-11")))
+        self.assertNotIn("promised 20", register.markdown(report()))
+
+    def test_invalid_date_is_a_register_issue(self):
+        row = self.promised(promised_at="soon")
+        self.assertEqual(row["promised"], {"state": "invalid", "date": None})
+        self.assertIn("invalid_date:promised_at", row["issues"])
+
+
 class RegisterIntegrationTests(unittest.TestCase):
     def setUp(self):
         # A normal clone has a .git directory. CI worktrees may use their admitted TMPDIR.

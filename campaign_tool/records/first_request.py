@@ -58,10 +58,17 @@ def check_window(start, end):
     return first, last
 
 
+_AUDIT_WORD = re.compile(r"(?<![a-z0-9])audit(?:s|ed|ing)?(?![a-z0-9])", re.I)
+
+
 def audit_policy_row(book, rows, agency):
-    """The agency's first policy row whose quote falls in tier 1 (audits / logs), else None."""
+    """The agency's first policy row whose quote itself speaks of audits, else None.
+
+    A tier-1 hit alone (an access or search-log row) is not an audit-policy section.
+    """
     for row in agency_policies.sections(rows, agency):
-        if pb.tier_for(book, row["quote"]) == 1:
+        quote = row["quote"]
+        if pb.tier_for(book, quote) == 1 and _AUDIT_WORD.search(quote):
             return row
     return None
 

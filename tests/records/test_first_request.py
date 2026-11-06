@@ -49,6 +49,14 @@ class DraftTests(unittest.TestCase):
         self.assertIn("no agency audit policy row", result["needs_edit"])
         self.assertIn("[EDIT ME: agency policy section]", result["body"])
 
+    def test_access_log_row_alone_is_not_an_audit_policy(self):
+        rows = [dict(r, quote="Access and search logs shall be kept for two years.", section="466.9")
+                for r in agency_policies.load(SLO_CSV)[0] if r["agency"] == "slo-county-sheriff"][:1]
+        self.assertIsNone(fr.audit_policy_row(pb.load(), rows, "slo-county-sheriff"))
+        result = make(rows=rows)
+        self.assertEqual(result["status"], "needs edit")
+        self.assertIn("no agency audit policy row", result["needs_edit"])
+
     def test_unverified_citations_left_out_and_verified_ones_used(self):
         result = make(all_items=True)
         self.assertNotIn("7922.600", result["body"])
