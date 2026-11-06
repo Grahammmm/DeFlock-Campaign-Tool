@@ -82,3 +82,5 @@ stays the source of truth) and the banned-phrase list. `campaign_tool.records.pl
 `tier_for`, `lint`). `records playbook check [--playbook FILE]` validates a playbook (exit 0, or 2 with a fixed refusal code);
 `records playbook lint FILE|-` prints each hit and `pass` (exit 0) or `needs edit` (exit 1). The lint is strict and cannot tell a
 quoted agency phrase from our own wording. Nothing here sends, posts or publishes, and a pass is not legal or semantic review.
+
+`records items [--json] [--playbook FILE] RESPONSE-ITEMS.json` (`campaign_tool.records.item_tiers`) reads the REC-AUTO-8 `response-items.json`, adds the playbook tier and a state word (produced, withheld, exemption cited, no records stated, not addressed, unclear, not rated) to each asked item, orders tier 1 (audit and search/use logs) first, and prints a per-request logs-and-audits line. Read-only, private, review required; it writes nothing and sends nothing.
