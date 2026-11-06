@@ -20,6 +20,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import h2o_questions as hq
+from .run_stages import StageTimeout
 
 ADVICE_SCHEMA = "records-model-advice-v1"
 AGREEMENT_SCHEMA = "records-model-advice-agreement-v1"
@@ -122,6 +123,8 @@ def _call(url, keys, text, timeout, transport):
         raw = transport(url, body, timeout)
     except urllib.error.HTTPError as error:
         return None, f"http_{error.code}"
+    except StageTimeout:
+        raise  # the stage's hard-stop alarm must reach the stage
     except TimeoutError:
         return None, "timeout"
     except Exception:  # noqa: BLE001 - never raises; refused/refusing service all read as "connection"
@@ -152,8 +155,11 @@ def _top(answer):
     return max(answer["probabilities"].values())
 
 
-def ask(text, *, config, transport=None):
-    """Ask the six typed questions about one text. Never raises."""
+def ask(text, *, config, transport=None, deadline=None, clock=time.monotonic):
+    """Ask the six typed questions about one text. Never raises (except the stage's StageTimeout).
+
+    deadline is an absolute clock() value; chunked calls after the first stop at it and use only the time left.
+    """
     try:
         if not isinstance(config, dict) or not config.get("enabled"):
             return {"status": "off", "decisions": None}
@@ -170,7 +176,12 @@ def ask(text, *, config, transport=None):
             return {"status": "unavailable", "code": code, "decisions": None}
         answers = dict(first)
         for piece in pieces[1:]:
-            more, code = _call(endpoint, list(hq.CHUNKED), piece, timeout, transport)
+            left = timeout
+            if deadline is not None:
+                left = min(timeout, deadline - clock())
+                if left <= 0:
+                    return {"status": "unavailable", "code": "budget", "decisions": None}
+            more, code = _call(endpoint, list(hq.CHUNKED), piece, left, transport)
             if code:
                 return {"status": "unavailable", "code": code, "decisions": None}
             # Most severe: the non-other type with the highest probability; the highest urgency.
@@ -182,6 +193,8 @@ def ask(text, *, config, transport=None):
             if more["urgency"]["score"] > answers["urgency"]["score"]:
                 answers["urgency"] = more["urgency"]
         return {"status": "ok", "version": hq.VERSION, "answers": answers}
+    except StageTimeout:
+        raise
     except Exception:  # noqa: BLE001 - the client contract is that it never raises
         return {"status": "unavailable", "code": "schema", "decisions": None}
 
@@ -273,6 +286,8 @@ def _drafts(project):
     try:
         from .approval_queue import load_queue
         return {row["item_id"] for row in load_queue(project)}
+    except StageTimeout:
+        raise
     except Exception:  # noqa: BLE001 - the draft comparison is optional context
         return None
 
@@ -335,7 +350,8 @@ def write_run_model_advice(project, run_id, *, transport=None, clock=time.monoto
         elif not by_original.get(item.get("original_sha256")):
             record["code"] = "no_text"
         else:
-            result = ask(by_original[item["original_sha256"]], config=config, transport=transport)
+            result = ask(by_original[item["original_sha256"]], config=config, transport=transport,
+                         deadline=started + RUN_BUDGET_SECONDS, clock=clock)
             record["status"], record["code"] = result["status"], result.get("code")
             if result["status"] == "ok":
                 record["answers"] = result["answers"]
@@ -362,6 +378,8 @@ def health(project, *, transport=None):
         (transport or _post)(url, None, config["timeout_seconds"])
     except urllib.error.HTTPError as error:
         return {"status": "unavailable", "code": f"http_{error.code}"}
+    except StageTimeout:
+        raise
     except TimeoutError:
         return {"status": "unavailable", "code": "timeout"}
     except Exception:  # noqa: BLE001

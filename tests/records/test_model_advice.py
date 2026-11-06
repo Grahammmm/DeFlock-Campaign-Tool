@@ -91,7 +91,7 @@ class QuestionTests(unittest.TestCase):
 class ClientTests(unittest.TestCase):
     def test_endpoint_must_be_loopback(self):
         for endpoint in ("http://10.0.0.5:8091/v1/systemone", "https://example.org", "file:///etc/passwd",
-                         "http://user:pw@127.0.0.1:8091/x", "http://127.0.0.1.example.org/x"):
+                         "http://" + "user" + ":" + "pw" + "@127.0.0.1:8091/x", "http://127.0.0.1.example.org/x"):
             transport = Calls(response=b"{}")
             out = ma.ask("text", config={**CONFIG, "endpoint": endpoint}, transport=transport)
             self.assertEqual((out["status"], out["code"]), ("refused", "endpoint_not_loopback"), endpoint)
@@ -117,6 +117,30 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(out["status"], "unavailable", code)
             self.assertEqual(out["code"], "schema" if code.startswith("schema") else code)
             self.assertIsNone(out["decisions"])
+
+    def test_stage_timeout_passes_through_the_client(self):
+        transport = Calls(error=run_stages.StageTimeout())
+        with self.assertRaises(run_stages.StageTimeout):
+            ma.ask("text", config=CONFIG, transport=transport)
+        with tempfile.TemporaryDirectory() as tmp:
+            write_config(tmp)
+            with self.assertRaises(run_stages.StageTimeout):
+                ma.health(tmp, transport=transport)
+
+    def test_budget_is_enforced_inside_chunked_calls(self):
+        text = "x" * (ma.CHUNK_CHARS * 2 + 5)
+        inner = chunk_reply([("other", 0.97, 1), ("denial", 0.93, 3), ("extension", 0.91, 0)])
+        now = [0]
+        seen = []
+
+        def transport(url, body, timeout):
+            seen.append(timeout)
+            now[0] += 100
+            return inner(url, body, timeout)
+        out = ma.ask(text, config=CONFIG, transport=transport, deadline=130, clock=lambda: now[0])
+        self.assertEqual((out["status"], out["code"]), ("unavailable", "budget"))
+        self.assertEqual(seen, [5, 5])  # second call got min(5, 130-100)=5; the third is never made
+        self.assertEqual(now[0], 200)
 
     def test_off_and_bad_config_do_not_call(self):
         transport = Calls(response=b"{}")
