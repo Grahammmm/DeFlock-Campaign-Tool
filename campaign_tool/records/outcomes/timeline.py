@@ -103,7 +103,9 @@ def _marks(row, today, events, closed):
     if closed:
         return marks
     state = clock.get("state")
-    if state == "past_due_reminder":
+    determined = any(e["type"] in ("determination", "production", "denial", "no records")
+                     and not e.get("superseded") for e in events)
+    if state == "past_due_reminder" and not determined:
         marks.append({"kind": "statutory_date_passed", "date": clock.get("due"), "basis": clock.get("basis"),
                       "label": OVERDUE_LABEL})
     elif state == "unknown":
@@ -121,8 +123,10 @@ def _marks(row, today, events, closed):
 
 
 def _next_action(row, stage, drafts, closed, marks):
-    pending = sorted(d for d in drafts if d["status"] == "pending")
-    approved = sorted(d for d in drafts if d["status"] == "approved")
+    def order(d):
+        return (str(d.get("draft_kind")), str(d.get("draft_id")))
+    pending = sorted((d for d in drafts if d["status"] == "pending"), key=order)
+    approved = sorted((d for d in drafts if d["status"] == "approved"), key=order)
     if pending:
         return {"owner": "G", "action": f"approve, edit or reject the pending {pending[0]['draft_kind']} draft"}
     if approved:

@@ -129,6 +129,23 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(only(build(reg(row(action="follow up"))))["next_action"]["owner"], "coordinator")
         self.assertEqual(only(build(reg(row())))["next_action"]["owner"], "agency")
 
+    def test_several_drafts_for_one_request_do_not_break_the_timeline(self):
+        base = {"kind": "fee-reply", "status": "pending", "agency_id": "ag1", "request_id": "L-1",
+                "created_at": "2026-11-01T00:00:00Z"}
+        two = [{**base, "id": "d2"}, {**base, "id": "d1"}]
+        self.assertEqual(only(build(reg(row()), drafts=two))["next_action"]["owner"], "G")
+        two = [{**d, "status": "approved"} for d in two]
+        self.assertIn("sending stays manual", only(build(reg(row()), drafts=two))["next_action"]["action"])
+
+    def test_manual_determination_clears_the_statutory_overdue_mark(self):
+        late = row(deadline=clock(state="past_due_reminder"))
+        self.assertEqual(only(build(reg(late)))["overdue_marks"][0]["kind"], "statutory_date_passed")
+        out = only(build(reg(late), manual=[manual("m1", "determination", "2026-11-02")]))
+        self.assertEqual(out["overdue_marks"], [])
+        out = only(build(reg(late), manual=[manual("m1", "determination", "2026-11-02"),
+                                            manual("m2", "call", "2026-11-03", corrects="m1")]))
+        self.assertEqual(out["overdue_marks"][0]["kind"], "statutory_date_passed")
+
     def test_events_are_dated_oldest_first_and_unmatched_are_counted(self):
         stray = {"idempotency_key": "kx", "kind": "send_request", "request_id": "OTHER", "agency_id": "ag1",
                  "sent_at": "2026-10-01T00:00:00Z", "state": "sent", "message_id": None}

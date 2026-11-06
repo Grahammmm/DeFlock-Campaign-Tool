@@ -208,7 +208,7 @@ def deadlines(units, received_at):
     return unique
 
 
-def _current_units(db, processing, subject):
+def _current_units(db, processing, subject, paged=True):
     """Current extraction units, hash-bound like factsheets.collect.
 
     -> (units, diagnostics, review_status). A missing extraction is a diagnostic;
@@ -251,6 +251,10 @@ def _current_units(db, processing, subject):
         text = payload["text"]
         pages = [locator[k] for k in ("page", "page_no") if k in locator]
         if not pages or any(type(p) is not int or p < 1 for p in pages) or len(set(pages)) != 1:
+            if not paged and payload["kind"] != "email_headers":  # REC-LINK-1: unpaginated mail bodies keep page None
+                units.append({"page": None, "ordinal": ordinal, "unit_id": unit["id"], "text": text,
+                              "text_sha256": unit["text_sha256"], "payload_sha256": digest})
+                continue
             if "page_locator_unavailable" not in diagnostics and payload["kind"] != "email_headers":
                 diagnostics.append("page_locator_unavailable")
             continue
