@@ -15,9 +15,9 @@ import re
 
 from .. import kit_track
 
-KINDS = ("reply-extension", "appeal-denial", "fee-reply", "followup-missing-records",
+KINDS = ("reply-extension", "appeal-denial", "fee-reply", "followup-missing-records", "first-request",
          "reminder-no-response", "reminder-promised-date", "formal-notice-no-response")
-FOLLOWUP_KINDS = KINDS[4:]
+FOLLOWUP_KINDS = KINDS[5:]
 DRAFT_BANNER = "DRAFT — NOT SENT. Review before sending it yourself."
 FOOTER = ("---\nDraft only. Not legal advice. Review required; the law package is draft and every reference above "
           "is the supplied reference, not a conclusion that the agency violated anything.\n")
