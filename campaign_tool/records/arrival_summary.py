@@ -44,9 +44,24 @@ def _safe_dir(path):
     return path
 
 
+def _safe_join(project, *parts):
+    """Project path joined with ``parts``; every existing ancestor must be a real directory."""
+    current = _safe_dir(project)
+    for index, part in enumerate(parts):
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        _need(not stat.S_ISLNK(info.st_mode), "unsafe_path")
+        if index < len(parts) - 1:
+            _need(stat.S_ISDIR(info.st_mode), "unsafe_path")
+    return current
+
+
 def baseline_path(project, run_id):
     _need(isinstance(run_id, str) and RUN_ID_RE.fullmatch(run_id) is not None, "run_id")
-    return _safe_dir(project) / "run-outputs" / run_id / BASELINE_NAME
+    return _safe_join(project, "run-outputs", run_id, BASELINE_NAME)
 
 
 def _read_private(path, limit=MAX_BYTES):
@@ -74,7 +89,7 @@ def _ledger_digests(project):
     """Original digests in the ledger; an absent ledger is empty, an unreadable one is unavailable."""
     import sqlite3
     from .run_stages import LedgerBusy, snapshot_ro
-    ledger = _safe_dir(project) / "processing-v1" / "ledger.sqlite"
+    ledger = _safe_join(project, "processing-v1", "ledger.sqlite")
     if not os.path.lexists(ledger):
         return []
     _need(not ledger.is_symlink(), "ledger_unavailable")
@@ -150,7 +165,7 @@ def capture_baseline(project, run_id):
 def new_counts(project, run_id):
     """New-original counts by kind, from this run's received-items file against the baseline."""
     baseline = load_baseline(project, run_id)
-    source = _safe_dir(project) / "run-outputs" / run_id / "outcomes" / "received-items.json"
+    source = _safe_join(project, "run-outputs", run_id, "outcomes", "received-items.json")
     raw, _ = _read_private(source)
     try:
         doc = json.loads(raw.decode("utf-8"))
