@@ -155,11 +155,9 @@ def _drop_dropped_sentences(question, open_asks, dropped_rows):
     if not dropped_rows:
         return question
     dropped_words = set().union(*(_words(d["text"]) for d in dropped_rows))
-    open_words = set().union(*(_words(a["text"]) for a in open_asks)) if open_asks else set()
-    unique = dropped_words - open_words  # words only a dropped ask uses; incidental shared vocabulary cannot save a sentence
     keep = []
     for sentence in _SENTENCE.split(question):
-        if _words(sentence) & unique:
+        if _words(sentence) & dropped_words:  # conservative: any subject word of a dropped ask suppresses it, even if an open ask shares the word
             continue
         keep.append(sentence)
     return " ".join(keep)

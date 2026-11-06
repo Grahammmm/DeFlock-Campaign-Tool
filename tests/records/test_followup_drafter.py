@@ -134,6 +134,19 @@ class GateTests(unittest.TestCase):
             self.assertNotIn("audit exists", letter)
             self.assertNotIn("conducted regularly", letter)
 
+    def test_dropped_audit_question_stays_out_when_open_ask_shares_the_subject_word(self):
+        open_ask = {"text": "ALPR audit trail access logs", "rating": "no_records_stated"}
+        produced = make(asks=[{"text": "Completed audits of ALPR use", "rating": "answered", "produced": [{"file": "audits.pdf"}]},
+                              open_ask], prior_asks=[])
+        pending = make(asks=[{"text": "Completed audits of ALPR use"}, open_ask],
+                       prior_asks=[{"text": "Completed audits of ALPR use", "status": "pending"}])
+        for case in (produced, pending):
+            out = fd.draft(self.book, case)
+            letter = out["body"].split("\n---\n")[0]
+            self.assertEqual(len(out["dropped"]), 1)
+            self.assertNotIn("audit exists", letter)
+            self.assertNotIn("conducted regularly", letter)
+
     def test_no_open_asks_left_asks_for_nothing_and_needs_edit(self):
         out = fd.draft(self.book, make(response_type="silence",
                                        prior_asks=[{"text": "Completed audits of ALPR use", "status": "produced"}]))

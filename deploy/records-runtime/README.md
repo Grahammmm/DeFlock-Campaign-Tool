@@ -16,7 +16,8 @@ Files
   (REC-AUTO-1, see "Arrival runs" below). Rendered, never enabled by the
   renderer.
 - `notify.py`: non-fatal Telegram notifier. It writes the report's `notify`
-  stage.
+  stage. Arrival runs get a fixed three-section summary (Came in / Done /
+  Needs G), see `docs/RECORDS-ARRIVAL-PROOF.md`.
 - `targets/stub.json.in`: a stage plan that wires every work stage to the
   synthetic stub backend. It is for TEST targets and the T12 harness only;
   live targets refuse it.
