@@ -525,7 +525,7 @@ _MODULES = {
         records.intake.eml_export records.intake.folder records.intake.local_capture records.intake.mail_delta
         records.intake.mail_wire records.intake.repair_intake records.intake.scope_quarantine
         records.ledger.reconcile records.ledger.store records.ledger_catalog records.ledger_catalog_acceptance
-        records.legacy_adoption records.mail_adoption records.mail_poll records.mail_resolution_census
+        records.legacy_adoption records.mail_adoption records.mail_poll records.mail_resolution_census records.model_advice
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
         records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register
         records.outcomes.textstate records.pipeline_health records.portal.download records.portal.engine records.portal.ledger_adapter
@@ -639,6 +639,7 @@ MODULE_FUNCTIONS = {
     'records.intake.mail_wire': ('store',),
     'records.admin_panel': ('_Handler._send', '_load_system', 'main', 'write_snapshot',),  # loopback panel: snapshot file + response bytes, owner-only; sends nothing
     'records.approval_queue': ('_Store.append', '_open_file', 'main',),  # approvals/queue.jsonl drafts; sends nothing
+    'records.model_advice': ('_write', 'main', 'write_run_model_advice',),  # private shadow advice files; no item text
     'records.intake.repair_intake': ('run',),
     'records.intake.scope_quarantine': ('quarantine',),
     'records.ledger.reconcile': ('main',),
