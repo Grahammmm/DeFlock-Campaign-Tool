@@ -139,7 +139,7 @@ class WriteTests(Base):
         self.assertEqual(got["result"], "written")
         with open(os.path.join(self.project, got["file"])) as f:
             change = json.load(f)
-        self.assertEqual((change["schema"], change["approved_by"], change["agency_key"]), (pp.CHANGE_SCHEMA, "g@x", "ex-pd"))
+        self.assertEqual((change["schema"], change["signed_by"], change["agency_key"]), (pp.CHANGE_SCHEMA, "g@x", "ex-pd"))
         self.assertTrue(change["target"].startswith("content/updates/ex-pd/"))
         self.assertEqual(change["documents"][0]["redaction_ids"], ["red-1"])
         self.assertEqual(pp.write_change(self.project, ident, now=T0 + 90)["result"], "existing")

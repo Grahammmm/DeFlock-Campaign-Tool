@@ -216,7 +216,7 @@ def fold(events):
         elif ident in rows and e.get("revision") == rows[ident]["revision"]:
             row = rows[ident]
             if kind == "approved" and row["status"] == "proposed":
-                row.update(status="approved", approved_by=e["principal"], signature=e["signature"], approved_ts=e["ts"])
+                row.update(status="approved", signed_by=e["principal"], signature=e["signature"], approved_ts=e["ts"])
             elif kind in ("rejected", "cancelled") and row["status"] in ("proposed", "approved"):
                 row["status"] = {"rejected": "rejected", "cancelled": "cancelled"}[kind]
             elif kind == "written" and row["status"] == "approved":
@@ -232,7 +232,7 @@ def _view(row, now):
     status = "expired" if row["status"] in ("proposed", "approved") and _expired(row, now) else row["status"]
     return {k: row[k] for k in ("id", "revision") if k in row} | {
         "status": status, "kind": row["packet"]["kind"], "agency_key": row["packet"]["agency_key"],
-        "title": row["packet"]["title"]} | ({"approved_by": row["approved_by"]} if "approved_by" in row else {}) | (
+        "title": row["packet"]["title"]} | ({"signed_by": row["signed_by"]} if "signed_by" in row else {}) | (
         {"file": row["file"]} if "file" in row else {})
 
 
@@ -367,7 +367,7 @@ def approve(project, ident, signature, now=None):
         except approval.ApprovalError:
             raise PacketError("approval_required") from None
         lock.append("approved", now, id=ident, revision=row["revision"], principal=who, signature=signature)
-    return {"id": ident, "approved_by": who}
+    return {"id": ident, "signed_by": who}
 
 
 def decide(project, ident, how, actor, now=None):
@@ -397,10 +397,10 @@ def write_change(project, ident, now=None):
             who = approval.verify(_payload(project, row), row["signature"])
         except approval.ApprovalError:
             raise PacketError("approval_required") from None
-        _need(who == row["approved_by"], "approval_required")
+        _need(who == row["signed_by"], "approval_required")
         name = f"{ident}-r{row['revision']}.json"
         day = _iso(row["approved_ts"])[:10]
-        change = {"schema": CHANGE_SCHEMA, "packet": ident, "revision": row["revision"], "approved_by": who,
+        change = {"schema": CHANGE_SCHEMA, "packet": ident, "revision": row["revision"], "signed_by": who,
                   "approved_at": _iso(row["approved_ts"]), "kind": packet["kind"], "agency_key": packet["agency_key"],
                   "request_id": packet["request_id"], "title": packet["title"], "text": packet["text"],
                   "documents": packet["documents"], "citations": packet["citations"],
