@@ -1,0 +1,12 @@
+{"schema": "records-followup-case-v1",
+ "agency": {"id": "grover-beach-pd", "name": "Grover Beach Police Department"},
+ "request_id": "26-133", "request_date": "2026-07-30", "response_date": "2026-09-10",
+ "response_type": "no_records", "contact": "Ms. LeVeque", "sender": "DeFlock SLO Records Project",
+ "subject": "Request 26-133: existing records reflecting the periodic ALPR audits",
+ "policy": {"policy_id": "Policy 428", "section": "428.5(c)"},
+ "prior_asks": [{"ask_id": "a-logs", "text": "Search logs January to June 2026", "status": "produced"}],
+ "asks": [
+  {"ask_id": "a-logs", "number": 5, "text": "Search logs for January to June 2026", "rating": "answered",
+   "produced": [{"file": "six monthly access-log CSV exports, Jan-Jun 2026"}]},
+  {"ask_id": "a-audits", "number": 6, "text": "Completed audits of ALPR use under the agency policy", "rating": "no_records_stated"}
+ ]}

@@ -20,7 +20,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, mail_drafts, mail_send, run_report, schedule
+from . import approval_queue, console_documents, mail_drafts, mail_send, run_report, schedule
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -706,6 +706,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._host_ok():
             return self._fail(403)
+        if console_documents.serve(self):  # Screen C
+            return
         path, _, query = self.path.partition("?")
         if path == "/send":
             return self._prepare_send(query)
