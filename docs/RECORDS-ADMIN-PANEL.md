@@ -37,6 +37,11 @@ plain text; no document-supplied link is clickable. The panel reads no raw `.eml
 
 ## Drafts and decisions
 
+Use **Edit** to remove draft banners, `# Draft (` headings, `[EDIT ME]` placeholders,
+reviewer notes, `BEFORE SENDING` instructions and template footers before approving.
+Placement and sending refuse remaining residue with `body_has_draft_residue`;
+approval alone does not make a working draft ready to send.
+
 - **Approve** follows the approval queue: the form shows the exact `approval_payload` bytes; sign them elsewhere
   (`ssh-keygen -Y sign -n deflock-approval`) and paste the signature. The panel holds no key and never signs.
   Result: `approved`, marked approved-to-send, nothing sent. A typed label never approves.
