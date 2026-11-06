@@ -7,6 +7,16 @@ Private, read-only pages served by `records panel` (stdlib, loopback only):
 
 Data: `run-outputs/<run>/outcomes/timeline.json` (REC-TL-1), plus `release-links.json` and `response-items.json`. Each source fails alone and is named unavailable. Nothing is sent, fetched, approved or published; overdue marks are arithmetic on our records, not a legal finding. Agency keys are data and are matched exactly against the timeline.
 
+## Home (CON-HOME-1)
+
+`GET /` is the read-only Home decision queue, with counts by kind. Requests,
+follow-ups, unsent approvals (when sending is configured), status lines and
+proposed packets share one queue: most overdue first, then closing windows,
+then oldest. Overdue is arithmetic on our records, not a legal finding.
+Open links lead to the existing action pages; Home adds no approval or send.
+Agency pages, redactions and findings show their not-connected source units.
+The unchanged pipeline dashboard is now at `GET /dashboard`.
+
 ## Manual events (REC-CON-4)
 
 Each request links to `GET /manual-event?agency=KEY&request=REF`. Choose call,

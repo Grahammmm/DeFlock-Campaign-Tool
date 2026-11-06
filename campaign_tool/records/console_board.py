@@ -206,7 +206,7 @@ def _head(title, model):
              for k, s in sources(model).items() if s["state"] != "ok"]
     return ['<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex,nofollow">'
             "<title>%s</title></head><body>" % esc(title), '<p class="notice">%s</p>' % esc(BANNER),
-            '<nav aria-label="Pages"><a href="/">Dashboard</a> <a href="/board">Board</a> '
+            '<nav aria-label="Pages"><a href="/">Home</a> <a href="/dashboard">Dashboard</a> <a href="/board">Board</a> '
             '<a href="/documents">Documents</a> <a href="/next-steps">Drafts and next steps</a></nav>',
             "<h1>%s</h1>" % esc(title), "<p>Run %s. %s Nothing is fetched, sent or published.</p>" % (
                 esc(model["run_id"]), esc(LABEL))] + notes

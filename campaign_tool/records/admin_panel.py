@@ -20,7 +20,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, console_board, console_documents, console_manual_events, console_oversight, draft_templates, mail_drafts, mail_send, run_report, schedule
+from . import approval_queue, console_board, console_documents, console_home, console_manual_events, console_oversight, draft_templates, mail_drafts, mail_send, run_report, schedule
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -32,7 +32,7 @@ ROW_LIMIT = 500
 STAGE_LIMIT = 20000
 SOCKET_TIMEOUT = 10
 DEFAULT_TIMERS = ("records-run.timer",)
-RETURNS = ("/", "/next-steps")  # the only places a decision may send the browser back to
+RETURNS = ("/", "/dashboard", "/next-steps")  # the only places a decision may send the browser back to
 NEXT_SECTIONS = (("social", "Draft social media post", "next-social-post", "approved-to-publish"),
                  ("site", "Proposed website update (diff)", "next-site-update", "approved-to-publish"),
                  ("followup", "Follow-up to the agency (probe)", "next-followup-probe", "approved-to-send"))
@@ -565,7 +565,7 @@ def render_next_steps(model, *, csrf_token=None):
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             '<meta name="robots" content="noindex,nofollow"><title>Next steps</title><style>' + STYLE + "</style></head><body><header>"
             '<p class="notice">' + esc(BANNER) + '</p><h1>Next steps</h1><p class="notice">' + esc(mode) + "</p>"
-            '<nav aria-label="Pages"><a href="/">Dashboard</a></nav></header><main id="content">'
+            '<nav aria-label="Pages"><a href="/">Home</a> <a href="/dashboard">Dashboard</a></nav></header><main id="content">'
             + _next_sections(model, csrf_token) + '</main><footer><p class="notice">' + esc(BANNER)
             + "</p></footer></body></html>\n")
 
@@ -784,6 +784,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._host_ok():
             return self._fail(403)
+        if console_home.serve(self):
+            return
         if console_manual_events.serve(self):
             return
         if console_documents.serve(self):  # Screen C

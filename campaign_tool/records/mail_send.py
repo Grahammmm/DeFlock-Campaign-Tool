@@ -234,7 +234,7 @@ def _log(project, **row):
         return False
 
 
-def results(project):
+def results(project, *, strict=False):
     """Latest log row per (queue_id, revision), oldest first. Read-only; a missing log is empty."""
     try:
         with _Dir(project) as d:
@@ -246,13 +246,23 @@ def results(project):
             finally:
                 os.close(fd)
     except (MailSendError, approval_queue.ApprovalQueueError, OSError):
+        if strict:
+            raise MailSendError("send_io") from None
         return []
+    if strict and (len(raw) > MAX_RESULTS or (raw and not raw.endswith(b"\n"))):
+        raise MailSendError("send_results_invalid")
     latest = {}
     for line in raw.split(b"\n"):
+        if not line:
+            continue
         try:
             row = json.loads(line)
         except ValueError:
+            if strict:
+                raise MailSendError("send_results_invalid") from None
             continue
+        if strict and not (isinstance(row, dict) and row.get("schema") == SCHEMA and isinstance(row.get("queue_id"), str)):
+            raise MailSendError("send_results_invalid")
         if isinstance(row, dict) and row.get("schema") == SCHEMA and isinstance(row.get("queue_id"), str):
             latest[(row["queue_id"], row.get("revision"))] = row
     return list(latest.values())
