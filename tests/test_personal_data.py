@@ -529,7 +529,7 @@ _MODULES = {
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
         records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register records.outcomes.timeline
         records.outcomes.textstate records.pipeline_health records.portal.download records.portal.engine records.portal.ledger_adapter
-        records.portal.store records.public_updates records.publish records.queue_runtime records.recovery.backup
+        records.portal.store records.public_packets records.public_updates records.publish records.queue_runtime records.recovery.backup
         records.recovery.backup_v2 records.recovery.publication records.review_bundle records.review_retirement
         records.run records.run_orchestrator records.run_stages records.runner.canonical_mail records.runner.core
         records.runner.export_proof records.runtime records.schedule records.systemd_control records.unattended
@@ -677,6 +677,9 @@ MODULE_FUNCTIONS = {
     'records.portal.engine': ('_download',),
     'records.portal.ledger_adapter': ('WP1LedgerAdapter._copy_cas',),
     'records.portal.store': ('Queue.__init__', 'Queue.lock', 'Queue.promote',),
+    'records.public_packets': (
+        '_Locked.__enter__', '_Locked.append', '_replace', 'main',
+    ),  # private packet journal (actor/signature history), lock and the site-content change file; nothing is published or deployed
     'records.public_updates': (
         '_Locked.__enter__', '_Locked.append', '_replace', 'advance', 'kill', 'main', 'retract',
     ),  # private journal (actor/signature history), lock, OFF/kill switches and derived feed; no transport or publication
