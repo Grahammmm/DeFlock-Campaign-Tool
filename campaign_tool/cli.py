@@ -370,8 +370,12 @@ def law_package_report(cfg):
     return report
 
 
-def doctor(root, contact_max_age_days=None, stale_days=None):
-    print(json.dumps(doctor_report(root, contact_max_age_days, stale_days), indent=2))
+def doctor(root, contact_max_age_days=None, stale_days=None, launch=False):
+    report = doctor_report(root, contact_max_age_days, stale_days)
+    if launch:
+        from .launch_check import launch_checks
+        report["launch"] = launch_checks(root, contact_max_age_days or 365)
+    print(json.dumps(report, indent=2))
 
 
 def doctor_report(root, contact_max_age_days=None, stale_days=None):
@@ -896,6 +900,7 @@ def main():
             cmd.add_argument("--not-in-sources", action="store_true",
                              help="With --list: only objects not registered in content/sources.json")
         if name == "doctor":
+            cmd.add_argument("--launch", action="store_true", help="Report offline launch readiness; never deployment approval")
             cmd.add_argument("--contact-max-age-days", type=int, metavar="N", help="Name verified kit contacts checked over N days ago")
             cmd.add_argument("--stale-days", type=int, metavar="N", help="Name inputs dated over N days ago (1-3650)")
             cmd.add_argument("--checklist", action="store_true", help="Print each check as ok/todo with its next step and owner")
@@ -2375,7 +2380,7 @@ def main():
             if args.command == "status":
                 status(root, check=args.check, fix=args.fix_modes)
             else:
-                doctor(root, args.contact_max_age_days, args.stale_days)
+                doctor(root, args.contact_max_age_days, args.stale_days, launch=args.launch)
     except (OSError, ValueError, sqlite3.Error) as exc:
         fixes.emit(exc)
         sys.exit(getattr(exc, "exit_code", 1))  # kit_track.WaitingOnYou: 3
