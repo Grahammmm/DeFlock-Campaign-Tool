@@ -34,7 +34,9 @@ PUBLISH_PATHS = (("campaign_tool/findings.py", "publish"), ("campaign_tool/findi
 GATE_CALLS = {"assert_publishable", "entry_refusals"}
 # The existing human review surface: modules that store a value a person typed or signed. None hard-codes one.
 HUMAN_SURFACE = frozenset(("campaign_tool/findings.py", "campaign_tool/outbox.py", "campaign_tool/outbox_batch.py",
-                           "tools/flock_approve.py"))
+                           "tools/flock_approve.py",
+                           # approved_by is only the principal of a verified SSH signature over the draft payload.
+                           "campaign_tool/records/approval_queue.py"))
 SKIP_DIRS = {".git", "node_modules", "tests", ".worktrees"}
 LITERAL = re.compile(r"""\b(?:approved_by|approved_on|approval_ref)["']?\s*[:=]\s*["'][^"'\s]""")
 
