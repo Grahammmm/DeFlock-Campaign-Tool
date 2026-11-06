@@ -17,7 +17,6 @@ import argparse
 import contextlib
 import hashlib
 import http.client
-import importlib.util
 import io
 import json
 import os
@@ -29,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
-from . import approval_queue, arrival, arrival_summary, run_orchestrator, run_stages
+from . import approval_queue, arrival, arrival_summary, notify_text, run_orchestrator, run_stages
 
 SCHEMA = "records-e2e-proof-v1"
 MARKER = run_stages.SANDBOX_MARKER
@@ -112,14 +111,6 @@ def _adapter(name, project, run_id, *extra):
     return line["status"], line.get("error_code"), detail
 
 
-def _load_notify(repo):
-    path = repo / "deploy" / "records-runtime" / "notify.py"
-    spec = importlib.util.spec_from_file_location("records_notify_for_proof", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _get(port, path):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
     try:
@@ -146,7 +137,6 @@ def _post(port, path, fields):
 
 def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None):
     """Replay one message; return the proof report dict. ``out/label`` must not exist yet."""
-    repo = Path(__file__).resolve().parents[2]
     now = now or datetime.now(timezone.utc)
     base = Path(os.path.abspath(out)) / label
     if base.exists():
@@ -201,7 +191,6 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None)
         return "ok", None, {"queued_by_kind": kinds}
 
     def telegram_text():
-        notify = _load_notify(repo)
         stages = [run_orchestrator.stage_entry(s["stage"], s["status"] if s["status"] != "not_run" else "skipped",
                                                _counts(s), s["seconds"], s["code"] if s["status"] != "ok" else None)
                   for s in line.stages if s["stage"] in ("extract", "digest_gates", "outputs")]
@@ -214,7 +203,7 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None)
         report = run_orchestrator.build_report(run_id, "arrival", started, stages, {}, 0, [],
                                                trigger="arrival", arrivals=state.get("arrivals", []),
                                                arrival_summary=summary)
-        text = notify.compose(report, "records", 0)
+        text = notify_text.compose(report, "records", 0)
         (base / "telegram-summary.txt").write_text(text + "\n", encoding="utf-8")
         (project / "run-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         state["report"] = str(project / "run-report.json")
