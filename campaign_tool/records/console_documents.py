@@ -54,6 +54,44 @@ def _read(path, schema):
     return {"state": "ok", "doc": doc}
 
 
+def _dicts(value, optional=True):
+    """A list whose members are all dicts (missing or None counts as empty when optional)."""
+    if value is None:
+        return optional
+    return type(value) is list and all(type(v) is dict for v in value)
+
+
+def _opt_str(value):
+    return value is None or type(value) is str
+
+
+def _shape_ok(key, doc):
+    """True when the fields this screen consumes have the expected types; a bad source degrades alone."""
+    if key == "received":
+        return _dicts(doc.get("items")) and all(_opt_str(i.get("agency_id")) for i in doc.get("items") or [])
+    if key == "links":
+        for link in doc.get("links") or []:
+            if type(link) is not dict:
+                return False
+            ids = link.get("agency_ids")
+            if ids is not None and not (type(ids) is list and all(type(a) is str for a in ids)):
+                return False
+            if not _dicts(link.get("sources")) or not (link.get("expiry") is None or type(link.get("expiry")) is dict):
+                return False
+        return type(doc.get("links") or []) is list
+    if key == "proposals":
+        if not _dicts(doc.get("agencies")):
+            return False
+        return all(_opt_str(b.get("agency_id")) and _dicts(b.get("requests"))
+                   and all(_dicts(r.get("proposals")) for r in b.get("requests") or [])
+                   for b in doc.get("agencies") or [])
+    if key == "response":
+        return _dicts(doc.get("requests")) and all(_dicts(r.get("asks")) for r in doc.get("requests") or [])
+    if key == "textstate":
+        return _dicts(doc.get("records"))
+    return True
+
+
 def _check_run(project, run_id):
     if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id) or run_id in (".", ".."):
         raise ValueError("run_id_invalid")
@@ -93,11 +131,16 @@ def load(project, run_id, *, playbook_path=None, pages=True):
         doc = model[key].get("doc")
         if doc is not None and doc.get("run_id") != run_id:
             model[key] = {"state": "unavailable", "code": "run_mismatch"}
+    for key in ("received", "links", "proposals", "response", "textstate"):
+        if model[key]["state"] == "ok" and not _shape_ok(key, model[key]["doc"]):
+            model[key] = {"state": "unavailable", "code": "shape_invalid"}
     if model["response"]["state"] == "ok":
         try:
             model["tiers"] = {"state": "ok", "doc": item_tiers.tier_report(model["response"]["doc"], _pb.load(playbook_path))}
         except _pb.PlaybookError as error:
             model["tiers"] = {"state": "unavailable", "code": error.code}
+        except (TypeError, ValueError, KeyError, AttributeError):
+            model["tiers"] = {"state": "unavailable", "code": "shape_invalid"}
     if pages and model["received"]["state"] == "ok":
         model["pages"] = _pages(project, model["received"]["doc"].get("items") or [])
     return model
@@ -130,6 +173,8 @@ def view(model, agency, now):
     for ask_req in (model["tiers"].get("doc") or {}).get("requests", []):
         if ask_req.get("agency_key") == agency:
             for ask in ask_req["asks"]:
+                if ask["state"] not in item_tiers.DONE:  # withheld, exempt, no records, unclear: not an answer
+                    continue
                 for ev in ask.get("evidence") or []:
                     answers.setdefault(ev.get("item_id") if type(ev) is dict else None, []).append(ask["ask_id"])
     items = []

@@ -121,6 +121,35 @@ class ScreenC(unittest.TestCase):
         self.assertEqual(src["response"]["code"], "unreadable")
         self.assertEqual(src["tiers"]["state"], "unavailable")
 
+    def test_only_produced_asks_count_as_answered(self):
+        build(self.project)
+        out = self.project / "run-outputs" / RUN / "outcomes" / "response-items.json"
+        doc = json.loads(out.read_text())
+        ev = [{"item_id": "i-a", "page": 1, "quote": "x"}]
+        doc["requests"][0]["asks"] += [
+            {"ask_id": "a3", "text": "w", "rating": "withheld", "evidence": ev, "flags": []},
+            {"ask_id": "a4", "text": "n", "rating": "no_records", "evidence": ev, "flags": []}]
+        put(out, doc)
+        item = cd.view(self.model(), "alpha-pd", NOW)["items"][0]
+        self.assertEqual(item["answers_asks"], ["a2"])
+
+    def test_malformed_source_shape_degrades_only_that_source(self):
+        build(self.project)
+        out = self.project / "run-outputs" / RUN / "outcomes"
+        doc = json.loads((out / "release-links.json").read_text())
+        doc["links"] = [None]
+        put(out / "release-links.json", doc)
+        prop = json.loads((out / "gap-proposals.json").read_text())
+        prop["agencies"][0]["requests"] = [None]
+        put(out / "gap-proposals.json", prop)
+        m = self.model()
+        src = cd.sources(m)
+        self.assertEqual(src["links"]["code"], "shape_invalid")
+        self.assertEqual(src["proposals"]["code"], "shape_invalid")
+        self.assertEqual(src["received"]["state"], "ok")
+        self.assertIn("alpha-pd", cd.agencies(m))
+        self.assertIn("links: unavailable (shape_invalid)", cd.render(m, NOW))
+
     def test_symlinked_source_is_refused(self):
         build(self.project)
         out = self.project / "run-outputs" / RUN / "outcomes"
