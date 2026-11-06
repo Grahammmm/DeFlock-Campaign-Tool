@@ -54,6 +54,45 @@ def _read(path, schema):
     return {"state": "ok", "doc": doc}
 
 
+def _aliases(path):
+    """Optional operator-staged identifiers; reject the whole file on any invalid row."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("not_regular")
+            data = stream.read(512 * 1024 + 1)
+        if len(data) > 512 * 1024:
+            raise ValueError("too_large")
+        lines = data.decode("utf-8").replace("\r\n", "\n").split("\n")
+        if lines[-1] == "":
+            lines.pop()
+        if not lines or lines[0] != "agency_key\talias" or len(lines) > 501:
+            raise ValueError("header_or_rows")
+        mapping, keys = {}, set()
+        for line in lines[1:]:
+            key, alias = line.split("\t")
+            if not AGENCY.fullmatch(key) or not alias or len(alias) > 128 or not alias.isprintable():
+                raise ValueError("field")
+            if alias in mapping and mapping[alias] != key:
+                raise ValueError("duplicate")
+            mapping[alias] = key
+            keys.add(key)
+        if keys.intersection(mapping):
+            raise ValueError("alias_is_key")
+        return {"state": "ok", "map": mapping}
+    except FileNotFoundError:
+        return {"state": "absent"}
+    except (OSError, ValueError):
+        return {"state": "unavailable", "code": "aliases_invalid"}
+
+
+def _key(model, ident):
+    aliases = model.get("aliases", {})
+    mapping = aliases.get("map") if isinstance(aliases, dict) and aliases.get("state") == "ok" else None
+    return mapping.get(ident, ident) if isinstance(mapping, dict) else ident
+
+
 def _dicts(obj, key):
     """Field absent, or a list whose members are all dicts. An explicit null or a non-list is malformed."""
     if key not in obj:
@@ -155,7 +194,7 @@ def _pages(project, items):
 def load(project, run_id, *, playbook_path=None, pages=True):
     run_dir = _check_run(project, run_id)
     outcomes = run_dir / "outcomes"
-    model = {"run_id": run_id,
+    model = {"run_id": run_id, "aliases": _aliases(Path(project) / "agency-aliases.tsv"),
              "received": _read(outcomes / "received-items.json", _ri.SCHEMA),
              "links": _read(outcomes / _rl.ARTIFACT, _rl.SCHEMA),
              "proposals": _read(outcomes / "gap-proposals.json", "records-gap-proposals-v1"),
@@ -193,7 +232,7 @@ def agencies(model):
     ids |= {a for l in (model["links"].get("doc") or {}).get("links", []) for a in l.get("agency_ids") or []}
     ids |= {a.get("agency_id") for a in (model["proposals"].get("doc") or {}).get("agencies", [])}
     ids |= {r.get("agency_key") for r in (model["tiers"].get("doc") or {}).get("requests", [])}
-    return sorted(i for i in ids if isinstance(i, str))
+    return sorted({_key(model, i) for i in ids if isinstance(i, str)})
 
 
 def _status(link, now):
@@ -209,14 +248,14 @@ def view(model, agency, now):
     text_of = {r["sha256"]: r["state"] for r in (state or {}).get("records", []) if type(r) is dict and "sha256" in r}
     answers = {}
     for ask_req in (model["tiers"].get("doc") or {}).get("requests", []):
-        if ask_req.get("agency_key") == agency:
+        if _key(model, ask_req.get("agency_key")) == agency:
             for ask in ask_req["asks"]:
                 if ask["state"] not in item_tiers.DONE:  # withheld, exempt, no records, unclear: not an answer
                     continue
                 for ev in ask.get("evidence") or []:
                     answers.setdefault(ev.get("item_id") if type(ev) is dict else None, []).append(ask["ask_id"])
     items = []
-    for item in sorted((i for i in _items(model) if i.get("agency_id") == agency),
+    for item in sorted((i for i in _items(model) if _key(model, i.get("agency_id")) == agency),
                        key=lambda i: (i.get("received_at") or "9", i.get("item_id") or "")):
         digest = item.get("original_sha256")
         items.append({"item_id": item.get("item_id"), "received_at": item.get("received_at"), "kind": item.get("kind"),
@@ -228,7 +267,7 @@ def view(model, agency, now):
     links = []
     for link in (model["links"].get("doc") or {}).get("links", []):
         ids = link.get("agency_ids") or []
-        if (agency in ids) if agency is not None else not ids:
+        if (agency in {_key(model, ident) for ident in ids}) if agency is not None else not ids:
             status, days = _status(link, now)
             links.append({"link_id": link.get("link_id"), "host": link.get("host"), "platform": link.get("platform"),
                           "url_redacted": link.get("url_redacted"),
@@ -237,13 +276,13 @@ def view(model, agency, now):
                           "status": status, "days": days, "fetched": False})
     dispositions = []
     for req in (model["tiers"].get("doc") or {}).get("requests", []):
-        if req.get("agency_key") == agency:
+        if _key(model, req.get("agency_key")) == agency:
             dispositions.append({"request_id": req.get("request_id"), "logs_and_audits": req["logs_and_audits"]["line"],
                                  "asks": [{"ask_id": a["ask_id"], "tier": a["tier"], "tier_name": a["tier_name"],
                                            "state": a["state"], "text": a["text"]} for a in req["asks"]]})
     proposals = []
     for block in (model["proposals"].get("doc") or {}).get("agencies", []):
-        if block.get("agency_id") == agency:
+        if _key(model, block.get("agency_id")) == agency:
             for req in block.get("requests", []):
                 for p in req.get("proposals", []):
                     proposals.append({k: p.get(k) for k in ("proposal_id", "type", "request_id", "quote", "page",
@@ -259,7 +298,8 @@ def view(model, agency, now):
 
 def sources(model):
     return {k: ({"state": "ok"} if model[k]["state"] == "ok" else dict(model[k]))
-            for k in ("received", "links", "proposals", "response", "textstate", "tiers")}
+            for k in ("received", "links", "proposals", "response", "textstate", "tiers", "aliases")
+            if model.get(k, {}).get("state", "absent") != "absent"}
 
 
 # ---- rendering ---------------------------------------------------------------------------------------
