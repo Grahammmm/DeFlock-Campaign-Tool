@@ -971,6 +971,8 @@ def stage_outputs(args):
         write_run_comparison(args.project, args.run_id)
         from .outcomes.received_items import write_run_received_items
         write_run_received_items(args.project, args.run_id)
+        from .outcomes.release_links import write_run_release_links
+        write_run_release_links(args.project, args.run_id)
     except OSError:
         return result("fail", {"input": 1, "failed": 1}, "OUTPUTS_WRITE_FAILED"), 1
     finally:
@@ -992,6 +994,19 @@ def stage_outputs(args):
         raise  # Preserve the run's hard deadline, not a recoverable register warning.
     except Exception:  # noqa: BLE001 - isolate register errors; never expose private exception text
         warning = warning or "OUTPUTS_REGISTER_UNAVAILABLE"
+        register_ok = False
+    else:
+        register_ok = True
+    # No-response follow-up drafts (REC-AUTO-7): need this run's register; own try, own codes; nothing is sent.
+    if register_ok:
+        try:
+            from .followup_clock import queue_followups
+            if queue_followups(args.project, args.run_id).get("settings_invalid"):
+                warning = warning or "OUTPUTS_FOLLOWUP_SETTINGS_INVALID"
+        except StageTimeout:
+            raise
+        except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
+            warning = warning or "OUTPUTS_FOLLOWUP_CLOCK_UNAVAILABLE"
     # Private gap/misuse proposals (REC-AUTO-9): own try, own code; never suppresses earlier outputs.
     try:
         from .outcomes.gap_proposals import write_run_gap_proposals
