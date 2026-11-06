@@ -51,6 +51,7 @@ ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".pdf"}
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 VENDOR_MAX_BYTES = 4 * 1024 * 1024
 SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmpl"  # DF1103-12
+MEETINGS_FILTER_ASSET = Path(__file__).parent / "assets" / "meetings-filter.js.tmpl"  # DF1622-09
 REQUESTS_FILTER_ASSET = Path(__file__).parent / "assets" / "requests-filter.js.tmpl"  # DF1622-08
 # Appended to style.css only with the requests filter: the mobile table rule makes rows display:block, so [hidden] needs help.
 REQUESTS_FILTER_CSS = ("#requests-table tbody tr[hidden]{display:none}\n"
@@ -2397,19 +2398,67 @@ class Site:
             items.append(f'<article><h3>{e(schedule["body"])}</h3><p>{usually}</p>{old}</article>')
         return f'    <section class="section" id="regular-meetings">{"".join(items)}</section>\n' if items else ""
 
+    def meeting_body_slugs(self):
+        """DF1622-09: {exact staged body name: page-local option slug}, or {} below two distinct bodies (no filter).
+        Names sort by (casefold, name); a slug is the ASCII-folded name, suffixed -2, -3 ... when taken; ``all`` is reserved."""
+        names = sorted({m["body"] for m in self.model["meetings"]}, key=lambda b: (b.casefold(), b))
+        if len(names) < 2:
+            return {}
+        used, slugs = {"all"}, {}
+        for name in names:
+            base = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-") or "body"
+            slug, n = base, 1
+            while slug in used:
+                n += 1
+                slug = f"{base}-{n}"
+            used.add(slug)
+            slugs[name] = slug
+        return slugs
+
+    def meetings_filter_js(self):
+        """meetings/filter.js: the packaged template, byte-identical on every site; labels travel in the page, not site-data.js."""
+        return MEETINGS_FILTER_ASSET.read_text(encoding="utf-8")
+
+    def meetings_filter_form(self, slugs):
+        options = "".join(f'<option value="{e(slug)}">{e(name)}</option>' for name, slug in slugs.items())
+        return (f'<form class="sources-filter" id="meetings-filter" aria-label="{self.t("js.meetings_label")}" '
+                f'data-count-template="{html_text(self.labels["js.meetings_count"])}" hidden>'
+                f'<div><label for="meetings-filter-body">{self.t("js.meetings_body")}</label>'
+                f'<select id="meetings-filter-body" name="body"><option value="all">{self.t("js.meetings_all_bodies")}</option>'
+                f'{options}</select></div></form>')
+
+    def meetings_filter_list(self, key, meetings, slugs, empty_html=""):
+        """One filterable list: count and empty note (hidden until the script runs), then the unchanged articles in wrappers."""
+        items = "".join(f'<div class="meeting-filter-item" data-body="{e(slugs[m["body"]])}">{self.meeting_item(m)}</div>' for m in meetings)
+        total = len(meetings)
+        return (f'<p class="sources-filter-count sources-filter-empty" id="meetings-filter-{key}-count" aria-live="polite" hidden>'
+                f'{self.t("js.meetings_count", shown=total, total=total)}</p>'
+                f'<p class="sources-filter-empty" id="meetings-filter-{key}-empty" hidden>{self.t("js.meetings_empty")}</p>'
+                f'<div class="meeting-list" id="meetings-filter-{key}">' + (items or empty_html) + '</div>')
+
     def meetings_html(self):
-        main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p>'
+        slugs = self.meeting_body_slugs()
+        head = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.meetings")}</p>'
                 f'<h2>{self.t("heading.meetings")}</h2></div><p>{self.t("intro.meetings")} '
                 f'<a href="/data/meetings.json" type="application/json">{self.t("intro.meetings_open_data")}</a> · '
                 f'{self.csv_link("/data/meetings.csv")}.'
                 + (f' <a href="/meetings.xml" type="application/atom+xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else "")
-                + f' <a href="/meetings.ics">{self.t("intro.meetings_calendar")}</a></p></div>'
-                '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
-                + '</div></section>\n') + self.body_schedule_html()
-        if self.past:
-            main += (f'    <section class="section" id="past-meetings"><h2>{self.t("heading.past_meetings")}</h2><div class="meeting-list">'
-                     + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')
-        return self.page("meetings", self.labels["title.meetings"], self.labels["title.meetings_description"], "/meetings.html", main)
+                + f' <a href="/meetings.ics">{self.t("intro.meetings_calendar")}</a></p></div>')
+        if slugs:
+            main = (head + self.meetings_filter_form(slugs)
+                    + self.meetings_filter_list("upcoming", self.upcoming, slugs, f'<p>{self.t("notice.no_upcoming")}</p>')
+                    + '</section>\n') + self.body_schedule_html()
+            if self.past:
+                main += (f'    <section class="section" id="past-meetings"><h2>{self.t("heading.past_meetings")}</h2>'
+                         + self.meetings_filter_list("past", self.past, slugs) + '</section>\n')
+        else:
+            main = (head + '<div class="meeting-list">' + ("".join(self.meeting_item(m) for m in self.upcoming) or f'<p>{self.t("notice.no_upcoming")}</p>')
+                    + '</div></section>\n') + self.body_schedule_html()
+            if self.past:
+                main += (f'    <section class="section" id="past-meetings"><h2>{self.t("heading.past_meetings")}</h2><div class="meeting-list">'
+                         + "".join(self.meeting_item(m) for m in self.past) + '</div></section>\n')
+        return self.page("meetings", self.labels["title.meetings"], self.labels["title.meetings_description"], "/meetings.html", main,
+                         ["/meetings/filter.js"] if slugs else [])
 
     def recorded_votes(self, meeting):
         """DF0137-07: the organizer-verified per-member votes, read from the outcome's official record; "" without."""
@@ -3578,6 +3627,8 @@ def _plan(root, today=None, notes=None):
         files["findings/cite.js"] = CITE_JS
     if site.sources_filter():  # DF1103-12: written only when sources.html loads it; an empty library leaves no stale asset
         files["sources/filter.js"] = site.sources_filter_js()
+    if site.meeting_body_slugs():  # DF1622-09: written only when meetings.html loads it; a rebuild below two bodies drops it
+        files["meetings/filter.js"] = site.meetings_filter_js()
     if site.requests_filter_enabled():  # DF1622-08: written only when requests.html loads it; below threshold leaves no stale asset
         files["requests/filter.js"] = site.requests_filter_js()
     files.update(site.agency_feeds())

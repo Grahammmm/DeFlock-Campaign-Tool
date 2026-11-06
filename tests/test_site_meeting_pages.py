@@ -179,7 +179,7 @@ class MeetingPageTests(unittest.TestCase):
         self.add("second", "2026-11-05T18:00:00-07:00")
         written = self.build()
         self.assertEqual(sorted(n for n in written if n.startswith("meetings/")),
-                         [PAGE, "meetings/second.html"])
+                         [PAGE, "meetings/filter.js", "meetings/second.html"])  # DF1622-09: two bodies write the filter script
         for path in self.meetings.glob("*.json"):
             path.unlink()
         written = self.build()

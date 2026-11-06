@@ -91,9 +91,12 @@ class AgencyIcsTests(unittest.TestCase):
             self.setUp()
             files = self.build(name)
             new, old = self.digests(files), DIGESTS[name]
-            self.assertEqual(sorted(set(new) - set(old)), ["agencies/cedar.ics"], name)
+            # DF1622-09: two or more staged bodies also add the meetings body filter (meetings/filter.js, a changed meetings.html)
+            filtered = name == "eligible"
+            self.assertEqual(sorted(set(new) - set(old)), ["agencies/cedar.ics"] + (["meetings/filter.js"] if filtered else []), name)
             self.assertEqual(sorted(set(old) - set(new)), [])
-            self.assertEqual(sorted(f for f in old if new[f] != old[f]), ["agencies/cedar.html"], name)
+            self.assertEqual(sorted(f for f in old if new[f] != old[f]),
+                             ["agencies/cedar.html"] + (["meetings.html"] if filtered else []), name)
             page = files["agencies/cedar.html"].decode("utf-8")
             self.assertEqual(page.count(LINK), 1)
             self.assertEqual(sha(page.replace(LINK, "").encode("utf-8")), old["agencies/cedar.html"])  # exactly the new paragraph
