@@ -229,7 +229,7 @@ class StageTests(unittest.TestCase):
                                        FactSheetsTests.enroll, FactSheetsTests.tree)
 
     def setUp(self):
-        workspaces = Path(__file__).resolve().parents[2] / "build" / "gap-proposals" / "test-workspaces"
+        workspaces = Path(tempfile.gettempdir()) / "gap-proposals" / "test-workspaces"
         workspaces.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(prefix="gap-", dir=workspaces)
         self.addCleanup(self.temp.cleanup)

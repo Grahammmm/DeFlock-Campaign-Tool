@@ -33,7 +33,7 @@ class ReceivedItemsTests(unittest.TestCase):
                                        FactSheetsTests.enroll, FactSheetsTests.tree)
 
     def setUp(self):
-        workspaces = Path(__file__).resolve().parents[2] / "build" / "received-items" / "test-workspaces"
+        workspaces = Path(tempfile.gettempdir()) / "received-items" / "test-workspaces"
         workspaces.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(prefix="received-", dir=workspaces)
         self.addCleanup(self.temp.cleanup)
