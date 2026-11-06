@@ -64,8 +64,11 @@ class PanelError(Exception):
 
 def _no_symlinks(path):
     path = Path(os.path.abspath(path))
-    if any(p.is_symlink() for p in (path, *path.parents)):
-        raise PanelError("unsafe_path")
+    try:
+        if any(p.is_symlink() for p in (path, *path.parents)):
+            raise PanelError("unsafe_path")
+    except OSError:
+        raise PanelError("unreadable") from None
     return path
 
 
@@ -279,8 +282,12 @@ def load_dashboard(project, run_id, *, run_report_path=None, kit_root=None, as_o
     project = Path(os.path.abspath(project))
     processing = project / "processing-v1"
     run_dir = project / "run-outputs" / run_id
+    try:
+        present = run_dir.is_dir()
+    except OSError:
+        present = False
     model = {"run_id": run_id, "captured_at": now.isoformat(), "as_of": day.isoformat(),
-             "run_outputs_present": run_dir.is_dir(),
+             "run_outputs_present": present,
              "ledger": _load_ledger(processing / "ledger.sqlite"),
              "report": _load_report(run_report_path, run_id), "received": _load_received(project, run_id),
              "kit": _load_kit(kit_root, day), "queue": _load_queue(project),

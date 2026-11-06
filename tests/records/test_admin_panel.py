@@ -217,6 +217,16 @@ class ReadTests(Base):
         self.assertEqual(self.load()["ledger"]["state"], "unavailable")
         self.assertEqual(len(self.load()["queue"]["state"]), len("unavailable"))
 
+    def test_unreadable_directories_are_per_source_diagnostics(self):
+        self.full()
+        locked = self.project / "run-outputs"
+        os.chmod(locked, 0)
+        self.addCleanup(os.chmod, locked, 0o700)
+        model = self.load()
+        self.assertEqual(model["received"]["code"], "received_unreadable")
+        self.assertFalse(model["run_outputs_present"])
+        self.assertEqual(model["ledger"]["state"], "ok")
+
     def test_missing_run_is_unavailable_not_empty(self):
         self.build_ledger()
         html = ap.render_dashboard(self.load(run_report_path=None))
