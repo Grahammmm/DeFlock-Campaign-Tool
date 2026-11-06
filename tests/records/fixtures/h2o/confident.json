@@ -1,0 +1,58 @@
+{
+ "answers": {
+  "completeness": {
+   "choice": "not_applicable",
+   "probabilities": {
+    "complete": 0.013333333333333345,
+    "fully_withheld": 0.013333333333333345,
+    "not_applicable": 0.96,
+    "partial_withheld": 0.013333333333333345
+   },
+   "type": "choice"
+  },
+  "deadline_stated": {
+   "choice": "yes",
+   "probabilities": {
+    "no": 0.050000000000000044,
+    "yes": 0.95
+   },
+   "type": "choice"
+  },
+  "doc_type": {
+   "choice": "extension",
+   "probabilities": {
+    "acknowledgement": 0.0057142857142857195,
+    "clarification": 0.0057142857142857195,
+    "denial": 0.0057142857142857195,
+    "extension": 0.96,
+    "fee_notice": 0.0057142857142857195,
+    "no_records": 0.0057142857142857195,
+    "other": 0.0057142857142857195,
+    "records": 0.0057142857142857195
+   },
+   "type": "choice"
+  },
+  "followup_needed": {
+   "choice": "yes",
+   "probabilities": {
+    "no": 0.050000000000000044,
+    "yes": 0.95
+   },
+   "type": "choice"
+  },
+  "privacy_present": {
+   "noul": 0.05,
+   "type": "noul"
+  },
+  "urgency": {
+   "probabilities": {
+    "0": 0.013333333333333345,
+    "1": 0.013333333333333345,
+    "2": 0.96,
+    "3": 0.013333333333333345
+   },
+   "score": 2.0,
+   "type": "score"
+  }
+ }
+}
