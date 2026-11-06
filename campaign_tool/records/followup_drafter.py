@@ -156,10 +156,10 @@ def _drop_dropped_sentences(question, open_asks, dropped_rows):
         return question
     dropped_words = set().union(*(_words(d["text"]) for d in dropped_rows))
     open_words = set().union(*(_words(a["text"]) for a in open_asks)) if open_asks else set()
+    unique = dropped_words - open_words  # words only a dropped ask uses; incidental shared vocabulary cannot save a sentence
     keep = []
     for sentence in _SENTENCE.split(question):
-        mine = _words(sentence)
-        if mine & dropped_words and not mine & open_words:
+        if _words(sentence) & unique:
             continue
         keep.append(sentence)
     return " ".join(keep)
