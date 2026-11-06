@@ -25,11 +25,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 TODAY = date(2026, 11, 1)
 AGENCY = "ca-cedar-city-council"
-# Digest of every public file of the pre-change build on main 39f75c0f (fixed-date fixtures below); mixed drops the two
+# Digest of every public file captured from detached main d2470763 (fixed-date fixtures below); mixed drops the two
 # files this feature may change. Recapture from a new main, never from this feature's output.
-ROOTS = {"empty": "136019bc316621aabc57965f48232c666f704eb7275cd7dc1674a0a5df80747d",  # pragma: allowlist secret
-         "one-body": "5c9a5db44802400fa0e51c252583e669f1141d68c5c622b659e157e9c46b557d",  # pragma: allowlist secret
-         "mixed": "fcb373130265cd1e0940138ed3a03906b1299c842eb39a4497feb10320a2eb49"}  # pragma: allowlist secret
+ROOTS = {"empty": "f174f11766b31f1fe42b6a22d9c0d308f75e0df6c38e45a7b1e6f83c8d1dbe30",  # pragma: allowlist secret
+         "one-body": "f2a31292279262074fe50e447814b147ea78744d8b310a71165c39e74cdbcfd0",  # pragma: allowlist secret
+         "mixed": "0b9321d1445080e45c9887d5af413fe7d7c4da1c352dbba7ada7c615bbbf5292"}  # pragma: allowlist secret
 MIXED = (("alpha-up", "Council A", "2026-11-10", None), ("beta-up", "Council B", "2026-11-11", None),
          ("alpha-past", "Council A", "2026-10-01", None), ("beta-cancel", "Council B", "2026-11-12", "cancelled"))
 
