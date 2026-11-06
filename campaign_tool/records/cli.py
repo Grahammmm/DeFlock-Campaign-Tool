@@ -19,6 +19,7 @@ COMMANDS = {
     "mail-poll": ("mail_poll", "main"),
     "approve": ("publish", "approve_main"),
     "approvals": "approval_queue",
+    "followups": "followup_clock",
     "publish": ("publish", "publish_main"),
     "reopen": ("publish", "reopen_main"),
     "health": ("schedule", "health_main"),
@@ -26,6 +27,7 @@ COMMANDS = {
     "release-links": ("outcomes.release_links", "main"),
     "playbook": ("playbook", "main"),
     "agency-policies": ("agency_policies", "main"),
+    "panel": ("admin_panel", "main"),
     "schedule": ("schedule", "schedule_main"),
 }
 

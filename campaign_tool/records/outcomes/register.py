@@ -40,6 +40,8 @@ COLUMNS = {
     "missing": ("missing", "records missing", "outstanding", "outstanding items"),
     "extension": ("extension", "extension claimed", "14-day extension"),
     "status": ("status", "request status"),
+    "promised_at": ("promised_at", "agency promised date", "promised date", "expected production date",
+                    "estimated production date"),
 }
 LIMITS = [
     "Private; REVIEW REQUIRED. Recorded assertions are not semantic or legal acceptance.",
@@ -177,6 +179,22 @@ def deadline(row, today, issues):
             "legal_timeliness": "not_assessed"}
 
 
+def promised(row, today, issues):
+    """The agency's own promised date. A production on or after it satisfies the promise."""
+    text = _text(row.get("promised_at"))
+    if not text:
+        return {"state": "none", "date": None}
+    day = _day(text)
+    if day is None:
+        issues.append("invalid_date:promised_at")
+        return {"state": "invalid", "date": None}
+    produced = _day(row.get("production_at"))
+    if produced and produced >= day:
+        return {"state": "none", "date": day.isoformat()}
+    state = "passed" if day < today else "due_today" if day == today else "upcoming"
+    return {"state": state, "date": day.isoformat()}
+
+
 def _subject(mail):
     try:
         value = json.loads(mail["headers"])
@@ -234,6 +252,8 @@ def build_register(data, tracker=(), *, as_of, gaps=()):
     for key, row in sorted(records.items()):
         issues = row["issues"]
         clock = deadline(row, today, issues)
+        promise = promised(row, today, issues)
+        started = _day(row.get("received_at")) or _day(row.get("submitted_at"))
         deliveries = []
         for oid, occurrence in sorted(occurrences.items()):
             if row["ledger_id"] is None or row["ledger_id"] not in members[oid]:
@@ -271,6 +291,7 @@ def build_register(data, tracker=(), *, as_of, gaps=()):
                        "arrived": deliveries, "reported_arrived": row.get("arrived") or "Not recorded",
                        "production_at": row.get("production_at"), "withheld": withheld, "missing": missing,
                        "status": row.get("status") or "unknown", "deadline": clock,
+                       "promised": promise, "request_date": started.isoformat() if started else None,
                        "next_action": action, "action_reason": reason,
                        "sources": row["sources"], "issues": sorted(set(issues)), "fulfillment": "not_assessed"})
     return {"schema": SCHEMA, "as_of": today.isoformat(), "visibility": "private", "review_required": True,
@@ -298,6 +319,8 @@ def markdown(report):
         clock = f"{due['state']}; due {due['due'] or 'unknown'}; base {due['base_due'] or 'unknown'}; +14 {due['extended_due'] or 'unknown'}"
         if due["recorded_due"]:
             clock += "; recorded due " + due["recorded_due"]
+        if row["promised"]["state"] not in ("none", "invalid"):
+            clock += f"; promised {row['promised']['date']} ({row['promised']['state']})"
         if row["issues"]:
             clock += "; CHECK: " + ", ".join(row["issues"])
         citations = "; ".join(f"ledger requests:{s['id']}" if "table" in s else f"{s['file']}:row {s['row']}" for s in row["sources"])
