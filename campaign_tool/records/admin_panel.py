@@ -20,7 +20,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, console_board, console_documents, draft_templates, mail_drafts, mail_send, run_report, schedule
+from . import approval_queue, console_board, console_documents, console_oversight, draft_templates, mail_drafts, mail_send, run_report, schedule
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -788,6 +788,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if console_board.serve(self):  # Screens A and B
             return
+        if console_oversight.serve(self):  # Screens E and F
+            return
         path, _, query = self.path.partition("?")
         if path == "/send":
             return self._prepare_send(query)
@@ -869,6 +871,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok():
             return self._fail(403)
+        if console_oversight.post(self):  # Screen F: Undo, OFF and kill only
+            return
         route = ROUTES.get(self.path) or (SEND_ROUTE if self.path == "/send" else None)
         if route is None:
             return self._fail(404)
