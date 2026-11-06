@@ -1,0 +1,8 @@
+{
+ "answers": {
+  "doc_type": {
+   "choice": "extension",
+   "type": "choice"
+  }
+ }
+}
