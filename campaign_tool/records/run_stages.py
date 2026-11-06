@@ -978,6 +978,14 @@ def stage_outputs(args):
     finally:
         os.umask(old)
     warning = None
+    # Cited reply drafts for this run's received items go to the private review queue; nothing is sent.
+    try:
+        from .approval_queue import queue_received_items
+        queue_received_items(args.project, args.run_id, directory / name / "outcomes" / "received-items.json")
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
+        warning = "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE"
     # The additive register must never suppress the counts snapshot or the digest.
     try:
         from .outcomes.register import write_for_run
@@ -985,7 +993,15 @@ def stage_outputs(args):
     except StageTimeout:
         raise  # Preserve the run's hard deadline, not a recoverable register warning.
     except Exception:  # noqa: BLE001 - isolate register errors; never expose private exception text
-        warning = "OUTPUTS_REGISTER_UNAVAILABLE"
+        warning = warning or "OUTPUTS_REGISTER_UNAVAILABLE"
+    # Private gap/misuse proposals (REC-AUTO-9): own try, own code; never suppresses earlier outputs.
+    try:
+        from .outcomes.gap_proposals import write_run_gap_proposals
+        write_run_gap_proposals(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - isolate proposal errors; never expose private exception text
+        warning = warning or "OUTPUTS_GAP_PROPOSALS_UNAVAILABLE"
     # Additive per-record text state (DOC-2): its own code; never suppresses the snapshot, register or digest.
     try:
         from .outcomes.textstate import write_run_textstate

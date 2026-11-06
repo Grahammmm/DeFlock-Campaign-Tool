@@ -517,7 +517,7 @@ FUNCTION_LEVEL_MODULES = {"findings", "kit", "kit_track", "kit_assign", "kit_und
                           "meeting_comments", "correction_requests", "supporters", "meeting_speakers"}
 _MODULES = {
     "records pipeline: ledger, objects, review queues, runner state; listed unknown at runtime": """
-        records.agency_reconciliation records.arrival records.bounded_resume records.catalog records.catalog_links
+        records.agency_reconciliation records.approval_queue records.arrival records.bounded_resume records.catalog records.catalog_links
         records.catalog_stage records.contained_resume records.container_host records.export_clearance
         records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes
         records.gates.batch_report records.gates.collect_reviews records.gates.reconcile_coverage
@@ -527,7 +527,7 @@ _MODULES = {
         records.ledger.reconcile records.ledger.store records.ledger_catalog records.ledger_catalog_acceptance
         records.legacy_adoption records.mail_adoption records.mail_poll records.mail_resolution_census
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
-        records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.reading records.outcomes.register
+        records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register
         records.outcomes.textstate records.pipeline_health records.portal.download records.portal.engine records.portal.ledger_adapter
         records.portal.store records.publish records.queue_runtime records.recovery.backup
         records.recovery.backup_v2 records.recovery.publication records.review_bundle records.review_retirement
@@ -637,6 +637,7 @@ MODULE_FUNCTIONS = {
     'records.intake.local_capture': ('_store', 'capture',),
     'records.intake.mail_delta': ('import_receipt', 'stage_source',),
     'records.intake.mail_wire': ('store',),
+    'records.approval_queue': ('_Store.append', '_open_file', 'main',),  # approvals/queue.jsonl drafts; sends nothing
     'records.intake.repair_intake': ('run',),
     'records.intake.scope_quarantine': ('quarantine',),
     'records.ledger.reconcile': ('main',),
@@ -659,6 +660,7 @@ MODULE_FUNCTIONS = {
     'records.outcomes.release_links': ('write_run_release_links',),
     'records.outcomes.response_items': ('write_run_response_items',),
     'records.outcomes.factsheets': ('write_run_factsheets',),
+    'records.outcomes.gap_proposals': ('write_run_gap_proposals',),
     'records.outcomes.reading': ('main',),
     'records.outcomes.register': ('write_for_run',),
     'records.outcomes.textstate': ('write_run_textstate',),

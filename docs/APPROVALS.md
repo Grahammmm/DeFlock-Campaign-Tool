@@ -123,3 +123,22 @@ labelled `provisional reminder; not a legal due date`.
   so it must stay out of agent reach.
 - Three approval surfaces exist: the Worker `external_action`, the outbox journal and Flock
   files. Which one is canonical is still undecided.
+
+## Records reply drafts: review queue (REC-AUTO-4)
+
+The records outputs stage turns each received item (REC-AUTO-3) into at most one cited draft:
+an extension reply, a request for reconsideration after a denial, a fee reply, or a follow-up
+listing cited `gap` findings. Drafts quote the agency's words with their page numbers and carry
+the target agency, the request, why, the deadline the agency itself stated (quoted, never
+calculated) and `State: pending-approval`. Nothing is sent.
+
+- Store: `<project>/approvals/queue.jsonl` (directory 0700, file 0600), append-only. Duplicate
+  runs never overwrite an edit or reopen a rejection; changed evidence for the same item is refused.
+- `python -m campaign_tool.records approvals list|payload|approve|reject|edit --project DIR`.
+  `approve` takes a detached SSH signature file over `payload` (same trust file as the outbox);
+  a typed name is refused. An edit returns the draft to pending and voids earlier approvals.
+- Approval only marks the draft reviewed and approved-to-send. It cannot send, and an outbox or
+  Flock signature cannot approve a draft. The outbox and `EMAIL-APPROVAL.json` stay the only
+  send authority.
+- A truncated or malformed journal tail is refused (`queue_invalid`) and left untouched for the
+  operator; the outputs stage then reports `OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE`.

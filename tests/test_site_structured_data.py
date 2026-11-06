@@ -19,6 +19,7 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "site-structured-data" 
 OPEN = '<script type="application/ld+json">'
 BLOCK = re.compile(r'<script type="application/ld\+json">(.*?)</script>', re.S)
 FINDING = "findings/cedar-policy-posted.html"
+MEETING = "meetings/cedar-council-2026-10.html"
 BEEF = "https://example.invalid/fixtures/agreement-excerpt"
 CAFE = "cafe" * 16
 BEEF_SHA = "beef" * 16
@@ -101,8 +102,8 @@ class PageTests(Case):
         for banned in ("ClaimReview", "Review", "Rating", "reviewRating", "factCheck", "FactCheck"):
             self.assertNotIn(banned, blob)
         for name in files:
-            if name.endswith(".html") and name not in (FINDING, "index.html"):
-                self.assertEqual(self.blocks(files, name), [], name)  # aggregate, packet, agency, source, meeting, 404 pages
+            if name.endswith(".html") and name not in (FINDING, "index.html", MEETING):
+                self.assertEqual(self.blocks(files, name), [], name)  # aggregate, packet, agency, source, 404 pages (meeting: DF1407-09)
 
     def test_home_graph_and_404_none(self):
         files = self.build()
