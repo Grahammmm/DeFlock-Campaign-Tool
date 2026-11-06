@@ -158,7 +158,7 @@ def _top(answer):
 def ask(text, *, config, transport=None, deadline=None, clock=time.monotonic):
     """Ask the six typed questions about one text. Never raises (except the stage's StageTimeout).
 
-    deadline is an absolute clock() value; chunked calls after the first stop at it and use only the time left.
+    deadline is an absolute clock() value; every call, the first included, stops at it and uses only the time left.
     """
     try:
         if not isinstance(config, dict) or not config.get("enabled"):
@@ -171,16 +171,19 @@ def ask(text, *, config, transport=None, deadline=None, clock=time.monotonic):
         transport = transport or _post
         timeout = config.get("timeout_seconds", 10)
         pieces = _chunks(text)
-        first, code = _call(endpoint, list(hq.QUESTIONS), pieces[0], timeout, transport)
-        if code:
-            return {"status": "unavailable", "code": code, "decisions": None}
-        answers = dict(first)
-        for piece in pieces[1:]:
+        answers = None
+        for index, piece in enumerate(pieces):
             left = timeout
             if deadline is not None:
                 left = min(timeout, deadline - clock())
                 if left <= 0:
                     return {"status": "unavailable", "code": "budget", "decisions": None}
+            if index == 0:
+                first, code = _call(endpoint, list(hq.QUESTIONS), piece, left, transport)
+                if code:
+                    return {"status": "unavailable", "code": code, "decisions": None}
+                answers = dict(first)
+                continue
             more, code = _call(endpoint, list(hq.CHUNKED), piece, left, transport)
             if code:
                 return {"status": "unavailable", "code": code, "decisions": None}

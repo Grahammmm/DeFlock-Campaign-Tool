@@ -142,6 +142,19 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(seen, [5, 5])  # second call got min(5, 130-100)=5; the third is never made
         self.assertEqual(now[0], 200)
 
+    def test_first_call_is_capped_by_the_remaining_budget(self):
+        inner = chunk_reply([("other", 0.97, 1)])
+        seen = []
+
+        def transport(url, body, timeout):
+            seen.append(timeout)
+            return inner(url, body, timeout)
+        out = ma.ask("short", config=CONFIG, transport=transport, deadline=121, clock=lambda: 119)
+        self.assertEqual(seen, [2])  # min(5, 121-119)
+        out = ma.ask("short", config=CONFIG, transport=transport, deadline=120, clock=lambda: 120)
+        self.assertEqual((out["status"], out["code"]), ("unavailable", "budget"))
+        self.assertEqual(seen, [2])  # no call once the budget is spent
+
     def test_off_and_bad_config_do_not_call(self):
         transport = Calls(response=b"{}")
         self.assertEqual(ma.ask("t", config={"enabled": False}, transport=transport)["status"], "off")
@@ -264,7 +277,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual((agree["unavailable"], agree["kind_agreement_rate"]), (3, None))
 
     def test_budget_marks_rest_unavailable(self):
-        ticks = iter([0, 0, 130, 131])
+        ticks = iter([0, 0, 0, 130, 131])  # start, item-1 check, item-1 first call, then past the budget
         transport = Calls(response=lambda: (FIXTURES / "confident.json").read_bytes())
         self.run_advice(transport, clock=lambda: next(ticks))
         statuses = [(i["status"], i.get("code")) for i in json.loads((self.outcomes / "model-advice.json").read_text())["items"]]
