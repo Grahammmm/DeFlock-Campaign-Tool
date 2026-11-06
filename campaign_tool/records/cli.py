@@ -29,6 +29,7 @@ COMMANDS = {
     "items": ("item_tiers", "main"),
     "agency-policies": ("agency_policies", "main"),
     "panel": ("admin_panel", "main"),
+    "documents": ("console_documents", "main"),
     "schedule": ("schedule", "schedule_main"),
 }
 
