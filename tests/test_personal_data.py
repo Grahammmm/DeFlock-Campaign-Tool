@@ -518,7 +518,7 @@ FUNCTION_LEVEL_MODULES = {"findings", "kit", "kit_track", "kit_assign", "kit_und
 _MODULES = {
     "records pipeline: ledger, objects, review queues, runner state; listed unknown at runtime": """
         records.admin_panel records.agency_reconciliation records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links
-        records.catalog_stage records.contained_resume records.container_host records.export_clearance
+        records.catalog_stage records.console_documents records.contained_resume records.container_host records.export_clearance
         records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes records.first_request
         records.gates.batch_report records.gates.collect_reviews records.gates.reconcile_coverage
         records.gates.safe_output records.gates.validate_findings records.intake.document_drop
@@ -647,6 +647,7 @@ MODULE_FUNCTIONS = {
     'records.ledger.reconcile': ('main',),
     'records.ledger.store': ('capture_database', 'initialize',),
     'records.ledger_catalog': ('_write_new', 'export',),
+    'records.console_documents': ('main',),  # --html writes one new owner-chosen review file (open mode x); read-only otherwise, sends nothing
     'records.ledger_catalog_acceptance': ('_connect', '_locked',),
     'records.legacy_adoption': ('apply_batch', 'main', 'write_proposal',),
     'records.mail_adoption': ('_snapshot_db',),
