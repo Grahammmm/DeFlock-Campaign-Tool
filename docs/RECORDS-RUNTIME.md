@@ -93,3 +93,5 @@ under the agency's own policy section, quoted from the register; sharing lists a
 phrase, no audit policy row for the agency, or an unfilled `[EDIT ME: ...]` placeholder), 2 = refused (bad window, agency or text). `--queue`
 appends it as a pending `first-request` draft to the private approval journal (repeat runs add no second row). It never sends, and approval
 still needs G's SSH signature.
+
+`records items [--json] [--playbook FILE] RESPONSE-ITEMS.json` (`campaign_tool.records.item_tiers`) reads the REC-AUTO-8 `response-items.json`, adds the playbook tier and a state word (produced, withheld, exemption cited, no records stated, not addressed, unclear, not rated) to each asked item, orders tier 1 (audit and search/use logs) first, and prints a per-request logs-and-audits line. Read-only, private, review required; it writes nothing and sends nothing.
