@@ -57,8 +57,8 @@ class Base(unittest.TestCase):
                                                           proposal(3, type="misuse_lead", confidence="low")]),
                                  ("ca-other", "req-9", [proposal(4, agency="ca-other", request="req-9", confidence="low")])))
         (self.outcomes / "received-items.json").write_text(json.dumps({"items": [
-            {"agency_id": "ca-caltrans", "received_at": "2026-11-02T18:59:00Z"},
-            {"agency_id": "ca-caltrans", "received_at": "2026-10-01T00:00:00Z"}]}), encoding="utf-8")
+            {"agency_id": "ca-caltrans", "kind": "records", "received_at": "2026-11-02T18:59:00Z"},
+            {"agency_id": "ca-caltrans", "kind": "records", "received_at": "2026-10-01T00:00:00Z"}]}), encoding="utf-8")
 
     def write_proposals(self, document):
         (self.outcomes / "gap-proposals.json").write_text(json.dumps(document), encoding="utf-8")
@@ -84,6 +84,18 @@ class GeneratorTests(Base):
         before = self.journal()
         self.assertEqual(self.run_ns()["queued"], 0)
         self.assertEqual(self.journal(), before)
+
+    def test_no_receipts_or_denial_only_agency_never_claims_records_arrived(self):
+        for items in ([], [{"agency_id": "ca-caltrans", "kind": "denial", "received_at": "2026-11-02T18:59:00Z"},
+                           {"agency_id": "ca-caltrans", "kind": "extension", "received_at": "2026-11-03T00:00:00Z"}]):
+            (self.outcomes / "received-items.json").write_text(json.dumps({"items": items}), encoding="utf-8")
+            result = ns.recommend(json.loads((self.outcomes / "gap-proposals.json").read_text()), AGENCIES,
+                                  run_id=RUN, received={"items": items})
+            social_drafts = [d for d in result["drafts"] if d["kind"] == ns.SOCIAL]
+            self.assertEqual(len(social_drafts), 1)
+            self.assertNotIn("received records", social_drafts[0]["body"])
+            self.assertIn("following up", social_drafts[0]["body"])
+            self.assertNotIn("records arrived", social_drafts[0]["evidence"]["why"])
 
     def test_human_edit_and_rejection_survive_a_rerun(self):
         self.run_ns()

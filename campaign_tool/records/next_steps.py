@@ -91,7 +91,7 @@ def _evidence(group, why):
         {k: p.get(k) for k in ("proposal_id", "item_id", "page", "quote", "type", "confidence")} for p in group]}
 
 
-def _social_text(name, group, base_url):
+def _social_text(name, group, base_url, arrived=True):
     n = len(group)
     labels = sorted({_label(p) for p in group})
     ids = sorted({p["item_id"][:12] for p in group if p.get("item_id")})
@@ -102,15 +102,19 @@ def _social_text(name, group, base_url):
         for with_ids in (True, False):
             about = f" about {', '.join(labels)}" if with_labels and labels else ""
             rec = f" Source record: {', '.join(ids[:2])}." if with_ids and ids else ""
-            variants.append(f"{name}: we received records in response to our public records requests and are reviewing "
-                            f"{n} {noun}{about} against the agency's ALPR policy and state law.{rec}{tail}")
+            if arrived:
+                variants.append(f"{name}: we received records in response to our public records requests and are reviewing "
+                                f"{n} {noun}{about} against the agency's ALPR policy and state law.{rec}{tail}")
+            else:  # no records in hand: say only that we are following up on an open request
+                variants.append(f"{name}: we are following up on our public records requests and have {n} open {noun}{about} "
+                                f"for the agency.{rec}{tail}")
     return variants
 
 
-def _social(name, group, base_url):
+def _social(name, group, base_url, arrived=True):
     """-> (text|None, diagnostic|None). Longer variants are tried first; a variant that trips the privacy lint is skipped."""
     refused = None
-    for text in _social_text(name, group, base_url):
+    for text in _social_text(name, group, base_url, arrived):
         if social.post_length(text, "x") > 280:
             continue
         found = privacy_patterns.categories(text)
@@ -179,10 +183,13 @@ def recommend(proposals_doc, agencies, *, run_id, root=None, received=None, base
     """Pure given its inputs (``root`` is only read for the site diff). -> {"drafts": [...], "diagnostics": [...], "skipped_low": n}."""
     names = {a["agency_id"]: a["name"] for a in agencies}
     drafts, diagnostics, skipped_low = [], [], 0
-    days = {}
+    days, with_records = {}, set()
     for item in (received or {}).get("items", []):
+        if not isinstance(item, dict) or item.get("kind") != "records":
+            continue  # denials, extensions, fee letters and unknown kinds are not records arriving
+        with_records.add(item.get("agency_id"))
         day = str(item.get("received_at") or "")[:10]
-        if isinstance(item, dict) and DAY.fullmatch(day) and item.get("agency_id"):
+        if DAY.fullmatch(day) and item.get("agency_id"):
             days[item["agency_id"]] = max(days.get(item["agency_id"], ""), day)
 
     def diag(code, agency=None):
@@ -203,15 +210,17 @@ def recommend(proposals_doc, agencies, *, run_id, root=None, received=None, base
         if name is None:
             diag("agency_not_in_content", agency)
         else:
-            text, problem = _social(name, group, base_url)
+            text, problem = _social(name, group, base_url, agency in with_records)
             if problem:
                 diag(problem, agency)
             else:
                 drafts.append({"kind": SOCIAL, "agency_id": agency, "request_id": AGENCY_WIDE, "body": text,
                                "item_id": _item_id(SOCIAL, agency, None, ids),
                                "evidence": _evidence(group, f"{len(group)} proposal(s) of confidence high or medium for "
-                                                            "this agency; a short factual post tells readers records arrived "
-                                                            "and are under review.")})
+                                                            "this agency; a short factual post says "
+                                                            + ("records arrived and are under review."
+                                                               if agency in with_records else
+                                                               "we are following up (no records received yet)."))})
             day = days.get(agency)
             if root is None:
                 pass
