@@ -335,6 +335,9 @@ RUN_PROVENANCE = ("report_sha256", "row_index")  # comparison_ref keys that chan
 def _norm(evidence):
     """Compare stable evidence only; run provenance in comparison_ref is not evidence identity."""
     ev = json.loads(_canon(evidence))
+    if ev.get("source") == "register":  # clock identity only; the run and row locators change every run
+        ev.pop("run_id", None)
+        ev.pop("register_sources", None)
     if isinstance(ev.get("findings"), list):
         for f in ev["findings"]:
             ref = f.get("comparison_ref") if isinstance(f, dict) else None

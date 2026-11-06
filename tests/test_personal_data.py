@@ -517,7 +517,7 @@ FUNCTION_LEVEL_MODULES = {"findings", "kit", "kit_track", "kit_assign", "kit_und
                           "meeting_comments", "correction_requests", "supporters", "meeting_speakers"}
 _MODULES = {
     "records pipeline: ledger, objects, review queues, runner state; listed unknown at runtime": """
-        records.agency_reconciliation records.approval_queue records.arrival records.bounded_resume records.catalog records.catalog_links
+        records.admin_panel records.agency_reconciliation records.approval_queue records.arrival records.bounded_resume records.catalog records.catalog_links
         records.catalog_stage records.contained_resume records.container_host records.export_clearance
         records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes
         records.gates.batch_report records.gates.collect_reviews records.gates.reconcile_coverage
@@ -637,6 +637,7 @@ MODULE_FUNCTIONS = {
     'records.intake.local_capture': ('_store', 'capture',),
     'records.intake.mail_delta': ('import_receipt', 'stage_source',),
     'records.intake.mail_wire': ('store',),
+    'records.admin_panel': ('_Handler._send', '_load_system', 'main', 'write_snapshot',),  # loopback panel: snapshot file + response bytes, owner-only; sends nothing
     'records.approval_queue': ('_Store.append', '_open_file', 'main',),  # approvals/queue.jsonl drafts; sends nothing
     'records.model_advice': ('_write', 'main', 'write_run_model_advice',),  # private shadow advice files; no item text
     'records.intake.repair_intake': ('run',),
