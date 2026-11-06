@@ -19,7 +19,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, mail_drafts, run_report, schedule
+from . import approval_queue, console_documents, mail_drafts, run_report, schedule
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -701,6 +701,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._host_ok():
             return self._fail(403)
+        if console_documents.serve(self):  # Screen C
+            return
         if self.path.split("?", 1)[0] != "/":
             return self._fail(404)
         try:
