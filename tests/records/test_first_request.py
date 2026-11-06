@@ -57,6 +57,15 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(result["status"], "needs edit")
         self.assertIn("no agency audit policy row", result["needs_edit"])
 
+    def test_audit_log_retention_is_not_an_audit_policy_and_search_continues(self):
+        base = [r for r in agency_policies.load(SLO_CSV)[0] if r["agency"] == "slo-county-sheriff"]
+        log_row = dict(base[0], quote="Access and search audit logs shall be retained for two years.", section="466.8")
+        book = pb.load()
+        self.assertIsNone(fr.audit_policy_row(book, [log_row], "slo-county-sheriff"))
+        self.assertIn("no agency audit policy row", make(rows=[log_row])["needs_edit"])
+        good = dict(base[0], quote="The unit shall audit searches quarterly and record the results.", section="466.9")
+        self.assertEqual(fr.audit_policy_row(book, [log_row, good], "slo-county-sheriff")["section"], "466.9")
+
     def test_unverified_citations_left_out_and_verified_ones_used(self):
         result = make(all_items=True)
         self.assertNotIn("7922.600", result["body"])

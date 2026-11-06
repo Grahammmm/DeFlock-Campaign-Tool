@@ -59,6 +59,15 @@ def check_window(start, end):
 
 
 _AUDIT_WORD = re.compile(r"(?<![a-z0-9])audit(?:s|ed|ing)?(?![a-z0-9])", re.I)
+_AUDIT_LOG_NOUN = re.compile(
+    r"(?<![a-z0-9])audit(?:ing)?[\s-]+(?:logs?|trails?|records?|entr(?:y|ies)|data|files?|events?)(?![a-z0-9])",
+    re.I,
+)
+
+
+def _speaks_of_audits(quote):
+    """True when the quote requires actual audits, not just audit-log/trail retention."""
+    return bool(_AUDIT_WORD.search(_AUDIT_LOG_NOUN.sub(" ", quote)))
 
 
 def audit_policy_row(book, rows, agency):
@@ -68,7 +77,7 @@ def audit_policy_row(book, rows, agency):
     """
     for row in agency_policies.sections(rows, agency):
         quote = row["quote"]
-        if pb.tier_for(book, quote) == 1 and _AUDIT_WORD.search(quote):
+        if pb.tier_for(book, quote) == 1 and _speaks_of_audits(quote):
             return row
     return None
 
