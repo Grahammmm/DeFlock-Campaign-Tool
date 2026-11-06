@@ -82,3 +82,14 @@ stays the source of truth) and the banned-phrase list. `campaign_tool.records.pl
 `tier_for`, `lint`). `records playbook check [--playbook FILE]` validates a playbook (exit 0, or 2 with a fixed refusal code);
 `records playbook lint FILE|-` prints each hit and `pass` (exit 0) or `needs edit` (exit 1). The lint is strict and cannot tell a
 quoted agency phrase from our own wording. Nothing here sends, posts or publishes, and a pass is not legal or semantic review.
+
+## First-request drafter
+
+`records first-request --agency SLUG --agency-name NAME --policies agency-policies.csv --window-start YYYY-MM-DD --window-end YYYY-MM-DD --basis TEXT [--requester TEXT] [--all-items] [--queue PROJECT --request-id ID]`
+builds one DRAFT letter from the playbook and the agency policy register: the exit ramp first, then the lead items in tier order (a native log
+export for the named window, which must be at most 92 days, with its fields and the pre-offered plate/case-number redaction; completed audits
+under the agency's own policy section, quoted from the register; sharing lists and MOUs), and with `--all-items` the rest. Only
+`verified-in-package` citations reach the body. The draft prints on standard output; exit 0 = ready for approval, 1 = needs edit (banned
+phrase, no audit policy row for the agency, or an unfilled `[EDIT ME: ...]` placeholder), 2 = refused (bad window, agency or text). `--queue`
+appends it as a pending `first-request` draft to the private approval journal (repeat runs add no second row). It never sends, and approval
+still needs G's SSH signature.

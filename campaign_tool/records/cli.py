@@ -25,6 +25,7 @@ COMMANDS = {
     "pipeline-health": ("pipeline_health", "main"),
     "playbook": ("playbook", "main"),
     "agency-policies": ("agency_policies", "main"),
+    "first-request": ("first_request", "main"),
     "schedule": ("schedule", "schedule_main"),
 }
 
