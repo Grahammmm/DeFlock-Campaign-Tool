@@ -909,6 +909,21 @@ def stage_digest_gates(args):
     return result("ok", out, needs_g=items), 0
 
 
+CAMPAIGN_ROOT_POINTER = ".campaign-root"
+
+
+def next_steps_campaign_root(args):
+    """The campaign root for next steps: --campaign-root, else a one-line pointer file in the project."""
+    if getattr(args, "campaign_root", None):
+        return args.campaign_root
+    try:
+        with open(os.path.join(args.project, CAMPAIGN_ROOT_POINTER), encoding="utf-8") as handle:
+            text = handle.readline(4096).strip()
+    except OSError:
+        return None
+    return text if os.path.isabs(text) else None
+
+
 def stage_outputs(args):
     # Per-run outcome files share run-outputs/<run>/: agency fact sheets,
     # policy comparison and request register each own (and verify) only their
@@ -1023,6 +1038,19 @@ def stage_outputs(args):
         raise
     except Exception:  # noqa: BLE001 - isolate proposal errors; never expose private exception text
         warning = warning or "OUTPUTS_GAP_PROPOSALS_UNAVAILABLE"
+    # Recommended next steps (REC-AUTO-11): queue the social, site and probe drafts from this run's proposals so the
+    # Next Steps page fills without a manual command. Needs the campaign root; nothing is sent or published.
+    try:
+        campaign_root = next_steps_campaign_root(args)
+        if campaign_root:
+            from .next_steps import queue_run_next_steps
+            if queue_run_next_steps(args.project, args.run_id, campaign_root=campaign_root).get("skipped") in (
+                    "content_invalid", "proposals_invalid", "proposals_stale"):
+                warning = warning or "OUTPUTS_NEXT_STEPS_UNAVAILABLE"
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - isolate next-step errors; never expose private exception text
+        warning = warning or "OUTPUTS_NEXT_STEPS_UNAVAILABLE"
     # Additive per-record text state (DOC-2): its own code; never suppresses the snapshot, register or digest.
     try:
         from .outcomes.textstate import write_run_textstate
@@ -1128,6 +1156,7 @@ def parser():
                    help="extract: with --ocr, timeout of each pdftoppm and tesseract child (10..600, default 180)")
     p.add_argument("--ocr-vision-timeout", type=int, default=None,
                    help="extract: with --ocr-vision-config, timeout of each vision child (10..600, default 300)")
+    p.add_argument("--campaign-root", help="outputs: campaign root; queues next-step drafts (nothing is sent)")
     p.add_argument("--require-sandbox", action="store_true",
                    help="refuse unless PROJECT holds the .t12-sandbox-v1 marker (TEST plans)")
     return p
