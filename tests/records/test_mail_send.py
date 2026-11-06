@@ -269,6 +269,38 @@ class SendTests(SendBase):
         self.assertEqual(sent["fingerprint"], md.placements(self.project)[0]["fingerprint"])
         self.assertEqual(sent["schema"], ms.SCHEMA)
 
+    def test_late_kill_then_changed_recipient_is_refused(self):
+        other = self.second_draft()  # unthreaded: the recipient comes from the form
+        real, stop = outbox.Outbox.approve, self.project / "approvals" / ms.KILL
+
+        def approve_then_stop(box, key, evidence):
+            row = real(box, key, evidence)
+            stop.write_text("")
+            return row
+        with mock.patch.object(outbox.Outbox, "approve", approve_then_stop):
+            self.assertEqual(self.click(other, to=OWNER, confirm=OWNER)["code"], "kill_switch")
+        stop.unlink()
+        changed = "someone-else@agency.example"
+        result = self.click(other, to=changed, confirm=changed)
+        self.assertEqual((result["state"], result["code"]), ("refused", "draft_payload_mismatch"))
+        self.assertEqual(self.smtp.connections, 0)
+        self.assertEqual([r["state"] for r in self.outbox_rows()], ["approved"])
+        self.assertEqual(self.click(other, to=OWNER, confirm=OWNER)["state"], "sent")  # same reviewed payload still sends
+        self.assertEqual(self.smtp.messages[0]["To"], OWNER)
+
+    def test_unwritable_or_full_log_sends_nothing(self):
+        with mock.patch.object(ms, "MAX_RESULTS", 1):  # the results log cannot take another row
+            result = self.click()
+        self.assertEqual((result["state"], result["code"]), ("refused", "audit_log_unwritable"))
+        self.assertEqual(self.smtp.connections, 0)
+        self.assertEqual([r["state"] for r in self.outbox_rows()], ["proposed"])  # never approved
+
+    def test_attempt_row_precedes_the_send(self):
+        self.assertEqual(self.click()["state"], "sent")
+        states = [r["state"] for r in self.log()]
+        self.assertEqual(states, ["attempt", "sent"])
+        self.assertEqual(self.log()[0]["actor"], "operator-1")
+
     def test_daily_cap_and_agency_cap(self):
         self.configure(daily_cap=1)
         self.assertEqual(self.click()["state"], "sent")

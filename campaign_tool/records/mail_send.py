@@ -403,6 +403,8 @@ def send_one(project, path, queue_id, *, actor, page_fingerprint, signature, to=
 def _send_locked(project, config, box, draft, key, signature, base, smtp_factory, now):
     existing = box.propose(draft)
     state = existing["state"]
+    if existing["draft_json"] != draft.to_json():  # the key omits the recipient: never send a stored text that is not the one reviewed
+        return _refuse(project, "refused", "draft_payload_mismatch", **base)
     if state == "sent":
         receipt = json.loads(existing["provider_receipt"] or "{}")
         _log(project, state="sent", code="already_sent", message_id=receipt.get("provider_message_id"), **base)
@@ -416,13 +418,22 @@ def _send_locked(project, config, box, draft, key, signature, base, smtp_factory
         return _refuse(project, "refused", "daily_cap_reached", **base)
     if killed(project, config):
         return _refuse(project, "refused", "kill_switch", **base)
+    # The decision record comes first: no approval step or SMTP happens unless this row is durably written.
+    if not _log(project, state="attempt", code=None, **base):
+        return _refuse(project, "refused", "audit_log_unwritable", **base)
+    evidence = {"kind": "ssh", "signature": signature}
     if state == "proposed":
         try:
-            approved = box.approve(key, {"kind": "ssh", "signature": signature})
+            approved = box.approve(key, evidence)
         except outbox.OutboxError:
             return _refuse(project, "refused", "approval_refused", **base)
         base["approver"] = approved["approved_by"]
-    else:
+    else:  # already approved (late kill earlier): the signature on this page must verify for this exact payload
+        try:
+            if box._verify(existing, evidence, box._round(key)) != existing["approved_by"]:
+                raise outbox.OutboxError("approver mismatch")
+        except outbox.OutboxError:
+            return _refuse(project, "refused", "approval_refused", **base)
         base["approver"] = existing["approved_by"]
     if killed(project, config):  # the switch may be thrown between approval and send: the row stays approved
         return _refuse(project, "refused", "kill_switch", **base)
@@ -441,8 +452,10 @@ def _send_locked(project, config, box, draft, key, signature, base, smtp_factory
     except outbox.OutboxError:
         return _refuse(project, "failed", "send_failed", **base)
     mid = json.loads(sent["provider_receipt"] or "{}").get("provider_message_id")
-    _log(project, state="sent", code=None, message_id=mid, **base)
-    return {"state": "sent", "code": None, "message_id": mid, "outbox_key": key}
+    out = {"state": "sent", "code": None, "message_id": mid, "outbox_key": key}
+    if not _log(project, state="sent", code=None, message_id=mid, **base):
+        out["audit"] = "outcome_not_recorded"  # the attempt row above stands as the record; the outbox holds the receipt
+    return out
 
 
 # ---- rendering (called by admin_panel; HTML only) ---------------------------------------------
@@ -466,6 +479,8 @@ def send_cell(model, d, live):
         return "<dt>Send</dt><dd>Sent %s (message id <code>%s</code>)</dd>" % (esc(last["at"]), esc(last.get("message_id") or ""))
     if last and last["state"] == "unknown":
         return "<dt>Send</dt><dd>Delivery unknown: reconcile in the outbox before any retry.</dd>"
+    if last and last["state"] == "attempt":
+        return "<dt>Send</dt><dd>Attempt recorded but no outcome: check the outbox before any retry.</dd>"
     note = ("Send refused: %s" % esc(last["code"])) if last and last["state"] in ("refused", "failed") else ""
     if not live:
         return "<dt>Send</dt><dd>%s</dd>" % note if note else ""
