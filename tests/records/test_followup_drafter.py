@@ -183,6 +183,50 @@ class GateTests(unittest.TestCase):
         self.assertTrue(set(fd.RESPONSE_TYPES.values()) <= ids)
         self.assertEqual(set(fd.RESPONSE_TYPES.values()), ids)
 
+    def test_every_pattern_has_a_verbatim_identity_response_key(self):
+        for pattern in self.book["followup_patterns"]:
+            ident = pattern["id"]
+            with self.subTest(pattern=ident):
+                self.assertEqual(fd.RESPONSE_TYPES[ident], ident)
+                self.assertEqual(fd.draft(self.book, make(response_type=ident))["pattern"], ident)
+
+    def test_audit_no_documents_draft_and_unfilled_period(self):
+        out = fd.draft(self.book, make(response_type="audit_no_documents", recipient="Records Unit",
+                       contact="Records Officer", sender="Example Project", slots={"period": "2020-2026"}))
+        self.assertEqual(out["pattern"], "audit_no_documents")
+        self.assertNotIn("no audits", out["body"].lower().split(fd.NOTES_RULE)[0])
+        self.assertIn("vendor audit-trail entries", out["body"])
+        self.assertIn("systems, accounts and custodians searched, per year", out["body"])
+        self.assertIn('may say "unknown"', out["body"])
+        self.assertEqual(out["banned_phrases"]["hits"], [])
+        self.assertEqual(out["status"], "ready for review")
+        missing = fd.draft(self.book, make(response_type="audit_no_documents"))
+        self.assertIn("period", missing["unfilled"])
+        self.assertEqual(missing["status"], "needs edit")
+
+    def test_closed_identity_aliases_placeholders_and_duplicate_asks(self):
+        for response in ("closed", "closed_with_open_items", "closed_new_request"):
+            with self.subTest(response=response):
+                c = make(response_type=response, request_id="NEW-2", recipient="Records Unit",
+                         contact="Records Officer", sender="Example Project",
+                         slots={"old request id": "OLD-1", "closure date": "2026-01-02"})
+                out = fd.draft(self.book, c)
+                self.assertEqual(out["pattern"], "closed_new_request")
+                self.assertIn("This is a new request. It refers to request OLD-1", out["body"])
+                self.assertEqual(out["status"], "ready for review")
+                self.assertTrue(out["review_required"])
+                self.assertFalse(out["sent"])
+                c["prior_asks"] = [{"text": "Completed audits of ALPR use", "status": "produced"}]
+                duplicate = fd.draft(self.book, c)
+                self.assertEqual(duplicate["open_asks"], [])
+                self.assertEqual(duplicate["status"], "needs edit")
+                self.assertNotIn("This is a new request.", duplicate["body"])
+        unresolved = fd.draft(self.book, make(response_type="closed_new_request"))
+        self.assertTrue({"old request id", "closure date"} <= set(unresolved["unfilled"]))
+        with self.assertRaises(pb.PlaybookError) as raised:
+            fd.draft(self.book, make(response_type="closed_new_requests"))
+        self.assertEqual(raised.exception.code, "response_type_unknown")
+
     def test_input_case_is_not_changed(self):
         c = case("sheriff")
         before = copy.deepcopy(c)
