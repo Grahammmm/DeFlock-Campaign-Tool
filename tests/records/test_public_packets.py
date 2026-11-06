@@ -159,6 +159,14 @@ class WriteTests(Base):
         self.assertEqual(pp.switch_state(self.project), "OFF")
         self.assertEqual(pp.main(["write", "--project", self.project, "--id", "0" * 16]), 1)
 
+    def test_cli_cancel_and_reject_decide(self):
+        for action in ("cancel", "reject"):
+            ident = pp.propose(self.project, doc(source="cli-" + action), now=T0)["id"]
+            self.assertEqual(pp.main([action, "--project", self.project, "--id", ident]), 0)
+            row = [r for r in pp.status(self.project, now=T0)["packets"] if r["id"] == ident][0]
+            self.assertEqual(row["status"], action + ("led" if action == "cancel" else "ed"))
+            self.assertEqual(self.code(pp.approve, self.project, ident, self.sign(b"x"), now=T0), "packet_not_open")
+
 
 if __name__ == "__main__":
     unittest.main()

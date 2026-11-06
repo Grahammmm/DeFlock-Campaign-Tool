@@ -456,7 +456,7 @@ def main(argv=None):
             sig = raw.decode("utf-8", "replace")
             out = approve(args.project, args.id, sig) if args.action == "approve" else {"switch": enable(args.project, sig)}
         elif args.action in ("reject", "cancel"):
-            out = decide(args.project, args.id, args.action + "ed", args.actor)
+            out = decide(args.project, args.id, {"reject": "rejected", "cancel": "cancelled"}[args.action], args.actor)
         elif args.action == "write":
             out = write_change(args.project, args.id)
         else:
