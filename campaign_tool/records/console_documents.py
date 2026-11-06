@@ -54,10 +54,11 @@ def _read(path, schema):
     return {"state": "ok", "doc": doc}
 
 
-def _dicts(value, optional=True):
-    """A list whose members are all dicts (missing or None counts as empty when optional)."""
-    if value is None:
-        return optional
+def _dicts(obj, key):
+    """Field absent, or a list whose members are all dicts. An explicit null or a non-list is malformed."""
+    if key not in obj:
+        return True
+    value = obj[key]
     return type(value) is list and all(type(v) is dict for v in value)
 
 
@@ -68,27 +69,45 @@ def _opt_str(value):
 def _shape_ok(key, doc):
     """True when the fields this screen consumes have the expected types; a bad source degrades alone."""
     if key == "received":
-        return _dicts(doc.get("items")) and all(_opt_str(i.get("agency_id")) for i in doc.get("items") or [])
+        return _dicts(doc, "items") and all(_opt_str(i.get("agency_id")) for i in doc.get("items", []))
     if key == "links":
-        for link in doc.get("links") or []:
-            if type(link) is not dict:
-                return False
+        if not _dicts(doc, "links"):
+            return False
+        for link in doc.get("links", []):
             ids = link.get("agency_ids")
             if ids is not None and not (type(ids) is list and all(type(a) is str for a in ids)):
                 return False
-            if not _dicts(link.get("sources")) or not (link.get("expiry") is None or type(link.get("expiry")) is dict):
+            if not _dicts(link, "sources") or not (link.get("expiry") is None or type(link.get("expiry")) is dict):
                 return False
-        return type(doc.get("links") or []) is list
+            if not all(_opt_str(s.get("received_at")) for s in link.get("sources", [])):
+                return False
+        return True
     if key == "proposals":
-        if not _dicts(doc.get("agencies")):
+        if not _dicts(doc, "agencies"):
             return False
-        return all(_opt_str(b.get("agency_id")) and _dicts(b.get("requests"))
-                   and all(_dicts(r.get("proposals")) for r in b.get("requests") or [])
-                   for b in doc.get("agencies") or [])
+        return all(_opt_str(b.get("agency_id")) and _dicts(b, "requests")
+                   and all(_dicts(r, "proposals") for r in b.get("requests", []))
+                   for b in doc.get("agencies", []))
     if key == "response":
-        return _dicts(doc.get("requests")) and all(_dicts(r.get("asks")) for r in doc.get("requests") or [])
+        return _dicts(doc, "requests") and all(_dicts(r, "asks") for r in doc.get("requests", []))
     if key == "textstate":
-        return _dicts(doc.get("records"))
+        return _dicts(doc, "records") and all(
+            "sha256" not in r or (type(r["sha256"]) is str and type(r.get("state")) is str)
+            for r in doc.get("records", []))
+    return True
+
+
+def _tiers_ok(report):
+    if type(report) is not dict or type(report.get("requests")) is not list:
+        return False
+    for r in report["requests"]:
+        if type(r) is not dict or type(r.get("asks")) is not list or type(r.get("logs_and_audits")) is not dict:
+            return False
+        for a in r["asks"]:
+            if type(a) is not dict or not all(k in a for k in ("ask_id", "state", "tier", "tier_name", "text")):
+                return False
+            if type(a["text"]) is not str or not (a.get("evidence") is None or type(a.get("evidence")) is list):
+                return False
     return True
 
 
@@ -136,7 +155,10 @@ def load(project, run_id, *, playbook_path=None, pages=True):
             model[key] = {"state": "unavailable", "code": "shape_invalid"}
     if model["response"]["state"] == "ok":
         try:
-            model["tiers"] = {"state": "ok", "doc": item_tiers.tier_report(model["response"]["doc"], _pb.load(playbook_path))}
+            report = item_tiers.tier_report(model["response"]["doc"], _pb.load(playbook_path))
+            if not _tiers_ok(report):
+                raise ValueError("shape")
+            model["tiers"] = {"state": "ok", "doc": report}
         except _pb.PlaybookError as error:
             model["tiers"] = {"state": "unavailable", "code": error.code}
         except (TypeError, ValueError, KeyError, AttributeError):

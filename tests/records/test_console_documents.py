@@ -150,6 +150,38 @@ class ScreenC(unittest.TestCase):
         self.assertIn("alpha-pd", cd.agencies(m))
         self.assertIn("links: unavailable (shape_invalid)", cd.render(m, NOW))
 
+    def test_each_remaining_malformed_shape_isolates_one_source(self):
+        cases = [("received-items.json", "items", None, "received"), ("release-links.json", "links", 1, "links"),
+                 ("release-links.json", "links", None, "links"), ("gap-proposals.json", "agencies", None, "proposals"),
+                 ("response-items.json", "requests", None, "response")]
+        for name, field, bad, source in cases:
+            with self.subTest(file=name, field=field, bad=bad):
+                tmp = tempfile.TemporaryDirectory()
+                self.addCleanup(tmp.cleanup)
+                project = Path(tmp.name)
+                build(project)
+                path = project / "run-outputs" / RUN / "outcomes" / name
+                doc = json.loads(path.read_text())
+                doc[field] = bad
+                put(path, doc)
+                m = cd.load(project, RUN, pages=False)
+                self.assertEqual(cd.sources(m)[source]["code"], "shape_invalid")
+                page = cd.render(m, NOW)
+                self.assertIn(source + ": unavailable (shape_invalid)", page)
+                self.assertIn("alpha-pd", page)
+        # nested null list and text-state record missing its state
+        build(self.project)
+        out = self.project / "run-outputs" / RUN
+        prop = json.loads((out / "outcomes" / "gap-proposals.json").read_text())
+        prop["agencies"][0]["requests"][0]["proposals"] = None
+        put(out / "outcomes" / "gap-proposals.json", prop)
+        put(out / "text-state.json", {"schema": "records-text-state-v1", "run_id": RUN, "records": [{"sha256": H1}]})
+        m = self.model()
+        src = cd.sources(m)
+        self.assertEqual((src["proposals"]["code"], src["textstate"]["code"]), ("shape_invalid", "shape_invalid"))
+        self.assertEqual(src["received"]["state"], "ok")
+        cd.render(m, NOW)
+
     def test_symlinked_source_is_refused(self):
         build(self.project)
         out = self.project / "run-outputs" / RUN / "outcomes"
