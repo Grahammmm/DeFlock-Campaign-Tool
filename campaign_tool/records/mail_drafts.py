@@ -350,9 +350,18 @@ def _imap_ok(result, code):
     return result[1] if len(result) > 1 else None
 
 
+def _stable_date(row, now):
+    """The Date header comes from the row's own last-event time, so a retry after a lost journal write
+    rebuilds byte-identical message bytes (the fingerprint then matches the message already in the mailbox)."""
+    try:
+        return datetime.strptime(row["updated_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        return now
+
+
 def _place_one(client, config, row, thread, reason, now):
     mid = message_id(row["id"], row["revision"], config["from_addr"])
-    raw = build_message(row, thread, config["from_addr"], now=now)
+    raw = build_message(row, thread, config["from_addr"], now=_stable_date(row, now))
     found = _imap_ok(client.uid("SEARCH", None, "HEADER", "Message-ID", imap_intake._quote(mid)), "imap_search_failed")
     exists = bool(found and found[0] and found[0].split())
     if not exists:

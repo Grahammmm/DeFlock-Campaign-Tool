@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unittest
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email import policy
 from pathlib import Path
 from unittest import mock
@@ -223,6 +223,18 @@ class PlaceTests(Base):
         self.assertNotIn("append", self.fake.calls)
         self.assertEqual(len(self.fake.messages), 1)
         self.assertEqual(md.placements(self.project)[0]["state"], "found_existing")
+
+    def test_crash_recovery_at_a_later_clock_records_the_stored_fingerprint(self):
+        self.build_ledger()
+        self.draft()
+        self.place()
+        self.journal_path().unlink()
+        later = NOW + timedelta(days=3)
+        self.assertEqual(self.place(now=later), {"placed": 0, "existing": 1, "failed": 0, "skipped": 0})
+        self.assertEqual(len(self.fake.messages), 1)
+        (row,) = md.placements(self.project)
+        self.assertEqual(row["state"], "found_existing")
+        self.assertEqual(row["fingerprint"], md.fingerprint(self.fake.messages[0]["raw"]))
 
     def test_edit_after_placement_supersedes(self):
         self.build_ledger()
