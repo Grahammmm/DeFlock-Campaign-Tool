@@ -31,6 +31,11 @@ deflock-campaign-env/bin/python -I -m campaign_tool doctor --directory ./example
 deflock-campaign-env/bin/python -I -m campaign_tool build --directory ./example-campaign --check
 ```
 
+Add `--launch` to `doctor` for nine offline checks, each with a state and one
+next action when needed. The temporary build does not write the campaign's
+`public/` tree. `--contact-max-age-days N` sets contact age. This is not a launch
+approval: deployment and human review remain required.
+
 This example is a synthetic campaign configuration. Agency suggestions are not
 verified custodian contacts and do not assert ALPR use. For another state, a
 corresponding supported seed/law package is required; this change does not

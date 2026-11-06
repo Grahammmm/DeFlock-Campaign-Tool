@@ -541,12 +541,13 @@ _MODULES = {
         newsletter.draft newsletter.sent outbox outbox_batch press recent search_log site site_check social social_threads""",
     "other local files with no catalog store": """
         agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
-        finding_search_log kit_fee_reply kit_preserve kit_repeat search_log law law_packet map_controller registry setup_cmd shell sources_cmd""",
+        finding_search_log kit_fee_reply kit_preserve kit_repeat search_log law law_packet launch_check map_controller registry setup_cmd shell sources_cmd""",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
 # Every write-capable function of a module with no catalog store, by identity; a new or renamed one fails until it is listed here.
 MODULE_FUNCTIONS = {
+    'launch_check': ('launch_checks',),  # doctor --launch: scratch-tree rehearsal, removed in finally; no campaign writes or sends
     "map_survey": ("_install_new", "_write_checks", "render_csv", "survey_import"),
     'agency_brief': ('_write_file', 'build_brief',),  # private kit/briefs html+txt from published content; kept unless --replace
     'agency_actions': ('_install',),
