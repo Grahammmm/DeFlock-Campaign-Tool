@@ -518,7 +518,7 @@ FUNCTION_LEVEL_MODULES = {"findings", "kit", "kit_track", "kit_assign", "kit_und
 _MODULES = {
     "records pipeline: ledger, objects, review queues, runner state; listed unknown at runtime": """
         records.admin_panel records.agency_reconciliation records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links
-        records.catalog_stage records.console_documents records.contained_resume records.container_host records.export_clearance
+        records.catalog_stage records.console_documents records.contained_resume records.e2e_proof records.container_host records.export_clearance
         records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes records.first_request
         records.gates.batch_report records.gates.collect_reviews records.gates.reconcile_coverage
         records.gates.safe_output records.gates.validate_findings records.intake.document_drop
@@ -616,6 +616,7 @@ MODULE_FUNCTIONS = {
         'Journal._change', 'Journal.allocate', 'PrivateDir.write', 'admit', 'build_board', 'entry',
         'postrun_entry'
     ),
+    'records.e2e_proof': ('replay', 'replay.console', 'replay.telegram_text',),  # replay writes only under a new --out proof dir (OUT_EXISTS refuses reuse); sends and publishes nothing
     'records.export_clearance': ('clearance',),
     'records.first_request': ('main',),  # prints a draft to stdout; --queue appends only via the approval journal
     'records.extract.ocr': (

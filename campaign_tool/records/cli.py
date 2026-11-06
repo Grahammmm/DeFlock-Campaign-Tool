@@ -21,6 +21,7 @@ COMMANDS = {
     "approvals": "approval_queue",
     "followups": "followup_clock",
     "next-steps": ("next_steps", "main"),
+    "e2e-proof": ("e2e_proof", "main"),
     "mail-drafts": ("mail_drafts", "main"),
     "mail-send": ("mail_send", "main"),
     "publish": ("publish", "publish_main"),
