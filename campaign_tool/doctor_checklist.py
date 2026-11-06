@@ -78,7 +78,7 @@ def _short(value, limit=80):
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
-def checklist(report, directory, agency_list_exists=False):
+def checklist(report, directory, agency_list_exists=False, *, git_row=None):
     """Rows in RULES order, then unknown keys as info, then the derived production_ready row.
 
     agency_list_exists: kit/agencies.json is present, so the agencies_selected fix is a kit-agency selection."""
@@ -97,6 +97,8 @@ def checklist(report, directory, agency_list_exists=False):
         if key not in KNOWN:
             rows.append({"key": key, "state": "info", "label": f"Other: {key} = {_short(report[key])}",
                          "next": None, "owner": None})
+    if git_row is not None:  # from git_exposure.git_exposure_row; absent outside any git work tree
+        rows.append(git_row)
     todos = sum(row["state"] == "todo" for row in rows)
     rows.append({"key": "production_ready", "state": "info", "owner": None, "next": None,
                  "label": (f"Production ready: not yet, {todos} to do; ready only when every todo above is done"
@@ -105,7 +107,8 @@ def checklist(report, directory, agency_list_exists=False):
 
 
 def render(report, directory, as_json=False, agency_list_exists=False):
-    rows = checklist(report, directory, agency_list_exists)
+    from .git_exposure import git_exposure_row
+    rows = checklist(report, directory, agency_list_exists, git_row=git_exposure_row(directory))
     if as_json:
         return json.dumps(rows, indent=2, ensure_ascii=False)
     lines = []

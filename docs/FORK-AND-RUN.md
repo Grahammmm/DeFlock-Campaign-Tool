@@ -25,6 +25,8 @@ your agency list, draft requests, private review receipts and the built site. Ke
 it in a sibling folder such as `../my-campaign`, never inside the clone, so that
 `git add .` in the engine cannot publish it and an engine update never touches it.
 See [AGENTS.md](../AGENTS.md) for the split between engine and campaign.
+`init` refuses a `--directory` that is the engine checkout or inside it, before it writes anything,
+and `doctor --checklist` shows a `todo` row if an existing campaign is there.
 
 ## 3. Create the campaign and the first drafts
 
@@ -67,6 +69,22 @@ Nothing is fetched or sent. See [AGENCY-DISCOVERY.md](AGENCY-DISCOVERY.md).
 `private/`, `kit/` and `public/` in a campaign directory, and any real mailbox,
 credential, subscriber list or signed link anywhere. If your campaign directory is
 outside the clone, as in step 2, there is nothing to commit.
+
+If the campaign directory sits inside any other git work tree (a `.git` directory or a
+worktree `.git` file above it), `doctor --checklist` asks git, read-only, whether these
+three are ignored and names each one that is not. Fix it by adding each as its own anchored
+line in the campaign directory's `.gitignore`, then rerun the checklist:
+
+```
+/kit/
+/private/
+/public/
+```
+
+The checklist never edits `.gitignore` and never stages, commits or untracks anything.
+A `.gitignore` does not untrack files already committed, and a later negation (`!`) rule
+can re-include files: both need manual review before any push. If git is not installed the
+row says `not checked` and never passes. A campaign outside every work tree gets no row.
 
 ## 7. Pull upstream fixes
 
