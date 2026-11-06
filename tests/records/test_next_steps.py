@@ -97,6 +97,21 @@ class GeneratorTests(Base):
             self.assertIn("following up", social_drafts[0]["body"])
             self.assertNotIn("records arrived", social_drafts[0]["evidence"]["why"])
 
+    def test_ledger_only_no_answer_probe_has_neutral_wording_and_ledger_citation(self):
+        ledger = {"proposal_id": pid(7), "agency_id": "ca-caltrans", "request_id": "req-1",
+                  "type": "deadline_passed_no_answer", "detector_or_field": "determination_due_at",
+                  "confidence": "medium", "item_id": None, "page": None,
+                  "quote": "determination_due_at=2026-10-01; no determination recorded",
+                  "rule_ref": {"label": "Gov. Code § 7922.535"}, "policy_section": None}
+        result = ns.recommend(doc(("ca-caltrans", "req-1", [ledger])), AGENCIES, run_id=RUN, received={"items": []})
+        probes = [d for d in result["drafts"] if d["kind"] == ns.PROBE]
+        self.assertEqual(len(probes), 1)
+        body = probes[0]["body"]
+        self.assertNotIn("Thank you for the records provided", body)
+        self.assertNotIn("on page None", body)
+        self.assertIn("Our request ledger shows", body)
+        self.assertIn("determination_due_at=2026-10-01", body)
+
     def test_human_edit_and_rejection_survive_a_rerun(self):
         self.run_ns()
         rows = self.rows()

@@ -161,21 +161,28 @@ def _site_diff(root, agency_id, day):
 
 
 def _probe(name, request, group):
-    asks = []
+    asks, recorded = [], False
     for number, p in enumerate(group, 1):
         template = ASKS.get((p["type"], p.get("detector_or_field"))) or ASKS.get((p["type"], None)) or GAP_ASK
         ask = template.format(page=p.get("page"), label=_label(p))
         rule = p.get("rule_ref") if isinstance(p.get("rule_ref"), dict) else {}
         cite = rule.get("label") or rule.get("citation") or ""
         quote = " ".join(str(p.get("quote") or "").split()).replace('"', "'")  # inner double quotes would end the quotation
+        if p.get("item_id") is None and p.get("page") is None:
+            # ledger-only proposal (no received record): cite the request ledger, not a record page
+            asks.append(f'{number}. Please provide {ask}' + (f" ({cite})" if cite else "") +
+                        f'. Our request ledger shows: "{quote}"')
+            continue
+        recorded = True
         asks.append(f'{number}. Please provide {ask}' + (f" ({cite})" if cite else "") +
                     f'. The record states, on page {p.get("page")}: "{quote}"')
     unquoted = "\n".join(re.sub(r'"[^"\n]*"', " ", a) for a in asks)
     if legal_claims.legal_claims(unquoted):
         return None
     scope = "request " + request if request else "our requests to this agency (agency-wide)"
-    return (f"{draft_templates.DRAFT_BANNER}\n\nTo: {name}\nRe: follow-up on {scope}\n\n"
-            "Thank you for the records provided. To understand them fully, we ask for the following:\n\n"
+    intro = ("Thank you for the records provided. To understand them fully, we ask for the following:" if recorded else
+             "We are following up on our public records request. We ask for the following:")
+    return (f"{draft_templates.DRAFT_BANNER}\n\nTo: {name}\nRe: follow-up on {scope}\n\n{intro}\n\n"
             + "\n".join(asks) + "\n\n" + draft_templates.FOOTER)
 
 
