@@ -46,6 +46,15 @@ class TierTests(unittest.TestCase):
         self.assertEqual(s["audits"]["states"], {"no records stated": 1})
         self.assertEqual(s["line"], "logs: produced; audits: open")
 
+    def test_audit_log_ask_is_logs_only(self):
+        text = "A native access/search/audit-log export for [one named window of at most one quarter]."
+        self.assertIn(text, json.dumps(pb.load()).replace("\\/", "/"))
+        s = it.tier_report(report((text, "answered")), self.book)["requests"][0]["logs_and_audits"]
+        self.assertEqual(s["line"], "logs: produced; audits: not asked")
+        for t in ("the audit trail", "audit logs for 2025"):
+            self.assertEqual(it._kinds(t), ["logs"])
+        self.assertEqual(it._kinds("completed audits"), ["audits"])
+
     def test_tier_one_not_asked(self):
         s = it.tier_report(report(("the retention policy", "answered")), self.book)["requests"][0]["logs_and_audits"]
         self.assertEqual((s["tier1_asked"], s["logs"]["status"], s["audits"]["status"]), (0, "not asked", "not asked"))

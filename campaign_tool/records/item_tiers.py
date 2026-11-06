@@ -31,8 +31,9 @@ STATES = {
 }
 NOT_RATED = "not rated"
 DONE = frozenset({"produced"})
-_AUDIT = re.compile(r"\baudits?\b|\baudit trail\b", re.I)
-_LOG = re.compile(r"\blogs?\b|\bsearch history\b|\baccess records?\b|\bquery records?\b|\bqueries\b", re.I)
+# "audit log" / "audit-log" / "audit trail" name a log, not a completed audit
+_AUDIT = re.compile(r"\baudits?\b(?![\s-]*(?:logs?|trails?)\b)", re.I)
+_LOG = re.compile(r"\blogs?\b|\baudit[\s-]*trails?\b|\bsearch history\b|\baccess records?\b|\bquery records?\b|\bqueries\b", re.I)
 LIMITS = (
     "Tier comes from the playbook keywords; state comes from the REC-AUTO-8 machine rating. Review required.",
     "A state is not a legal finding and not proof that records exist or that a duty was missed. Private; not for publication.",
