@@ -235,18 +235,19 @@ def render_followup(kind, *, agency, request_id, asked, request_date, clock_kind
     else:
         clock = f"Clock: the date the agency gave: {clock_date}.\n"
         ask = ("Please send the records you described, or tell us a new date by which you expect to send them.")
+    recorded = "written determination" if clock_kind == "determination" else "production"
     if kind == "formal-notice-no-response":
         step = (f"This is a formal written notice following our earlier reminder sent on "
                 f"{EDIT.format('date you sent the reminder')}. Please reply in writing to this request.")
-        title = "Formal notice: no response recorded"
+        title = "Formal notice: no " + recorded + " recorded"
     else:
-        step = "This is a courtesy reminder. We have no response recorded in our register as of " + as_of + "."
-        title = "Reminder: no response recorded"
+        step = (f"This is a courtesy reminder. Our register shows no {recorded} recorded as of " + as_of + ".")
+        title = "Reminder: no " + recorded + " recorded"
     text = (f"# Draft ({kind}): {agency} / {request_id}\n\n{DRAFT_BANNER}\n\n"
             f"Target agency: {agency}\nBelongs to request: {request_id}\nState: pending-approval\n"
             f"To: {EDIT.format('recipient and contact; not taken from the record')}\n"
             f"Subject: {title} for public records request {request_id}\n\n"
-            f"Hello,\n\nI am writing about public records request {request_id}, sent {sent}. "
+            f"Hello,\n\nI am writing about public records request {request_id}, dated {sent} in our records. "
             f"The request asked for: {asked}\n\n{clock}\n{step}\n\n{ask}\n\n"
             f"Thank you,\n\n{EDIT.format('name')}\n\n{_LADDER}\n{_FOLLOWUP_FOOTER}")
     _need(len(text.encode("utf-8")) <= MAX_BODY_BYTES, "body_bound")

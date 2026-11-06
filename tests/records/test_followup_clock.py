@@ -220,7 +220,7 @@ class Queueing(Base):
                 self.assertNotIn(word, text.casefold())
         self.assertIn("req-1", statutory["body"])
         self.assertIn("2030-01-12", statutory["body"])
-        self.assertIn("sent 2030-01-01", statutory["body"])
+        self.assertIn("dated 2030-01-01", statutory["body"])
         self.assertIn("Camera audit logs for 2029", statutory["body"])
         self.assertIn(register.LIMITS[1], statutory["body"])
         self.assertIn(register.LIMITS[2], statutory["body"])
