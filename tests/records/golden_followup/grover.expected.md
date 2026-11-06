@@ -38,6 +38,7 @@ Notes for the reviewer (remove before sending):
   Do not: Write 'zero audits'.
   Do not: Ask the agency to create a report.
   Dropped by the prior-asks check: item 5 (already produced)
+  Open placeholder: recipient and contact; not taken from the record
   Banned-phrase check: pass
-  Status: ready for review
+  Status: needs edit
 Draft only. Not legal advice. Review required; nothing here is a finding that anyone broke a rule.

@@ -95,7 +95,7 @@ def _validate(case):
           "case_invalid", "agency")
     _need(isinstance(case.get("request_id"), str) and case["request_id"].strip(), "case_invalid", "request_id")
     _need(isinstance(case.get("response_type"), str) and case["response_type"].strip(), "case_invalid", "response_type")
-    for key in ("request_date", "response_date", "contact", "sender", "subject"):
+    for key in ("request_date", "response_date", "contact", "sender", "subject", "recipient"):
         _need(case.get(key) is None or isinstance(case[key], str), "case_invalid", key)
     asks = case.get("asks")
     _need(isinstance(asks, list) and asks, "case_invalid", "asks")
@@ -132,6 +132,37 @@ def _tiered(book, case):
     last = len(book["tiers"]) + 1
     open_asks.sort(key=lambda a: (a["tier"] if a["tier"] is not None else last, a["_pos"]))
     return open_asks, dropped, rows
+
+
+_EDIT_SLOT = re.compile(r"\[EDIT ME: ([^\[\]]+)\]")
+_SENTENCE = re.compile(r"(?<=[.?!])\s+")
+_GENERIC = frozenset({"alpr", "agency", "policy", "records", "record", "completed", "under", "used", "system", "that",
+                      "with", "from", "this", "please", "which", "were", "does", "have", "been", "should"})
+
+
+def _words(text):
+    """Distinctive lower-case word stems of a text (slots removed, plural s stripped)."""
+    stems = set()
+    for word in re.sub(r"\[[^\[\]]*\]", " ", _norm(text)).split():
+        word = word[:-1] if word.endswith("s") and len(word) > 4 else word
+        if len(word) >= 4 and word not in _GENERIC:
+            stems.add(word)
+    return stems
+
+
+def _drop_dropped_sentences(question, open_asks, dropped_rows):
+    """Remove sentences that are only about an ask the prior-asks check dropped, so no dropped record is asked for again."""
+    if not dropped_rows:
+        return question
+    dropped_words = set().union(*(_words(d["text"]) for d in dropped_rows))
+    open_words = set().union(*(_words(a["text"]) for a in open_asks)) if open_asks else set()
+    keep = []
+    for sentence in _SENTENCE.split(question):
+        mine = _words(sentence)
+        if mine & dropped_words and not mine & open_words:
+            continue
+        keep.append(sentence)
+    return " ".join(keep)
 
 
 def _numbers(asks):
@@ -171,6 +202,7 @@ def draft(book, case, policy_rows=()):
     unfilled = []
 
     open_asks, dropped, all_asks = _tiered(book, case)
+    dropped_rows = [a for a in all_asks if a["number"] in {d["number"] for d in dropped}]
     policy = _policy_row(policy_rows, case["agency"]["id"], case.get("policy"))
     if case.get("policy") and policy is None:
         slots.pop("policy_section", None)
@@ -182,7 +214,7 @@ def draft(book, case, policy_rows=()):
     lead = [a for a in open_asks if a["tier"] == 1]
     lines = [f"# Draft (followup-{kind}): {agency} / {request_id}", "", BANNER, "",
              f"Target agency: {agency}", f"Belongs to request: {request_id}", f"Pattern: {kind}", "State: pending-approval",
-             f"To: {EDIT.format('recipient and contact; not taken from the record')}",
+             "To: " + (_clean(case["recipient"], 200) if case.get("recipient") else EDIT.format("recipient and contact; not taken from the record")),
              "Subject: " + _clean(case.get("subject") or f"Request {request_id}: follow-up ({kind.replace('_', ' ')})", 200), "",
              ("Dear " + _clean(case["contact"], 120) + ",") if case.get("contact") else f"Hello {EDIT.format('contact')},", ""]
     when = f" of {_clean(case['response_date'], 40)}" if case.get("response_date") else ""
@@ -204,11 +236,18 @@ def draft(book, case, policy_rows=()):
         lines += ["Another county agency released an export of this kind.", ""]
 
     questions = []
-    for text in entry["questions"]:
+    for text in entry["questions"] if open_asks else ():  # nothing open: nothing to ask
+        text = _drop_dropped_sentences(text, open_asks, dropped_rows)
+        if not text:
+            continue
         text = text.replace("the lead items", _numbers(lead) if lead else "the first items listed above")
         questions.append(_fill(text, slots, unfilled))
-    lines.append("Please:")
-    lines += [f"{n}. {q}" for n, q in enumerate(questions, 1)]
+    if questions:
+        lines.append("Please:")
+        lines += [f"{n}. {q}" for n, q in enumerate(questions, 1)]
+    else:
+        lines.append("Nothing further is asked in this letter: every item is already produced or already pending.")
+        unfilled.append("no open asks remain; nothing to request, do not send")
     lines.append("")
 
     cites = _citations(book, entry)
@@ -218,6 +257,9 @@ def draft(book, case, policy_rows=()):
     lines += list(book["first_request"].get("closing", [])) + ["", "Thank you,", "",
                                                                _clean(case["sender"], 160) if case.get("sender") else EDIT.format("name"), ""]
     letter = "\n".join(lines)
+    for inner in _EDIT_SLOT.findall(letter):  # every placeholder left in the letter, not only _fill() ones
+        if inner not in unfilled:
+            unfilled.append(inner)
 
     lint = _pb.lint(book, letter)
     status = "needs edit" if lint["hits"] or unfilled else "ready for review"

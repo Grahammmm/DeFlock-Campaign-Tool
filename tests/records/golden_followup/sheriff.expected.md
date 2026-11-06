@@ -45,6 +45,7 @@ Notes for the reviewer (remove before sending):
   Do not: Ask for plates, hotlist contents or camera coordinates.
   Left out of the body (unverified): Gov. Code 7922.600
   Dropped by the prior-asks check: item 9 (already produced)
+  Open placeholder: recipient and contact; not taken from the record
   Banned-phrase check: pass
-  Status: ready for review
+  Status: needs edit
 Draft only. Not legal advice. Review required; nothing here is a finding that anyone broke a rule.

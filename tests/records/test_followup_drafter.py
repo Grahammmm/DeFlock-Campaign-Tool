@@ -3,6 +3,7 @@ policy quote, citation flags, prior-asks check and the banned-phrase gate."""
 import copy
 import io
 import json
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -40,7 +41,8 @@ class GoldenTests(unittest.TestCase):
                 out = fd.draft(self.book, case(name), ROWS)
                 expected = (GOLD / (name + ".expected.md")).read_text(encoding="utf-8")
                 self.assertEqual(out["body"], expected)
-                self.assertEqual(out["status"], "ready for review")
+                self.assertEqual(out["status"], "needs edit")  # the recipient is never taken from the record
+                self.assertEqual(out["unfilled"], ["recipient and contact; not taken from the record"])
                 self.assertIs(out["sent"], False)
                 self.assertTrue(out["review_required"])
                 self.assertIn("DRAFT \u2014 NOT SENT", out["body"])
@@ -90,12 +92,44 @@ class GateTests(unittest.TestCase):
         out = fd.draft(self.book, make(response_type="partial"))
         self.assertEqual(out["status"], "needs edit")
         self.assertIn("[EDIT ME: n]", out["body"])
-        filled = fd.draft(self.book, make(response_type="partial", slots={"n": "6", "requested window": "1 Jan-30 Jun 2026",
+        filled = fd.draft(self.book, make(response_type="partial", recipient="Records Unit", contact="Ms. A", sender="Project", slots={"n": "6", "requested window": "1 Jan-30 Jun 2026",
                                                                            "produced window": "8 Jul-7 Aug 2026",
                                                                            "Template or substitute": "A blank template",
                                                                            "requested record": "the executed MOUs"}))
         self.assertEqual(filled["unfilled"], [])
         self.assertIn("Item 6 asked for 1 Jan-30 Jun 2026", filled["body"])
+
+    def test_unresolved_recipient_contact_and_sender_mark_needs_edit(self):
+        out = fd.draft(self.book, make())
+        for inner in ("recipient and contact; not taken from the record", "contact", "name"):
+            self.assertIn(inner, out["unfilled"])
+        self.assertEqual(out["status"], "needs edit")
+        ready = fd.draft(self.book, make(recipient="Records Unit", contact="Ms. A", sender="Project",
+                                         slots={"policy_section": "Policy 1"}))
+        self.assertEqual((ready["unfilled"], ready["status"]), ([], "ready for review"))
+
+    def test_questions_about_dropped_audit_ask_are_not_repeated(self):
+        c = make(asks=[{"text": "Completed audits of ALPR use", "rating": "answered", "produced": [{"file": "audits.pdf"}]},
+                       {"text": "The vendor agreement", "rating": "no_records_stated"}],
+                 prior_asks=[])
+        out = fd.draft(self.book, c)
+        letter = out["body"].split("\n---\n")[0]
+        self.assertNotIn("audit exists", letter)
+        self.assertNotIn("conducted regularly", letter)
+        self.assertIn("Which systems were searched?", letter)
+        pending = fd.draft(self.book, make(prior_asks=[{"text": "Completed audits of ALPR use", "status": "pending"}]))
+        self.assertEqual([d["reason"] for d in pending["dropped"]], ["already asked, still pending"])
+        self.assertNotIn("audit exists", pending["body"].split("\n---\n")[0])
+
+    def test_no_open_asks_left_asks_for_nothing_and_needs_edit(self):
+        out = fd.draft(self.book, make(response_type="silence",
+                                       prior_asks=[{"text": "Completed audits of ALPR use", "status": "produced"}]))
+        letter = out["body"].split("\n---\n")[0]
+        self.assertEqual(out["open_asks"], [])
+        self.assertNotIn("Please:", letter)
+        self.assertIn("Nothing further is asked", letter)
+        self.assertEqual(out["status"], "needs edit")
+        self.assertIn("no open asks remain; nothing to request, do not send", out["unfilled"])
 
     def test_policy_section_missing_from_register_needs_edit(self):
         out = fd.draft(self.book, make(policy={"section": "9.9"}), ROWS)
@@ -137,10 +171,22 @@ class CliTests(unittest.TestCase):
             code = fd.main()
         return code, out.getvalue(), err.getvalue()
 
-    def test_prints_draft_and_exits_zero_when_ready(self):
+    def test_prints_draft_and_exits_one_while_the_recipient_is_open(self):
         code, out, _ = self.run_cli(str(GOLD / "sheriff.case.json"), "--policies", str(REGISTER))
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertEqual(out, (GOLD / "sheriff.expected.md").read_text(encoding="utf-8"))
+
+    def test_exits_zero_when_every_placeholder_is_resolved(self):
+        done = case("sheriff")
+        done["recipient"] = "Records Unit"
+        path = Path(tempfile.mkdtemp(dir=ROOT / "tests" / "records")) / "done.case.json"
+        try:
+            path.write_text(json.dumps(done), encoding="utf-8")
+            code, out, _ = self.run_cli(str(path), "--policies", str(REGISTER), "--json")
+        finally:
+            path.unlink()
+            path.parent.rmdir()
+        self.assertEqual((code, json.loads(out)["status"]), (0, "ready for review"))
 
     def test_without_register_the_policy_is_a_placeholder_and_exit_is_one(self):
         code, out, _ = self.run_cli(str(GOLD / "grover.case.json"), "--json")
