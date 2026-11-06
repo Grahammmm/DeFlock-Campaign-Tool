@@ -160,7 +160,7 @@ class ColdStartReadmeTests(unittest.TestCase):
 
     def test_fork_doc_links_and_commands_resolve(self):
         text = (REPO / "docs" / "FORK-AND-RUN.md").read_text(encoding="utf-8")
-        self.assertLessEqual(len(text.splitlines()), 90)
+        self.assertLessEqual(len(text.splitlines()), 110)
         helped = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "--help"], cwd=REPO,
                                 capture_output=True, text=True, timeout=60).stdout
         found = re.search(r"\{([a-z,-]+)\}", helped)

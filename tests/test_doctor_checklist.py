@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -19,6 +20,12 @@ from campaign_tool.doctor_checklist import checklist, render  # noqa: E402
 BOOLEANS = ("config_readable", "jurisdiction_verified", "reviewed_law_package", "public_deployment_checked",
             "newsletter_checked", "kit_built")
 FORBIDDEN = re.compile(r"late|overdue|violat|illegal|compliant", re.I)
+
+
+def render_pure(report, directory):
+    """render() with the cwd-dependent git row switched off, so the test does not depend on where it runs."""
+    with mock.patch("campaign_tool.git_exposure.git_exposure_row", return_value=None):
+        return render(report, directory)
 
 
 def done_report(**overrides):
@@ -168,7 +175,7 @@ class ChecklistRowTests(unittest.TestCase):
     def test_all_satisfied_is_zero_todo(self):
         rows = checklist(done_report(), "D")
         self.assertEqual({row["state"] for row in rows} - {"ok", "info"}, set())
-        self.assertTrue(render(done_report(), "D").splitlines()[-1].startswith("0 to do · "))
+        self.assertTrue(render_pure(done_report(), "D").splitlines()[-1].startswith("0 to do · "))
         self.assertEqual(by_key(rows)["safe_to_send_automatically"]["state"], "info")
         self.assertEqual(rows[-1]["key"], "production_ready")
 
@@ -241,7 +248,7 @@ class ChecklistRowTests(unittest.TestCase):
             for row in checklist(report, "D"):
                 self.assertIsNone(FORBIDDEN.search(" ".join(str(row[k] or "") for k in ("label", "next", "owner"))),
                                   row)
-            self.assertIsNone(FORBIDDEN.search(render(report, "D")))
+            self.assertIsNone(FORBIDDEN.search(render_pure(report, "D")))
 
 
 if __name__ == "__main__":

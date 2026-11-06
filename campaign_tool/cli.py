@@ -69,6 +69,8 @@ def initialize(args, root):
     for field in ('name', 'county'):
         if not getattr(args, field).strip():
             raise ValueError('Missing campaign field: ' + field)
+    from .git_exposure import refuse_engine_directory
+    refuse_engine_directory(root)
     root.mkdir(parents=True, exist_ok=True)
     cfg = {"schema_version": 1, "name": args.name, "county": args.county,
            "state": args.state.upper(), "country": "US",
