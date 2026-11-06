@@ -63,6 +63,17 @@ class MergeTests(unittest.TestCase):
         self.assertEqual([m["kind"] for m in out["overdue_marks"]], ["unknown"])
         self.assertEqual(out["next_action"]["owner"], "coordinator")
 
+    def test_register_only_promised_date_is_merged_and_marked(self):
+        passed = only(build(reg(row(promised={"state": "passed", "date": "2026-11-04"}))))
+        self.assertEqual([m["kind"] for m in passed["overdue_marks"]], ["promised_date_passed"])
+        self.assertEqual(passed["overdue_marks"][0]["label"], tl.OVERDUE_LABEL)
+        ev = [e for e in passed["events"] if e["type"] == "promised date"]
+        self.assertEqual([(e["date"], e["source"]["kind"]) for e in ev], [("2026-11-04", "register")])
+        future = only(build(reg(row(promised={"state": "upcoming", "date": "2026-11-20"}))))
+        self.assertEqual(future["overdue_marks"], [])
+        met = only(build(reg(row(promised={"state": "none", "date": "2026-11-04"}))))
+        self.assertEqual((met["overdue_marks"], [e for e in met["events"] if e["type"] == "promised date"]), ([], []))
+
     def test_promised_date_passed_marked_but_future_promise_is_not(self):
         past = only(build(reg(row()), manual=[manual("m1", "promised date", "2026-10-30", new_date="2026-11-04")]))
         self.assertIn("promised_date_passed", [m["kind"] for m in past["overdue_marks"]])

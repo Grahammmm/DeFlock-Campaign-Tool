@@ -168,6 +168,11 @@ def build_timeline(register, received, drafts, outbox, manual, *, run_id):
                                  "extension recorded in the register (no notice date held)",
                                  {"kind": "register", "request": row.get("request_id")},
                                  new_dates=[], undated=True))
+        promise = row.get("promised") or {}
+        if promise.get("state") in ("passed", "due_today", "upcoming") and _day(promise.get("date")):
+            events.append(_event(_day(promise["date"]), "promised date", "promised date recorded in the register",
+                                 {"kind": "register", "request": row.get("request_id")},
+                                 new_dates=[_iso(_day(promise["date"]))]))
         for it in items:
             if not _matches(row, it.get("agency_id"), it.get("request_id")):
                 continue
