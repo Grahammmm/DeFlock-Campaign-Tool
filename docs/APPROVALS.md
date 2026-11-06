@@ -142,3 +142,37 @@ calculated) and `State: pending-approval`. Nothing is sent.
   send authority.
 - A truncated or malformed journal tail is refused (`queue_invalid`) and left untouched for the
   operator; the outputs stage then reports `OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE`.
+
+## No-response follow-ups (REC-AUTO-7)
+
+After each outputs stage, the records pipeline reads that run's `CURRENT-REQUEST-REGISTER.json` and,
+for agencies you switch on, queues a pending draft when a request's clock has passed with no
+response. Nothing is sent; approval is not sending.
+
+Settings: `<project>/followup-settings.json` (regular file, owner-only, at most 64 KiB; a symlink,
+group/world-readable, oversized, duplicate-key or unknown-value file is refused as a whole):
+
+```json
+{"schema": "records-followup-settings-v1",
+ "default": {"autonomy": "off"},
+ "agencies": {"<agency_key>": {"autonomy": "draft", "notice_after_days": 10}}}
+```
+
+- `autonomy` is `off` (default, also when the file is absent) or `draft`. There is no sending value;
+  `send`, `auto` or `on` make the file invalid, every agency stays `off` and the stage reports
+  `OUTPUTS_FOLLOWUP_SETTINGS_INVALID`. `notice_after_days` (1 to 60, default 10) is the wait after an
+  approved reminder before a formal notice is drafted.
+- `reminder-no-response`: the register's determination reminder date passed with no determination.
+- `reminder-promised-date`: the agency's own promised date (tracker column `promised_at`) passed and no
+  production is recorded on or after it.
+- `formal-notice-no-response`: drafted only after the reminder for the same clock was approved and
+  `notice_after_days` have passed. A pending, rejected or edited reminder never escalates.
+  It asks for a written response and states no violation, penalty or lawsuit.
+- Each draft is keyed by agency, request and clock date, so a rerun adds nothing, an edit or rejection is
+  never overwritten, and a new date (a recorded extension or a new promise) is a new draft. Rows with a
+  register issue, a closed status or an `off` agency yield nothing.
+- Dates and wording come from the register and its limits text. The period is still the register's fixed
+  10 + 14 day rule (moving it into the law package is a follow-up); it is a provisional reminder, not a
+  legal determination.
+- `python -m campaign_tool.records followups plan|rows --project DIR --run-id RID` prints the planned drafts
+  or the Deadlines and Overdue rows, read-only.
