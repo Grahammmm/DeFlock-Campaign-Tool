@@ -32,7 +32,7 @@ OVERDUE_LABEL = "past the statutory date on our records; not a legal finding"
 EXTENSION_LABEL = "extension total exceeds 14 days on our records"
 EVENT_TYPES = ("sent", "acknowledged", "extension notice", "promised date", "determination", "production",
                "denial", "no records", "fee estimate", "our follow-up sent", "call", "portal check", "closed",
-               "received", "draft")
+               "received", "draft", "hand note")
 # Stage ladder, lowest to highest; the stage is the highest one the evidence reaches.
 STAGES = ("not_started", "drafted", "sent", "acknowledged", "extended", "determined", "produced", "denied",
           "no_records", "analysed", "follow_up_drafted", "follow_up_sent")

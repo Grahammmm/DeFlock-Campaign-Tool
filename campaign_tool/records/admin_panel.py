@@ -20,7 +20,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, console_board, console_documents, console_oversight, draft_templates, mail_drafts, mail_send, run_report, schedule
+from . import approval_queue, console_board, console_documents, console_manual_events, console_oversight, draft_templates, mail_drafts, mail_send, run_report, schedule
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -784,6 +784,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._host_ok():
             return self._fail(403)
+        if console_manual_events.serve(self):
+            return
         if console_documents.serve(self):  # Screen C
             return
         if console_board.serve(self):  # Screens A and B
@@ -873,7 +875,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(403)
         if console_oversight.post(self):  # Screen F: Undo, OFF and kill only
             return
-        route = ROUTES.get(self.path) or (SEND_ROUTE if self.path == "/send" else None)
+        route = ROUTES.get(self.path) or (SEND_ROUTE if self.path == "/send" else console_manual_events.ROUTE if self.path == "/manual-event" else None)
         if route is None:
             return self._fail(404)
         origins = self.headers.get_all("Origin") or []
@@ -890,6 +892,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(403)
         if back not in RETURNS:
             return self._fail(400)
+        if action == "manual":
+            return console_manual_events.post(self, fields)
         ident = fields["id"]
         if not DRAFT_ID.fullmatch(ident):
             return self._fail(400)
@@ -933,6 +937,7 @@ def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_ro
         raise PanelError("port_invalid")
     server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
     server.csrf_token = secrets.token_urlsafe(32)
+    server.manual_event_key = secrets.token_urlsafe(32)
     server.actor = actor
     server.mail_drafts_config = mail_drafts_config
     server.send_hooks = {}  # tests inject imap_factory / smtp_factory; production uses the real ones
