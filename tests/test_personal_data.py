@@ -680,7 +680,7 @@ MODULE_FUNCTIONS = {
     'records.portal.engine': ('_download',),
     'records.portal.ledger_adapter': ('WP1LedgerAdapter._copy_cas',),
     'records.portal.store': ('Queue.__init__', 'Queue.lock', 'Queue.promote',),
-    'records.console_manual_events': ('append', 'post',),  # actor-bearing local-console manual events: append-only journal line and timeline refresh; nothing sent or published
+    'records.console_manual_events': ('append_events', 'post',),  # actor-bearing local-console manual events: append-only journal line and timeline refresh; nothing sent or published
     'records.public_packets': (
         '_Locked.__enter__', '_Locked.append', '_replace', 'main',
     ),  # private packet journal (actor/signature history), lock and the site-content change file; nothing is published or deployed
