@@ -337,5 +337,137 @@ class Cli(Base):
         self.assertEqual((code, err.strip()), (1, "register_missing"))
 
 
+class DueClocks(Base):
+    run_cli = Cli.run_cli
+    snapshot = Cli.snapshot
+
+    def test_silence_validation_and_override(self):
+        self.assertEqual(fc.load_settings(self.root)["default"]["silence_after_days"], 0)
+        for scope in ("default", "agencies"):
+            for bad in (31, -1, "3", True):
+                with self.subTest(scope=scope, bad=bad):
+                    entry = {"autonomy": "draft", "silence_after_days": bad}
+                    self.settings({"schema": fc.SETTINGS_SCHEMA,
+                                   scope: entry if scope == "default" else {"ag1": entry}})
+                    settings = fc.load_settings(self.root)
+                    self.assertTrue(settings["invalid"])
+                    self.assertEqual(fc.plan(doc([row()]), settings, [], as_of=AS_OF), [])
+        self.settings({"schema": fc.SETTINGS_SCHEMA,
+                       "default": {"autonomy": "draft", "silence_after_days": 3},
+                       "agencies": {"ag1": {"silence_after_days": 30}, "ag2": {"silence_after_days": 0}}})
+        settings = fc.load_settings(self.root)
+        self.assertFalse(settings["invalid"])
+        self.assertEqual([fc._setting(settings, a)["silence_after_days"] for a in ("ag1", "ag2", "ag3")], [30, 0, 3])
+
+    def test_grace_boundary_and_notice_unchanged(self):
+        from datetime import date, timedelta
+        self.enable(silence_after_days=5)
+        settings = fc.load_settings(self.root)
+        for kind in ("determination", "promised"):
+            r = row(state="determined" if kind == "promised" else "past_due_reminder",
+                    due="2030-01-12", promised={"state": "passed", "date": "2030-01-12"} if kind == "promised" else None)
+            expected = [(kind, "2030-01-12", "2030-01-18")]
+            self.assertEqual(fc.followup_due(r, fc._setting(settings, "ag1")), expected)
+            for offset in range(1, 6):
+                day = (date(2030, 1, 12) + timedelta(days=offset)).isoformat()
+                self.assertEqual(fc.plan(doc([r]), settings, [], as_of=day), [])
+            found = fc.plan(doc([r]), settings, [], as_of="2030-01-18")
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]["item_id"], fc.item_id("ag1", "req-1", kind, "2030-01-12"))
+            approved = [{**found[0], "status": "approved", "updated_at": "2030-01-18T12:00:00Z"}]
+            self.assertNotIn(fc.NOTICE, [c["kind"] for c in fc.plan(doc([r]), settings, approved, as_of="2030-01-27")])
+            self.assertIn(fc.NOTICE, [c["kind"] for c in fc.plan(doc([r]), settings, approved, as_of="2030-01-28")])
+
+    def test_first_plan_date_equivalence(self):
+        from datetime import date, timedelta
+        anchor = date(2030, 1, 12)
+        for n in (0, 3):
+            self.enable(silence_after_days=n)
+            settings = fc.load_settings(self.root)
+            for case in ("running", "due_today", "past_due_reminder", "upcoming", "passed", "determined", "unknown", "closed"):
+                with self.subTest(n=n, case=case):
+                    promised = case in ("upcoming", "passed")
+                    base = anchor + timedelta(days={"running": 2, "past_due_reminder": -1, "upcoming": 2, "passed": -1}.get(case, 0))
+                    r = row(state="determined" if promised else case if case != "closed" else "running",
+                            due=None if case == "unknown" else base.isoformat(),
+                            promised={"state": case, "date": base.isoformat()} if promised else None,
+                            status="closed" if case == "closed" else "open")
+                    expected = fc.followup_due(r, fc._setting(settings, "ag1"))
+                    first = None
+                    for offset in range(-2, 41):
+                        day = anchor + timedelta(days=offset)
+                        current = json.loads(json.dumps(r))
+                        if promised:
+                            current["promised"]["state"] = "passed" if day > base else "due_today" if day == base else "upcoming"
+                        elif case not in ("determined", "unknown"):
+                            current["deadline"]["state"] = "past_due_reminder" if day > base else "due_today" if day == base else "running"
+                        if fc.plan(doc([current], day.isoformat()), settings, [], as_of=day.isoformat()):
+                            first = day.isoformat()
+                            break
+                    self.assertEqual(first, expected[0][2] if expected else None)
+
+    def test_clock_table_golden_and_identity(self):
+        self.enable(silence_after_days=3)
+        settings = fc.load_settings(self.root)
+        rows = [row(request="overdue"), row(request="future", state="running", due="2030-02-08"),
+                row(request="closed", status="closed"), row(request="unknown", state="unknown", due=None),
+                row(request="promise", state="determined", promised={"state": "upcoming", "date": "2030-02-03"})]
+        rows[0]["deadline"].update(base_due="2030-01-12", extended_due="2030-01-26")
+        rows[3]["issues"] = ["missing_receipt"]
+        timeline = {"requests": [{"agency_key": "ag1", "request_id": "overdue", "extension_chain": {"exceeds_14_days": True}},
+                                 {"agency_key": "other", "request_id": "future", "extension_chain": {"exceeds_14_days": True}}]}
+        approved = {"item_id": fc.item_id("ag1", "overdue", "determination", "2030-01-12"),
+                    "kind": "reminder-no-response", "status": "approved", "updated_at": "2030-01-23T12:00:00Z"}
+        inputs = json.dumps([rows, settings, timeline, approved], sort_keys=True)
+        result = fc.clock_table(doc(rows), settings, [approved], timeline, as_of=AS_OF)
+        self.assertEqual([r["request_id"] for r in result], ["overdue", "promise", "future", "closed", "unknown"])
+        self.assertEqual(result[0], {"agency_key": "ag1", "request_id": "overdue", "basis": "recorded_receipt",
+                         "base_due": "2030-01-12", "extended_due": "2030-01-26", "due": "2030-01-12",
+                         "state": "past_due_reminder", "promised": {"state": "none", "date": None},
+                         "followup_due": [{"clock_kind": "determination", "clock_date": "2030-01-12", "due_date": "2030-01-16"}],
+                         "notice_due": "2030-02-02", "extension_limit_exceeded": True, "autonomy": "draft", "issues": [], "closed": False})
+        self.assertTrue(result[3]["closed"])
+        self.assertEqual(result[3]["followup_due"], [])
+        self.assertEqual(result[4]["issues"], ["missing_receipt"])
+        self.assertIsNone(result[2]["extension_limit_exceeded"])
+        self.assertEqual(json.dumps([rows, settings, timeline, approved], sort_keys=True), inputs)
+        for status in ("pending", "rejected", "cancelled", "expired"):
+            queue = [{**approved, "status": status}]
+            self.assertTrue(all(r["notice_due"] is None for r in fc.clock_table(doc(rows), settings, queue, as_of=AS_OF)))
+        stale = {**approved, "item_id": fc.item_id("ag1", "overdue", "determination", "2030-01-01")}
+        self.assertTrue(all(r["notice_due"] is None for r in fc.clock_table(doc(rows), settings, [stale], as_of=AS_OF)))
+        self.assertEqual(fc.clock_table(doc(rows), settings, [approved, approved], timeline, as_of=AS_OF), result)
+
+    def test_clocks_cli_optional_timeline_and_failures(self):
+        from campaign_tool.records.outcomes.timeline import SCHEMA
+        self.enable(silence_after_days=3)
+        self.put_register([row()])
+        argv = ("clocks", "--project", str(self.root), "--run-id", "run-1")
+        before = self.snapshot()
+        code, out, _ = self.run_cli(*argv)
+        self.assertEqual(code, 0)
+        self.assertIsNone(json.loads(out)[0]["extension_limit_exceeded"])
+        self.assertEqual(self.snapshot(), before)
+        path = self.root / "run-outputs/run-1/outcomes/timeline.json"
+        path.parent.mkdir()
+        timeline = {"schema": SCHEMA, "run_id": "run-1", "requests": [
+            {"agency_key": "ag1", "request_id": "req-1", "extension_chain": {"exceeds_14_days": True}}]}
+        path.write_text(json.dumps(timeline))
+        before = self.snapshot()
+        code, out, _ = self.run_cli(*argv)
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(out)[0]["extension_limit_exceeded"])
+        self.assertEqual(self.snapshot(), before)
+        for bad in ("not json", json.dumps({**timeline, "run_id": "stale"}), json.dumps({**timeline, "requests": [None]})):
+            path.write_text(bad)
+            code, _, err = self.run_cli(*argv)
+            self.assertEqual((code, err.strip()), (1, "timeline_unreadable"))
+        path.unlink()
+        path.symlink_to(self.root / "run-outputs/run-1" / fc.REGISTER_NAME)
+        code, _, err = self.run_cli(*argv)
+        self.assertEqual((code, err.strip()), (1, "timeline_unreadable"))
+        self.assertEqual(self.run_cli("clocks", "--project", str(self.root), "--run-id", "missing")[0], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
