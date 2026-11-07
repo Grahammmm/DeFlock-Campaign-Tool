@@ -19,6 +19,26 @@ G edits away placeholders/reviewer notes and signs the exact text on the existin
 approval pages. Residue is refused. Sending remains off by default and attended.
 The Python API's optional `as_of` must match the run snapshot, not override it.
 
+## Refusal log
+
+`records denials --project P --run-id R [--json]` reads existing run outputs
+and approval/send journals; it never refreshes the timeline or writes anything.
+Each withheld/exemption-cited ask appears once; a denial event without item rows
+appears as `denied_whole`. Quotes are verbatim prefixes (400 characters maximum),
+with available page and document hash; absent quotes say `no quote extracted`.
+Citation text is the agency's quoted wording, labelled **agency's citation;
+UNVERIFIED by us**, never a validation of the exemption. Item text is capped at
+160 characters. Dates are recorded receipt dates in Pacific time, or UNKNOWN.
+The same-run received-items report supplies receipt timestamps and hashes;
+without it those fields remain unknown unless the timeline records the date.
+Reply status uses exact source/item coverage, not queue kind alone. Ambiguous
+coverage stays `not_drafted`; a current-revision send receipt is needed for `sent`.
+Engine-playbook draft coverage is deliberately deferred to DEN-DRAFT-1.
+Missing required sources or invalid/stale sources return `state: unavailable`
+with a content-free code and exit 2, never an empty successful report.
+Private machine reading of the response; review required; not proof of a lawful
+or unlawful denial. Nothing drafts, approves, sends or publishes.
+
 ## Read-only response state
 
 `records followup-state --project P --run-id R` prints private, review-required JSON;
