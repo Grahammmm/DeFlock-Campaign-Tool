@@ -1,28 +1,36 @@
 """Synthetic exact-pair acceptance for the loopback records panel."""
 import contextlib
 import io
+import tempfile
 from pathlib import Path
 from unittest import mock
 from urllib.parse import urlencode
 
 from campaign_tool.records import admin_panel as ap
 from tests.records.test_admin_panel import ServerCase, RUN, journal
+from tests.records.test_console_access import HDR, NOW, make_token, write_config
 
 PUBLIC = "https://admin.example.test"
 HOST = "admin.example.test"
 
 
 class PublicOriginTests(ServerCase):
+    def setUp(self):
+        super().setUp()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cfg = write_config(tmp.name)
+
     def public_server(self):
-        self.server = self.start(public_origin=PUBLIC)
+        self.server = self.start(public_origin=PUBLIC, access_config=self.cfg, access_clock=lambda: NOW)
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
 
-    def request(self, method="GET", path="/board", hosts=None, origins=None, fields=None, extra_headers=None):
+    def request(self, method="GET", path="/board", hosts=None, origins=None, fields=None, extra_headers=None, token=True):
         hosts = [HOST] if hosts is None else hosts
         origins = [PUBLIC] if origins is None else origins
         body = urlencode(fields or {}).encode()
         headers = [("Host", h) for h in hosts] + [("Origin", o) for o in origins]
-        headers += list((extra_headers or {}).items())
+        headers += list((extra_headers or {}).items()) + ([(HDR, make_token())] if token else [])
         headers += [("Content-Type", "application/x-www-form-urlencoded"), ("Content-Length", str(len(body)))]
         raw = (f"{method} {path} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in headers) + "\r\n").encode() + body
         return self.http.send(method, path, raw=raw)
@@ -46,7 +54,7 @@ class PublicOriginTests(ServerCase):
             with self.subTest(hosts=hosts):
                 self.assertEqual(self.request(hosts=hosts)[0], 403)
         for hosts in ([HOST], [loop]):
-            self.assertEqual(self.request(hosts=hosts)[0], 200)
+            self.assertEqual(self.request(hosts=hosts, token=hosts == [HOST])[0], 200)
 
     def test_public_post_csrf_and_readback(self):
         self.public_server()
@@ -110,12 +118,12 @@ class PublicOriginTests(ServerCase):
             with self.subTest(value=value), mock.patch.object(ap, "build_server") as build, \
                     contextlib.redirect_stderr(io.StringIO()) as err:
                 result = ap.main(["--project", str(self.project), "--run-id", RUN, "--actor", "op",
-                                  "--public-origin", value])
+                                  "--public-origin", value, "--access-config", str(self.cfg)])
                 self.assertEqual((result, err.getvalue()), (2, "public_origin_invalid\n"))
                 build.assert_not_called()
             with mock.patch.object(ap.http.server, "HTTPServer") as listener:
                 with self.assertRaises(ap.PanelError) as caught:
-                    ap.build_server(self.project, RUN, actor="op", public_origin=value)
+                    ap.build_server(self.project, RUN, actor="op", public_origin=value, access_config=self.cfg)
                 self.assertEqual(caught.exception.code, "public_origin_invalid")
                 listener.assert_not_called()
 
@@ -123,7 +131,7 @@ class PublicOriginTests(ServerCase):
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 8765)
         server.serve_forever.side_effect = KeyboardInterrupt
-        args = ["--project", str(self.project), "--run-id", RUN, "--no-system", "--public-origin", PUBLIC]
+        args = ["--project", str(self.project), "--run-id", RUN, "--no-system", "--access-config", str(self.cfg), "--public-origin", PUBLIC]
         with mock.patch.object(ap, "build_server", return_value=server), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(ap.main(args + ["--actor", "op"]), 0)

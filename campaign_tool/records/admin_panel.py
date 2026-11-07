@@ -16,12 +16,14 @@ import socket
 import stat
 import subprocess
 import sys
+import time
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import approval_queue, console_board, console_calendar, console_documents, console_home, console_manual_events, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
 from . import console_origin
+from . import console_access
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -932,8 +934,25 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self._send(303, "", location=back)
 
 
+def _access_cfg(public_origin, access_config):
+    """Claims config (a path or an already loaded dict); required exactly when a public origin is set."""
+    if public_origin is None:
+        if access_config is not None:
+            raise PanelError("access_config_unused")
+        return None
+    if access_config is None:
+        raise PanelError("access_config_required")
+    if isinstance(access_config, dict):
+        return access_config
+    try:
+        return console_access.load_config(access_config)
+    except ValueError:
+        raise PanelError("access_config_invalid") from None
+
+
 def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
-                 timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None):
+                 timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None,
+                 access_config=None, access_clock=None):
     """Unstarted loopback-only server; the caller serves and closes it."""
     check_run_id(run_id)
     check_actor(actor)
@@ -944,8 +963,11 @@ def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_ro
         public_pair = console_origin.check_public_origin(public_origin) if public_origin is not None else None
     except ValueError:
         raise PanelError("public_origin_invalid") from None
+    access_cfg = _access_cfg(public_origin, access_config)
     server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
     server.public_pair = public_pair
+    server.access_cfg = access_cfg
+    server.access_clock = access_clock or time.time
     server.csrf_token = secrets.token_urlsafe(32)
     server.manual_event_key = secrets.token_urlsafe(32)
     server.actor = actor
@@ -978,6 +1000,8 @@ def main(argv=None):
                         help="owner-only mailbox config: after Approve, place that one draft in the Drafts folder")
     parser.add_argument("--send-config", metavar="FILE",
                         help="owner-only send.json: enables the Approve and send button (still off until enabled)")
+    parser.add_argument("--access-config", metavar="FILE",
+                        help="owner-only JSON {aud,email,team_domain}; required with --public-origin")
     args = parser.parse_args(argv)
     timers = tuple(args.timer_unit) if args.timer_unit else DEFAULT_TIMERS
     try:
@@ -999,6 +1023,7 @@ def main(argv=None):
                 console_origin.check_public_origin(args.public_origin)
             except ValueError:
                 raise PanelError("public_origin_invalid") from None
+        access = _access_cfg(args.public_origin, args.access_config)
         if args.mail_drafts_config:
             try:
                 mail_drafts.load_config(args.mail_drafts_config)
@@ -1009,10 +1034,11 @@ def main(argv=None):
         server = build_server(args.project, args.run_id, actor=args.actor, port=args.port,
                               run_report_path=args.run_report, kit_root=args.kit_root, as_of=args.as_of,
                               timers=timers, system=not args.no_system, mail_drafts_config=args.mail_drafts_config,
-                              send_config=args.send_config, public_origin=args.public_origin)
+                              send_config=args.send_config, public_origin=args.public_origin,
+                              access_config=access)
     except PanelError as error:
         print(error.code, file=sys.stderr)
-        return 2 if error.code.endswith(("_invalid", "_required")) else 1
+        return 2 if error.code.endswith(("_invalid", "_required", "_unused")) else 1
     except OSError:
         print("panel_start_failed", file=sys.stderr)
         return 1
