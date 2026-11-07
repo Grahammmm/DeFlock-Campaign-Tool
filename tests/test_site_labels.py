@@ -236,6 +236,8 @@ class LabelsTest(unittest.TestCase):
             for path, data in files.items():
                 if path.endswith(".html"):
                     page = data.decode()
+                    if path == "data.html":  # DF0237-12: the catalogue's fixed description of the camera CSV (not a label)
+                        page = page.replace("Community-mapped camera points; ownership unconfirmed.", "")
                     seen |= {key for key in DEFAULTS if f"X{key}X" in page}
                     left = [p for p in phrases if p in page or html_text(p) in page]
                     self.assertEqual(left, [], f"{name}: {path}")

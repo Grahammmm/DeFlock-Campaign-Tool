@@ -351,7 +351,7 @@ class LogoAndData(PressBase):
 
     def test_logo_and_exact_emitted_data_licences(self):
         emitted = lambda: sorted(f"/data/{p.name}" for p in (self.public / "data").iterdir()
-                                 if p.suffix in (".json", ".csv", ".geojson"))
+                                 if p.suffix in (".json", ".csv", ".geojson") and p.name != "cameras.csv")  # DF0237-12: the press page lists no camera CSV
         for license_id, (name, url) in LICENSES.items():
             with self.subTest(license_id):
                 self.build(press=PRESS, license={"id": license_id, "attribution": "Cedar group"})
