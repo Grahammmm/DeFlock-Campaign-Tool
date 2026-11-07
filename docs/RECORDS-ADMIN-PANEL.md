@@ -67,7 +67,12 @@ but the pairs cannot mix. The hostname must be lowercase DNS with at least two l
 path, query, fragment or trailing dot is accepted. Missing or duplicate Host/POST Origin is refused.
 The bind stays literal `127.0.0.1`; `--render` ignores this flag.
 This is only safe behind Cloudflare Access with **cloudflared Access JWT validation**.
-CON-HOST-2 adds the application claims check; this flag alone does not authenticate a public user.
+`--access-config FILE` is required with `--public-origin` (and refused without it): an owner-only (0600, regular,
+non-symlink, at most 4096 bytes) JSON object with exactly `aud` (64 lowercase hex), `email` and `team_domain`
+(`<team>.cloudflareaccess.com`). Every request on the public Host must then carry one `Cf-Access-Jwt-Assertion`
+whose header is RS256 and whose `aud`, `iss`, `exp`, `iat` and `email` claims match; otherwise it gets the generic 403.
+This check does **not** verify the signature: alone it is only a tripwire against a missing or misconfigured edge, never
+authentication. Loopback requests are exempt. Never commit the real values.
 Never add an edge rule that rewrites Origin. Existing CSRF and action checks still apply.
 
 ## Static snapshot

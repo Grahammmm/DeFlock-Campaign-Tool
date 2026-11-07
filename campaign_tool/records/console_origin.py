@@ -1,6 +1,8 @@
 """Exact Host/Origin pairs for the always-loopback records panel."""
 import re
 
+from campaign_tool.records import console_access
+
 _DNS = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
@@ -27,4 +29,8 @@ def request_ok(handler, post):
     if public is not None:
         pairs.append(public)
     origins = handler.headers.get_all("Origin") or []
-    return any(hosts == [host] and (not post or origins == [origin]) for host, origin in pairs)
+    for host, origin in pairs:
+        if hosts == [host] and (not post or origins == [origin]):
+            return (public is None or host != public[0]
+                    or console_access.claims_ok(handler.headers, handler.server.access_cfg, handler.server.access_clock()))
+    return False
