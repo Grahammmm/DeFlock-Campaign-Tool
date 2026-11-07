@@ -738,9 +738,12 @@ def meetings_cmd(args, root):
 def _meetings_multi(args, root, cfg, zone):
     """DF1507-08: no --client scans every campaign.json meeting_sources entry into one kit/meetings.json; exit 3 if any failed."""
     from datetime import date
-    from .meetings import default_opener, fixture_opener, load_sources, scan_sources, write_meetings
-    if args.platform != "legistar" or args.matters or args.from_xml or args.view_id is not None or args.all_events:
-        raise ValueError("without --client only the Legistar events in meeting_sources are scanned; pass --client for other options")
+    from .meetings import default_opener, fixture_opener, load_sources, scan_sources, source_key, write_meetings
+    for flag in ("all_events", "matters"):
+        if getattr(args, flag):
+            raise ValueError(f"--{flag.replace('_', '-')} is single-source only; pass --client")
+    if args.platform != "legistar" or args.from_xml or args.view_id is not None:
+        raise ValueError("without --client every meeting_sources entry is scanned; pass --client for other options")
     sources = load_sources(cfg)
     if not sources:
         raise ValueError("add meeting_sources to campaign.json or pass --client")
@@ -750,12 +753,12 @@ def _meetings_multi(args, root, cfg, zone):
     since = date.fromisoformat(args.since) if args.since else None
     previous = _read_previous(root / "kit" / "meetings.json")
     meetings, sources_report, changes = scan_sources(sources, lambda client: opener, since, zone, previous)
-    target = write_meetings(root, meetings, "multi", changes, zone=zone, source="legistar",
-                            extra={"clients": sorted(s["client"] for s in sources), "sources": sources_report})
+    target = write_meetings(root, meetings, "multi", changes, zone=zone, source="multi",
+                            extra={"clients": sorted(source_key(s) for s in sources), "sources": sources_report})
     counts = {c: ({k: len(v[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
                   if "added" in v else {"previous": v["previous"]}) for c, v in changes.items()}
     failed = [s["client"] for s in sources_report if s["status"] == "failed"]
-    print(json.dumps({"client": "multi", "platform": "legistar", "matched_meetings": len(meetings), "written": str(target),
+    print(json.dumps({"client": "multi", "platform": "multi", "matched_meetings": len(meetings), "written": str(target),
                       "sources": sources_report, "changes": counts, "failed_sources": failed,
                       "note": "keyword hits only; verify the posted agenda before publishing"}, indent=2))
     if failed:
