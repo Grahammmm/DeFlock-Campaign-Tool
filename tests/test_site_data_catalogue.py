@@ -122,7 +122,7 @@ class CatalogueTests(Case):
         on_disk = {p.relative_to(self.public).as_posix(): p.read_bytes() for p in (self.public / "data").iterdir()
                    if p.name != "datapackage.json"}
         self.assertEqual(sorted(on_disk), sorted([*(f"data/{k}.{x}" for k in JSON_PATHS for x in ("json", "csv")),
-                                                  "data/cameras.geojson", "data/county.geojson", CITY]))
+                                                  "data/cameras.csv", "data/cameras.geojson", "data/county.geojson", CITY]))
         for kind in JSON_PATHS:
             self.assertTrue(on_disk[f"data/{kind}.csv"].endswith(b"\r\n"), kind)  # CRLF kept in the hashed bytes
             self.assertTrue(on_disk[f"data/{kind}.json"].endswith(b"}\n"), kind)
@@ -196,12 +196,14 @@ class CatalogueTests(Case):
                 self.build()
                 resources = self.resources()
                 for path, resource in resources.items():
-                    if path.endswith((".json", ".csv")):
+                    if path.endswith((".json", ".csv")) and path != "data/cameras.csv":
                         self.assertEqual(resource["licenses"], [{"name": license_id, "path": url}], path)
                         self.assertEqual(resource["attribution"], "Cedar Records Project", path)
                 cameras = resources["data/cameras.geojson"]
                 self.assertEqual(cameras["licenses"], [{"name": ODBL["id"], "path": ODBL["url"]}])
                 self.assertEqual(cameras["attribution"], OSM)
+                self.assertEqual(resources["data/cameras.csv"]["licenses"], [{"name": ODBL["id"], "path": ODBL["url"]}])  # DF0237-12
+                self.assertEqual(resources["data/cameras.csv"]["attribution"], OSM + ". ODbL 1.0; attribution and share-alike apply.")
                 for path in ("data/county.geojson", CITY):  # GeoJSON placement is not a licence
                     self.assertEqual(resources[path]["licenses"], [], path)
                     self.assertNotIn("attribution", resources[path], path)
@@ -211,11 +213,12 @@ class CatalogueTests(Case):
         self.build()
         resources = self.resources()
         for path, resource in resources.items():
-            if path != "data/cameras.geojson":
+            if path not in ("data/cameras.geojson", "data/cameras.csv"):
                 self.assertEqual(resource["licenses"], [], path)
         self.assertEqual(resources["data/cameras.geojson"]["licenses"][0]["name"], "ODbL-1.0")
+        self.assertEqual(resources["data/cameras.csv"]["licenses"][0]["name"], "ODbL-1.0")
         page = (self.public / "data.html").read_text(encoding="utf-8")
-        self.assertEqual(page.count("licence not stated"), len(resources) - 1)
+        self.assertEqual(page.count("licence not stated"), len(resources) - 2)
         self.assertIn(OSM, page)
         self.assertIn(f'href="{ODBL["url"]}"', page)
         self.assertNotIn("creativecommons", page)
