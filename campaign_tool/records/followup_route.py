@@ -141,8 +141,10 @@ def route(state_row, clock_row, queue_rows, as_of, *, items=None, coverage_rows=
             out.update(pattern=residual[0], extra_patterns=residual[1:], asks_for=sorted(set(opened) - done))
     elif number == 10:
         out.update(handled_by="manual")
-    if number in (1, 6):
+    if number == 1:
         out["asks_for"] = opened or sorted((state_row.get("evidence") or {}).get("item_numbers", []))
+    elif number == 6:
+        out["asks_for"] = opened  # every ask produced: nothing to re-ask, so []
     if out["handled_by"] == "engine" and out["date_basis"] is None:
         out["date_basis"] = READY
     return out

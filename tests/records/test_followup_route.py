@@ -158,6 +158,8 @@ class RouteTests(unittest.TestCase):
             fr.route(s, {}, [], "invalid")
         r = fr.route(state("closed", ["open_tier1"], produced=[1]), {}, [], DAY)
         self.assertEqual(r["asks_for"], [1])
+        r = fr.route(state("extension", ["extension_limit_exceeded"], produced=[1]), {}, [], DAY)
+        self.assertEqual((r["pattern"], r["asks_for"]), ("extension", []))
 
 
 class RunTests(unittest.TestCase):
