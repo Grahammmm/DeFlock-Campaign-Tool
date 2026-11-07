@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from . import console_board as cb, console_oversight as co, followup_clock as fc, mail_send, public_packets
 from .outcomes.reading import BANNER, esc
+from . import console_layout
 
 KINDS = {"statutory_due": "Statutory due", "extension_limit": "Extension limit", "expected_window": "Agency-stated date",
          "followup_draft_due": "Follow-up draft due", "publication_pending": "Publication step",
@@ -324,10 +325,7 @@ def render(model, today, first):
     horizon = max(90, (last - today).days)
     items, notes = build(model, today, horizon, since=min(today, first))
     prev, nxt = (first - timedelta(days=1)).replace(day=1), last + timedelta(days=1)
-    out = ['<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex,nofollow">'
-           "<title>Calendar</title></head><body>", '<p class="notice">%s</p>' % esc(BANNER),
-           '<nav aria-label="Pages"><a href="/">Home</a> <a href="/board">Board</a> <a href="/oversight">Oversight</a> '
-           '<a href="/next-steps">Drafts and next steps</a> <a href="/calendar.ics">Download .ics</a></nav>',
+    out = [console_layout.start("Calendar", "Calendar"), '<p><a href="/calendar.ics">Download .ics</a></p>',
            "<h1>Calendar: %s</h1>" % esc(first.strftime("%B %Y")),
            "<p>Run %s. %s DATED means a recorded or agency-stated date; INFERRED means arithmetic or a projection. "
            "Subscribing from a phone needs hosting, which is not built.</p>" % (esc(model["run_id"]), esc(LABEL)),
@@ -354,7 +352,7 @@ def render(model, today, first):
             flag, e["date"], esc(KINDS[e["kind"]]), esc(e["agency"]), esc(e["request"]), esc(e["label"]), e["basis"],
             esc(e["source"])))
     out.append("</ul>" if ordered else "<li>Nothing dated in this window.</li></ul>")
-    return "\n".join(out + ["</body></html>"]) + "\n"
+    return "\n".join(out + ["</main></body></html>"]) + "\n"
 
 
 # ---- panel seam and CLI ------------------------------------------------------------------------------

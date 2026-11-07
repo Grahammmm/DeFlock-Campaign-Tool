@@ -26,6 +26,7 @@ from . import public_updates as pu
 from . import console_board as cb
 from .outcomes import release_links as _rl
 from .outcomes.reading import BANNER, esc
+from . import console_layout
 
 STUCK_HOURS = 72
 EXPIRING_DAYS = cb.EXPIRING_DAYS
@@ -227,16 +228,13 @@ def lines_in(model, state):
 
 # ---- rendering ---------------------------------------------------------------------------------------
 
-NAV = ('<nav aria-label="Pages"><a href="/">Home</a> <a href="/dashboard">Dashboard</a> <a href="/board">Board</a> <a href="/oversight">Oversight</a> '
-       '<a href="/public-updates">Public updates</a> <a href="/documents">Documents</a> '
-       '<a href="/next-steps">Drafts and next steps</a></nav>')
+NAV = console_layout.nav()
 
 
 def _head(title, model):
     notes = ['<p class="diag" role="status">%s: unavailable (%s).</p>' % (esc(k), esc(s.get("code")))
              for k, s in sources(model).items() if s["state"] != "ok"]
-    return ['<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex,nofollow">'
-            "<title>%s</title></head><body>" % esc(title), '<p class="notice">%s</p>' % esc(BANNER), NAV,
+    return [console_layout.start(title),
             "<h1>%s</h1>" % esc(title),
             "<p>Run %s. %s Nothing is fetched, sent or published.</p>" % (esc(model["run_id"]), esc(LABEL))] + notes
 
@@ -313,7 +311,7 @@ def render_oversight(model):
         out.append(_table("Public-update hold queue", ("Line", "Agency", "Text", "Hold ends (UTC)"),
                           [(r["id"], r["agency_key"], r["text"],
                             datetime.fromtimestamp(r["hold_until"], timezone.utc).strftime("%Y-%m-%d %H:%M")) for r in holding]))
-    return "\n".join(out + ["</body></html>"]) + "\n"
+    return "\n".join(out + ["</main></body></html>"]) + "\n"
 
 
 def _form(path, token, label, fields=()):
@@ -326,7 +324,7 @@ def render_public(model, token):
     out = _head("Public updates", model)
     pub = model["public"]
     if pub["state"] != "ok":
-        return "\n".join(out + ["<p>No journal can be read, so no lines are listed.</p></body></html>"]) + "\n"
+        return "\n".join(out + ["<p>No journal can be read, so no lines are listed.</p></main></body></html>"]) + "\n"
     out.append('<p role="status">Auto-post switch: <strong>%s</strong> (OFF, ON when signed by G, or KILLED). '
                "It can only be turned ON by G's signature through the command line; this page can only make it safer.</p>" % esc(pub["switch"]))
     out.append(_form("/public-updates/off", token, "Turn auto-post OFF") + _form("/public-updates/kill", token, "Kill switch: stop and retract held lines"))
@@ -366,7 +364,7 @@ def render_public(model, token):
                    + '<p><a href="/packets">Review packets with G\'s signature</a></p>')
     except (public_packets.PacketError, OSError, ValueError, KeyError, TypeError):
         out.append("<p>Packets: unavailable.</p>")
-    return "\n".join(out + ["</body></html>"]) + "\n"
+    return "\n".join(out + ["</main></body></html>"]) + "\n"
 
 
 # ---- panel seams -------------------------------------------------------------------------------------
