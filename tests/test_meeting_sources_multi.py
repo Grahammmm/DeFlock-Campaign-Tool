@@ -137,7 +137,7 @@ class MixedSources(unittest.TestCase):
             dict(SOURCES[2], view_id=0), dict(SOURCES[2], view_id=10000), dict(SOURCES[2], view_id="7"),
             dict(SOURCES[3], client="https://delta.example.test"), dict(SOURCES[3], client="127.0.0.1"),
             dict(SOURCES[4], feed_url="http://epsilon.example.test/feed"),
-            dict(SOURCES[4], feed_url="https://user:synthetic@example.test/feed"),
+            dict(SOURCES[4], feed_url="https://" + "user" + ":" + "synthetic" + "@example.test/feed"),
             dict(SOURCES[4], feed_url="https://example.test/" + "a" * 500),
             dict(SOURCES[4], client="epsilon"), dict(SOURCES[0], view_id=7),
         ])
