@@ -154,7 +154,16 @@ def _aware(value, spec):
 
 
 def _slot_at(spec, date_, hour, minute):
-    return datetime(date_.year, date_.month, date_.day, hour, minute, tzinfo=spec.zone)
+    """The slot's aware wall time, or ``None`` when that wall time does not exist (spring-forward gap).
+
+    systemd skips a calendar time that DST removes rather than shifting it, so the slot
+    simply does not occur that day.
+    """
+    slot = datetime(date_.year, date_.month, date_.day, hour, minute, tzinfo=spec.zone)
+    utc = ZoneInfo("UTC")
+    if slot.astimezone(utc).astimezone(spec.zone).replace(tzinfo=None) != slot.replace(tzinfo=None):
+        return None
+    return slot
 
 
 def due_slots(now, count=3, spec=None):
@@ -163,13 +172,15 @@ def due_slots(now, count=3, spec=None):
     now = _aware(now, spec)
     day = now.date()
     found = []
-    for back in range(0, 9):  # a weekend (or a one-day-a-week calendar) needs up to a week of look-back
+    # Search back until the count is met; a calendar with at least one weekday always has a slot
+    # within a week, so this is bounded by count weeks plus slack for skipped DST days.
+    for back in range(0, 7 * count + 15):
         date_ = day - timedelta(days=back)
         if date_.weekday() not in spec.weekdays:
             continue
         for hour, minute in sorted(spec.slots, reverse=True):
             slot = _slot_at(spec, date_, hour, minute)
-            if slot <= now:
+            if slot is not None and slot <= now:
                 found.append(slot)
                 if len(found) == count:
                     return found
@@ -179,13 +190,13 @@ def due_slots(now, count=3, spec=None):
 def next_slot(now, spec=None):
     spec = spec or configured()
     now = _aware(now, spec)
-    for ahead in range(0, 9):
+    for ahead in range(0, 23):  # a one-day-a-week calendar whose slot hits a DST gap needs two weeks
         date_ = now.date() + timedelta(days=ahead)
         if date_.weekday() not in spec.weekdays:
             continue
         for hour, minute in sorted(spec.slots):
             slot = _slot_at(spec, date_, hour, minute)
-            if slot > now:
+            if slot is not None and slot > now:
                 return slot
     raise AssertionError("unreachable")
 

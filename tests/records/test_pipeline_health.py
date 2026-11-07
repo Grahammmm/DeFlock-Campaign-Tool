@@ -204,6 +204,15 @@ class CheckTests(Base):
         report = self.assess(now=tuesday, spec=spec)
         self.assertEqual((self.check(report, "last_run")["state"], self.check(report, "schedule")["state"]), ("ok", "ok"))
 
+    def test_sparse_calendar_month_old_run_is_not_recent(self):
+        spec = schedule.Schedule("Mon", "07:00")
+        ny = ZoneInfo("America/Los_Angeles")
+        thursday = datetime(2026, 11, 12, 12, 0, tzinfo=ny)
+        old = thursday - timedelta(days=30)
+        self.write_report(old, seq=3)
+        report = self.assess(now=thursday, spec=spec)
+        self.assertEqual(self.check(report, "last_run")["reason_code"], "no_recent_run")
+
     def test_schedule_missed_is_stop(self):
         item = self.check(self.assess(now=NOW + timedelta(hours=10)), "schedule")
         self.assertEqual((item["state"], item["reason_code"]), ("stop", "schedule_missed"))

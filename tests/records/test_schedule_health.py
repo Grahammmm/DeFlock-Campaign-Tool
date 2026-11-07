@@ -60,6 +60,22 @@ class SlotMathTests(unittest.TestCase):
         self.assertEqual(schedule.due_slots(now, 1)[0], la(2026, 10, 1, 15, 0))
         self.assertEqual(schedule.next_slot(now), la(2026, 10, 2, 7, 0))
 
+    def test_lookback_searches_until_the_requested_count_is_met(self):
+        # Mon 07:00 only: on Thursday 2026-10-08 the two latest slots are Oct 5 and Sep 28 (>9 days back).
+        spec = schedule.Schedule("Mon", "07:00")
+        due = schedule.due_slots(la(2026, 10, 8, 12, 0), 2, spec)
+        self.assertEqual(due, [la(2026, 10, 5, 7, 0), la(2026, 9, 28, 7, 0)])
+        self.assertEqual(len(schedule.due_slots(la(2026, 10, 8, 12, 0), 6, spec)), 6)
+
+    def test_dst_gap_wall_times_are_skipped_like_systemd(self):
+        # 2026-03-08 02:30 does not exist in Los Angeles; systemd skips that day's slot.
+        spec = schedule.Schedule("daily", "02:30")
+        self.assertEqual(schedule.next_slot(la(2026, 3, 7, 12, 0), spec).isoformat(), "2026-03-09T02:30:00-07:00")
+        due = schedule.due_slots(la(2026, 3, 9, 12, 0), 2, spec)
+        self.assertEqual([s.isoformat() for s in due], ["2026-03-09T02:30:00-07:00", "2026-03-07T02:30:00-08:00"])
+        weekly = schedule.Schedule("Sun", "02:30")
+        self.assertEqual(schedule.next_slot(la(2026, 3, 1, 3, 0), weekly).isoformat(), "2026-03-15T02:30:00-07:00")
+
     def test_naive_datetimes_are_rejected(self):
         with self.assertRaises(ValueError):
             schedule.due_slots(datetime(2026, 10, 1, 8, 0))
