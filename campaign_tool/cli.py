@@ -543,15 +543,15 @@ def _site_claim_notes(root):
 def build(root, check=False, budget=None, weights_out=None, weights_baseline=None):
     from .site import build_site
     public = root / "public"
+    if check and any(os.path.lexists(public / name) for name in ("data.html", "data/datapackage.json")):
+        from .site_check import check_data_catalogue  # DF2207-12: refuse an already-missing or changed listed file first
+        check_data_catalogue(public)
     expected = None
     if check and (root / "content").is_dir():  # DF0022-11: the archive a rebuild would write, computed before anything is written
         from .site import planned_source_bundle
         from .source_bundle import check_source_bundle
         _, expected = planned_source_bundle(root)
         check_source_bundle(public, expected)
-    if check and any(os.path.lexists(public / name) for name in ("data.html", "data/datapackage.json")):
-        from .site_check import check_data_catalogue  # DF2207-12: refuse an already-missing or changed listed file first
-        check_data_catalogue(public)
     notes = []
     written = build_site(root, notes=notes)
     for note in notes:  # informational: the exit code is unchanged

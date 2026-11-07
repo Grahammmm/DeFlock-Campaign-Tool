@@ -227,7 +227,7 @@ class CheckTests(Fixture):
         archive = self.public / "data" / "sources.zip"
         good = archive.read_bytes()
 
-        def refused(message="differs from rebuilt public-source bundle"):
+        def refused(message="differs from rebuilt public-source bundle|data catalogue check failed"):  # either gate may speak first
             snapshot = {p: p.read_bytes() for p in self.public.rglob("*") if p.is_file() and not p.is_symlink()}
             with self.assertRaisesRegex(ContentError, message):
                 run_build(self.root, check=True)
