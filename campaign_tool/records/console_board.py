@@ -25,6 +25,8 @@ CONTACT_SOURCES = ("received_item", "outbox_receipt", "manual")
 # Drafts are ours; a promised date is a date the agency stated, not a contact on that day.
 NOT_CONTACT = ("draft", "promised date", "hand note")
 EXPIRING_DAYS = 14
+# CON-HOME-2's clock-basis vocabulary: a recorded receipt is dated, a submission proxy is inferred.
+BASIS_WORD = {"recorded_receipt": "DATED", "submission_proxy": "INFERRED"}
 LABEL = "Private; review required. Overdue marks are arithmetic on our records, not a legal finding."
 
 
@@ -79,11 +81,13 @@ def load(project, run_id):
     if doc is not None and (doc.get("run_id") != run_id or not _timeline_ok(doc)):
         timeline = {"state": "unavailable", "code": "run_mismatch" if doc.get("run_id") != run_id else "shape_invalid"}
     model = cd.load(project, run_id, pages=False)
-    return {"run_id": run_id, "timeline": timeline, "links": model["links"], "tiers": model["tiers"]}
+    return {"run_id": run_id, "timeline": timeline, "links": model["links"], "tiers": model["tiers"],
+            "received": model["received"], "aliases": model.get("aliases", {"state": "absent"})}
 
 
 def sources(model):
-    return {k: ({"state": "ok"} if model[k]["state"] == "ok" else dict(model[k])) for k in ("timeline", "links", "tiers")}
+    keys = ("timeline", "links", "tiers", "received") + (("aliases",) if model["aliases"]["state"] != "absent" else ())
+    return {k: ({"state": "ok"} if model[k]["state"] == "ok" else dict(model[k])) for k in keys}
 
 
 def _requests(model):
@@ -122,6 +126,15 @@ def _pending(row):
     return sum(1 for e in _live(row) if e["type"] == "draft" and e.get("draft_status") == "pending")
 
 
+def _received(model, row):
+    """Received items for this request, agencies matched through the alias map; None when the list is unavailable."""
+    if model.get("received", {}).get("state") != "ok":
+        return None
+    return sum(1 for i in cd._items(model)
+               if cd._key(model, i.get("agency_id")) == row.get("agency_key")
+               and i.get("request_id") in (row.get("request_id"), row.get("ledger_request_id")))
+
+
 def board_rows(model, today):
     rows = []
     for r in _requests(model):
@@ -129,6 +142,7 @@ def board_rows(model, today):
         rows.append({
             "agency_key": r.get("agency_key"), "agency": r.get("agency") or r.get("agency_key"),
             "request_id": r.get("request_id"), "tier1": _tier1(model, r), "stage": r.get("stage"),
+            "ledger_request_id": r.get("ledger_request_id"), "received": _received(model, r),
             "last_contact_days": _last_contact(r, today), "due": (r.get("clocks") or {}).get("due"),
             "basis": (r.get("clocks") or {}).get("basis"), "promised": _promised(r),
             "overdue": [m["label"] for m in r["overdue_marks"] if m.get("kind") != "unknown"],
@@ -219,6 +233,14 @@ def _documents_href(agency):
     return "/documents"
 
 
+def _received_cell(r):
+    if r["received"] is None:
+        return "unavailable"
+    if not r["received"]:
+        return "0"
+    return '<a href="%s">%d files</a>' % (esc(_documents_href(r["agency_key"])), r["received"])
+
+
 def _ago(days):
     return "no contact recorded" if days is None else ("today" if days == 0 else "%d days ago" % days)
 
@@ -239,7 +261,7 @@ def render_board(model, today, which="all"):
     if not shown:
         out.append("<p>No requests match this filter.</p>")
     else:
-        head = ("Agency", "Request", "Tier 1 (logs / audits)", "Stage", "Last contact", "Statutory due", "Promised",
+        head = ("Agency", "Request", "Tier 1 (logs / audits)", "Stage", "Received", "Last contact", "Statutory due", "Promised",
                 "Overdue", "Next action", "Owner")
         out.append("<table><caption>Requests, needs action first</caption><thead><tr>%s</tr></thead><tbody>" % "".join(
             '<th scope="col">%s</th>' % esc(h) for h in head))
@@ -247,8 +269,9 @@ def render_board(model, today, which="all"):
             overdue = "; ".join(r["overdue"]) or ("clock unknown" if r["clock_unknown"] else "")
             cells = ['<a href="/agency?agency=%s">%s</a>' % (esc(urllib.parse.quote(r["agency_key"] or "", safe="")),
                                                                esc(r["agency"])),
-                     esc(r["request_id"]), esc(r["tier1"]), esc(r["stage"]), esc(_ago(r["last_contact_days"])),
-                     esc("%s (%s)" % (r["due"], r["basis"]) if r["due"] else "unknown"),
+                     esc(r["request_id"]), esc(r["tier1"]), esc(r["stage"]), _received_cell(r),
+                     esc(_ago(r["last_contact_days"])),
+                     esc("%s (%s)" % (r["due"], BASIS_WORD.get(r["basis"], "UNKNOWN")) if r["due"] else "unknown"),
                      esc(r["promised"] or ""), esc(overdue), esc(r["next_action"]), esc(r["owner"])]
             out.append("<tr>%s</tr>" % "".join("<td>%s</td>" % c for c in cells))
         out.append("</tbody></table>")
