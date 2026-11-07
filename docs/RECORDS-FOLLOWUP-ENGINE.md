@@ -16,6 +16,25 @@ activate routes; a later agency acknowledgment prevents silence after the latest
 These are machine leads for review, not findings or proof that records exist.
 No drafts, sends, approvals, publication or ledger writes occur.
 
+## Read-only follow-up routing
+
+`records followup-route --project P --run-id R` prints one private, review-required
+JSON row per request; nothing is drafted or written. First-match precedence is:
+closed/tier-1, closed, clarification, queued fee answer, silence, exceeded extension
+limit (even with a future promise), waiting extension, mixed-answer composition,
+answered/waiting/nothing open, unknown. Silence belongs to the existing clock drafter.
+Closed tier-1 scope uses a new request; other actionable patterns reply in thread.
+Composite patterns retain all residual ask numbers, in denial/audits/no-records/
+partial order. Queue kind alone never proves coverage. Machine coverage uses only
+exact received-item evidence and is review-required; unmapped or overlapping scope
+fails closed to manual `coverage_unreconciled`, with no engine asks or coverage.
+An operator may stage `P/followup-coverage/AGENCY_KEY.tsv` with columns
+`queue_id`, `ask_numbers`, `confirmed_by`, `note` (tab-separated). After reading the
+letter, list comma-separated ask numbers or `none`; this overrides machine mapping.
+Duplicate rows, inactive/unknown queue ids or out-of-scope asks yield manual
+`coverage_table_invalid`. The table is read-only. Neither ask text nor quotes are
+printed. `records_contradict_policy` and `vague_answer` require reviewed findings.
+
 ## Agency events import
 
 This is a private, review-required timeline input, not a legal finding or publication.
