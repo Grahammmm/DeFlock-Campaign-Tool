@@ -22,7 +22,7 @@ from email.parser import BytesParser
 from email.utils import getaddresses, parseaddr
 from zoneinfo import ZoneInfo
 
-from . import approval_queue, mail_drafts, mail_poll
+from . import approval_queue, draft_residue, mail_drafts, mail_poll
 from .intake import imap_intake
 from .outcomes.reading import esc
 from .. import approval, outbox
@@ -324,6 +324,7 @@ def _context(project, config, queue_id, *, page_fingerprint, form_to, imap_facto
     row = rows.get(queue_id)
     _need(row is not None, "unknown_draft")
     _need(row["status"] == "approved", "not_approved")
+    _need(not draft_residue.codes(row["body"]), "body_has_draft_residue")
     mine = {r["revision"]: r for r in mail_drafts.placements(project) if r["queue_id"] == queue_id}
     jrow = mine.get(row["revision"])
     _need(jrow is not None and jrow["state"] in ("placed", "found_existing"),
