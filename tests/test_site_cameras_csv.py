@@ -109,7 +109,7 @@ class CameraCsvTests(unittest.TestCase):
         self.assertEqual(camera_csv.camera_rows({"features": [at(1.0, 1.0)]}, {"features": []}, {})[0]["city"], "")
 
     def test_csv_encoding_and_no_private_fields(self):
-        features = [at(-0.5, -1.5, NODE + "1", manufacturer="=cmd", operator="a,b \"q\" \u00e9\u4e2d", secret_tag="SENTINEL-PROP"),
+        features = [at(-0.5, -1.5, NODE + "1", manufacturer="=cmd", operator="a,b \"q\" \u00e9\u4e2d", private_tag="SENTINEL-PROP"),
                     at(0.7, 0.6, NODE + "2", manufacturer="+1", operator="-2", model="@x", direction="N;NE"),
                     at(0.8, 0.6, NODE + "3", manufacturer="a=b", operator="x+y-z@w", tagged=True),
                     at(0.9, 0.6, NODE + "4", manufacturer=12, operator=False),
