@@ -109,7 +109,9 @@ class EventsImport(unittest.TestCase):
 
     def test_refused_rows_never_print_content_or_apply_even_when_allowed(self):
         for changes in ({"what_happened": "private > content"}, {"source": "private < content"},
-                        {"date": "2026-02-30"}, {"date": "2026-11-05extra"}):
+                        {"date": "2026-02-30"}, {"date": "2026-11-05extra"},
+                        {"what_happened": "line\u2028break"}, {"what_happened": "a\u2029b"},
+                        {"what_happened": "a\u0085b"}):
             with self.subTest(changes=changes):
                 self.stage_rows([row("bad", "call", **changes), row("good", "call")])
                 code, output = self.command("--apply", "--allow-unmapped")

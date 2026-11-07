@@ -68,6 +68,7 @@ def plan(tsv_bytes, request_map, agency_key):
         try:
             _need(re.fullmatch(r"\d{4}-\d{2}-\d{2}", row["date"]))
             date.fromisoformat(row["date"])
+            _need(all(c.isprintable() for c in row["what_happened"]))
             _need(isinstance(request, str) and bool(request.strip())
                   and all(c.isprintable() for c in request) and not any(c in request for c in "<>"))
         except ValueError:
