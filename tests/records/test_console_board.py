@@ -252,5 +252,118 @@ class Boards(unittest.TestCase):
         self.assertEqual(get("/documents?agency=alpha-pd")[0], 200)  # Screen C still served
 
 
+class AgencySections(unittest.TestCase):
+    """Synthetic read-only sources, including real refusal classification and CSV validation."""
+    def model(self):
+        return cb.load(self.project, RUN)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = Path(self.tmp.name)
+        build(self.project)
+        from unittest.mock import patch
+        self.retention_path = self.project / "agency-retention.csv"
+        self.patch_path = patch.object(cb, "RETENTION_PATH", self.retention_path)
+        self.patch_path.start()
+        self.addCleanup(self.patch_path.stop)
+        self.write_retention([])
+        path = self.project / "run-outputs" / RUN / "outcomes" / "response-items.json"
+        doc = json.loads(path.read_text())
+        for n, ask in enumerate(doc["requests"][0]["asks"], 1):
+            ask.update(ask_id="ask-%d" % n, rating="withheld", evidence=[{"item_id": "i-%d" % n, "page": n,
+                       "quote": "<script>Withheld</script> under Government Code section 9999."}])
+        put(path, doc)
+
+    def write_retention(self, rows):
+        import csv
+        with self.retention_path.open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, cb.agency_retention.HEADER)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def statement(self, **kw):
+        return dict(agency="alpha-pd", system="ALPR", vendor="flock", data_layer="detections",
+                    stated_period="30 days", period_days="30", bound="exact", source_kind="order_form",
+                    quote="Synthetic retention statement.", doc_sha256="a" * 64, page="2",
+                    confidence="high", checked="VERIFIED-ORIGINAL", **kw)
+
+    def test_refusal_rows_review_and_escaped_quote(self):
+        from unittest.mock import patch
+        queue = [{"id": "draft-1", "agency_id": "alpha-pd", "request_id": "R-1", "kind": "appeal-denial",
+                  "status": "pending", "revision": 0, "evidence": {"item_id": "i-1", "ask_numbers": [1]}}]
+        with patch.object(cb.denial_log.approval_queue, "load_queue", return_value=queue), \
+                patch.object(cb.denial_log.mail_send, "results", return_value=[]):
+            model = self.model()
+        self.assertEqual(len(model["refusals"]["entries"]), 2)
+        page = cb.render_agency(model, "alpha-pd")
+        section = page.split("<h2>Refusals</h2>")[1].split("</section>")[0]
+        for text in ("R-1", "p.1", "p.2", "UNVERIFIED by us", "Draft ready",
+                     'href="/review?id=draft-1"', "Not drafted", "&lt;script&gt;Withheld&lt;/script&gt;"):
+            self.assertIn(text, section)
+        self.assertNotIn("<script>", section)
+        self.assertEqual(page.count(cb.READING_LABEL), 2)
+        self.assertNotIn("<form", page)
+
+    def test_reply_states_cancelled_expired_duplicate_and_stale_receipts(self):
+        from unittest.mock import patch
+        base = dict(id="draft-1", agency_id="alpha-pd", request_id="R-1", kind="appeal-denial",
+                    revision=1, evidence={"item_id": "i-1", "ask_numbers": [1]})
+        for status, expected in (("approved", "Approved"), ("sent", "Sent"), ("rejected", "Rejected"),
+                                 ("cancelled", "Not drafted"), ("expired", "Not drafted")):
+            with self.subTest(status=status), \
+                    patch.object(cb.denial_log.approval_queue, "load_queue", return_value=[dict(base, status=status)]), \
+                    patch.object(cb.denial_log.mail_send, "results", return_value=[
+                        {"queue_id": "draft-1", "revision": 0, "state": "sent"}]):
+                section = cb.render_agency(self.model(), "alpha-pd").split("<h2>Refusals</h2>")[1]
+                self.assertIn("<td>%s</td>" % expected, section)
+                self.assertNotIn('/review?id=', section)
+                if status == "approved":
+                    self.assertNotIn("<td>Sent</td>", section)
+        with patch.object(cb.denial_log.approval_queue, "load_queue", return_value=[dict(base, status="pending")] * 2), \
+                patch.object(cb.denial_log.mail_send, "results", return_value=[]):
+            self.assertIn("Refusals unavailable (denial_log_invalid_source)", cb.render_agency(self.model(), "alpha-pd"))
+
+    def test_retention_sources_scopes_other_vendor_and_exact_agency_match(self):
+        flock = self.statement()
+        policy = dict(flock, data_layer="downloaded_data", source_kind="policy", stated_period="minimum 365 days",
+                      period_days="365", bound="min", page="3", confidence="medium", checked="UNVERIFIED")
+        other = dict(flock, system="Other ALPR", vendor="motorola-vigilant", stated_period="90 days", period_days="90")
+        self.write_retention([flock, policy, other])
+        page = cb.render_agency(self.model(), "alpha-pd")
+        for text in ("30 days", "minimum 365 days", "differ in scope", "motorola-vigilant", "90 days",
+                     "order_form, p.2, doc aaaaaaaaaaaa", "policy, p.3", "high, VERIFIED-ORIGINAL", "medium, UNVERIFIED"):
+            self.assertIn(text, page)
+        self.assertIn("No retention statement on file.", cb.render_agency(self.model(), "Alpha-PD"))
+        self.write_retention([flock, dict(policy, data_layer="detections")])
+        self.assertIn("longer than the Flock 30-day default", cb.render_agency(self.model(), "alpha-pd"))
+
+    def test_empty_sources_stale_denials_and_invalid_retention_degrade_alone(self):
+        page = cb.render_agency(self.model(), "tracker:beta sheriff / coroner")
+        self.assertIn("No refusals on our records.", page)
+        self.assertIn("No retention statement on file.", page)
+        path = self.project / "run-outputs" / RUN / "outcomes" / "response-items.json"
+        doc = json.loads(path.read_text())
+        for change in ("stale", "missing"):
+            if change == "stale":
+                put(path, dict(doc, run_id="old-run"))
+                code = "denial_log_invalid_source"
+            else:
+                path.unlink()
+                code = "denial_log_source_missing"
+            self.write_retention([self.statement()])
+            page = cb.render_agency(self.model(), "alpha-pd")
+            self.assertIn("Refusals unavailable (%s)" % code, page)
+            self.assertIn("30 days", page)
+        self.write_retention([self.statement(), self.statement()])
+        model = self.model()
+        self.assertEqual(len(model["retention"][0]), 1)
+        self.assertIn("1 validation problem(s)", cb.render_agency(model, "alpha-pd"))
+        self.retention_path.unlink()
+        page = cb.render_agency(self.model(), "alpha-pd")
+        self.assertIn("No retention statement on file.", page)
+        self.assertIn("validation problem(s)", page)
+
+
 if __name__ == "__main__":
     unittest.main()
