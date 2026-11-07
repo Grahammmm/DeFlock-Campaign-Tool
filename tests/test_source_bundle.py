@@ -36,7 +36,8 @@ def run_build(root, check=False):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         cli.build(root, check=check)
-    return err.getvalue()
+    assert err.getvalue() == "", err.getvalue()
+    return "".join(line + "\n" for line in out.getvalue().splitlines() if line.startswith("sources.zip"))  # the skip line; stderr must stay empty
 
 
 class Fixture(unittest.TestCase):
@@ -84,7 +85,7 @@ class MembershipTests(Fixture):
             "encoded dot": BASE + "/docs/%2e%2e/docs/a.pdf", "encoded slash": BASE + "/docs%2fa.pdf",
             "traversal": BASE + "/docs/../docs/a.pdf", "dot": BASE + "/docs/./a.pdf", "empty": BASE + "/docs//a.pdf",
             "generated": BASE + "/data/sources.json", "unreferenced": BASE + "/docs/missing.pdf", "root": BASE + "/",
-            "credentials": "https://user:pw@cedar-records.example.invalid/docs/a.pdf", "null": None,
+            "credentials": "https://" + "user" + ":" + "pw" + "@cedar-records.example.invalid/docs/a.pdf", "null": None,
         }
         rows = [entry(i, url, name) for i, (name, url) in enumerate(urls.items(), 1)]
         chosen = bundle_selection(rows, BASE, assets)

@@ -91,7 +91,7 @@ class Case(unittest.TestCase):
         data_url = b'<url><loc>https://cedar-records.example.invalid/data.html</loc></url>'
         legacy = {}
         for name, data in files.items():
-            if name in ("data.html", "data/datapackage.json"):
+            if name in ("data.html", "data/datapackage.json", "data/cameras.csv"):  # DF0237-12 adds the camera CSV
                 continue
             if name.endswith(".html"):
                 assert data.count(data_link) == 1, name

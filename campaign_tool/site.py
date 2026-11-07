@@ -25,7 +25,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
-from . import agency_cards, camera_counts, finding_law, finding_updates, image_meta, law, map_controller
+from . import agency_cards, camera_counts, camera_csv, finding_law, finding_updates, image_meta, law, map_controller
 from .camera_direction import DIRECTION_PATTERN, valid_direction
 from .content import (ASKED_STATES, CHECKLIST_JURISDICTION, CITY_KINDS, FINDING_KEYS, PRE_MEETING_RULE_ID, MAX_GEOJSON_BYTES, ODBL, POINT_CHECK_STATUSES, SHARING_BULLETIN_ID, SHARING_KINDS,
                       SHARING_RULE_ID, TRANSPARENCY_FIELDS,
@@ -808,12 +808,22 @@ class Site:
                "attribution": ODBL["attribution"], "attribution_url": ODBL["attribution_url"]}
         return json.dumps(doc, ensure_ascii=False, separators=(",", ":")) + "\n"
 
+    def cameras_csv(self):
+        """``data/cameras.csv`` (DF0237-12): one row per mapped point, fixed columns, sorted by OSM URL; None without a map."""
+        if not self.map:
+            return None
+        from .kit_export import formula_safe  # local, as the other optional site steps
+        self.mapped_counts()
+        rows = camera_csv.camera_rows(*self._map_docs, self.map.get("point_checks") or {})
+        return _csv_text(camera_csv.COLUMNS, [{c: formula_safe(row[c]) for c in camera_csv.COLUMNS} for row in rows])
+
     def data_html(self, records):
         """/data.html (DF2207-12): one row per open-data file with its size and full SHA-256, schema link and licence.
         The fixed data-* attributes on each row are what ``build --check`` compares with the Data Package."""
         rows = []
         for record in records:
-            path, csv_file = record["path"], record["mediatype"] == "text/csv"
+            path = record["path"]
+            csv_file = record["mediatype"] == "text/csv" and bool(record["schema_url"]) and record["schema_url"].endswith("-open-data.schema.json")  # DF0237-12: cameras.csv links the GeoJSON schema
             schema_label = (self.t("data.schema_csv") if csv_file else
                             e(record["schema_url"].rsplit("/", 1)[-1]) if record["schema_url"] else "")
             licence = "; ".join(f'<a href="{e(item["path"])}" rel="noopener noreferrer">{e(item["name"])}</a>'
@@ -3660,6 +3670,7 @@ def _plan(root, today=None, notes=None):
     if model["map"]:
         found = model["map"]
         files["data/cameras.geojson"] = site.cameras_geojson()  # DF1422-13: ODbL + OSM attribution members, always
+        files["data/cameras.csv"] = site.cameras_csv()  # DF0237-12: the spreadsheet copy, only with a map
         plan = [(found[key], relative, 8 * 1024 * 1024) for key, relative in (
             ("boundary_path", found["controller"]["city_boundaries_url"]),
             ("county_boundary_path", "data/county.geojson")) if found[key]]
@@ -3747,7 +3758,7 @@ def build_site(root, today=None, notes=None):
     if "sitemap.xml" not in files:  # planned exactly when content/site.json has a base_url
         print("sitemap.xml skipped: content/site.json has no base_url", file=sys.stderr)
     if site.bundle_skip:  # DF0022-11: no local public copy, or over 200 MiB; no archive and no link
-        print(site.bundle_skip, file=sys.stderr)
+        print(site.bundle_skip)
     return [public / path.relative_to(new) for path in written]
 
 

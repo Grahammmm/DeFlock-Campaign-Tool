@@ -1692,6 +1692,24 @@ refused entry. With the file, `cameras.html` gains an "Organizer check" column (
 A check never removes or edits a point and never writes to OpenStreetMap: `duplicate` and `not_found_on_site` points stay
 on the map and in every count. `in_agency_record` says an agency record lists the point; it is never ownership.
 
+**Spreadsheet copy (DF0237-12).** With a map, every build also writes `data/cameras.csv`: one row per point in
+`cameras.geojson`, none dropped, merged or capped (unlike the 2,000-point HTML list), with the header
+`osm_url,latitude,longitude,manufacturer,operator,direction,city,check_status,checked_on`. `latitude` is `coordinates[1]` and
+`longitude` is `coordinates[0]`, exactly as stored (no rounding); a non-finite coordinate refuses the build by feature index.
+`osm_url` is the stored `url` or blank (older way URLs stay; a way or a blank has no check). `manufacturer`, `operator` and
+`direction` are the stored values, verbatim: no trimming, no placeholder, null or missing is blank, a number or boolean is
+its compact JSON text. `city` is geometric, never an agency claim: the lexicographically first exact name (`BASENAME`, else `NAME`)
+of any valid boundary polygon holding the point by the same half-open test as the counts, blank when none (including a boundary
+that is not in the city picker). `check_status` and `checked_on` are the raw status and date of the newest organizer check of
+that node (a later entry wins a same-day tie), blank when none; the note, source and earlier checks are never exported. Rows are
+sorted by the raw `osm_url` text (`node/10` before `node/2`, blank last, input order for equal URLs). Encoding is that of the other
+CSVs (UTF-8 without a byte-order mark, CRLF, standard quoting) and a cell beginning with `=`, `+`, `-`, `@`, a tab or a carriage
+return gets one leading `'`, so a negative coordinate reads `'-120.5`. The file is always under ODbL 1.0 with the OpenStreetMap
+contributors attribution, never the campaign licence: `data.html` and `datapackage.json` list it as `cameras-csv` with
+`© OpenStreetMap contributors. ODbL 1.0; attribution and share-alike apply.` Points are community reports and checks are single
+organizer observations: the file says nothing about ownership or coverage. Without a map nothing is built differently, and a
+rebuild after removing the map removes the file and its catalogue entries.
+
 **Field survey (DF0237-13).** `map survey-sheet --city NAME --directory D` writes a private, printable
 `kit/survey/<city-slug>-<date>.html` and a matching `.csv` (0600, folders 0700; never overwritten, so the same city and
 day again refuses) listing every mapped point inside the boundary named exactly NAME (case-sensitive; an unknown name is

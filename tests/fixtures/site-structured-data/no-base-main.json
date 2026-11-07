@@ -9,12 +9,12 @@
   "cameras.html": "79932cabed1780a2-e42389651e7671be-4252b9c0a8a017d3-e44926564f525fec",
   "corrections.html": "946919016805d2f9-d26892fac75865fc-be6992154ae91058-4568aa121100b857",
   "corrections.xml": "0a42c8c816a03963-f87c7e7ccc80bf72-4ff720b96efb2c0b-dc7c4f59a39c05d1",
-  "data.html": "4c3b0433ff9b38bd-5dc2e6b5c4bb8306-72fde2cf2b3d6d17-2fedf82db3b82687",
+  "data.html": "40c18ef3bd27c0b7-0593e77cec34aca8-3905061f4ede857e-779edb50bd893160",
   "data/agencies.csv": "b4cd0e39026d0bd7-682eb2cd44963d47-f98c92eb8672a91d-4b975281f47e2cf0",
   "data/agencies.json": "30fc6fcc25f20bb5-485e125e5fc29255-dd5a445f898a8a9d-1da32aa8e5e83b9b",
   "data/cameras.geojson": "5f3c2ce066666761-f6c940d1c2e1c33c-cd8cc5275df54310-84c1bfb7a4cdc146",
   "data/city-boundaries.geojson": "68593cd8443c2ec4-2b01e4153cf28386-727a9486503eccb5-dc42ea1961511f19",
-  "data/datapackage.json": "8f267b7b2147291e-cdb4eb560c68b8d6-caedec88e63e7f8e-7a26d7fe9b8c0763",
+  "data/datapackage.json": "70019f4749c222a8-984287cc2244bf91-2eef1f082a45a233-b27c6ee2a1e22add",
   "data/findings.csv": "8c9369d1ac91c291-defcab2afd5b8dbf-d725f6cad55a29a7-a438a651ab9e215c",
   "data/findings.json": "f411c1c82c2ef694-90cbe20b8f028191-47a92923ad43c487-befb146ea9ffddea",
   "data/meetings.csv": "561e8d71686d8f37-308263f983360308-d381f2d39484997a-99525a3cff5f49ae",
@@ -44,5 +44,6 @@
   "sources/cafecafecafe.html": "49e4a380aa27f158-e7297ae22cd2d45a-0bde077b3640bcbe-6bd88dcbbf823311",
   "sources/filter.js": "4880474e6f4e5529-46692df7bbadbf93-41d0c383f081b873-d776d1cbc1070b2a",
   "style.css": "2dc934dbebe30b0c-6c11780789a53d1a-4c853f7cbbd5ff5b-27cb347bed933bf4",
-  "timeline.html": "4429ce9ce858c9d5-56e8098fd7d27019-e8f0df27f6c82bdd-d06b125836eeec75"
+  "timeline.html": "4429ce9ce858c9d5-56e8098fd7d27019-e8f0df27f6c82bdd-d06b125836eeec75",
+  "data/cameras.csv": "9dfa6a99d61315b2-73fc69db224db1c2-200d251c83a68ad4-101add791c6e22b1"
 }

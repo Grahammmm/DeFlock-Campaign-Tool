@@ -40,7 +40,7 @@ PUBLISH_PATHS = (
     _entry("agency-cards", "campaign_tool/agency_cards.py", "render", "card", "public", "privacy+legal", GATE, "site",
            "agency-cards.js, built inside the site plan"),
     _entry("data-exports", "campaign_tool/site.py", "Site.findings_json", "export", "public", "privacy+legal", GATE, "site",
-           "data/findings.json, .csv, sources, meetings, agencies"),
+           "data/findings.json, .csv, sources, meetings, agencies, data/cameras.csv"),
     _entry("map-geojson", "campaign_tool/site.py", "_plan_site", "export", "public", "privacy", GATE, "site",
            "camera, city and county GeoJSON copies; all decoded JSON text is linted before any write"),
     _entry("runner-build-site", "runner/handlers/build_site.py", "run", "page", "public", "privacy+legal", "build_site(root)", "runner",
