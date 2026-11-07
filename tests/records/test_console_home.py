@@ -228,7 +228,7 @@ class Week(unittest.TestCase):
 
     def test_week_window_basis_links_duplicates_and_empty(self):
         rows = [cal.row("alpha-pd", "R-" + str(day), cal.clock(due=(NOW + timedelta(days=day)).date().isoformat(),
-                    extended_due=None)) for day in (-1, 0, 3, 7, 9)]
+                    base_due=(NOW + timedelta(days=day)).date().isoformat(), extended_due=None)) for day in (-1, 0, 3, 7, 9)]
         cal.build(self.project, rows + [rows[2]])
         model = self.model()
         week = model["calendar"]["rows"]
@@ -236,7 +236,7 @@ class Week(unittest.TestCase):
         page = home.render_home(model, "")
         section = page.split('<section id="week">')[1].split('</section>')[0]
         self.assertIn('3 due in the next 7 days', page)
-        self.assertIn('Sun Nov 08 · Statutory due · ALPHA-PD · R-3 · DATED', section)
+        self.assertIn('Sun Nov 08 · Statutory due · ALPHA-PD · R-3 · UNVERIFIED', section)
         self.assertEqual(section.count('/calendar?month=2026-11'), 3)
         for request in ('R--1', 'R-9'):
             self.assertNotIn(request, section)
@@ -245,7 +245,7 @@ class Week(unittest.TestCase):
 
     def test_week_cap_and_order(self):
         cal.build(self.project, [cal.row('alpha-pd', 'R-%02d' % n, cal.clock(due='2026-11-08',
-            extended_due='2026-11-08')) for n in range(25)], links=[cal.link('2026-11-08')])
+            base_due='2026-11-08', extended_due=None)) for n in range(25)], links=[cal.link('2026-11-08')])
         model = self.model()
         week = model['calendar']['rows']
         self.assertEqual(len(week), 26)

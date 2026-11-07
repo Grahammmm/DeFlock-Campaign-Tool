@@ -4,7 +4,7 @@
                         GET /calendar.ics                RFC 5545 all-day events, no bodies, URLs or addresses
   records calendar  ->  --project P --run-id R [--ics OUT]
 
-Read-only. Every entry is DATED (a recorded or agency-stated date) or INFERRED (arithmetic or a projection) and
+Read-only. Dates are DATED (recorded), INFERRED (projected), COMPUTED (law arithmetic), or UNVERIFIED and
 carries its source; a source that cannot be read is named unavailable and the others still list. Follow-up
 drafts are projected only by calling ``followup_clock.plan`` on copies of register rows; nothing is queued,
 sent, approved or published here. Overdue is arithmetic on our records, not a legal finding.
@@ -31,7 +31,6 @@ KINDS = {"statutory_due": "Statutory due", "extension_limit": "Extension limit",
          "followup_draft_due": "Follow-up draft due", "publication_pending": "Publication step",
          "link_expiry": "Link expiry", "overdue": "Overdue", "followup_planned_send": "Follow-up planned send", "meeting": "Meeting"}
 BASIS = {"recorded_receipt": "DATED", "submission_proxy": "INFERRED", "agency_promised": "DATED"}
-CLOCK_SOURCE = "register clock (Gov. Code 7922.535 arithmetic on our records)"
 LABEL = "Private; review required. Overdue is on our records; not a legal finding. Nothing is sent from this page."
 MONTH = re.compile(r"(\d{4})-(0[1-9]|1[0-2])")
 MONTH_YEARS = (1900, 2200)  # outside this range the grid arithmetic would run into date.min/date.max
@@ -53,6 +52,7 @@ def _row_ok(r):
 
 def load(project, run_id, now=None, *, send_config=None, meetings_dir=None):
     model = co.load(project, run_id, None, now)
+    model["deadlines"] = cb.computed_dates(project, run_id)
     model["meetings"] = _load_meetings(meetings_dir)
     model["sends"] = {"state": "ok", "rows": [], "configured": send_config is not None}
     if send_config is not None:
@@ -220,10 +220,11 @@ def build(model, today, horizon_days=90, since=None):
             if basis is None or not clock.get("due"):
                 no_clock += clock.get("state") != "determined"
             elif clock.get("state") != "determined":
-                add(cb._day(clock["due"]), "statutory_due", k, n, req, "statutory determination due", basis, CLOCK_SOURCE)
-                ext = cb._day(clock.get("extended_due"))
-                if ext != cb._day(clock["due"]):
-                    add(ext, "extension_limit", k, n, req, "latest date if the 14-day extension applies", basis, CLOCK_SOURCE)
+                for name, key, kind, label in (
+                        ("determination_due", "base_due", "statutory_due", "statutory determination due"),
+                        ("extension_limit", "extended_due", "extension_limit", "latest date if the 14-day extension applies")):
+                    computed, source, start = cb.computed_clock(model, r, name, clock.get(key))
+                    add(cb._day(clock.get(key)), kind, k, n, req, label + " (" + start + ")", computed, source)
             for e in r["events"]:
                 if e["type"] in ("promised date", "extension notice") and not e.get("superseded"):
                     for d in e.get("new_dates") or []:
@@ -387,7 +388,8 @@ def render(model, today, first):
     out = [console_layout.start("Calendar", "Calendar"), '<p><a href="/calendar.ics">Download .ics</a></p>',
            "<h1>Calendar: %s</h1>" % esc(first.strftime("%B %Y")),
            "<p>Run %s. %s DATED means a recorded or agency-stated date; INFERRED means arithmetic or a projection. "
-           "Subscribing from a phone needs hosting, which is not built.</p>" % (esc(model["run_id"]), esc(LABEL)),
+           "%s "
+           "Subscribing from a phone needs hosting, which is not built.</p>" % (esc(model["run_id"]), esc(LABEL), esc(cb.COMPUTED_LEGEND)),
            '<p><a href="/calendar?month=%s">&larr; %s</a> <a href="/calendar?month=%s">%s &rarr;</a></p>' % (
                prev.strftime("%Y-%m"), prev.strftime("%b %Y"), nxt.strftime("%Y-%m"), nxt.strftime("%b %Y"))]
     out += ['<p class="diag" role="status">%s</p>' % esc(n) for n in notes]

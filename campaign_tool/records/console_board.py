@@ -9,10 +9,13 @@ timeline, never a legal finding.
   records panel  ->  GET /board[?filter=overdue|waiting|ours|closed]   (Screen A)
                      GET /agency?agency=ID                              (Screen B)
 """
+import hashlib
 import json
 import urllib.parse
 from datetime import datetime, timezone
 
+from .. import law
+from . import deadline_calc, followup_clock
 from . import console_documents as cd
 from .outcomes import release_links as _rl
 from .outcomes import timeline as _tl
@@ -29,6 +32,8 @@ EXPIRING_DAYS = 14
 # CON-HOME-2's clock-basis vocabulary: a recorded receipt is dated, a submission proxy is inferred.
 BASIS_WORD = {"recorded_receipt": "DATED", "submission_proxy": "INFERRED"}
 LABEL = "Private; review required. Overdue marks are arithmetic on our records, not a legal finding."
+COMPUTED_LEGEND = ("COMPUTED = date arithmetic from the law package (Gov. Code § 7922.535), not a legal finding. "
+                   "UNVERIFIED = dates could not be verified against the law package and register.")
 
 
 def _str_or_none(value):
@@ -83,7 +88,34 @@ def load(project, run_id):
         timeline = {"state": "unavailable", "code": "run_mismatch" if doc.get("run_id") != run_id else "shape_invalid"}
     model = cd.load(project, run_id, pages=False)
     return {"run_id": run_id, "timeline": timeline, "links": model["links"], "tiers": model["tiers"],
+            "deadlines": computed_dates(project, run_id),
             "received": model["received"], "aliases": model.get("aliases", {"state": "absent"})}
+
+
+def computed_dates(project, run_id):
+    """Read the same run's register through the cited calculator; never infer verification."""
+    try:
+        register = followup_clock.read_register(project, run_id)
+        package = law.load_package("us-ca")
+        digest = hashlib.sha256(law.package_path("us-ca").read_bytes()).hexdigest()
+        rows = deadline_calc.deadlines(register, package, digest)
+        return {(r["agency_key"], r["request_id"]): r for r in rows}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, StopIteration, OverflowError):
+        return {}
+
+
+def computed_clock(model, row, name, value):
+    calculated = model.get("deadlines", {}).get((row.get("agency_key"), row.get("request_id")), {})
+    entry = calculated.get(name, {})
+    basis = entry.get("label", "UNVERIFIED") if entry.get("date") == value else "UNVERIFIED"
+    source = ("Gov. Code § 7922.535 via law package " + entry["package"].rsplit(" ", 1)[-1][:12]
+              if entry.get("package") else "Gov. Code § 7922.535; law package unavailable")
+    received = calculated.get("received", {})
+    own = (row.get("clocks") or {}).get("basis")  # no calculator row: keep how the register's own clock was started
+    start = ("from recorded receipt" if received.get("note") == "recorded receipt" or (not received and own == "recorded_receipt") else
+             "from send date; receipt not recorded" if received.get("date") or (not received and own == "submission_proxy")
+             else "receipt/send date not recorded")
+    return basis, source, start
 
 
 def sources(model):
@@ -279,6 +311,7 @@ def render_board(model, today, which="all"):
 def render_agency(model, agency):
     views = agency_view(model, agency)
     out = _head("Agency timeline: %s" % (views[0]["agency"] if views else agency), model)
+    out.append("<p>%s</p>" % esc(COMPUTED_LEGEND))
     docs_href = _documents_href(agency)
     out.append('<p><a href="%s">Documents and findings</a> <a href="/next-steps">Drafts</a></p>' % esc(docs_href))
     if model["timeline"]["state"] != "ok":
@@ -293,6 +326,14 @@ def render_agency(model, agency):
                        esc(c.get("basis") or "unknown"), esc(c.get("base_due") or "unknown"),
                        esc(", ".join(v["extension_chain"].get("new_dates") or []) or c.get("extended_due") or "none recorded"), esc(", ".join(v["promised"]) or "none"),
                        esc(c.get("due") or "unknown")))
+        for name, key, title in (("determination_due", "base_due", "Determination due"),
+                                 ("extension_limit", "extended_due", "Extension limit")):
+            basis, source, start = computed_clock(model, {**v, "agency_key": agency}, name, c.get(key))
+            out.append("<p>%s: %s (%s; %s). %s.</p>" % (
+                title, esc(c.get(key) or "unknown"), basis, esc(start), esc(source)))
+        calculated = model.get("deadlines", {}).get((agency, v["request_id"]), {}).get("determination_due", {})
+        digest = calculated.get("package", "unavailable").rsplit(" ", 1)[-1][:12]
+        out.append("<p>Dates computed from Gov. Code § 7922.535 (law package %s); provisional, not a legal finding.</p>" % esc(digest))
         for m in v["overdue_marks"]:
             if m.get("kind") == "unknown":
                 out.append('<p class="clock-unknown">Clock unknown: %s</p>' % esc(m.get("label") or "no statutory date is recorded"))
