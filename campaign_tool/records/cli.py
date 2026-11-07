@@ -5,6 +5,7 @@ import os
 import sys
 
 COMMANDS = {
+    "denials": ("denial_log", "main"),
     "deadlines": ("deadline_calc", "main"),
     "followup-engine": ("followup_engine", "main"),
     "followup-route": ("followup_route", "main"),
