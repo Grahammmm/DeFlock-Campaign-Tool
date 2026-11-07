@@ -13,18 +13,22 @@ import argparse
 import calendar
 import copy
 import hashlib
+import json
 import os
 import re
 import sys
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+from ..meetings_manual import _read_bytes, ManualMeetingError
 
 from . import console_board as cb, console_oversight as co, followup_clock as fc, mail_send, public_packets
 from .outcomes.reading import BANNER, esc
 
 KINDS = {"statutory_due": "Statutory due", "extension_limit": "Extension limit", "expected_window": "Agency-stated date",
          "followup_draft_due": "Follow-up draft due", "publication_pending": "Publication step",
-         "link_expiry": "Link expiry", "overdue": "Overdue", "followup_planned_send": "Follow-up planned send"}
+         "link_expiry": "Link expiry", "overdue": "Overdue", "followup_planned_send": "Follow-up planned send", "meeting": "Meeting"}
 BASIS = {"recorded_receipt": "DATED", "submission_proxy": "INFERRED", "agency_promised": "DATED"}
 CLOCK_SOURCE = "register clock (Gov. Code 7922.535 arithmetic on our records)"
 LABEL = "Private; review required. Overdue is on our records; not a legal finding. Nothing is sent from this page."
@@ -46,8 +50,9 @@ def _row_ok(r):
     return all(r.get(k) is None or isinstance(r.get(k), dict) for k in ("deadline", "promised"))
 
 
-def load(project, run_id, now=None, *, send_config=None):
+def load(project, run_id, now=None, *, send_config=None, meetings_dir=None):
     model = co.load(project, run_id, None, now)
+    model["meetings"] = _load_meetings(meetings_dir)
     model["sends"] = {"state": "ok", "rows": [], "configured": send_config is not None}
     if send_config is not None:
         try:
@@ -76,6 +81,54 @@ def load(project, run_id, now=None, *, send_config=None):
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         model["followup"] = co._unavailable("register_unreadable")
     return model
+
+
+def _load_meetings(directory):
+    rows, notes, seen = [], [], set()
+    if directory is None:
+        return rows, notes
+    root = Path(directory)
+    for filename in ("meetings.json", "meetings-manual.json"):
+        try:
+            if (root / "kit").is_symlink():
+                raise ValueError("symlink kit")
+            data = _read_bytes(root / "kit" / filename, filename)
+            if data is None:
+                continue
+            doc = json.loads(data.decode("utf-8"))
+            if not isinstance(doc, dict) or doc.get("schema_version") != 1 or not isinstance(doc.get("meetings"), list):
+                raise ValueError("invalid meetings")
+            staged, local_seen, undated = [], set(), 0
+            for m in doc["meetings"]:
+                if not isinstance(m, dict) or not all(isinstance(m.get(k), str) for k in ("id", "body", "agenda_item")):
+                    raise ValueError("invalid meeting")
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", m["id"]):
+                    raise ValueError("invalid meeting id")
+                day = cb._day(m.get("starts_at"))
+                if day is None:
+                    undated += 1
+                    continue
+                if m.get("status", "scheduled") not in ("scheduled", "cancelled") or m.get("not_scanned"):
+                    continue
+                if m["id"] in seen or m["id"] in local_seen:
+                    continue
+                local_seen.add(m["id"])
+                label = "%s: %s - keyword lead, verify on the official agenda" % (m["body"], m["agenda_item"])
+                for flag, text in ((m.get("status") == "cancelled", "cancelled"),
+                                   (not m.get("time_known"), "time unknown"), (m.get("stale"), "stale source"),
+                                   ((root / "content" / "meetings" / (m["id"] + ".json")).is_file(), "comment kit staged")):
+                    if flag:
+                        label += " (%s)" % text
+                generated = cb._day(doc.get("generated"))
+                source = "%s agenda via kit/%s (generated %s)" % (m.get("source", "unknown"), filename, generated or "unknown")
+                staged.append((day, "meeting", m["id"], m["body"], "", label, "DATED", source))
+            rows.extend(staged)
+            seen.update(local_seen)
+            if undated:
+                notes.append("undated meetings skipped: %d (%s)" % (undated, filename))
+        except (OSError, ValueError, TypeError, RecursionError, ManualMeetingError):
+            notes.append("unavailable (meetings): %s" % filename)
+    return rows, notes
 
 
 def _iso(day):
@@ -251,6 +304,10 @@ def build(model, today, horizon_days=90, since=None):
         add(day, "followup_planned_send", q["agency_id"], None, q["request_id"],
             "%s follow-up: %s" % (evidence.get("pattern", "unknown"), state), "INFERRED",
             "follow-up engine route (run %s)" % q["source_run_id"])
+    meetings, meeting_notes = model.get("meetings", ([], []))
+    for meeting in meetings:
+        add(*meeting)
+    notes.extend(meeting_notes)
     for e in out:
         e["agency"] = names.get(e["agency_key"]) or e["agency"]
     out.sort(key=lambda e: (e["date"], e["kind"], e["agency_key"], e["request"], e["label"]))
@@ -304,6 +361,8 @@ def to_ics(items, now):
             continue
         done.add(uid(e))
         summary = "%s: %s %s (%s)" % (KINDS[e["kind"]], _scrub(e["agency"]), _scrub(e["request"]), e["basis"])
+        if e["kind"] == "meeting":
+            summary = "Meeting: %s (DATED)" % _scrub(e["agency"])
         lines += ["BEGIN:VEVENT", "UID:" + uid(e), "DTSTAMP:" + stamp, "DTSTART;VALUE=DATE:" + e["date"].strftime("%Y%m%d"),
                   "SUMMARY:" + _esc(re.sub(r"\s+", " ", summary)), "DESCRIPTION:" + _esc(_scrub(e["source"])), "END:VEVENT"]
     lines.append("END:VCALENDAR")
@@ -371,7 +430,8 @@ def serve(handler):
         return True
     options = handler.server.options
     try:
-        model = load(options["project"], options["run_id"], now, send_config=options.get("send_config"))
+        model = load(options["project"], options["run_id"], now, send_config=options.get("send_config"),
+                     meetings_dir=options.get("meetings_dir"))
     except ValueError:
         handler._fail(503)
         return True

@@ -352,5 +352,100 @@ class Calendar(unittest.TestCase):
             self.assertTrue(cc.render(stub(register([])), TODAY, first))
 
 
+    def meeting(self, ident="legistar-alpha-1", **kw):
+        return {"id": ident, "body": "Alpha Council Département", "agenda_item": SENTINEL,
+                "starts_at": "2026-11-12T18:00:00-08:00", "time_known": True,
+                "source": "legistar", "status": "scheduled", "matched_terms": ["flock"],
+                "agenda_url": "https://agenda.example.test/" + SENTINEL, **kw}
+
+    def meetings_model(self, scan, manual=()):
+        self.model([])
+        campaign = self.project / "campaign"
+        put(campaign / "kit/meetings.json", {"schema_version": 1, "generated": "2026-11-05T12:00:00Z",
+                                           "meetings": scan})
+        put(campaign / "kit/meetings-manual.json", {"schema_version": 1, "meetings": list(manual)})
+        return campaign, cc.load(str(self.project), RUN, NOW, meetings_dir=campaign)
+
+    def test_meetings_scheduled_cancelled_manual_staged_and_ics(self):
+        scan = [self.meeting(), self.meeting("legistar-alpha-2", status="cancelled", time_known=False)]
+        manual = [self.meeting("manual-alpha", source="manual", starts_at="2026-11-13T00:00:00-08:00")]
+        campaign, _ = self.meetings_model(scan, manual)
+        put(campaign / "content/meetings/legistar-alpha-1.json", {"synthetic": True})
+        before = snapshot(self.project)
+        model = cc.load(str(self.project), RUN, NOW, meetings_dir=campaign)
+        items, notes = cc.build(model, TODAY)
+        self.assertEqual(len(items), 3)
+        self.assertEqual(notes, [])
+        self.assertTrue(all(e["kind"] == "meeting" and e["basis"] == "DATED" for e in items))
+        html = cc.render(model, TODAY, TODAY.replace(day=1))
+        self.assertIn("keyword lead, verify on the official agenda", html)
+        self.assertIn("comment kit staged", items[0]["label"])
+        self.assertNotIn("comment kit staged", items[1]["label"])
+        self.assertIn("cancelled", items[1]["label"])
+        self.assertIn("time unknown", items[1]["label"])
+        self.assertIn("legistar agenda via kit/meetings.json (generated 2026-11-05)", html)
+        self.assertIn("manual agenda via kit/meetings-manual.json (generated unknown)", html)
+        self.model_ics(model)
+        ics = cc.to_ics(items, NOW).replace("\r\n ", "")
+        self.assertEqual(ics.count("SUMMARY:Meeting: Alpha Council Département (DATED)"), 3)
+        for private in ("agenda.example.test", "legistar-alpha", "manual-alpha", SENTINEL):
+            self.assertNotIn(private, ics)
+        self.assertEqual(snapshot(self.project), before)
+
+    def test_meetings_undated_duplicate_past_expired_and_stale(self):
+        first = self.meeting(stale=True)
+        scan = [first, copy.deepcopy(first), self.meeting("undated", starts_at=None),
+                self.meeting("bad-date", starts_at="2026-02-30"),
+                self.meeting("past", starts_at="2026-11-04"), self.meeting("expired", status="expired"),
+                self.meeting("unscanned", not_scanned=True)]
+        _, model = self.meetings_model(scan)
+        items, notes = cc.build(model, TODAY)
+        self.assertEqual(len(items), 1)
+        self.assertIn("stale source", items[0]["label"])
+        self.assertIn("undated meetings skipped: 2 (meetings.json)", notes)
+        self.assertEqual(cc.to_ics(items, NOW).count("BEGIN:VEVENT"), 1)
+        self.assertEqual(len(cc.entries(model, TODAY, since=date(2026, 11, 1))), 2)
+
+    def test_meetings_absent_unreadable_bounded_and_independent(self):
+        self.model([])
+        self.assertEqual(cc._load_meetings(None), ([], []))
+        campaign = self.project / "absent"
+        self.assertEqual(cc._load_meetings(campaign), ([], []))
+        campaign, _ = self.meetings_model([], [self.meeting("manual-alpha", source="manual")])
+        path = campaign / "kit/meetings.json"
+        for raw in ("{broken", "[]", json.dumps({"schema_version": 1, "meetings": [self.meeting("manual-alpha"), None]}),
+                    " " * (4 * 1024 * 1024 + 1)):
+            with self.subTest(raw_size=len(raw)):
+                put(path, None, raw=raw)
+                model = cc.load(str(self.project), RUN, NOW, meetings_dir=campaign)
+                items, notes = cc.build(model, TODAY)
+                self.assertEqual(len(items), 1)
+                self.assertIn("unavailable (meetings): meetings.json", notes)
+        path.unlink()
+        path.symlink_to(campaign / "kit/meetings-manual.json")
+        self.assertIn("unavailable (meetings): meetings.json", cc._load_meetings(campaign)[1])
+        path.unlink()
+        os.mkfifo(path)
+        self.assertIn("unavailable (meetings): meetings.json", cc._load_meetings(campaign)[1])
+
+    def test_meetings_panel_option_and_route(self):
+        from campaign_tool.records import admin_panel
+        from io import BytesIO
+        campaign, _ = self.meetings_model([self.meeting()])
+        with admin_panel.build_server(str(self.project), RUN, actor="operator", system=False,
+                                      meetings_dir=campaign) as server:
+            self.assertEqual(server.options["meetings_dir"], campaign)
+            handler = mock.Mock(path="/calendar", server=server, command="GET", wfile=BytesIO())
+            self.assertTrue(cc.serve(handler))
+            self.assertIn("keyword lead", handler._send.call_args.args[1])
+            handler.path = "/calendar.ics"
+            self.assertTrue(cc.serve(handler))
+            self.assertNotIn(SENTINEL.encode(), handler.wfile.getvalue())
+        with mock.patch.object(admin_panel, "build_server", side_effect=OSError) as build_server:
+            self.assertEqual(admin_panel.main(["--project", str(self.project), "--run-id", RUN,
+                                              "--actor", "operator", "--meetings-dir", str(campaign)]), 1)
+            self.assertEqual(build_server.call_args.kwargs["meetings_dir"], str(campaign))
+
+
 if __name__ == "__main__":
     unittest.main()
