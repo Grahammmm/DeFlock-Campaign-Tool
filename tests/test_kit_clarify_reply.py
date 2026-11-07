@@ -27,6 +27,13 @@ NO_OPEN = "no open clarification request to answer"
 SENTENCE = f"On {ASKED_ON} you asked us to clarify or narrow this request"
 
 
+class _PinnedDate(date):
+    """kit_track's clock pinned to TODAY: a run that crosses midnight must not split TODAY from the dated draft."""
+    @classmethod
+    def today(cls):
+        return cls.fromisoformat(TODAY)
+
+
 def run(*arguments):
     out, err = io.StringIO(), io.StringIO()
     code = 0
@@ -45,6 +52,9 @@ class ClarifyReplyTests(unittest.TestCase):
             patch = mock.patch(target, side_effect=AssertionError("network used"))
             patch.start()
             self.addCleanup(patch.stop)
+        pinned = mock.patch.object(kit_track, "date", _PinnedDate)
+        pinned.start()
+        self.addCleanup(pinned.stop)
         temporary = tempfile.TemporaryDirectory(prefix="synthetic-clarify-reply-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name) / "campaign"
