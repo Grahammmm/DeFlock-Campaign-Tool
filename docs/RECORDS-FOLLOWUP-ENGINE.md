@@ -1,5 +1,21 @@
 # Records follow-up engine
 
+## Read-only response state
+
+`records followup-state --project P --run-id R` prints private, review-required JSON;
+it writes nothing. It reads the run's timeline and optional response-items report,
+plus the same-run register for original asks and clarification status (not in the timeline).
+Each request has one display state, flags, open ask numbers, event ids/types/dates
+and an exhaustive `item_needs` partition: withheld, audit_no_records,
+other_no_records, not_addressed, produced. Ask and response text are never printed.
+Closed requests retain the partition; agency closure does not mean all asks were produced.
+The explicit mixed-answer case (produced + not addressed + other no-records)
+is partial, not no_records; withheld still takes precedence. Register issues yield
+unknown after closed/clarification. Superseded events and expired extensions do not
+activate routes; a later agency acknowledgment prevents silence after the latest send.
+These are machine leads for review, not findings or proof that records exist.
+No drafts, sends, approvals, publication or ledger writes occur.
+
 ## Agency events import
 
 This is a private, review-required timeline input, not a legal finding or publication.

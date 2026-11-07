@@ -5,6 +5,7 @@ import os
 import sys
 
 COMMANDS = {
+    "followup-state": ("followup_state", "main"),
     "events-import": ("events_import", "main"),
     "doctor": ("runtime", "main"),
     "validate-findings": "gates.validate_findings",
