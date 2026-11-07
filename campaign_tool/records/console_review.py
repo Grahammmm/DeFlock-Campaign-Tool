@@ -1,7 +1,10 @@
 """One draft's editor; decisions reuse the existing signed approval POSTs."""
 import urllib.parse
 
-from . import approval_queue, console_layout, mail_preview
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from . import approval_queue, console_layout, draft_templates, mail_drafts, mail_preview, mail_send
 from .outcomes.reading import esc
 
 RESIDUE = {"edit_placeholder": "[EDIT ME] placeholder left", "draft_heading": "Draft heading left",
@@ -9,14 +12,47 @@ RESIDUE = {"edit_placeholder": "[EDIT ME] placeholder left", "draft_heading": "D
            "before_sending": "BEFORE SENDING instructions left", "draft_footer": "Template footer left"}
 
 
-def render(project, row, history, preview, token, payload):
+def approval_label(row, switches):
+    if row["kind"] in draft_templates.NEXT_STEP_KINDS:
+        return "Approve (records the decision only; nothing is posted or sent)"
+    if switches["can_send"]:
+        return "Approve and send"
+    reason = switches["reason"]
+    return "Approve - sending is off (%s). This marks it Approved, not sent." % mail_send.REASONS.get(reason, reason)
+
+
+def approval_status(project, row, switches):
+    if row["kind"] in draft_templates.NEXT_STEP_KINDS:
+        return esc("Approved; records the decision only; nothing is posted or sent.")
+    result = next((r for r in reversed(mail_send.results(project, strict=True))
+                   if (r["queue_id"], r.get("revision")) == (row["id"], row["revision"])), {})
+    if result.get("state") == "sent":
+        when = datetime.fromisoformat(result["at"].replace("Z", "+00:00")).astimezone(ZoneInfo(mail_send.TZ))
+        return esc("Approved and sent on %s. Message id %s" % (
+            when.strftime("%Y-%m-%d %H:%M %Z"), str(result.get("message_id") or "")[:12]))
+    if result.get("state") in ("attempt", "unknown"):
+        return esc("Delivery unresolved; reconcile in the outbox before any retry")
+    placement = next((r for r in reversed(mail_drafts.placements(project))
+                      if (r["queue_id"], r["revision"]) == (row["id"], row["revision"])), {})
+    if placement.get("state") not in ("placed", "found_existing"):
+        return esc("Approved, not sent. Not in the Drafts mailbox yet: %s." % (
+            placement.get("code") or placement.get("state") or "not_placed"))
+    if switches["can_send"]:
+        return ('Approved. Next: <a href="/send?id=%s">open the send check</a> '
+                '(it re-checks the mailbox copy and switches and asks for your outbox signature).') % esc(row["id"])
+    reason = switches["reason"]
+    return esc("Approved, not sent. Sending is off: %s." % mail_send.REASONS.get(reason, reason))
+
+
+def render(project, row, history, preview, token, payload, send_config=None):
     from . import admin_panel as ap
 
     title = "Review: %s for %s / %s" % (row["kind"].replace("-", " "), row["agency_id"], row["request_id"])
     pending = row["status"] == "pending"
-    status = {"pending": "Pending", "approved": "Approved (not sent)",
-              "rejected": "Rejected: " + str(row.get("reason") or "")}[row["status"]]
-    out = ["<h1>%s</h1><p role=\"status\">%s</p>" % (esc(title), esc(status)), "<dl>"]
+    switches = mail_send.switch_state(project, send_config)
+    status = approval_status(project, row, switches) if row["status"] == "approved" else esc(
+        "Pending" if pending else "Rejected: " + str(row.get("reason") or ""))
+    out = ["<h1>%s</h1><p role=\"status\">%s</p>" % (esc(title), status), "<dl>"]
     for label, value in (("To", preview["to"] or "Unknown"), ("To note", preview["to_note"]),
                          ("From", preview["from"] or "Unknown"), ("From note", preview["from_note"]),
                          ("Subject", preview["subject"]),
@@ -61,10 +97,12 @@ def render(project, row, history, preview, token, payload):
         out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre>' % esc(payload.decode("utf-8")))
         out.append("<p>Sign this text with your approval key "
                    "(<code>ssh-keygen -Y sign -n deflock-approval</code>) and paste the signature. "
-                   "The console holds no key and never signs. Approval does not send or publish.</p>")
+                   "The console holds no key and never signs. Approval does not send or publish. "
+                   "For mail, continue to the separate send check after approval.</p>")
         out.append(ap._form("/approvals/approve", token, row["id"], "",
                             '<label for="signature">Detached SSH signature</label>'
-                            '<textarea id="signature" name="signature" required></textarea>', "Approve", back="review"))
+                            '<textarea id="signature" name="signature" required></textarea>',
+                            approval_label(row, switches), back="review"))
         out.append(ap._form("/approvals/reject", token, row["id"], "",
                             '<label for="reason">Rejection reason</label>'
                             '<input id="reason" name="reason" required maxlength="2000">',
@@ -94,8 +132,10 @@ def serve(handler):
         history = approval_queue.history(project, ids[0])
         preview = mail_preview.preview(project, row, handler.server.mail_drafts_config)
         payload = approval_queue.approval_payload(project, ids[0]) if row["status"] == "pending" else None
-        page = render(project, row, history, preview, handler.server.csrf_token, payload)
-    except (approval_queue.ApprovalQueueError, OSError, ValueError, KeyError, TypeError):
+        page = render(project, row, history, preview, handler.server.csrf_token, payload,
+                      handler.server.options.get("send_config"))
+    except (approval_queue.ApprovalQueueError, mail_send.MailSendError, mail_drafts.MailDraftError,
+            OSError, ValueError, KeyError, TypeError):
         handler._fail(503)
         return True
     handler._send(200, page)
