@@ -41,6 +41,7 @@ COMMANDS = {
     "public-updates": ("public_updates", "main"),
     "public-packets": ("public_packets", "main"),
     "agency-policies": ("agency_policies", "main"),
+    "agency-retention": ("agency_retention", "main"),
     "first-request": ("first_request", "main"),
     "model-advice": ("model_advice", "main"),
     "panel": ("admin_panel", "main"),
