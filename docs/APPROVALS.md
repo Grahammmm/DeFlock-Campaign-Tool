@@ -143,6 +143,17 @@ calculated) and `State: pending-approval`. Nothing is sent.
 - A truncated or malformed journal tail is refused (`queue_invalid`) and left untouched for the
   operator; the outputs stage then reports `OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE`.
 
+## Edit history: diff and hashes from the journal; no second store
+
+`python -m campaign_tool.records approvals history --project DIR --id ID` prints
+read-only JSON with the original body, current body and every edit's revision,
+time, actor, UTF-8 SHA-256 and byte count (`body` holds text; `bytes` is its UTF-8
+length). It folds the existing queue journal under the reader lock, never creates
+a store, and includes an original-to-current unified diff capped at 400 lines
+with `diff_truncated` marking a cut. Approval/rejection revisions are skipped in
+`edits`; the top-level revision tracks all events while `current.revision` tracks
+the last body edit (zero for the original). Nothing approves or sends.
+
 ## No-response follow-ups (REC-AUTO-7)
 
 After each outputs stage, the records pipeline reads that run's `CURRENT-REQUEST-REGISTER.json` and,
