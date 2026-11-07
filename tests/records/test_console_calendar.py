@@ -271,6 +271,79 @@ class Calendar(unittest.TestCase):
                 for ln in cc._fold("X" + ch * n).split("\r\n"):
                     self.assertLessEqual(len(ln.encode("utf-8")), 75)
 
+    def engine_row(self, status="pending", **kw):
+        return {"id": "engine-1", "item_id": "route:synthetic", "kind": "followup-playbook",
+                "agency_id": "alpha-pd", "request_id": "R-1", "status": status, "revision": 2,
+                "source_run_id": "route_run", "body": SENTINEL,
+                "evidence": {"pattern": "partial", "planned_send_date": "2026-11-12",
+                             "private_body": SENTINEL, "url": "https://example.test/" + SENTINEL}, **kw}
+
+    def test_engine_planned_dates_labels_privacy_and_queue_preserved(self):
+        from campaign_tool.records import approval_queue as aq
+        self.model([])
+        for status, day in (("pending", "2026-11-12"), ("approved", "2026-11-13"), ("rejected", "2026-11-14")):
+            q = self.engine_row(status)
+            aq.add_draft(self.project, **{k: q[k] for k in
+                         ("kind", "agency_id", "request_id", "body", "source_run_id")},
+                         item_id="route:" + status, evidence={**q["evidence"], "planned_send_date": day})
+        model = cc.load(str(self.project), RUN, NOW)
+        for q in model["queue"]["rows"]:
+            q["status"] = q["item_id"].split(":")[1]
+        before = snapshot(self.project)
+        items = cc.entries(model, TODAY)
+        self.assertEqual([(e["date"].isoformat(), e["label"]) for e in items], [
+            ("2026-11-12", "partial follow-up: awaiting your approval (Home)"),
+            ("2026-11-13", "partial follow-up: approved; sending is yours (send not tracked)")])
+        self.assertTrue(all(e["basis"] == "INFERRED" and
+                            e["source"] == "follow-up engine route (run route_run)" for e in items))
+        html, ics = cc.render(model, TODAY, TODAY.replace(day=1)), cc.to_ics(items, NOW)
+        self.assertIn("awaiting your approval (Home)", html)
+        self.assertIn("approved; sending is yours", html)
+        self.assertEqual(ics.count("BEGIN:VEVENT"), 2)
+        self.assertIn("DTSTART;VALUE=DATE:20261112", ics)
+        self.assertIn("DTSTART;VALUE=DATE:20261113", ics)
+        for text in (html, ics):
+            self.assertNotIn(SENTINEL, text)
+            self.assertNotIn("https://example.test/", text)
+        self.assertEqual(snapshot(self.project), before)
+
+    def test_engine_exclusions_duplicates_stale_revisions_and_delivery_states(self):
+        q = self.engine_row("approved")
+        model = stub(register([]), [q, copy.deepcopy(q)])
+        for revision, state, count in ((2, "sent", 0), (1, "sent", 1), (2, "failed", 1),
+                                       (2, "unknown", 1), (2, "attempt", 1)):
+            with self.subTest(revision=revision, state=state):
+                model["sends"] = {"state": "ok", "configured": True,
+                                  "rows": [{"queue_id": q["id"], "revision": revision, "state": state}]}
+                items = cc.entries(model, TODAY)
+                self.assertEqual(len(items), count)
+                if items:
+                    self.assertIn("approved; sending is yours", items[0]["label"])
+                    self.assertNotIn("send not tracked", items[0]["label"])
+                self.assertEqual(cc.to_ics(items, NOW).count("BEGIN:VEVENT"), count)
+        for status in ("rejected", "cancelled", "expired"):
+            self.assertEqual(cc.entries(stub(register([]), [self.engine_row(status)]), TODAY), [])
+        for day in (None, "bad", "2026-02-30", "2026-11-04", "2027-11-12"):
+            bad = self.engine_row(evidence={"pattern": "partial", "planned_send_date": day})
+            self.assertEqual(cc.entries(stub(register([]), [bad]), TODAY), [])
+        self.assertEqual(cc.entries(stub(register([]), [self.engine_row(kind="first-request")]), TODAY), [])
+
+    def test_engine_send_source_loading_and_fail_closed(self):
+        self.model([])
+        with mock.patch.object(cc.mail_send, "results", return_value=[]) as results:
+            cc.load(str(self.project), RUN, NOW)
+            results.assert_not_called()
+            model = cc.load(str(self.project), RUN, NOW, send_config="not-read")
+            results.assert_called_once_with(str(self.project), strict=True)
+        with mock.patch.object(cc.mail_send, "results", side_effect=cc.mail_send.MailSendError("invalid")):
+            model = cc.load(str(self.project), RUN, NOW, send_config="not-read")
+        model["queue"]["rows"] = [self.engine_row("approved"), self.engine_row(request_id="R-2")]
+        items, notes = cc.build(model, TODAY)
+        self.assertEqual([e["request"] for e in items], ["R-2"])
+        self.assertIn("follow-up planned sends: unavailable (sends_unreadable)", notes)
+        model["queue"] = {"state": "unavailable"}
+        self.assertEqual(cc.entries(model, TODAY), [])
+
     def test_boundary_months_are_rejected(self):
         for bad in ("0000-01", "0001-01", "9999-12", "2201-01", "1899-12"):
             self.assertIsNone(cc._month(bad, TODAY), bad)
