@@ -936,7 +936,7 @@ def _access_cfg(public_origin, access_config):
 
 def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
                  timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None,
-                 access_config=None, access_clock=None, manual_events_dir=None):
+                 access_config=None, access_clock=None, manual_events_dir=None, meetings_dir=None):
     """Unstarted loopback-only server; the caller serves and closes it."""
     check_run_id(run_id)
     check_actor(actor)
@@ -961,6 +961,7 @@ def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_ro
     server.actor = actor
     server.manual_events_dir = manual_events_dir
     server.mail_drafts_config = mail_drafts_config
+    server.meetings_dir = meetings_dir
     server.send_hooks = {}  # tests inject imap_factory / smtp_factory; production uses the real ones
     server.options = {"project": os.path.abspath(project), "run_id": run_id, "run_report_path": run_report_path,
                       "kit_root": kit_root, "as_of": as_of, "timers": tuple(timers), "system": system,
@@ -978,6 +979,7 @@ def main(argv=None):
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-report")
     parser.add_argument("--kit-root")
+    parser.add_argument("--meetings-dir", metavar="DIR", help="read-only campaign directory for calendar meetings")
     parser.add_argument("--as-of", help="YYYY-MM-DD; fixes the deadline day and health clock (UTC midnight)")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--public-origin", metavar="URL", help="one exact HTTPS origin behind validated Access")
@@ -1029,7 +1031,7 @@ def main(argv=None):
                               run_report_path=args.run_report, kit_root=args.kit_root, as_of=args.as_of,
                               timers=timers, system=not args.no_system, mail_drafts_config=args.mail_drafts_config,
                               send_config=args.send_config, public_origin=args.public_origin,
-                              access_config=access, manual_events_dir=args.manual_events)
+                              access_config=access, manual_events_dir=args.manual_events, meetings_dir=args.meetings_dir)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required", "_unused")) else 1
