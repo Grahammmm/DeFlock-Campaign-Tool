@@ -13,9 +13,10 @@ import hashlib
 import json
 import urllib.parse
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .. import law
-from . import deadline_calc, followup_clock
+from . import agency_retention, deadline_calc, denial_log, followup_clock
 from . import console_documents as cd
 from .outcomes import release_links as _rl
 from .outcomes import timeline as _tl
@@ -29,6 +30,8 @@ CONTACT_SOURCES = ("received_item", "outbox_receipt", "manual")
 # Drafts are ours; a promised date is a date the agency stated, not a contact on that day.
 NOT_CONTACT = ("draft", "promised date", "hand note")
 EXPIRING_DAYS = 14
+RETENTION_PATH = Path(__file__).resolve().parents[2] / "data" / "slo-pilot" / "agency-retention.csv"
+READING_LABEL = "Machine reading and reviewed rows; review required; not a legal finding."
 # CON-HOME-2's clock-basis vocabulary: a recorded receipt is dated, a submission proxy is inferred.
 BASIS_WORD = {"recorded_receipt": "DATED", "submission_proxy": "INFERRED"}
 LABEL = "Private; review required. Overdue marks are arithmetic on our records, not a legal finding."
@@ -88,6 +91,7 @@ def load(project, run_id):
         timeline = {"state": "unavailable", "code": "run_mismatch" if doc.get("run_id") != run_id else "shape_invalid"}
     model = cd.load(project, run_id, pages=False)
     return {"run_id": run_id, "timeline": timeline, "links": model["links"], "tiers": model["tiers"],
+            "refusals": denial_log.load(project, run_id), "retention": agency_retention.load(RETENTION_PATH),
             "deadlines": computed_dates(project, run_id),
             "received": model["received"], "aliases": model.get("aliases", {"state": "absent"})}
 
@@ -365,7 +369,54 @@ def render_agency(model, agency):
                     esc(e.get("date") or "undated"), esc(e["type"]), esc(summary), _source(e.get("source") or {}, docs_href)))
             out.append("</tbody></table>")
         out.append("</section>")
+    out.extend(_agency_sections(model, agency))
     return "\n".join(out + ["</main></body></html>"]) + "\n"
+
+
+def _agency_sections(model, agency):
+    out = ["<section><h2>Refusals</h2>"]
+    refusals = model.get("refusals", {"state": "unavailable", "code": "not_loaded"})
+    rows = [r for r in refusals.get("entries", []) if r["agency_key"] == agency]
+    if refusals["state"] != "available":
+        out.append("<p>Refusals unavailable (%s).</p>" % esc(refusals.get("code")))
+    elif not rows:
+        out.append("<p>No refusals on our records.</p>")
+    else:
+        out.append("<table><caption>Refusals</caption><tr><th>Date</th><th>Request</th><th>Item</th>"
+                   "<th>What they said</th><th>Their citation (UNVERIFIED by us)</th><th>Reply</th></tr>")
+        for r in rows:
+            words = r.get("agency_words") or {}
+            quote = words.get("quote", "no quote extracted")
+            if words.get("page") is not None:
+                quote += " (p.%s)" % words["page"]
+            reply = {"drafted": "Draft ready", "approved": "Approved", "sent": "Sent",
+                     "rejected": "Rejected"}.get(r["reply"], "Not drafted")
+            reply = esc(reply)
+            if r["reply"] == "drafted" and r.get("queue_id"):
+                reply += ' - <a href="/review?id=%s">Review</a>' % esc(urllib.parse.quote(r["queue_id"], safe=""))
+            cells = [esc("%s (%s)" % (r.get("date") or "unknown", r["date_basis"])), esc(r["request_id"]),
+                     esc("%s: %s" % (r.get("item_no") or "Whole request", r.get("item_text") or "")),
+                     esc(quote), esc("; ".join(r["agency_citation"]["text"]) or "None extracted"), reply]
+            out.append("<tr>%s</tr>" % "".join("<td>%s</td>" % c for c in cells))
+        out.append("</table>")
+    out.extend(["<p>%s</p></section>" % esc(READING_LABEL), "<section><h2>Retention</h2>"])
+    retention, problems = model.get("retention", ([], []))
+    selected = agency_retention.summary(retention, agency)
+    if problems:
+        out.append("<p>Retention source has %d validation problem(s); invalid rows are not shown.</p>" % len(problems))
+    if selected:
+        out.append("<table><caption>Stated retention</caption><tr><th>System</th><th>Vendor</th><th>Data</th>"
+                   "<th>Stated period</th><th>Source</th><th>Confidence</th></tr>")
+        for group in selected.values():
+            for r in group:
+                cells = [r["system"], r["vendor"], r["data_layer"], r["stated_period"],
+                         "%s, p.%s, doc %s" % (r["source_kind"], r["page"], r["doc_sha256"][:12]),
+                         "%s, %s" % (r["confidence"], r["checked"])]
+                out.append("<tr>%s</tr>" % "".join("<td>%s</td>" % esc(c) for c in cells))
+        out.append("</table>")
+    out.extend("<p>%s</p>" % esc(line) for line in agency_retention.compare(retention, agency))
+    out.append("<p>%s</p></section>" % esc(READING_LABEL))
+    return out
 
 
 def _source(src, docs_href):
