@@ -190,7 +190,8 @@ def serve(handler):
         signed = ticket(options["project"], options["run_id"], agency, request, handler.server.manual_event_key, ident)
         back = "/agency?" + urllib.parse.urlencode({"agency": agency})
         hidden = dict(csrf_token=handler.server.csrf_token, id=ident, ticket=signed)
-        page = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Manual event</title></head><body>'
+        from . import console_layout
+        page = console_layout.start('Manual event', 'Agencies')
         page += '<h1>Manual event</h1><p>Private; review required. Nothing is sent or published.</p>'
         page += '<p>Request %s; actor %s (local attribution, not authenticated identity).</p>' % (esc(request), esc(handler.server.actor))
         page += '<form method="post" action="/manual-event">'
@@ -199,7 +200,7 @@ def serve(handler):
         page += '<label>Date <input type="date" name="date" required></label>'
         page += '<label>Summary <input name="summary" maxlength="2000" required></label>'
         page += '<label>Corrects event id (optional) <input name="corrects" maxlength="128"></label>'
-        page += '<button>Append event</button></form><p><a href="%s">Cancel</a></p></body></html>' % esc(back)
+        page += '<button>Append event</button></form><p><a href="%s">Cancel</a></p></main></body></html>' % esc(back)
         handler._send(200, page)
     except ManualError as error:
         handler._fail(error.status)
