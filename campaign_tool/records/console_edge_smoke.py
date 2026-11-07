@@ -62,30 +62,50 @@ def _send(scheme, host, method, path, body, extra, timeout):
                 resp.read(MAX_BODY)
             except (OSError, http.client.HTTPException):
                 pass
-            return resp.status, {k.lower(): v for k, v in resp.getheaders()}
+            return resp.status, [(k.lower(), v) for k, v in resp.getheaders()]
         finally:
             conn.close()
     except (OSError, http.client.HTTPException) as error:
         return None, type(error).__name__
 
 
+def _values(headers, name):
+    """Every value sent for one header name. Accepts a (name, value) list (all
+    duplicates kept) or a mapping whose values are a string or a list."""
+    if isinstance(headers, dict):
+        pairs = []
+        for key, value in headers.items():
+            for item in (value if isinstance(value, (list, tuple)) else [value]):
+                pairs.append((key, item))
+    else:
+        pairs = list(headers)
+    return [str(v) for k, v in pairs if str(k).lower() == name]
+
+
 def _fingerprint(headers):
     found = []
-    if CONSOLE_CSP in headers.get("content-security-policy", ""):
+    if any(CONSOLE_CSP in v for v in _values(headers, "content-security-policy")):
         found.append("console-csp")
-    if FINGERPRINT_SERVER in headers.get("server", ""):
+    if any(FINGERPRINT_SERVER in v for v in _values(headers, "server")):
         found.append("server")
-    if FENCE_HEADER in headers:
+    if _values(headers, FENCE_HEADER):
         found.append("write-fence")
     return found
 
 
 def _location(headers):
-    value = headers.get("location", "")
-    if not value:
+    """(parts, host) for the Location header; (None, "") if absent, (None, "?")
+    if missing, repeated, or malformed (never raises on untrusted input)."""
+    values = _values(headers, "location")
+    if not values:
         return None, ""
-    parts = urlsplit(value)
-    return parts, (parts.hostname or "")
+    if len(values) != 1:
+        return None, "?"
+    try:
+        parts = urlsplit(values[0])
+        return parts, (parts.hostname or "")
+    except ValueError:
+        return None, "?"
 
 
 def _refused_by_access(status, headers):
@@ -122,7 +142,7 @@ def sweep(host, mode, timeout, out):
     _say(out, "ISOLATION CHECK (not an Access check)" if mode == "isolation" else "ACCESS CHECK")
     for scheme, method, path, body, extra in _probes():
         status, headers = _send(scheme, host, method, path, body, extra, timeout)
-        verdict = judge(mode, host, scheme, path, status, headers if status is not None else {})
+        verdict = judge(mode, host, scheme, path, status, headers if status is not None else [])
         shown_path = path if scheme == "https" else "http://" + host + path
         loc_host = _location(headers)[1] if status is not None else ""
         if verdict == "FAIL":

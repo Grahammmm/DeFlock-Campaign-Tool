@@ -10,7 +10,7 @@ from campaign_tool.records import console_edge_smoke as smoke
 
 HOST = "admin.example.test"
 URL = "https://" + HOST
-ACCESS = "https://team-x.cloudflareaccess.com/cdn-cgi/access/login"
+ACCESS = "https://team-x" + smoke.ACCESS_SUFFIX + "/cdn-cgi/access/login"
 BODY_MARKER = b"SECRET-BODY-MARKER"
 CSP = "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 
@@ -99,7 +99,7 @@ class AccessSweepTests(unittest.TestCase):
                 self.assertIn("FAIL", text)
 
     def test_foreign_redirect_hosts_fail(self):
-        for target in ("https://evil.example.test/", "https://cloudflareaccess.com.evil.test/"):
+        for target in ("https://evil.example.test/", "https://" + smoke.ACCESS_SUFFIX[1:] + ".evil.test/"):
             with self.subTest(target=target):
                 code, text, _ = run_stub(lambda m, p, h: (302, {"Location": target}, b""))
                 self.assertEqual(code, 1)
@@ -149,6 +149,68 @@ class AccessSweepTests(unittest.TestCase):
         code, text, _ = run_stub(lambda m, p, h: (200, {}, BODY_MARKER))
         self.assertEqual(code, 1)
         self.assertNotIn(BODY_MARKER.decode(), text)
+
+
+class HeaderEdgeTests(unittest.TestCase):
+    def test_malformed_location_is_a_failed_probe_not_a_crash(self):
+        for bad in ("https://[bad", "http://[::1", "https://x]"):
+            with self.subTest(location=bad):
+                for headers in ({"location": bad}, [("location", bad)]):
+                    self.assertEqual(smoke.judge("access", HOST, "https", "/", 302, headers), "FAIL")
+                    self.assertEqual(smoke.judge("access", HOST, "http", "/", 301, headers), "FAIL")
+                    self.assertEqual(smoke.judge("isolation", HOST, "https", "/", 302, headers), "ok")
+
+    def test_malformed_location_is_reported_and_sweep_completes(self):
+        code, text, stub = run_stub(lambda m, p, h: (302, {"Location": "https://[bad"}, b""))
+        probes = smoke._probes()
+        self.assertEqual(len(stub.log), len(probes))
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL %d probes" % len(probes), text)
+        self.assertIn("GET / 302 ? FAIL", text)
+
+    def test_duplicate_location_fails(self):
+        headers = [("location", ACCESS), ("location", "https://evil.example.test/")]
+        self.assertEqual(smoke.judge("access", HOST, "https", "/", 302, headers), "FAIL")
+
+    def test_duplicate_server_header_any_value_fails(self):
+        for headers in ([("server", "RecordsPanel/1"), ("server", "cloudflare")],
+                        [("server", "cloudflare"), ("server", "RecordsPanel/1")]):
+            with self.subTest(headers=headers):
+                self.assertEqual(smoke.judge("access", HOST, "https", "/", 403, headers), "FAIL")
+                self.assertEqual(smoke.judge("isolation", HOST, "https", "/", 403, headers), "FAIL")
+        self.assertEqual(smoke.judge("access", HOST, "https", "/", 403,
+                                     [("server", "cloudflare"), ("server", "other")]), "ok")
+
+    def test_duplicate_csp_header_any_value_fails(self):
+        for headers in ([("content-security-policy", CSP), ("content-security-policy", "default-src 'none'")],
+                        [("content-security-policy", "default-src 'none'"), ("content-security-policy", CSP)]):
+            with self.subTest(headers=headers):
+                self.assertEqual(smoke.judge("access", HOST, "https", "/", 403, headers), "FAIL")
+
+    def test_send_keeps_duplicate_headers_from_the_wire(self):
+        class Resp:
+            status = 403
+
+            def read(self, n):
+                return b""
+
+            def getheaders(self):
+                return [("Server", "RecordsPanel/1"), ("Server", "cloudflare")]
+
+        class Conn:
+            def request(self, *a, **k):
+                pass
+
+            def getresponse(self):
+                return Resp()
+
+            def close(self):
+                pass
+        with mock.patch.object(smoke, "_connect", lambda *a: Conn()):
+            status, headers = smoke._send("https", HOST, "GET", "/", None, {}, 5)
+        self.assertEqual(smoke.judge("access", HOST, "https", "/", status, headers), "FAIL")
+        code, text = run(lambda *a: Conn())
+        self.assertEqual(code, 1)
 
 
 class IsolationTests(unittest.TestCase):
