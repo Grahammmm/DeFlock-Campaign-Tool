@@ -25,6 +25,7 @@ from . import playbook as _pb
 from .outcomes import release_links as _rl
 from .outcomes import received_items as _ri
 from .outcomes.reading import BANNER, esc
+from . import console_layout
 
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 AGENCY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
@@ -355,11 +356,10 @@ def render(model, now, agency=...):
     notes = ["<p class=\"diag\" role=\"status\">%s: unavailable (%s).</p>" % (esc(k), esc(s.get("code")))
              for k, s in sources(model).items() if s["state"] != "ok"]
     body = [render_agency(view(model, a, now)) for a in chosen]
-    head = ['<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex,nofollow">'
-            "<title>Documents and findings</title></head><body>", '<p class="notice">%s</p>' % esc(BANNER),
+    head = [console_layout.start("Documents and findings", "Library"),
             "<h1>Documents and findings</h1>", "<p>Run %s. %s Nothing is fetched, sent or published.</p>" % (
                 esc(model["run_id"]), esc(LABEL))]
-    return "\n".join(head + notes + body + ["</body></html>"]) + "\n"
+    return "\n".join(head + notes + body + ["</main></body></html>"]) + "\n"
 
 
 # ---- panel seam and CLI ------------------------------------------------------------------------------

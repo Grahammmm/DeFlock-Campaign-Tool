@@ -102,3 +102,10 @@ is rewritten. The confirmation links back to the agency; the event appears on
 the timeline after the next data refresh. Snapshot-builder merging of this
 journal is staged separately in CDATA-MANUAL-MERGE-1. Without the flag the
 existing project journal and immediate timeline refresh remain unchanged.
+
+## Navigation
+
+Every console page shares a plain left navigation: Home, Approvals, Agencies,
+Calendar, Timeline and Library. The small More line retains Dashboard, Oversight,
+Public updates, Packets, and Drafts and next steps. On narrow screens the nav
+stacks above the page; overdue notices are bold red (on our records, not a legal finding).
