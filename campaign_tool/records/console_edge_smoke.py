@@ -28,6 +28,10 @@ POST_PATHS = ("/approvals/approve", "/approvals/reject", "/approvals/edit", "/ma
 JUNK = {"Cookie": "CF_Authorization=x.y.z", "Cf-Access-Jwt-Assertion": "x.y.z"}
 
 
+def _say(out, text):
+    print(text, file=out)
+
+
 def _connect(scheme, host, timeout):
     """Connection factory; tests replace this, the CLI cannot."""
     if scheme == "https":
@@ -115,7 +119,7 @@ def judge(mode, host, scheme, path, status, headers):
 
 def sweep(host, mode, timeout, out):
     failures = 0
-    out.write("ISOLATION CHECK (not an Access check)\n" if mode == "isolation" else "ACCESS CHECK\n")
+    _say(out, "ISOLATION CHECK (not an Access check)" if mode == "isolation" else "ACCESS CHECK")
     for scheme, method, path, body, extra in _probes():
         status, headers = _send(scheme, host, method, path, body, extra, timeout)
         verdict = judge(mode, host, scheme, path, status, headers if status is not None else {})
@@ -123,9 +127,9 @@ def sweep(host, mode, timeout, out):
         loc_host = _location(headers)[1] if status is not None else ""
         if verdict == "FAIL":
             failures += 1
-        out.write("%s %s %s %s %s\n" % (method, shown_path, status if status is not None else "ERR:" + headers,
+        _say(out, "%s %s %s %s %s" % (method, shown_path, status if status is not None else "ERR:" + str(headers),
                                         loc_host or "-", verdict))
-    out.write("PASS\n" if not failures else "FAIL %d probes\n" % failures)
+    _say(out, "PASS" if not failures else "FAIL %d probes" % failures)
     return 1 if failures else 0
 
 
@@ -143,10 +147,10 @@ def main(argv=None, out=None):
     try:
         args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     except SystemExit:
-        out.write("usage: console_edge_smoke https://<host> [--mode access|isolation] [--timeout N]\n")
+        _say(out, "usage: console_edge_smoke https://<host> [--mode access|isolation] [--timeout N]")
         return 2
     if not URL_RE.fullmatch(args.url) or not 0 < args.timeout <= 120:
-        out.write("usage: URL must be https://<lowercase dns name> with no path or port\n")
+        _say(out, "usage: URL must be https://<lowercase dns name> with no path or port")
         return 2
     return sweep(args.url[len("https://"):], args.mode, args.timeout, out)
 
