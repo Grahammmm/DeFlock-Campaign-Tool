@@ -11,7 +11,6 @@ $VARIABLE in a command must have a fixture value in Sandbox.mapping.
 import argparse
 import contextlib
 import csv
-import hashlib
 import io
 import json
 import re
@@ -396,7 +395,7 @@ class GuideTests(unittest.TestCase):
                          [("2026-10-01", 5, 0), ("2026-10-20", 1, 1)])
         self.assertEqual(history[-1]["by_city"], {CITY: 4, "Synthetic Pine": 1})
         self.assertEqual(set(history[-1]), {"recorded_on", "osm_base", "source", "total", "by_city", "added", "removed"})
-        self.assertNotIn("moved", json.dumps(history))  # counts of added and removed only
+        self.assertFalse({"moved", "retagged"} & set(history[-1]))  # counts of added and removed only
         self.assertIn("Map data (c) OpenStreetMap contributors, ODbL 1.0", read(box.map / "attribution.txt"))
 
     def test_refresh_refusals_and_partial_history_write(self):
