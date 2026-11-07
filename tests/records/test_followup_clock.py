@@ -469,5 +469,53 @@ class DueClocks(Base):
         self.assertEqual(self.run_cli("clocks", "--project", str(self.root), "--run-id", "missing")[0], 1)
 
 
+class ReminderStatus(Base):
+    def test_six_states_identity_and_purity(self):
+        self.enable()
+        settings = fc.load_settings(self.root)
+        settings["agencies"].update({"off": {"autonomy": "off"},
+                                      "wait": {"autonomy": "draft", "silence_after_days": 30}})
+        rows = [row(request=s) for s in ("drafted", "approved", "rejected")]
+        rows += [row("off", "off"), row("wait", "not_yet"), row(request="closed", status="closed")]
+        queue = [{"id": s, "item_id": fc.item_id("ag1", s, "determination", "2030-01-12"),
+                  "kind": fc.REMINDERS[0], "status": q, "updated_at": AS_OF}
+                 for s, q in (("drafted", "pending"), ("approved", "approved"), ("rejected", "rejected"))]
+        inputs = json.dumps([rows, settings, queue], sort_keys=True)
+        with mock.patch("builtins.open", side_effect=AssertionError("IO")), mock.patch.object(os, "open", side_effect=AssertionError("IO")):
+            result = fc.reminder_status(doc(rows), settings, queue, as_of=AS_OF)
+            self.assertEqual(fc.reminder_status(doc(rows), settings, queue, as_of=AS_OF), result)
+        self.assertEqual([r["state"] for r in result], ["drafted", "approved", "rejected", "off", "not_yet", "closed"])
+        self.assertEqual(result[4]["due"], "2030-02-12")
+        candidates = {c["item_id"] for c in fc.plan(doc(rows), settings, queue, as_of=AS_OF)}
+        for r in result:
+            ident = fc.item_id(*(r[k] for k in ("agency_key", "request_id", "clock_kind", "clock_date")))
+            self.assertEqual(r["state"] in ("drafted", "approved", "rejected"),
+                             ident in candidates and ident in {q["item_id"] for q in queue})
+        self.assertEqual(json.dumps([rows, settings, queue], sort_keys=True), inputs)
+
+    def test_no_false_ready_cancelled_expired_stale_duplicate_and_unqueued(self):
+        self.enable()
+        settings = fc.load_settings(self.root)
+        request = row(state="determined", promised={"state": "passed", "date": "2030-01-20"})
+        q = {"id": "draft", "item_id": fc.item_id("ag1", "req-1", "promised", "2030-01-20"),
+             "kind": fc.REMINDERS[1], "status": "pending"}
+        status = lambda rows, queue: fc.reminder_status(doc(rows), settings, queue, as_of=AS_OF)
+        ready = status([request], [q])
+        self.assertEqual(ready[0]["state"], "drafted")
+        self.assertEqual(status([request, request], [q, q]), ready)
+        for state in ("cancelled", "expired"):
+            result = status([request], [q | {"status": state}])[0]
+            self.assertIsNone(result["state"])
+            self.assertIn(state, result["reason"])
+        for stale in (q | {"item_id": fc.item_id("ag1", "req-1", "promised", "2030-01-19")},
+                      q | {"kind": fc.NOTICE}):
+            self.assertNotIn("queue_id", status([request], [stale])[0])
+        self.assertEqual(status([request], [])[0]["reason"], "No reminder draft queued")
+        self.assertIn("needs checking", status([request | {"issues": ["bad_date"]}], [q])[0]["reason"])
+        self.assertEqual(status([row(state="running", due="2030-03-01")], []), [])
+        with self.assertRaisesRegex(ValueError, "as_of_invalid"):
+            fc.reminder_status(doc([request]), settings, [], as_of="bad")
+
+
 if __name__ == "__main__":
     unittest.main()

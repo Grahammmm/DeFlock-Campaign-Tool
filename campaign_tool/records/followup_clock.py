@@ -184,6 +184,44 @@ def plan(register, settings, queue_rows, *, as_of):
     return _plan(register, settings, queue_rows, as_of)[0]
 
 
+def reminder_status(register, settings, queue_rows, *, as_of):
+    """Read-only status per passed clock; only planner identities can match a draft."""
+    today = _day(as_of)
+    if today is None:
+        raise ValueError("as_of_invalid")
+    candidates = {(c["item_id"], c["kind"]) for c in plan(register, settings, queue_rows, as_of=as_of)}
+    queued = {(r["item_id"], r["kind"]): r for r in queue_rows}
+    out, seen = [], set()
+    for row in register.get("requests", []):
+        setting = _setting(settings, row["agency_key"])
+        closed = str(row.get("status", "")).strip().casefold() in CLOSED
+        for kind, clock_date, due in followup_due(dict(row, status="open"), setting):
+            source = row.get("deadline" if kind == "determination" else "promised") or {}
+            key = (row["agency_key"], row["request_id"], kind, clock_date)
+            if key in seen or source.get("state") not in ("past_due_reminder", "passed") or _day(clock_date) >= today:
+                continue
+            seen.add(key)
+            ident = item_id(*key)
+            pair = (ident, REMINDERS[0 if kind == "determination" else 1])
+            match = queued.get(pair) if pair in candidates else None
+            state, reason = None, "No reminder draft queued"
+            if closed:
+                state, reason = "closed", "Request closed"
+            elif setting["autonomy"] != "draft":
+                state, reason = "off", "Reminders are off for this agency (see Settings)"
+            elif today < _day(due):
+                state, reason = "not_yet", "Reminder due " + due
+            elif row.get("issues"):
+                reason = "Request needs checking before a reminder can be drafted"
+            elif match:
+                state = {"pending": "drafted", "approved": "approved", "rejected": "rejected"}.get(match["status"])
+                reason = {"drafted": "Draft ready", "approved": "Approved", "rejected": "Rejected"}.get(
+                    state, "Reminder draft " + match["status"])
+            out.append(dict(zip(("agency_key", "request_id", "clock_kind", "clock_date"), key),
+                            state=state, due=due, reason=reason, **({"queue_id": match["id"]} if match else {})))
+    return out
+
+
 def clock_table(register, settings, queue_rows, timeline=None, *, as_of):
     """All request clocks, on our records; not a legal finding. Pure, with no IO."""
     today = _day(as_of)
