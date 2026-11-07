@@ -10,7 +10,7 @@ FIELD_BASIS = ("redaction log", "field-by-field", "field-specific")
 PURPOSE = ("our objective", "we seek to determine", "not alleging misconduct",
            "the purpose of this request")
 # G 2026-11-06 07:55: no preservation demand.
-PRESERVATION = ("preserve", "preservation", "litigation hold")
+PRESERVATION = ("preserve", "preserving", "preservation", "litigation hold")
 # AGENCY-RUN-SKILL §5, send-ready rule 12: counsel clears statute citations.
 STATUTES = ("§", "Gov. Code", "Government Code", "Civ. Code", "Penal Code")
 # AGENCY-RUN-SKILL send-ready text must not expose internal identifiers.
@@ -48,7 +48,7 @@ def check(body, *, subject_agency, other_agency_names=()):
         warn("field_basis_missing", "ask for a redaction log or field-specific basis")
     for code, phrases, message, words in (
         ("purpose_paragraph", PURPOSE, "omit the purpose paragraph", False),
-        ("preservation_demand", PRESERVATION, "omit preservation demands", True),
+        ("preservation_demand", PRESERVATION, "omit preservation demands", False),
         ("statute_citation", STATUTES, "needs counsel clearance", False),
     ):
         match = _find(body, phrases, words=words)

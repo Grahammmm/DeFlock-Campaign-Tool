@@ -73,7 +73,17 @@ class DenialReplyCheckTests(unittest.TestCase):
                             other_agency_names=("Beta (PD)",))
 
     def test_token_boundaries(self):
-        self.assertEqual(self.check(LETTER + "\nD12x XM34 INBOX:4x Sent:5x preserved"), [])
+        self.assertEqual(self.check(LETTER + "\nD12x XM34 INBOX:4x Sent:5x"), [])
+
+    def test_preservation_wordings(self):
+        for text in ("Please ensure all responsive records are preserved.",
+                     "Records must be preserved pending review.",
+                     "We ask that you continue preserving these records.",
+                     "Please preserve all records.",
+                     "A preservation notice applies.",
+                     "Place a litigation hold."):
+            with self.subTest(text=text):
+                self.assert_warning(LETTER + "\n" + text, "preservation_demand")
 
     def test_length_boundary(self):
         for count in (1300, 1301, 1400):
