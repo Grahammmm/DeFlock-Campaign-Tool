@@ -101,7 +101,7 @@ class SendBase(DraftsBase):
 
     def on(self, **changes):
         """Switch sending on the way G would: enabled true and SEND-STOP removed by hand."""
-        self.configure(enabled=True, **changes)
+        self.configure(**{"enabled": True, "live": True, **changes})
         (self.project / "approvals" / ms.KILL).unlink()
 
     def imap(self):
@@ -149,6 +149,7 @@ class SwitchTests(SendBase):
     def test_ships_switched_off(self):
         config = json.loads(self.send_path.read_text())
         self.assertIs(config["enabled"], False)
+        self.assertIs(config["live"], False)
         self.assertTrue((self.project / "approvals" / ms.KILL).exists())
         self.assertEqual(oct(self.send_path.stat().st_mode & 0o777), "0o600")
         result = self.click(sign=False, signature="x", fingerprint="f")
@@ -398,6 +399,106 @@ class ConcurrencyTests(SendBase):
             proc.join(30)
         self.assertEqual(states, ["refused", "sent"])
         self.assertEqual(Path(record).read_text().count("sent"), 1)
+
+
+class TestModeTests(SendBase):
+    def test_default_mode_refuses_other_recipient_before_send_steps(self):
+        self.on(test_recipient=OWNER)
+        data = json.loads(self.send_path.read_text())
+        del data["live"]
+        self.send_path.write_text(json.dumps(data))
+        self.assertIs(ms.load_config(self.send_path)["live"], False)
+        # Unthreaded form recipient is also constrained, before typed confirmation.
+        other = self.second_draft()
+        for ident, to in ((self.draft_row["id"], ""), (other, "other@example.invalid")):
+            with self.subTest(ident=ident):
+                info = ms.prepare(self.project, self.send_path, ident, to=to or None,
+                                  imap_factory=self.imap(), now=NOW)
+                self.assertEqual(info["code"], "test_mode_recipient")
+                self.assertNotIn("payload", info)
+                with mock.patch.object(ms._Dir, "_flock", side_effect=AssertionError("lock reached")), \
+                        mock.patch.object(ms, "sent_today", side_effect=AssertionError("cap reached")):
+                    fingerprint = next(r["fingerprint"] for r in md.placements(self.project) if r["queue_id"] == ident)
+                    result = self.click(ident, sign=False, signature="x", to=to, fingerprint=fingerprint)
+                self.assertEqual(result, {"state": "refused", "code": "test_mode_recipient"})
+        self.assertEqual([(r["state"], r["code"]) for r in self.log()],
+                         [("refused", "test_mode_recipient")] * 2)
+        self.assertNotIn(OWNER, json.dumps(self.log()))
+        self.assertNotIn("other@example.invalid", json.dumps(self.log()))
+        self.assertEqual(aq.load_queue(self.project)[0]["status"], "approved")
+        self.assertEqual(self.smtp.connections, 0)
+        self.assertFalse(self.outbox_path.exists())
+
+    def test_test_recipient_case_insensitive_and_existing_confirmation_still_required(self):
+        self.on(live=False, test_recipient=OWNER.upper())
+        data = json.loads(self.send_path.read_text())
+        del data["live"]
+        self.send_path.write_text(json.dumps(data))
+        self.assertEqual(ms.load_config(self.send_path)["test_recipient"], OWNER)
+        other = self.second_draft()
+        self.assertEqual(self.click(other, to=OWNER)["code"], "confirmation_required")
+        self.assertEqual(self.smtp.connections, 0)
+        result = self.click(other, to=OWNER, confirm=OWNER)
+        self.assertEqual(result["state"], "sent")
+        self.assertEqual(self.smtp.connections, 1)
+        self.assertEqual(self.smtp.messages[0]["To"], OWNER)
+        self.assertEqual(self.click(other, to=OWNER, confirm=OWNER)["code"], "already_sent")
+        self.assertEqual(self.smtp.connections, 1)
+
+    def test_missing_test_recipient_refuses_preview_and_send(self):
+        self.on(live=False)
+        info = ms.prepare(self.project, self.send_path, self.draft_row["id"],
+                          imap_factory=self.imap(), now=NOW)
+        self.assertEqual(info["code"], "test_recipient_missing")
+        self.assertNotIn("payload", info)
+        self.assertEqual(self.click(sign=False, signature="x")["code"], "test_recipient_missing")
+        self.assertEqual([r["state"] for r in self.log()], ["refused"])
+        self.assertEqual(self.smtp.connections, 0)
+        self.assertFalse(self.outbox_path.exists())
+
+    def test_original_stops_win_in_test_mode(self):
+        self.on(live=False, test_recipient="records-desk@agency.example")
+        for stop in ms.kill_files(self.project, {"kill_file": str(self.root / "custom-stop")}):
+            with self.subTest(stop=stop):
+                path = Path(stop)
+                path.parent.mkdir(exist_ok=True)
+                self.configure(kill_file=str(self.root / "custom-stop"))
+                path.write_text("")
+                self.assertEqual(self.click(sign=False, signature="x")["code"], "kill_switch")
+                path.unlink()
+        self.configure(enabled=False)
+        self.assertEqual(self.click(sign=False, signature="x")["code"], "send_disabled")
+        self.assertEqual(self.smtp.connections, 0)
+        self.assertFalse(self.outbox_path.exists())
+
+    def test_config_rejects_bad_mode_and_recipient(self):
+        for field, values, valid in (("live", ("yes", None, 1, []), False),
+                                     ("test_recipient", ("bad", "", None, 1, [], "A <a@example.invalid>"), OWNER)):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    self.configure(**{field: value})
+                    with self.assertRaises(ms.MailSendError) as error:
+                        ms.load_config(self.send_path)
+                    self.assertEqual(error.exception.code, "config_field:" + field)
+            self.configure(**{field: valid})
+
+    def test_init_test_recipient_and_switch_state(self):
+        project = self.root / "fresh-project"
+        project.mkdir(mode=0o700)
+        args = list(self.init_args)
+        args[2] = str(project)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ms.main(args + ["--test-recipient", OWNER.upper()]), 0)
+        config = ms.load_config(ms.config_path(project))
+        self.assertIs(config["live"], False)
+        self.assertEqual(config["test_recipient"], OWNER)
+        self.on(live=False, test_recipient=OWNER)
+        for live in (False, True):
+            self.configure(live=live)
+            state = ms.switch_state(self.project, self.send_path, now=NOW)
+            self.assertEqual(state["mode"], "live" if live else "test")
+            self.assertEqual(state["test_recipient"], OWNER)
+            self.assertTrue(state["can_send"])
 
 
 if __name__ == "__main__":
