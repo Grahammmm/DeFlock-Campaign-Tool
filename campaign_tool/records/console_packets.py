@@ -55,7 +55,8 @@ def serve(handler):
 def post(handler):
     if handler.path not in ROUTES:
         return False
-    if (handler.headers.get_all('Origin') or []) != ['http://127.0.0.1:%d' % handler.server.server_port]:
+    from . import console_origin
+    if not console_origin.request_ok(handler, post=True):
         handler._fail(403)
         return True
     fields = handler._body()

@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import approval_queue, console_board, console_calendar, console_documents, console_home, console_manual_events, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
+from . import console_origin
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -778,8 +779,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                    % (esc(text), esc(text), esc(BANNER)))
 
     def _host_ok(self):
-        hosts = self.headers.get_all("Host") or []
-        return len(hosts) == 1 and hosts[0] == "127.0.0.1:%d" % self.server.server_address[1]
+        return console_origin.request_ok(self, post=False)
 
     def do_GET(self):
         if not self._host_ok():
@@ -877,7 +877,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return fields
 
     def do_POST(self):
-        if not self._host_ok():
+        if not console_origin.request_ok(self, post=True):
             return self._fail(403)
         if console_packets.post(self):
             return
@@ -886,9 +886,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         route = ROUTES.get(self.path) or (SEND_ROUTE if self.path == "/send" else console_manual_events.ROUTE if self.path == "/manual-event" else None)
         if route is None:
             return self._fail(404)
-        origins = self.headers.get_all("Origin") or []
-        if origins != ["http://127.0.0.1:%d" % self.server.server_address[1]]:
-            return self._fail(403)
         fields = self._body()
         if isinstance(fields, int):
             return self._fail(fields)
@@ -936,14 +933,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
-                 timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None):
+                 timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None):
     """Unstarted loopback-only server; the caller serves and closes it."""
     check_run_id(run_id)
     check_actor(actor)
     parse_as_of(as_of)
     if type(port) is not int or not 0 <= port <= 65535:
         raise PanelError("port_invalid")
+    try:
+        public_pair = console_origin.check_public_origin(public_origin) if public_origin is not None else None
+    except ValueError:
+        raise PanelError("public_origin_invalid") from None
     server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
+    server.public_pair = public_pair
     server.csrf_token = secrets.token_urlsafe(32)
     server.manual_event_key = secrets.token_urlsafe(32)
     server.actor = actor
@@ -967,6 +969,7 @@ def main(argv=None):
     parser.add_argument("--kit-root")
     parser.add_argument("--as-of", help="YYYY-MM-DD; fixes the deadline day and health clock (UTC midnight)")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--public-origin", metavar="URL", help="one exact HTTPS origin behind validated Access")
     parser.add_argument("--actor", help="operator label for Reject and Edit (not authenticated identity)")
     parser.add_argument("--render", metavar="OUT.html", help="write a static, non-actionable snapshot and exit")
     parser.add_argument("--timer-unit", action="append", help="systemd user timer to report (repeatable)")
@@ -991,6 +994,11 @@ def main(argv=None):
             return 0
         if not args.actor:
             raise PanelError("actor_required")
+        if args.public_origin is not None:
+            try:
+                console_origin.check_public_origin(args.public_origin)
+            except ValueError:
+                raise PanelError("public_origin_invalid") from None
         if args.mail_drafts_config:
             try:
                 mail_drafts.load_config(args.mail_drafts_config)
@@ -1001,16 +1009,16 @@ def main(argv=None):
         server = build_server(args.project, args.run_id, actor=args.actor, port=args.port,
                               run_report_path=args.run_report, kit_root=args.kit_root, as_of=args.as_of,
                               timers=timers, system=not args.no_system, mail_drafts_config=args.mail_drafts_config,
-                              send_config=args.send_config)
+                              send_config=args.send_config, public_origin=args.public_origin)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required")) else 1
     except OSError:
         print("panel_start_failed", file=sys.stderr)
         return 1
-    print("Records dashboard on http://127.0.0.1:%d/ (loopback only). %s" % (
-        server.server_address[1], "Approve and send is configured (off until enabled)." if args.send_config
-        else "Nothing is sent."), flush=True)
+    print(f"Records dashboard on http://127.0.0.1:{server.server_address[1]}/ (loopback only). " + (
+        "Approve and send is configured (off until enabled)." if args.send_config else "Nothing is sent.")
+        + (" Public origin: " + args.public_origin if args.public_origin else ""), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

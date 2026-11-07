@@ -406,8 +406,8 @@ def post(handler):
     """Called by admin_panel's POST handler. Returns True when the path is one of ours (answered either way)."""
     if handler.path not in ROUTES:
         return False
-    origins = handler.headers.get_all("Origin") or []
-    if origins != ["http://127.0.0.1:%d" % handler.server.server_address[1]]:
+    from . import console_origin
+    if not console_origin.request_ok(handler, post=True):
         handler._fail(403)
         return True
     fields = handler._body()
