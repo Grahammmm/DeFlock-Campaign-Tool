@@ -47,7 +47,7 @@ def entries(states, response_items_doc, queue_rows):
         denied = [e for e in events if e["type"] == "denial"]
         selected = [(n, a) for n, a in zip(numbers, asks)
                     if n in needs or a.get("rating") in ("withheld", "exemption_cited")]
-        if not asks and denied:
+        if not selected and denied:
             selected = [(None, {})]
         for number, ask in selected:
             evidence = sorted(ask.get("evidence", []), key=response_items.canon)

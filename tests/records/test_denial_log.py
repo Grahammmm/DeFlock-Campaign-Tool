@@ -57,6 +57,20 @@ class EntryTests(unittest.TestCase):
         states["requests"][0]["evidence"]["events"] = []
         self.assertEqual(dl.entries(states, doc, []), [])
 
+    def test_whole_denial_with_unmatched_asks(self):
+        for ratings in (("missing", "missing"), ("missing", "unclear")):
+            with self.subTest(ratings=ratings):
+                states, doc = fixtures()
+                states["requests"][0]["item_needs"]["withheld"] = []
+                doc["requests"][0]["asks"] = [
+                    {"ask_id": f"ask-{n}", "rating": rating, "evidence": []}
+                    for n, rating in enumerate(ratings, 1)]
+                rows = dl.entries(states, doc, [])
+                self.assertEqual(len(rows), 1)
+                self.assertEqual((rows[0]["kind"], rows[0]["item_no"]), ("denied_whole", None))
+                states["requests"][0]["evidence"]["events"] = []
+                self.assertEqual(dl.entries(states, doc, []), [])
+
     def test_reply_states_no_kind_only_coverage_or_ambiguous_sources(self):
         states, doc = fixtures()
         for status, expected in (("pending", "drafted"), ("approved", "approved"), ("rejected", "rejected"), ("sent", "sent"), ("cancelled", "not_drafted"), ("expired", "not_drafted")):
