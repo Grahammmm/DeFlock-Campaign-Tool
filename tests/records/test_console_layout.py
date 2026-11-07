@@ -93,7 +93,7 @@ class LayoutTests(Base):
                                   '/documents': '/documents', '/agency?agency=alpha-pd': '/board'}
                         self.assertEqual(parsed.current, [active[path]] if path in active else [])
                         if path == '/':
-                            self.assertTrue({'decide', 'timeline'} <= set(parsed.ids))
+                            self.assertTrue({'decide', 'more'} <= set(parsed.ids))
                         if path == '/calendar':
                             self.assertIn('/calendar.ics', parsed.links)
                 self.assertEqual(snapshot(), before)
