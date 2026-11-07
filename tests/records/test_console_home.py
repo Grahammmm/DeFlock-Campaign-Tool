@@ -84,8 +84,7 @@ class Home(unittest.TestCase):
         self.assertIn('<summary>More detail</summary>', page)
         self.assertTrue(page.index('</table></section>') < page.index('id="week"') < start)
         self.assertTrue(page.index('id="week"') < page.index('id="waiting"') < start)
-        for ident in ('timeline', 'next'):
-            self.assertNotIn('id="' + ident + '"', page)
+        self.assertTrue(page.index('id="waiting"') < page.index('id="timeline"') < page.index('id="next"') < start)
         table = page.split('<tbody>', 1)[1].split('</tbody>', 1)[0]
         for row in rows:
             label = "Review" if row["source"] == "queue" else "Open"
@@ -371,6 +370,85 @@ class Waiting(unittest.TestCase):
             self.assertIn(text, section)
         self.assertNotIn('<Agency>', section)
         self.assertNotIn('2026-09-01', section)
+
+
+    def test_timeline_latest_three_grouping_labels_and_escaping(self):
+        events = [{'type': 'production', 'date': '2026-10-%02d' % n} for n in range(1, 6)]
+        events += [{'type': 'denial', 'date': '2026-11-04', 'superseded': True}]
+        events += [{'type': 'draft', 'date': '2026-11-03', 'draft_status': s} for s in ('cancelled', 'expired')]
+        alpha = self.request('a', events=events)
+        beta = self.request('b', agency_key='beta-pd', agency='<Beta>',
+                            events=[{'type': 'acknowledged', 'date': '2026-11-01'}])
+        empty = self.request('c', agency_key='empty/pd', agency='Empty', events=[], due=None)
+        model, page = self.page([alpha, beta, empty, alpha])
+        rows = home.timeline_rows(model, NOW.date())
+        self.assertEqual([r['key'] for r in rows], ['beta-pd', 'alpha-pd', 'empty/pd'])
+        self.assertEqual([e['date'] for e in rows[1]['events']], ['2026-10-05', '2026-10-04', '2026-10-03'])
+        section = page.split('<section id="timeline">')[1].split('</section>')[0]
+        for text in ('&lt;Beta&gt;', '2026-11-01 (DATED) acknowledged', 'No events recorded.',
+                     'Next: unknown (UNKNOWN)', '2026-11-09 Statutory due (UNVERIFIED;',
+                     'Gov. Code § 7922.535', '/agency?agency=empty%2Fpd'):
+            self.assertIn(text, section)
+        self.assertEqual(section.count('Full timeline</a>'), 3)
+        for text in ('denial', 'draft', '2026-10-02', '<Beta>'):
+            self.assertNotIn(text, section)
+        model['deadlines'] = {('alpha-pd', 'a'): {'statutory_due': {
+            'date': '2026-11-09', 'label': 'COMPUTED', 'package': 'us-ca sha256:' + 'a' * 64}}}
+        self.assertIn('Statutory due (COMPUTED;', home.render_progress(model, NOW.date()))
+        alpha['events'] += [{'type': 'promised date', 'date': '2026-10-05', 'new_dates': ['2026-11-07']}]
+        model, _ = self.page([alpha])
+        self.assertIn('Next: 2026-11-07 promised date (DATED)', home.render_progress(model, NOW.date()))
+        alpha['closed'] = True
+        model, _ = self.page([alpha])
+        self.assertIn('Next: unknown (UNKNOWN)', home.render_progress(model, NOW.date()))
+
+    def test_timeline_and_action_caps(self):
+        requests = [self.request('r-%02d' % n, agency_key='agency-%02d' % n,
+                    agency='Agency %02d' % n, next_action={'owner': 'coordinator', 'action': 'Review reply'})
+                    for n in range(35)]
+        model, page = self.page(requests)
+        self.assertEqual(page.split('<section id="timeline">')[1].split('</section>')[0].count('Full timeline</a>'), 30)
+        self.assertEqual(page.split('<section id="next">')[1].split('</section>')[0].count('<p>'), 10)
+        model['queue']['rows'] = [{'id': 'synthetic', 'revision': 1, 'kind': 'next-site-update', 'status': 'pending'}]
+        section = home.render_progress(model, NOW.date()).split('<section id="next">')[1]
+        self.assertEqual(section.count('<p>'), 10)
+        self.assertEqual(section.count('Review reply'), 9)
+        self.assertIn('1 suggested drafts waiting', section)
+
+    def test_next_owners_drafts_dedup_status_and_empty(self):
+        rows = [self.request('ours', next_action={'owner': 'G', 'action': '<Review reply>'}),
+                self.request('theirs', agency_key='beta-pd', agency='Beta', next_action={'owner': 'agency', 'action': 'Respond'}),
+                self.request('coordinator', agency_key='gamma-pd', agency='Gamma',
+                             next_action={'owner': 'coordinator', 'action': 'Review records'})]
+        model, _ = self.page(rows)
+        template = {'id': 'synthetic', 'revision': 2, 'kind': 'next-followup-probe', 'status': 'pending'}
+        model['queue']['rows'] = [template, template] + [template | {'id': s, 'status': s}
+            for s in ('cancelled', 'expired', 'rejected', 'superseded', 'approved')]
+        section = home.render_progress(model, NOW.date()).split('<section id="next">')[1]
+        for text in ('ALPHA-PD: &lt;Review reply&gt;', 'Gamma: Review records', '/next-steps', '1 suggested drafts waiting'):
+            self.assertIn(text, section)
+        for text in ('Respond', '<Review reply>', 'No next steps recorded.'):
+            self.assertNotIn(text, section)
+        model, page = self.page([])
+        self.assertIn('No next steps recorded.', page)
+        self.assertIn('No agency events recorded.', page)
+
+    def test_progress_unavailable_stale_and_independent_sources(self):
+        for patch, code in (({'run_id': 'stale'}, 'run_mismatch'), ({'requests': None}, 'shape_invalid')):
+            put(self.path, self.doc | patch)
+            page = home.render_home(home.load(self.project, RUN, now=NOW), '')
+            section = page.split('<section id="timeline">')[1].split('</section>')[0]
+            self.assertEqual(section.count('<p'), 1)
+            self.assertIn('Timeline: unavailable (%s).' % code, section)
+            self.assertIn('Needs your decision', page)
+            self.assertIn('Next actions: unavailable (timeline).', page)
+            self.assertNotIn('No next steps recorded.', page)
+        model, _ = self.page([self.request('r')])
+        model['queue'] = {'state': 'unavailable', 'code': '<bad>'}
+        page = home.render_progress(model, NOW.date())
+        self.assertIn('Full timeline</a>', page)
+        self.assertIn('Suggested drafts: unavailable (&lt;bad&gt;).', page)
+        self.assertNotIn('No next steps recorded.', page)
 
 
 class Routes(panel.ServerCase):
