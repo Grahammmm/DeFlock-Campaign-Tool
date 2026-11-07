@@ -58,9 +58,14 @@ def _aliases(path):
     """Optional operator-staged identifiers; reject the whole file on any invalid row."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise ValueError("not_regular")
+            stream = os.fdopen(fd, "rb")
+        except BaseException:
+            os.close(fd)
+            raise
+        with stream:
             data = stream.read(512 * 1024 + 1)
         if len(data) > 512 * 1024:
             raise ValueError("too_large")

@@ -117,3 +117,12 @@ class Aliases(unittest.TestCase):
             response = conn.getresponse()
             self.assertEqual(response.status, 200)
             self.assertIn("i-a", response.read().decode())
+
+
+class AliasDescriptorLeak(unittest.TestCase):
+    def test_directory_alias_path_closes_its_descriptor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            before = len(os.listdir("/proc/self/fd"))
+            for _ in range(50):
+                self.assertEqual(cd._aliases(tmp), {"state": "unavailable", "code": "aliases_invalid"})
+            self.assertLessEqual(len(os.listdir("/proc/self/fd")), before + 1)
