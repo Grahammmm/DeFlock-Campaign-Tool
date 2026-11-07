@@ -44,9 +44,11 @@ DATASETS = {
     "data/meetings.json": ("meetings-json", "Meetings (JSON)", "Staged public meetings with recorded outcomes and votes.", JSON, "meetings"),
     "data/meetings.csv": ("meetings-csv", "Meetings (CSV)", "The meetings as one flat row per meeting; every cell is text.", CSV, "meetings"),
     "data/cameras.geojson": ("cameras-geojson", "Mapped camera points (GeoJSON)", "Community-mapped camera points from OpenStreetMap, as reviewed for the map.", GEO, None),
+    "data/cameras.csv": ("cameras-csv", "Mapped camera points (CSV)", "Community-mapped camera points; ownership unconfirmed.", CSV, None),  # DF0237-12
     "data/county.geojson": ("county-geojson", "County boundary (GeoJSON)", "County boundary used by the map.", GEO, None),
 }
 CITY_META = (CITY_NAME, "City boundaries (GeoJSON)", "City boundaries used to count mapped points.", GEO, None)
+CAMERA_CSV_ATTRIBUTION = ODBL["attribution"] + ". ODbL 1.0; attribution and share-alike apply."  # DF0237-12
 KNOWN_LICENSES = {ODBL["id"]: ODBL["url"], **{key: value[1] for key, value in LICENSES.items()}}
 PACKAGE_KEYS = {"profile", "name", "title", "resources"}
 RESOURCE_KEYS = {"profile", "name", "title", "description", "path", "mediatype", "bytes", "hash", "schema", "licenses"}
@@ -69,8 +71,8 @@ def csv_columns(data):
 def _expected_schema(path, media, kind, data):
     """``(descriptor schema, link target for the HTML page)``."""
     if media == CSV:
-        return ({"fields": [{"name": name, "type": "string"} for name in csv_columns(data)]},
-                f"{SCHEMA_BASE}{kind}-open-data.schema.json")
+        link = f"{SCHEMA_BASE}{kind}-open-data.schema.json" if kind else GEOJSON_SCHEMA  # DF0237-12: cameras.csv is a copy of the GeoJSON
+        return {"fields": [{"name": name, "type": "string"} for name in csv_columns(data)]}, link
     link = GEOJSON_SCHEMA if media == GEO else f"{SCHEMA_BASE}{kind}-open-data.schema.json"
     return link, link
 
@@ -87,6 +89,8 @@ def _stated_license(data):
 
 def _licenses(path, media, data, campaign):
     """``(licenses, attribution or None)`` for one file; a licence never crosses from one resource to another."""
+    if path == "data/cameras.csv":  # DF0237-12: the same OpenStreetMap licence, with the share-alike note beside the credit
+        return [{"name": ODBL["id"], "path": ODBL["url"]}], CAMERA_CSV_ATTRIBUTION
     if path == "data/cameras.geojson":  # OpenStreetMap-derived: ODbL always, whatever the campaign chose
         return [{"name": ODBL["id"], "path": ODBL["url"]}], ODBL["attribution"]
     if media != GEO:  # the campaign's own data
@@ -258,8 +262,8 @@ def _check_resource(public, resource, seen, problems, city_names):
         expected = None
     if expected is not None and resource.get("schema") != expected:
         problems.append((full, "schema does not match the file"))
-    if full == "data/cameras.geojson" and resource.get("licenses") != [{"name": ODBL["id"], "path": ODBL["url"]}]:
-        problems.append((full, "cameras.geojson must carry ODbL-1.0"))
+    if full in ("data/cameras.geojson", "data/cameras.csv") and resource.get("licenses") != [{"name": ODBL["id"], "path": ODBL["url"]}]:
+        problems.append((full, f"{full[5:]} must carry ODbL-1.0"))
     for item in resource.get("licenses") if isinstance(resource.get("licenses"), list) else [None]:
         if not (isinstance(item, dict) and set(item) == {"name", "path"}
                 and isinstance(item["name"], str) and isinstance(item["path"], str)

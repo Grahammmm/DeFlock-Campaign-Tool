@@ -44,12 +44,13 @@ BASELINE = {
     "app.js": "ab63767de14fee8703a11531e24ebcfc4a8b845f986208772f242ef8d447db9e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "cameras.html": "24ae04e1ace94fb13ba5c52e7b64c229056bdb527217e39ccf576d43f97709da",  # pragma: allowlist secret -- public rendered-file SHA-256
     "corrections.html": "39f3317e4e535872c46c53db952438d28fb06e851cee3ab407152fe52074dd88",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "data.html": "62c9df031cabbec36907a43145509b68a12b26bc47b4de6197e91c0ffe7a2d75",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "data.html": "c16646a7f05f745f3b3c3947bb7b818fbd90182830b7ff2fa867d7bd5e5673fc",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/agencies.csv": "de226f37600fdaac36bacba18473551b0a724fa89dcd3c8a743a7442cf1bb477",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/agencies.json": "9c3dd727cbd33c726007e50c84daab6bd9d38cffa53e4941aefdff67a707f7bb",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "data/cameras.csv": "9dfa6a99d61315b273fc69db224db1c2200d251c83a68ad4101add791c6e22b1",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/cameras.geojson": "5f3c2ce066666761f6c940d1c2e1c33ccd8cc5275df5431084c1bfb7a4cdc146",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/city-boundaries.geojson": "68593cd8443c2ec42b01e4153cf28386727a9486503eccb5dc42ea1961511f19",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "data/datapackage.json": "91f21da6ded098ed0753f3ff1b06278ea4c218bb16751fec4b24321a06fd5c33",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "data/datapackage.json": "4b1f220df4d72f7ec37ca531f171001a3244fba0204ea823e977e7fcd18e15c6",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/findings.csv": "c0b05563d22729245783a2fc5953ddc60ed6defa42bc45556f4721f8d6d5880d",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/findings.json": "09d948c3ea4c0e3501f9f5b686f576c42c3f8c720dfb5ab8fcf61440396cc2b7",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/meetings.csv": "561e8d71686d8f37308263f983360308d381f2d39484997a99525a3cff5f49ae",  # pragma: allowlist secret -- public rendered-file SHA-256

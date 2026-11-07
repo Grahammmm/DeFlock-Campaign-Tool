@@ -23,7 +23,7 @@ PAGES = ["index.html", "agencies.html", "findings/index.html", "findings/packet-
          "sources.html", "meetings.html", "about.html", "corrections.html", "timeline.html", "requests.html", "meetings/cedar-council-2026-10.html",
          "agencies/cedar.html", "sources/cafecafecafe.html", "sources/beefbeefbeef.html"]  # DF2237-08: Cedar Police has a finding and sources; DF1103-11: a record page per library entry
 FILES = PAGES + ["404.html", "cameras.html", "methods.html", "privacy.html", "search.html", "search.js", "style.css", "_headers", "robots.txt", "sitemap.xml", "feed.xml", "meetings.ics",
-                 "site-data.js", "agency-cards.js", "app.js", "data/cameras.geojson",
+                 "site-data.js", "agency-cards.js", "app.js", "data/cameras.geojson", "data/cameras.csv",
                  "data/city-boundaries.geojson", "findings/agency/cedar.xml", "data/findings.json", "data/findings.csv",
                  "data/sources.json", "data/sources.csv", "data.html", "data/datapackage.json",  # DF2207-12
                  "data/meetings.json", "data/agencies.json", "data/meetings.csv", "data/agencies.csv", "findings/cite.js", "meetings.xml", "corrections.xml", "sources/filter.js"]
