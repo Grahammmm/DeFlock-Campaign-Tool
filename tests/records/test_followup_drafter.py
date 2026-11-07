@@ -189,7 +189,9 @@ class GateTests(unittest.TestCase):
         for bad, code in ((make(response_type="applause"), "response_type_unknown"),
                           (make(asks=[]), "case_invalid"),
                           ({"schema": "nope"}, "case_invalid"),
-                          (make(prior_asks=[{"text": "x", "status": "maybe"}]), "case_invalid")):
+                          (make(prior_asks=[{"text": "x", "status": "maybe"}]), "case_invalid"),
+                          *((make(received_asks=ra), "case_invalid")
+                            for ra in ("abc", 5, [None], [{"text": "x"}], [{"number": 1}], [{"text": "", "number": 1}]))):
             with self.subTest(code=code), self.assertRaises(pb.PlaybookError) as raised:
                 fd.draft(self.book, bad)
             self.assertEqual(raised.exception.code, code)

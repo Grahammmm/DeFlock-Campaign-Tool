@@ -110,6 +110,10 @@ def _validate(case):
     _need(isinstance(prior, list) and all(isinstance(p, dict) and isinstance(p.get("text") or p.get("ask_id"), str)
                                           and p.get("status") in _DONE_PRIOR | _PENDING_PRIOR for p in prior),
           "case_invalid", "prior_asks")
+    recv = case.get("received_asks", [])
+    _need(isinstance(recv, list) and all(isinstance(a, dict) and isinstance(a.get("text"), str) and a["text"].strip()
+          and isinstance(a.get("number"), (int, str)) and not isinstance(a.get("number"), bool) for a in recv),
+          "case_invalid", "received_asks")
     slots = case.get("slots", {})
     _need(isinstance(slots, dict) and all(isinstance(v, str) for v in slots.values()), "case_invalid", "slots")
 
