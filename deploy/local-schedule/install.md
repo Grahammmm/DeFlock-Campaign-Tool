@@ -4,19 +4,33 @@ Six systemd **user** `.service`/`.timer` pairs for the gate-safe campaign jobs. 
 this repository installs, enables or starts them: the install is one attended operator step
 on AgentOrange (CLAUDE.md: automation runs natively there, never in a cloud scheduler).
 
-| Slot | Time (America/Los_Angeles) | Command (all read-only or draft-only) |
+| Slot | Days and time (America/Los_Angeles) | Command (all read-only or draft-only) |
 | --- | --- | --- |
-| `deflock-backup` | 03:00 | `campaign_tool backup --into %h/deflock-backups` (local tar, no upload) |
-| `deflock-reconcile` | 06:00 | `campaign_tool status --check` (exit 3 fails the unit: the alert) |
-| `deflock-stale-check` | 08:00 | `tools/stage_stale_check.py check --reports REPORTS` (records run reports, read-only) |
-| `deflock-deadlines` | 09:00 | `tools/flock_deadlines.py run --date <today, America/Los_Angeles>` (drafts only) |
-| `deflock-run-report-review` | 14:00 | `tools/run_report_review.py summary --dir REPORTS` (records run reports, read-only) |
-| `deflock-site-build` | 21:30 | `campaign_tool build` (build only; publishing stays a human gate) |
+| `deflock-backup` | daily 03:00 | `campaign_tool backup --into %h/deflock-backups` (local tar, no upload) |
+| `deflock-stale-check` | Mon..Fri 08:00 | `tools/stage_stale_check.py check --reports REPORTS` (records run reports, read-only) |
+| `deflock-deadlines` | Mon..Fri 09:00 | `tools/flock_deadlines.py run --date <today, America/Los_Angeles>` (drafts only) |
+| `deflock-reconcile` | Mon..Fri 10:00 | `campaign_tool status --check` (exit 3 fails the unit: the alert) |
+| `deflock-run-report-review` | Mon..Fri 16:00 | `tools/run_report_review.py summary --dir REPORTS` (records run reports, read-only) |
+| `deflock-site-build` | Mon..Fri 17:00 | `campaign_tool build` (build only; publishing stays a human gate) |
+
+The records engine runs Mon..Fri at 07:00 and 15:00 (records requests do not
+arrive on weekends), so every job except the backup is weekday-only and follows a
+records run: stale-check, deadlines and reconcile after the 07:00 run, run-report
+review and site build after the 15:00 run. The backup stays daily. Deadline drafts
+are weekday-only but the deadline arithmetic is unchanged and still counts calendar
+days: the rule is checked as of the run date, so Monday's run drafts anything that
+fell due over the weekend. The stale-check's 36 hour silence rule is frozen and is
+why it must not run on weekends (Friday afternoon to Sunday morning is 40 hours).
 
 Each slot is at least 50 minutes from every other slot and from the records engine's
-07:00 / 13:00 / 20:30 slots, fires up to 5 minutes late (`RandomizedDelaySec`), catches up
-after downtime (`Persistent=true`) and holds its own `flock` lock (`%t/deflock-SLOT.lock`;
+07:00 / 15:00 slots, fires up to 5 minutes late (`RandomizedDelaySec`), catches up
+after downtime (`Persistent=true`, so a weekday missed while the machine was off runs
+once on the next start) and holds its own `flock` lock (`%t/deflock-SLOT.lock`;
 a held lock skips that slot with exit 73). No slot sends, publishes or spends.
+
+An install made before this change keeps its old timers until the operator re-runs the
+install below (re-render the copies, `systemctl --user daemon-reload`, then
+`systemctl --user restart deflock-SLOT.timer`).
 
 ## Check first (read-only)
 

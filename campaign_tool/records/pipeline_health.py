@@ -1,6 +1,7 @@
 """Silent-stop watch for the records pipeline: one content-free "Run health" line.
 
-``records health`` knows the three daily slots. This module adds what it cannot
+``records health`` knows the configured run calendar (weekdays twice a day by
+default). This module adds what it cannot
 see: mail that arrived but no run consumed, a mail poll that stopped, repeated
 failed runs, a failed notify and a run report that went stale. ``assess`` only
 reads existing state files. ``write_alerts`` is the only write: one small alert
@@ -152,7 +153,7 @@ def _recent_reports(target_dir, limits):
     return valid, bad
 
 
-def _last_run(target_dir, now, limits):
+def _last_run(target_dir, now, limits, spec):
     try:
         latest = _read_json(target_dir / "run-report.json")
     except (ValueError, OSError):
@@ -162,7 +163,11 @@ def _last_run(target_dir, now, limits):
     if not _valid_report(latest):
         return _check("last_run", "stop", "run_report_invalid"), None
     finished = _finished(latest)
-    if now - finished > timedelta(hours=limits["run_max_hours"]):
+    # A run is only overdue once the hours limit has passed AND two calendar slots have come and gone
+    # since it finished. Without the second test a weekend (no slots) would read as "no recent run".
+    previous = schedule.due_slots(now, 2, spec)
+    skipped_two = len(previous) == 2 and finished < previous[1].astimezone(timezone.utc)
+    if now - finished > timedelta(hours=limits["run_max_hours"]) and skipped_two:
         return _check("last_run", "stop", "no_recent_run", finished), latest
     return _check("last_run", "ok", "run_recent", finished), latest
 
@@ -205,9 +210,9 @@ def _notify(target_dir, limits):
     return _check("notify", "ok", "notify_ok")
 
 
-def _schedule(records_root, now):
+def _schedule(records_root, now, spec):
     try:
-        result = schedule.health(records_root, now=now)
+        result = schedule.health(records_root, now=now, spec=spec)
         state = SCHEDULE_STATE[result["status"]]
     except Exception:  # fail closed: an unreadable ledger is never ok
         return _check("schedule", "unknown", "schedule_unreadable")
@@ -216,17 +221,19 @@ def _schedule(records_root, now):
 
 # ----- assessment and line ----------------------------------------------------------------------
 
-def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limits=LIMITS):
+def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limits=LIMITS,
+           spec=None):
     """Read-only health report; unknown is never reported as ok."""
+    spec = spec or schedule.configured()
     now = (now or datetime.now(timezone.utc))
     if now.tzinfo is None:
         raise HealthError("now_naive")
     now = now.astimezone(timezone.utc)
     target_dir = _target_dir(runtime_dir, target)
     backlog, waiting, age = _arrival_backlog(runtime_dir, now, limits)
-    last_run, latest = _last_run(target_dir, now, limits)
+    last_run, latest = _last_run(target_dir, now, limits, spec)
     checks = [backlog, _mail_poll(mail_store, now, limits), last_run, _run_failures(target_dir, latest, limits),
-              _notify(target_dir, limits), _schedule(records_root, now)]
+              _notify(target_dir, limits), _schedule(records_root, now, spec)]
     states = {item["state"] for item in checks}
     overall = next(state for state in ("stop", "warn", "unknown", "ok") if state in states)
     report = {"schema": SCHEMA, "now": now.isoformat(), "state": overall, "exit_code": EXIT[overall],
@@ -353,11 +360,13 @@ def main(argv=None):
     parser.add_argument("--now", help="ISO-8601 clock override for tests and reviews")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--record-alerts", action="store_true")
+    schedule._add_calendar_flags(parser)
     args = parser.parse_args(argv)
+    spec = schedule._spec_from(parser, args)
     try:
         now = datetime.fromisoformat(args.now.replace("Z", "+00:00")) if args.now else None
         report = assess(runtime_dir=args.runtime_dir, target=args.target, records_root=args.root,
-                        mail_store=args.mail_store, now=now)
+                        mail_store=args.mail_store, now=now, spec=spec)
         if args.record_alerts:
             report["alerts_written"] = write_alerts(report, _target_dir(args.runtime_dir, args.target) / "alerts")
     except (HealthError, ValueError) as error:

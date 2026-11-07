@@ -3,7 +3,7 @@
 
 For each shipped .service/.timer pair: the command's resolved path and whether it
 exists, whether it is on the gate-safe allowlist, its OnCalendar time and any
-collision with another slot or a records slot (07:00/13:00/20:30), and whether its
+collision with another slot or a records slot (07:00/15:00 on weekdays), and whether its
 overlap lock is per-slot. It only reads unit files and checks that paths exist:
 it installs, enables and starts nothing and writes nothing.
 Exit 0 all available and safe; 1 missing (a command, or the records reports directory a
@@ -18,10 +18,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SHIPPED = ROOT / 'deploy' / 'local-schedule'
-RECORDS_SLOTS = ('07:00', '13:00', '20:30')
+RECORDS_SLOTS = ('07:00', '15:00')  # default records calendar: Mon..Fri; collisions are checked on any day, conservatively
 WINDOW = 50  # minutes; a records run stops by 47 min, a slot fires up to 5 min late
 PLACEHOLDER = re.compile(r'@[A-Za-z_]+@')
-CALENDAR = re.compile(r'\*-\*-\* (\d\d):(\d\d):00 America/Los_Angeles')
+_DAY = r'(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)'
+# One optional weekday prefix (`Mon..Fri`, `Mon,Wed`), then the daily time in the Pacific zone.
+CALENDAR = re.compile(rf'(?:{_DAY}(?:\.\.{_DAY})?(?:,{_DAY}(?:\.\.{_DAY})?)* )?\*-\*-\* (\d\d):(\d\d):00 America/Los_Angeles')
 NOW_ARG = '"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)"'
 # The America/Los_Angeles calendar day at run time (OnCalendar is that zone; a Persistent catch-up
 # can run after UTC midnight). The only other recognised substitution.
@@ -160,7 +162,7 @@ def check(units_dir, store, rendered, reports=''):
         calendar = tmr.get('OnCalendar', [])
         match = CALENDAR.fullmatch(calendar[0]) if len(calendar) == 1 else None
         if not match:
-            fails.append(f'{stem}.timer: needs one OnCalendar=*-*-* HH:MM:00 America/Los_Angeles')
+            fails.append(f'{stem}.timer: needs one OnCalendar=[Mon..Fri ]*-*-* HH:MM:00 America/Los_Angeles')
         execs = svc.get('ExecStart', [])
         parsed = split_command(execs[0]) if len(execs) == 1 else 'needs exactly one ExecStart'
         if isinstance(parsed, str):

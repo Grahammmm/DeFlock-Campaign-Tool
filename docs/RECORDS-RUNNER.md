@@ -83,10 +83,10 @@ will be visibly blocked rather than falsely reported cataloged.
 
 ## Scheduler, activation and rollback
 
-`records schedule render --root R --engine-root E [--python P] [--mail-config M] [--environment-file F] [--ocr]`
+`records schedule render --root R --engine-root E [--python P] [--mail-config M] [--environment-file F] [--ocr] [--days D] [--times T] [--timezone Z]`
 writes fully resolved user-systemd units and two scripts into `R/ops/`:
 
-- `records-run.timer`: `OnCalendar` 07:00, 13:00 and 20:30 `America/Los_Angeles`, `Persistent=true`
+- `records-run.timer`: `OnCalendar` `Mon..Fri` 07:00 and 15:00 `America/Los_Angeles` by default (`--days`, `--times`, `--timezone` choose another calendar), `Persistent=true`
   (a run missed while the host was down is made up at boot), validated with `systemd-analyze calendar`.
 - `records-run.service`: `Type=oneshot`, `UMask=0077`, `NoNewPrivileges`, `PrivateTmp`; `ExecStart` runs
   `records run` and `ExecStartPost` runs `records health --record`.
@@ -100,7 +100,7 @@ Both scripts are tested against a fake `systemctl` (`tests/records/test_schedule
 not activation: running `activate.sh` without `--dry-run` on the host is the owner's one-time step and
 requires explicit approval. Nothing in the engine enables a timer by itself.
 
-`records health --root R [--now ISO] [--record] [--json]` derives health from the approved schedule and the
+`records health --root R [--now ISO] [--record] [--json] [--days D] [--times T] [--timezone Z]` derives health from the configured calendar (default Mon..Fri 07:00 and 15:00; a weekend has no slot, so it is never late or missed) and the
 ledger's `runs` rows, not from file timestamps or an hours-since threshold: per due slot `ok`, `late` (inside
 the 45-minute grace), `missed`, `failed`, `stalled` (started, never finalised) or `before_first_run`; overall
 `ok`, `late`, `degraded` (latest fine, an earlier slot in the lookback missed), `missed`, `failed`, `stalled`
@@ -303,7 +303,7 @@ whole-environment pinning and a real host attestor remain integration requiremen
 
 Templates only, never installable without replacing/reviewing every placeholder:
 `runner/templates/records.service.in` and `records.timer.in`. The intended single
-job runs at 07:00, 13:00 and 20:30 America/Los_Angeles. It must absorb the legacy
+job runs Mon..Fri at 07:00 and 15:00 America/Los_Angeles by default. It must absorb the legacy
 exporter, not run beside a second mailbox timer. Its trusted launcher and private
 profile must pin the exporter command and the installed ledger/catalog adapters.
 

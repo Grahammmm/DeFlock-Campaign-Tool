@@ -146,10 +146,10 @@ Tests create no containers and cannot substitute for real host/systemd acceptanc
 
 ## Campaign-side local schedule
 
-The records runtime above has its own three slots (07:00, 13:00, 20:30
+The records runtime above has its own slots (default Mon..Fri 07:00 and 15:00
 America/Los_Angeles). The campaign side (reconcile, stale-stage check, run report
 review, deadline drafts, site build, backup) ships separately as six systemd **user**
-`.service`/`.timer` templates in `deploy/local-schedule/`, each at least 50 minutes from
+`.service`/`.timer` templates in `deploy/local-schedule/`, each (weekday-only except the backup) at least 50 minutes from
 every records slot and from each other, each with its own `flock` lock. Every slot is
 read-only or draft-only: none sends, publishes or spends, and `tools/flock_publish.py`
 is never a slot.

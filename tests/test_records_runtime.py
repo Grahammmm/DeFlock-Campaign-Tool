@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 import urllib.parse
 from pathlib import Path
@@ -861,15 +862,17 @@ class RendererTests(unittest.TestCase):
         return self.render.render(values or self.values, targets or self.targets,
                                   out or self.tmp / "out")
 
-    def test_suggested_values_render_three_pacific_slots(self):
+    def test_suggested_values_render_weekday_twice_daily_pacific_slots(self):
         written = self.do_render()
         self.assertEqual(sorted(written), ["records-arrival.path", "records-arrival.service",
                                            "records-run.service", "records-run.timer",
                                            "run-records.sh", "targets/TEST.json"])
         out = self.tmp / "out"
         timer = (out / "records-run.timer").read_text()
-        for slot in ("07:00:00", "13:00:00", "20:30:00"):
-            self.assertIn(f"OnCalendar=*-*-* {slot} America/Los_Angeles", timer)
+        self.assertEqual([line for line in timer.splitlines() if line.startswith("OnCalendar=")],
+                         ["OnCalendar=Mon..Fri *-*-* 07:00:00 America/Los_Angeles",
+                          "OnCalendar=Mon..Fri *-*-* 15:00:00 America/Los_Angeles"])
+        self.assertIn("\nPersistent=true\n", timer)
         service = (out / "records-run.service").read_text()
         self.assertIn("ExecStart=/bin/sh /srv/runtime/run-records.sh --target TEST --scheduled",
                       service)
@@ -1155,7 +1158,57 @@ class RendererTests(unittest.TestCase):
 
     def test_timer_check_rejects_other_slots(self):
         with self.assertRaises(ValueError):
-            self.render.check_timer("OnCalendar=*-*-* 00:00:00 America/Los_Angeles\n")
+            self.render.check_timer("OnCalendar=*-*-* 00:00:00 America/Los_Angeles\nPersistent=true\n")
+        with self.assertRaises(ValueError):  # the old three-a-day, every-day calendar is no longer the default
+            self.render.check_timer("OnCalendar=*-*-* 07:00:00 America/Los_Angeles\n"
+                                    "OnCalendar=*-*-* 13:00:00 America/Los_Angeles\n"
+                                    "OnCalendar=*-*-* 20:30:00 America/Los_Angeles\nPersistent=true\n")
+
+    def timer_text(self, **overrides):
+        self.do_render(values={**self.values, **overrides})
+        return (self.tmp / "out" / "records-run.timer").read_text()
+
+    def test_custom_timer_calendar_and_timezone_per_deployment(self):
+        timer = self.timer_text(TIMER_DAYS="Mon,Wed,Fri", TIMER_TIMES="09:30,16:00", TIMER_TIMEZONE="America/New_York")
+        self.assertEqual([line for line in timer.splitlines() if line.startswith("OnCalendar=")],
+                         ["OnCalendar=Mon,Wed,Fri *-*-* 09:30:00 America/New_York",
+                          "OnCalendar=Mon,Wed,Fri *-*-* 16:00:00 America/New_York"])
+        self.assertIn("\nPersistent=true\n", timer)
+        self.assertNotIn("Los_Angeles", timer)
+
+    def test_daily_calendar_has_no_weekday_prefix(self):
+        timer = self.timer_text(TIMER_DAYS="daily", TIMER_TIMES="06:00,13:00,20:30", TIMER_TIMEZONE="Europe/London")
+        self.assertIn("OnCalendar=*-*-* 06:00:00 Europe/London\n", timer)
+        self.assertIn("OnCalendar=*-*-* 20:30:00 Europe/London\n", timer)
+
+    def test_refuses_invalid_or_unsafe_timer_calendar(self):
+        bad = ({"TIMER_DAYS": "Fri..Mon"}, {"TIMER_DAYS": "Mon..Fri,"}, {"TIMER_DAYS": "Someday"},
+               {"TIMER_TIMES": "7:00"}, {"TIMER_TIMES": "25:00"}, {"TIMER_TIMES": "15:00,07:00"},
+               {"TIMER_TIMES": "07:00,07:30"}, {"TIMER_TIMES": "07:00,07:00"}, {"TIMER_TIMES": "07:00:30"},
+               {"TIMER_TIMEZONE": "Mars/Olympus"}, {"TIMER_TIMEZONE": "../../etc/passwd"}, {"TIMER_TIMEZONE": "UTC+"},
+               {"TIMER_TIMES": "07:00 15:00"}, {"TIMER_DAYS": "Mon;reboot"}, {"TIMER_TIMES": "07:00\nExecStart=x"},
+               {"TIMER_TIMES": ""})
+        for index, override in enumerate(bad):
+            with self.subTest(override=override):
+                self.assert_refused("", values={**self.values, **override}, out=self.tmp / f"bad{index}")
+                self.assertFalse((self.tmp / f"bad{index}" / "records-run.timer").exists())
+
+    def test_check_timer_requires_persistent_and_the_exact_schedule(self):
+        good = ("OnCalendar=Mon..Fri *-*-* 07:00:00 America/Los_Angeles\n"
+                "OnCalendar=Mon..Fri *-*-* 15:00:00 America/Los_Angeles\n")
+        self.render.check_timer(good + "Persistent=true\n")
+        with self.assertRaisesRegex(ValueError, "Persistent"):
+            self.render.check_timer(good + "Persistent=false\n")
+        with self.assertRaisesRegex(ValueError, "Persistent"):
+            self.render.check_timer(good)
+        with self.assertRaises(ValueError):  # a hand-edited extra line is not the validated schedule
+            self.render.check_timer(good + "OnCalendar=*-*-* 03:00:00 America/Los_Angeles\nPersistent=true\n")
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            spec = types.SimpleNamespace(on_calendar=lambda: ["Mon..Fri *-*-* 07:00:00 UTC;x"])
+            self.render.check_timer("OnCalendar=Mon..Fri *-*-* 07:00:00 UTC;x\nPersistent=true\n", spec)
+
+    def test_unknown_timer_value_names_still_refused(self):
+        self.assert_refused("unknown placeholder", values={**self.values, "TIMER_DAY": "Mon"})
 
 
 class StageContractTests(unittest.TestCase):

@@ -1,9 +1,9 @@
 [Unit]
-Description=DeFlock local schedule: site-build daily
+Description=DeFlock local schedule: site-build weekdays
 
 [Timer]
-# 21:30 America/Los_Angeles: one hour after the 20:30 records slot.
-OnCalendar=*-*-* 21:30:00 America/Los_Angeles
+# 17:00 America/Los_Angeles, weekdays only, two hours after the 15:00 records run, so the build sees that day's intake. Build only; publishing stays a human gate.
+OnCalendar=Mon..Fri *-*-* 17:00:00 America/Los_Angeles
 Persistent=true
 RandomizedDelaySec=5min
 Unit=deflock-site-build.service

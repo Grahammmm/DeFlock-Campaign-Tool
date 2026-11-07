@@ -182,9 +182,9 @@ class ExportProofTests(unittest.TestCase):
     def test_scheduler_templates_are_explicit_preparation_only(self):
         directory=Path(core.__file__).parent/'templates'
         timer=(directory/'records.timer.in').read_text();service=(directory/'records.service.in').read_text()
-        for time in ('07:00:00','13:00:00','20:30:00'):
-            self.assertIn('OnCalendar=*-*-* '+time+' America/Los_Angeles',timer)
-        self.assertEqual(timer.count('OnCalendar='),3)
+        for time in ('07:00:00','15:00:00'):
+            self.assertIn('OnCalendar=Mon..Fri *-*-* '+time+' America/Los_Angeles',timer)
+        self.assertEqual(timer.count('OnCalendar='),2)
         self.assertIn('PREPARATION ONLY',timer);self.assertIn('@INSTALLED_TRUSTED_LAUNCHER@',service)
         self.assertIn('@OWNER_ONLY_MAIL_ENV@',service)
     def test_post_preservation_receipt_mismatch_cannot_checkpoint(self):

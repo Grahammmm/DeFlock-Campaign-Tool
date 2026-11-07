@@ -111,7 +111,7 @@ class RenderedSet(unittest.TestCase):
         (self.work / 'tools' / 'run_report_review.py').unlink()
         code, out = self.check()
         self.assertEqual(code, 1)
-        self.assertIn(f'slot deflock-run-report-review | at 14:00 | {self.work}/tools/run_report_review.py missing', out)
+        self.assertIn(f'slot deflock-run-report-review | at 16:00 | {self.work}/tools/run_report_review.py missing', out)
         self.assertEqual(out.count(' available | gate-safe'), 5)
         self.assertIn('available=5 missing=1 collisions=0 gate-unsafe=0', out)
 
@@ -170,17 +170,17 @@ class RenderedSet(unittest.TestCase):
 
     def test_same_time_and_records_slot_collisions_are_named(self):
         self.edit('deflock-deadlines.timer', '09:00:00', '08:00:00')
-        self.edit('deflock-backup.timer', '03:00:00', '12:40:00')
+        self.edit('deflock-backup.timer', '03:00:00', '14:40:00')
         code, out = self.check()
         self.assertEqual(code, 1)
         self.assertIn('COLLISION deflock-deadlines 08:00 collides with deflock-stale-check 08:00', out)
-        self.assertIn('COLLISION deflock-backup 12:40 collides with records slot 13:00', out)
+        self.assertIn('COLLISION deflock-backup 14:40 collides with records slot 15:00', out)
         self.assertIn('collisions=2 gate-unsafe=0', out)
 
     def test_collision_window_wraps_midnight(self):
         self.assertEqual(lsc.apart('23:50', '00:10'), 20)
         self.edit('deflock-backup.timer', '03:00:00', '00:10:00')
-        self.edit('deflock-reconcile.timer', '06:00:00', '23:50:00')
+        self.edit('deflock-reconcile.timer', '10:00:00', '23:50:00')
         code, out = self.check()
         self.assertEqual(code, 1)
         self.assertIn('COLLISION deflock-backup 00:10 collides with deflock-reconcile 23:50', out)
@@ -269,8 +269,34 @@ class ShippedUnits(unittest.TestCase):
                 else:
                     self.assertEqual((keys['Persistent'], keys['WantedBy']), (['true'], ['timers.target']))
                     self.assertTrue(keys['RandomizedDelaySec'])
-                    hhmm = re.search(r'OnCalendar=\*-\*-\* (\d\d:\d\d):00', text)[1]
+                    hhmm = re.search(r'OnCalendar=(?:\S+ )?\*-\*-\* (\d\d:\d\d):00', text)[1]
                     self.assertIn(f'# {hhmm} America/Los_Angeles', text)
+
+    def test_shipped_cadence_is_weekday_after_records_runs_and_never_collides(self):
+        want = {'backup': (None, '03:00'), 'stale-check': ('Mon..Fri', '08:00'), 'deadlines': ('Mon..Fri', '09:00'),
+                'reconcile': ('Mon..Fri', '10:00'), 'run-report-review': ('Mon..Fri', '16:00'),
+                'site-build': ('Mon..Fri', '17:00')}
+        for slot, (days, hhmm) in want.items():
+            keys = lsc.parse_unit((SHIPPED / f'deflock-{slot}.timer').read_text(encoding='utf-8'))
+            with self.subTest(slot=slot):
+                match = lsc.CALENDAR.fullmatch(keys['OnCalendar'][0])
+                self.assertEqual(match[1] + ':' + match[2], hhmm)
+                self.assertEqual(keys['OnCalendar'][0].startswith(f'{days} ') if days else
+                                 keys['OnCalendar'][0].startswith('*-*-*'), True)
+                self.assertEqual(keys['Persistent'], ['true'])
+        self.assertEqual(lsc.RECORDS_SLOTS, ('07:00', '15:00'))
+        # Only the backup runs on weekends; every other job follows a weekday records run.
+        weekend = [s for s in want if not lsc.parse_unit((SHIPPED / f'deflock-{s}.timer').read_text(
+            encoding='utf-8'))['OnCalendar'][0].startswith('Mon..Fri ')]
+        self.assertEqual(weekend, ['backup'])
+
+    def test_day_prefix_is_accepted_but_other_calendars_are_not(self):
+        for ok in ('*-*-* 09:00:00 America/Los_Angeles', 'Mon..Fri *-*-* 09:00:00 America/Los_Angeles',
+                   'Mon,Wed *-*-* 09:00:00 America/Los_Angeles'):
+            self.assertTrue(lsc.CALENDAR.fullmatch(ok), ok)
+        for bad in ('Mon..Fri *-*-* 09:00:00 UTC', 'Funday *-*-* 09:00:00 America/Los_Angeles',
+                    'Mon..Fri; reboot *-*-* 09:00:00 America/Los_Angeles', '*-*-* 09:00:00'):
+            self.assertFalse(lsc.CALENDAR.fullmatch(bad), bad)
 
     def test_reading_slots_read_the_records_reports_not_the_store(self):
         for name, flag in (('deflock-stale-check.service', '--reports'), ('deflock-run-report-review.service', '--dir')):
