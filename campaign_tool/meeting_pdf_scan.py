@@ -1,5 +1,6 @@
 """Optional, memory-only agenda PDF keyword leads; never publication approval."""
 import hashlib
+import http.client
 import subprocess
 import urllib.error
 import urllib.parse
@@ -59,7 +60,7 @@ def scan(url, opener=None, *, platform_host_rule):
     except urllib.error.HTTPError as exc:
         exc.close()
         return dict(result, pdf_scan="refused" if 300 <= exc.code < 400 else "failed")
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except (OSError, http.client.HTTPException, subprocess.SubprocessError, ValueError):
         return dict(result, pdf_scan="failed")
 
 

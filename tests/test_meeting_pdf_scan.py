@@ -1,6 +1,7 @@
 """Synthetic agenda bytes, injectable HTTP responses and converter; no live GETs."""
 import contextlib
 import hashlib
+import http.client
 import io
 import json
 import subprocess
@@ -27,6 +28,12 @@ def opener(data=DATA, code=200, url=URL):
     response.geturl.return_value = url
     response.read.return_value = data
     return Mock(open=Mock(return_value=response))
+
+
+def truncated():
+    opener_ = opener()
+    opener_.open.return_value.read.side_effect = http.client.IncompleteRead(b"%PDF-")
+    return opener_
 
 
 def client(events=None, text="Routine business"):
@@ -72,6 +79,8 @@ class PdfScanTests(unittest.TestCase):
                              (opener(b"<html>no pdf"), "not_pdf"), (opener(code=302), "refused"),
                              (opener(url="https://elsewhere.invalid/a"), "refused"),
                              (Mock(open=Mock(side_effect=TimeoutError())), "failed"),
+                             (Mock(open=Mock(side_effect=http.client.BadStatusLine("x"))), "failed"),
+                             (truncated(), "failed"),
                              (Mock(open=Mock(side_effect=urllib.error.HTTPError(URL, 302, "redirect", {}, None))), "refused")):
             with self.subTest(status=status):
                 self.assertEqual(pdf.scan(URL, http, platform_host_rule=lambda u: True)["pdf_scan"], status)
