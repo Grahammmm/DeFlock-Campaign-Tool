@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from . import console_board as cb, console_oversight as co, console_outstanding, console_standing, mail_send, public_packets
 from .outcomes.reading import BANNER, esc
+from . import console_layout
 
 GROUPS = ("request", "follow-up", "send", "site-update", "social-post", "status-line", "packet")
 LABELS = ("Requests", "Follow-ups", "Sends", "Site updates", "Social posts", "Status lines", "Packets")
@@ -104,10 +105,8 @@ def decision_rows(model, today):
 
 def render_home(model, token):
     rows = decision_rows(model, model["now"].date())
-    out = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
-           '<meta name="robots" content="noindex,nofollow"><title>Home</title></head><body>',
-           '<p class="notice">%s</p>' % esc(BANNER), co.NAV, "<h1>Home</h1>",
-           '<h2>Needs your decision</h2><p role="status">' + " · ".join(
+    out = [console_layout.start("Home", "Home"), "<h1>Home</h1>",
+           '<h2 id="decide">Needs your decision</h2><p role="status">' + " · ".join(
                "%s %d" % (label, sum(r["kind_group"] == group for r in rows))
                for group, label in zip(GROUPS, LABELS)) + "</p>"]
     for source in ("timeline", "queue", "public", "packets", "sends"):
@@ -134,8 +133,10 @@ def render_home(model, token):
         out.append("<tr>%s</tr>" % "".join("<td>%s</td>" % cell for cell in cells))
     out.append("</tbody></table>")
     out += ["<p>%s: source not connected yet (%s).</p>" % pair for pair in DISCONNECTED]
+    out.append('<section id="timeline">')
     out.append(console_standing.render_standing(model, model["now"].date()))
-    out += [console_outstanding.render_outstanding(model), '</body></html>']
+    out.append('</section>')
+    out += [console_outstanding.render_outstanding(model), '</main></body></html>']
     return "\n".join(out) + "\n"
 
 

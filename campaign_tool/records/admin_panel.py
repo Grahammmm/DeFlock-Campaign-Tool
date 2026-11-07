@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import approval_queue, console_board, console_calendar, console_documents, console_home, console_manual_events, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
 from . import console_origin
-from . import console_access
+from . import console_access, console_layout
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -50,17 +50,7 @@ ACTION_STATUS = {"unknown_id": 404, "invalid_transition": 409, "approval_require
 REASONS = {400: "Bad request", 403: "Refused", 404: "Not found", 405: "Method not allowed", 408: "Request timed out",
            409: "Conflict: the draft is not in a state that allows this", 411: "Length required",
            413: "Request too large", 415: "Unsupported media type", 503: "A source is unavailable"}
-STYLE = """
-*{box-sizing:border-box}body{margin:0;background:#fffdf6;color:#173e3a;font:16px/1.5 system-ui,sans-serif}
-header,main,footer{max-width:1200px;margin:auto;padding:16px}h1{line-height:1.2}h2{margin-top:32px}
-a{display:inline-block;min-height:44px;padding:10px;color:#173e3a}nav{display:flex;flex-wrap:wrap;gap:8px}
-:focus-visible{outline:3px solid #804000;outline-offset:3px}.notice{padding:12px;border:2px solid #173e3a}
-.diag{padding:8px;border-left:6px solid #804000;background:#fff0d6}table{width:100%;border-collapse:collapse;margin:8px 0}
-th,td{padding:6px;text-align:left;vertical-align:top;border:1px solid #729186;overflow-wrap:anywhere;white-space:pre-wrap}
-code,pre,q{overflow-wrap:anywhere;white-space:pre-wrap}textarea,input[type=text]{width:100%;font:inherit}
-button{min-height:44px;padding:8px 16px;font:inherit}.draft{border:2px solid #729186;padding:12px;margin:12px 0}
-.overdue{color:#8a1c1c;font-weight:bold}
-"""
+STYLE = console_layout.STYLE
 
 
 class PanelError(Exception):
@@ -564,13 +554,8 @@ def render_next_steps(model, *, csrf_token=None):
     """Next Steps page. csrf_token=None renders the static, non-actionable snapshot (no forms, no token)."""
     mode = ("Live: a decision is recorded only; nothing is sent or published." if csrf_token is not None
             else "Static snapshot — decisions unavailable")
-    return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            '<meta name="viewport" content="width=device-width, initial-scale=1">'
-            '<meta name="robots" content="noindex,nofollow"><title>Next steps</title><style>' + STYLE + "</style></head><body><header>"
-            '<p class="notice">' + esc(BANNER) + '</p><h1>Next steps</h1><p class="notice">' + esc(mode) + "</p>"
-            '<nav aria-label="Pages"><a href="/">Home</a> <a href="/dashboard">Dashboard</a></nav></header><main id="content">'
-            + _next_sections(model, csrf_token) + '</main><footer><p class="notice">' + esc(BANNER)
-            + "</p></footer></body></html>\n")
+    return console_layout.shell("Next steps", '<header><h1>Next steps</h1><p class="notice">' + esc(mode)
+                                + '</p></header>' + _next_sections(model, csrf_token))
 
 
 def _mailbox_cell(model, d):
@@ -660,10 +645,7 @@ def render_dashboard(model, *, csrf_token=None):
     sections = {"mail": _mail_section(model), "documents": _documents_section(model),
                 "stages": _stages_section(model), "findings": _findings_section(model),
                 "deadlines": _deadlines_section(model), "drafts": _drafts_section(model, csrf_token)}
-    out = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
-           '<meta name="viewport" content="width=device-width, initial-scale=1">',
-           '<meta name="robots" content="noindex,nofollow"><title>Private records dashboard</title>',
-           "<style>" + STYLE + "</style></head><body><header>", '<p class="notice">' + esc(BANNER) + "</p>",
+    out = ['<header>',
            '<a href="#content">Skip to content</a><h1>Records pipeline dashboard</h1>',
            '<p class="notice">' + esc(mode) + "</p>",
            "<p>Run %s, captured %s, deadlines as of %s. Current ledger state and the selected run's outcomes are "
@@ -671,15 +653,14 @@ def render_dashboard(model, *, csrf_token=None):
            '<nav aria-label="Dashboard sections">']
     out += ['<a href="#%s">%s</a>' % (i, esc(t)) for i, t in SECTIONS]
     out.append('<a href="/next-steps">Next steps</a>' if live else '<a href="#social">Next steps</a>')
-    out.append('</nav></header><main id="content" tabindex="-1">')
+    out.append('</nav></header>')
     if not model["run_outputs_present"]:
         out.append('<p class="diag" role="status">Selected run outputs unavailable (run_outputs_missing).</p>')
     for ident, title in SECTIONS:
         out.append('<section id="%s"><h2>%s</h2>%s</section>' % (ident, esc(title), sections[ident]))
     if not live:
         out.append(_next_sections(model, None))
-    out.append('</main><footer><p class="notice">' + esc(BANNER) + "</p></footer></body></html>")
-    return "\n".join(out) + "\n"
+    return console_layout.shell("Private records dashboard", "\n".join(out))
 
 
 # ---- static writer -----------------------------------------------------------------------------------
