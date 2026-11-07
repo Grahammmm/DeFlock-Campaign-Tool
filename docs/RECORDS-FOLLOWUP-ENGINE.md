@@ -103,6 +103,27 @@ Refresh the derived run timeline through the normal records output stage to see
 imports. Ledger events may also appear: distinct sources remain visible.
 Nothing sends, fetches, approves, publishes or writes the coordinator ledger.
 
+## Deadline calculator
+
+`records deadlines --project P --run-id R [--json]` reads only that run's register
+and the shipped California law package. It lists every request, including closed
+ones: received (DATED recorded receipt, or INFERRED send-date proxy), determination
+due and extension limit (COMPUTED), and agency-promised date (DATED). Missing dates
+are UNKNOWN. The limit applies only with a lawful written extension notice; the
+output separately says whether an extension was recorded. This is a determination
+reminder, not a production deadline.
+
+Both computed dates carry the package rule's Gov. Code § 7922.535 citation,
+primary-source URL and `jurisdictions/us-ca/package.json sha256 <hex>` file hash.
+The register's normalized `request_date` and receipt/proxy basis supply the start.
+Register dates are checked against `law.deadline`, allowing only the register's
+weekend roll. Package-rule differences or stale computed dates are visible issues
+and labelled UNVERIFIED, never silently COMPUTED. Existing register issues remain.
+The table and JSON are private and review-required; nothing is queued or written.
+The package's `needs_attorney_review` rule status is unchanged.
+
+Provisional reminder date: receipt, holiday last-day rules and extension-notice requirements are not checked. Not a legal finding.
+
 ## Clocks and the due rule
 
 `records followups clocks --project P --run-id R` prints a read-only JSON table
