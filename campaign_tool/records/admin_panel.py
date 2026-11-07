@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import approval_queue, console_board, console_calendar, console_documents, console_home, console_manual_events, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
 from . import console_origin
-from . import console_access, console_layout
+from . import console_access, console_layout, console_review
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -619,6 +619,7 @@ def _drafts_section(model, token):
         out.append(mail_send.send_cell(model, d, live))
         out.append("<dt>Text</dt><dd><pre>%s</pre></dd></dl>" % esc(d["body"]))
         if live and d["status"] == "pending":
+            out.append('<p><a href="/review?id=%s">Review</a></p>' % i)
             pid = "sig-" + i[:12]
             if d.get("payload") is not None:
                 out.append("<p>To approve, sign this exact payload with the approver key "
@@ -771,6 +772,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if console_home.serve(self):
             return
+        if console_review.serve(self):
+            return
         if console_manual_events.serve(self):
             return
         if console_documents.serve(self):  # Screen C
@@ -878,7 +881,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(400)
         if not hmac.compare_digest(fields["csrf_token"].encode("utf-8"), self.server.csrf_token.encode("ascii")):
             return self._fail(403)
-        if back not in RETURNS:
+        if back not in RETURNS and not (back == "review" and action in ("approve", "reject", "edit")):
             return self._fail(400)
         if action == "manual":
             return console_manual_events.post(self, fields)
@@ -912,7 +915,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(503)
         if hook and self.server.mail_drafts_config and rows[ident].get("kind") not in draft_templates.NEXT_STEP_KINDS:
             _place_after_approve(project, self.server.mail_drafts_config, ident)
-        self._send(303, "", location=back)
+        self._send(303, "", location="/review?id=" + urllib.parse.quote(ident) if back == "review" else back)
 
 
 def _access_cfg(public_origin, access_config):

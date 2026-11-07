@@ -51,6 +51,24 @@ approval alone does not make a working draft ready to send.
   adds no second store. State is reloaded on every GET and success is confirmed by reading the queue back.
 - No stale-revision protection beyond the queue's own state rules; concurrent CLI edits keep upstream semantics.
 
+## Review page
+
+Open a pending draft from Home or the dashboard's **Review** link at
+`/review?id=DRAFT_ID`. The page shows the full editable body, read-only placement
+headers (using the server's Drafts configuration), threading, attachment names,
+residue warnings and body-header line warnings. Attachment names are evidence
+metadata, not a promise that placement attaches files. Unknown headers stay Unknown.
+The reason and evidence limits are escaped text, never document-provided links.
+
+**Save edit** returns to this page with the journal's edit history, actor/time,
+SHA-256 hashes and bounded unified diff. **Reject with reason** records the reason;
+**Approve** requires the existing detached signature over the exact current payload.
+A signature from before an edit is refused. No key is held here and approval does
+not send or publish. Approved/rejected drafts have a read-only body and no forms.
+**Back** returns Home. These forms use the existing decision routes and CSRF/Origin
+checks; only the literal `return=review` adds a new success redirect. Static
+`--render` output is unchanged and includes no editor.
+
 ## Sending an approved draft
 
 With `--send-config`, the separate `/send` review and human POST send one approved,
