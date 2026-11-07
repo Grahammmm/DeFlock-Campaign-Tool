@@ -257,10 +257,10 @@ class Calendar(unittest.TestCase):
 
     def test_ics_has_no_paths_and_folds_to_75_octets(self):
         e = {"date": TODAY, "kind": "overdue", "agency_key": "k", "request": "R-1 /home/u/records/x.pdf C:\\data\\a.txt ~/p",
-             "agency": "City/County PD ./rel/file.csv", "label": "l", "basis": "DATED",
-             "source": "see /var/lib/deflock/run/out.json and ../up/x.tsv " + "é" * 120}
+             "agency": "City/County PD ./rel/file.csv private/report.parquet", "label": "l", "basis": "DATED",
+             "source": "see /var/lib/deflock/run/out.json and ../up/x.tsv data/report.markdown " + "é" * 120}
         text = cc.to_ics([e], NOW)
-        for frag in ("/home", "/var", "C:", "x.pdf", "out.json", "../", "~/", "file.csv"):
+        for frag in ("/home", "/var", "C:", "x.pdf", "out.json", "report.parquet", "report.markdown", "../", "~/", "file.csv"):
             self.assertNotIn(frag, text)
         self.assertIn("City/County PD", text.replace("\r\n ", ""))
         for line in text.split("\r\n"):
