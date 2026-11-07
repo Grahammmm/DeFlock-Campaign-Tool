@@ -160,6 +160,20 @@ def _eml_for(con, subject):
     return eml
 
 
+def _thread_for(project, row):
+    if row["kind"] != "followup-playbook":
+        return find_thread(project, row["item_id"])
+    evidence = row.get("evidence") or {}
+    vehicle, ident = evidence.get("vehicle"), evidence.get("thread_item_id")
+    if vehicle == "new_request" and ident is None:
+        return None, "new_request"
+    _need(vehicle == "reply_in_thread" and isinstance(ident, str)
+          and re.fullmatch(r"[0-9a-fA-F]{64}", ident), "thread_provenance_invalid")
+    thread, reason = find_thread(project, ident)
+    _need(thread is not None and reason is None, "thread_provenance_unresolved")
+    return thread, reason
+
+
 def _address(value):
     for _, addr in getaddresses([str(value or "")]):
         if _ADDR.fullmatch(addr or "") and not _CTRL.search(addr):
@@ -406,8 +420,8 @@ def place(project, config, *, factory=mail_poll.default_connect, now=None, only_
             except (imaplib.IMAP4.error, OSError, EOFError):
                 return _fail_all(journal, todo, summary, "imap_failed", now)
             for row in todo:
-                thread, reason = find_thread(project, row["item_id"])
                 try:
+                    thread, reason = _thread_for(project, row)
                     result = _place_one(client, config, row, thread, reason, now)
                 except MailDraftError as error:
                     journal.append([_row(row, "failed", now, code=error.code)])

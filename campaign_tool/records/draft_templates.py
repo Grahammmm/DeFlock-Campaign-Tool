@@ -17,7 +17,7 @@ from .. import kit_track
 
 NEXT_STEP_KINDS = ("next-social-post", "next-site-update", "next-followup-probe")  # REC-AUTO-10 recommendations
 KINDS = ("reply-extension", "appeal-denial", "fee-reply", "followup-missing-records", "first-request",
-         "reminder-no-response", "reminder-promised-date", "formal-notice-no-response") + NEXT_STEP_KINDS
+         "reminder-no-response", "reminder-promised-date", "formal-notice-no-response") + NEXT_STEP_KINDS + ("followup-playbook",)
 FOLLOWUP_KINDS = KINDS[5:8]
 DRAFT_BANNER = "DRAFT — NOT SENT. Review before sending it yourself."
 FOOTER = ("---\nDraft only. Not legal advice. Review required; the law package is draft and every reference above "
