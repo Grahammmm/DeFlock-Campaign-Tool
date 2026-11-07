@@ -279,3 +279,19 @@ retain. It covers `*.tar` and `*.tar.gpg` (encrypted archives need your GnuPG ke
 Restore of a hosted
 campaign back into D1 and R2 (the export is readable JSON and hash-named objects, so a restore
 script is straightforward but not written), and retention deletion (`backup-list` only reports).
+
+## Backup reminders in today
+
+`python3 -m campaign_tool today --directory ~/campaign --backups ~/backups [--backup-days N]` adds at most one `backup_due`
+item when `~/backups` holds no archive that `backup-list` reports as verified, or the newest verified one is too old.
+`--backup-days` is 1 to 90 (default 7) and needs `--backups`. Without `--backups` nothing is read and the output is unchanged.
+
+- **Age** comes from the archive's recorded `created_at` (never the file name or modification time), converted to UTC,
+  counted in UTC calendar days up to `--as-of` (default today). Due means strictly more than N days: exactly N is not due.
+  `--as-of` is a planning date: an archive dated after it is not overdue.
+- **No backup versus failure.** An archive that cannot be verified (corrupt, unreadable, or encrypted without a usable key
+  or GnuPG) never counts; each one is listed by name as an `unreadable` item with a `backup-list --dir ~/backups` command.
+  A symlinked archive is named and never opened. An unreadable folder gives "Could not establish a verified backup".
+  Encrypted archives count only if the normal local GnuPG setup can decrypt and verify them.
+- **Manual only.** The reminder names `backup --directory ~/campaign --into ~/backups` (arguments shell-quoted, so paths
+  with spaces work). Today never runs it, and creates, deletes or repairs nothing.

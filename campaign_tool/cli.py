@@ -1620,11 +1620,14 @@ def main():
     today_p.add_argument("--owner", metavar="NAME", help="Only the request work assigned to this teammate label; "
                          "meetings, findings, contracts and contacts are still listed")
     today_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
-    from .today import CONTRACT_DAYS, REVIEW_DAYS, contract_days, review_days
+    from .today import CONTRACT_DAYS, REVIEW_DAYS, backup_days, contract_days, review_days
     today_p.add_argument("--contract-days", type=contract_days, default=CONTRACT_DAYS, metavar="N", help="Contracts "
                          "ending within N days, default 90; ended in the last 30 days are always listed")
     today_p.add_argument("--review-days", type=review_days, default=REVIEW_DAYS, metavar="N", help="Assigned finding "
                          "reviews with no receipt after N days, default 7")
+    today_p.add_argument("--backups", metavar="DIR", help="Check verified campaign archives in DIR (read-only; optional)")
+    today_p.add_argument("--backup-days", type=backup_days, default=None, metavar="N",
+                         help="Backup age limit in days, 1 to 90 (default 7); requires --backups")
     recent_p = commands.add_parser("recent", help="Private what-changed report for a period: requests, records, findings, "
                                    "meetings (read-only; --md writes one new file)")
     recent_p.add_argument("--directory", required=True)
@@ -1718,6 +1721,8 @@ def main():
                 kit_cmd.error("fee-reply cannot be combined with --online, --include or --scope")
         elif fee_only:
             kit_cmd.error(", ".join(fee_only) + " only work with fee-reply")
+    if args.command == "today" and args.backup_days is not None and args.backups is None:
+        parser.error("--backup-days requires --backups")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
     if getattr(args, "stale_days", None) is not None and not 1 <= args.stale_days <= 3650:
@@ -2287,7 +2292,8 @@ def main():
         elif args.command == "today":
             from .today import run_cli as today_cli
             read_config(root)  # not a campaign folder: Stopped, before any source is read
-            print(today_cli(root, args.as_of, args.as_json, args.contract_days, args.review_days, owner=args.owner))
+            print(today_cli(root, args.as_of, args.as_json, args.contract_days, args.review_days, owner=args.owner,
+                            backups=args.backups, **({} if args.backup_days is None else {"backup_days": args.backup_days})))
         elif args.command == "recent":
             from .recent import run_cli as recent_cli
             read_config(root)
