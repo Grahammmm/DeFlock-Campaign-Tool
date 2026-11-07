@@ -57,8 +57,10 @@ class PublicOriginTests(ServerCase):
         self.assertEqual(self.row()["status"], "pending")
         self.assertEqual(self.request("POST", "/approvals/reject", fields=fields)[0], 303)
         self.assertEqual(self.row()["status"], "rejected")
-        # Valid transport never bypasses a terminal queue transition.
-        self.assertEqual(self.request("POST", "/approvals/reject", fields=fields)[0], 409)
+        # A duplicate valid rejection preserves the queue's existing idempotence.
+        rejected = journal(self.project)
+        self.assertEqual(self.request("POST", "/approvals/reject", fields=fields)[0], 303)
+        self.assertEqual(journal(self.project), rejected)
 
     def test_post_origin_matrix_never_mutates(self):
         self.public_server()
@@ -77,7 +79,7 @@ class PublicOriginTests(ServerCase):
     def test_all_dispatch_paths_use_same_gate(self):
         self.public_server()
         loop = f"127.0.0.1:{self.http.port}"
-        for path in ("/public-updates/off", "/manual-event", "/packets/build"):
+        for path in ("/public-updates/off", "/manual-event", "/packets/reject"):
             for hosts, origins, refused in (([HOST], [PUBLIC], False), ([loop], [PUBLIC], True),
                                             ([HOST], ["null"], True)):
                 with self.subTest(path=path, hosts=hosts, origins=origins):

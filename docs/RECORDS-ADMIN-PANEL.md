@@ -61,6 +61,15 @@ another process of the same account that can already read these files (trusted l
 three `POST /approvals/{approve,reject,edit}` routes exist; bodies are urlencoded UTF-8, at most 256 KiB, with a
 read timeout. Responses are `no-store` with a strict CSP; request logging is off.
 
+`--public-origin https://admin.example.test` adds exactly one case-sensitive Host/Origin pair:
+`Host: admin.example.test` with POST `Origin: https://admin.example.test`. Loopback remains accepted,
+but the pairs cannot mix. The hostname must be lowercase DNS with at least two labels; no port,
+path, query, fragment or trailing dot is accepted. Missing or duplicate Host/POST Origin is refused.
+The bind stays literal `127.0.0.1`; `--render` ignores this flag.
+This is only safe behind Cloudflare Access with **cloudflared Access JWT validation**.
+CON-HOST-2 adds the application claims check; this flag alone does not authenticate a public user.
+Never add an edge rule that rewrites Origin. Existing CSRF and action checks still apply.
+
 ## Static snapshot
 
 `--render out.html` writes the same view with no forms, token or endpoint links, banner "Static snapshot — decisions
