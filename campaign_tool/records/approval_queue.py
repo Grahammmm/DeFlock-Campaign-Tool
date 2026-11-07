@@ -7,6 +7,8 @@ human and authorizes no outbound action by itself. Refusals raise ApprovalQueueE
 content-free message.
 """
 import argparse
+import difflib
+from itertools import islice
 import fcntl
 import hashlib
 import json
@@ -312,6 +314,39 @@ def load_queue(root):
     return [_public(rows[k]) for k in sorted(rows)]
 
 
+def history(root, id):
+    """Original and edited bodies, hashes and bounded diff from the journal; creates nothing."""
+    with _Store(root, False) as store:
+        raw = store.raw()
+        rows = _fold(root, raw)
+        _need(isinstance(id, str) and id in rows, "unknown_id")
+        row = rows[id]
+        original, edits, current = None, [], None
+        for line in raw.splitlines():
+            ev = _strict_load(line, "queue_invalid")
+            if ev["id"] != id or ev["event"] not in ("draft", "edited"):
+                continue
+            body = ev["snapshot"].get("body") if ev["event"] == "draft" else ev["body"]
+            _need(isinstance(body, str), "queue_invalid")
+            try:
+                data = body.encode("utf-8")
+            except UnicodeEncodeError as error:
+                raise ApprovalQueueError("queue_invalid") from error
+            entry = {"body": body, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
+                     "revision": ev["revision"], "at": ev["at"], "actor": ev["actor"]}
+            if original is None:
+                original = {k: entry[k] for k in ("body", "sha256", "bytes", "at", "actor")}
+            else:
+                edits.append(entry)
+            current = {k: entry[k] for k in ("body", "sha256", "bytes", "revision")}
+        diff = list(islice(difflib.unified_diff(original["body"].splitlines(), current["body"].splitlines(),
+                                               "original", f"revision {current['revision']}", lineterm=""), 401))
+        return {"id": id, "kind": row["kind"], "status": row["status"], "revision": row["revision"],
+                "original": original, "current": current, "edits": edits,
+                "changed": original["body"] != current["body"], "diff": diff[:400],
+                "diff_truncated": len(diff) > 400}
+
+
 def _row(root, store, ident):
     rows = _fold(root, store.raw())
     _need(isinstance(ident, str) and ident in rows, "unknown_id")
@@ -500,13 +535,16 @@ def _file(path):
 def main():
     parser = argparse.ArgumentParser(prog="records approvals", description="Review queue for drafted replies. Sends nothing.")
     sub = parser.add_subparsers(dest="action", required=True)
-    for name in ("list", "payload", "approve", "reject", "edit"):
+    for name in ("list", "payload", "approve", "reject", "edit", "history"):
         p = sub.add_parser(name)
         p.add_argument("--project", required=True)
         if name == "list":
             p.add_argument("--status", choices=("pending", "approved", "rejected"))
             continue
-        p.add_argument("id")
+        if name == "history":
+            p.add_argument("--id", required=True)
+        else:
+            p.add_argument("id")
         if name == "approve":
             p.add_argument("--signature", required=True, help="file holding the detached SSH signature text")
         if name in ("reject", "edit"):
@@ -521,6 +559,8 @@ def main():
             rows = load_queue(args.project)
             print(json.dumps([r for r in rows if not args.status or r["status"] == args.status], indent=1,
                              ensure_ascii=False))
+        elif args.action == "history":
+            print(json.dumps(history(args.project, args.id), indent=1, ensure_ascii=False))
         elif args.action == "payload":
             sys.stdout.buffer.write(approval_payload(args.project, args.id))
             sys.stdout.buffer.flush()
