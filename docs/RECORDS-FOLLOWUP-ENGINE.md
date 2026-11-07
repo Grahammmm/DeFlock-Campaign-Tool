@@ -1,5 +1,24 @@
 # Records follow-up engine
 
+## Drafting into Home (never sends)
+
+`records followup-engine --project P --run-id R` prints counts by pattern/handler,
+never letter bodies. Dry run is default; `--apply` adds pending `followup-playbook`
+rows to Home's follow-up group. Only engine routes with agency `autonomy: draft`
+are eligible. Settings remain off by default and are never changed here.
+Replies require one uniquely latest received item for the agency/request and a
+resolvable stored message. Missing/ambiguous provenance becomes manual, with its
+reason in the summary. Manual coverage gaps list unreconciled queue ids.
+New requests deliberately have no thread or recipient: G fills the recipient.
+Placement rechecks the immutable vehicle/source evidence; replies never fall back
+to unthreaded messages. Existing kinds retain their original placement behavior.
+Repeated identities are skipped even after rejection. Changed state, residual
+asks or source message creates a new row; G rejects stale older drafts.
+Prior produced/pending asks are suppressed; empty letters are not queued.
+G edits away placeholders/reviewer notes and signs the exact text on the existing
+approval pages. Residue is refused. Sending remains off by default and attended.
+The Python API's optional `as_of` must match the run snapshot, not override it.
+
 ## Read-only response state
 
 `records followup-state --project P --run-id R` prints private, review-required JSON;

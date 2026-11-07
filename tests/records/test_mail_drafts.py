@@ -154,6 +154,34 @@ class Base(unittest.TestCase):
         return email.message_from_bytes(self.fake.messages[index]["raw"], policy=policy.default)
 
 
+class PlaybookPlaceTests(Base):
+    def test_invalid_or_unresolved_provenance_is_journaled_without_append(self):
+        cases = [({}, "thread_provenance_invalid"),
+                 ({"vehicle": "reply_in_thread", "thread_item_id": None}, "thread_provenance_invalid"),
+                 ({"vehicle": "reply_in_thread", "thread_item_id": "bad"}, "thread_provenance_invalid"),
+                 ({"vehicle": "new_request", "thread_item_id": "a" * 64}, "thread_provenance_invalid"),
+                 ({"vehicle": "reply_in_thread", "thread_item_id": "a" * 64}, "thread_provenance_unresolved")]
+        for evidence, code in cases:
+            with self.subTest(evidence=evidence):
+                self.tearDown_project()
+                row = aq.add_draft(self.project, item_id="route:synthetic", kind="followup-playbook",
+                                   agency_id="alpha-pd", request_id="OLD-1", body="Please supply the logs.\n",
+                                   evidence=evidence, source_run_id="r1")
+                self.approve(row["id"])
+                self.assertEqual(self.place()["failed"], 1)
+                self.assertEqual(md.placements(self.project)[0]["code"], code)
+                self.assertEqual(self.fake.messages, [])
+
+    def test_received_items_denial_keeps_original_threading(self):
+        self.build_ledger()
+        row = aq.add_draft(self.project, item_id=received_items.item_id(DOC), kind="appeal-denial",
+                           agency_id="alpha-pd", request_id="OLD-1", body="Please reconsider.\n",
+                           evidence={}, source_run_id="r1")
+        self.approve(row["id"])
+        self.assertEqual(self.place()["placed"], 1)
+        self.assertEqual(self.parsed()["In-Reply-To"], AGENCY_MID)
+
+
 class PlaceTests(Base):
     def test_only_approved_rows_are_placed_once(self):
         self.build_ledger()

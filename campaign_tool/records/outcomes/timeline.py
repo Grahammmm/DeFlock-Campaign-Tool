@@ -41,7 +41,7 @@ EVENT_STAGE = {"sent": "sent", "acknowledged": "acknowledged", "extension notice
                "no records": "no_records", "our follow-up sent": "follow_up_sent"}
 ITEM_EVENT = {"response": "acknowledged", "extension": "extension notice", "denial": "denial",
               "fee": "fee estimate", "records": "production", "other": "received"}
-FOLLOW_UP_KINDS = frozenset({"followup-missing-records", "appeal-denial", "reply-extension", "fee-reply"})
+FOLLOW_UP_KINDS = frozenset({"followup-missing-records", "appeal-denial", "reply-extension", "fee-reply", "followup-playbook"})
 LIMITS = (
     "Private; REVIEW REQUIRED. Arithmetic on our records, not a legal finding.",
     "Overdue marks use the register clock (basis recorded_receipt or submission_proxy); receipt may be "

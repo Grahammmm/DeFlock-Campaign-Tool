@@ -5,6 +5,7 @@ import os
 import sys
 
 COMMANDS = {
+    "followup-engine": ("followup_engine", "main"),
     "followup-route": ("followup_route", "main"),
     "followup-state": ("followup_state", "main"),
     "events-import": ("events_import", "main"),
