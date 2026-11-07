@@ -1,4 +1,5 @@
 """Private manual-event form and append-only journal (REC-CON-4); no transport."""
+import fcntl
 import hashlib
 import hmac
 import json
@@ -7,6 +8,7 @@ import re
 import secrets
 import time
 import urllib.parse
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -56,7 +58,47 @@ def ticket(project, run_id, agency, request, key, ident, now=None):
     return payload + "." + _sign(payload, key)
 
 
-def append(project, run_id, actor, key, fields, now=None):
+def check_manual_events_dir(directory, project):
+    """Require a private existing directory disjoint from the project snapshot."""
+    if directory is None:
+        return None
+    try:
+        path = Path(directory)
+        real, snapshot = path.resolve(), Path(project).resolve()
+        if (not path.is_absolute() or not aq._private(path.lstat(), True)
+                or real == snapshot or real in snapshot.parents or snapshot in real.parents):
+            raise ValueError("manual_events_dir_invalid")
+        return str(real)
+    except (OSError, ValueError, RuntimeError):
+        raise ValueError("manual_events_dir_invalid") from None
+
+
+@contextmanager
+def _journal_lock(project, directory):
+    if directory is None:
+        with aq._Store(project, True):
+            yield project
+        return
+    directory = check_manual_events_dir(directory, project)
+    root = aq._open_chain(directory)
+    lock = None
+    try:
+        lock = aq._open_file(root, "manual-events.lock", os.O_RDWR | os.O_NONBLOCK)
+        if lock is None:
+            try:
+                lock = aq._open_file(root, "manual-events.lock", os.O_RDWR | os.O_NONBLOCK, create=True)
+            except aq.ApprovalQueueError:
+                lock = aq._open_file(root, "manual-events.lock", os.O_RDWR | os.O_NONBLOCK)
+        _require(lock is not None, 503)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield directory
+    finally:
+        if lock is not None:
+            os.close(lock)
+        os.close(root)
+
+
+def append(project, run_id, actor, key, fields, now=None, *, manual_events_dir=None):
     """Validate a form's target/version, then append once under the existing journal lock discipline."""
     from .admin_panel import check_actor
     check_actor(actor)
@@ -84,27 +126,27 @@ def append(project, run_id, actor, key, fields, now=None):
                  actor=actor, summary=summary)
     if corrects:
         event["corrects"] = corrects
-    append_events(project, [event], reject_conflicts=True)
+    append_events(project, [event], reject_conflicts=True, manual_events_dir=manual_events_dir)
     return event
 
 
-def append_events(project, incoming, *, reject_conflicts=False):
+def append_events(project, incoming, *, reject_conflicts=False, manual_events_dir=None):
     """Append a batch once under the private journal lock; return added/present counts."""
     # Reuse the approval store's private, symlink-safe lock; never append to its journal.
-    with aq._Store(project, True):
-        root = aq._open_chain(project)
+    with _journal_lock(project, manual_events_dir) as directory:
+        root = aq._open_chain(directory)
         fd = None
         try:
-            fd = aq._open_file(root, "manual-events.jsonl", os.O_RDWR | os.O_APPEND)
+            fd = aq._open_file(root, "manual-events.jsonl", os.O_RDWR | os.O_APPEND | os.O_NONBLOCK)
             if fd is None:
-                fd = aq._open_file(root, "manual-events.jsonl", os.O_RDWR | os.O_APPEND, create=True)
+                fd = aq._open_file(root, "manual-events.jsonl", os.O_RDWR | os.O_APPEND | os.O_NONBLOCK, create=True)
             if fd is None:
                 raise OSError("manual_open_failed")
             info = os.fstat(fd)
             _require(info.st_size <= tl.MAX_INPUT_BYTES, 503)
             raw = os.read(fd, tl.MAX_INPUT_BYTES + 1)
             _require(not raw or raw.endswith(b"\n"), 503)
-            events = tl.read_manual_events(Path(project) / "manual-events.jsonl")
+            events = tl.read_manual_events(Path(directory) / "manual-events.jsonl")
             known = {e["event_id"]: e for e in events}
             added, present = [], 0
             for event in incoming:
@@ -169,11 +211,17 @@ def serve(handler):
 def post(handler, fields):
     try:
         options = handler.server.options
-        event = append(options["project"], options["run_id"], handler.server.actor, handler.server.manual_event_key, fields)
+        event = append(options["project"], options["run_id"], handler.server.actor, handler.server.manual_event_key, fields,
+                       manual_events_dir=getattr(handler.server, "manual_events_dir", None))
         # Refresh only the derived timeline, never the tracker or coordinator ledger.
-        tl.write_run_timeline(options["project"], options["run_id"])
+        if getattr(handler.server, "manual_events_dir", None) is None:
+            tl.write_run_timeline(options["project"], options["run_id"])
         location = "/agency?" + urllib.parse.urlencode({"agency": event["agency_id"]})
-        handler._send(303, "", location=location)
+        if getattr(handler.server, "manual_events_dir", None) is not None:
+            handler._send(200, '<p>Recorded (event %s). It appears on the agency timeline after the next data refresh.</p>'
+                          '<a href="%s">Back to agency</a>' % (esc(event["event_id"]), esc(location)))
+        else:
+            handler._send(303, "", location=location)
     except ManualError as error:
         handler._fail(error.status)
     except (OSError, ValueError, aq.ApprovalQueueError):
