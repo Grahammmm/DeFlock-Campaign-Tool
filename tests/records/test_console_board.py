@@ -78,6 +78,24 @@ class Boards(unittest.TestCase):
     def model(self):
         return cb.load(self.project, RUN)
 
+    def test_agency_computed_citation_once_per_request_and_unverified_without_register(self):
+        from campaign_tool import law
+        from campaign_tool.records import followup_clock
+        import hashlib
+        path = self.project / "run-outputs" / RUN / followup_clock.REGISTER_NAME
+        rows = [row("alpha-pd", "R-1", request_date="2026-10-30"),
+                row("alpha-pd", "R-2", request_date="2026-10-30")]
+        put(path, {"schema": "records-request-register-v1", "as_of": "2026-11-05", "requests": rows})
+        digest = hashlib.sha256(law.package_path("us-ca").read_bytes()).hexdigest()[:12]
+        page = cb.render_agency(self.model(), "alpha-pd")
+        citation = "Dates computed from Gov. Code § 7922.535 (law package %s); provisional, not a legal finding." % digest
+        self.assertEqual(page.count(citation), 2)
+        self.assertEqual(page.count("(COMPUTED; from recorded receipt)"), 4)
+        path.unlink()
+        page = cb.render_agency(self.model(), "alpha-pd")
+        self.assertEqual(page.count("(UNVERIFIED;"), 4)
+        self.assertNotIn("(COMPUTED;", page)
+
     def test_board_orders_needs_action_first_and_counts(self):
         m = self.model()
         rows = cb.board_rows(m, TODAY)

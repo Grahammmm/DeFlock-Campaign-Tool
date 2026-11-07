@@ -147,6 +147,7 @@ def render_home(model, token):
                  '<a href="%s">%s</a>' % (esc(row["link"]), "Review" if row["source"] == "queue" else "Open")]
         out.append("<tr>%s</tr>" % "".join("<td>%s</td>" % cell for cell in cells))
     out.append('</tbody></table></section><section id="week"><h2>Next 7 days</h2>')
+    out.append("<p>%s</p>" % esc(cb.COMPUTED_LEGEND))
     if calendar["state"] != "ok":
         out.append('<p role="status">Calendar: unavailable (%s).</p>' % esc(calendar.get("code")))
     elif not week:
@@ -156,6 +157,8 @@ def render_home(model, token):
         for entry in week[:20]:
             text = " · ".join((entry["date"].strftime("%a %b %d"), console_calendar.KINDS[entry["kind"]],
                                entry["agency"], entry["request"], entry["basis"]))
+            if entry["kind"] in ("statutory_due", "extension_limit"):
+                text += " · " + entry["source"] + " · " + entry["label"]
             if entry["kind"] == "meeting":
                 text += " · " + entry["label"]
             out.append('<li><a href="/calendar?month=%s">%s</a></li>' % (

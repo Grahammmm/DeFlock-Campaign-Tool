@@ -28,7 +28,7 @@ def clock(**kw):
 def row(agency, request, deadline=None, name=None, promised=None, **kw):
     return {"agency": name or agency.upper(), "agency_key": agency, "request_id": request, "ledger_request_id": "L-" + request,
             "deadline": deadline or clock(), "promised": promised or {"state": "none", "date": None}, "next_action": "wait",
-            "status": "open", "issues": [], "production_at": None, "asked": "x", "request_date": "2026-10-01",
+            "status": "open", "issues": [], "production_at": None, "asked": "x", "request_date": "2026-10-30",
             "sources": [], **kw}
 
 
@@ -89,10 +89,61 @@ class Calendar(unittest.TestCase):
         build(self.project, rows, **kw)
         return cc.load(str(self.project), RUN, NOW)
 
+    def test_computed_dates_citation_start_ics_and_home(self):
+        from campaign_tool import law
+        from campaign_tool.records import console_home
+        import hashlib
+        rows = [row("alpha-pd", "R-1"), row("alpha-pd", "R-2", clock(basis="submission_proxy"))]
+        model = self.model(rows, manual=[manual("m1", "R-1", "promised date", "2026-11-01", "2026-11-12")])
+        digest = hashlib.sha256(law.package_path("us-ca").read_bytes()).hexdigest()[:12]
+        dates = [e for e in cc.entries(model, TODAY) if e["kind"] in ("statutory_due", "extension_limit")]
+        self.assertEqual(len(dates), 4)
+        for e in dates:
+            self.assertEqual(e["basis"], "COMPUTED")
+            self.assertEqual(e["source"], "Gov. Code § 7922.535 via law package " + digest)
+            self.assertIn("from recorded receipt" if e["request"] == "R-1" else
+                          "from send date; receipt not recorded", e["label"])
+        self.assertEqual(next(e["basis"] for e in cc.entries(model, TODAY) if e["kind"] == "expected_window"), "DATED")
+        text = cc.to_ics(dates, NOW).replace("\r\n ", "")
+        self.assertEqual(text.count("(COMPUTED)"), 4)
+        self.assertNotRegex(text, r"http|package.json|/home/|jurisdictions/")
+        self.assertIn("COMPUTED = date arithmetic from the law package", cc.render(model, TODAY, TODAY.replace(day=1)))
+        home = console_home.load(self.project, RUN, now=NOW)
+        page = console_home.render_home(home, "synthetic-token")
+        self.assertIn("COMPUTED", page)
+        self.assertIn(digest, page)
+
+    def test_mismatch_missing_package_and_stale_timeline_are_unverified(self):
+        from campaign_tool import law
+        for failure in ("package", "missing", "stale"):
+            with self.subTest(failure=failure):
+                model = self.model([row("alpha-pd", "R-1")])
+                if failure == "package":
+                    package = copy.deepcopy(law.load_package("us-ca"))
+                    package["records_law"]["determination_days"] = 11
+                    with mock.patch.object(law, "load_package", return_value=package):
+                        model = cc.load(self.project, RUN, NOW)
+                elif failure == "missing":
+                    with mock.patch.object(law, "load_package", side_effect=OSError("missing")):
+                        model = cc.load(self.project, RUN, NOW)
+                else:
+                    model["timeline"]["doc"]["requests"][0]["clocks"]["base_due"] = "2026-11-10"
+                dates = [e for e in cc.entries(model, TODAY) if e["kind"] == "statutory_due"]
+                self.assertEqual([e["basis"] for e in dates], ["UNVERIFIED"])
+                self.assertIn("(UNVERIFIED)", cc.to_ics(dates, NOW))
+
+    def test_computed_dates_closed_expired_and_duplicate(self):
+        rows = [row("alpha-pd", "R-1"), row("alpha-pd", "R-1"),
+                row("alpha-pd", "closed", status="closed"),
+                row("alpha-pd", "expired", clock(base_due="2026-10-01", extended_due="2026-10-15", due="2026-10-01"))]
+        model = self.model(rows)
+        dates = [e for e in cc.entries(model, TODAY) if e["kind"] in ("statutory_due", "extension_limit")]
+        self.assertEqual([(e["request"], e["basis"]) for e in dates], [("R-1", "COMPUTED"), ("R-1", "COMPUTED")])
+
     def test_each_kind_with_basis_source_and_month_day(self):
         rows = [row("alpha-pd", "R-1"),
                 row("beta-so", "R-2", clock(basis="submission_proxy", base_due="2026-11-12", extended_due="2026-11-26",
-                                            due="2026-11-12"), name=LONG),
+                                            due="2026-11-12"), name=LONG, request_date="2026-11-02"),
                 row("beta-so", "R-3", clock(state="unknown", basis="unknown", base_due=None, extended_due=None, due=None)),
                 row("alpha-pd", "R-4", clock(state="past_due_reminder", due="2026-10-20", base_due="2026-10-20",
                                              extended_due="2026-11-03"))]
@@ -110,8 +161,8 @@ class Calendar(unittest.TestCase):
             html = cc.render(model, TODAY, date(2026, 11, 1))
         self.assertEqual(snapshot(self.project), before)
         got = {(e["kind"], e["date"].isoformat(), e["request"]): e for e in items}
-        want = {("statutory_due", "2026-11-09", "R-1"): "DATED", ("extension_limit", "2026-11-23", "R-1"): "DATED",
-                ("statutory_due", "2026-11-12", "R-2"): "INFERRED", ("expected_window", "2026-11-20", "R-1"): "DATED",
+        want = {("statutory_due", "2026-11-09", "R-1"): "COMPUTED", ("extension_limit", "2026-11-23", "R-1"): "COMPUTED",
+                ("statutory_due", "2026-11-12", "R-2"): "COMPUTED", ("expected_window", "2026-11-20", "R-1"): "DATED",
                 ("expected_window", "2026-11-18", "R-2"): "DATED", ("expected_window", "2026-11-25", "R-2"): "DATED",
                 ("overdue", "2026-10-20", "R-4"): "DATED", ("link_expiry", "2026-11-17", ""): "DATED",
                 ("link_expiry", "2026-11-27", ""): "INFERRED", ("publication_pending", "2026-11-08", ""): "DATED",
