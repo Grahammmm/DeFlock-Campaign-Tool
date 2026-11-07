@@ -100,14 +100,16 @@ def _replace(path, data):
 
 
 class _Locked:
-    def __init__(self, project, create=False):
+    def __init__(self, project, create=False, read_only=False):
+        self.read_only = read_only
         if create:
             os.makedirs(project, mode=0o700, exist_ok=True)
         _need(os.path.isdir(project) and not os.path.islink(project), "project_invalid")
         self.project = os.path.abspath(project)
 
     def __enter__(self):
-        self.fd = os.open(os.path.join(self.project, LOCK), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        flags = os.O_RDONLY if self.read_only else os.O_RDWR | os.O_CREAT
+        self.fd = os.open(os.path.join(self.project, LOCK), flags | os.O_NOFOLLOW, 0o600)
         deadline = time.monotonic() + 5.0
         while True:
             try:
@@ -281,9 +283,18 @@ def switch_payload(project):
     return approval.payload(SWITCH_SCOPE, project_id(project), _switch_content(project, rnd), round_=rnd)
 
 
-def switch_state(project):
-    with _Locked(project) as lock:
-        return _switch_state(lock, lock.events())
+def switch_state(project, *, read_only=False):
+    """Read switch state; read_only never creates a synchronization file."""
+    try:
+        with _Locked(project, read_only=read_only) as lock:
+            return _switch_state(lock, lock.events())
+    except FileNotFoundError:
+        if not read_only:
+            raise
+        # No lock and no switch evidence is the untouched, shipped-OFF state.
+        if any(os.path.lexists(os.path.join(project, name)) for name in (JOURNAL, SWITCH, KILL)):
+            raise PacketError("switch_unavailable") from None
+        return "OFF"
 
 
 def init(project):

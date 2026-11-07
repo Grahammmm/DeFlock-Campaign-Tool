@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import approval_queue, console_board, console_calendar, console_documents, console_home, console_manual_events, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
 from . import console_origin
-from . import console_access, console_layout, console_review
+from . import console_access, console_layout, console_review, console_settings
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -769,6 +769,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not self._host_ok():
             return self._fail(403)
         if console_packets.serve(self):
+            return
+        if console_settings.serve(self):
             return
         if console_home.serve(self):
             return
