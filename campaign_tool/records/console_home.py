@@ -38,6 +38,7 @@ def load(project, run_id, run_report_path=None, now=None, *, send_config=None, m
         model["calendar"] = co._unavailable("calendar_unreadable")
     try:
         board = cb.load(project, run_id)
+        model["deadlines"] = board["deadlines"]
         model["waiting"] = ({"state": "ok", "rows": waiting_rows(board, model["now"].date())}
                             if board["timeline"]["state"] == "ok" else dict(board["timeline"]))
     except Exception:
@@ -173,6 +174,74 @@ def render_waiting(state, today):
     return "\n".join(out + ['</section>'])
 
 
+def timeline_rows(model, today):
+    groups = {}
+    for request in cb._requests(model):
+        groups.setdefault(request.get("agency_key") or "(no key)", []).append(request)
+    rows = []
+    for key, requests in groups.items():
+        events, dates = [], []
+        for request in requests:
+            for event in cb._live(request):
+                if event["type"] == "draft" and event.get("draft_status") in ("cancelled", "expired", "rejected"):
+                    continue
+                if event not in events:
+                    events.append(event)
+            if request.get("closed"):
+                continue
+            clock = request.get("clocks") or {}
+            due = clock.get("due")
+            day = cb._day(due)
+            if day and day >= today and clock.get("state") != "determined":
+                extended = clock.get("extended_due") == due
+                label, source, _ = cb.computed_clock(model, request, "extension_limit" if extended else "determination_due", due)
+                kind = "extension_limit" if extended else "statutory_due"
+                dates.append((day, "%s (%s; %s)" % (console_calendar.KINDS[kind], label, source)))
+            for event in cb._live(request):
+                if event["type"] == "promised date":
+                    dates += [(day, "promised date (DATED)") for value in event.get("new_dates") or []
+                              if (day := cb._day(value)) and day >= today]
+        events.sort(key=lambda e: (cb._day(e.get("date")) or datetime.min.date(), e["type"]), reverse=True)
+        rows.append({"key": key, "agency": next((r["agency"] for r in requests if r.get("agency")), key),
+                     "events": events[:3], "latest": cb._day(events[0].get("date")) if events else None,
+                     "next": min(dates) if dates else None})
+    return sorted(rows, key=lambda r: (-(r["latest"] or datetime.min.date()).toordinal(), r["key"]))
+
+
+def render_progress(model, today):
+    out = ['<section id="timeline"><h2>Timeline (all agencies)</h2>']
+    available = model["timeline"]["state"] == "ok"
+    if not available:
+        out.append('<p role="status">Timeline: unavailable (%s).</p>' % esc(model["timeline"].get("code")))
+    else:
+        rows = timeline_rows(model, today)
+        for row in rows[:30]:
+            events = " · ".join("%s %s" % (str(cb._day(e.get("date"))) + " (DATED)" if cb._day(e.get("date")) else "unknown date (UNKNOWN)",
+                                {"sent": "request sent", "received": "reply received"}.get(e["type"], e["type"]))
+                                for e in row["events"]) or "No events recorded."
+            expected = "%s %s" % row["next"] if row["next"] else "unknown (UNKNOWN)"
+            out.append('<p>%s: %s. Next: %s. <a href="/agency?agency=%s">Full timeline</a></p>' % (
+                esc(row["agency"]), esc(events), esc(expected), esc(urllib.parse.quote(row["key"], safe=""))))
+        if not rows:
+            out.append('<p>No agency events recorded.</p>')
+    out.append('</section><section id="next"><h2>Next steps</h2>')
+    actions = ([r for r in console_standing.agency_rows(model, today, {"state": "absent"})
+                if r["owner"] in cb.OURS] if available else [])
+    drafts = {(r["id"], r["revision"]) for r in model["queue"].get("rows", [])
+              if r["status"] == "pending" and r["kind"] in NEXT}
+    for row in actions[:9 if drafts else 10]:
+        out.append('<p>%s: %s</p>' % (esc(row["agency"]), esc(row["action"] or "No next action recorded")))
+    if drafts:
+        out.append('<p><a href="/next-steps">%d suggested drafts waiting</a></p>' % len(drafts))
+    if not available:
+        out.append('<p role="status">Next actions: unavailable (timeline).</p>')
+    if model["queue"]["state"] != "ok":
+        out.append('<p role="status">Suggested drafts: unavailable (%s).</p>' % esc(model["queue"].get("code")))
+    if available and model["queue"]["state"] == "ok" and not actions and not drafts:
+        out.append('<p>No next steps recorded.</p>')
+    return "\n".join(out + ['</section>'])
+
+
 def render_home(model, token):
     rows = decision_rows(model, model["now"].date())
     calendar = model["calendar"]
@@ -224,6 +293,7 @@ def render_home(model, token):
         out.append('</ul>')
     out.append('</section>')
     out.append(render_waiting(waiting, model["now"].date()))
+    out.append(render_progress(model, model["now"].date()))
     out.append('<details id="more"><summary>More detail</summary>')
     out.append(console_standing.render_standing(model, model["now"].date()))
     out.append(console_outstanding.render_outstanding(model))
