@@ -583,7 +583,7 @@ class AbsenceTests(FaqCase):
         files = self.build()
         # DF2207-12 adds exactly two catalogue outputs, one footer paragraph and one sitemap URL.
         # Retain every pre-feature digest; normalize only those independently named additions.
-        self.assertEqual(set(files) - set(BASELINE), {"data.html", "data/datapackage.json"})
+        self.assertEqual(set(files) - set(BASELINE), {"data.html", "data/datapackage.json", "data/cameras.csv"})
         legacy = {}
         data_link = b'<p><a href="/data.html">Open data</a></p>'
         data_url = b'<url><loc>https://cedar-records.example.invalid/data.html</loc></url>'
