@@ -42,6 +42,7 @@ from .shell import render
 from .provenance_text import EXPLAINER, source_line
 from .redirects import load_redirects
 from .site_data_catalogue import DATASETS, DESCRIPTOR, PAGE, datapackage_json, resource_records
+from . import source_bundle
 from .review import ROLES
 
 from .sharing_summary import GROUPS as SHARING_GROUPS, summarize_sharing
@@ -591,6 +592,7 @@ class Site:
         self.fragment_for_sha = {}
         for source in model["sources"]:
             self.fragment_for_sha.setdefault(source["sha256"], source["fragment"])
+        self.bundle = None  # DF0022-11: (byte size, sha256) of this build's data/sources.zip, set before sources.html is rendered
         self.cited_by = {}  # sha256 -> published findings citing it, model order, each finding once
         for finding in model["findings"]:
             for sha in dict.fromkeys(s["sha256"] for s in finding["sources"]):
@@ -811,7 +813,8 @@ class Site:
         rows = []
         for record in records:
             path, csv_file = record["path"], record["mediatype"] == "text/csv"
-            schema_label = self.t("data.schema_csv") if csv_file else e(record["schema_url"].rsplit("/", 1)[-1])
+            schema_label = (self.t("data.schema_csv") if csv_file else
+                            e(record["schema_url"].rsplit("/", 1)[-1]) if record["schema_url"] else "")
             licence = "; ".join(f'<a href="{e(item["path"])}" rel="noopener noreferrer">{e(item["name"])}</a>'
                                 for item in record["licenses"]) or self.t("data.license_unstated")
             if record["attribution"]:
@@ -821,8 +824,8 @@ class Site:
                 f'<th scope="row"><a href="/{e(path)}" download>{e(path.rsplit("/", 1)[-1])}</a></th>'
                 f'<td>{e(record["description"])}</td><td class="bytes">{record["bytes"]}</td>'
                 f'<td class="sha256"><code>{record["sha256"]}</code></td>'
-                f'<td><a href="{e(record["schema_url"])}" rel="noopener noreferrer">{schema_label}</a></td>'
-                f'<td>{licence}</td></tr>')
+                + (f'<td><a href="{e(record["schema_url"])}" rel="noopener noreferrer">{schema_label}</a></td>' if record["schema_url"] else "<td></td>")
+                + f'<td>{licence}</td></tr>')
         head = "".join(f'<th scope="col">{self.t(key)}</th>' for key in (
             "data.download", "data.description", "data.bytes", "data.sha256", "data.schema", "data.license"))
         main = (f'    <section class="section" id="content"><div class="section-heading"><div>'
@@ -2366,6 +2369,12 @@ class Site:
                 items.append(f'<li{hooks}><p>{sentence}</p><p class="record-no">{self.t("sources.record_no")} <code>{record}</code>{pages} · {link}'
                              f'{copy_status(source)}{note}{details}{cited}</p></li>')
             sections.append(f'<section class="agency-document-group" id="{e(fragment)}"><h3>{heading}</h3><ul class="source-table">{"".join(items)}</ul></section>')
+        bundle = ""  # DF0022-11: only when this build writes data/sources.zip
+        if self.bundle:
+            size, digest = self.bundle
+            bundle = (f'<p class="source-bundle"><a href="/data/sources.zip" download>{self.t("sources.bundle")}</a> · '
+                      f'{self.t("sources.bundle_details", bytes=e(size), sha256=e(digest))}</p>'
+                      f'<p class="source-bundle-scope">{self.t("sources.bundle_scope")}</p>')
         howto = COPY_HOWTO if any(copy_status(s) for s in self.model["sources"]) else ""  # unchanged page without checks
         form = self.sources_filter()
         empty = (f'<p class="sources-filter-empty" id="sources-filter-empty" hidden>{self.t("sources.filter_empty")}</p>' if form else "")
@@ -2373,7 +2382,7 @@ class Site:
                 f'<h2>{self.t("heading.sources")}</h2></div><p class="provenance-note">{e(EXPLAINER)} {self.t("intro.sources")} '
                 f'<a href="/data/sources.json" type="application/json">{self.t("intro.open_data")}</a> · '
                 f'{self.csv_link("/data/sources.csv")}.</p>{howto}</div>'
-                + form + ("".join(sections) or f'<p>{self.t("notice.no_sources")}</p>') + empty + '</section>\n')
+                + bundle + form + ("".join(sections) or f'<p>{self.t("notice.no_sources")}</p>') + empty + '</section>\n')
         return self.page("sources", self.labels["title.sources"], self.labels["title.sources_description"], "/sources.html", main,
                          ["/site-data.js", "/sources/filter.js"] if form else [])
 
@@ -3425,9 +3434,14 @@ def _assert_public(doc, name, top, nested):
 
 # --- file emission -----------------------------------------------------------
 
+def _bytes(payload):
+    """A planned file as bytes: text is UTF-8 encoded, bytes (the DF0022-11 archive) are used verbatim."""
+    return payload if isinstance(payload, bytes) else payload.encode("utf-8")
+
+
 def _write(path, text, written):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(text.encode("utf-8"))  # exact UTF-8 bytes (CRLF kept) so the catalogue hashes match the file
+    path.write_bytes(_bytes(text))  # exact UTF-8 bytes (CRLF kept) so the catalogue hashes match the file
     written.append(path)
 
 
@@ -3552,7 +3566,7 @@ def _plan(root, today=None, notes=None):
     # Render everything before touching public/ so a refused page leaves no partial site.
     pages = {
         "index.html": site.index_html(), "agencies.html": site.agencies_html(),
-        "findings/index.html": site.findings_index_html(), "findings/packet-all.html": site.packet_html(), "sources.html": site.sources_html(),
+        "findings/index.html": site.findings_index_html(), "findings/packet-all.html": site.packet_html(),
         "meetings.html": site.meetings_html(), "about.html": site.about_html(),
         "corrections.html": site.corrections_html(), "404.html": site.not_found_html(), "methods.html": site.methods_html(), "search.html": site.search_html(),
         "timeline.html": site.timeline_html(), "privacy.html": site.privacy_html(),
@@ -3650,12 +3664,21 @@ def _plan(root, today=None, notes=None):
             ("county_boundary_path", "data/county.geojson")) if found[key]]
         map_data = [Path(relative).as_posix() for _, relative, _ in plan]
         plan += [(path, f"vendor/{name}", VENDOR_MAX_BYTES) for name, path in model["vendor"].items()]
-    plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in _asset_plan(model)]
+    assets = _asset_plan(model)
+    plan += [(source, relative, ASSET_MAX_BYTES) for source, relative in assets]
     for source, _, limit in plan:  # every copy is checked before the filesystem changes
         _check_copy(source, limit)
+    # DF0022-11: data/sources.zip holds only the library entries whose public_url is one of THIS build's public-asset copies;
+    # it is planned before sources.html (which links it with its size and sha256) and before the catalogue (which lists it).
+    archive = source_bundle.plan_bundle(model["sources"], site.base, assets, site.agencies_by_id, notes)
+    site.bundle_assets = [Path(relative).as_posix() for _, relative in assets]
+    if archive is not None:
+        files[source_bundle.ZIP_PATH] = archive
+        site.bundle = (len(archive), hashlib.sha256(archive).hexdigest())
+    files["sources.html"] = site.sources_html()["html"]
     # DF2207-12: the catalogue is calculated from the exact bytes planned above, so it joins the redirect and privacy checks
     site.city_path = Path(model["map"]["controller"]["city_boundaries_url"]).as_posix() if model["map"] else None
-    payloads = _catalogue_payloads(files, plan, site.city_path, lambda source, path: Path(source).read_bytes() if source else files[path].encode("utf-8"))
+    payloads = _catalogue_payloads(files, plan, site.city_path, lambda source, path: Path(source).read_bytes() if source else _bytes(files[path]))
     files[PAGE], files[DESCRIPTOR] = _render_catalogue(site, payloads)
     if model["site"].get("press"):  # DF2207-10: links only the open data this build writes, never a scan of public/
         files["press.html"] = site.press_html(sorted({name for name in PRESS_DATA_FILES if name in files} | set(map_data)))["html"]
@@ -3699,6 +3722,8 @@ def build_site(root, today=None, notes=None):
         for source, relative, limit in plan:
             _copy(source, new / relative, written, limit)
         staged = _catalogue_payloads(files, plan, site.city_path, lambda _, path: (new / path).read_bytes())
+        source_bundle.rebuild_from_staged(site.model["sources"], site.base, site.bundle_assets, new,
+                                          site.agencies_by_id, files.get(source_bundle.ZIP_PATH))
         again = _render_catalogue(site, staged)
         if again != (files[PAGE], files[DESCRIPTOR]):  # a copy changed after it was planned: nothing is swapped in
             raise ContentError("data catalogue: an open-data file changed while the site was built; build again")
@@ -3721,6 +3746,13 @@ def build_site(root, today=None, notes=None):
     return [public / path.relative_to(new) for path in written]
 
 
+def planned_source_bundle(root, today=None):
+    """DF0022-11: ``(True, archive bytes or None)`` a rebuild of ``root`` would write as data/sources.zip, or ``(False, None)``
+    for the starter. Writes nothing; ``build --check`` calls it before any build."""
+    planned = _plan(root, today)
+    return (False, None) if planned is None else (True, planned[0].get(source_bundle.ZIP_PATH))
+
+
 def preview_site(root, today=None):
     """Compare a fresh render with the current ``public/`` by path, size and SHA-256; writes nothing."""
     public = Path(root) / "public"
@@ -3731,7 +3763,7 @@ def preview_site(root, today=None):
 
     def sized(data):
         return len(data), hashlib.sha256(data).hexdigest()
-    new = {name: sized(text.encode("utf-8")) for name, text in files.items()}
+    new = {name: sized(_bytes(text)) for name, text in files.items()}
     new.update({Path(relative).as_posix(): sized(Path(source).read_bytes()) for source, relative, _ in plan})
     old, unreadable = {}, []
     if public.is_dir():

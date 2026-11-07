@@ -124,7 +124,7 @@ class BuiltSiteTests(unittest.TestCase):
     def test_fictional_example_builds_and_check_passes(self):
         out, err, error = self.run_build()
         self.assertIsNone(error, err)
-        self.assertEqual(err, "")
+        self.assertEqual(err, "note: sources.zip skipped: no local public source copies\n")  # DF0022-11: the fictional library has no local public copy
         self.assertIn(PASSED, out)
         self.assertEqual(check_accessibility(self.public), [])
         self.assertIn('id="city-records-link" href="sources.html#library">Review the evidence notes</a>',

@@ -20,6 +20,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from .content import LICENSES, ODBL, ContentError
+from .source_bundle import MAX_BYTES as SOURCE_ZIP_MAX
 
 PACKAGE_NAME = "campaign-open-data"
 DESCRIPTOR = "data/datapackage.json"
@@ -27,6 +28,7 @@ PAGE = "data.html"
 SCHEMA_BASE = "https://raw.githubusercontent.com/Grahammmm/DeFlock-Campaign-Tool/main/schemas/"
 GEOJSON_SCHEMA = "https://geojson.org/schema/FeatureCollection.json"
 JSON, CSV, GEO = "application/json", "text/csv", "application/geo+json"
+ZIP = "application/zip"  # DF0022-11: data/sources.zip, the one binary resource (schema null, no licence claimed)
 CITY_NAME = "city-boundary-geojson"
 MAX_BYTES = 64 * 1024 * 1024
 NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
@@ -45,6 +47,7 @@ DATASETS = {
     "data/meetings.csv": ("meetings-csv", "Meetings (CSV)", "The meetings as one flat row per meeting; every cell is text.", CSV, "meetings"),
     "data/cameras.geojson": ("cameras-geojson", "Mapped camera points (GeoJSON)", "Community-mapped camera points from OpenStreetMap, as reviewed for the map.", GEO, None),
     "data/county.geojson": ("county-geojson", "County boundary (GeoJSON)", "County boundary used by the map.", GEO, None),
+    "data/sources.zip": ("sources-zip", "Public source copies (ZIP)", "The public source copies this site hosts, with manifest.csv; external links and private originals are not included.", ZIP, None),
 }
 CITY_META = (CITY_NAME, "City boundaries (GeoJSON)", "City boundaries used to count mapped points.", GEO, None)
 KNOWN_LICENSES = {ODBL["id"]: ODBL["url"], **{key: value[1] for key, value in LICENSES.items()}}
@@ -68,6 +71,8 @@ def csv_columns(data):
 
 def _expected_schema(path, media, kind, data):
     """``(descriptor schema, link target for the HTML page)``."""
+    if media == ZIP:
+        return None, None
     if media == CSV:
         return ({"fields": [{"name": name, "type": "string"} for name in csv_columns(data)]},
                 f"{SCHEMA_BASE}{kind}-open-data.schema.json")
@@ -87,6 +92,8 @@ def _stated_license(data):
 
 def _licenses(path, media, data, campaign):
     """``(licenses, attribution or None)`` for one file; a licence never crosses from one resource to another."""
+    if media == ZIP:  # mixed source rights: no blanket campaign licence
+        return [], None
     if path == "data/cameras.geojson":  # OpenStreetMap-derived: ODbL always, whatever the campaign chose
         return [{"name": ODBL["id"], "path": ODBL["url"]}], ODBL["attribution"]
     if media != GEO:  # the campaign's own data
@@ -174,7 +181,7 @@ def _duplicate_keys(pairs):
     return dict(pairs)
 
 
-def _read_regular(public, relative):
+def _read_regular(public, relative, limit=MAX_BYTES):
     """Bytes of ``public/<relative>``; ``None`` when absent, a reason string when it is a symlink, escapes or is not a file."""
     current = public
     for index, part in enumerate(relative.split("/")):
@@ -191,7 +198,7 @@ def _read_regular(public, relative):
             return "has a non-directory ancestor"
     if not stat.S_ISREG(mode):
         return "is not a regular file"
-    if os.lstat(current).st_size > MAX_BYTES:
+    if os.lstat(current).st_size > limit:
         return "is too large to check"
     try:
         return current.read_bytes()
@@ -240,7 +247,7 @@ def _check_resource(public, resource, seen, problems, city_names):
         problems.append((full, "bytes must be a non-negative integer"))
     if not (isinstance(digest, str) and digest.startswith("sha256:") and SHA.fullmatch(digest[7:])):
         problems.append((full, "hash must be sha256:<64 lowercase hex>"))
-    data = _read_regular(public, full)
+    data = _read_regular(public, full, SOURCE_ZIP_MAX if meta[3] == ZIP else MAX_BYTES)
     if data is None:
         problems.append((full, "listed file is missing"))
         return full
@@ -258,6 +265,8 @@ def _check_resource(public, resource, seen, problems, city_names):
         expected = None
     if expected is not None and resource.get("schema") != expected:
         problems.append((full, "schema does not match the file"))
+    if meta[3] == ZIP and (resource.get("schema") is not None or resource.get("licenses") != []):
+        problems.append((full, "sources.zip must have a null schema and no licences"))
     if full == "data/cameras.geojson" and resource.get("licenses") != [{"name": ODBL["id"], "path": ODBL["url"]}]:
         problems.append((full, "cameras.geojson must carry ODbL-1.0"))
     for item in resource.get("licenses") if isinstance(resource.get("licenses"), list) else [None]:

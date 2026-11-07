@@ -543,6 +543,12 @@ def _site_claim_notes(root):
 def build(root, check=False, budget=None, weights_out=None, weights_baseline=None):
     from .site import build_site
     public = root / "public"
+    expected = None
+    if check and (root / "content").is_dir():  # DF0022-11: the archive a rebuild would write, computed before anything is written
+        from .site import planned_source_bundle
+        from .source_bundle import check_source_bundle
+        _, expected = planned_source_bundle(root)
+        check_source_bundle(public, expected)
     if check and any(os.path.lexists(public / name) for name in ("data.html", "data/datapackage.json")):
         from .site_check import check_data_catalogue  # DF2207-12: refuse an already-missing or changed listed file first
         check_data_catalogue(public)
@@ -565,6 +571,7 @@ def build(root, check=False, budget=None, weights_out=None, weights_baseline=Non
         from .site_check import check_accessibility, check_data_catalogue, check_links
         if content_mode:
             check_data_catalogue(public)  # DF2207-12: the fresh output, before any success line
+            check_source_bundle(public, expected)  # DF0022-11: the written archive is what the precheck computed
         hits = check_public_tree(public)
         for path, line, label in hits:
             print(f"public/{path}:{line}: {label}", file=sys.stderr)

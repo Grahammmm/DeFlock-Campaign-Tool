@@ -1362,6 +1362,21 @@ output. `data.html` is linked from the footer (its own paragraph before the fina
 listed in `sitemap.xml`; `data.html` is a reserved name. Labels: `data.title`, `data.intro`, `data.csv_note`, `data.download`,
 `data.description`, `data.bytes`, `data.sha256`, `data.schema`, `data.schema_csv`, `data.license`, `data.license_unstated`,
 `data.package` and `footer.data`; the descriptions in the catalogue are fixed English like the other non-page outputs.
+
+`data/sources.zip` (DF0022-11) bundles the public source copies this build hosts. A source-library entry is included only when
+its `public_url` is `site.json.base_url` plus the path of a file this same build copies from `content/public-assets` (exact
+HTTPS origin and path prefix; a fragment is ignored; a query, `%` escape, dot/empty/backslash segment, other origin, generated
+or vendor file, or a `public_url` with no `base_url` is never included). Each file is stored once as `files/<path>` next to
+`manifest.csv` (`sha256,title,agency,received_at,public_path,bytes`, one row per library entry, sorted, findings.csv quoting and
+formula guard). `sha256` there is the 12-character record number, not a hash of the copy: a redacted copy need not match the
+original. Members are sorted, stored without compression with fixed 1980-01-01 timestamps and mode 0644, so two builds write
+identical bytes. With no eligible copy, or when the archive would pass 200 MiB, the build prints `note: sources.zip skipped: ...`,
+writes no archive and leaves no link or catalogue row (the build swap removes an older archive). `sources.html` and `data.html`
+show its byte size and full SHA-256 (this digest is a public output hash, not the private original hash). `build --check`
+computes the expected archive before building and refuses (`sources.zip: differs from rebuilt public-source bundle`) a
+`public/data/sources.zip` that is missing, symlinked, edited, or stale, or present when no archive is expected; an ordinary build
+repairs it. Labels: `sources.bundle`, `sources.bundle_details` (`{bytes}`, `{sha256}`) and `sources.bundle_scope`.
+
 `public/` is
 regenerated from scratch on every content build; do not
 hand-edit it. `build --check` runs the `tools/check_public_tree.py` pattern scan

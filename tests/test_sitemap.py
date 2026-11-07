@@ -74,7 +74,7 @@ class SitemapTests(unittest.TestCase):
     def test_two_findings_absolute_locs_and_lastmod(self):
         self.finding(corrections=[], updated_at="2026-02-05T09:30:00+00:00")
         self.finding("second-finding", corrections=[], updated_at="2026-03-07T10:00:00+00:00")
-        self.assertEqual(self.build(), "")
+        self.assertEqual(self.build(), "note: sources.zip skipped: no local public source copies\n")  # DF0022-11
         urls = self.urls()
         self.assertTrue(all(loc.startswith(BASE + "/") for loc in urls), urls)
         self.assertEqual(urls[BASE + "/findings/cedar-policy-posted.html"], "2026-02-05")
@@ -123,7 +123,7 @@ class SitemapTests(unittest.TestCase):
                 self.assertIn('<a href="/corrections.html">Corrections</a> · <a href="/corrections.xml">Corrections feed</a> · <a href="/methods.html">How to read our findings</a></p>',
                               files["index.html"])
         self.base_url(BASE)
-        self.assertEqual(self.build(), "")
+        self.assertEqual(self.build(), "note: sources.zip skipped: no local public source copies\n")  # DF0022-11
         self.assertIn(BASE + "/", self.urls())
         self.assertIn('<a href="/sitemap.xml">Sitemap</a>', self.all_text()["about.html"])
 
