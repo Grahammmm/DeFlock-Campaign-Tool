@@ -146,7 +146,7 @@ stacks above the page; overdue notices are bold red (on our records, not a legal
 `deploy/` (`*.timer`, `*.path`, `.in` templates included) plus any `--timer-unit`, so another geography with its own units
 needs no code change. For each job it runs only `systemctl --user show` and reports installed, enabled, last trigger,
 last result (`Result` and `ExecMainStatus` of the triggered service) and next run, read from systemd at request time
-(schedules are never hard-coded). Only an installed, enabled unit whose last run reported success with exit 0 reads `ok`.
+(schedules are never hard-coded). Only an installed, enabled timer-driven unit whose service has a recorded completed execution (`ExecMainExitTimestamp`) with success and exit 0 reads `ok`; a service that never ran reads "never run" even though systemd defaults its result to success. Arrival (`.path`) units never read `ok`: `run-records.sh --arrival` exits 0 both when it processed work and when a held overlap lock only queued the arrival, so they read `UNKNOWN`.
 Not installed, disabled, never run, exit 73 (a held lock skipped the slot), failed, `systemctl` missing and unparseable
 output each render as their own explicit state, never as passed. There are no start, stop or enable controls.
 

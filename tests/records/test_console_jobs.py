@@ -37,7 +37,8 @@ def timer(**kw):
 
 
 def service(**kw):
-    return dict({"LoadState": "loaded", "ActiveState": "inactive", "Result": "success", "ExecMainStatus": "0"}, **kw)
+    return dict({"LoadState": "loaded", "ActiveState": "inactive", "Result": "success", "ExecMainStatus": "0",
+                 "ExecMainExitTimestamp": "Sat 2026-11-07 03:00:15 PST"}, **kw)
 
 
 class JobsUnit(unittest.TestCase):
@@ -75,7 +76,24 @@ class JobsUnit(unittest.TestCase):
         self.assertEqual(cj.inspect("a.timer", fake({"a.timer": timer(LastTriggerUSec="n/a"), "a.service": service()}))["state"], "never")
         path = {"LoadState": "loaded", "UnitFileState": "enabled", "ActiveState": "active", "Unit": "p.service"}
         row = cj.inspect("p.path", fake({"p.path": path, "p.service": service()}))
-        self.assertEqual((row["state"], row["next_run"]), ("ok", "n/a (event driven)"))
+        self.assertEqual((row["state"], row["next_run"]), ("unknown", "n/a (event driven)"))
+
+    def test_never_executed_service_is_not_ok(self):
+        # systemd defaults Result=success, ExecMainStatus=0 for a service that never ran
+        for stamp in ("", "n/a", "0"):
+            row = cj.inspect("a.timer", fake({"a.timer": timer(), "a.service": service(ExecMainExitTimestamp=stamp)}))
+            self.assertEqual(row["state"], "never", stamp)
+        bare = service()
+        del bare["ExecMainExitTimestamp"]
+        self.assertEqual(cj.inspect("a.timer", fake({"a.timer": timer(), "a.service": bare}))["state"], "unknown")
+
+    def test_held_arrival_exit_zero_is_not_ok(self):
+        # run-records.sh --arrival exits 0 when the lock is held (arrival queued), so a path unit is never ok
+        path = {"LoadState": "loaded", "UnitFileState": "enabled", "ActiveState": "active", "Unit": "p.service"}
+        row = cj.inspect("p.path", fake({"p.path": path, "p.service": service()}))
+        self.assertEqual(row["state"], "unknown")
+        self.assertIn("queues", row["detail"])
+        self.assertNotIn(">ok<", cj.render(["p.path"], fake({"p.path": path, "p.service": service()})))
 
     def test_systemctl_missing_and_garbage_are_unknown(self):
         def missing(args):

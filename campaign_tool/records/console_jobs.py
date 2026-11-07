@@ -2,8 +2,10 @@
 
 Lists every scheduled job the deploy/ unit files define, with what systemd reports about it. Only
 ``systemctl --user show`` is run; nothing is started, stopped, enabled or changed. Missing, skipped,
-held or unknown is never shown as passed: only an installed, enabled unit whose last run reported
-``Result=success`` with exit status 0 is "ok".
+held or unknown is never shown as passed: only an installed, enabled timer-driven unit whose service has a
+recorded completed execution (``ExecMainExitTimestamp``) reporting ``Result=success`` with exit status 0 is "ok".
+Path (arrival) units are never "ok": the wrapper exits 0 both when work ran and when the overlap lock was held
+and the arrival was only queued, so exit 0 does not prove it was processed.
 
 The job list is discovered from ``deploy/**/*.timer|*.path`` (``.in`` templates included), so another
 geography that ships its own units needs no code change. Extra units may be added with the console's
@@ -29,7 +31,7 @@ UNIT_SUFFIXES = (".timer", ".path")
 UNIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,100}\.(timer|path)")
 SERVICE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,100}\.service")
 PROPS = ("LoadState", "UnitFileState", "ActiveState", "Unit", "LastTriggerUSec", "NextElapseUSecRealtime")
-SERVICE_PROPS = ("LoadState", "ActiveState", "Result", "ExecMainStatus")
+SERVICE_PROPS = ("LoadState", "ActiveState", "Result", "ExecMainStatus", "ExecMainExitTimestamp")
 ENABLED_OK = frozenset({"enabled", "enabled-runtime", "static", "generated", "alias"})
 TOKEN_ENV, TOKEN_FILE_ENV, REPO_ENV, FLOWS_ENV = (
     "DEFLOCK_GITHUB_READ_TOKEN", "DEFLOCK_GITHUB_READ_TOKEN_FILE", "DEFLOCK_GITHUB_REPO",
@@ -111,10 +113,15 @@ def inspect(unit, runner=system_runner):
         return dict(row, state="skipped", detail="exit 73: a held lock skipped the slot")
     if "failed" in (props.get("ActiveState"), svc.get("ActiveState")) or result not in ("", "success"):
         return dict(row, state="failed", detail="last run failed (result %s, exit %s)" % (result[:40] or "unknown", status[:10] or "unknown"))
+    if "ExecMainExitTimestamp" not in svc:
+        return dict(row, detail="no completed-execution evidence reported")
+    if _stamp(svc["ExecMainExitTimestamp"]) == "never":
+        return dict(row, state="never", detail="no completed run recorded yet")
     if result != "success" or status != "0":
-        if row["last_trigger"] == "never" and result in ("", "success"):
-            return dict(row, state="never", detail="no run recorded yet")
         return dict(row, detail="no complete result recorded")
+    if "LastTriggerUSec" not in props:
+        return dict(row, detail="exit 0 does not prove the arrival was processed: a held overlap lock queues it "
+                                "and also exits 0")
     if row["last_trigger"] == "never":
         return dict(row, state="never", detail="no run recorded yet")
     return dict(row, state="ok", detail="last run succeeded")
