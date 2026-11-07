@@ -29,7 +29,21 @@ BASIS = {"recorded_receipt": "DATED", "submission_proxy": "INFERRED", "agency_pr
 CLOCK_SOURCE = "register clock (Gov. Code 7922.535 arithmetic on our records)"
 LABEL = "Private; review required. Overdue is on our records; not a legal finding. Nothing is sent from this page."
 MONTH = re.compile(r"(\d{4})-(0[1-9]|1[0-2])")
+MONTH_YEARS = (1900, 2200)  # outside this range the grid arithmetic would run into date.min/date.max
 UID_HOST = "@calendar.deflock.invalid"
+
+
+def _row_ok(r):
+    """True when a register row has the shape the projection reads; a bad row degrades only the follow-up source."""
+    if not isinstance(r, dict):
+        return False
+    if not all(isinstance(r.get(k), str) and r.get(k) for k in ("agency_key", "request_id")):
+        return False
+    if r.get("agency") is not None and not isinstance(r.get("agency"), str):
+        return False
+    if not isinstance(r.get("status", ""), str):
+        return False
+    return all(r.get(k) is None or isinstance(r.get(k), dict) for k in ("deadline", "promised"))
 
 
 def load(project, run_id, now=None):
@@ -44,13 +58,16 @@ def load(project, run_id, now=None):
         register, settings = fc.read_register(project, run_id), fc.load_settings(project)
         if register is None:
             model["followup"] = co._unavailable("register_missing")
+        elif not isinstance(register.get("requests"), list) or not isinstance(register.get("as_of"), str) \
+                or not all(_row_ok(r) for r in register["requests"]):
+            model["followup"] = co._unavailable("register_invalid")
         elif settings["invalid"]:
             model["followup"] = co._unavailable("settings_invalid")
         elif model["queue"]["state"] != "ok":
             model["followup"] = co._unavailable("queue_unavailable")
         else:
             model["followup"] = {"state": "ok", "register": register, "settings": settings}
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         model["followup"] = co._unavailable("register_unreadable")
     return model
 
@@ -193,7 +210,15 @@ def build(model, today, horizon_days=90, since=None):
     if model["followup"]["state"] != "ok":
         notes.append("follow-up projection: unavailable (%s)" % model["followup"].get("code"))
     else:
-        _projection(model, today, add, notes)
+        staged, extra = [], []
+        try:
+            _projection(model, today, lambda *a, **k: staged.append((a, k)), extra)
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError, OverflowError):
+            notes.append("follow-up projection: unavailable (register_invalid)")
+        else:
+            for a, k in staged:
+                add(*a, **k)
+            notes.extend(extra)
     for e in out:
         e["agency"] = names.get(e["agency_key"]) or e["agency"]
     out.sort(key=lambda e: (e["date"], e["kind"], e["agency_key"], e["request"], e["label"]))
@@ -206,8 +231,13 @@ def entries(model, today, horizon_days=90, since=None):
 
 # ---- .ics --------------------------------------------------------------------------------------------
 
+PATHS = re.compile(r"(?<![\w])(?:[A-Za-z]:[\\/]|~[\\/]?|\.{1,2}[\\/]|[\\/])[^\s)\]'\",;]*"
+                   r"|(?<![\w.-])[\w.-]+(?:[\\/][\w.-]+){2,}|(?<![\w.-])[\w-]+[\\/][\w-]+\.\w{1,5}\b")
+
+
 def _scrub(text):
     text = re.sub(r"https?\S*|file:\S*", "", text)
+    text = PATHS.sub("", text)
     text = re.sub(r"[0-9a-fA-F]{32,}", "", text).replace("@", "")
     return re.sub(r"\s+", " ", text).strip()
 
@@ -218,7 +248,7 @@ def _esc(text):
 
 def _fold(line):
     raw, parts = line.encode("utf-8"), []
-    while len(raw) > 75:
+    while len(raw) > (75 if not parts else 74):  # continuation lines carry a leading space
         cut = 75 if not parts else 74
         while cut > 0 and (raw[cut] & 0xC0) == 0x80:
             cut -= 1
@@ -252,6 +282,8 @@ def to_ics(items, now):
 
 def _month(text, today):
     m = MONTH.fullmatch(text) if text else None
+    if m and not MONTH_YEARS[0] <= int(m.group(1)) <= MONTH_YEARS[1]:
+        return None
     return date(int(m.group(1)), int(m.group(2)), 1) if m else (None if text else today.replace(day=1))
 
 

@@ -241,5 +241,43 @@ class Calendar(unittest.TestCase):
         self.assertEqual(oct(out.stat().st_mode & 0o777), "0o600")
 
 
+    def test_malformed_register_rows_degrade_only_followup(self):
+        rows = [row("alpha-pd", "R-1")]
+        model = self.model(rows, links=[link("2026-11-17")])
+        for bad in ("junk", {"agency_key": "alpha-pd"}, {**rows[0], "deadline": "oops"}, {**rows[0], "request_id": 7}):
+            put(self.project / "run-outputs" / RUN / fc.REGISTER_NAME, register(rows + [bad]))
+            items, notes = cc.build(cc.load(str(self.project), RUN, NOW), TODAY)
+            self.assertIn("follow-up projection: unavailable (register_invalid)", notes)
+            self.assertIn("link_expiry", [x["kind"] for x in items])
+        # a row that passes the shape check but still breaks the planner must not crash or leak partial entries
+        broken = {**rows[0], "deadline": {"state": "running", "due": "9999-12-31"}}
+        put(self.project / "run-outputs" / RUN / fc.REGISTER_NAME, register([rows[0], broken]))
+        items, notes = cc.build(cc.load(str(self.project), RUN, NOW), TODAY)
+        self.assertIn("link_expiry", [x["kind"] for x in items])
+
+    def test_ics_has_no_paths_and_folds_to_75_octets(self):
+        e = {"date": TODAY, "kind": "overdue", "agency_key": "k", "request": "R-1 /home/u/records/x.pdf C:\\data\\a.txt ~/p",
+             "agency": "City/County PD ./rel/file.csv", "label": "l", "basis": "DATED",
+             "source": "see /var/lib/deflock/run/out.json and ../up/x.tsv " + "é" * 120}
+        text = cc.to_ics([e], NOW)
+        for frag in ("/home", "/var", "C:", "x.pdf", "out.json", "../", "~/", "file.csv"):
+            self.assertNotIn(frag, text)
+        self.assertIn("City/County PD", text.replace("\r\n ", ""))
+        for line in text.split("\r\n"):
+            self.assertLessEqual(len(line.encode("utf-8")), 75, line)
+        self.assertEqual(cc._fold("a" * 74 + "é" * 40).split("\r\n ")[-1].encode().__len__() <= 74, True)
+        for n in range(70, 240):
+            for ch in ("a", "é", "€"):
+                for ln in cc._fold("X" + ch * n).split("\r\n"):
+                    self.assertLessEqual(len(ln.encode("utf-8")), 75)
+
+    def test_boundary_months_are_rejected(self):
+        for bad in ("0000-01", "0001-01", "9999-12", "2201-01", "1899-12"):
+            self.assertIsNone(cc._month(bad, TODAY), bad)
+        for good in ("1900-01", "2200-12"):
+            first = cc._month(good, TODAY)
+            self.assertTrue(cc.render(stub(register([])), TODAY, first))
+
+
 if __name__ == "__main__":
     unittest.main()
