@@ -35,8 +35,10 @@ LOCK_SECONDS = 90.0
 DEFAULT_CAP = 5
 TZ = "America/Los_Angeles"
 FIELDS = {"enabled", "daily_cap", "smtp_host", "smtp_port", "smtp_user", "smtp_password_file", "imap_config",
-          "outbox_path", "agency_addresses", "kill_file"}
+          "outbox_path", "agency_addresses", "kill_file", "live", "test_recipient"}
 REASONS = {
+    "test_mode_recipient": "Test mode: only the test recipient can receive mail; this draft is addressed to someone else. It stays Approved, not sent.",
+    "test_recipient_missing": "Test mode is on and no test recipient is configured.",
     "send_disabled": "Sending is switched off in the send config.",
     "kill_switch": "The kill switch file is present.",
     "daily_cap_reached": "The daily send cap for this campaign is reached.",
@@ -76,6 +78,11 @@ def load_config(path):
         raise MailSendError(error.args[0] if error.args else "config_unavailable") from None
     _need(isinstance(raw, dict) and not set(raw) - FIELDS, "config_field_unknown")
     _need(type(raw.get("enabled")) is bool, "config_field:enabled")
+    live = raw.get("live", False)
+    _need(type(live) is bool, "config_field:live")
+    test_recipient = raw.get("test_recipient", "")
+    _need("test_recipient" not in raw or (isinstance(test_recipient, str)
+          and mail_drafts._ADDR.fullmatch(test_recipient)), "config_field:test_recipient")
     cap = raw.get("daily_cap", DEFAULT_CAP)
     _need(type(cap) is int and 1 <= cap <= 20, "config_field:daily_cap")
     port = raw.get("smtp_port", 587)
@@ -89,7 +96,7 @@ def load_config(path):
           "config_field:agency_addresses")
     kill = raw.get("kill_file")
     _need(kill is None or (isinstance(kill, str) and os.path.isabs(kill) and "\0" not in kill), "config_field:kill_file")
-    return {**raw, "daily_cap": cap, "smtp_port": port, "agency_addresses": [a.lower() for a in agency]}
+    return {**raw, "live": live, "test_recipient": test_recipient.lower(), "daily_cap": cap, "smtp_port": port, "agency_addresses": [a.lower() for a in agency]}
 
 
 def kill_files(project, config=None):
@@ -147,7 +154,8 @@ def switch_state(project, path, *, now=None):
         return {"can_send": False, "reason": error.code, "cap": None, "count": None}
     reason = ("send_disabled" if not config["enabled"] else "kill_switch" if killed(project, config)
               else "daily_cap_reached" if count >= config["daily_cap"] else None)
-    return {"can_send": reason is None, "reason": reason, "cap": config["daily_cap"], "count": count}
+    return {"can_send": reason is None, "reason": reason, "cap": config["daily_cap"], "count": count,
+            "mode": "live" if config["live"] else "test", "test_recipient": config["test_recipient"]}
 
 
 # ---- private files under <project>/approvals ------------------------------------------------
@@ -351,6 +359,12 @@ def _context(project, config, queue_id, *, page_fingerprint, form_to, imap_facto
             "fingerprint": jrow["fingerprint"]}
 
 
+def _test_recipient(config, address):
+    if config["live"] is not True:
+        _need(bool(config["test_recipient"]), "test_recipient_missing")
+        _need(address.lower() == config["test_recipient"], "test_mode_recipient")
+
+
 def prepare(project, path, queue_id, *, to=None, imap_factory=mail_poll.default_connect, now=None):
     """Read-only preview for the console: what would be sent and the exact payload G signs with the outbox key."""
     switch = switch_state(project, path, now=now)
@@ -361,6 +375,7 @@ def prepare(project, path, queue_id, *, to=None, imap_factory=mail_poll.default_
     try:
         config = load_config(path)
         ctx = _context(project, config, queue_id, page_fingerprint=None, form_to=to, imap_factory=imap_factory)
+        _test_recipient(config, ctx["address"])
     except MailSendError as error:
         out["code"] = error.code
         return out
@@ -391,6 +406,7 @@ def send_one(project, path, queue_id, *, actor, page_fingerprint, signature, to=
         _need(isinstance(signature, str) and signature.strip(), "signature_required")
         ctx = _context(project, config, queue_id, page_fingerprint=page_fingerprint or "", form_to=to,
                        imap_factory=imap_factory)
+        _test_recipient(config, ctx["address"])
     except MailSendError as error:
         return _refuse(project, "refused", error.code, **base)
     except approval_queue.ApprovalQueueError:
@@ -558,10 +574,13 @@ def render_result(result):
 # ---- command line ----------------------------------------------------------------------------
 
 def init(project, args):
-    config = {"enabled": False, "daily_cap": args.daily_cap, "smtp_host": args.smtp_host, "smtp_port": args.smtp_port,
+    config = {"enabled": False, "live": False, "daily_cap": args.daily_cap, "smtp_host": args.smtp_host, "smtp_port": args.smtp_port,
               "smtp_user": args.smtp_user, "smtp_password_file": args.smtp_password_file,
               "imap_config": args.imap_config, "outbox_path": args.outbox_path
               or os.path.join(os.path.abspath(project), "outbox", "outbox.sqlite")}
+    if args.test_recipient is not None:
+        _need(bool(mail_drafts._ADDR.fullmatch(args.test_recipient)), "config_field:test_recipient")
+        config["test_recipient"] = args.test_recipient.lower()
     with _Dir(project, create=True) as d:
         try:
             for name, data in ((CONFIG, (json.dumps(config, indent=1, sort_keys=True) + "\n").encode()),
@@ -589,6 +608,7 @@ def main(argv=None):
     init_p.add_argument("--smtp-port", type=int, default=587)
     init_p.add_argument("--daily-cap", type=int, default=DEFAULT_CAP)
     init_p.add_argument("--outbox-path")
+    init_p.add_argument("--test-recipient")
     status_p = sub.add_parser("status", help="switch state, today's count and cap; no secrets")
     status_p.add_argument("--project", required=True)
     status_p.add_argument("--config")
