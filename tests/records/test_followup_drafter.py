@@ -83,6 +83,22 @@ class GateTests(unittest.TestCase):
     def setUp(self):
         self.book = pb.load()
 
+    def test_extra_patterns_validation_and_filled_question_deduplication(self):
+        for extras in (["unknown"], ["no_records"], "audit_no_documents", [None], None):
+            with self.subTest(extras=extras), self.assertRaises(pb.PlaybookError) as raised:
+                fd.draft(self.book, make(extra_patterns=extras))
+            self.assertEqual(raised.exception.code, "response_type_unknown")
+        book = copy.deepcopy(self.book)
+        primary = pb.pattern(book, "no_records")
+        extra = pb.pattern(book, "audit_no_documents")
+        extra["questions"] = [primary["questions"][0], "Keep [value].", "Keep same."]
+        out = fd.draft(book, make(extra_patterns=["audit_no_documents", "audit_no_documents"], slots={"value": "same"}))
+        letter = out["body"].split(fd.NOTES_RULE)[0]
+        self.assertEqual(letter.count("Keep same."), 1)
+        self.assertEqual(out["extra_patterns"], ["audit_no_documents"])
+        original = fd.draft(self.book, make())
+        self.assertEqual(fd.draft(self.book, make(extra_patterns=[])), original)
+
     def test_banned_phrase_marks_needs_edit(self):
         out = fd.draft(self.book, make(subject="This was a violation"))
         self.assertEqual(out["status"], "needs edit")

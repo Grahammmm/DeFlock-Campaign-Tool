@@ -197,6 +197,10 @@ def draft(book, case, policy_rows=()):
     if kind is None:
         raise _pb.PlaybookError("response_type_unknown", _clean(case["response_type"], 60))
     entry = _pb.pattern(book, kind)
+    extras = case.get("extra_patterns", [])
+    _need(isinstance(extras, list) and all(isinstance(p, str) and p != kind and
+          RESPONSE_TYPES.get(p) == p for p in extras), "response_type_unknown")
+    entries = [entry] + [_pb.pattern(book, p) for p in dict.fromkeys(extras)]
     agency, request_id = _clean(case["agency"]["name"], 200), _clean(case["request_id"], 128)
     slots = {_slot_key(k): v for k, v in case.get("slots", {}).items()}
     unfilled = []
@@ -223,6 +227,9 @@ def draft(book, case, policy_rows=()):
     if produced:
         files = "; ".join("%s%s" % (_clean(p["file"], 160), (", page %s" % p["page"]) if p.get("page") else "") for _, p in produced)
         lines.append(f"We have the records you produced ({files}); we are not asking for those again.")
+    if case.get("received_asks"):
+        lines.append("Items recorded as received; not requested again: " + "; ".join(
+            f"Item {a['number']}: {_clean(a['text'])}" for a in case["received_asks"]) + ".")
     lines.append("")
 
     if open_asks:
@@ -236,12 +243,14 @@ def draft(book, case, policy_rows=()):
         lines += ["Another county agency released an export of this kind.", ""]
 
     questions = []
-    for text in entry["questions"] if open_asks else ():  # nothing open: nothing to ask
+    for text in (q for e in entries for q in e["questions"]) if open_asks else ():  # nothing open: nothing to ask
         text = _drop_dropped_sentences(text, open_asks, dropped_rows)
         if not text:
             continue
         text = text.replace("the lead items", _numbers(lead) if lead else "the first items listed above")
-        questions.append(_fill(text, slots, unfilled))
+        filled = _fill(text, slots, unfilled)
+        if filled not in questions:
+            questions.append(filled)
     if questions:
         lines.append("Please:")
         lines += [f"{n}. {q}" for n, q in enumerate(questions, 1)]
@@ -250,7 +259,7 @@ def draft(book, case, policy_rows=()):
         unfilled.append("no open asks remain; nothing to request, do not send")
     lines.append("")
 
-    cites = _citations(book, entry)
+    cites = list({c["key"]: c for e in entries for c in _citations(book, e)}.values())
     shown = [c for c in cites if c["in_body"]]
     if shown:
         lines += ["For reference: " + "; ".join(f"{c['ref']} ({c['gives']})" if c["gives"] else c["ref"] for c in shown) + ".", ""]
@@ -265,6 +274,8 @@ def draft(book, case, policy_rows=()):
     status = "needs edit" if lint["hits"] or unfilled else "ready for review"
     notes = ["Notes for the reviewer (remove before sending):", f"  Pattern {kind}: {entry['goal']}"]
     notes += ["  Do not: " + d for d in entry["do_not"]]
+    for extra in entries[1:]:
+        notes += [f"  Pattern {extra['id']}: {extra['goal']}"] + ["  Do not: " + d for d in extra["do_not"]]
     held = [c for c in cites if not c["in_body"]]
     notes += ["  Left out of the body (%s): %s" % (c["status"], c["ref"]) for c in held]
     notes += ["  Dropped by the prior-asks check: item %s (%s)" % (d["number"], d["reason"]) for d in dropped]
@@ -275,7 +286,7 @@ def draft(book, case, policy_rows=()):
     return {"schema": SCHEMA_OUT, "kind": "followup-" + kind, "pattern": kind, "agency_id": case["agency"]["id"],
             "request_id": request_id, "status": status, "review_required": True, "sent": False, "body": body,
             "open_asks": [{"number": a["number"], "tier": a["tier"], "state": a["state"]} for a in open_asks],
-            "dropped": dropped, "citations": cites,
+            "dropped": dropped, "citations": cites, **({"extra_patterns": list(dict.fromkeys(extras))} if extras else {}),
             "policy": ({"cite": _pol.cite(policy), "doc_sha256": policy["doc_sha256"], "page": policy["page"]} if policy else None),
             "banned_phrases": lint, "unfilled": unfilled}
 
