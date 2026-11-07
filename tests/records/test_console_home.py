@@ -10,6 +10,7 @@ from campaign_tool.records import approval_queue as aq, console_home as home, pu
 from campaign_tool.records import public_updates as pu
 from tests.records import test_admin_panel as panel
 from tests.records.test_console_board import build, put, RUN
+from tests.records import test_console_calendar as cal
 
 NOW = datetime(2026, 11, 5, tzinfo=timezone.utc)
 
@@ -74,14 +75,15 @@ class Home(unittest.TestCase):
         model = self.model()
         rows = home.decision_rows(model, NOW.date())
         page = home.render_home(model, "")
-        self.assertIn('<p role="status">6 need your decision</p>', page)
+        self.assertIn('<p role="status">6 need your decision · ', page)
         self.assertLess(page.index('6 need your decision'), page.index('<section id="decide">'))
         start, end = page.index('<details id="more">'), page.index('</details>')
         self.assertLess(page.index('<section id="decide">'), start)
         for text in ('id="standing"', 'id="outstanding"', 'CON-SITEPR-1', 'CON-REDACT-1', 'CON-FIND-1'):
             self.assertTrue(start < page.index(text) < end, text)
         self.assertIn('<summary>More detail</summary>', page)
-        for ident in ('week', 'waiting', 'timeline', 'next'):
+        self.assertTrue(page.index('</table></section>') < page.index('id="week"') < start)
+        for ident in ('waiting', 'timeline', 'next'):
             self.assertNotIn('id="' + ident + '"', page)
         table = page.split('<tbody>', 1)[1].split('</tbody>', 1)[0]
         for row in rows:
@@ -211,6 +213,83 @@ class Home(unittest.TestCase):
         model = self.model()
         self.assertEqual(model["timeline"]["code"], "run_mismatch")
         self.assertTrue(all(r["overdue_days"] is None for r in home.decision_rows(model, NOW.date())))
+
+
+class Week(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.project = Path(tmp.name)
+
+    def model(self):
+        cal.put(self.project / cal.fc.SETTINGS_FILE, cal.settings_doc(**{'alpha-pd': 'off'}))
+        return home.load(self.project, RUN, now=NOW)
+
+    def test_week_window_basis_links_duplicates_and_empty(self):
+        rows = [cal.row("alpha-pd", "R-" + str(day), cal.clock(due=(NOW + timedelta(days=day)).date().isoformat(),
+                    extended_due=None)) for day in (-1, 0, 3, 7, 9)]
+        cal.build(self.project, rows + [rows[2]])
+        model = self.model()
+        week = model["calendar"]["rows"]
+        self.assertEqual([e["request"] for e in week], ["R-0", "R-3", "R-7"])
+        page = home.render_home(model, "")
+        section = page.split('<section id="week">')[1].split('</section>')[0]
+        self.assertIn('3 due in the next 7 days', page)
+        self.assertIn('Sun Nov 08 · Statutory due · ALPHA-PD · R-3 · DATED', section)
+        self.assertEqual(section.count('/calendar?month=2026-11'), 3)
+        for request in ('R--1', 'R-9'):
+            self.assertNotIn(request, section)
+        cal.build(self.project, [])
+        self.assertIn('Nothing due in the next 7 days.', home.render_home(self.model(), ""))
+
+    def test_week_cap_and_order(self):
+        cal.build(self.project, [cal.row('alpha-pd', 'R-%02d' % n, cal.clock(due='2026-11-08',
+            extended_due='2026-11-08')) for n in range(25)], links=[cal.link('2026-11-08')])
+        model = self.model()
+        week = model['calendar']['rows']
+        self.assertEqual(len(week), 26)
+        self.assertEqual([(e['date'], e['kind']) for e in week], sorted((e['date'], e['kind']) for e in week))
+        self.assertEqual(week[0]['kind'], 'link_expiry')
+        section = home.render_home(model, '').split('<section id="week">')[1].split('</section>')[0]
+        self.assertEqual(section.count('<li>'), 20)
+        self.assertNotIn('R-24', section)
+        self.assertIn('26 due in the next 7 days', home.render_home(model, ''))
+
+    def test_week_failure_is_independent_and_escaped(self):
+        for result in (RuntimeError('private detail'), {'state': 'unavailable', 'code': '<bad>'}):
+            kwargs = {'side_effect': result} if isinstance(result, Exception) else {'return_value': result}
+            with mock.patch.object(home.console_calendar, 'load', **kwargs):
+                page = home.render_home(self.model(), '')
+            code = 'calendar_unreadable' if isinstance(result, Exception) else '&lt;bad&gt;'
+            self.assertIn('Calendar: unavailable (%s).' % code, page)
+            self.assertIn('Needs your decision', page)
+            self.assertIn('More detail', page)
+            self.assertNotIn('private detail', page)
+            self.assertNotIn('Nothing due in the next 7 days.', page)
+            self.assertIn('unknown due in the next 7 days', page)
+        with mock.patch.object(home.console_calendar, 'entries', side_effect=ValueError('bad')):
+            self.assertEqual(self.model()['calendar']['state'], 'unavailable')
+
+    def test_week_meetings_cancelled_stale_and_month_boundary(self):
+        cal.build(self.project, [])
+        meetings = self.project / 'campaign'
+        day = '2026-12-01'
+        meeting = {'id': 'm1', 'body': '<Council>', 'agenda_item': '<ALPR>', 'starts_at': day,
+                   'status': 'cancelled', 'stale': True}
+        cal.put(meetings / 'kit/meetings.json', {'schema_version': 1, 'meetings': [meeting, meeting]})
+        model = home.load(self.project, RUN, now=datetime(2026, 11, 28, tzinfo=timezone.utc), meetings_dir=meetings)
+        self.assertEqual(len(model['calendar']['rows']), 1)
+        page = home.render_home(model, '')
+        self.assertIn('/calendar?month=2026-12', page)
+        self.assertIn('Meeting · &lt;Council&gt; ·  · DATED', page)
+        self.assertIn('(cancelled)', page)
+        self.assertIn('(stale source)', page)
+        cal.build(self.project, [cal.row('alpha-pd', 'R-stale')])
+        path = self.project / 'run-outputs' / RUN / 'outcomes/timeline.json'
+        doc = json.loads(path.read_text())
+        doc['run_id'] = 'stale'
+        cal.put(path, doc)
+        self.assertEqual(self.model()['calendar']['rows'], [])
 
 
 class Routes(panel.ServerCase):

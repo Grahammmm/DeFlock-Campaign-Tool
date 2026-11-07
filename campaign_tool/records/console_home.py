@@ -1,10 +1,10 @@
 """Read-only console Home. Decisions remain on their existing signed action pages."""
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import console_board as cb, console_oversight as co, console_outstanding, console_standing, mail_send, public_packets
 from .outcomes.reading import BANNER, esc
-from . import console_layout
+from . import console_calendar, console_layout
 
 GROUPS = ("request", "follow-up", "send", "site-update", "social-post", "status-line", "packet")
 LABELS = ("Requests", "Follow-ups", "Sends", "Site updates", "Social posts", "Status lines", "Packets")
@@ -21,8 +21,21 @@ NEXT = {"next-site-update": ("site-update", "site"), "next-social-post": ("socia
         "next-followup-probe": ("follow-up", "followup")}
 
 
-def load(project, run_id, run_report_path=None, now=None, *, send_config=None):
+def load(project, run_id, run_report_path=None, now=None, *, send_config=None, meetings_dir=None):
     model = co.load(project, run_id, run_report_path, now)
+    try:
+        calendar = console_calendar.load(project, run_id, model["now"], send_config=send_config,
+                                         meetings_dir=meetings_dir)
+        if calendar.get("state") == "unavailable":
+            model["calendar"] = co._unavailable(calendar.get("code", "calendar_unreadable"))
+        else:
+            today = model["now"].date()
+            entries = console_calendar.entries(calendar, today, horizon_days=7)
+            model["calendar"] = {"state": "ok", "rows": sorted(
+                (e for e in entries if e["kind"] != "overdue" and today <= e["date"] <= today + timedelta(days=7)),
+                key=lambda e: (e["date"], e["kind"]))}
+    except Exception:
+        model["calendar"] = co._unavailable("calendar_unreadable")
     try:
         model["packets"] = {"state": "ok", "rows": public_packets.pending(project, model["now"].timestamp())}
     except public_packets.PacketError as error:
@@ -107,7 +120,10 @@ def decision_rows(model, today):
 
 def render_home(model, token):
     rows = decision_rows(model, model["now"].date())
-    out = ["<h1>Home</h1>", '<p role="status">%d need your decision</p>' % len(rows),
+    calendar = model["calendar"]
+    week = calendar.get("rows", [])
+    week_count = str(len(week)) if calendar["state"] == "ok" else "unknown"
+    out = ["<h1>Home</h1>", '<p role="status">%d need your decision · %s due in the next 7 days</p>' % (len(rows), week_count),
            '<section id="decide"><h2>Needs your decision</h2>']
     counts = ["%s %d" % (label, count) for group, label in zip(GROUPS, LABELS)
               if (count := sum(r["kind_group"] == group for r in rows))]
@@ -130,7 +146,22 @@ def render_home(model, token):
         cells = [agency, what, esc(co._ago(row["age_hours"])),
                  '<a href="%s">%s</a>' % (esc(row["link"]), "Review" if row["source"] == "queue" else "Open")]
         out.append("<tr>%s</tr>" % "".join("<td>%s</td>" % cell for cell in cells))
-    out.append('</tbody></table></section><details id="more"><summary>More detail</summary>')
+    out.append('</tbody></table></section><section id="week"><h2>Next 7 days</h2>')
+    if calendar["state"] != "ok":
+        out.append('<p role="status">Calendar: unavailable (%s).</p>' % esc(calendar.get("code")))
+    elif not week:
+        out.append('<p>Nothing due in the next 7 days.</p>')
+    else:
+        out.append('<ul>')
+        for entry in week[:20]:
+            text = " · ".join((entry["date"].strftime("%a %b %d"), console_calendar.KINDS[entry["kind"]],
+                               entry["agency"], entry["request"], entry["basis"]))
+            if entry["kind"] == "meeting":
+                text += " · " + entry["label"]
+            out.append('<li><a href="/calendar?month=%s">%s</a></li>' % (
+                entry["date"].strftime("%Y-%m"), esc(text)))
+        out.append('</ul>')
+    out.append('</section><details id="more"><summary>More detail</summary>')
     out.append(console_standing.render_standing(model, model["now"].date()))
     out.append(console_outstanding.render_outstanding(model))
     out += ["<p>%s: source not connected yet (%s).</p>" % pair for pair in DISCONNECTED]
@@ -145,7 +176,7 @@ def serve(handler):
     options = handler.server.options
     try:
         model = load(options["project"], options["run_id"], options.get("run_report_path"),
-                     send_config=options.get("send_config"))
+                     send_config=options.get("send_config"), meetings_dir=getattr(handler.server, "meetings_dir", None))
     except ValueError:
         handler._fail(503)
         return True
