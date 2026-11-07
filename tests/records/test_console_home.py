@@ -83,7 +83,8 @@ class Home(unittest.TestCase):
             self.assertTrue(start < page.index(text) < end, text)
         self.assertIn('<summary>More detail</summary>', page)
         self.assertTrue(page.index('</table></section>') < page.index('id="week"') < start)
-        for ident in ('waiting', 'timeline', 'next'):
+        self.assertTrue(page.index('id="week"') < page.index('id="waiting"') < start)
+        for ident in ('timeline', 'next'):
             self.assertNotIn('id="' + ident + '"', page)
         table = page.split('<tbody>', 1)[1].split('</tbody>', 1)[0]
         for row in rows:
@@ -290,6 +291,86 @@ class Week(unittest.TestCase):
         doc['run_id'] = 'stale'
         cal.put(path, doc)
         self.assertEqual(self.model()['calendar']['rows'], [])
+
+
+class Waiting(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.project = Path(tmp.name)
+        build(self.project)
+        self.path = self.project / 'run-outputs' / RUN / 'outcomes/timeline.json'
+        self.doc = json.loads(self.path.read_text())
+        self.template = self.doc['requests'][1]
+
+    def request(self, ident, due='2026-11-09', owner='agency', overdue=None, **extra):
+        return self.template | {'request_id': ident, 'ledger_request_id': 'L-' + ident,
+            'clocks': {'due': due, 'basis': 'submission_proxy'},
+            'next_action': {'owner': owner, 'action': 'wait'}, 'closed': False,
+            'events': [{'type': 'sent', 'date': '2026-10-01', 'source': {'kind': 'outbox_receipt'}}],
+            'overdue_marks': [] if overdue is None else [{'kind': 'statutory_date_passed',
+                'label': 'past due', 'date': overdue, 'basis': 'recorded_receipt'}], **extra}
+
+    def page(self, requests):
+        put(self.path, self.doc | {'requests': requests})
+        model = home.load(self.project, RUN, now=NOW)
+        return model, home.render_home(model, '')
+
+    def test_order_dates_basis_counts_and_exclusions(self):
+        requests = [self.request('unknown', due=None), self.request('future'),
+            self.request('recent', overdue='2026-11-03'),
+            self.request('oldest', owner='coordinator', overdue='2026-10-20'),
+            self.request('ours', owner='G'), self.request('closed', closed=True, overdue='2026-10-01'),
+            self.request('sooner', due='2026-11-06')]
+        model, page = self.page(requests)
+        self.assertEqual([r['request_id'] for r in model['waiting']['rows']],
+                         ['oldest', 'recent', 'sooner', 'future', 'unknown'])
+        section = page.split('<section id="waiting">')[1].split('</section>')[0]
+        for text in ('OVERDUE 16 days</span> since 2026-10-20 (on our records; not a legal finding)',
+                     'class="overdue"', 'OVERDUE 2 days', '2026-10-01 (DATED)',
+                     '2026-11-09 (INFERRED; submission_proxy)', 'due in 4 days', 'due date unknown',
+                     'href="/agency?agency=alpha-pd"', 'Asked on', 'Due (basis)'):
+            self.assertIn(text, section)
+        for ident in ('ours', 'closed'):
+            self.assertNotIn('<td>' + ident + '</td>', section)
+        self.assertIn('· 5 waiting on agencies (2 overdue)', page)
+
+    def test_cap_duplicate_and_empty(self):
+        requests = [self.request('R-%02d' % n) for n in range(45)]
+        model, page = self.page(requests + [requests[0]])
+        self.assertEqual(len(model['waiting']['rows']), 45)
+        section = page.split('<section id="waiting">')[1].split('</section>')[0]
+        self.assertEqual(section.count('<tr>'), 41)  # header plus 40 requests
+        self.assertIn('href="/board?filter=waiting">5 more on the Agencies page</a>', section)
+        self.assertIn('45 waiting on agencies (0 overdue)', page)
+        self.assertNotIn('<td>R-40</td>', section)
+        self.assertIn('No requests waiting on agencies.', self.page([])[1])
+
+    def test_failure_stale_and_unusable_dates(self):
+        base = home.co.load(self.project, RUN, now=NOW)
+        for failure in (OSError('private detail'), ValueError('private detail')):
+            with mock.patch.object(home.co, 'load', return_value=dict(base)), mock.patch.object(home.cb, 'load', side_effect=failure):
+                page = home.render_home(home.load(self.project, RUN, now=NOW), '')
+            self.assertIn('Waiting on agencies: unavailable (board_unreadable).', page)
+            self.assertIn('waiting on agencies: unknown', page)
+            self.assertNotIn('private detail', page)
+        for mutate, code in (({'run_id': 'stale'}, 'run_mismatch'), ({'requests': None}, 'shape_invalid')):
+            put(self.path, self.doc | mutate)
+            page = home.render_home(home.load(self.project, RUN, now=NOW), '')
+            self.assertIn('Waiting on agencies: unavailable (%s).' % code, page)
+            self.assertNotIn('0 waiting on agencies', page)
+        row = self.request('<request>', due='bad', agency='<Agency>', agency_key='alpha/<pd>',
+            events=[{'type': 'sent', 'date': '2026-09-01', 'superseded': True},
+                    {'type': 'draft', 'date': '2026-10-02', 'draft_status': 'cancelled'},
+                    {'type': 'draft', 'date': '2026-10-03', 'draft_status': 'expired'}])
+        model, page = self.page([row])
+        section = page.split('<section id="waiting">')[1].split('</section>')[0]
+        self.assertIsNone(model['waiting']['rows'][0]['asked'])
+        for text in ('unknown (UNKNOWN)', 'due date unknown', '&lt;Agency&gt;', '&lt;request&gt;',
+                     '/agency?agency=alpha%2F%3Cpd%3E'):
+            self.assertIn(text, section)
+        self.assertNotIn('<Agency>', section)
+        self.assertNotIn('2026-09-01', section)
 
 
 class Routes(panel.ServerCase):
