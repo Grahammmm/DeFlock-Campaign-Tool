@@ -35,6 +35,21 @@ Duplicate rows, inactive/unknown queue ids or out-of-scope asks yield manual
 `coverage_table_invalid`. The table is read-only. Neither ask text nor quotes are
 printed. `records_contradict_policy` and `vague_answer` require reviewed findings.
 
+## Read-only follow-up cases
+
+`case_builder.build(route, timeline_request, response_items, asks_rows=...)` returns
+a private `records-followup-case-v1` for human review, never a sent request.
+`build_for_run(project, run_id, agency_key, request_id)` reads the same-run outputs
+and optional `project/agency-asks/AGENCY_KEY.tsv` (the staged asks ledger).
+Only `route.asks_for` becomes `asks`; produced items outside that scope are named
+separately as `received_asks`, never requested again. Patterns pass verbatim and
+unknown/non-identity patterns refuse in CASE. Mixed `extra_patterns` append their
+questions once, preserving goals, do-not notes and citation status. Prior ledger
+produced/pending text suppresses repeated asks; other statuses remain open.
+Missing ledgers carry the R1/R7 manual-check note. No recipient, contact or sender
+is inferred. Closed routes use the recorded request id and unsuperseded closure
+date; missing values remain edit placeholders. No ledger writes or network calls.
+
 ## Agency events import
 
 This is a private, review-required timeline input, not a legal finding or publication.
