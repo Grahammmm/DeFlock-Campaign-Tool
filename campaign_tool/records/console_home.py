@@ -37,6 +37,12 @@ def load(project, run_id, run_report_path=None, now=None, *, send_config=None, m
     except Exception:
         model["calendar"] = co._unavailable("calendar_unreadable")
     try:
+        board = cb.load(project, run_id)
+        model["waiting"] = ({"state": "ok", "rows": waiting_rows(board, model["now"].date())}
+                            if board["timeline"]["state"] == "ok" else dict(board["timeline"]))
+    except Exception:
+        model["waiting"] = co._unavailable("board_unreadable")
+    try:
         model["packets"] = {"state": "ok", "rows": public_packets.pending(project, model["now"].timestamp())}
     except public_packets.PacketError as error:
         model["packets"] = co._unavailable(error.code)
@@ -118,12 +124,64 @@ def decision_rows(model, today):
                                         row["age_hours"] if row["age_hours"] is not None else 0, row["id"]))
 
 
+def waiting_rows(board, today):
+    requests = {(r.get("agency_key"), r.get("request_id")): r for r in cb._requests(board)}
+    rows, seen = [], set()
+    for row in cb.board_rows(board, today):
+        key = (row["agency_key"], row["request_id"])
+        if key in seen or not (cb.keep(row, "waiting") or cb.keep(row, "overdue")):
+            continue
+        seen.add(key)
+        request = requests[key]
+        asked = [cb._day(e.get("date")) for e in cb._live(request) if e["type"] == "sent"]
+        marks = [cb._day(m.get("date")) for m in request["overdue_marks"] if m.get("kind") != "unknown"]
+        marks = [d for d in marks if d and d <= today]
+        since = min(marks) if marks else None
+        rows.append(row | {"asked": min((d for d in asked if d), default=None),
+                           "due_day": cb._day(row["due"]), "since": since,
+                           "days": (today - since).days if since else None})
+    return sorted(rows, key=lambda r: (not bool(r["overdue"]), -(r["days"] or 0),
+                                      r["due_day"] is None, r["due_day"] or today,
+                                      r["agency_key"] or "", r["request_id"] or ""))
+
+
+def render_waiting(state, today):
+    out = ['<section id="waiting"><h2>Waiting on agencies</h2>']
+    if state["state"] != "ok":
+        return "\n".join(out + ['<p role="status">Waiting on agencies: unavailable (%s).</p></section>' % esc(state.get("code"))])
+    rows = state["rows"]
+    out.append('<table><thead><tr>' + ''.join('<th scope="col">%s</th>' % h for h in
+               ("Agency", "Request", "Asked on", "Due (basis)", "Status")) + '</tr></thead><tbody>')
+    for r in rows[:40]:
+        if r["overdue"]:
+            status = ('<span class="overdue">OVERDUE %d days</span> since %s' % (r["days"], esc(r["since"]))
+                      if r["days"] is not None else '<span class="overdue">OVERDUE</span> since unknown')
+            status += ' (on our records; not a legal finding)'
+        else:
+            days = (r["due_day"] - today).days if r["due_day"] else None
+            status = "due date unknown" if days is None else ("due in %d days" % days if days >= 0 else "due date passed; no overdue mark recorded")
+        cells = ['<a href="/agency?agency=%s">%s</a>' % (esc(urllib.parse.quote(r["agency_key"] or "", safe="")), esc(r["agency"])),
+                 esc(r["request_id"]), esc(str(r["asked"]) + " (DATED)" if r["asked"] else "unknown (UNKNOWN)"),
+                 esc('%s (%s; %s)' % (r["due_day"], cb.BASIS_WORD.get(r["basis"], "UNKNOWN"), r["basis"] or "unknown")
+                     if r["due_day"] else "unknown (UNKNOWN)"), status]
+        out.append('<tr>%s</tr>' % ''.join('<td>%s</td>' % c for c in cells))
+    out.append('</tbody></table>')
+    if not rows:
+        out.append('<p>No requests waiting on agencies.</p>')
+    if len(rows) > 40:
+        out.append('<p>and <a href="/board?filter=waiting">%d more on the Agencies page</a></p>' % (len(rows) - 40))
+    return "\n".join(out + ['</section>'])
+
+
 def render_home(model, token):
     rows = decision_rows(model, model["now"].date())
     calendar = model["calendar"]
     week = calendar.get("rows", [])
     week_count = str(len(week)) if calendar["state"] == "ok" else "unknown"
-    out = ["<h1>Home</h1>", '<p role="status">%d need your decision · %s due in the next 7 days</p>' % (len(rows), week_count),
+    waiting = model["waiting"]
+    waiting_count = ("%d waiting on agencies (%d overdue)" % (len(waiting["rows"]), sum(bool(r["overdue"]) for r in waiting["rows"]))
+                     if waiting["state"] == "ok" else "waiting on agencies: unknown")
+    out = ["<h1>Home</h1>", '<p role="status">%d need your decision · %s due in the next 7 days · %s</p>' % (len(rows), week_count, waiting_count),
            '<section id="decide"><h2>Needs your decision</h2>']
     counts = ["%s %d" % (label, count) for group, label in zip(GROUPS, LABELS)
               if (count := sum(r["kind_group"] == group for r in rows))]
@@ -164,7 +222,9 @@ def render_home(model, token):
             out.append('<li><a href="/calendar?month=%s">%s</a></li>' % (
                 entry["date"].strftime("%Y-%m"), esc(text)))
         out.append('</ul>')
-    out.append('</section><details id="more"><summary>More detail</summary>')
+    out.append('</section>')
+    out.append(render_waiting(waiting, model["now"].date()))
+    out.append('<details id="more"><summary>More detail</summary>')
     out.append(console_standing.render_standing(model, model["now"].date()))
     out.append(console_outstanding.render_outstanding(model))
     out += ["<p>%s: source not connected yet (%s).</p>" % pair for pair in DISCONNECTED]
