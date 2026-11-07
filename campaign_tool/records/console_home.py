@@ -66,7 +66,7 @@ def decision_rows(model, today):
         why = evidence.get("why") or " ".join(str(evidence.get(k) or "") for k in ("clock_kind", "clock_date")).strip()
         if row["status"] == "pending":
             group, anchor = NEXT.get(kind, ("request" if kind == "first-request" else "follow-up", None))
-            link = "/review?id=" + urllib.parse.quote(ident, safe="")
+            link = "/next-steps#" + anchor if anchor else "/dashboard#drafts"
             add(ident, group, kind, row["agency_id"], row["request_id"], why or "Draft awaiting decision", age, link, "queue")
         elif row["status"] == "approved" and kind not in NEXT and sends.get("configured") and sends["state"] == "ok":
             result = latest.get((ident, row["revision"]))

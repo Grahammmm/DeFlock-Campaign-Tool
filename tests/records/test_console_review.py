@@ -41,7 +41,6 @@ class ReviewTests(ServerCase):
         self.assertNotIn("<script>", page)
         self.assertEqual(page.count('name="return" value="review"'), 3)
         self.assertEqual(tree_state(self.project), before)
-        self.assertIn("/review?id=" + self.draft_row["id"], self.get("/")[2])
         self.assertIn('>Review</a>', self.get("/dashboard")[2])
 
     def test_bad_unknown_duplicate_ids_and_unreadable_queue(self):
