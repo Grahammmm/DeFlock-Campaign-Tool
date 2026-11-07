@@ -5,6 +5,21 @@ a public-comment kit from published findings. Code: `campaign_tool/meetings.py`,
 `workers/workspace/src/comment_kit.ts`, the Meetings screen in `views/screens.ts`.
 For the task order (find, stage, verify, comment, record, outcome) see the [meetings guide](MEETINGS-GUIDE.md); this file stays the reference.
 
+## Optional agenda PDF scan
+
+`meetings --online --scan-agenda-pdfs` (single or multi-source) also checks
+unmatched agendas, including feed entries with no description. Default: off.
+Only existing platform agenda hosts are permitted (AgendaCenter also requires
+`/AgendaCenter/`); HTTPS, no credentials/port, no redirects, one GET per unique
+agenda per body, at most 20 per body, 10 MiB and a 20-second network timeout.
+`pdftotext -layout - -` runs in memory with a 30-second timeout; no PDF or extracted
+text is written. Only hash, matched terms and matched page numbers enter the kit.
+Reports count `pdf_scan` outcomes, including missing `pdftotext`; failed or empty
+scans do not create a match. Feed-text hits are unchanged and never fetched again.
+Offline inputs, `--matters` and single-source ICS do not accept this flag; ICS
+sources in a multi-source run remain feed-only. PDF hits are keyword leads:
+verify on the official agenda before staging or publishing. Nothing is published.
+
 ## Legistar import (CLI)
 
 ```

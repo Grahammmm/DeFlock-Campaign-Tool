@@ -695,6 +695,10 @@ def meetings_cmd(args, root):
     if zone is None:
         print(f"meetings: unknown time zone {args.tz}", file=sys.stderr)
         raise SystemExit(2)
+    from .meeting_pdf_scan import AgendaScans
+    if args.scan_agenda_pdfs and (not args.online or args.from_json or args.from_xml or args.from_ics or args.matters or args.platform == "ics"):
+        raise MeetingsError("--scan-agenda-pdfs needs --online events on a supported agenda platform")
+    args.pdf_scans = AgendaScans() if args.scan_agenda_pdfs else None
     cfg = read_config(root)
     if args.platform != "ics" and (args.feed_url or args.body or args.from_ics):
         raise MeetingsError("--feed-url, --body and --from-ics go with --platform ics")
@@ -722,13 +726,15 @@ def meetings_cmd(args, root):
         print(json.dumps({"client": args.client, "matched_matters": len(matters), "written": str(target),
                           "note": "keyword hits on matter titles; verify on the official Legistar page before citing"}, indent=2))
         return
-    meetings = relevant_events(client, since=since, zone=zone, all_events=args.all_events)
+    meetings = relevant_events(client, since=since, zone=zone, all_events=args.all_events, pdf_scans=args.pdf_scans)
     previous = _read_previous(root / "kit" / "meetings.json")
     changes = ({"previous": previous} if previous == "unreadable"
                else compare_meetings(previous, meetings, name, since or date.today()))
     target = write_meetings(root, meetings, name, None if previous is None else changes, zone=zone, source=client.source)
     report = {"client": name, "platform": client.source, "matched_meetings": len(meetings), "written": str(target), "previous": changes["previous"],
               "cancelled_meetings": sum(m["status"] == "cancelled" for m in meetings)}
+    if args.pdf_scans is not None:
+        report["pdf_scan"] = dict(args.pdf_scans.counts)
     report.update(getattr(client, "report_extra", lambda m: {})(meetings))
     if "added" in changes:
         report["changes"] = {k: len(changes[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
@@ -752,7 +758,7 @@ def _meetings_multi(args, root, cfg, zone):
     opener = fixture_opener(json.loads(Path(args.from_json).read_text(encoding="utf-8"))) if args.from_json else default_opener
     since = date.fromisoformat(args.since) if args.since else None
     previous = _read_previous(root / "kit" / "meetings.json")
-    meetings, sources_report, changes = scan_sources(sources, lambda client: opener, since, zone, previous)
+    meetings, sources_report, changes = scan_sources(sources, lambda client: opener, since, zone, previous, pdf_scans=args.pdf_scans)
     target = write_meetings(root, meetings, "multi", changes, zone=zone, source="multi",
                             extra={"clients": sorted(source_key(s) for s in sources), "sources": sources_report})
     counts = {c: ({k: len(v[k]) for k in ("added", "removed", "rescheduled", "agenda_changed", "past")}
@@ -760,6 +766,7 @@ def _meetings_multi(args, root, cfg, zone):
     failed = [s["client"] for s in sources_report if s["status"] == "failed"]
     print(json.dumps({"client": "multi", "platform": "multi", "matched_meetings": len(meetings), "written": str(target),
                       "sources": sources_report, "changes": counts, "failed_sources": failed,
+                      **({"pdf_scan": dict(args.pdf_scans.counts)} if args.pdf_scans is not None else {}),
                       "note": "keyword hits only; verify the posted agenda before publishing"}, indent=2))
     if failed:
         sys.exit(3)
@@ -1031,6 +1038,7 @@ def main():
     meetings_p.add_argument("--client", help="Legistar client slug (the part after webapi.legistar.com/v1/); the <name>.granicus.com host for granicus; the AgendaCenter host for agendacenter; omit to scan every campaign.json meeting_sources entry")
     meetings_p.add_argument("--platform", choices=("legistar", "civicclerk", "granicus", "agendacenter", "ics"), default="legistar", help="Agenda platform (default legistar)")
     meetings_p.add_argument("--matters", action="store_true", help="List ALPR keyword matters (legislation, contracts) instead of events; writes kit/matters.json (Legistar only)")
+    meetings_p.add_argument("--scan-agenda-pdfs", action="store_true", help="With --online: scan at most 20 unmatched agenda PDFs per body; keyword leads only")
     meetings_p.add_argument("--online", action="store_true", help="Query the Legistar Web API (the only network use)")
     meetings_p.add_argument("--view-id", type=int, help="Granicus view_id (--platform granicus; --client is then the <name>.granicus.com host)")
     meetings_p.add_argument("--from-xml", help="Saved Granicus or AgendaCenter agenda RSS feed (offline)")

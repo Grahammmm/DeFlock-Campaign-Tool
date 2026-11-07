@@ -547,7 +547,7 @@ def event_status(event):
     return "cancelled" if isinstance(comment, str) and CANCELLED_COMMENT.search(comment) else "scheduled"
 
 
-def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_events=False):
+def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_events=False, pdf_scans=None):
     """Upcoming events with at least one ALPR-related agenda item, as meeting dicts."""
     if hasattr(client, "relevant"):  # a platform that reads whole documents (iCalendar) builds its own meeting dicts
         return client.relevant(since=since, zone=zone)
@@ -558,8 +558,6 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_ev
         items = client.event_items(event["EventId"])
         hits = match_items(items)
         unscanned = not hits and all_events and hasattr(client, "scanned") and not client.scanned(event["EventId"])
-        if not hits and not unscanned:
-            continue
         starts = _starts_at(event, zone or ZoneInfo(DEFAULT_ZONE))
         if not starts:
             continue
@@ -567,6 +565,9 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_ev
         agenda_url = event.get("EventInSiteURL") or event.get("EventAgendaFile")
         if not isinstance(agenda_url, str) or not agenda_url.startswith("https://"):
             agenda_url = None
+        pdf = pdf_scans.meeting(client, body, event.get("EventAgendaFile") or agenda_url) if pdf_scans and not hits and agenda_url else {}
+        if not hits and not unscanned and not pdf:
+            continue
         item_text, terms = hits[0] if hits else ("", [])
         matched = [i for i in items if isinstance(i, dict) and match_items([i])]
         attached, dropped = _attachments(a for i in matched for a in (i.get("EventItemMatterAttachments") or [])
@@ -586,7 +587,8 @@ def relevant_events(client, since=None, max_events=MAX_EVENTS, zone=None, all_ev
             "status": event_status(event),
             "attachments": attached,
             "attachments_dropped": dropped,
-            **({"not_scanned": True, "relevance": "not_scanned"} if unscanned else {}),
+            **({"not_scanned": True, "relevance": "not_scanned"} if unscanned and not pdf else {}),
+            **pdf,
         })
     meetings.sort(key=lambda m: m["starts_at"])
     return meetings
@@ -700,7 +702,7 @@ def _previous_subset(previous, client):
                 meetings=[m for m in previous["meetings"] if isinstance(m, dict) and m.get("client") == client])
 
 
-def scan_sources(sources, opener_for, since, zone, previous=None):
+def scan_sources(sources, opener_for, since, zone, previous=None, pdf_scans=None):
     """Scan every source on its own: ``(meetings, report, changes)``. A failing source keeps its previous meetings
     (marked ``stale``) and is named in ``report``; ``changes`` covers the sources that succeeded."""
     since = since or date.today()
@@ -709,7 +711,7 @@ def scan_sources(sources, opener_for, since, zone, previous=None):
         client, label = source_key(source), source["label"]
         subset = _previous_subset(previous, client)
         try:
-            found = relevant_events(client_for(source, opener_for(client)), since=since, zone=zone)
+            found = relevant_events(client_for(source, opener_for(client)), since=since, zone=zone, pdf_scans=pdf_scans)
         except Exception as exc:  # network, JSON, a missing recorded response: this source only
             old = subset.get("meetings") if isinstance(subset, dict) and subset.get("schema_version") == 1 else None
             kept = [dict(m, client=client, source_label=label, stale=True) for m in old or [] if isinstance(m, dict)]
