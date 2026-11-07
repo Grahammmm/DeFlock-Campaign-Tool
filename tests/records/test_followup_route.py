@@ -133,6 +133,10 @@ class RouteTests(unittest.TestCase):
             self.assertEqual(r["reason"], "coverage_unreconciled")
         split = dict(ask(1), evidence=ask(1)["evidence"] + ask(2, "i2")["evidence"])
         self.check(state(not_addressed=[1]), [queue()], [split], owner="manual")
+        # A split ask blocks mapping even when a different ask matches the gap.
+        split["ask_id"] = "ask-2"
+        split["evidence"][0]["quote"] = "different synthetic quote"
+        self.check(state(not_addressed=[1, 2]), [queue()], [ask(1), split], owner="manual")
         # Every gap scope unit must map, not just one of them.
         q = queue()
         q["evidence"]["findings"].append({"rating": "gap", "page": 2, "quote": "unmapped"})

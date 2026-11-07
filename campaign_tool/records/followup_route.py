@@ -34,6 +34,10 @@ def _mapped(q, asks, need):
     if not ident:
         return None
     candidates = [a for a in asks if followup_state._number(a) in need]
+    for ask in candidates:
+        sources = {e.get("item_id") for e in ask.get("evidence", [])}
+        if ident in sources and sources != {ident}:
+            return None
     if q["kind"] == "appeal-denial":
         mapped = []
         for ask in candidates:
