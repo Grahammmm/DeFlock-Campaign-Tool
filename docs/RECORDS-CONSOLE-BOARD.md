@@ -55,3 +55,9 @@ Documents joins items, release links, proposals and dispositions to those keys.
 Absent file preserves exact matching; an invalid or symlinked file shows
 `aliases: unavailable (aliases_invalid)` and applies no aliases, even valid rows.
 No file is generated and no source records or publication gates are changed.
+
+## Calendar (CON-CAL-1)
+
+`GET /calendar[?month=YYYY-MM]` shows a month grid and an agenda (overdue and today first): statutory due and 14-day extension dates, agency-stated dates, planned follow-up drafts, status-line holds and packet expiries, release-link expiries and overdue marks. Each entry is DATED (recorded or agency-stated) or INFERRED (arithmetic or projection) and shows its source. Follow-up dates come only from `followup_clock.plan` run on copies of register rows; they are drafts that send only after your approval. Nothing is queued, sent or published. An unreadable source is named unavailable and the rest still list.
+
+`GET /calendar.ics` and `records calendar --project P --run-id R --ics OUT` write an RFC 5545 file of all-day events. Each event holds only UID (32 hex plus `@calendar.deflock.invalid`), DTSTAMP, DTSTART, SUMMARY (kind, agency name, request ref, DATED/INFERRED) and DESCRIPTION (the source label). No bodies, URLs, release links, addresses, staff names, hashes or paths. Hosting the feed for phone subscription needs exposure beyond this loopback box: that is G's decision and is not built.

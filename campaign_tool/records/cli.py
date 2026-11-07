@@ -42,6 +42,7 @@ COMMANDS = {
     "first-request": ("first_request", "main"),
     "model-advice": ("model_advice", "main"),
     "panel": ("admin_panel", "main"),
+    "calendar": ("console_calendar", "main"),
     "documents": ("console_documents", "main"),
     "schedule": ("schedule", "schedule_main"),
 }

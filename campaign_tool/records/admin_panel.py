@@ -20,7 +20,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, console_board, console_documents, console_home, console_manual_events, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
+from . import approval_queue, console_board, console_calendar, console_documents, console_home, console_manual_events, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
 from .ledger import store
 from .outcomes.reading import BANNER, esc
 
@@ -793,6 +793,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if console_documents.serve(self):  # Screen C
             return
         if console_board.serve(self):  # Screens A and B
+            return
+        if console_calendar.serve(self):  # Calendar
             return
         if console_oversight.serve(self):  # Screens E and F
             return
