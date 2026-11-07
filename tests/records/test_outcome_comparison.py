@@ -214,10 +214,10 @@ class CPRAComparison(unittest.TestCase):
 
 class OutputsStage(unittest.TestCase):
     def test_original_counts_snapshot_acceptance_on_legacy_minimal_schema(self):
-        # Exercise the ORIGINAL acceptance body/assertions without its default
-        # external temp root or cleanup: all synthetic evidence stays in build/.
+        # Exercise the ORIGINAL acceptance body/assertions with retained synthetic
+        # evidence under the normal temp root, outside repository snapshots.
         from tests.test_records_run_stages import CountStageTests
-        root = REPO / "build/outcome-comparison"
+        root = Path(tempfile.gettempdir()) / "outcome-comparison"
         root.mkdir(parents=True, exist_ok=True)
         project = Path(tempfile.mkdtemp(prefix="legacy-counts-", dir=root))
         case = CountStageTests("test_outputs_snapshot_counts_only")
@@ -237,7 +237,7 @@ class OutputsStage(unittest.TestCase):
         self.assertIn("agencies, requests", (project / "run-outputs/run-1/comparison.md").read_text())
 
     def project(self, supplied=True):
-        root = REPO / "build/outcome-comparison"
+        root = Path(tempfile.gettempdir()) / "outcome-comparison"
         root.mkdir(parents=True, exist_ok=True)
         project = Path(tempfile.mkdtemp(prefix="synthetic-", dir=root))
         processing = project / "processing-v1"
