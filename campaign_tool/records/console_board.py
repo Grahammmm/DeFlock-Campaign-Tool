@@ -111,8 +111,10 @@ def computed_clock(model, row, name, value):
     source = ("Gov. Code § 7922.535 via law package " + entry["package"].rsplit(" ", 1)[-1][:12]
               if entry.get("package") else "Gov. Code § 7922.535; law package unavailable")
     received = calculated.get("received", {})
-    start = ("from recorded receipt" if received.get("note") == "recorded receipt" else
-             "from send date; receipt not recorded" if received.get("date") else "receipt/send date not recorded")
+    own = (row.get("clocks") or {}).get("basis")  # no calculator row: keep how the register's own clock was started
+    start = ("from recorded receipt" if received.get("note") == "recorded receipt" or (not received and own == "recorded_receipt") else
+             "from send date; receipt not recorded" if received.get("date") or (not received and own == "submission_proxy")
+             else "receipt/send date not recorded")
     return basis, source, start
 
 

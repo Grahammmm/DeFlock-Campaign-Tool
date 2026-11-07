@@ -130,6 +130,8 @@ class Calendar(unittest.TestCase):
                     model["timeline"]["doc"]["requests"][0]["clocks"]["base_due"] = "2026-11-10"
                 dates = [e for e in cc.entries(model, TODAY) if e["kind"] == "statutory_due"]
                 self.assertEqual([e["basis"] for e in dates], ["UNVERIFIED"])
+                if failure == "missing":
+                    self.assertIn("from recorded receipt", dates[0]["label"])
                 self.assertIn("(UNVERIFIED)", cc.to_ics(dates, NOW))
 
     def test_computed_dates_closed_expired_and_duplicate(self):
