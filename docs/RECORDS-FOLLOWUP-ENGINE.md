@@ -19,6 +19,24 @@ G edits away placeholders/reviewer notes and signs the exact text on the existin
 approval pages. Residue is refused. Sending remains off by default and attended.
 The Python API's optional `as_of` must match the run snapshot, not override it.
 
+## Reminder text
+
+The clock drafter's `reminder-no-response`, `reminder-promised-date` and
+`formal-notice-no-response` bodies contain only the letter: no draft banner,
+reviewer ladder, recipient/subject headers, purpose statement or statute citation.
+Clock evidence and review context remain outside the outgoing body. Existing
+queue rows retain their text and evidence; rerunning does not rewrite them.
+
+The optional `default.signature` in `followup-settings.json` supplies the project
+name and public sending address (maximum 200 characters and three newline-separated
+lines, no other control characters). Per-agency signatures are not accepted.
+An absent signature leaves `[EDIT ME: signature]`; invalid settings turn all
+reminders off. A formal notice uses the approved reminder's recorded approval day,
+not proof of sending; if unavailable it leaves `[EDIT ME: date of our reminder]`.
+G must check this date before approving the exact text. Missing request dates also
+remain edit placeholders. The residue and owner-approval/send gates are unchanged.
+Letter wording requires G's approval before merge; no setting is changed here.
+
 ## Refusal log
 
 `records denials --project P --run-id R [--json]` reads existing run outputs

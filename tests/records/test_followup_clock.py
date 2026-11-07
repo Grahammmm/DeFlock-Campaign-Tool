@@ -12,7 +12,7 @@ from unittest import mock
 
 from campaign_tool.records import approval_queue as aq
 from campaign_tool.records import followup_clock as fc
-from campaign_tool.records import run_stages
+from campaign_tool.records import run_stages, draft_residue, draft_templates
 from campaign_tool.records.ledger.migrations import v001
 from campaign_tool.records.outcomes import register
 from tests.approval_signing import Signer
@@ -130,7 +130,7 @@ class SettingsAndStates(Base):
         self.assertEqual(out["created"], 1)
         draft = self.queued()[0]
         self.assertEqual((draft["request_id"], draft["kind"]), ("p", "reminder-promised-date"))
-        self.assertIn("the date the agency gave: 2030-01-20", draft["body"])
+        self.assertIn("The date you gave, 2030-01-20, has passed", draft["body"])
 
     def test_missing_register_never_reads_older_run_or_queue(self):
         self.enable()
@@ -178,7 +178,7 @@ class Queueing(Base):
         kinds = lambda queue, as_of: [c["kind"] for c in fc.plan(doc([row()]), settings, queue, as_of=as_of)]
         self.assertEqual(kinds(reminder("approved"), "2030-01-31"), ["reminder-no-response"])
         self.assertEqual(kinds(reminder("approved"), "2030-02-01"), ["reminder-no-response", fc.NOTICE])
-        for status in ("pending", "rejected"):
+        for status in ("pending", "rejected", "cancelled", "expired"):
             self.assertEqual(kinds(reminder(status), "2030-03-01"), ["reminder-no-response"])
         # the clock moved on (extension recorded): the old reminder does not escalate the new clock
         moved = fc.plan(doc([row(due="2030-01-26", extension=True)]), settings, reminder("approved"), as_of="2030-03-01")
@@ -214,19 +214,18 @@ class Queueing(Base):
         self.assertEqual(statutory["evidence"]["source"], "register")
         self.assertEqual(statutory["item_id"], ident)
         for text in (statutory["body"], promised["body"], notice_body):
-            self.assertIn("DRAFT — NOT SENT. Review before sending it yourself.", text)
+            self.assertNotIn("DRAFT — NOT SENT. Review before sending it yourself.", text)
             self.assertNotIn("Provenance", text)
             for word in BANNED:
                 self.assertNotIn(word, text.casefold())
         self.assertIn("req-1", statutory["body"])
-        self.assertIn("2030-01-12", statutory["body"])
-        self.assertIn("dated 2030-01-01", statutory["body"])
-        self.assertIn("Camera audit logs for 2029", statutory["body"])
-        self.assertIn(register.LIMITS[1], statutory["body"])
-        self.assertIn(register.LIMITS[2], statutory["body"])
-        self.assertIn("the date the agency gave: 2030-01-20", promised["body"])
-        self.assertIn("[EDIT ME: date you sent the reminder]", notice_body)
+        self.assertIn("sent on 2030-01-01", statutory["body"])
+        for removed in ("Camera audit logs for 2029", register.LIMITS[1], register.LIMITS[2]):
+            self.assertNotIn(removed, statutory["body"])
+        self.assertIn("The date you gave, 2030-01-20, has passed", promised["body"])
+        self.assertIn("[EDIT ME: date of our reminder]", notice_body)
         self.assertIn("in writing", notice_body)
+
 
 
 def fc_render(case, kind):
@@ -235,6 +234,75 @@ def fc_render(case, kind):
         kind, agency="Fable Bay Police", request_id="req-1", asked="Camera audit logs for 2029",
         request_date="2030-01-01", clock_kind="determination", clock_date="2030-01-12",
         deadline={"basis": "recorded_receipt", "extension_recorded": False}, limits=register.LIMITS, as_of=AS_OF)
+
+
+class LetterText(Base):
+    signature = "Synthetic Records Project\nrecords@example.test"
+
+    def configure(self, signature):
+        self.settings({"schema": fc.SETTINGS_SCHEMA, "default": {"autonomy": "draft", "signature": signature}})
+        return fc.load_settings(self.root)
+
+    def test_three_letters_signature_and_missing_signature(self):
+        requests = [row(), row(request="req-2", state="determined",
+                              promised={"state": "passed", "date": "2030-01-20"})]
+        settings = self.configure(self.signature)
+        prior = {"item_id": fc.item_id("ag1", "req-1", "determination", "2030-01-12"),
+                 "kind": fc.REMINDERS[0], "status": "approved", "updated_at": "2030-01-20T10:00:00Z"}
+        candidates = fc.plan(doc(requests), settings, [prior], as_of=AS_OF)
+        self.assertEqual({c["kind"] for c in candidates}, set(draft_templates.FOLLOWUP_KINDS))
+        for candidate in candidates:
+            with self.subTest(kind=candidate["kind"]):
+                body, evidence = fc._render(candidate, doc(requests), "run-1")
+                self.assertEqual(draft_residue.codes(body), [])
+                self.assertLessEqual(len(body), 1200)
+                self.assertTrue(body.startswith("Hello,\n\nI am writing about public records request "))
+                self.assertTrue(body.endswith("Thank you,\n\n" + self.signature + "\n"))
+                for banned in ("DRAFT", "# Draft", "To:", "Subject:", "[EDIT ME", "Draft only", "Ladder:",
+                               "Gov. Code", "§", "Camera audit logs", "Clock:"):
+                    self.assertNotIn(banned, body)
+                missing, _ = fc._render(dict(candidate, signature=None), doc(requests), "run-1")
+                self.assertEqual(missing.count("[EDIT ME:"), 1)
+                self.assertEqual(len(draft_residue.codes(missing)), 1)
+                self.assertIn("[EDIT ME: signature]", missing)
+                if candidate["kind"] == fc.NOTICE:
+                    self.assertIn("This follows our reminder of 2030-01-20.", body)
+        fallback = fc_render(self, fc.NOTICE)
+        self.assertEqual(fallback.count("[EDIT ME: date of our reminder]"), 1)
+
+    def test_signature_validation_all_off_and_boundary(self):
+        self.put_register([row()])
+        for bad in ("a\nb\nc\nd", "a\tb", "a\rb", "a\x00b", "a\x7fb", "a\x85b", "x" * 201,
+                    "", "   ", None, 1, ["name"]):
+            with self.subTest(signature=bad):
+                self.assertTrue(self.configure(bad)["invalid"])
+                self.assertEqual(fc.queue_followups(self.root, "run-1")["created"], 0)
+                self.assertEqual(self.queued(), [])
+        for good in ("x" * 200, "Project\nPublic contact\nrecords@example.test"):
+            self.assertFalse(self.configure(good)["invalid"])
+        self.enable(signature=self.signature)  # only the project default owns the signature
+        self.assertTrue(fc.load_settings(self.root)["invalid"])
+
+    def test_golden_evidence_old_body_duplicate_and_signature_change(self):
+        settings = self.configure(self.signature)
+        self.put_register([row()])
+        candidate = fc.plan(doc([row()]), settings, [], as_of=AS_OF)[0]
+        body, evidence = fc._render(candidate, doc([row()]), "run-1")
+        golden = {"source": "register", "run_id": "run-1", "agency_key": "ag1", "request_id": "req-1",
+                  "clock_kind": "determination", "clock_date": "2030-01-12",
+                  "register_sources": [{"table": "requests", "id": "r1"}]}
+        self.assertEqual(evidence, golden)
+        old_body = '# Draft (reminder-no-response): Fable Bay Police / req-1\n\nDRAFT — NOT SENT. Review before sending it yourself.\n\nTarget agency: Fable Bay Police\nBelongs to request: req-1\nState: pending-approval\nTo: [EDIT ME: recipient and contact; not taken from the record]\nSubject: Reminder: no written determination recorded for public records request req-1\n\nHello,\n\nI am writing about public records request req-1, dated 2030-01-01 in our records. The request asked for: Camera audit logs for 2029\n\nClock: the determination reminder date in our register was 2030-01-12, counted from the recorded receipt date.\nGov. Code 7922.535: provisional determination reminder, not a production deadline.\n10 calendar days from recorded receipt (otherwise submission proxy); an explicitly recorded extension adds 14 days. Weekend last days roll forward to Monday (CCP 12a/12b). Receipt, holiday rules and lawful written extension require human verification.\n\nThis is a courtesy reminder. Our register shows no written determination recorded as of 2030-02-01.\n\nPlease send your written determination on this request, or tell us the date by which you expect to send it.\n\nThank you,\n\n[EDIT ME: name]\n\nNotes for the reviewer (remove before sending):\n  Ladder: 1 reminder, 2 formal notice (only after this reminder is approved and the wait has passed), 3 supervisor or records-office head, 4 any appeal or legal route the law package lists for this jurisdiction; check each by hand.\n\n---\nDraft only. Not legal advice. Review required. Dates come from the request register, which marks them provisional; check receipt dates and holidays by hand.\n'
+        aq.add_draft(self.root, item_id=candidate["item_id"], kind=candidate["kind"], agency_id="ag1",
+                     request_id="req-1", body=old_body, evidence=golden, source_run_id="run-1")
+        before = self.queued()
+        self.configure("Changed project signature")
+        for run in ("run-1", "run-2"):
+            self.put_register([row(), row()], run=run)  # duplicate source rows remain idempotent
+            result = fc.queue_followups(self.root, run)
+            self.assertEqual((result["created"], result["existing"]), (0, 2))
+            self.assertEqual(self.queued(), before)
+        self.assertNotEqual(body, old_body)
 
 
 class Seam(Base):

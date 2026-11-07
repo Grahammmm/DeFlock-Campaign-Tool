@@ -52,10 +52,17 @@ def _strict(raw):
         raise SettingsError("json") from error
 
 
-def _entry(value, allowed_autonomy=True):
-    if not isinstance(value, dict) or set(value) - {"autonomy", "notice_after_days", "silence_after_days"}:
+def _entry(value, *, allow_signature=False):
+    allowed = {"autonomy", "notice_after_days", "silence_after_days"} | ({"signature"} if allow_signature else set())
+    if not isinstance(value, dict) or set(value) - allowed:
         raise SettingsError("entry")
     out = {}
+    if "signature" in value:
+        signature = value["signature"]
+        if (not isinstance(signature, str) or not signature.strip() or len(signature) > 200
+                or signature.count("\n") > 2 or re.search(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", signature)):
+            raise SettingsError("signature")
+        out["signature"] = signature
     if "autonomy" in value:
         if value["autonomy"] not in AUTONOMY or not isinstance(value["autonomy"], str):
             raise SettingsError("autonomy")
@@ -95,7 +102,7 @@ def load_settings(project):
             doc = _strict(stream.read(MAX_SETTINGS + 1))
         if not isinstance(doc, dict) or doc.get("schema") != SETTINGS_SCHEMA or set(doc) - {"schema", "default", "agencies"}:
             return invalid
-        default = _entry(doc.get("default", {}))
+        default = _entry(doc.get("default", {}), allow_signature=True)
         agencies = doc.get("agencies", {})
         if not isinstance(agencies, dict):
             return invalid
@@ -175,7 +182,9 @@ def _plan(register, settings, queue_rows, as_of):
                 kinds.append(NOTICE)
             for kind in kinds:
                 found.append({"kind": kind, "agency_key": row["agency_key"], "request_id": row["request_id"],
-                              "clock_kind": clock_kind, "clock_date": clock_date, "item_id": ident, "row": row})
+                              "clock_kind": clock_kind, "clock_date": clock_date, "item_id": ident, "row": row,
+                              "signature": setting.get("signature"),
+                              "reminder_date": changed.isoformat() if changed else None})
     return found, counts
 
 
@@ -265,7 +274,8 @@ def _render(candidate, register, run_id):
     body = draft_templates.render_followup(
         candidate["kind"], agency=row["agency"], request_id=row["request_id"], asked=row.get("asked") or "",
         request_date=row.get("request_date"), clock_kind=candidate["clock_kind"], clock_date=candidate["clock_date"],
-        deadline=row.get("deadline") or {}, limits=register.get("limits") or [], as_of=register["as_of"])
+        deadline=row.get("deadline") or {}, limits=register.get("limits") or [], as_of=register["as_of"],
+        signature=candidate.get("signature"), reminder_date=candidate.get("reminder_date"))
     evidence = {"source": "register", "run_id": run_id, "agency_key": candidate["agency_key"],
                 "request_id": candidate["request_id"], "clock_kind": candidate["clock_kind"],
                 "clock_date": candidate["clock_date"], "register_sources": row.get("sources", [])}
