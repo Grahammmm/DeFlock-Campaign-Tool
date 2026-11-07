@@ -3,8 +3,9 @@ import hmac
 import urllib.parse
 
 from . import public_packets as pp
-from .console_oversight import NAV, _journal_actor
+from .console_oversight import _journal_actor
 from .outcomes.reading import BANNER, esc
+from . import console_layout
 
 ROUTES = {"/packets/approve": "signature", "/packets/reject": "reason"}
 
@@ -12,9 +13,7 @@ ROUTES = {"/packets/approve": "signature", "/packets/reject": "reason"}
 def render(project, token):
     rows = pp.pending(project)
     switch = pp.status(project)["switch"]
-    out = ['<!doctype html><html lang="en"><head><meta charset="utf-8">'
-           '<meta name="robots" content="noindex,nofollow"><title>Update packets</title></head><body>',
-           '<p>%s</p>' % esc(BANNER), NAV, '<h1>Update packets</h1>',
+    out = [console_layout.start("Update packets"), '<h1>Update packets</h1>',
            '<p>Packets switch: %s. Approve records G\'s signed decision only. '
            'Nothing is sent, published or written to site-changes. Writing remains a separate CLI step.</p>' % esc(switch)]
     if not rows:
@@ -36,7 +35,7 @@ def render(project, token):
                            'G’s SSH signature' if field == 'signature' else 'Rejection reason (private audit)', field,
                            'Approve' if field == 'signature' else 'Reject'))
         out.append('</section>')
-    return '\n'.join(out + ['</body></html>'])
+    return '\n'.join(out + ['</main></body></html>'])
 
 
 def serve(handler):

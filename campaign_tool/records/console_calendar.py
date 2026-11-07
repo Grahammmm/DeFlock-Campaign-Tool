@@ -19,12 +19,13 @@ import sys
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 
-from . import console_board as cb, console_oversight as co, followup_clock as fc, public_packets
+from . import console_board as cb, console_oversight as co, followup_clock as fc, mail_send, public_packets
 from .outcomes.reading import BANNER, esc
+from . import console_layout
 
 KINDS = {"statutory_due": "Statutory due", "extension_limit": "Extension limit", "expected_window": "Agency-stated date",
          "followup_draft_due": "Follow-up draft due", "publication_pending": "Publication step",
-         "link_expiry": "Link expiry", "overdue": "Overdue"}
+         "link_expiry": "Link expiry", "overdue": "Overdue", "followup_planned_send": "Follow-up planned send"}
 BASIS = {"recorded_receipt": "DATED", "submission_proxy": "INFERRED", "agency_promised": "DATED"}
 CLOCK_SOURCE = "register clock (Gov. Code 7922.535 arithmetic on our records)"
 LABEL = "Private; review required. Overdue is on our records; not a legal finding. Nothing is sent from this page."
@@ -46,8 +47,14 @@ def _row_ok(r):
     return all(r.get(k) is None or isinstance(r.get(k), dict) for k in ("deadline", "promised"))
 
 
-def load(project, run_id, now=None):
+def load(project, run_id, now=None, *, send_config=None):
     model = co.load(project, run_id, None, now)
+    model["sends"] = {"state": "ok", "rows": [], "configured": send_config is not None}
+    if send_config is not None:
+        try:
+            model["sends"]["rows"] = mail_send.results(project, strict=True)
+        except (mail_send.MailSendError, OSError, ValueError, KeyError, TypeError):
+            model["sends"] = co._unavailable("sends_unreadable")
     try:
         model["packets"] = {"state": "ok", "rows": public_packets.pending(project, model["now"].timestamp())}
     except public_packets.PacketError as error:
@@ -219,6 +226,32 @@ def build(model, today, horizon_days=90, since=None):
             for a, k in staged:
                 add(*a, **k)
             notes.extend(extra)
+    queue, sends = model["queue"], model.get("sends", {})
+    if queue["state"] != "ok":
+        notes.append("follow-up planned sends: unavailable (queue_unavailable)")
+    if sends.get("state") == "unavailable":
+        notes.append("follow-up planned sends: unavailable (sends_unreadable)")
+    latest = {(r["queue_id"], r.get("revision")): r for r in sends.get("rows", [])}
+    for q in queue.get("rows", []) if queue["state"] == "ok" else []:
+        if q["kind"] != "followup-playbook" or q["status"] not in ("pending", "approved"):
+            continue
+        evidence = q.get("evidence") or {}
+        day = cb._day(evidence.get("planned_send_date"))
+        result = latest.get((q["id"], q.get("revision")), {})
+        if result.get("state") == "sent":
+            continue
+        state = "awaiting your approval (Home)"
+        if q["status"] == "approved":
+            if sends.get("state") == "unavailable":
+                continue  # cannot establish whether this revision was sent
+            state = "approved; sending is yours"
+            if not sends.get("configured"):
+                state += " (send not tracked)"
+            elif result.get("state") in ("unknown", "attempt"):
+                state += " (delivery unresolved; reconcile in the outbox before any retry)"
+        add(day, "followup_planned_send", q["agency_id"], None, q["request_id"],
+            "%s follow-up: %s" % (evidence.get("pattern", "unknown"), state), "INFERRED",
+            "follow-up engine route (run %s)" % q["source_run_id"])
     for e in out:
         e["agency"] = names.get(e["agency_key"]) or e["agency"]
     out.sort(key=lambda e: (e["date"], e["kind"], e["agency_key"], e["request"], e["label"]))
@@ -292,10 +325,7 @@ def render(model, today, first):
     horizon = max(90, (last - today).days)
     items, notes = build(model, today, horizon, since=min(today, first))
     prev, nxt = (first - timedelta(days=1)).replace(day=1), last + timedelta(days=1)
-    out = ['<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex,nofollow">'
-           "<title>Calendar</title></head><body>", '<p class="notice">%s</p>' % esc(BANNER),
-           '<nav aria-label="Pages"><a href="/">Home</a> <a href="/board">Board</a> <a href="/oversight">Oversight</a> '
-           '<a href="/next-steps">Drafts and next steps</a> <a href="/calendar.ics">Download .ics</a></nav>',
+    out = [console_layout.start("Calendar", "Calendar"), '<p><a href="/calendar.ics">Download .ics</a></p>',
            "<h1>Calendar: %s</h1>" % esc(first.strftime("%B %Y")),
            "<p>Run %s. %s DATED means a recorded or agency-stated date; INFERRED means arithmetic or a projection. "
            "Subscribing from a phone needs hosting, which is not built.</p>" % (esc(model["run_id"]), esc(LABEL)),
@@ -322,7 +352,7 @@ def render(model, today, first):
             flag, e["date"], esc(KINDS[e["kind"]]), esc(e["agency"]), esc(e["request"]), esc(e["label"]), e["basis"],
             esc(e["source"])))
     out.append("</ul>" if ordered else "<li>Nothing dated in this window.</li></ul>")
-    return "\n".join(out + ["</body></html>"]) + "\n"
+    return "\n".join(out + ["</main></body></html>"]) + "\n"
 
 
 # ---- panel seam and CLI ------------------------------------------------------------------------------
@@ -339,7 +369,7 @@ def serve(handler):
         return True
     options = handler.server.options
     try:
-        model = load(options["project"], options["run_id"], now)
+        model = load(options["project"], options["run_id"], now, send_config=options.get("send_config"))
     except ValueError:
         handler._fail(503)
         return True
