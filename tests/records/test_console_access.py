@@ -105,7 +105,7 @@ class AccessTests(ServerCase):
             "alg none": [make_token(header={"alg": "none"})], "alg HS256": [make_token(header={"alg": "HS256"})],
             "alg missing": [make_token(header={"typ": "JWT"})], "other aud": [make_token(aud=other)],
             "aud list without": [make_token(aud=[other, "x"])], "aud list too long": [make_token(aud=[AUD] + ["x"] * 16)],
-            "iss http": [make_token(iss="http://" + TEAM)], "iss other": [make_token(iss="https://t2.cloudflareaccess.com")],
+            "iss http": [make_token(iss="http://" + TEAM)], "iss other": [make_token(iss="https://" + TEAM.replace("team-x", "t2"))],
             "exp now": [make_token(exp=NOW)], "exp past": [make_token(exp=NOW - 1)], "exp true": [make_token(exp=True)],
             "exp string": [make_token(exp="9999999999")], "iat future": [make_token(iat=NOW + 61)],
             "nbf future": [make_token(nbf=NOW + 61)], "email other": [make_token(email="o@example.test")],
@@ -156,6 +156,12 @@ class StartupTests(ServerCase):
                write_config(tmp.name, aud="ab12" * 15 + "ab1", name="a63"), write_config(tmp.name, aud=AUD.upper(), name="up"),
                write_config(tmp.name, team="team-x.example.test", name="team"),
                write_config(tmp.name, email="a@b@c", name="e1"), write_config(tmp.name, email="a<b@c", name="e2")]
+        deep = Path(tmp.name) / "deep.json"
+        deep.write_text("[" * 1500 + "]" * 1500)
+        os.chmod(deep, 0o600)
+        fifo = Path(tmp.name) / "fifo.json"
+        os.mkfifo(fifo, 0o600)
+        bad += [deep, fifo]
         extra = Path(tmp.name) / "extra.json"
         extra.write_text(json.dumps({"aud": AUD, "email": EMAIL, "team_domain": TEAM, "x": 1}))
         missing = Path(tmp.name) / "missing.json"

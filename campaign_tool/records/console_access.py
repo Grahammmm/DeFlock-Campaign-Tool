@@ -21,7 +21,7 @@ _SKEW = 60
 def load_config(path):
     """Read the owner-only JSON config once; raise ValueError('access_config_invalid') on any defect."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
             info = os.fstat(fd)
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
@@ -36,7 +36,7 @@ def load_config(path):
                 or not _AUD.fullmatch(cfg["aud"]) or not _TEAM.fullmatch(cfg["team_domain"])
                 or len(cfg["email"]) > 254 or not _EMAIL.fullmatch(cfg["email"])):
             raise ValueError
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, RecursionError):
         raise ValueError("access_config_invalid") from None
     return cfg
 
