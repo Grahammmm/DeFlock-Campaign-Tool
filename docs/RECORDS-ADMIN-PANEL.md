@@ -51,6 +51,18 @@ approval alone does not make a working draft ready to send.
   adds no second store. State is reloaded on every GET and success is confirmed by reading the queue back.
 - No stale-revision protection beyond the queue's own state rules; concurrent CLI edits keep upstream semantics.
 
+## Sending an approved draft
+
+With `--send-config`, the separate `/send` review and human POST send one approved,
+placed draft; draft approval alone never sends it. `records mail-send init` writes
+`enabled: false`, `live: false` and the SEND-STOP file; `--test-recipient ADDR`
+sets the only allowed recipient in test mode. Omitted `live` also means test mode.
+Other recipients are refused `test_mode_recipient`; without a test recipient,
+sending is refused `test_recipient_missing`. The draft stays approved, not sent.
+Only G may set `"live": true` in owner-only `approvals/send.json`; there is no
+console switch or CLI flag for that. Every existing switch, kill file, cap,
+fingerprint, typed-confirmation and outbox-signature check still applies.
+
 ## Local-only model
 
 Bound only to literal `127.0.0.1` (no host option). Every request must carry `Host: 127.0.0.1:PORT`; POSTs also need
