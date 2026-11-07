@@ -26,6 +26,7 @@ class Markup(HTMLParser):
 
 class LayoutTests(Base):
     def test_nav_order_and_active(self):
+        self.assertEqual(layout.LINKS[-1], ("Settings", "/settings"))
         expected = [url for _, url in layout.LINKS + layout.MORE]
         for active, current in ((None, []), ('Calendar', ['/calendar']), ('unknown', []),
                                 ('<script>', [])):
@@ -84,13 +85,13 @@ class LayoutTests(Base):
                         status, _, html = client.send('GET', path)
                         self.assertEqual(status, 200)
                         parsed = Markup(html)
-                        self.assertEqual(parsed.links[:11], [u for _, u in layout.LINKS + layout.MORE])
+                        self.assertEqual(parsed.links[:len(layout.LINKS + layout.MORE)], [u for _, u in layout.LINKS + layout.MORE])
                         self.assertEqual(parsed.tags.count('main'), 1)
                         self.assertEqual(parsed.ids.count('content'), 1)
                         self.assertIn(layout.STYLE, html)
                         self.assertIn(BANNER, html)
                         active = {'/': '/', '/board': '/board', '/calendar': '/calendar',
-                                  '/documents': '/documents', '/agency?agency=alpha-pd': '/board'}
+                                  '/documents': '/documents', '/settings': '/settings', '/agency?agency=alpha-pd': '/board'}
                         self.assertEqual(parsed.current, [active[path]] if path in active else [])
                         if path == '/':
                             self.assertTrue({'decide', 'more'} <= set(parsed.ids))

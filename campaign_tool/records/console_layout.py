@@ -2,7 +2,7 @@
 from .outcomes.reading import BANNER, esc
 
 LINKS = (("Home", "/"), ("Approvals", "/#decide"), ("Agencies", "/board"),
-         ("Calendar", "/calendar"), ("Timeline", "/#timeline"), ("Library", "/documents"))
+         ("Calendar", "/calendar"), ("Timeline", "/#timeline"), ("Library", "/documents"), ("Settings", "/settings"))
 MORE = (("Dashboard", "/dashboard"), ("Oversight", "/oversight"),
         ("Public updates", "/public-updates"), ("Packets", "/packets"),
         ("Drafts and next steps", "/next-steps"))
