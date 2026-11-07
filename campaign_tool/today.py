@@ -17,8 +17,9 @@ KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_i
          "request_installment_due", "request_stated_extension_date_passed", "request_download_pending", "request_download_expired", "finding_ready",
          "finding_blocked",
          "contract_ending", "minutes_pending", "continued_pending", "direction_pending", "stale_comment_kit", "stale_contact", "review_waiting",
-         "stale_body_schedule", "expected_regular_meeting", "unreadable")
+         "stale_body_schedule", "expected_regular_meeting", "backup_due", "unreadable")
 WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS, REVIEW_DAYS = 7, 180, 120, 7
+BACKUP_DAYS = 7
 CONTRACT_DAYS, CONTRACT_ENDED_DAYS, MINUTES_DAYS, DIRECTION_DAYS = 90, 30, 45, 14
 
 
@@ -31,6 +32,13 @@ def contract_days(text):
 
 def review_days(text):
     """argparse type for ``today --review-days``: a whole number of days, 1-90."""
+    if not (text.isascii() and text.isdigit()) or not 1 <= int(text) <= 90:
+        raise argparse.ArgumentTypeError(f"must be a whole number of days from 1 to 90, got {text!r}")
+    return int(text)
+
+
+def backup_days(text):
+    """argparse type for ``today --backup-days``: a whole number of days, 1-90."""
     if not (text.isascii() and text.isdigit()) or not 1 <= int(text) <= 90:
         raise argparse.ArgumentTypeError(f"must be a whole number of days from 1 to 90, got {text!r}")
     return int(text)
@@ -296,13 +304,52 @@ def _body_schedules(root, as_of):
     return items
 
 
-def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS, owner=None):
+def _show(text):
+    """A filesystem name for display: control and non-printable characters become escaped text."""
+    return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") if ord(c) < 256
+                   else f"\\u{ord(c):04x}" if ord(c) < 0x10000 else f"\\U{ord(c):08x}" for c in str(text))
+
+
+def _backups(folder, as_of, directory, days):
+    """DF0237-10: one ``backup_due`` item unless a verified archive no older than ``days`` exists in ``folder``."""
+    from . import backup
+    shown, quoted = _show(folder), shlex.quote(str(folder))
+    command = f"backup --directory {directory} --into {quoted}"
+    inspect = f"backup-list --dir {quoted}"
+    unreadable = lambda label, reason: _item("unreadable", f"fix {label}: {reason}", inspect, key=label)
+    try:
+        found = backup.list_archives(folder)
+        rows = [(backup._created(row), row) for row in found["archives"] if row["verify"] == "ok"]
+    except (backup.BackupError, OSError) as exc:
+        return [unreadable(shown, "backup directory could not be read"),
+                _item("backup_due", f"Could not establish a verified backup in {shown}.", command, key=str(folder))]
+    items = [unreadable(f"{shown}/{_show(row['name'])}", "archive could not be verified; not counted as a backup")
+             for row in found["archives"] if row["verify"] != "ok"]
+    items += [unreadable(f"{shown}/{_show(row['name'])}", "symlink archive skipped; not counted as a backup")
+              for row in found["skipped"]]
+    if not rows:
+        items.append(_item("backup_due", f"No verified backup found in {shown}.", command, key=str(folder)))
+        return items
+    when, row = max(rows, key=lambda pair: pair[0])  # first of equal instants keeps list_archives' name order
+    age = (as_of - when.date()).days
+    if age > days:
+        day = when.date().isoformat()
+        items.append(_item("backup_due", f"Last verified backup {_show(row['name'])} was created {day} "
+                           f"({age} days ago; limit {days} days).", command, due=day, key=str(folder)))
+    return items
+
+
+def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS, owner=None,
+         backups=None, backup_days=BACKUP_DAYS):
     """Ranked to-do items ``{rank, kind, what, due, command}``; reads only, never raises for a broken input.
 
     ``owner`` keeps only that teammate's request work; meetings, findings, contracts and contacts stay listed."""
     root = Path(root)
     directory = shlex.quote(str(root))
     owner = None if owner is None else kit_assign.owner_label(owner, "--owner")
+    if backups is not None and (type(backup_days) is not int or not 1 <= backup_days <= 90):
+        from .backup import BackupError
+        raise BackupError("backup_days must be an integer 1-90")
     sources = ((lambda: _meetings(root, as_of, directory), "content/meetings/"),
                (lambda: _requests(root, as_of, directory, law_base, owner), "kit/sent.json"),
                (lambda: _findings(root, directory), "private/drafts/"),
@@ -317,15 +364,19 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days
             items.extend(read())
         except (ValueError, OSError) as exc:  # one failing source never hides another's items
             items.append(_unreadable(label, exc))
+    if backups is not None:
+        items.extend(_backups(backups, as_of, directory, backup_days))
     items.sort(key=lambda item: (KINDS.index(item["kind"]), item["due"] or "", item["_key"]))
     return [{"rank": rank, **{k: v for k, v in item.items() if k != "_key"}} for rank, item in enumerate(items, 1)]
 
 
-def run_cli(root, as_of=None, as_json=False, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS, owner=None):
+def run_cli(root, as_of=None, as_json=False, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS, owner=None,
+            *, backups=None, backup_days=BACKUP_DAYS):
     day = date.today() if as_of is None else kit_track._day(as_of)
     if day is None:
         raise ValueError("--as-of must be a real YYYY-MM-DD date")
-    items = todo(root, day, contract_days=contract_days, review_days=review_days, owner=owner)
+    items = todo(root, day, contract_days=contract_days, review_days=review_days, owner=owner,
+                 backups=backups, backup_days=backup_days)
     if as_json:
         return json.dumps(items, indent=2, ensure_ascii=False)
     if not items:

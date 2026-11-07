@@ -308,8 +308,8 @@ class TodayTests(Base):
 
     def test_kinds_rank_between_review_waiting_and_unreadable(self):
         kinds = list(today.KINDS)
-        self.assertEqual(kinds[-3:], ["stale_body_schedule", "expected_regular_meeting", "unreadable"])
-        self.assertEqual(kinds[-4], "review_waiting")
+        self.assertEqual(kinds[-4:], ["stale_body_schedule", "expected_regular_meeting", "backup_due", "unreadable"])
+        self.assertEqual(kinds[-5], "review_waiting")
 
     def test_broken_meeting_beside_a_valid_schedule_is_one_unreadable_row_and_suppresses_nothing(self):
         (self.root / "content" / "meetings" / "broken.json").write_text("{not json", encoding="utf-8")
