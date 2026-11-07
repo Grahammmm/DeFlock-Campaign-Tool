@@ -1,4 +1,4 @@
-"""Synthetic Home decisions: urgency, metadata-only packets, degradation and HTTP routing."""
+"""Synthetic Home decisions: newest first, metadata-only packets, degradation and HTTP routing."""
 import json
 import tempfile
 import unittest
@@ -18,7 +18,7 @@ def fixture(project):
     build(project)
     path = project / "run-outputs" / RUN / "outcomes/timeline.json"
     doc = json.loads(path.read_text())
-    for request, days in zip(doc["requests"], (30, 1, None, None)):
+    for request, days in zip(doc["requests"], (None, 30, None, None)):
         request["overdue_marks"] = [] if days is None else [{"kind": "statutory_date_passed", "label": "overdue",
             "date": (NOW - timedelta(days=days)).date().isoformat(), "basis": "recorded_receipt"}]
     put(path, doc)
@@ -52,23 +52,79 @@ class Home(unittest.TestCase):
     def model(self, **kwargs):
         return home.load(self.project, RUN, now=NOW, **kwargs)
 
-    def test_urgency_counts_links_metadata_and_privacy(self):
+    def test_newest_counts_links_metadata_and_privacy(self):
         model = self.model()
         rows = home.decision_rows(model, NOW.date())
         queue = [r for r in rows if r["source"] == "queue"]
         self.assertEqual([r["age_hours"] for r in queue], [2, 50, 200])
-        self.assertEqual([r["overdue_days"] for r in queue], [30, 1, None])
+        self.assertEqual([r["overdue_days"] for r in queue], [None, 30, None])
         holding = next(r for r in rows if r["kind"] == "holding")
-        self.assertLess(rows.index(queue[1]), rows.index(holding))
+        self.assertLess(rows.index(holding), rows.index(queue[1]))
         self.assertLess(rows.index(holding), rows.index(queue[2]))
         for row in rows:
             self.assertTrue(all(row[k] not in (None, "") for k in ("agency", "what", "why", "age_hours", "link")))
         page = home.render_home(model, "unused")
-        for text in ("Requests 1 · Follow-ups 2 · Sends 0", "Status lines 2 · Packets 1", "overdue 30 days since 2026-10-06",
+        for text in ("Requests 1 · Follow-ups 2", "Status lines 2 · Packets 1", '<span class="overdue">OVERDUE 30 days</span>',
                      "not a legal finding", "CON-SITEPR-1", "CON-REDACT-1", "CON-FIND-1", 'id="standing"', 'id="outstanding"'):
             self.assertIn(text, page)
         for text in ("BODY-SENTINEL-1", "person@example.invalid", "PACKET-TEXT-SENTINEL-1", "LINE-TEXT-SENTINEL", "@", "<form"):
             self.assertNotIn(text, page)
+
+    def test_layout_labels_and_review_links(self):
+        model = self.model()
+        rows = home.decision_rows(model, NOW.date())
+        page = home.render_home(model, "")
+        self.assertIn('<p role="status">6 need your decision</p>', page)
+        self.assertLess(page.index('6 need your decision'), page.index('<section id="decide">'))
+        start, end = page.index('<details id="more">'), page.index('</details>')
+        self.assertLess(page.index('<section id="decide">'), start)
+        for text in ('id="standing"', 'id="outstanding"', 'CON-SITEPR-1', 'CON-REDACT-1', 'CON-FIND-1'):
+            self.assertTrue(start < page.index(text) < end, text)
+        self.assertIn('<summary>More detail</summary>', page)
+        for ident in ('week', 'waiting', 'timeline', 'next'):
+            self.assertNotIn('id="' + ident + '"', page)
+        table = page.split('<tbody>', 1)[1].split('</tbody>', 1)[0]
+        for row in rows:
+            label = "Review" if row["source"] == "queue" else "Open"
+            self.assertIn('<a href="%s">%s</a>' % (row["link"], label), table)
+        queue = [r for r in rows if r["source"] == "queue"]
+        self.assertEqual([r["what"] for r in queue],
+                         ["First request", "Reply to an extension", "Reminder: no reply"])
+        self.assertLess(table.index(queue[0]["link"]), table.index(queue[1]["link"]))
+        self.assertLess(table.index(queue[1]["link"]), table.index(queue[2]["link"]))
+        self.assertEqual({r["link"] for r in rows if r["source"] == "packets"}, {"/packets"})
+        self.assertEqual({r["what"] for r in rows if r["source"] == "public"}, {"Public status line"})
+        self.assertEqual({r["what"] for r in rows if r["source"] == "packets"}, {"Update packet"})
+
+    def test_label_map_unknown_escaping_and_age_ties(self):
+        model = self.model()
+        template = model["queue"]["rows"][0]
+        model["public"]["lines"] = []
+        model["packets"]["rows"] = []
+        expected = {
+            "first-request": "First request", "reminder-no-response": "Reminder: no reply",
+            "reminder-promised-date": "Reminder: promised date passed",
+            "formal-notice-no-response": "Formal notice: no reply", "appeal-denial": "Reply to a refusal",
+            "reply-extension": "Reply to an extension", "fee-reply": "Reply about fees",
+            "followup-missing-records": "Ask for missing records", "next-social-post": "Suggested post",
+            "next-site-update": "Suggested site update", "next-followup-probe": "Suggested follow-up",
+            "<unknown>": "<unknown>",
+        }
+        model["queue"]["rows"] = [template | {"kind": kind, "id": kind} for kind in reversed(expected)]
+        rows = home.decision_rows(model, NOW.date())
+        self.assertEqual([r["id"] for r in rows], sorted(expected))
+        self.assertEqual({r["kind"]: r["what"] for r in rows}, expected)
+        self.assertIn('&lt;unknown&gt;', home.render_home(model, ""))
+        self.assertNotIn('<unknown>', home.render_home(model, ""))
+        model["queue"]["rows"] += [template | {"id": "undated", "created_at": None}]
+        rows = home.decision_rows(model, NOW.date())
+        self.assertEqual((rows[-1]["id"], rows[-1]["age_hours"]), ("undated", None))
+        for state in ("rejected", "cancelled", "expired"):
+            model["queue"]["rows"] = [template | {"status": state}]
+            self.assertEqual(home.decision_rows(model, NOW.date()), [])
+            page = home.render_home(model, "")
+            self.assertIn('0 need your decision', page)
+            self.assertNotIn('Requests 0', page)
 
     def test_sends_revision_matching_next_kinds_and_unknown_outcome(self):
         model = self.model(send_config="not-read")
@@ -84,9 +140,9 @@ class Home(unittest.TestCase):
                 self.assertIn("reconcile", next(r["why"] for r in rows if r["kind_group"] == "send"))
         model["sends"]["configured"] = False
         self.assertFalse(any(r["kind_group"] == "send" for r in home.decision_rows(model, NOW.date())))
-        for kind, (group, anchor) in home.NEXT.items():
+        for kind, (group, _) in home.NEXT.items():
             row = next(r for r in rows if r["kind"] == kind)
-            self.assertEqual((row["kind_group"], row["link"]), (group, "/next-steps#" + anchor))
+            self.assertEqual((row["kind_group"], row["link"]), (group, "/review?id=" + kind))
 
     def test_pending_exact_keys_readonly_and_legacy_status(self):
         path = self.project / pp.JOURNAL
@@ -163,13 +219,17 @@ class Routes(panel.ServerCase):
         status, _, page = get("/")
         self.assertEqual(status, 200)
         self.assertIn("Needs your decision", page)
+        link = "/review?id=" + self.draft_row["id"]
+        self.assertIn('<a href="%s">Review</a>' % link, page)
+        self.assertEqual(get(link)[0], 200)
         self.assertIn(self.draft_row["id"], get("/dashboard")[2])
         with mock.patch.object(panel.ap, "load_dashboard", return_value={"synthetic": True}):
             with mock.patch.object(panel.ap, "render_dashboard", return_value="old dashboard bytes"):
                 self.assertEqual(get("/dashboard")[2], "old dashboard bytes")
         status, headers, _ = self.http.post("/approvals/reject", {"csrf_token": self.tok, "id": self.draft_row["id"], "reason": "not needed"})
         self.assertEqual((status, headers["location"]), (303, "/"))
-        self.assertIn("Follow-ups 0", get("/")[2])
+        self.assertIn("0 need your decision", get("/")[2])
+        self.assertNotIn("Follow-ups 0", get("/")[2])
         (self.project / pp.JOURNAL).write_bytes(b"invalid\n")
         self.assertEqual(get("/")[0], 200)
         self.assertIn("packets: unavailable (journal_invalid)", get("/")[2])
