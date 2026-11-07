@@ -7,13 +7,21 @@
 VALUES.json is a flat object mapping each placeholder name (without @) to a
 string. The renderer fails closed. It refuses a missing, unknown or
 shell-unsafe value, a leftover placeholder, an invalid stage plan, a timer
-that is not the three Pacific slots (07:00, 13:00, 20:30
-America/Los_Angeles), a budget that does not fit the unit's 47 minute
+whose OnCalendar lines are not exactly the validated schedule, a timer without
+Persistent=true, a budget that does not fit the unit's 47 minute
 TimeoutStartSec, and a MIN_FREE_BYTES free-space threshold that is not a
 canonical byte count between 64 MiB and 1 PiB (or a wrapper template that
 lost the placeholder). It also refuses an output directory that already has files
 or sits inside a Git checkout, because rendered files hold private host
 values.
+
+The timer calendar is data. VALUES.json may set TIMER_DAYS (default Mon..Fri; a
+list such as Mon,Wed,Fri, or daily), TIMER_TIMES (default 07:00,15:00; ascending
+HH:MM, at least 60 minutes apart) and TIMER_TIMEZONE (default America/Los_Angeles;
+any IANA zone). Each OnCalendar line is built from those after strict validation
+(campaign_tool.records.schedule, the same rules `records health` uses) and, where
+`systemd-analyze` exists, checked by `systemd-analyze calendar`. Persistent=true
+stays, so a slot missed during downtime catches up.
 
 Output: run-records.sh (0700), records-run.service, records-run.timer,
 records-arrival.path, records-arrival.service and targets/NAME.json (0600). Installing them into the private runtime and the
@@ -24,13 +32,15 @@ import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from campaign_tool.records import run_orchestrator  # noqa: E402
+from campaign_tool.records import run_orchestrator, schedule as records_schedule  # noqa: E402
 
 TEMPLATES = (("run-records.sh.in", "run-records.sh", 0o700),
              ("records-run.service.in", "records-run.service", 0o600),
@@ -67,7 +77,9 @@ MIN_FREE_BYTES_CEILING = 1024 ** 5
 DF_PROBE_SECONDS = 10 + 2
 TARGET_NAMES = {"DEFAULT_TARGET", "SCHEDULED_TARGET"}
 # Supplied per target by the renderer, never by VALUES.json.
-RESERVED = {"TARGET_NAME"}
+RESERVED = {"TARGET_NAME", "TIMER_ONCALENDAR"}
+# Optional timer calendar inputs; absent means the default weekday schedule.
+TIMER_KEYS = ("TIMER_DAYS", "TIMER_TIMES", "TIMER_TIMEZONE")
 # Safety placeholders a template must keep: a wrapper template that dropped
 # the free-space preflight would otherwise render cleanly without it.
 REQUIRED_PLACEHOLDERS = {"run-records.sh.in": {"MIN_FREE_BYTES", "RECORDS_DROP_DIR", "SCHEDULED_TARGET"},
@@ -77,9 +89,10 @@ UNIT_TIMEOUT_SECONDS = 47 * 60
 KILL_GRACE = 2
 BACKSTOP_GRACE = 15
 SAFETY_MARGIN = 30
-TIMER_SLOTS = ["*-*-* 07:00:00 America/Los_Angeles",
-               "*-*-* 13:00:00 America/Los_Angeles",
-               "*-*-* 20:30:00 America/Los_Angeles"]
+ONCALENDAR_LINE = re.compile(r"(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:\.\.(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))?"
+                             r"(?:,(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:\.\.(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))?)* )?"
+                             r"\*-\*-\* (?:[01][0-9]|2[0-3]):[0-5][0-9]:00 [A-Za-z][A-Za-z0-9_+-]*"
+                             r"(?:/[A-Za-z0-9_+-]+){0,2}")
 
 
 class RenderError(ValueError):
@@ -100,6 +113,7 @@ def check_values(values):
             raise RenderError(f"{key}: expected a non-negative integer")
         if key in TARGET_NAMES and not run_orchestrator.TARGET_RE.match(value):
             raise RenderError(f"{key}: expected an upper-case target name")
+    timer_schedule(values)
     if "RELEASE_COMMIT" in values and not re.fullmatch(r"[0-9a-f]{40}", values["RELEASE_COMMIT"]):
         raise RenderError("RELEASE_COMMIT: expected 40 lower-case hex characters")
     if "EXPECTED_IMAGE" in values and not re.fullmatch(r"sha256:[0-9a-f]{64}",
@@ -109,6 +123,17 @@ def check_values(values):
         check_min_free_bytes(values["MIN_FREE_BYTES"])
     if "RECORDS_DROP_DIR" in values:
         check_drop_dir(values["RECORDS_DROP_DIR"], values.get("RUNTIME_DIR"))
+
+
+def timer_schedule(values):
+    """The validated timer calendar from the optional TIMER_* values (default: weekdays twice a day)."""
+    default = records_schedule.DEFAULT_SCHEDULE
+    try:
+        return records_schedule.Schedule(values.get("TIMER_DAYS", default.days_spec),
+                                         values.get("TIMER_TIMES", default.times_spec),
+                                         values.get("TIMER_TIMEZONE", default.timezone))
+    except records_schedule.ScheduleError as exc:
+        raise RenderError(f"timer: {exc}") from None
 
 
 def check_drop_dir(drop, runtime):
@@ -169,11 +194,28 @@ def substitute(text, values, where):
     return rendered
 
 
-def check_timer(text):
+def check_timer(text, expected=None):
+    """Refuse a timer whose OnCalendar lines are not exactly the validated schedule's, or that lost Persistent=true."""
+    expected = (expected or records_schedule.DEFAULT_SCHEDULE).on_calendar()
     slots = [line.split("=", 1)[1].strip() for line in text.splitlines()
              if line.startswith("OnCalendar=")]
-    if slots != TIMER_SLOTS:
-        raise RenderError(f"timer: expected OnCalendar slots {TIMER_SLOTS}, got {slots}")
+    if slots != expected:
+        raise RenderError(f"timer: expected OnCalendar slots {expected}, got {slots}")
+    for slot in slots:
+        if not ONCALENDAR_LINE.fullmatch(slot):
+            raise RenderError(f"timer: unsafe OnCalendar value {slot!r}")
+    if "Persistent=true" not in text.splitlines():
+        raise RenderError("timer: Persistent=true is required so a missed slot catches up after downtime")
+    analyzer = shutil.which("systemd-analyze")
+    if analyzer:  # the strict pattern above is the fallback where systemd is absent
+        for slot in slots:
+            try:
+                result = subprocess.run([analyzer, "calendar", slot], capture_output=True, text=True,
+                                        timeout=20, check=False)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if result.returncode != 0:
+                raise RenderError(f"timer: systemd-analyze rejected OnCalendar {slot!r}")
 
 
 def inside_git_checkout(path):
@@ -208,6 +250,7 @@ def render(values, targets, out):
         raise RenderError("out: refusing to write rendered private files inside a Git checkout")
     if out.exists() and any(out.iterdir()):
         raise RenderError("out: directory exists and is not empty")
+    timer = timer_schedule(values)
     names = [name for name, _ in targets]
     if len(set(names)) != len(names):
         raise RenderError("targets: duplicate target name")
@@ -226,7 +269,8 @@ def render(values, targets, out):
             raise RenderError(f"{template}: template lost required placeholder(s) "
                               f"{missing_required}")
         used.update(found)
-        files.append((output, substitute(text, values, template), mode))
+        extra = {"TIMER_ONCALENDAR": "\n".join("OnCalendar=" + line for line in timer.on_calendar())}
+        files.append((output, substitute(text, {**values, **extra}, template), mode))
     for name, template in targets:
         if not run_orchestrator.TARGET_RE.match(name):
             raise RenderError(f"target {name!r}: expected an upper-case target name")
@@ -242,11 +286,11 @@ def render(values, targets, out):
         files.append((f"targets/{name}.json", rendered, 0o600))
         plans.append((name, config))
     check_overlap(plans)
-    unknown = sorted(set(values) - used)
+    unknown = sorted(set(values) - used - set(TIMER_KEYS))
     if unknown:
         raise RenderError(f"values: unknown placeholder(s) {unknown}")
     check_budget(values)
-    check_timer(next(text for output, text, _ in files if output == "records-run.timer"))
+    check_timer(next(text for output, text, _ in files if output == "records-run.timer"), timer)
 
     old_umask = os.umask(0o077)
     try:

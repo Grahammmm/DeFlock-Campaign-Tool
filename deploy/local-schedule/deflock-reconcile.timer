@@ -1,9 +1,9 @@
 [Unit]
-Description=DeFlock local schedule: reconcile daily
+Description=DeFlock local schedule: reconcile weekdays
 
 [Timer]
-# 06:00 America/Los_Angeles: one hour before the 07:00 records slot.
-OnCalendar=*-*-* 06:00:00 America/Los_Angeles
+# 10:00 America/Los_Angeles, weekdays only. After the 07:00 records run and the 09:00 deadline drafts, so it checks the state they left. Nothing changes over a weekend.
+OnCalendar=Mon..Fri *-*-* 10:00:00 America/Los_Angeles
 Persistent=true
 RandomizedDelaySec=5min
 Unit=deflock-reconcile.service

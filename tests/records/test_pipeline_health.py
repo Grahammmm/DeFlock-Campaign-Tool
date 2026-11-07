@@ -8,7 +8,9 @@ import sys
 import tempfile
 import unittest
 
-from campaign_tool.records import pipeline_health as ph
+from zoneinfo import ZoneInfo
+
+from campaign_tool.records import pipeline_health as ph, schedule
 from campaign_tool.records.ledger import store
 
 REPO = Path(__file__).resolve().parents[2]
@@ -172,6 +174,44 @@ class CheckTests(Base):
         self.assertEqual((item["state"], item["reason_code"]), ("warn", "notify_failed"))
         os.utime(alert, ((NOW - timedelta(hours=5)).timestamp(),) * 2)
         self.assertEqual(self.check(self.assess(), "notify")["state"], "ok")
+
+    def test_weekend_gap_is_not_a_missed_or_stale_run(self):
+        pst = timezone(timedelta(hours=-8))
+        friday = datetime(2026, 11, 6, 15, 0, tzinfo=pst)
+        for earlier in (friday - timedelta(days=1), friday - timedelta(hours=8)):  # Thu 15:00 and Fri 07:00 slots
+            self.add_ledger_run(earlier + timedelta(minutes=1), earlier + timedelta(minutes=9))
+        self.add_ledger_run(friday + timedelta(minutes=1), friday + timedelta(minutes=9))
+        self.write_report(friday + timedelta(minutes=9), seq=1)
+        for now in (datetime(2026, 11, 7, 12, 0, tzinfo=pst), datetime(2026, 11, 8, 23, 0, tzinfo=pst),
+                    datetime(2026, 11, 9, 6, 59, tzinfo=pst)):
+            with self.subTest(now=now.isoformat()):
+                report = self.assess(now=now)
+                self.assertEqual((self.check(report, "last_run")["state"], self.check(report, "schedule")["state"]),
+                                 ("ok", "ok"), report)
+        # Tuesday afternoon with no run since Friday is a real miss, and says so.
+        tuesday = datetime(2026, 11, 10, 16, 0, tzinfo=pst)
+        report = self.assess(now=tuesday)
+        self.assertEqual(self.check(report, "last_run")["reason_code"], "no_recent_run")
+        self.assertEqual(self.check(report, "schedule")["state"], "stop")
+
+    def test_custom_calendar_is_honoured(self):
+        spec = schedule.Schedule("Mon,Wed", "09:00", "America/New_York")
+        ny = ZoneInfo("America/New_York")
+        monday = datetime(2026, 11, 2, 9, 0, tzinfo=ny)
+        self.add_ledger_run(monday + timedelta(minutes=1), monday + timedelta(minutes=5))
+        self.write_report(monday + timedelta(minutes=5), seq=2)
+        tuesday = datetime(2026, 11, 3, 18, 0, tzinfo=ny)  # 33 h later, past the 26 h limit: no slot has been skipped
+        report = self.assess(now=tuesday, spec=spec)
+        self.assertEqual((self.check(report, "last_run")["state"], self.check(report, "schedule")["state"]), ("ok", "ok"))
+
+    def test_sparse_calendar_month_old_run_is_not_recent(self):
+        spec = schedule.Schedule("Mon", "07:00")
+        ny = ZoneInfo("America/Los_Angeles")
+        thursday = datetime(2026, 11, 12, 12, 0, tzinfo=ny)
+        old = thursday - timedelta(days=30)
+        self.write_report(old, seq=3)
+        report = self.assess(now=thursday, spec=spec)
+        self.assertEqual(self.check(report, "last_run")["reason_code"], "no_recent_run")
 
     def test_schedule_missed_is_stop(self):
         item = self.check(self.assess(now=NOW + timedelta(hours=10)), "schedule")

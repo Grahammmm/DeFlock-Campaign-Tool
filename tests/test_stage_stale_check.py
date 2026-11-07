@@ -154,6 +154,21 @@ class StaleCheckTest(unittest.TestCase):
             code, lines, _ = self.run_check(reports=where)
             self.assertEqual((code, self.ids(lines)), (3, ['insufficient-history', 'no-recent-report']))
 
+    def test_weekday_calendar_check_after_monday_run_is_quiet_after_a_weekend(self):
+        # Records run Mon..Fri 07:00 and 15:00 America/Los_Angeles (PST: 15:00Z and 23:00Z). The stale-check
+        # timer fires Mon..Fri 08:00 PST, after that morning's run, so the 64 h weekend gap never reads as silence.
+        friday = dt.datetime(2026, 1, 9, 15, 0, 0, tzinfo=dt.timezone.utc)
+        for index, start in enumerate((friday, friday + dt.timedelta(hours=8), friday + dt.timedelta(days=3))):
+            self.put(report(index, start=start))
+        monday_check = stamp(friday + dt.timedelta(days=3, hours=1))  # Monday 08:00 PST
+        self.assertEqual(self.run_check(now=monday_check)[0], 0)
+        # Without that Monday run (a real miss) the same check does alert: only the weekend gap is excused,
+        # which is why the timer is weekday-only (36 h is frozen; a Sunday check would read 40 h of silence).
+        os.unlink(self.dir / (report(2, start=friday + dt.timedelta(days=3))['run_id'] + '.json'))
+        code, lines, _ = self.run_check(now=monday_check)  # the Friday afternoon run is then 65 h old
+        self.assertEqual(code, 3)
+        self.assertIn('no-recent-report', self.ids(lines))
+
     def test_order_by_started_at_not_name_and_future_excluded(self):
         for index, name in zip(range(4), ('d', 'c', 'b', 'a')):
             self.put(report(index, extract=('ok', 3, 0) if index else ('ok', 1, 1)), name + '.json')

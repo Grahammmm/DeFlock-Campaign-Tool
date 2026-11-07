@@ -1,9 +1,9 @@
 [Unit]
-Description=DeFlock local schedule: stale-check daily
+Description=DeFlock local schedule: stale-check weekdays
 
 [Timer]
-# 08:00 America/Los_Angeles: one hour after the 07:00 records slot.
-OnCalendar=*-*-* 08:00:00 America/Los_Angeles
+# 08:00 America/Los_Angeles, weekdays only, one hour after the 07:00 records run. Its 36 h silence rule is judged right after a run, so a weekend gap (no slots) never alerts.
+OnCalendar=Mon..Fri *-*-* 08:00:00 America/Los_Angeles
 Persistent=true
 RandomizedDelaySec=5min
 Unit=deflock-stale-check.service

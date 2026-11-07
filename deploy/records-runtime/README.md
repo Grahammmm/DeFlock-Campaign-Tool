@@ -11,7 +11,9 @@ Files
   the overlap lock, the Docker wait and the image pin check, then calls the
   stage orchestrator, then notify.
 - `records-run.service.in`, `records-run.timer.in`: systemd user units. The
-  timer fires at 07:00, 13:00 and 20:30 America/Los_Angeles.
+  timer fires on a data-driven calendar: by default Mon..Fri at 07:00 and
+  15:00 America/Los_Angeles (see "Timer calendar" below). Records requests do
+  not arrive on weekends, so no weekend slot exists.
 - `records-arrival.path.in`, `records-arrival.service.in`: the arrival trigger
   (REC-AUTO-1, see "Arrival runs" below). Rendered, never enabled by the
   renderer.
@@ -46,7 +48,10 @@ renderer refuses:
 
 - missing or unknown values, unsafe characters and relative paths
 - a leftover placeholder or an invalid stage plan
-- a timer that is not the three Pacific slots
+- a timer whose `OnCalendar` lines are not exactly the validated schedule, one
+  that lost `Persistent=true`, or any `TIMER_*` value that is not a strict
+  weekday list, ascending `HH:MM` times at least 60 minutes apart, or a known
+  IANA zone (also run through `systemd-analyze calendar` when it is installed)
 - a budget that does not fit `TimeoutStartSec=47min`
 - a `MIN_FREE_BYTES` that is not a canonical decimal byte count between
   64 MiB (67108864) and 1 PiB, or a wrapper template that lost the
@@ -122,7 +127,7 @@ live runs use:
 
     run-records.sh --target LIVE
 
-T17's three-per-day timer uses the same plan with `--scheduled` once
+T17's scheduled timer (weekdays, twice a day by default) uses the same plan with `--scheduled` once
 `SCHEDULED_TARGET` is switched to `LIVE` at cutover. Rendering installs,
 enables and starts nothing; installing the rendered files and switching the
 timer are separate owner-approved cutover steps. Until the per-run
@@ -441,11 +446,38 @@ scheduled runs; idle stages (no input) never alert. It also flags no scheduled r
 1 untrusted. It complements `records health`. Scheduling it and delivering its alerts beyond
 stdout or `--json-out` are separate operator decisions; it installs and sends nothing.
 
+## Timer calendar
+
+The timer's `OnCalendar` lines are built by `render.py` from three optional
+`VALUES.json` entries, so another geography picks its own schedule without
+editing code:
+
+| Value | Default | Accepts |
+| --- | --- | --- |
+| `TIMER_DAYS` | `Mon..Fri` | `daily`, or a list of days and ranges: `Mon..Fri`, `Mon,Wed,Fri`, `Tue..Thu,Sat` (no backwards ranges) |
+| `TIMER_TIMES` | `07:00,15:00` | 1 to 6 ascending 24-hour `HH:MM` times, each at least 60 minutes from the next (a run stops by 47 minutes) |
+| `TIMER_TIMEZONE` | `America/Los_Angeles` | any IANA zone name known to the host |
+
+Default result: `OnCalendar=Mon..Fri *-*-* 07:00:00 America/Los_Angeles` and the
+same for `15:00:00`, with `Persistent=true`, so a weekday slot missed during
+downtime runs once on the next boot. The arrival path unit
+(`records-arrival.path`) is unchanged: new mail or files still start a run on any
+day. Ten timer runs a week replace the earlier twenty-one.
+
+`records health`, `records pipeline-health` and `records schedule render|show`
+judge the same calendar and take `--days`, `--times` and `--timezone` (defaults
+as above), or read `RECORDS_SCHEDULE_DAYS`, `RECORDS_SCHEDULE_TIMES` and
+`RECORDS_SCHEDULE_TIMEZONE` from the environment, which is also how the console
+and admin panel pick up a non-default calendar. Pass the same values you rendered here; a weekend or any day the
+calendar skips is not a late or missed run. A change takes effect only after the
+operator re-renders, re-installs the timer and runs `systemctl --user
+daemon-reload` and `restart records-run.timer` on the host.
+
 ## Arrival runs (REC-AUTO-1)
 
 A new message or a completed file at the records drop folder starts one
 incremental run through the same wrapper, stage plan, stage order, gates and
-notification as the three timer slots. The timer stays as the safety net.
+notification as the timer slots. The timer stays as the safety net.
 
 Placeholder `@RECORDS_DROP_DIR@`: absolute, normalised, separate from
 `@RUNTIME_DIR@`. The renderer writes `records-arrival.path` (watches the drop

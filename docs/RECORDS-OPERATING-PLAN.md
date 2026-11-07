@@ -49,7 +49,7 @@ successful text extractor does not establish original-level understanding.
 | M2: extraction recovery | Local OCR tools approved and available; every image-only page has a receipt; low-confidence/fidelity pages have queue entries; document/image/mail/capture support is explicit; recoverable failures rerun without rewriting originals |
 | M3: complete detectors | Seven detectors, verified rule versions and private policy overlays tested and run on applicable corpus inputs; all dispositions and exact source locators persisted; high-severity hits checked against originals |
 | M4: triage and proposals | Ranked queue; three factual drafts with hash-bound independent source checks, privacy scans and limits; full finding gate for legal claims; draft files await tier and owner approval |
-| M5: one scheduled job | One approved job absorbs existing exporter/checkpoints; runs at 07:00, 13:00 and 20:30 Pacific; controlled mail attachment reaches the private board unattended; restore and incident tests pass |
+| M5: one scheduled job | One approved job absorbs existing exporter/checkpoints; runs Mon..Fri at 07:00 and 15:00 Pacific by default (calendar is a render value); controlled mail attachment reaches the private board unattended; restore and incident tests pass |
 
 Complete missing M1 acceptance checks before marking that milestone complete.
 M2 code can be prepared alongside those checks; passing synthetic OCR tests
@@ -242,7 +242,7 @@ but a source-verification gap must remain visible and prevent readiness.
 
 ## Scheduling, failures and recovery
 
-The final intake schedule is 07:00, 13:00 and 20:30 America/Los_Angeles. It is
+The final intake schedule is Mon..Fri 07:00 and 15:00 America/Los_Angeles (records requests do not arrive on weekends; the calendar and zone are render values). It is
 not the old every-15-minute skill description. Arrival-to-next-run wait and
 run-start-to-catalog latency are separate measures; this schedule cannot promise
 that every arrival is cataloged within one hour.

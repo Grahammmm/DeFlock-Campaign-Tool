@@ -1,7 +1,8 @@
 """Schedule-derived health and the rendered activation/rollback scripts.
 
-Health is computed from the approved 07:00 / 13:00 / 20:30 America/Los_Angeles
-promise against ledger run rows. The activation and rollback scripts are
+Health is computed from the configured calendar (default: Mon..Fri 07:00 and
+15:00 America/Los_Angeles) against ledger run rows; a weekend has no slot, so a
+weekend without a run is never a miss. The activation and rollback scripts are
 exercised against a fake ``systemctl`` on PATH so the exact command sequence,
 state file and unit placement are verified without touching any real host.
 """
@@ -32,24 +33,85 @@ def la(*parts):
 
 class SlotMathTests(unittest.TestCase):
     def test_due_and_next_slots_follow_the_zone_across_dst_end(self):
-        # 2026-11-01 02:00 PDT -> 01:00 PST. The 20:30 slot on Oct 31 and the 07:00 slot on
-        # Nov 1 are 11.5 hours apart in UTC, not 10.5.
+        # 2026-11-01 (Sunday) is when PDT ends; use the daily calendar so the DST day has slots.
+        spec = schedule.Schedule("daily", "07:00,15:00")
         now = la(2026, 11, 1, 7, 5)
-        due = schedule.due_slots(now)
+        due = schedule.due_slots(now, 3, spec)
         self.assertEqual([s.isoformat() for s in due],
-                         ["2026-11-01T07:00:00-08:00", "2026-10-31T20:30:00-07:00", "2026-10-31T13:00:00-07:00"])
+                         ["2026-11-01T07:00:00-08:00", "2026-10-31T15:00:00-07:00", "2026-10-31T07:00:00-07:00"])
         # Same-tzinfo subtraction is wall-clock in Python; compare instants instead.
-        self.assertEqual(due[0].timestamp() - due[1].timestamp(), 11.5 * 3600)
-        self.assertEqual(schedule.next_slot(now).isoformat(), "2026-11-01T13:00:00-08:00")
+        self.assertEqual(due[0].timestamp() - due[1].timestamp(), 17 * 3600)
+        self.assertEqual(schedule.next_slot(now, spec).isoformat(), "2026-11-01T15:00:00-08:00")
+
+    def test_default_calendar_is_weekdays_twice_a_day(self):
+        self.assertEqual(schedule.DEFAULT_SCHEDULE.on_calendar(),
+                         ["Mon..Fri *-*-* 07:00:00 America/Los_Angeles", "Mon..Fri *-*-* 15:00:00 America/Los_Angeles"])
+        self.assertEqual(schedule.DEFAULT_SCHEDULE.runs_per_week(), 10)
+
+    def test_weekend_has_no_slots_and_monday_reaches_back_to_friday(self):
+        saturday = la(2026, 10, 3, 12, 0)
+        self.assertEqual(schedule.due_slots(saturday, 1)[0], la(2026, 10, 2, 15, 0))
+        self.assertEqual(schedule.next_slot(saturday), la(2026, 10, 5, 7, 0))
+        self.assertEqual(schedule.next_slot(la(2026, 10, 2, 15, 0)), la(2026, 10, 5, 7, 0))
+        self.assertEqual(schedule.due_slots(la(2026, 10, 5, 6, 59), 1)[0], la(2026, 10, 2, 15, 0))
 
     def test_due_slots_before_first_slot_of_day_reach_back_to_previous_day(self):
-        now = la(2026, 10, 2, 6, 59)
-        self.assertEqual(schedule.due_slots(now, 1)[0], la(2026, 10, 1, 20, 30))
+        now = la(2026, 10, 2, 6, 59)  # Friday
+        self.assertEqual(schedule.due_slots(now, 1)[0], la(2026, 10, 1, 15, 0))
         self.assertEqual(schedule.next_slot(now), la(2026, 10, 2, 7, 0))
+
+    def test_lookback_searches_until_the_requested_count_is_met(self):
+        # Mon 07:00 only: on Thursday 2026-10-08 the two latest slots are Oct 5 and Sep 28 (>9 days back).
+        spec = schedule.Schedule("Mon", "07:00")
+        due = schedule.due_slots(la(2026, 10, 8, 12, 0), 2, spec)
+        self.assertEqual(due, [la(2026, 10, 5, 7, 0), la(2026, 9, 28, 7, 0)])
+        self.assertEqual(len(schedule.due_slots(la(2026, 10, 8, 12, 0), 6, spec)), 6)
+
+    def test_dst_gap_wall_times_are_skipped_like_systemd(self):
+        # 2026-03-08 02:30 does not exist in Los Angeles; systemd skips that day's slot.
+        spec = schedule.Schedule("daily", "02:30")
+        self.assertEqual(schedule.next_slot(la(2026, 3, 7, 12, 0), spec).isoformat(), "2026-03-09T02:30:00-07:00")
+        due = schedule.due_slots(la(2026, 3, 9, 12, 0), 2, spec)
+        self.assertEqual([s.isoformat() for s in due], ["2026-03-09T02:30:00-07:00", "2026-03-07T02:30:00-08:00"])
+        weekly = schedule.Schedule("Sun", "02:30")
+        self.assertEqual(schedule.next_slot(la(2026, 3, 1, 3, 0), weekly).isoformat(), "2026-03-15T02:30:00-07:00")
 
     def test_naive_datetimes_are_rejected(self):
         with self.assertRaises(ValueError):
             schedule.due_slots(datetime(2026, 10, 1, 8, 0))
+
+    def test_custom_calendar_and_zone(self):
+        spec = schedule.Schedule("Mon,Wed,Fri", "09:30", "America/New_York")
+        self.assertEqual(spec.on_calendar(), ["Mon,Wed,Fri *-*-* 09:30:00 America/New_York"])
+        ny = ZoneInfo("America/New_York")
+        # Thursday 2026-10-01 12:00 New York: last slot was Wednesday, next is Friday.
+        now = datetime(2026, 10, 1, 12, 0, tzinfo=ny)
+        self.assertEqual(schedule.due_slots(now, 1, spec)[0], datetime(2026, 9, 30, 9, 30, tzinfo=ny))
+        self.assertEqual(schedule.next_slot(now, spec), datetime(2026, 10, 2, 9, 30, tzinfo=ny))
+        self.assertEqual(schedule.Schedule("daily", "06:00,18:00").on_calendar()[0], "*-*-* 06:00:00 America/Los_Angeles")
+
+    def test_deployment_calendar_comes_from_the_environment(self):
+        self.assertEqual(schedule.configured({}), schedule.DEFAULT_SCHEDULE)
+        env = {"RECORDS_SCHEDULE_DAYS": "Tue..Thu", "RECORDS_SCHEDULE_TIMES": "10:00", "RECORDS_SCHEDULE_TIMEZONE": "Europe/Dublin"}
+        self.assertEqual(schedule.configured(env).on_calendar(), ["Tue..Thu *-*-* 10:00:00 Europe/Dublin"])
+        with self.assertRaises(schedule.ScheduleError):
+            schedule.configured({"RECORDS_SCHEDULE_TIMES": "99:00"})
+        old = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v) for k, v in old.items()])
+        dublin = ZoneInfo("Europe/Dublin")
+        self.assertEqual(schedule.next_slot(datetime(2026, 10, 5, 12, 0, tzinfo=dublin)), datetime(2026, 10, 6, 10, 0, tzinfo=dublin))
+
+    def test_bad_calendar_specs_are_rejected(self):
+        for days, times, zone in (("Fri..Mon", "07:00", "UTC"), ("Mon..Fri; rm", "07:00", "UTC"), ("Funday", "07:00", "UTC"),
+                                  ("", "07:00", "UTC"), ("Mon..Fri", "7:00", "UTC"), ("Mon..Fri", "24:00", "UTC"),
+                                  ("Mon..Fri", "15:00,07:00", "UTC"), ("Mon..Fri", "07:00,07:00", "UTC"),
+                                  ("Mon..Fri", "07:00,07:30", "UTC"), ("Mon..Fri", "", "UTC"),
+                                  ("Mon..Fri", "07:00,08:00,09:00,10:00,11:00,12:00,13:00", "UTC"),
+                                  ("Mon..Fri", "07:00", "Not/AZone"), ("Mon..Fri", "07:00", "../etc/passwd"),
+                                  ("Mon..Fri", "07:00", "America/Los_Angeles extra"), ("Mon..Fri", "07:00", ""), ("Mon..Fri", "07:00\n", "UTC"), ("Mon..Fri\n", "07:00", "UTC")):
+            with self.subTest(days=days, times=times, zone=zone), self.assertRaises(schedule.ScheduleError):
+                schedule.Schedule(days, times, zone)
 
 
 class HealthTests(unittest.TestCase):
@@ -82,22 +144,45 @@ class HealthTests(unittest.TestCase):
     def test_ok_late_missed_failed_and_stalled(self):
         self.add_run("r1", la(2026, 10, 1, 7, 1), la(2026, 10, 1, 7, 9))
         self.assertEqual(self.statuses(la(2026, 10, 1, 8, 0))[0], "ok")
-        # 13:00 slot due, inside grace, no run yet -> late (exit 0), the 07:00 slot still ok.
-        status, slots, report = self.statuses(la(2026, 10, 1, 13, 20))
+        # 15:00 slot due, inside grace, no run yet -> late (exit 0), the 07:00 slot still ok.
+        status, slots, report = self.statuses(la(2026, 10, 1, 15, 20))
         self.assertEqual((status, slots[:2], report["exit_code"]), ("late", ["late", "ok"], 0))
         # Grace passed -> missed (exit 1).
-        status, slots, report = self.statuses(la(2026, 10, 1, 14, 0))
+        status, slots, report = self.statuses(la(2026, 10, 1, 16, 0))
         self.assertEqual((status, slots[:2], report["exit_code"]), ("missed", ["missed", "ok"], 1))
-        # A failed run for the 13:00 slot.
-        self.add_run("r2", la(2026, 10, 1, 13, 2), la(2026, 10, 1, 13, 3), status="failed")
-        self.assertEqual(self.statuses(la(2026, 10, 1, 14, 0))[0], "failed")
-        # A run that started for the 20:30 slot and never finalised: running inside grace, stalled after.
-        self.add_run("r3", la(2026, 10, 1, 20, 31), None, status="running")
-        status, slots, report = self.statuses(la(2026, 10, 1, 20, 50))
-        self.assertEqual((status, slots[0]), ("degraded", "running"))  # degraded: 13:00 failed in lookback
-        status, slots, report = self.statuses(la(2026, 10, 1, 22, 0))
+        # A failed run for the 15:00 slot.
+        self.add_run("r2", la(2026, 10, 1, 15, 2), la(2026, 10, 1, 15, 3), status="failed")
+        self.assertEqual(self.statuses(la(2026, 10, 1, 16, 0))[0], "failed")
+        # Friday's 07:00 run started and never finalised: running inside grace, stalled after.
+        self.add_run("r3", la(2026, 10, 2, 7, 1), None, status="running")
+        status, slots, report = self.statuses(la(2026, 10, 2, 7, 20))
+        self.assertEqual((status, slots[0]), ("degraded", "running"))  # degraded: Thursday 15:00 failed in lookback
+        status, slots, report = self.statuses(la(2026, 10, 2, 9, 0))
         self.assertEqual((status, slots[0], report["exit_code"]), ("stalled", "stalled", 1))
         self.assertEqual(report["missed_in_lookback"], 2)
+
+    def test_weekend_without_runs_is_not_late_missed_or_stalled(self):
+        self.add_run("fri-am", la(2026, 10, 2, 7, 1), la(2026, 10, 2, 7, 9))
+        self.add_run("fri-pm", la(2026, 10, 2, 15, 1), la(2026, 10, 2, 15, 9))
+        for now in (la(2026, 10, 2, 15, 50), la(2026, 10, 3, 3, 0), la(2026, 10, 3, 15, 30), la(2026, 10, 4, 20, 30),
+                    la(2026, 10, 5, 6, 59)):
+            with self.subTest(now=now.isoformat()):
+                status, slots, report = self.statuses(now)
+                self.assertEqual((status, report["exit_code"], report["missed_in_lookback"]), ("ok", 0, 0), report)
+                self.assertEqual(slots[0], "ok")
+        report = schedule.health(self.root, now=la(2026, 10, 3, 12, 0))
+        self.assertEqual(report["next_slot"], la(2026, 10, 5, 7, 0).isoformat())
+        # Monday: the 07:00 slot is genuinely due, so no run is late and then missed.
+        self.assertEqual(self.statuses(la(2026, 10, 5, 7, 10))[0], "late")
+        self.assertEqual(self.statuses(la(2026, 10, 5, 8, 0))[0], "missed")
+
+    def test_dropped_afternoon_style_slot_is_not_judged_under_a_custom_calendar(self):
+        # One slot a day on Mon/Wed: a Tuesday with no run is not a miss, a Wednesday without one is.
+        spec = schedule.Schedule("Mon,Wed", "07:00")
+        self.add_run("mon", la(2026, 10, 5, 7, 1), la(2026, 10, 5, 7, 9))
+        tuesday = schedule.health(self.root, now=la(2026, 10, 6, 15, 0), spec=spec)
+        self.assertEqual((tuesday["status"], tuesday["days"], tuesday["schedule"]), ("ok", "Mon,Wed", ["07:00"]))
+        self.assertEqual(schedule.health(self.root, now=la(2026, 10, 7, 9, 0), spec=spec)["status"], "missed")
 
     def test_run_finishing_after_slot_counts_for_that_slot(self):
         # Started 06:50 (before the 07:00 slot, e.g. Persistent catch-up after a reboot) and ended 07:10.
@@ -106,13 +191,13 @@ class HealthTests(unittest.TestCase):
 
     def test_record_writes_keyed_alerts_once_per_slot(self):
         self.add_run("r1", la(2026, 10, 1, 7, 1), la(2026, 10, 1, 7, 9))
-        report = schedule.health(self.root, now=la(2026, 10, 1, 14, 0))
+        report = schedule.health(self.root, now=la(2026, 10, 1, 16, 0))
         self.assertEqual(schedule.record_health(self.root, report), 1)
         self.assertEqual(schedule.record_health(self.root, report), 1)
         con = sqlite3.connect(self.root / "ledger.sqlite")
         rows = con.execute("SELECT key,count,state FROM alerts").fetchall()
         con.close()
-        self.assertEqual(rows, [("schedule:missed:2026-10-01T13:00:00-07:00", 2, "open")])
+        self.assertEqual(rows, [("schedule:missed:2026-10-01T15:00:00-07:00", 2, "open")])
 
     def test_health_after_automated_review_reports_gaps_and_cli_exit_codes_agree(self):
         inbox = Path(self.tmp.name) / "inbox"
@@ -124,12 +209,12 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(report["slots"][0]["status"], "gaps", report)
         self.assertEqual(report["status"], "gaps")
         result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "health", "--root", str(self.root),
-                                 "--now", now.isoformat(), "--json"], cwd=REPO, capture_output=True, text=True)
+                                 "--days", "daily", "--now", now.isoformat(), "--json"], cwd=REPO, capture_output=True, text=True)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual(json.loads(result.stdout)["status"], "gaps")
-        # The same ledger a day later with no further runs is missed.
+        # The same ledger two days later with no further runs is missed (daily calendar: no weekend gap).
         later = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "health", "--root", str(self.root),
-                                "--now", (now + timedelta(days=1)).isoformat()], cwd=REPO, capture_output=True, text=True)
+                                "--days", "daily", "--now", (now + timedelta(days=2)).isoformat()], cwd=REPO, capture_output=True, text=True)
         self.assertEqual(later.returncode, 1)
         self.assertIn("missed", later.stdout)
 
@@ -170,14 +255,16 @@ class RenderAndActivationTests(unittest.TestCase):
         written = schedule.render(self.root, engine_root=REPO, python="/opt/py/bin/python3", mail_config=self.mail, ocr=True)
         self.assertEqual(sorted(written), ["activate.sh", "records-run.service", "records-run.timer", "rollback.sh"])
         timer = (self.root / "ops/records-run.timer").read_text()
-        for line in ("OnCalendar=*-*-* 07:00:00 America/Los_Angeles", "OnCalendar=*-*-* 13:00:00 America/Los_Angeles",
-                     "OnCalendar=*-*-* 20:30:00 America/Los_Angeles", "Persistent=true", "Unit=records-run.service"):
+        for line in ("OnCalendar=Mon..Fri *-*-* 07:00:00 America/Los_Angeles",
+                     "OnCalendar=Mon..Fri *-*-* 15:00:00 America/Los_Angeles", "Persistent=true", "Unit=records-run.service"):
             self.assertIn(line, timer)
+        self.assertEqual(timer.count("OnCalendar="), 2)
         service = (self.root / "ops/records-run.service").read_text()
         self.assertIn("ExecStart=/opt/py/bin/python3 -m campaign_tool.records run --unattended --max-originals-per-run 200 --root", service)
         self.assertIn("--mail-config", service)
         self.assertIn(" --ocr --json", service)
         self.assertIn("ExecStartPost=/opt/py/bin/python3 -m campaign_tool.records health --root", service)
+        self.assertNotIn("--days", service)  # the default calendar needs no flags
         self.assertIn("UMask=0077", service)
         self.assertNotIn("@", service.split("[Service]")[1])  # no unresolved placeholders
         for name in ("activate.sh", "rollback.sh"):
@@ -185,37 +272,45 @@ class RenderAndActivationTests(unittest.TestCase):
         for name in ("records-run.service", "records-run.timer"):
             self.assertEqual(oct(os.stat(self.root / "ops" / name).st_mode & 0o777), "0o600")
 
+    def test_custom_calendar_renders_into_timer_and_health_command(self):
+        spec = schedule.Schedule("Mon,Wed,Fri", "09:30,16:00", "America/New_York")
+        schedule.render(self.root, engine_root=REPO, spec=spec)
+        timer = (self.root / "ops/records-run.timer").read_text()
+        self.assertIn("OnCalendar=Mon,Wed,Fri *-*-* 09:30:00 America/New_York\n", timer)
+        self.assertIn("OnCalendar=Mon,Wed,Fri *-*-* 16:00:00 America/New_York\n", timer)
+        self.assertNotIn("Los_Angeles", timer)
+        self.assertIn("Persistent=true", timer)
+        service = (self.root / "ops/records-run.service").read_text()
+        self.assertIn("health --root", service)
+        self.assertIn("--days Mon,Wed,Fri --times 09:30,16:00 --timezone America/New_York --record", service)
+
+    def test_schedule_cli_rejects_a_bad_calendar_before_writing_anything(self):
+        result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "schedule", "render", "--root",
+                                 str(self.root), "--engine-root", str(REPO), "--times", "07:00;reboot"],
+                                cwd=REPO, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((self.root / "ops").exists())
+
     @unittest.skipUnless(shutil.which("systemd-analyze"), "systemd-analyze not installed")
     def test_calendar_lines_are_accepted_by_systemd_and_elapse_at_the_zone_instant(self):
         schedule.render(self.root, engine_root=REPO)
         timer = (self.root / "ops/records-run.timer").read_text()
         specs = [line.split("=", 1)[1] for line in timer.splitlines() if line.startswith("OnCalendar=")]
-        self.assertEqual(len(specs), 3)
-        base = datetime(2026, 11, 1, 0, 0, tzinfo=ZoneInfo("UTC"))  # DST ends in LA later this day
-        expected = []
-        for hour, minute in schedule.SLOTS:  # first elapse of each slot after base, in UTC
-            for day in range(0, 3):
-                date_ = (base.astimezone(LA) + timedelta(days=day)).date()
-                slot = datetime(date_.year, date_.month, date_.day, hour, minute, tzinfo=LA)
-                if slot > base:
-                    expected.append(slot.astimezone(ZoneInfo("UTC")))
-                    break
-        expected.sort()
+        self.assertEqual(len(specs), 2)
+        # Saturday 2026-10-31 20:00 UTC: the next weekday slots are Monday 2026-11-02, after DST ended
+        # (07:00 and 15:00 PST are 15:00 and 23:00 UTC); nothing elapses over the weekend.
         elapses = []
         for spec in specs:
-            result = subprocess.run(["systemd-analyze", "calendar", "--base-time=2026-11-01 00:00:00 UTC", spec],
+            result = subprocess.run(["systemd-analyze", "calendar", "--base-time=2026-10-31 20:00:00 UTC", spec],
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             # systemd prints the elapse in the host zone and, when that differs, an "(in UTC)" line.
             utc_line = next((l for l in result.stdout.splitlines() if "(in UTC)" in l), None)
             line = utc_line or next(l for l in result.stdout.splitlines() if "Next elapse" in l)
-            stamp = line.split(":", 1)[1].strip()  # e.g. "Sun 2026-11-01 15:00:00 UTC"
-            parts = stamp.split()
-            self.assertEqual(parts[-1], "UTC", stamp)
-            elapses.append(datetime.fromisoformat(parts[1] + "T" + parts[2]).replace(tzinfo=ZoneInfo("UTC")))
-        self.assertEqual(sorted(elapses), expected)
-        # 20:30 PDT on Oct 31 is 03:30 UTC; 07:00 and 13:00 PST on Nov 1 are 15:00 and 21:00 UTC.
-        self.assertEqual([(e.day, e.hour, e.minute) for e in sorted(elapses)], [(1, 3, 30), (1, 15, 0), (1, 21, 0)])
+            parts = line.split(":", 1)[1].strip().split()  # e.g. "Mon 2026-11-02 15:00:00 UTC"
+            self.assertEqual(parts[-1], "UTC", line)
+            elapses.append(datetime.fromisoformat(parts[1] + "T" + parts[2]))
+        self.assertEqual([(e.month, e.day, e.hour, e.minute) for e in sorted(elapses)], [(11, 2, 15, 0), (11, 2, 23, 0)])
 
     def test_activate_dry_run_changes_nothing(self):
         schedule.render(self.root, engine_root=REPO)
@@ -267,8 +362,8 @@ class RenderAndActivationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("activate.sh --dry-run first", result.stdout)
         shown = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "schedule", "show", "--now",
-                                "2026-10-01T12:00:00-07:00"], cwd=REPO, capture_output=True, text=True)
-        self.assertEqual(json.loads(shown.stdout)["next"], "2026-10-01T13:00:00-07:00")
+                                "2026-10-03T12:00:00-07:00"], cwd=REPO, capture_output=True, text=True)
+        self.assertEqual(json.loads(shown.stdout)["next"], "2026-10-05T07:00:00-07:00")  # Saturday -> Monday
 
 
 if __name__ == "__main__":

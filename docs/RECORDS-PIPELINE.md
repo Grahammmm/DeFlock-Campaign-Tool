@@ -76,7 +76,7 @@ is different from the full records gate; do not convert approvals implicitly.
 | M4 | Three independently checked, privacy-scanned factual drafts awaiting owner and tier approval; no publication. **Status: not started.** Digests exist per original (see [RUNNER.md](RUNNER.md)); no draft, no independent check and no publication path has been produced from them. |
 | M5 | One lock-protected job absorbs the exporter; exact existing-to-proposed schedule diff and owner approval before activation. **Status: not started for the pilot.** The engine side now has the pieces a schedule would call: the workspace Worker's cron enqueues `intake`/`digest`/`draft_followup` jobs offline, the runner executes them, and the outbox ([OUTBOX.md](OUTBOX.md)) journals sends. The pilot's existing exporter, its unit and checkpoint state have not been inventoried, no schedule diff exists and nothing has been activated. |
 
-The intended schedule is 07:00, 13:00 and 20:30 America/Los_Angeles, not every
+The intended schedule is Mon..Fri 07:00 and 15:00 America/Los_Angeles by default (configurable per deployment), not every
 15 minutes. With that cadence, measure arrival-to-next-run separately from
 run-start-to-catalog latency; do not promise an under-one-hour arrival SLA.
 No scheduled job is created or changed in M0a. The existing exporter remains
