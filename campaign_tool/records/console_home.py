@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import console_board as cb, console_oversight as co, console_outstanding, console_standing, mail_send, public_packets
 from .outcomes.reading import BANNER, esc
-from . import console_calendar, console_layout
+from . import console_calendar, console_layout, followup_clock
 
 GROUPS = ("request", "follow-up", "send", "site-update", "social-post", "status-line", "packet")
 LABELS = ("Requests", "Follow-ups", "Sends", "Site updates", "Social posts", "Status lines", "Packets")
@@ -23,6 +23,7 @@ NEXT = {"next-site-update": ("site-update", "site"), "next-social-post": ("socia
 
 def load(project, run_id, run_report_path=None, now=None, *, send_config=None, meetings_dir=None):
     model = co.load(project, run_id, run_report_path, now)
+    calendar = {}
     try:
         calendar = console_calendar.load(project, run_id, model["now"], send_config=send_config,
                                          meetings_dir=meetings_dir)
@@ -36,10 +37,18 @@ def load(project, run_id, run_report_path=None, now=None, *, send_config=None, m
                 key=lambda e: (e["date"], e["kind"]))}
     except Exception:
         model["calendar"] = co._unavailable("calendar_unreadable")
+    model["reminders"] = co._unavailable("reminders_unreadable")
+    try:
+        followup = calendar["followup"]
+        if followup["state"] == "ok":
+            model["reminders"] = {"state": "ok", "rows": followup_clock.reminder_status(
+                followup["register"], followup["settings"], model["queue"]["rows"], as_of=model["now"].date().isoformat())}
+    except (KeyError, ValueError, TypeError, AttributeError):
+        pass
     try:
         board = cb.load(project, run_id)
         model["deadlines"] = board["deadlines"]
-        model["waiting"] = ({"state": "ok", "rows": waiting_rows(board, model["now"].date())}
+        model["waiting"] = ({"state": "ok", "rows": waiting_rows(board, model["now"].date()), "reminders": model["reminders"]}
                             if board["timeline"]["state"] == "ok" else dict(board["timeline"]))
     except Exception:
         model["waiting"] = co._unavailable("board_unreadable")
@@ -92,6 +101,13 @@ def decision_rows(model, today):
         age = _age(now, made.timestamp() if made else None)
         evidence = row.get("evidence") or {}
         why = evidence.get("why") or " ".join(str(evidence.get(k) or "") for k in ("clock_kind", "clock_date")).strip()
+        if kind in (*followup_clock.REMINDERS, followup_clock.NOTICE) and evidence.get("clock_date"):
+            day = evidence["clock_date"]
+            label = "DATED" if evidence.get("clock_kind") == "promised" else "UNVERIFIED"
+            for req in cb._requests(model):
+                if (req.get("agency_key"), req.get("request_id")) == (row["agency_id"], row["request_id"]) and label != "DATED":
+                    label, _, _ = cb.computed_clock(model, req, "determination_due", day)
+            why = "No reply since %s (%s due date; on our records, not a legal finding)" % (day, label)
         if row["status"] == "pending":
             group, _ = NEXT.get(kind, ("request" if kind == "first-request" else "follow-up", None))
             link = "/review?id=" + urllib.parse.quote(ident, safe="")
@@ -152,7 +168,7 @@ def render_waiting(state, today):
         return "\n".join(out + ['<p role="status">Waiting on agencies: unavailable (%s).</p></section>' % esc(state.get("code"))])
     rows = state["rows"]
     out.append('<table><thead><tr>' + ''.join('<th scope="col">%s</th>' % h for h in
-               ("Agency", "Request", "Asked on", "Due (basis)", "Status")) + '</tr></thead><tbody>')
+               ("Agency", "Request", "Asked on", "Due (basis)", "Status", "Reminder")) + '</tr></thead><tbody>')
     for r in rows[:40]:
         if r["overdue"]:
             status = ('<span class="overdue">OVERDUE %d days</span> since %s' % (r["days"], esc(r["since"]))
@@ -161,10 +177,20 @@ def render_waiting(state, today):
         else:
             days = (r["due_day"] - today).days if r["due_day"] else None
             status = "due date unknown" if days is None else ("due in %d days" % days if days >= 0 else "due date passed; no overdue mark recorded")
+        reminders = state.get("reminders", {"state": "ok", "rows": []})
+        notes = []
+        for reminder in reminders.get("rows", []):
+            if (reminder["agency_key"], reminder["request_id"]) != (r["agency_key"], r["request_id"]):
+                continue
+            text = esc(reminder["reason"])
+            if reminder["state"] == "drafted":
+                text += ' - <a href="/review?id=%s">Review</a>' % esc(urllib.parse.quote(reminder["queue_id"], safe=""))
+            notes.append(text)
+        reminder_text = '<br>'.join(notes) if reminders["state"] == "ok" else "Reminder status unavailable"
         cells = ['<a href="/agency?agency=%s">%s</a>' % (esc(urllib.parse.quote(r["agency_key"] or "", safe="")), esc(r["agency"])),
                  esc(r["request_id"]), esc(str(r["asked"]) + " (DATED)" if r["asked"] else "unknown (UNKNOWN)"),
                  esc('%s (%s; %s)' % (r["due_day"], cb.BASIS_WORD.get(r["basis"], "UNKNOWN"), r["basis"] or "unknown")
-                     if r["due_day"] else "unknown (UNKNOWN)"), status]
+                     if r["due_day"] else "unknown (UNKNOWN)"), status, reminder_text]
         out.append('<tr>%s</tr>' % ''.join('<td>%s</td>' % c for c in cells))
     out.append('</tbody></table>')
     if not rows:
@@ -268,6 +294,8 @@ def render_home(model, token):
         what = esc(row["what"])
         if row["overdue_days"] is not None:
             what += ' <span class="overdue">OVERDUE %d days</span> (on our records; not a legal finding)' % row["overdue_days"]
+        if row["kind"] in (*followup_clock.REMINDERS, followup_clock.NOTICE):
+            what += "<br>" + esc(row["why"])
         agency = '<a href="/agency?agency=%s">%s</a>' % (
             esc(urllib.parse.quote(row["agency"] or "", safe="")), esc(row["agency"]))
         cells = [agency, what, esc(co._ago(row["age_hours"])),

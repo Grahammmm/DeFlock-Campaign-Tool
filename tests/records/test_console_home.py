@@ -476,3 +476,54 @@ class Routes(panel.ServerCase):
         (self.project / pp.JOURNAL).write_bytes(b"invalid\n")
         self.assertEqual(get("/")[0], 200)
         self.assertIn("packets: unavailable (journal_invalid)", get("/")[2])
+
+
+class Reminders(unittest.TestCase):
+    setUp, request, page = Waiting.setUp, Waiting.request, Waiting.page
+
+    def test_reminder_column_integration_and_plain_why(self):
+        from campaign_tool.records import followup_clock as fc
+        from tests.records.test_followup_clock import row, doc
+        requests = [self.request(s, due="2026-10-01", overdue="2026-10-01")
+                    for s in ("drafted", "approved", "rejected", "off", "wait")]
+        register = [row("alpha-pd", s, due="2026-10-01") for s in ("drafted", "approved", "rejected")]
+        register += [row("off-pd", "off", due="2026-10-01"), row("wait-pd", "wait", due="2026-11-04")]
+        requests[3]["agency_key"], requests[4]["agency_key"] = "off-pd", "wait-pd"
+        put(self.project / 'run-outputs' / RUN / fc.REGISTER_NAME, doc(register, "2026-11-05"))
+        settings = {"schema": fc.SETTINGS_SCHEMA, "default": {"autonomy": "draft"},
+                    "agencies": {"off-pd": {"autonomy": "off"}, "wait-pd": {"silence_after_days": 3}}}
+        cal.put(self.project / fc.SETTINGS_FILE, settings)
+        ids = {}
+        for s in ("drafted", "approved", "rejected"):
+            q = aq.add_draft(self.project, item_id=fc.item_id("alpha-pd", s, "determination", "2026-10-01"),
+                kind=fc.REMINDERS[0], agency_id="alpha-pd", request_id=s, body="Synthetic reminder",
+                evidence={"clock_kind": "determination", "clock_date": "2026-10-01"}, source_run_id=RUN)
+            ids[s] = q["id"]
+            if s == "rejected":
+                aq.reject(self.project, q["id"], "G", "not needed")
+        model, initial_page = self.page(requests)
+        self.assertIn('Draft ready - <a href="/review?id=' + ids['drafted'], initial_page)
+        model['deadlines'] = {('alpha-pd', 'drafted'): {'determination_due': {
+            'date': '2026-10-01', 'label': 'COMPUTED', 'package': 'us-ca sha256:' + 'a' * 64}}}
+        self.assertIn('No reply since 2026-10-01 (COMPUTED due date;', home.render_home(model, ''))
+        model['deadlines'] = {}
+        # Synthetic projection of an already-approved queue row; no approval operation occurs here.
+        queue = [q | {"status": "approved"} if q["id"] == ids["approved"] else q for q in model["queue"]["rows"]]
+        model["waiting"]["reminders"]["rows"] = fc.reminder_status(doc(register), fc.load_settings(self.project), queue, as_of="2026-11-05")
+        page = home.render_home(model, '')
+        section = page.split('<section id="waiting">')[1].split('</section>')[0]
+        for text in ('Reminder</th>', 'Draft ready - <a href="/review?id=' + ids['drafted'] + '">Review</a>',
+                     '>Approved<', '>Rejected<', 'Reminders are off for this agency (see Settings)', 'Reminder due 2026-11-08'):
+            self.assertIn(text, section)
+        self.assertIn('No reply since 2026-10-01 (UNVERIFIED due date; on our records, not a legal finding)', page)
+        template = next(q for q in model["queue"]["rows"] if q["id"] == ids["drafted"])
+        for kind in (*fc.REMINDERS, fc.NOTICE):
+            model["queue"]["rows"] = [template | {"kind": kind, "evidence": {"clock_kind": "promised", "clock_date": "<date>"}}]
+            self.assertIn('No reply since &lt;date&gt; (DATED due date;', home.render_home(model, ''))
+        before = sorted((str(p), p.read_bytes()) for p in self.project.rglob('*') if p.is_file())
+        home.load(self.project, RUN, now=NOW)
+        self.assertEqual(sorted((str(p), p.read_bytes()) for p in self.project.rglob('*') if p.is_file()), before)
+        with mock.patch.object(fc, 'reminder_status', side_effect=ValueError('private detail')):
+            page = home.render_home(home.load(self.project, RUN, now=NOW), '')
+        self.assertIn('Reminder status unavailable', page)
+        self.assertNotIn('private detail', page)
