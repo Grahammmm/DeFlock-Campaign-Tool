@@ -43,3 +43,15 @@ browser returns to the agency page, showing summary and actor. If refreshing
 fails (503), the event may already be durable: retry the unchanged form rather
 than opening a new one. Malformed, incomplete, linked or non-private journals
 refuse further writes. The form does not send, approve or publish anything.
+
+## Documents agency aliases (CDATA-ALIAS-1)
+
+An operator may hand-stage `<project>/agency-aliases.tsv` (UTF-8), header
+`agency_key<TAB>alias`, at most 500 rows. Use public agency identifiers only.
+Keys fullmatch `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`; aliases are nonempty,
+printable, at most 128 characters, without tabs/newlines. Each alias maps to
+one key and cannot itself be a key. Mapping is UNVERIFIED until REC-PILOT-1.
+Documents joins items, release links, proposals and dispositions to those keys.
+Absent file preserves exact matching; an invalid or symlinked file shows
+`aliases: unavailable (aliases_invalid)` and applies no aliases, even valid rows.
+No file is generated and no source records or publication gates are changed.

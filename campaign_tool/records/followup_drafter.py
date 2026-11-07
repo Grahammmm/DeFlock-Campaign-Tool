@@ -32,6 +32,8 @@ EDIT = "[EDIT ME: {}]"
 NOTES_RULE = "\n---\n"
 # response type words (from received items and registers) -> playbook pattern id
 RESPONSE_TYPES = {
+    "audit_no_documents": "audit_no_documents", "closed_new_request": "closed_new_request",
+    "closed": "closed_new_request", "closed_with_open_items": "closed_new_request",
     "extension": "extension", "partial": "partial_production", "partial_production": "partial_production",
     "denial": "blanket_denial", "denied": "blanket_denial", "blanket_denial": "blanket_denial",
     "fee": "fee", "fee_estimate": "fee", "no_records": "no_records", "no_responsive_records": "no_records",

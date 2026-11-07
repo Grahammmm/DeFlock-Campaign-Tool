@@ -124,9 +124,11 @@ class FactsReviewTest(unittest.TestCase):
 
     def test_checked_to_disputed_logged_then_hand_edit_named_by_check(self):
         self.assertEqual(self.review([self.a], "checked", "ben", "--date", DAY)[0], 0)
+        days = {datetime.date.today().isoformat()}  # read the clock around the call: a run may cross midnight
         code, out, _ = self.review([self.a], "disputed", "cara")
+        days.add(datetime.date.today().isoformat())
         self.assertEqual((code, out[0]), (0, "review | alpha | %s | checked -> disputed" % self.a))
-        self.assertEqual(self.log_lines()[2], "%s,checked,disputed,cara,%s," % (self.a, TODAY.isoformat()))
+        self.assertIn(self.log_lines()[2], {"%s,checked,disputed,cara,%s," % (self.a, day) for day in days})
         self.assertEqual(self.check(), (0, []))
         text = self.facts.read_text(encoding="utf-8")
         self.facts.write_text(text.replace(self.a + ",record,,,ana,%s,disputed" % ADDED, self.a + ",record,,,ana,%s,checked" % ADDED),
@@ -150,7 +152,7 @@ class FactsReviewTest(unittest.TestCase):
         self.assertEqual(self.check(), (1, ["file 1: reviews row 1: header is not FACT-REVIEWS.csv v1"]))
 
     def test_bad_dates_refused_and_unreviewed_is_usage(self):
-        future = (TODAY + datetime.timedelta(days=1)).isoformat()
+        future = (datetime.date.today() + datetime.timedelta(days=2)).isoformat()  # still future across midnight
         before_added = (TODAY - datetime.timedelta(days=31)).isoformat()
         self.assertEqual(self.refused([self.a], "checked", "ben", "--date", future), ["--date: is after today"])
         self.assertEqual(self.refused([self.a, self.c], "checked", "ben", "--date", before_added),

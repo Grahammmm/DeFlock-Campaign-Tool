@@ -47,7 +47,7 @@ class TierTests(unittest.TestCase):
         self.assertEqual(s["line"], "logs: produced; audits: open")
 
     def test_audit_log_ask_is_logs_only(self):
-        text = "A native access/search/audit-log export for [one named window of at most one quarter]."
+        text = "A native access/search/audit-log export with every recorded field, for the longest period held."
         self.assertIn(text, json.dumps(pb.load()).replace("\\/", "/"))
         s = it.tier_report(report((text, "answered")), self.book)["requests"][0]["logs_and_audits"]
         self.assertEqual(s["line"], "logs: produced; audits: not asked")

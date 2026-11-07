@@ -10,7 +10,7 @@ from unittest import mock
 from campaign_tool.records import playbook as pb
 
 PATTERN_IDS = {"extension", "partial_production", "blanket_denial", "fee", "no_records",
-               "records_contradict_policy", "silence", "vague_answer"}
+               "records_contradict_policy", "silence", "vague_answer", "audit_no_documents", "closed_new_request"}
 
 
 class ShippedPlaybookTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class ShippedPlaybookTests(unittest.TestCase):
     def setUpClass(cls):
         cls.book = pb.load()
 
-    def test_eight_followup_patterns_with_all_parts(self):
+    def test_ten_followup_patterns_with_all_parts(self):
         self.assertEqual({p["id"] for p in self.book["followup_patterns"]}, PATTERN_IDS)
         for entry in self.book["followup_patterns"]:
             for key in ("when", "goal", "questions", "cite", "do_not"):
@@ -37,6 +37,29 @@ class ShippedPlaybookTests(unittest.TestCase):
         for name in ("sheriff", "grover", "arroyo", "morro", "paso robles", "atascadero", "pismo", "san luis"):
             self.assertNotIn(name, text)
         self.assertEqual(self.book["jurisdictions"], ["us-ca"])
+
+    def test_v2_goal_first_defaults(self):
+        self.assertEqual(self.book["version"], 2)
+        self.assertIs(pb.validate(self.book), self.book)
+        item = self.book["first_request"]["items"][0]
+        self.assertEqual(item["ask"], "A native access/search/audit-log export with every recorded field, for the longest period held.")
+        privacy = ("Plate numbers and personal identifiers of members of the public may be redacted; "
+                   "please produce every other recorded field and, for any other withheld field, "
+                   "provide a redaction log or a field-specific written basis.")
+        self.assertEqual(item["redaction_offer"], privacy)
+        self.assertIn(privacy, pb.pattern(self.book, "blanket_denial")["questions"])
+
+    def test_new_send_ready_bans_are_case_insensitive_and_word_bounded(self):
+        phrases = ("our objective", "we seek to determine whether", "we are not alleging", "we do not assume",
+                   "we do not claim", "does not repeat", "new asks only", "would settle", "would back",
+                   "not any investigation", "et seq", "ff.", "preserve", "preservation", "litigation hold", "prevent deletion")
+        for phrase in phrases:
+            ident = phrase.replace(" ", "_").rstrip(".")
+            with self.subTest(ident=ident):
+                self.assertEqual([h["id"] for h in pb.lint(self.book, "Text: " + phrase.upper() + " ; end")["hits"]], [ident])
+                for clean in ("Please produce existing records.", "x" + phrase, phrase + "x"):
+                    self.assertEqual(pb.lint(self.book, clean)["hits"], [])
+        self.assertEqual(pb.lint(self.book, "We seek existing records only, not a newly created report.")["hits"], [])
 
     def test_tier_assignment_puts_logs_before_policy_before_contracts(self):
         tier = lambda text: pb.tier_for(self.book, text)  # noqa: E731
@@ -171,7 +194,7 @@ class CliTests(unittest.TestCase):
 
     def test_check_and_lint_exit_codes(self):
         code, out, _ = self.run_cli("check")
-        self.assertEqual((code, "8 patterns" in out), (0, True))
+        self.assertEqual((code, "10 patterns" in out), (0, True))
         code, out, _ = self.run_cli("lint", "-", stdin="Please produce the existing export.")
         self.assertEqual((code, out.strip()), (0, "pass"))
         code, out, _ = self.run_cli("lint", "-", stdin="That is illegal.")

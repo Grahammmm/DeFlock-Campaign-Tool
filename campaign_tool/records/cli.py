@@ -31,6 +31,7 @@ COMMANDS = {
     "pipeline-health": ("pipeline_health", "main"),
     "release-links": ("outcomes.release_links", "main"),
     "playbook": ("playbook", "main"),
+    "ask-parity": ("ask_parity", "main"),
     "items": ("item_tiers", "main"),
     "followup-draft": ("followup_drafter", "main"),
     "precedent": ("precedent", "main"),

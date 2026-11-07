@@ -53,7 +53,7 @@ def _strict(raw):
 
 
 def _entry(value, allowed_autonomy=True):
-    if not isinstance(value, dict) or set(value) - {"autonomy", "notice_after_days"}:
+    if not isinstance(value, dict) or set(value) - {"autonomy", "notice_after_days", "silence_after_days"}:
         raise SettingsError("entry")
     out = {}
     if "autonomy" in value:
@@ -65,11 +65,17 @@ def _entry(value, allowed_autonomy=True):
         if type(days) is not int or not 1 <= days <= 60:
             raise SettingsError("notice_after_days")
         out["notice_after_days"] = days
+    if "silence_after_days" in value:
+        days = value["silence_after_days"]
+        if type(days) is not int or not 0 <= days <= 30:
+            raise SettingsError("silence_after_days")
+        out["silence_after_days"] = days
     return out
 
 
 def _off():
-    return {"invalid": False, "default": {"autonomy": "off", "notice_after_days": DEFAULT_NOTICE_DAYS}, "agencies": {}}
+    return {"invalid": False, "default": {"autonomy": "off", "notice_after_days": DEFAULT_NOTICE_DAYS,
+                                         "silence_after_days": 0}, "agencies": {}}
 
 
 def load_settings(project):
@@ -119,14 +125,27 @@ def _day(value):
         return None
 
 
-def _clocks(row):
+def followup_due(row, setting):
+    """Pure clock dates, including future ones; closed requests have no follow-up due."""
+    if str(row.get("status", "")).strip().casefold() in CLOSED:
+        return []
+    deadline, promise = row.get("deadline") or {}, row.get("promised") or {}
+    clocks = []
+    if deadline.get("state") not in ("determined", "unknown") and deadline.get("due"):
+        clocks.append(("determination", deadline["due"]))
+    if promise.get("state") in ("upcoming", "due_today", "passed") and promise.get("date"):
+        clocks.append(("promised", promise["date"]))
+    return [(kind, value, (day + timedelta(days=1 + setting.get("silence_after_days", 0))).isoformat())
+            for kind, value in clocks if (day := _day(value)) is not None]
+
+
+def _clocks(row, setting, today):
     """Passed clocks of one register row: [(clock_kind, date, reminder_kind)]."""
     out = []
-    deadline, promise = row.get("deadline") or {}, row.get("promised") or {}
-    if deadline.get("state") == "past_due_reminder" and deadline.get("due"):
-        out.append(("determination", deadline["due"], "reminder-no-response"))
-    if promise.get("state") == "passed" and promise.get("date"):
-        out.append(("promised", promise["date"], "reminder-promised-date"))
+    for kind, clock_date, due in followup_due(row, setting):
+        state = (row.get("deadline" if kind == "determination" else "promised") or {}).get("state")
+        if state in ("past_due_reminder", "passed") and today and today >= _day(due):
+            out.append((kind, clock_date, REMINDERS[0 if kind == "determination" else 1]))
     return out
 
 
@@ -136,11 +155,11 @@ def _plan(register, settings, queue_rows, as_of):
     counts = {"skipped_off": 0, "skipped_issue": 0, "not_due": 0}
     found = []
     for row in register.get("requests", []):
-        clocks = _clocks(row)
+        setting = _setting(settings, row["agency_key"])
+        clocks = _clocks(row, setting, today)
         if not clocks or str(row.get("status", "")).strip().casefold() in CLOSED:
             counts["not_due"] += 1
             continue
-        setting = _setting(settings, row["agency_key"])
         if setting["autonomy"] != "draft":
             counts["skipped_off"] += 1
             continue
@@ -163,6 +182,44 @@ def _plan(register, settings, queue_rows, as_of):
 def plan(register, settings, queue_rows, *, as_of):
     """Pure planner: the drafts this register calls for. No IO."""
     return _plan(register, settings, queue_rows, as_of)[0]
+
+
+def clock_table(register, settings, queue_rows, timeline=None, *, as_of):
+    """All request clocks, on our records; not a legal finding. Pure, with no IO."""
+    today = _day(as_of)
+    if today is None:
+        raise ValueError("as_of_invalid")
+    chains = {(r["agency_key"], r["request_id"]): r.get("extension_chain") or {}
+              for r in (timeline or {}).get("requests", [])}
+    approved = {(r["item_id"], r["kind"]): r for r in queue_rows if r["status"] == "approved"}
+    out = []
+    for row in register.get("requests", []):
+        setting = _setting(settings, row["agency_key"])
+        deadline, promise = row.get("deadline") or {}, row.get("promised") or {}
+        followups = followup_due(row, setting)
+        notices = []
+        for kind, clock_date, _ in followups:
+            ident = item_id(row["agency_key"], row["request_id"], kind, clock_date)
+            prior = approved.get((ident, REMINDERS[0 if kind == "determination" else 1]))
+            changed = _day(prior["updated_at"]) if prior else None
+            if changed:
+                notices.append((changed + timedelta(days=setting["notice_after_days"])).isoformat())
+        entry = {"agency_key": row["agency_key"], "request_id": row["request_id"],
+                 **{k: deadline.get(k) for k in ("basis", "base_due", "extended_due", "due", "state")},
+                 "promised": dict(promise),
+                 "followup_due": [{"clock_kind": k, "clock_date": c, "due_date": d} for k, c, d in followups],
+                 "notice_due": min(notices) if notices else None,
+                 "extension_limit_exceeded": chains.get((row["agency_key"], row["request_id"]), {}).get("exceeds_14_days"),
+                 "autonomy": setting["autonomy"], "issues": list(row.get("issues") or []),
+                 "closed": str(row.get("status", "")).strip().casefold() in CLOSED}
+        out.append(entry)
+
+    def order(entry):
+        dates = [entry.get(k) for k in ("base_due", "extended_due", "due", "notice_due")]
+        dates += [entry["promised"].get("date")] + [f["due_date"] for f in entry["followup_due"]]
+        upcoming = [d for d in dates if _day(d) and _day(d) >= today]
+        return (min(upcoming, default="9999-12-31"), entry["agency_key"], entry["request_id"])
+    return sorted(out, key=order)
 
 
 def _render(candidate, register, run_id):
@@ -254,7 +311,8 @@ def main():
                                      description="No-response follow-up clocks. Read-only; sends nothing.")
     sub = parser.add_subparsers(dest="action", required=True)
     for name, help_text in (("plan", "print the drafts this run's register calls for"),
-                            ("rows", "print Deadlines and Overdue rows")):
+                            ("rows", "print Deadlines and Overdue rows"),
+                            ("clocks", "print all request clocks and follow-up due dates")):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--project", required=True)
         p.add_argument("--run-id", required=True)
@@ -279,6 +337,27 @@ def main():
         result = [{**{k: c[k] for k in ("kind", "agency_key", "request_id", "clock_kind", "clock_date", "item_id")},
                    "queued": approval_queue.draft_id(c["item_id"], c["kind"]) in have} for c in found]
         result = {"settings_invalid": settings["invalid"], "candidates": result}
+    elif args.action == "clocks":
+        from .outcomes.timeline import SCHEMA
+        timeline = None
+        try:
+            path = checked_path(os.path.join(args.project, "run-outputs", args.run_id, "outcomes", "timeline.json"), existing=False)
+            try:
+                with secure_open(path) as stream:
+                    raw = stream.read(MAX_REGISTER + 1)
+            except FileNotFoundError:
+                raw = None
+            if raw is not None:
+                if len(raw) > MAX_REGISTER:
+                    raise ValueError("timeline_size")
+                timeline = _strict(raw)
+                if not isinstance(timeline, dict) or timeline.get("schema") != SCHEMA or timeline.get("run_id") != args.run_id \
+                        or not isinstance(timeline.get("requests"), list):
+                    raise ValueError("timeline_shape")
+            result = clock_table(register, settings, queue_rows, timeline, as_of=register["as_of"])
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            print("timeline_unreadable", file=sys.stderr)
+            return 1
     else:
         result = dashboard(register, settings, queue_rows)
     print(json.dumps(result, indent=1, ensure_ascii=False))
