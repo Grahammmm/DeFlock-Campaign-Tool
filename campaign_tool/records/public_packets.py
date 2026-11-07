@@ -108,8 +108,8 @@ class _Locked:
         self.project = os.path.abspath(project)
 
     def __enter__(self):
-        flags = os.O_RDONLY if self.read_only else os.O_RDWR | os.O_CREAT
-        self.fd = os.open(os.path.join(self.project, LOCK), flags | os.O_NOFOLLOW, 0o600)
+        self.fd = os.open(os.path.join(self.project, LOCK),
+                          (os.O_RDONLY if self.read_only else os.O_RDWR | os.O_CREAT) | os.O_NOFOLLOW, 0o600)
         deadline = time.monotonic() + 5.0
         while True:
             try:
