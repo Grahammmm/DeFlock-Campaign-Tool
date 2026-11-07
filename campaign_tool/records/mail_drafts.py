@@ -24,7 +24,7 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import format_datetime, getaddresses
 
-from . import approval_queue, draft_templates, mail_poll
+from . import approval_queue, draft_residue, draft_templates, mail_poll
 from .intake import folder as intake_folder
 from .intake import imap_intake
 from .ledger import store
@@ -384,6 +384,14 @@ def place(project, config, *, factory=mail_poll.default_connect, now=None, only_
         if dry_run:
             summary["would_place"] = len(todo)
             return summary
+        clean = []
+        for row in todo:
+            if draft_residue.codes(row["body"]):
+                journal.append([_row(row, "failed", now, code="body_has_draft_residue")])
+                summary["failed"] += 1
+            else:
+                clean.append(row)
+        todo = clean
         if not todo:
             return summary
         client = None
