@@ -139,3 +139,19 @@ Every console page shares a plain left navigation: Home, Approvals, Agencies,
 Calendar, Timeline and Library. The small More line retains Dashboard, Oversight,
 Public updates, Packets, and Drafts and next steps. On narrow screens the nav
 stacks above the page; overdue notices are bold red (on our records, not a legal finding).
+
+## Jobs
+
+`GET /jobs` (More: Jobs) is a read-only list of every scheduled job. The list is discovered from the unit files under
+`deploy/` (`*.timer`, `*.path`, `.in` templates included) plus any `--timer-unit`, so another geography with its own units
+needs no code change. For each job it runs only `systemctl --user show` and reports installed, enabled, last trigger,
+last result (`Result` and `ExecMainStatus` of the triggered service) and next run, read from systemd at request time
+(schedules are never hard-coded). Only an installed, enabled timer-driven unit whose service has a recorded completed execution (`ExecMainExitTimestamp`) with success and exit 0 reads `ok`; a service that never ran reads "never run" even though systemd defaults its result to success. Arrival (`.path`) units never read `ok`: `run-records.sh --arrival` exits 0 both when it processed work and when a held overlap lock only queued the arrival, so they read `UNKNOWN`.
+Not installed, disabled, never run, exit 73 (a held lock skipped the slot), failed, `systemctl` missing and unparseable
+output each render as their own explicit state, never as passed. There are no start, stop or enable controls.
+
+The optional GitHub Actions section shows the latest run of each workflow (default `check`, `camera-source-review`,
+`production`; override with `DEFLOCK_GITHUB_WORKFLOWS`, comma separated). It needs `DEFLOCK_GITHUB_REPO` (`owner/name`) and a
+read-only token in `DEFLOCK_GITHUB_READ_TOKEN`, or an owner-only (0600) regular file named by
+`DEFLOCK_GITHUB_READ_TOKEN_FILE`. Without them it shows "not configured" and makes no network call. The token is never
+rendered, and a failed call shows only "GitHub unavailable". Tests inject a fake fetcher and never use the network.
