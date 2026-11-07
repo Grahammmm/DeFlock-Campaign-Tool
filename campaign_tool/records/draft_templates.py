@@ -204,6 +204,7 @@ def render(item):
 
 # ---- no-response follow-ups (REC-AUTO-7): facts from the request register only -----------------
 
+# Retained for residue detection on existing queue rows, not included in new letters.
 _FOLLOWUP_FOOTER = ("---\nDraft only. Not legal advice. Review required. Dates come from the request register, "
                     "which marks them provisional; check receipt dates and holidays by hand.\n")
 _BASIS_WORDS = {"recorded_receipt": "counted from the recorded receipt date",
@@ -220,36 +221,24 @@ def _clean(value, limit=500):
 
 
 def render_followup(kind, *, agency, request_id, asked, request_date, clock_kind, clock_date, deadline, limits,
-                    as_of):
-    """Return the body of one follow-up draft. ``deadline`` and ``limits`` are the register's own values."""
+                    as_of, signature=None, reminder_date=None):
+    """Return only the letter; clock basis and limits remain outside the outgoing body."""
     _need(kind in FOLLOWUP_KINDS and clock_kind in ("determination", "promised"), "followup_kind")
     _need(all(isinstance(v, str) and v for v in (agency, request_id, clock_date, as_of)), "followup_fields")
-    agency, request_id, asked = _clean(agency, 200), _clean(request_id, 128), _clean(asked)
-    sent = request_date or EDIT.format("request date not recorded")
+    request_id = _clean(request_id, 128)
+    sent = _clean(request_date) if request_date else EDIT.format("request date not recorded")
     if clock_kind == "determination":
-        basis = _BASIS_WORDS.get(deadline.get("basis"), "basis not recorded")
-        extension = " An extension is recorded for this request." if deadline.get("extension_recorded") else ""
-        clock = (f"Clock: the determination reminder date in our register was {clock_date}, {basis}.{extension}\n"
-                 + "\n".join(_clean(line, 600) for line in limits[1:3]) + "\n")
+        status = f"We have no written determination on our records as of {_clean(as_of)}."
         ask = ("Please send your written determination on this request, or tell us the date by which you expect "
                "to send it.")
     else:
-        clock = f"Clock: the date the agency gave: {clock_date}.\n"
-        ask = ("Please send the records you described, or tell us a new date by which you expect to send them.")
-    recorded = "written determination" if clock_kind == "determination" else "production"
+        status = (f"The date you gave, {_clean(clock_date)}, has passed and we have not received the records.")
+        ask = "Please send the records you described, or tell us a new date by which you expect to send them."
     if kind == "formal-notice-no-response":
-        step = (f"This is a formal written notice following our earlier reminder sent on "
-                f"{EDIT.format('date you sent the reminder')}. Please reply in writing to this request.")
-        title = "Formal notice: no " + recorded + " recorded"
-    else:
-        step = (f"This is a courtesy reminder. Our register shows no {recorded} recorded as of " + as_of + ".")
-        title = "Reminder: no " + recorded + " recorded"
-    text = (f"# Draft ({kind}): {agency} / {request_id}\n\n{DRAFT_BANNER}\n\n"
-            f"Target agency: {agency}\nBelongs to request: {request_id}\nState: pending-approval\n"
-            f"To: {EDIT.format('recipient and contact; not taken from the record')}\n"
-            f"Subject: {title} for public records request {request_id}\n\n"
-            f"Hello,\n\nI am writing about public records request {request_id}, dated {sent} in our records. "
-            f"The request asked for: {asked}\n\n{clock}\n{step}\n\n{ask}\n\n"
-            f"Thank you,\n\n{EDIT.format('name')}\n\n{_LADDER}\n{_FOLLOWUP_FOOTER}")
+        reminder = _clean(reminder_date) if reminder_date else EDIT.format("date of our reminder")
+        status += f" This follows our reminder of {reminder}."
+        ask += " Please reply in writing."
+    text = (f"Hello,\n\nI am writing about public records request {request_id}, sent on {sent}. {status}\n\n"
+            f"{ask}\n\nThank you,\n\n{signature or EDIT.format('signature')}\n")
     _need(len(text.encode("utf-8")) <= MAX_BODY_BYTES, "body_bound")
     return text
