@@ -94,7 +94,7 @@ class Packets(Base):
         for path in ('/public-updates', '/'):
             status, page, _ = self.request('GET', path)
             self.assertEqual(status, 200)
-            self.assertIn(self.ident[:12] if path == '/public-updates' else 'document r1', page)
+            self.assertIn(self.ident[:12] if path == '/public-updates' else 'Update packet', page)
             self.assertIn('href="/packets"', page)
 
     def test_revision_checked_inside_decision_lock(self):

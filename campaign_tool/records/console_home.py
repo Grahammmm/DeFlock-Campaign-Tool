@@ -8,6 +8,14 @@ from . import console_layout
 
 GROUPS = ("request", "follow-up", "send", "site-update", "social-post", "status-line", "packet")
 LABELS = ("Requests", "Follow-ups", "Sends", "Site updates", "Social posts", "Status lines", "Packets")
+PLAIN_KINDS = {
+    "first-request": "First request", "reminder-no-response": "Reminder: no reply",
+    "reminder-promised-date": "Reminder: promised date passed",
+    "formal-notice-no-response": "Formal notice: no reply", "appeal-denial": "Reply to a refusal",
+    "reply-extension": "Reply to an extension", "fee-reply": "Reply about fees",
+    "followup-missing-records": "Ask for missing records", "next-social-post": "Suggested post",
+    "next-site-update": "Suggested site update", "next-followup-probe": "Suggested follow-up",
+}
 DISCONNECTED = (("agency-page", "CON-SITEPR-1"), ("redaction", "CON-REDACT-1"), ("finding", "CON-FIND-1"))
 NEXT = {"next-site-update": ("site-update", "site"), "next-social-post": ("social-post", "social"),
         "next-followup-probe": ("follow-up", "followup")}
@@ -52,7 +60,7 @@ def decision_rows(model, today):
     def add(ident, group, kind, agency, request, why, age, link, source, hours=None):
         overdue, day, mark = _overdue(model, agency, request, today)
         rows.append({"id": ident, "kind_group": group, "kind": kind, "agency": agency, "request": request,
-                     "what": "%s %s" % (kind, request or "agency-wide"), "why": why, "age_hours": age,
+                     "what": {"public": "Public status line", "packets": "Update packet"}.get(source, PLAIN_KINDS.get(kind, kind)), "why": why, "age_hours": age,
                      "overdue_days": overdue, "overdue_date": day, "overdue_kind": mark,
                      "hours_left": hours, "link": link, "source": source})
 
@@ -65,8 +73,8 @@ def decision_rows(model, today):
         evidence = row.get("evidence") or {}
         why = evidence.get("why") or " ".join(str(evidence.get(k) or "") for k in ("clock_kind", "clock_date")).strip()
         if row["status"] == "pending":
-            group, anchor = NEXT.get(kind, ("request" if kind == "first-request" else "follow-up", None))
-            link = "/next-steps#" + anchor if anchor else "/dashboard#drafts"
+            group, _ = NEXT.get(kind, ("request" if kind == "first-request" else "follow-up", None))
+            link = "/review?id=" + urllib.parse.quote(ident, safe="")
             add(ident, group, kind, row["agency_id"], row["request_id"], why or "Draft awaiting decision", age, link, "queue")
         elif row["status"] == "approved" and kind not in NEXT and sends.get("configured") and sends["state"] == "ok":
             result = latest.get((ident, row["revision"]))
@@ -93,22 +101,18 @@ def decision_rows(model, today):
             packet["agency_key"], packet["request_id"], "%s %s" % (packet["source"], packet["request_id"]),
             packet["age_hours"], "/packets", "packets", packet["hours_to_expiry"])
 
-    def urgency(row):
-        overdue, hours, age = row["overdue_days"], row["hours_left"], row["age_hours"]
-        closing = hours is not None and hours <= (12 if row["source"] == "public" else 48)
-        band = 0 if overdue is not None else 1 if closing else 2
-        return (band, -(overdue or 0), hours if hours is not None else float("inf"),
-                -(age if age is not None else -1), GROUPS.index(row["kind_group"]), row["id"])
-
-    return sorted(rows, key=urgency)
+    return sorted(rows, key=lambda row: (row["age_hours"] is None,
+                                        row["age_hours"] if row["age_hours"] is not None else 0, row["id"]))
 
 
 def render_home(model, token):
     rows = decision_rows(model, model["now"].date())
-    out = [console_layout.start("Home", "Home"), "<h1>Home</h1>",
-           '<h2 id="decide">Needs your decision</h2><p role="status">' + " · ".join(
-               "%s %d" % (label, sum(r["kind_group"] == group for r in rows))
-               for group, label in zip(GROUPS, LABELS)) + "</p>"]
+    out = ["<h1>Home</h1>", '<p role="status">%d need your decision</p>' % len(rows),
+           '<section id="decide"><h2>Needs your decision</h2>']
+    counts = ["%s %d" % (label, count) for group, label in zip(GROUPS, LABELS)
+              if (count := sum(r["kind_group"] == group for r in rows))]
+    if counts:
+        out.append("<p>" + " · ".join(counts) + "</p>")
     for source in ("timeline", "queue", "public", "packets", "sends"):
         state = model[source]
         if state["state"] != "ok":
@@ -116,28 +120,23 @@ def render_home(model, token):
     if model["packets"]["state"] == "ok" and not model["packets"]["rows"]:
         out.append("<p>No packets pending.</p>")
     out.append('<table><thead><tr>' + "".join('<th scope="col">%s</th>' % title for title in
-               ("Agency", "What is being approved", "Why", "Age", "Overdue", "Open")) + '</tr></thead><tbody>')
+               ("Agency", "What", "Waiting since", "Open")) + '</tr></thead><tbody>')
     for row in rows:
-        overdue = ""
+        what = esc(row["what"])
         if row["overdue_days"] is not None:
-            overdue = "overdue %d days since %s (%s), on our records; not a legal finding" % (
-                row["overdue_days"], row["overdue_date"],
-                "promised" if row["overdue_kind"] == "promised_date_passed" else "statutory")
-        why = str(row["why"])
-        if row["hours_left"] is not None:
-            why += "; window closes in %d h" % row["hours_left"]
+            what += ' <span class="overdue">OVERDUE %d days</span> (on our records; not a legal finding)' % row["overdue_days"]
         agency = '<a href="/agency?agency=%s">%s</a>' % (
             esc(urllib.parse.quote(row["agency"] or "", safe="")), esc(row["agency"]))
-        cells = [agency, esc(row["what"]), esc(why), esc(co._ago(row["age_hours"])), esc(overdue),
-                 '<a href="%s">Open</a>' % esc(row["link"])]
+        cells = [agency, what, esc(co._ago(row["age_hours"])),
+                 '<a href="%s">%s</a>' % (esc(row["link"]), "Review" if row["source"] == "queue" else "Open")]
         out.append("<tr>%s</tr>" % "".join("<td>%s</td>" % cell for cell in cells))
-    out.append("</tbody></table>")
-    out += ["<p>%s: source not connected yet (%s).</p>" % pair for pair in DISCONNECTED]
-    out.append('<section id="timeline">')
+    out.append('</tbody></table></section><details id="more"><summary>More detail</summary>')
     out.append(console_standing.render_standing(model, model["now"].date()))
-    out.append('</section>')
-    out += [console_outstanding.render_outstanding(model), '</main></body></html>']
-    return "\n".join(out) + "\n"
+    out.append(console_outstanding.render_outstanding(model))
+    out += ["<p>%s: source not connected yet (%s).</p>" % pair for pair in DISCONNECTED]
+    out.append('</details>')
+    return console_layout.shell("Home", "\n".join(out), "Home")
+
 
 
 def serve(handler):
