@@ -392,13 +392,18 @@ class Waiting(unittest.TestCase):
         self.assertEqual(section.count('Full timeline</a>'), 3)
         for text in ('denial', 'draft', '2026-10-02', '<Beta>'):
             self.assertNotIn(text, section)
-        model['deadlines'] = {('alpha-pd', 'a'): {'statutory_due': {
+        model['deadlines'] = {('alpha-pd', 'a'): {'determination_due': {
             'date': '2026-11-09', 'label': 'COMPUTED', 'package': 'us-ca sha256:' + 'a' * 64}}}
         self.assertIn('Statutory due (COMPUTED;', home.render_progress(model, NOW.date()))
         alpha['events'] += [{'type': 'promised date', 'date': '2026-10-05', 'new_dates': ['2026-11-07']}]
         model, _ = self.page([alpha])
         self.assertIn('Next: 2026-11-07 promised date (DATED)', home.render_progress(model, NOW.date()))
         alpha['closed'] = True
+        model, _ = self.page([alpha])
+        self.assertIn('Next: unknown (UNKNOWN)', home.render_progress(model, NOW.date()))
+        alpha['closed'] = False
+        alpha['events'] = [e for e in alpha['events'] if e['type'] != 'promised date']
+        alpha['clocks'] = {'due': '2026-11-09', 'basis': 'submission_proxy', 'state': 'determined'}
         model, _ = self.page([alpha])
         self.assertIn('Next: unknown (UNKNOWN)', home.render_progress(model, NOW.date()))
 

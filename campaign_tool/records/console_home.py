@@ -189,12 +189,14 @@ def timeline_rows(model, today):
                     events.append(event)
             if request.get("closed"):
                 continue
-            due = (request.get("clocks") or {}).get("due")
+            clock = request.get("clocks") or {}
+            due = clock.get("due")
             day = cb._day(due)
-            if day and day >= today:
-                name = "extension_limit" if (request.get("clocks") or {}).get("extended_due") == due else "statutory_due"
-                label, source, _ = cb.computed_clock(model, request, name, due)
-                dates.append((day, "%s (%s; %s)" % (console_calendar.KINDS[name], label, source)))
+            if day and day >= today and clock.get("state") != "determined":
+                extended = clock.get("extended_due") == due
+                label, source, _ = cb.computed_clock(model, request, "extension_limit" if extended else "determination_due", due)
+                kind = "extension_limit" if extended else "statutory_due"
+                dates.append((day, "%s (%s; %s)" % (console_calendar.KINDS[kind], label, source)))
             for event in cb._live(request):
                 if event["type"] == "promised date":
                     dates += [(day, "promised date (DATED)") for value in event.get("new_dates") or []
