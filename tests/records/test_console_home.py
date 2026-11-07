@@ -86,7 +86,7 @@ class Home(unittest.TestCase):
         self.assertFalse(any(r["kind_group"] == "send" for r in home.decision_rows(model, NOW.date())))
         for kind, (group, anchor) in home.NEXT.items():
             row = next(r for r in rows if r["kind"] == kind)
-            self.assertEqual((row["kind_group"], row["link"]), (group, "/next-steps#" + anchor))
+            self.assertEqual((row["kind_group"], row["link"]), (group, "/review?id=" + kind))
 
     def test_pending_exact_keys_readonly_and_legacy_status(self):
         path = self.project / pp.JOURNAL
