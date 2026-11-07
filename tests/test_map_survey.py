@@ -21,7 +21,6 @@ from campaign_tool.site import build_site  # noqa: E402
 from tests.test_site_cameras_page import NODE, point, square  # noqa: E402
 
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
-DAY = date.today().isoformat()
 CANARY = "SECRETVALUE"
 CAMERAS = [point(0.6, 0.6, manufacturer="=Evil,Co", operator="Cedar PD", url=NODE + "30"),
            point(0.7, 1.0, manufacturer="Smith & Co", operator="Cedar \"PD\" & Co", url=NODE + "10"),
@@ -56,12 +55,18 @@ class SurveyTests(unittest.TestCase):
     def sheet(self, city="Cedar"):
         return run("map", "survey-sheet", "--city", city, "--directory", str(self.root))
 
-    def survey_rows(self, city="Cedar"):
+    def sheet_file(self, city="Cedar", suffix="csv"):
+        """The one dated sheet for city, found by name: a run crossing midnight must not look for another day's."""
         folder = self.root / "kit" / "survey"
-        if not (folder / f"{map_survey.stem(city)}-{DAY}.csv").exists():  # one sheet per city and day, never overwritten
+        found = sorted(folder.glob(f"{map_survey.stem(city)}-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].{suffix}"))
+        self.assertLessEqual(len(found), 1, found)
+        return found[0] if found else None
+
+    def survey_rows(self, city="Cedar"):
+        if self.sheet_file(city) is None:  # one sheet per city and day, never overwritten
             result = self.sheet(city)
             self.assertEqual(result.returncode, 0, result.stderr)
-        raw = (folder / f"{map_survey.stem(city)}-{DAY}.csv").read_bytes()
+        raw = self.sheet_file(city).read_bytes()
         return list(csv.reader(io.StringIO(raw.decode("utf-8"), newline="")))
 
     def fill(self, rows):
@@ -99,10 +104,10 @@ class SurveyTests(unittest.TestCase):
         self.assertEqual(table[2][1:6], ["0.6", "0.6", "'=Evil,Co", "Cedar PD", ""])  # lat, lon, formula guard
         self.assertTrue(all(row[10:] == ["", "", "", ""] for row in table[1:]))
         folder = self.root / "kit" / "survey"
-        raw = (folder / f"cedar-{DAY}.csv").read_bytes()
+        raw = self.sheet_file().read_bytes()
         self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
         self.assertIn(b"\r\n", raw)
-        page = (folder / f"cedar-{DAY}.html").read_text(encoding="utf-8")
+        page = self.sheet_file(suffix="html").read_text(encoding="utf-8")
         self.assertIn("Camera field survey: Cedar", page)
         self.assertIn("Cedar &quot;PD&quot; &amp; Co", page)
         self.assertNotIn("\"PD\" & Co", page)
@@ -110,7 +115,7 @@ class SurveyTests(unittest.TestCase):
         self.assertIn("Supply your own source for every new check.", page)
         self.assertEqual(oct((self.root / "kit").stat().st_mode & 0o777), "0o700")
         self.assertEqual(oct(folder.stat().st_mode & 0o777), "0o700")
-        self.assertEqual(oct((folder / f"cedar-{DAY}.csv").stat().st_mode & 0o777), "0o600")
+        self.assertEqual(oct(self.sheet_file().stat().st_mode & 0o777), "0o600")
         self.assertFalse((self.root / "public").exists())
 
     def test_negative_longitude_is_guarded_and_zero_points_is_a_sheet(self):
@@ -120,7 +125,7 @@ class SurveyTests(unittest.TestCase):
         table = self.survey_rows("Empty")
         self.assertEqual(len(table), 1)
         self.assertIn("No mapped points inside this city boundary.",
-                      (self.root / "kit" / "survey" / f"empty-{DAY}.html").read_text(encoding="utf-8"))
+                      self.sheet_file("Empty", "html").read_text(encoding="utf-8"))
 
     def test_sheet_refusals_write_nothing(self):
         for city in ("Nowhere", "cedar"):
