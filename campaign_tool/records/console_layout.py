@@ -4,7 +4,7 @@ from .outcomes.reading import BANNER, esc
 LINKS = (("Home", "/"), ("Approvals", "/#decide"), ("Agencies", "/board"),
          ("Calendar", "/calendar"), ("Timeline", "/#timeline"), ("Library", "/documents"), ("Settings", "/settings"))
 MORE = (("Dashboard", "/dashboard"), ("Oversight", "/oversight"),
-        ("Public updates", "/public-updates"), ("Packets", "/packets"),
+        ("Public updates", "/public-updates"), ("Packets", "/packets"), ("Jobs", "/jobs"),
         ("Drafts and next steps", "/next-steps"))
 STYLE = """
 *{box-sizing:border-box}body{margin:0;padding:1rem;background:white;color:#222;font:16px/1.5 system-ui,sans-serif;
