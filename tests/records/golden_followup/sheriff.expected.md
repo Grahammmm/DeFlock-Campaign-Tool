@@ -24,7 +24,7 @@ Your own policy, Policy 466.5(e) (page 2), says: “Audits of law enforcement re
 Another county agency released an export of this kind.
 
 Please:
-1. Does the exemption apply to each field (date, time, user role, agency, query type, networks searched, whether a reason or case number was entered), with plate and case numbers redacted?
+1. Plate numbers and personal identifiers of members of the public may be redacted; please produce every other recorded field and, for any other withheld field, provide a redaction log or a field-specific written basis.
 2. Is a completed audit under Policy 466.5(e) a record of investigation? If withheld, please identify it and the basis.
 3. Please list withheld records by category, as the response says segregability was considered.
 

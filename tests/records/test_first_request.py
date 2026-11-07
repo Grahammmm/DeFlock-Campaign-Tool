@@ -29,10 +29,10 @@ class DraftTests(unittest.TestCase):
         self.assertNotIn("4. ", body)  # lead items only by default
         self.assertNotIn("Contracts", body)
 
-    def test_named_window_fields_and_redaction_pre_offer(self):
+    def test_longest_period_fields_and_redaction_pre_offer(self):
         body = make()["body"]
-        self.assertIn("for 2026-07-01 through 2026-09-30.", body)
-        self.assertIn("Plate numbers and case numbers may be redacted", body)
+        self.assertIn("with every recorded field, for the longest period held.", body)
+        self.assertIn("Plate numbers and personal identifiers of members of the public may be redacted", body)
         self.assertIn("reason or purpose field", body)
 
     def test_agency_policy_section_quoted_from_register(self):
