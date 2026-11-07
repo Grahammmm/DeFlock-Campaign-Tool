@@ -431,7 +431,7 @@ def serve(handler):
     options = handler.server.options
     try:
         model = load(options["project"], options["run_id"], now, send_config=options.get("send_config"),
-                     meetings_dir=options.get("meetings_dir"))
+                     meetings_dir=getattr(handler.server, "meetings_dir", None))
     except ValueError:
         handler._fail(503)
         return True

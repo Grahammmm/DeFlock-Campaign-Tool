@@ -977,10 +977,11 @@ def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_ro
     server.actor = actor
     server.manual_events_dir = manual_events_dir
     server.mail_drafts_config = mail_drafts_config
+    server.meetings_dir = meetings_dir
     server.send_hooks = {}  # tests inject imap_factory / smtp_factory; production uses the real ones
     server.options = {"project": os.path.abspath(project), "run_id": run_id, "run_report_path": run_report_path,
                       "kit_root": kit_root, "as_of": as_of, "timers": tuple(timers), "system": system,
-                      "send_config": send_config, "meetings_dir": meetings_dir}
+                      "send_config": send_config}
     return server
 
 

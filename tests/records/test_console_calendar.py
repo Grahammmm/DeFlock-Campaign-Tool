@@ -434,7 +434,7 @@ class Calendar(unittest.TestCase):
         campaign, _ = self.meetings_model([self.meeting()])
         with admin_panel.build_server(str(self.project), RUN, actor="operator", system=False,
                                       meetings_dir=campaign) as server:
-            self.assertEqual(server.options["meetings_dir"], campaign)
+            self.assertEqual(server.meetings_dir, campaign)
             handler = mock.Mock(path="/calendar", server=server, command="GET", wfile=BytesIO())
             self.assertTrue(cc.serve(handler))
             self.assertIn("keyword lead", handler._send.call_args.args[1])
