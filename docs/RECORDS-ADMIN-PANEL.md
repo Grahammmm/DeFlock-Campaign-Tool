@@ -90,3 +90,15 @@ nothing and reflect no input.
 ## Next steps
 
 The `/next-steps` page lists recommended social, site and follow-up drafts with Approve and Deny; see [RECORDS-NEXT-STEPS.md](RECORDS-NEXT-STEPS.md). Static `--render` includes the same sections without forms.
+
+### Manual events with a read-only snapshot
+
+Use `records panel --manual-events DIR` to keep manual form events outside the
+project. DIR must already exist, be absolute, owned by the running uid, have no
+group/other permissions (for example 0700), and not be a symlink. Its real path
+must neither contain nor be inside the project. Events append to
+`DIR/manual-events.jsonl` under `DIR/manual-events.lock`; nothing in the project
+is rewritten. The confirmation links back to the agency; the event appears on
+the timeline after the next data refresh. Snapshot-builder merging of this
+journal is staged separately in CDATA-MANUAL-MERGE-1. Without the flag the
+existing project journal and immediate timeline refresh remain unchanged.

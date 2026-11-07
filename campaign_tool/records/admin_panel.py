@@ -952,7 +952,7 @@ def _access_cfg(public_origin, access_config):
 
 def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
                  timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None,
-                 access_config=None, access_clock=None):
+                 access_config=None, access_clock=None, manual_events_dir=None):
     """Unstarted loopback-only server; the caller serves and closes it."""
     check_run_id(run_id)
     check_actor(actor)
@@ -963,6 +963,10 @@ def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_ro
         public_pair = console_origin.check_public_origin(public_origin) if public_origin is not None else None
     except ValueError:
         raise PanelError("public_origin_invalid") from None
+    try:
+        manual_events_dir = console_manual_events.check_manual_events_dir(manual_events_dir, project)
+    except ValueError:
+        raise PanelError("manual_events_dir_invalid") from None
     access_cfg = _access_cfg(public_origin, access_config)
     server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
     server.public_pair = public_pair
@@ -971,6 +975,7 @@ def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_ro
     server.csrf_token = secrets.token_urlsafe(32)
     server.manual_event_key = secrets.token_urlsafe(32)
     server.actor = actor
+    server.manual_events_dir = manual_events_dir
     server.mail_drafts_config = mail_drafts_config
     server.send_hooks = {}  # tests inject imap_factory / smtp_factory; production uses the real ones
     server.options = {"project": os.path.abspath(project), "run_id": run_id, "run_report_path": run_report_path,
@@ -992,6 +997,7 @@ def main(argv=None):
     parser.add_argument("--as-of", help="YYYY-MM-DD; fixes the deadline day and health clock (UTC midnight)")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--public-origin", metavar="URL", help="one exact HTTPS origin behind validated Access")
+    parser.add_argument("--manual-events", metavar="DIR", help="private external manual-event journal directory")
     parser.add_argument("--actor", help="operator label for Reject and Edit (not authenticated identity)")
     parser.add_argument("--render", metavar="OUT.html", help="write a static, non-actionable snapshot and exit")
     parser.add_argument("--timer-unit", action="append", help="systemd user timer to report (repeatable)")
@@ -1007,6 +1013,10 @@ def main(argv=None):
     try:
         check_run_id(args.run_id)
         parse_as_of(args.as_of)
+        try:
+            console_manual_events.check_manual_events_dir(args.manual_events, args.project)
+        except ValueError:
+            raise PanelError("manual_events_dir_invalid") from None
         if args.render:
             model = load_dashboard(args.project, args.run_id, run_report_path=args.run_report, kit_root=args.kit_root,
                                    as_of=args.as_of, timers=timers, system=not args.no_system)
@@ -1035,7 +1045,7 @@ def main(argv=None):
                               run_report_path=args.run_report, kit_root=args.kit_root, as_of=args.as_of,
                               timers=timers, system=not args.no_system, mail_drafts_config=args.mail_drafts_config,
                               send_config=args.send_config, public_origin=args.public_origin,
-                              access_config=access)
+                              access_config=access, manual_events_dir=args.manual_events)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required", "_unused")) else 1
