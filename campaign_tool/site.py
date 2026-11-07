@@ -592,6 +592,7 @@ class Site:
         self.fragment_for_sha = {}
         for source in model["sources"]:
             self.fragment_for_sha.setdefault(source["sha256"], source["fragment"])
+        self.bundle_skip = None
         self.bundle = None  # DF0022-11: (byte size, sha256) of this build's data/sources.zip, set before sources.html is rendered
         self.cited_by = {}  # sha256 -> published findings citing it, model order, each finding once
         for finding in model["findings"]:
@@ -3670,7 +3671,9 @@ def _plan(root, today=None, notes=None):
         _check_copy(source, limit)
     # DF0022-11: data/sources.zip holds only the library entries whose public_url is one of THIS build's public-asset copies;
     # it is planned before sources.html (which links it with its size and sha256) and before the catalogue (which lists it).
-    archive = source_bundle.plan_bundle(model["sources"], site.base, assets, site.agencies_by_id, notes)
+    skipped = []
+    archive = source_bundle.plan_bundle(model["sources"], site.base, assets, site.agencies_by_id, skipped)
+    site.bundle_skip = skipped[0] if skipped else None  # printed once by build_site, like the sitemap.xml skip line
     site.bundle_assets = [Path(relative).as_posix() for _, relative in assets]
     if archive is not None:
         files[source_bundle.ZIP_PATH] = archive
@@ -3743,6 +3746,8 @@ def build_site(root, today=None, notes=None):
         shutil.rmtree(staging, ignore_errors=True)
     if "sitemap.xml" not in files:  # planned exactly when content/site.json has a base_url
         print("sitemap.xml skipped: content/site.json has no base_url", file=sys.stderr)
+    if site.bundle_skip:  # DF0022-11: no local public copy, or over 200 MiB; no archive and no link
+        print(site.bundle_skip, file=sys.stderr)
     return [public / path.relative_to(new) for path in written]
 
 
