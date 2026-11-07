@@ -2,7 +2,7 @@
 import urllib.parse
 from datetime import datetime, timezone
 
-from . import console_board as cb, console_oversight as co, mail_send, public_packets
+from . import console_board as cb, console_oversight as co, console_standing, mail_send, public_packets
 from .outcomes.reading import BANNER, esc
 
 GROUPS = ("request", "follow-up", "send", "site-update", "social-post", "status-line", "packet")
@@ -134,8 +134,8 @@ def render_home(model, token):
         out.append("<tr>%s</tr>" % "".join("<td>%s</td>" % cell for cell in cells))
     out.append("</tbody></table>")
     out += ["<p>%s: source not connected yet (%s).</p>" % pair for pair in DISCONNECTED]
-    out += ['<h2 id="standing">Where each agency stands</h2><p>Coming.</p>',
-            '<h2 id="outstanding">Outstanding information</h2><p>Coming.</p>', '</body></html>']
+    out.append(console_standing.render_standing(model, model["now"].date()))
+    out += ['<h2 id="outstanding">Outstanding information</h2><p>Coming.</p>', '</body></html>']
     return "\n".join(out) + "\n"
 
 
