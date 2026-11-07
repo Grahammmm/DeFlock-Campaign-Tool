@@ -36,6 +36,7 @@ def units(text):
 def required(text):
     terms = content_words(text) | set(re.findall(r'\b\d+(?:[./-]\d+)*\b', text))
     terms.update(m.group(1).casefold() for m in re.finditer(r'["“]([^"”]+)["”]', text))
+    terms.update(m.group(1).casefold() for m in re.finditer(r"(?<!\w)['‘]([^'’]+)['’](?!\w)", text))
     terms.update(m.group().strip(' .;?!').casefold() for m in re.finditer(
         r'\bor\b.+|\bif\b.*\bnot\s+held\b.*', text, re.I))
     return sorted(terms)
@@ -70,7 +71,7 @@ def check(table, short_text):
     if not table:
         raise ParityError('empty_table')
     for row in table:
-        if any(not isinstance(row.get(k), str) for k in FIELDS if k != 'required'):
+        if any(not isinstance(row.get(k), str) for k in FIELDS if k not in ('required', 'short_unit')):
             raise ParityError('invalid_row')
         if (not isinstance(row.get('ask_id'), str) or
                 not re.fullmatch(r'[A-Za-z0-9_-]+', row['ask_id']) or row['ask_id'] in seen):

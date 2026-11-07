@@ -71,6 +71,11 @@ class AskParityTests(unittest.TestCase):
                 self.assertIn(absent, rows[0]['missing'])
         rows = parity.check(parity.propose('Provide audit logs.'), 'PROVIDE AUDIT LOG.')
         self.assertEqual(rows[0]['status'], 'candidate')
+        for quote in ("'", '‘'):
+            end = '’' if quote == '‘' else quote
+            self.assertIn('go live', parity.required(f'Provide {quote}go live{end} dates.'))
+        rows = parity.check(parity.propose('Provide audit logs.'), 'Provide audit. List logs.')
+        self.assertEqual(rows[0]['status'], 'missing')  # No cross-unit word union.
 
     def test_merged_survival_and_human_confirmation(self):
         table = parity.propose('Provide audit logs. Identify sharing partners.')
@@ -79,7 +84,7 @@ class AskParityTests(unittest.TestCase):
         self.assertEqual([r['short_unit'] for r in rows], [1, 1])
         self.assertEqual([r['status'] for r in rows], ['candidate', 'candidate'])
         for row in table:
-            row.update(short_unit='1', confirmed_by='reviewer')
+            row.update(short_unit=1, confirmed_by='reviewer')
         self.assertEqual(parity.exit_code(parity.check(table, short)), 0)
         table[1]['confirmed_by'] = ''
         self.assertEqual(parity.exit_code(parity.check(table, short)), 2)
