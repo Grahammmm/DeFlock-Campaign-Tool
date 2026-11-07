@@ -12,6 +12,7 @@ PLAIN_KINDS = {
     "first-request": "First request", "reminder-no-response": "Reminder: no reply",
     "reminder-promised-date": "Reminder: promised date passed",
     "formal-notice-no-response": "Formal notice: no reply", "appeal-denial": "Reply to a refusal",
+    "followup-playbook": "Reply to a refusal",
     "reply-extension": "Reply to an extension", "fee-reply": "Reply about fees",
     "followup-missing-records": "Ask for missing records", "next-social-post": "Suggested post",
     "next-site-update": "Suggested site update", "next-followup-probe": "Suggested follow-up",
@@ -48,6 +49,7 @@ def load(project, run_id, run_report_path=None, now=None, *, send_config=None, m
     try:
         board = cb.load(project, run_id)
         model["deadlines"] = board["deadlines"]
+        model["refusals"] = board["refusals"]
         model["waiting"] = ({"state": "ok", "rows": waiting_rows(board, model["now"].date()), "reminders": model["reminders"]}
                             if board["timeline"]["state"] == "ok" else dict(board["timeline"]))
     except Exception:
@@ -263,7 +265,11 @@ def render_progress(model, today):
         out.append('<p role="status">Next actions: unavailable (timeline).</p>')
     if model["queue"]["state"] != "ok":
         out.append('<p role="status">Suggested drafts: unavailable (%s).</p>' % esc(model["queue"].get("code")))
-    if available and model["queue"]["state"] == "ok" and not actions and not drafts:
+    refusals = model.get("refusals", {"state": "unavailable"})
+    count = sum(r["reply"] == "not_drafted" for r in refusals.get("entries", [])) if refusals["state"] == "available" else 0
+    if count:
+        out.append('<p><a href="/board">%d refusals with no reply drafted</a></p>' % count)
+    if available and model["queue"]["state"] == "ok" and not actions and not drafts and not count:
         out.append('<p>No next steps recorded.</p>')
     return "\n".join(out + ['</section>'])
 

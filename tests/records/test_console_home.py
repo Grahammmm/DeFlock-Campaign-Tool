@@ -527,3 +527,23 @@ class Reminders(unittest.TestCase):
             page = home.render_home(home.load(self.project, RUN, now=NOW), '')
         self.assertIn('Reminder status unavailable', page)
         self.assertNotIn('private detail', page)
+
+
+class RefusalNext(unittest.TestCase):
+    setUp, model = Home.setUp, Home.model
+    def test_counts_source_link_zero_and_engine_label(self):
+        from campaign_tool.records import denial_log
+        from tests.records.test_denial_log import fixtures, queue
+        states, doc = fixtures()
+        entries = denial_log.entries(states, doc, [queue()])
+        with mock.patch.object(home.cb.denial_log, "load", return_value={"state": "available", "entries": entries}):
+            model = self.model()
+        page = home.render_home(model, '')
+        section = page.split('<section id="next">')[1].split('</section>')[0]
+        self.assertIn('href="/board">2 refusals with no reply drafted</a>', section)
+        template = model["queue"]["rows"][0]
+        model["queue"]["rows"] = [template | {"kind": "followup-playbook"}]
+        self.assertEqual(next(r for r in home.decision_rows(model, NOW.date()) if r["source"] == "queue")["what"], "Reply to a refusal")
+        for refusals in ({"state": "available", "entries": []}, {"state": "unavailable", "code": "stale"}):
+            model["refusals"] = refusals
+            self.assertNotIn('refusals with no reply drafted', home.render_home(model, ''))

@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from . import approval_queue, console_layout, draft_templates, mail_drafts, mail_preview, mail_send
 from .outcomes.reading import esc
+from . import denial_log, denial_reply_check, followup_clock
 
 RESIDUE = {"edit_placeholder": "[EDIT ME] placeholder left", "draft_heading": "Draft heading left",
            "draft_banner": "Draft banner left", "reviewer_notes": "Notes for the reviewer left",
@@ -44,7 +45,49 @@ def approval_status(project, row, switches):
     return esc("Approved, not sent. Sending is off: %s." % mail_send.REASONS.get(reason, reason))
 
 
-def render(project, row, history, preview, token, payload, send_config=None):
+def refusal_panel(project, row, run_id):
+    if row["kind"] not in ("appeal-denial", "followup-playbook"):
+        return ""
+    log = denial_log.load(project, run_id)
+    if log["state"] != "available":
+        return '<h2>Refusal being answered</h2><p>Refusal context unavailable; review the source by hand.</p>'
+    try:
+        register = followup_clock.read_register(project, run_id)
+    except (OSError, ValueError, KeyError, TypeError):
+        register = None
+    requests = (register or {}).get("requests", [])
+    ids = {row["request_id"]}
+    for request in requests:
+        if request["agency_key"] == row["agency_id"] and row["request_id"] in (request["request_id"], request.get("ledger_request_id")):
+            ids.add(request["request_id"])
+    entries = [r for r in log["entries"] if r["agency_key"] == row["agency_id"] and
+               (r["request_id"] in ids or r.get("queue_id") == row["id"])]
+    if not entries:
+        return ""
+    out = ['<section><h2>Refusal being answered</h2>', '<p>%s</p>' % esc(denial_log.LABEL)]
+    for entry in entries:
+        words = entry.get("agency_words") or {}
+        quote = words.get("quote", "no quote extracted")
+        out.append('<h3>%s (%s) · Item %s: %s · %s</h3>' % tuple(esc(str(v)) for v in (
+            entry["date"] or "unknown", entry["date_basis"], entry["item_no"] if entry["item_no"] is not None else "whole request",
+            entry["item_text"], entry["kind"].replace("_", " "))))
+        out.append('<p>%s — page %s; doc %s</p>' % (esc(quote), esc(str(words.get("page", "unknown"))),
+                                                        esc(words.get("doc_sha256", "unknown")[:12])))
+        out.append('<p>Their citation: %s (UNVERIFIED by us)</p>' % esc(
+            "; ".join(entry["agency_citation"]["text"]) or "none extracted"))
+    names = {r["agency"] for r in requests if r["agency_key"] != row["agency_id"]}
+    warnings = denial_reply_check.check(row["body"], subject_agency=row["agency_id"], other_agency_names=sorted(names))
+    out.append('<h3>Advisory reply warnings</h3><p>Heuristics only; not legal review. Lawyer read recommended.</p><ul>')
+    out.extend('<li>Line %s: %s</li>' % (w["line"], esc(w["message"])) for w in warnings)
+    out.append('</ul><h3>By-hand checklist (not machine-checked)</h3><ul>')
+    for question in ("Their letter names the people responsible for the denial (names and titles)?",
+                     "Every withheld item is asked again or deliberately dropped?",
+                     "Held documents listed with 'please do not resend'?"):
+        out.append('<li>%s</li>' % esc(question))
+    return "\n".join(out + ['</ul></section>'])
+
+
+def render(project, row, history, preview, token, payload, send_config=None, *, run_id=None):
     from . import admin_panel as ap
 
     title = "Review: %s for %s / %s" % (row["kind"].replace("-", " "), row["agency_id"], row["request_id"])
@@ -60,6 +103,7 @@ def render(project, row, history, preview, token, payload, send_config=None):
                          ("Attachments", ", ".join(a["name"] for a in preview["attachments"]) or "None")):
         out.append("<dt>%s</dt><dd>%s</dd>" % (esc(label), esc(value)))
     out.append("</dl>")
+    out.append(refusal_panel(project, row, run_id or row["source_run_id"]))
     warnings = [RESIDUE[code] for code in preview["residue"]]
     if preview["body_header_lines"]:
         warnings.append("Lines %s: the body has its own To/Subject/From lines; the real headers are shown above" %
@@ -133,7 +177,7 @@ def serve(handler):
         preview = mail_preview.preview(project, row, handler.server.mail_drafts_config)
         payload = approval_queue.approval_payload(project, ids[0]) if row["status"] == "pending" else None
         page = render(project, row, history, preview, handler.server.csrf_token, payload,
-                      handler.server.options.get("send_config"))
+                      handler.server.options.get("send_config"), run_id=handler.server.options["run_id"])
     except (approval_queue.ApprovalQueueError, mail_send.MailSendError, mail_drafts.MailDraftError,
             OSError, ValueError, KeyError, TypeError):
         handler._fail(503)

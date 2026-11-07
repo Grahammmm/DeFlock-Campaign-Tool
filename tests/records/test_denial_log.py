@@ -127,3 +127,28 @@ class LoadTests(unittest.TestCase):
         for revision, expected in ((0, "sent"), (1, "approved")):
             with patch.object(fs, "classify_run", return_value=states), patch.object(fs.received_items, "_safe_dir", return_value=Path("/synthetic")), patch.object(fs, "_read", side_effect=[doc, {"schema": "records-received-item-v1", "run_id": "run1", "items": []}]), patch.object(dl.approval_queue, "load_queue", return_value=[queue("approved")]), patch.object(dl.mail_send, "results", return_value=[{"queue_id": "q1", "revision": revision, "state": "sent"}]):
                 self.assertEqual(dl.load("/synthetic", "run1")["entries"][0]["reply"], expected)
+
+
+class EngineReplies(unittest.TestCase):
+    def test_engine_pattern_coverage_scope_lifecycle_and_ambiguity(self):
+        states, doc = fixtures()
+        engine = queue(kind="followup-playbook", source_run_id="run1", evidence={
+            "pattern": "blanket_denial", "extra_patterns": [], "asks_for": [1, 3], "thread_item_id": "i1"})
+        for pattern, extras in (("blanket_denial", []), ("partial_production", ["blanket_denial"])):
+            q = engine | {"evidence": engine["evidence"] | {"pattern": pattern, "extra_patterns": extras}}
+            rows = dl.entries(states, doc, [q])
+            self.assertEqual([r["reply"] for r in rows], ["drafted", "not_drafted", "drafted"])
+            self.assertEqual(rows[0]["queue_id"], "q1")
+        for changes in ({"status": "cancelled"}, {"status": "expired"}, {"source_run_id": "stale"},
+                        {"agency_id": "beta-pd"}, {"request_id": "other"},
+                        {"evidence": engine["evidence"] | {"pattern": "no_records"}},
+                        {"evidence": engine["evidence"] | {"asks_for": [2]}}):
+            with self.subTest(changes=changes):
+                self.assertEqual(dl.entries(states, doc, [engine | changes])[0]["reply"], "not_drafted")
+        self.assertEqual(dl.entries(states, doc, [engine, engine | {"id": "q2"}])[0]["reply"], "not_drafted")
+        with self.assertRaisesRegex(ValueError, "duplicate_queue"):
+            dl.entries(states, doc, [engine, engine])
+        doc["requests"][0]["asks"] = []
+        self.assertEqual(dl.entries(states, doc, [engine])[0]["reply"], "drafted")
+        engine["evidence"]["thread_item_id"] = "unrelated"
+        self.assertEqual(dl.entries(states, doc, [engine])[0]["reply"], "not_drafted")

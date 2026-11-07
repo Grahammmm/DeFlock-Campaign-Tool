@@ -61,13 +61,20 @@ def entries(states, response_items_doc, queue_rows):
             for q in queue_rows:
                 if q.get("agency_id") != key[0] or q.get("request_id") not in (key[1], req.get("ledger_request_id") or key[1]):
                     continue
-                if followup_route.COVERERS.get(q.get("kind")) != "withheld":
+                engine = q.get("kind") == "followup-playbook"
+                engine_evidence = q.get("evidence") or {}
+                if engine:
+                    patterns = [engine_evidence.get("pattern"), *engine_evidence.get("extra_patterns", [])]
+                    if "blanket_denial" not in patterns or q.get("source_run_id") != states["run_id"]:
+                        continue
+                elif followup_route.COVERERS.get(q.get("kind")) != "withheld":
                     continue
                 if q.get("status") not in ("pending", "approved", "rejected", "sent"):
                     continue
-                mapped = followup_route._mapped(q, asks, sorted(set(needs + numbers)))
+                mapped = engine_evidence.get("asks_for", []) if engine else followup_route._mapped(q, asks, sorted(set(needs + numbers)))
+                reply_source = (q.get("evidence") or {}).get("thread_item_id" if engine else "item_id")
                 if (number is not None and mapped and number in mapped) or (number is None and source_id and
-                        (q.get("evidence") or {}).get("item_id") == source_id):
+                        reply_source == source_id):
                     matches.append(q)
             reply, qid = "not_drafted", None
             if len(matches) == 1:

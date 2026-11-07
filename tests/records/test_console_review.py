@@ -226,3 +226,46 @@ class ReviewTests(ServerCase):
             self.assertEqual(self.get()[0], 200)
         for hook in self.server.send_hooks.values():
             hook.assert_not_called()
+
+
+class RefusalReview(ServerCase):
+    get = ReviewTests.get
+    def test_refusal_context_warnings_checklist_and_no_writes(self):
+        from campaign_tool.records import console_review as review, denial_log
+        from tests.records.test_denial_log import fixtures
+        states, doc = fixtures()
+        refusals = denial_log.entries(states, doc, [])[:2]
+        for r in refusals:
+            r["request_id"] = "req-1"
+        refusals[0]["agency_words"]["quote"] = "<script>withheld</script> https://example.invalid"
+        register = {"requests": [{"agency_key": "beta-pd", "agency": "Beta Police", "request_id": "other"},
+                                 {"agency_key": "alpha-pd", "agency": "Alpha Police", "request_id": "req-1"}]}
+        self.get()  # Open the fixture's read-only ledger before comparing its tree.
+        for n, kind in enumerate(("appeal-denial", "followup-playbook"), 80):
+            row = aq.add_draft(self.project, item_id=f"{n:064x}", kind=kind, agency_id="alpha-pd",
+                               request_id="req-1", body="Gov. Code § 9999. Beta Police.", evidence={}, source_run_id=RUN)
+            before = tree_state(self.project)
+            with mock.patch.object(review.denial_log, "load", return_value={"state": "available", "entries": refusals}), \
+                    mock.patch.object(review.followup_clock, "read_register", return_value=register):
+                status, _, page = self.get("/review?id=" + row["id"])
+            self.assertEqual(status, 200)
+            for text in ("Refusal being answered", "Item 1:", "Item 2:", "page 1", "page 2", "doc bbbbbbbbbbbb",
+                         "2026-11-04", "UNVERIFIED by us", "&lt;script&gt;withheld&lt;/script&gt;",
+                         "needs counsel clearance", "another agency is named", "By-hand checklist (not machine-checked)",
+                         "names and titles", "Every withheld item", "please do not resend"):
+                self.assertIn(text, page)
+            self.assertNotIn('<a href="https://example.invalid', page)
+            self.assertNotIn('<script>', page)
+            self.assertEqual(tree_state(self.project), before)
+        self.assertNotIn('Refusal being answered', self.get()[2])
+
+    def test_missing_stale_context_and_unrelated_request(self):
+        from campaign_tool.records import console_review as review
+        row = {"kind": "followup-playbook", "agency_id": "alpha-pd", "request_id": "r1", "id": "q1", "body": "reply"}
+        for code in ("denial_log_source_missing", "denial_log_invalid_source"):
+            with mock.patch.object(review.denial_log, "load", return_value={"state": "unavailable", "code": code}):
+                self.assertIn('context unavailable', review.refusal_panel(self.project, row, RUN))
+        entry = {"agency_key": "beta-pd", "request_id": "r1"}
+        with mock.patch.object(review.denial_log, "load", return_value={"state": "available", "entries": [entry]}), \
+                mock.patch.object(review.followup_clock, "read_register", return_value=None):
+            self.assertEqual(review.refusal_panel(self.project, row, RUN), "")
