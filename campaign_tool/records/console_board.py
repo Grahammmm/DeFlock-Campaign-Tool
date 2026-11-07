@@ -17,6 +17,7 @@ from . import console_documents as cd
 from .outcomes import release_links as _rl
 from .outcomes import timeline as _tl
 from .outcomes.reading import BANNER, esc
+from . import console_layout
 
 FILTERS = {"all": "All", "overdue": "Overdue", "waiting": "Waiting on agency", "ours": "Ball in our court",
            "closed": "Closed"}
@@ -218,10 +219,7 @@ def agencies(model):
 def _head(title, model):
     notes = ['<p class="diag" role="status">%s: unavailable (%s).</p>' % (esc(k), esc(s.get("code")))
              for k, s in sources(model).items() if s["state"] != "ok"]
-    return ['<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex,nofollow">'
-            "<title>%s</title></head><body>" % esc(title), '<p class="notice">%s</p>' % esc(BANNER),
-            '<nav aria-label="Pages"><a href="/">Home</a> <a href="/dashboard">Dashboard</a> <a href="/board">Board</a> '
-            '<a href="/documents">Documents</a> <a href="/next-steps">Drafts and next steps</a></nav>',
+    return [console_layout.start(title, "Agencies"),
             "<h1>%s</h1>" % esc(title), "<p>Run %s. %s Nothing is fetched, sent or published.</p>" % (
                 esc(model["run_id"]), esc(LABEL))] + notes
 
@@ -248,7 +246,7 @@ def _ago(days):
 def render_board(model, today, which="all"):
     out = _head("Board: every request, every agency", model)
     if model["timeline"]["state"] != "ok":
-        return "\n".join(out + ["<p>No timeline for this run, so no requests can be listed.</p></body></html>"]) + "\n"
+        return "\n".join(out + ["<p>No timeline for this run, so no requests can be listed.</p></main></body></html>"]) + "\n"
     rows = board_rows(model, today)
     c = counters(model, rows, today)
     out.append('<p role="status">Requests: %d. Overdue: %d. Drafts pending: %d. Links expiring within %d days: %s.</p>' % (
@@ -275,7 +273,7 @@ def render_board(model, today, which="all"):
                      esc(r["promised"] or ""), esc(overdue), esc(r["next_action"]), esc(r["owner"])]
             out.append("<tr>%s</tr>" % "".join("<td>%s</td>" % c for c in cells))
         out.append("</tbody></table>")
-    return "\n".join(out + ["</body></html>"]) + "\n"
+    return "\n".join(out + ["</main></body></html>"]) + "\n"
 
 
 def render_agency(model, agency):
@@ -326,7 +324,7 @@ def render_agency(model, agency):
                     esc(e.get("date") or "undated"), esc(e["type"]), esc(summary), _source(e.get("source") or {}, docs_href)))
             out.append("</tbody></table>")
         out.append("</section>")
-    return "\n".join(out + ["</body></html>"]) + "\n"
+    return "\n".join(out + ["</main></body></html>"]) + "\n"
 
 
 def _source(src, docs_href):
