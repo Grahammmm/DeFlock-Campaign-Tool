@@ -552,10 +552,12 @@ def build(root, check=False, budget=None, weights_out=None, weights_baseline=Non
         from .source_bundle import check_source_bundle
         _, expected = planned_source_bundle(root)
         check_source_bundle(public, expected)
-    notes = []
-    written = build_site(root, notes=notes)
+    notes, bundle_notes = [], []
+    written = build_site(root, notes=notes, bundle_notes=bundle_notes)
     for note in notes:  # informational: the exit code is unchanged
         print(f"note: {note}", file=sys.stderr)
+    for note in bundle_notes:  # DF0022-11: the sources.zip skip line, on stdout
+        print(note)
     content_mode = (root / "content").is_dir()
     print(("Site" if content_mode else "Starter") + " written to " + str(public)
           + ". No private documents exported.")

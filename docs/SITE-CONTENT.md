@@ -1370,7 +1370,7 @@ or vendor file, or a `public_url` with no `base_url` is never included). Each fi
 `manifest.csv` (`sha256,title,agency,received_at,public_path,bytes`, one row per library entry, sorted, findings.csv quoting and
 formula guard). `sha256` there is the 12-character record number, not a hash of the copy: a redacted copy need not match the
 original. Members are sorted, stored without compression with fixed 1980-01-01 timestamps and mode 0644, so two builds write
-identical bytes. With no eligible copy, or when the archive would pass 200 MiB, the build prints `sources.zip skipped: ...` to stderr,
+identical bytes. With no eligible copy, or when the archive would pass 200 MiB, `campaign build` prints `sources.zip skipped: ...` to stdout,
 writes no archive and leaves no link or catalogue row (the build swap removes an older archive). `sources.html` and `data.html`
 show its byte size and full SHA-256 (this digest is a public output hash, not the private original hash). `build --check`
 computes the expected archive before building and refuses (`sources.zip: differs from rebuilt public-source bundle`) a

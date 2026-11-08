@@ -3684,7 +3684,7 @@ def _plan(root, today=None, notes=None):
     # it is planned before sources.html (which links it with its size and sha256) and before the catalogue (which lists it).
     skipped = []
     archive = source_bundle.plan_bundle(model["sources"], site.base, assets, site.agencies_by_id, skipped)
-    site.bundle_skip = skipped[0] if skipped else None  # printed once by build_site, like the sitemap.xml skip line
+    site.bundle_skip = skipped[0] if skipped else None  # handed to build_site's caller once (``campaign build`` prints it)
     site.bundle_assets = [Path(relative).as_posix() for _, relative in assets]
     if archive is not None:
         files[source_bundle.ZIP_PATH] = archive
@@ -3708,12 +3708,13 @@ def _plan(root, today=None, notes=None):
     return files, plan, site
 
 
-def build_site(root, today=None, notes=None):
+def build_site(root, today=None, notes=None, bundle_notes=None):
     """Build ``<root>/public`` from ``<root>/content``; returns the list of written paths.
 
     ``today`` (a ``datetime.date``, default the build date) splits meetings into
     upcoming (on or after it) and past. ``notes``, when a list, receives
     boundary names that match no city agency and boundary feature problems.
+    ``bundle_notes``, when a list, receives the DF0022-11 ``sources.zip skipped: ...`` line.
 
     Falls back to the neutral starter when ``content/`` does not exist.
     Raises ``ContentError``/``ValueError`` and writes nothing when content is
@@ -3757,8 +3758,8 @@ def build_site(root, today=None, notes=None):
         shutil.rmtree(staging, ignore_errors=True)
     if "sitemap.xml" not in files:  # planned exactly when content/site.json has a base_url
         print("sitemap.xml skipped: content/site.json has no base_url", file=sys.stderr)
-    if site.bundle_skip:  # DF0022-11: no local public copy, or over 200 MiB; no archive and no link
-        print(site.bundle_skip)
+    if site.bundle_skip and isinstance(bundle_notes, list):  # DF0022-11: no local public copy, or over 200 MiB; no archive and no link
+        bundle_notes.append(site.bundle_skip)  # the caller prints it; a library print would corrupt JSON callers (doctor --launch)
     return [public / path.relative_to(new) for path in written]
 
 
