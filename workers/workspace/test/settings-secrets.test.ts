@@ -32,10 +32,10 @@ const OK_LINE = '<span class="pill ok">configured</span>';
 const BAD_LINE = '<span class="pill bad">not configured</span>';
 
 describe("settings secrets table: outbox coverage", () => {
-  it("neither outbox secret: both rows missing, line says not configured, table has 8 rows", async () => {
+  it("neither outbox secret: both rows missing, line says not configured, table has 9 rows", async () => {
     const page = await settingsPage({ OUTBOX_GATEWAY_URL: undefined, OUTBOX_SIGNING_KEY: undefined });
     const r = rows(page);
-    expect(Object.keys(r)).toHaveLength(8);
+    expect(Object.keys(r)).toHaveLength(9);
     expect(r.OUTBOX_GATEWAY_URL).toBe("missing");
     expect(r.OUTBOX_SIGNING_KEY).toBe("missing");
     expect(page).toContain("Request mail delivery: " + BAD_LINE);
