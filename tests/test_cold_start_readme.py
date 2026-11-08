@@ -182,6 +182,17 @@ class ColdStartReadmeTests(unittest.TestCase):
         self.assertEqual(lint_doc("[x](docs/NO-SUCH-GUIDE.md)", set(tracked_files(REPO)), set(), doc="README.md"),
                          ["link does not resolve to a tracked file: docs/NO-SUCH-GUIDE.md"])
 
+    def test_readme_links_the_map_guide_once_outside_start_locally(self):
+        start = re.search(r"^## Start locally\s*$(.*?)(?=^## |\Z)", self.readme, re.M | re.S).group(1)
+        self.assertNotIn("MAP-GUIDE", start)
+        self.assertEqual(self.readme.count("[camera map guide](docs/MAP-GUIDE.md)"), 1)
+        self.assertIn("docs/MAP-GUIDE.md", tracked_files(REPO))
+        self.assertIn("](docs/FINDINGS-GUIDE.md)", self.readme)  # the older guide links stay
+        self.assertIn("](docs/REVIEW-GUIDE.md)", self.readme)
+        self.assertEqual(lint_doc("[m](docs/MAP-GUIDE.md)", set(tracked_files(REPO)), set(), doc="README.md"), [])
+        self.assertEqual(lint_doc("[m](docs/NO-SUCH-MAP-GUIDE.md)", set(tracked_files(REPO)), set(), doc="README.md"),
+                         ["link does not resolve to a tracked file: docs/NO-SUCH-MAP-GUIDE.md"])
+
     def test_readme_links_the_ordinance_checklist_once_outside_start_locally(self):
         start = re.search(r"^## Start locally\s*$(.*?)(?=^## |\Z)", self.readme, re.M | re.S).group(1)
         self.assertNotIn("ORDINANCE-CHECKLIST", start)
