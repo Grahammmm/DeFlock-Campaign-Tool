@@ -82,6 +82,17 @@ class EdgeTests(Base):
         ok, _ = self.probe(lambda p: (302, {"Location": "https" + "://cloudflare" + "access.com.evil.example/"}, b""), "edge")
         self.assertFalse(ok)
 
+    def test_malformed_location_fails_without_crash(self):
+        def h(p):
+            if p == "/status":
+                return 302, {"Location": "https://[invalid/"}, b""
+            return redirect(p)
+        for status in (302, 303):
+            ok, res = self.probe(lambda p, s=status: (s, h(p)[1], b""), "edge")
+            self.assertFalse(ok)
+            self.assertEqual([p for p, (g, _) in res.items() if not g], ["/status"])
+            self.assertEqual(len(res), 7)
+
     def test_404_fails_in_edge(self):
         ok, _ = self.probe(lambda p: (404, {}, b""), "edge")
         self.assertFalse(ok)

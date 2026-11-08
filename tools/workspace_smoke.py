@@ -63,7 +63,10 @@ def fetch(base, path, timeout=TIMEOUT):
 def is_access_redirect(status, location):
     if status not in REDIRECTS or not location:
         return False
-    host = (urlsplit(location).hostname or "").lower()
+    try:
+        host = (urlsplit(location).hostname or "").lower()
+    except ValueError:
+        return False  # malformed Location is not an Access redirect
     return host.endswith(ACCESS_SUFFIX) and len(host) > len(ACCESS_SUFFIX)
 
 
