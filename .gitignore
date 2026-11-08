@@ -20,3 +20,6 @@ public/
 build/
 dist/
 *.egg-info/
+
+# Real Cloudflare deploy config (account ids); the tracked template is wrangler.deploy.example.jsonc
+workers/workspace/wrangler.deploy.jsonc
