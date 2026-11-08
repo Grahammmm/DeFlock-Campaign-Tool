@@ -2,6 +2,15 @@
 // bucket-level public URL). Links are never stored.
 import { bytesToHex, timingSafeEqual } from "@deflock/shared/ids";
 
+/** Shortest download-signing key (bytes) the Worker will use. Shorter or missing: downloads are refused. */
+export const MIN_DOWNLOAD_KEY_BYTES = 32;
+
+/** True only when the signing key is long enough AND the ORIGINALS bucket is bound. */
+export function downloadsConfigured(env: { DOWNLOAD_SIGNING_KEY?: string; ORIGINALS?: unknown }): boolean {
+  const key = env.DOWNLOAD_SIGNING_KEY;
+  return typeof key === "string" && new TextEncoder().encode(key).length >= MIN_DOWNLOAD_KEY_BYTES && Boolean(env.ORIGINALS);
+}
+
 async function hmacKey(secret: string): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
 }
