@@ -452,6 +452,7 @@ function secretPresence(env: Env): V.SecretPresence[] {
     { name: "DOWNLOAD_SIGNING_KEY", present: Boolean(env.DOWNLOAD_SIGNING_KEY), note: "HMAC key for short-lived original download links" },
     { name: "ACCESS_AUD", present: Boolean(env.ACCESS_AUD), note: "Access application audience tag" },
     { name: "ACCESS_TEAM_DOMAIN", present: Boolean(env.ACCESS_TEAM_DOMAIN), note: "Access team domain used to fetch signing certificates" },
+    { name: "ORGANIZER_EMAILS", present: Boolean(env.ORGANIZER_EMAILS?.trim()), note: "Optional organizer email allowlist behind Access; when set, other signed-in identities get 403. Value is never shown" },
     { name: "BREVO_API_KEY", present: Boolean(env.BREVO_API_KEY), note: "Brevo v3 key used only by the send_newsletter executor (campaign create + send)" },
     { name: "SUBSCRIBE_WEBHOOK_SECRET", present: Boolean(env.SUBSCRIBE_WEBHOOK_SECRET), note: "HMAC secret verifying POST /api/webhooks/subscribe deliveries" },
     { name: "OUTBOX_GATEWAY_URL", present: Boolean(env.OUTBOX_GATEWAY_URL), note: "Signed outbox gateway URL; with OUTBOX_SIGNING_KEY lets approved send_request / send_followup cards deliver" },
