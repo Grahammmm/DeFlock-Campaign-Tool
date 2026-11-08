@@ -1,0 +1,3 @@
+event_id	date	time_local	agency	request_ref	event_type	what_happened	source	who	basis	clock_note
+BR-001	2026-09-01		Bravo County Sheriff	PL_PRA	clarification_sent	CANARY-NAME text	x	x	DATED	
+BR-002	2026-09-05		Bravo County Sheriff	PL_PRA	denial	CANARY-NAME text	x	x	DATED	
