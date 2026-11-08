@@ -94,7 +94,10 @@ sha256_of() {
 is_done() { [ -f "$STATE" ] && grep -qx "done $1" "$STATE"; }
 mark()    { printf 'done %s\n' "$1" >> "$STATE"; }
 kv_put()  { printf '%s=%s\n' "$1" "$2" >> "$STATE"; }
-kv_get()  { [ -f "$STATE" ] && sed -n "s/^$1=//p" "$STATE" | tail -1 || true; }
+kv_get() {
+  if [ -f "$STATE" ]; then sed -n "s/^$1=//p" "$STATE" | tail -n 1; fi
+  return 0
+}
 skip_if_done() {
   if [ "$RESUME" -eq 1 ] && is_done "$1"; then say "Already finished earlier (--resume): skipping."; return 0; fi
   return 1
@@ -124,7 +127,7 @@ wr_neutral() {
 wr_must() {
   if ! wr "$@"; then printf '%s\n' "$WR_OUT" | tail -n 15 >&2; die "wrangler $1 $2 failed (last lines above)."; fi
 }
-json_objects() { tr -d '\n' | sed 's/}/}\n/g'; }
+json_objects() { tr -d '\n' | tr '}' '\n'; }
 # jget MATCHKEY MATCHVALUE FIELD: from JSON on stdin, print FIELD of the object whose MATCHKEY is MATCHVALUE.
 jget() { json_objects | grep -E "\"$1\": *\"$2\"" | grep -Eo "\"$3\": *\"[^\"]+\"" | sed 's/.*: *"//; s/"//' || true; }
 
@@ -163,15 +166,25 @@ step_preflight() {
   fi
   if [ "$RESUME" -eq 1 ]; then
     [ -f "$STATE" ] || die "--resume given but $STATE does not exist."
+    [ "$(kv_get sha)" = "$SHA" ] || die "--resume must use the same reviewed commit as the first run (the saved one is $(kv_get sha))."
   else
     if [ -e "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
       die "$DIR already exists and is not empty. Run with --resume to continue, or pick a new folder with --dir."
     fi
     mkdir -p "$DIR"; chmod 700 "$DIR"
     : > "$STATE"; chmod 600 "$STATE"
+    kv_put sha "$SHA"
   fi
   mkdir -p "$LOGS" "$NEUTRAL" "$SEEDD"
   APPLYING=1
+}
+
+# Runs on EVERY apply run (also --resume): clone at the reviewed commit, clean, and this script is the reviewed copy.
+verify_repo() {
+  [ -d "$REPO/.git" ] || die "$REPO is not a git clone."
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$SHA" ] || die "the clone is not at the reviewed commit."
+  [ -z "$(git -C "$REPO" status --porcelain)" ] || die "the clone has changed or untracked files. Nothing is deleted for you; start again with a new --dir."
+  cmp -s "$SELF" "$REPO/tools/workspace_deploy.sh" || die "this script differs from the reviewed copy at that commit. Download it again from the guide's link."
 }
 
 step_clone() {
@@ -184,14 +197,12 @@ step_clone() {
     dry "wrangler version must equal the version pinned in workers/package.json"
     return 0
   fi
-  if skip_if_done clone; then return 0; fi
+  if skip_if_done clone; then verify_repo; say "Reviewed commit, clean clone and script identity re-checked."; return 0; fi
   [ ! -e "$REPO" ] || die "$REPO already exists from an unfinished run. Pick a new folder with --dir (nothing is deleted for you)."
   say "Cloning (this is a new folder, never the AgentOrange repo)..."
   git clone --quiet "$REPO_URL" "$REPO" || die "git clone failed."
   git -C "$REPO" checkout --quiet --detach "$SHA" || die "the reviewed commit $SHA was not found in the clone."
-  [ "$(git -C "$REPO" rev-parse HEAD)" = "$SHA" ] || die "the clone is not at the reviewed commit."
-  [ -z "$(git -C "$REPO" status --porcelain)" ] || die "the fresh clone is not clean."
-  cmp -s "$SELF" "$REPO/tools/workspace_deploy.sh" || die "this script differs from the reviewed copy at that commit. Download it again from the guide's link."
+  verify_repo
   say "Commit $SHA confirmed; this script matches the reviewed copy."
   say "Installing packages (npm ci) and running the checks; this takes a few minutes..."
   if ! ( cd "$REPO/workers" && npm ci --no-audit --no-fund ) >"$LOGS/npm-ci.log" 2>&1; then
@@ -384,7 +395,7 @@ step_deploy() {
   step "8 of 12: deploy the Worker"
   if [ "$DRY" -eq 1 ]; then dry "wrangler deploy -c $CFG"; return 0; fi
   if skip_if_done deploy; then URL="$(kv_get url)"; return 0; fi
-  say "Deploying. If Cloudflare asks you to pick a workers.dev subdomain, type one and press Return."
+  say "Deploying. If it says a workers.dev subdomain must be registered: Cloudflare dashboard > Workers & Pages > set your subdomain, then run this command again with --resume."
   local rc=0
   ( cd "$WS" && "$WRANGLER_BIN" deploy -c "$CFG" ) 2>&1 | tee "$LOGS/deploy.log" || rc=$?
   cost_guard "$(cat "$LOGS/deploy.log")"

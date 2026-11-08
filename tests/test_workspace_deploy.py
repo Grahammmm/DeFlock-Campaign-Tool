@@ -53,6 +53,11 @@ case "$1" in
 esac
 if [ "$1 $2" = "d1 list" ]; then
   if [ -n "$FAKE_COST" ]; then echo "Please upgrade your plan"; exit 0; fi
+  if [ -n "$FAKE_MULTI" ]; then
+    mine=''; if [ -f "$S/d1" ]; then mine=', {"uuid": "'"$FAKE_D1_UUID"'", "name": "deflock-campaign"}'; fi
+    printf '[{"uuid": "aaaaaaaa-0000-0000-0000-000000000001", "name": "other-db"}%s, {"uuid": "bbbbbbbb-0000-0000-0000-000000000002", "name": "deflock-campaign-old"}]\\n' "$mine"
+    exit 0
+  fi
   if [ -f "$S/d1" ]; then printf '[\\n {\\n "uuid": "%s",\\n "name": "deflock-campaign"\\n }\\n]\\n' "$FAKE_D1_UUID"; else echo "[]"; fi
   exit 0
 fi
@@ -62,6 +67,11 @@ if [ "$1 $2" = "d1 info" ]; then
   exit 0
 fi
 if [ "$1 $2 $3" = "kv namespace list" ]; then
+  if [ -n "$FAKE_MULTI" ]; then
+    mine=''; if [ -f "$S/kv" ]; then mine=', {"id": "'"$FAKE_KV_ID"'", "title": "deflock-workspace-CACHE"}'; fi
+    printf '[{"id": "cccccccc000000000000000000000003", "title": "deploy_site"}%s, {"id": "dddddddd000000000000000000000004", "title": "deflock-workspace-CACHE-old"}]\\n' "$mine"
+    exit 0
+  fi
   if [ -f "$S/kv" ]; then printf '[{"id": "%s", "title": "deflock-workspace-CACHE"}]\\n' "$FAKE_KV_ID"; else echo "[]"; fi
   exit 0
 fi
@@ -343,6 +353,49 @@ class DeployScriptTests(unittest.TestCase):
         self.assertFalse([c for c in after if "--file" in c])
         self.assertTrue([c for c in after if c.startswith("smoke edge")])
         self.assertIn("DONE", r2.stdout)
+
+    def test_resume_rechecks_sha_script_and_clean_tree(self):
+        env = self.f.env(FAKE_SMOKE_EDGE="1")
+        self.assertNotEqual(self.f.run("--apply", stdin=self.f.answers(), env=env).returncode, 0)
+        before = len(self.f.calls())
+        # a different --sha on resume is refused
+        r = self.f.run("--apply", "--resume", stdin="yes\n", sha="b" * 40)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("same reviewed commit", r.stdout + r.stderr)
+        # a tampered script on resume (right sha) is refused
+        tampered = self.f.dl / "tampered.sh"
+        tampered.write_text(SCRIPT.read_text() + "\n# extra\n")
+        r = self.f.run("--apply", "--resume", stdin="yes\n", script=tampered)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("differs", r.stdout + r.stderr)
+        # a modified file in the clone is refused
+        clone_file = self.f.dir / "repo" / "workers" / "package.json"
+        clone_file.write_text(clone_file.read_text() + " ")
+        r = self.f.run("--apply", "--resume", stdin="yes\n")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("changed or untracked", r.stdout + r.stderr)
+        self.assertEqual(len(self.f.calls()), before, "no tool may run after a refused resume")
+
+    def test_several_existing_databases_and_namespaces_pick_the_right_ids(self):
+        (self.f.state / "d1").touch()
+        (self.f.state / "kv").touch()
+        self.apply_ok_env(FAKE_MULTI="1")
+        cfg = (self.f.dir / "repo" / "workers" / "workspace" / "wrangler.deploy.jsonc").read_text()
+        self.assertIn(D1_UUID, cfg)
+        self.assertIn(KV_ID, cfg)
+        for other in ("aaaaaaaa-0000", "bbbbbbbb-0000", "cccccccc0000", "dddddddd0000"):
+            self.assertNotIn(other, cfg)
+        # creation path too: nothing of ours exists yet, others do
+        self.f = Fixture(self)
+        self.apply_ok_env(FAKE_MULTI="1")
+        cfg = (self.f.dir / "repo" / "workers" / "workspace" / "wrangler.deploy.jsonc").read_text()
+        self.assertIn(D1_UUID, cfg)
+        self.assertIn(KV_ID, cfg)
+
+    def apply_ok_env(self, **extra):
+        r = self.f.run("--apply", stdin=self.f.answers(), env=self.f.env(**extra))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r
 
     def test_resume_without_state_and_rerun_without_resume_refused(self):
         r = self.f.run("--apply", "--resume", stdin="")

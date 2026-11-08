@@ -22,6 +22,7 @@ Leave off `--apply` (just `bash workspace_deploy.sh --sha <REVIEWED_SHA>`) to se
 
 It makes one folder, `~/deflock-admin-deploy`, and stops with a plain message at the first problem.
 If it stops, fix what it says and run the same command again with `--resume` added at the end.
+If the deploy step says a workers.dev subdomain must be registered: in the Cloudflare dashboard open Workers & Pages, set your subdomain, then run the same command again with `--resume`.
 
 While it runs it asks you a few short questions:
 
@@ -64,6 +65,6 @@ If the final check says **FAIL**, the script prints the rollback and stops. Fast
 
 ## What the script will never do
 
-It never prints or saves a password, token or key. It makes the signing key itself, sends it straight to Cloudflare
+It never prints or saves a password, token or key. Its private notes file (only you can read it) holds the reviewed commit, the resource ids, the Access team name and audience tag, and the organizer emails you typed, but never a key. It makes the signing key itself, sends it straight to Cloudflare
 and shows only "set". It never turns on sending of email, newsletters or social posts. It never touches DNS.
 It never uses the AgentOrange copy of the repository.
