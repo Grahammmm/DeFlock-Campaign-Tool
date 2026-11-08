@@ -60,6 +60,9 @@ export function postSocialExecutorWith(adapterFor: (env: Env) => SocialAdapter |
   return {
     kind: "post_social",
     async execute(action, proposal, ctx) {
+      // Same switch as send_request/send_followup: configured credentials alone never post.
+      const gate = await ctx.repo.campaign();
+      if (gate?.external_sends !== "approval_required") throw new ExecutorFailure("external_sends_disabled", "campaign.external_sends is disabled; enable approval_required in Settings first; nothing was posted");
       const adapter = adapterFor(ctx.env);
       if (!adapter) throw new ExecutorFailure("social_not_configured", "social_posting: not configured (MASTODON_URL and the MASTODON_TOKEN secret); nothing was posted");
       requireApproval(action);

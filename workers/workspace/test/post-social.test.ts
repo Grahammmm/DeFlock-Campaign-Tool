@@ -57,6 +57,24 @@ const run = (repo: Repo, a: ExternalActionRow, d: FetchDouble, e: Env = ENV) => 
 const direct = (repo: Repo, a: ExternalActionRow, d: FetchDouble) =>
   postSocialExecutorWith((e) => socialAdapterFor(e, d.fetch)).execute(a, JSON.parse(a.proposal_json), { env: ENV, repo, identity: ORG });
 
+describe("post_social: ADM-SENDLOCK-1 campaign.external_sends", () => {
+  it("refuses external_sends_disabled with credentials set: zero fetch, no receipt slot taken", async () => {
+    const repo = await seedCampaign();
+    const d = new FetchDouble();
+    const f = await published(repo);
+    const a = await card(repo, f);
+    await repo.db.prepare("UPDATE campaign SET external_sends = 'disabled' WHERE campaign_id = ?").bind(repo.campaignId).run();
+    const blocked = await run(repo, a, d);
+    expect(blocked.error).toMatch(/^external_sends_disabled: /);
+    expect(d.calls).toHaveLength(0);
+    expect(await repo.setting(socialReceiptKey(f, "mastodon"))).toBeNull();
+    await expect(direct(repo, a, d)).rejects.toMatchObject({ code: "external_sends_disabled" });
+    expect(d.calls).toHaveLength(0);
+    // the test database is shared across tests: put the switch back
+    await repo.db.prepare("UPDATE campaign SET external_sends = 'approval_required' WHERE campaign_id = ?").bind(repo.campaignId).run();
+  });
+});
+
 describe("post_social: one post, one platform, one recorded approval", () => {
   it("posts the approved draft once and writes an id-only receipt", async () => {
     const repo = await seedCampaign();

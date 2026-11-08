@@ -33,6 +33,9 @@ export function newsletterExecutor(client: BrevoClient | null): ActionExecutor {
   return {
     kind: "send_newsletter",
     async execute(action, proposal, ctx) {
+      // Same switch as send_request/send_followup: a configured key alone never sends.
+      const gate = await ctx.repo.campaign();
+      if (gate?.external_sends !== "approval_required") throw new ExecutorFailure("external_sends_disabled", "campaign.external_sends is disabled; enable approval_required in Settings first; nothing was sent");
       const settings = await ctx.repo.setting<BrevoSettings>("brevo");
       // The list comes from Settings at execute time, never from the card: an older draft
       // must not carry a test list into a send after Settings moved to the real one.
