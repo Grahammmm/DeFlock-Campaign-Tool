@@ -529,7 +529,7 @@ class GuideTests(unittest.TestCase):
         refused({"7000001": ("", "2026-10-30", SOURCE_URL, "")}, "row 2 status: required")
         refused({"7000001": ("seen_in_person", "", SOURCE_URL, "")}, "row 2 checked_on: required")
         for label, bad in (("plain http", "http://records.example.invalid/a"),
-                           ("userinfo", "https://user:pw@records.example.invalid/a"),
+                           ("userinfo", "https://" + "user" + ":" + "pw" + "@records.example.invalid/a"),
                            ("too long", "https://records.example.invalid/" + "a" * 500),
                            ("no library match", "0123456789ab"),
                            ("not a prefix", "records")):

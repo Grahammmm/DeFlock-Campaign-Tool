@@ -167,7 +167,7 @@ python3 -m campaign_tool content init --directory "$NEW_CAMPAIGN"
 
 Run it in a new folder just made by `init` (README, "Start locally").
 
-This writes `content/pages/help-map.json`, and the next build produces `/help-map.html`. Every section starts with `[EDIT ME: verify for this campaign]`; the marker stays visible until you replace it and is not an approval. Read the page, edit it for your campaign, or delete the file or set `"nav": false` to publish no such page. `content init` refuses a folder that already has `content/`, so an existing campaign copies the JSON file into `content/pages/` by hand after checking that nothing is already there; there is no overwrite recipe.
+This writes `content/pages/help-map.json`, and the next build produces `/help-map.html`. Every section starts with `[EDIT ME: verify for this campaign]`; the marker stays visible until you replace it and is not an approval. Read the page and edit it for your campaign. Every loaded page is published; `"nav": false` only removes the navigation link, so delete the page file when it must not be published. `content init` refuses a folder that already has `content/`, so an existing campaign copies the JSON file into `content/pages/` by hand after checking that nothing is already there; there is no overwrite recipe.
 
 Adding or correcting a camera on OpenStreetMap or the DeFlock reporting page is something a person does outside this tool. This tool never edits OpenStreetMap, and a new point appears on your map only after you refresh (steps 2 and 3) and rebuild. The page names the methods page in words; see "How to read our findings" in the generated site, described under [Generated pages and files](SITE-CONTENT.md#generated-pages-and-files).
 
