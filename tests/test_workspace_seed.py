@@ -155,6 +155,15 @@ class SeedTests(unittest.TestCase):
         self.assertIn("agency row x column name", message)
         self.assertNotIn("jdoe", message)
 
+    def test_backstop_does_not_echo_a_phone_shaped_row_key(self):
+        rows = [("request", "AL 805 555 0142", {"request_id": "AL 805 555 0142"})]
+        with self.assertRaises(seed.Refused) as caught:
+            seed.backstop(rows)
+        message = str(caught.exception)
+        self.assertIn("request row <redacted> column request_id", message)
+        for leaked in ("555", "0142", "805"):
+            self.assertNotIn(leaked, message)
+
     def test_third_party_ref_is_dropped_before_the_ref_shape_check(self):
         copy = self.mutated(alpha_row="AL-060\t2026-08-20\t\tAlpha PD\t26-83 (third party)\tproduction\tx\tx\tx\tDATED\t\n")
         self.assertEqual(run(self.out, agencies=copy / "agencies.tsv", events=[copy / "events"])[0], 0)

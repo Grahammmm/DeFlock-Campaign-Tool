@@ -264,6 +264,8 @@ def build_rows(agencies, events, tracker, campaign_id, snapshot):
 def backstop(rows):
     """Email/phone/plate screen over every exported text value. Names table, key and column; never the value."""
     for table, key, row in rows:
+        if _privacy.categories(str(key)):
+            key = "<redacted>"  # the locator itself is source-derived; never echo it when it is sensitive
         for column, value in row.items():
             if isinstance(value, str):
                 hits = _privacy.categories(value)
@@ -289,6 +291,8 @@ def render_sql(rows):
 def render_review(rows, digest):
     out = ["seed.sql sha256: " + digest, "Every exported text value (table.column [row key] = value). NULL columns are not listed.", ""]
     for table, key, row in rows:
+        if _privacy.categories(str(key)):
+            key = "<redacted>"  # the locator itself is source-derived; never echo it when it is sensitive
         for column, value in row.items():
             if isinstance(value, str):
                 out.append("%s.%s [%s] = %s" % (table, column, key, value))
