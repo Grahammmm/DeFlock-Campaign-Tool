@@ -22,10 +22,18 @@ export function legistarLine(runs: RunReceiptRow[]): string {
   return "legistar_poll: no scheduled run yet";
 }
 
+/** One plain line: Outbound is ON only when campaign.external_sends=approval_required (and then still needs an approved card). */
+export function outboundLine(campaign: CampaignRow | null): Safe {
+  return campaign?.external_sends === "approval_required"
+    ? html`<p class="meta"><strong>Outbound: ON</strong> - sends and posts still need an approved card.</p>`
+    : html`<p class="notice"><strong>Outbound: OFF</strong> - email, newsletter and social posts are blocked by the campaign switch.</p>`;
+}
+
 export function dashboard(campaign: CampaignRow | null, counts: Record<string, number>, incidents: IncidentRow[], runs: RunReceiptRow[], jobs: JobRow[]): Safe {
   const stat = (label: string, key: string) => html`<div class="card stat"><strong>${counts[key] ?? 0}</strong><span class="meta">${label}</span></div>`;
   return html`<h1>${campaign?.name ?? "Campaign"}</h1>
 <p class="meta">${campaign ? `${campaign.county_name} County, ${campaign.jurisdiction.toUpperCase()} - privacy tier ${campaign.privacy_tier} - external sends ${campaign.external_sends} - law package ${campaign.law_package_status}` : "No campaign row yet; the wizard writes it at launch."}</p>
+${outboundLine(campaign)}
 <p class="meta">${legistarLine(runs)}</p>
 <div class="cards">${stat("Selected agencies", "agencies")}${stat("Requests", "requests")}${stat("Open requests", "requests_open")}${stat("Inbound mail", "inbox")}${stat("Unclassified mail", "unclassified")}${stat("Preserved originals", "originals")}${stat("Findings", "findings")}${stat("Approvals waiting", "approvals_pending")}${stat("Jobs queued", "jobs_queued")}${stat("Jobs failed", "jobs_failed")}${stat("Open incidents", "incidents")}</div>
 <h2>Open incidents</h2>
@@ -259,6 +267,7 @@ export interface SignupTest {
 
 export function settings(campaign: CampaignRow | null, rows: SettingRow[], secrets: SecretPresence[], notice: string | null, brevo: BrevoSettings | null, mailDelivery: boolean, signupTest: SignupTest | null = null): Safe {
   return html`<h1>Settings</h1>
+${outboundLine(campaign)}
 ${notice ? html`<p class="notice">${raw(notice)}</p>` : ""}
 <h2>Newsletter (Brevo, non-secret settings)</h2>
 <form method="post" action="/settings/brevo" class="stack"><p>The API key is a Worker secret (<code>BREVO_API_KEY</code>); nothing here reads or writes contacts. The hosted form URL sets <code>signup.mode = brevo_hosted</code> on the public site.</p>
