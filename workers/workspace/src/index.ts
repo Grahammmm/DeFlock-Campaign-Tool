@@ -21,7 +21,7 @@ import { issueCorrection, proposePublication, submitReview, withdrawFinding, Wor
 import { recomputeState } from "./review_state.ts";
 import { runnerApi } from "./runner.ts";
 import { subscribeWebhook } from "./routes/subscribe_webhook.ts";
-import { signDownload, verifyDownload } from "./signing.ts";
+import { downloadsConfigured, signDownload, verifyDownload } from "./signing.ts";
 import { page } from "./views/layout.ts";
 import * as V from "./views/screens.ts";
 
@@ -58,6 +58,7 @@ app.route("/api/webhooks/subscribe", subscribeWebhook);
 // Signed downloads: HMAC link minted by an authenticated organizer; no Access on this path.
 app.get("/dl/:sha256", async (c) => {
   const sha = c.req.param("sha256");
+  if (!downloadsConfigured(c.env)) return c.json({ error: "download_not_configured" }, 503);
   const exp = Number(c.req.query("exp"));
   const sig = c.req.query("sig") ?? "";
   if (!HEX64.test(sha) || !(await verifyDownload(c.env.DOWNLOAD_SIGNING_KEY, sha, exp, sig))) return c.text("link invalid or expired", 403);
@@ -180,6 +181,7 @@ app.get("/records/:sha256", async (c) => {
 });
 
 app.post("/records/:sha256/link", async (c) => {
+  if (!downloadsConfigured(c.env)) return c.json({ error: "download_not_configured" }, 503);
   const sha = c.req.param("sha256");
   const o = await c.var.repo.original(sha);
   if (!o) return c.text("not found", 404);

@@ -19,7 +19,7 @@ export default defineConfig(async () => {
             ACCESS_TEAM_DOMAIN: "example-team",
             ACCESS_AUD: "test-aud-0123456789abcdef",
             RUNNER_TOKEN: "test-runner-token-0123456789abcdef",
-            DOWNLOAD_SIGNING_KEY: "test-download-signing-key",
+            DOWNLOAD_SIGNING_KEY: "test-download-signing-key-0123456789",
           },
         },
       }),
