@@ -110,6 +110,13 @@ export function tokenFromRequest(request: Request): string | null {
   return m ? m[1].trim() : null;
 }
 
+/** Parse the optional ORGANIZER_EMAILS secret (comma, semicolon or whitespace separated, case-insensitive). Unset or blank: null, meaning no app-side allowlist. */
+export function organizerAllowlist(env: Env): Set<string> | null {
+  const raw = (env.ORGANIZER_EMAILS ?? "").trim();
+  if (!raw) return null;
+  return new Set(raw.toLowerCase().split(/[\s,;]+/).filter(Boolean));
+}
+
 /** Verify an Access JWT: RS256 signature against the team certs, iss, aud, exp, nbf. */
 export async function verifyAccessJwt(token: string, env: Env, opts: AuthOptions = {}): Promise<AccessIdentity> {
   if (opts.resetCache) certCache.clear();
@@ -137,8 +144,11 @@ export async function verifyAccessJwt(token: string, env: Env, opts: AuthOptions
   if (typeof claims.exp !== "number" || claims.exp <= nowSec) throw new AuthError("token expired");
   if (typeof claims.nbf === "number" && claims.nbf > nowSec + 60) throw new AuthError("token not yet valid");
   if (typeof claims.email !== "string" || !claims.email) throw new AuthError("token has no email");
+  const email = claims.email.toLowerCase();
+  const allowed = organizerAllowlist(env);
+  if (allowed && !allowed.has(email)) throw new AuthError("not an organizer", 403);
   return {
-    email: claims.email.toLowerCase(),
+    email,
     sub: typeof claims.sub === "string" ? claims.sub : "",
     issued_at: typeof claims.iat === "number" ? claims.iat : 0,
     expires_at: claims.exp,
