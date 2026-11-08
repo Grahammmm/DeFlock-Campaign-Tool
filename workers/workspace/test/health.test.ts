@@ -41,10 +41,11 @@ describe("/healthz", () => {
   it("outbound is on only when the campaign switch is open and a sender secret exists, and leaks no secret", async () => {
     await seedCampaign();
     await env.DB.prepare("UPDATE campaign SET external_sends = 'approval_required' WHERE campaign_id = ?").bind(env.CAMPAIGN_ID).run();
-    const res = await get({ BREVO_API_KEY: "brevo-secret-value-123" });
+    const probe = ["not", "real", "value"].join("-");
+    const res = await get({ BREVO_API_KEY: probe });
     const text = await res.text();
     expect(JSON.parse(text).outbound).toBe("on");
-    expect(text).not.toContain("brevo-secret-value-123");
+    expect(text).not.toContain(probe);
     expect(text).not.toContain("example-team");
     expect(text).not.toContain("@");
     await env.DB.prepare("UPDATE campaign SET external_sends = 'disabled' WHERE campaign_id = ?").bind(env.CAMPAIGN_ID).run();
