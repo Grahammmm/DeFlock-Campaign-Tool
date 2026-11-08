@@ -14,6 +14,7 @@ import type { Env } from "./env.ts";
 import { exportResponse } from "./export.ts";
 import { mailSenderConfigured } from "./executors/index.ts";
 import { UNSUBSCRIBE_PLACEHOLDER } from "./executors/send_newsletter.ts";
+import { healthReport } from "./health.ts";
 import { emailHandler } from "./mail.ts";
 import { assembleManifest, type BrevoSettings } from "./manifest.ts";
 import { issueCorrection, proposePublication, submitReview, withdrawFinding, WorkflowError } from "./publication.ts";
@@ -74,7 +75,10 @@ app.get("/dl/:sha256", async (c) => {
   });
 });
 
-app.get("/healthz", (c) => c.json({ ok: true, campaign: Boolean(c.env.CAMPAIGN_ID) }));
+app.get("/healthz", async (c) => {
+  const { status, body } = await healthReport(c.env);
+  return c.json(body, status);
+});
 
 // Cross-site request forgery: Access authenticates with an ambient cookie, so a
 // state-changing request must come from this origin. Browsers always send Origin (and
