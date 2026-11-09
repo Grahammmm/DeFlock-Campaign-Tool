@@ -128,6 +128,78 @@ class Home(unittest.TestCase):
             self.assertIn('0 need your decision', page)
             self.assertNotIn('Requests 0', page)
 
+    def test_decisions_same_hour_are_exact_newest_first(self):
+        items = ["a" * 64, "f" * 64]
+        if aq.draft_id(items[0], "first-request") > aq.draft_id(items[1], "first-request"):
+            items.reverse()  # older draft gets the lexically smaller id, so an id sort would be wrong
+        ids = []
+        for item, stamp, req in zip(items, ("2026-11-04T23:01:00Z", "2026-11-04T23:59:00Z"), ("R-3", "R-4")):
+            with mock.patch.object(aq, "_now", return_value=stamp):
+                ids.append(aq.add_draft(self.project, item_id=item, kind="first-request", agency_id="alpha-pd",
+                                        request_id=req, body="BODY-SENTINEL-1", evidence={"why": "Recorded request"},
+                                        source_run_id=RUN)["id"])
+        older, newer = ids
+        self.assertLess(older, newer)
+        model = self.model()
+        rows = [r for r in home.decision_rows(model, NOW.date()) if r["id"] in ids]
+        self.assertEqual([r["age_hours"] for r in rows], [0, 0])
+        self.assertEqual([r["id"] for r in rows], [newer, older])
+        page = home.render_home(model, "")
+        self.assertLess(page.index("/review?id=" + newer), page.index("/review?id=" + older))
+
+    def test_decisions_cross_source_exact_time_order(self):
+        model = self.model(send_config="not-read")
+        stamp = lambda minutes: (NOW - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        template = model["queue"]["rows"][0]
+        model["queue"]["rows"] = [
+            template | {"id": "q-pending", "created_at": stamp(50)},
+            template | {"id": "q-approved", "status": "approved", "revision": 1, "created_at": stamp(10)}]
+        model["public"]["lines"] = [dict(model["public"]["lines"][0], id="p-line", proposed_at=NOW.timestamp() - 30 * 60)]
+        model["packets"]["rows"] = [dict(model["packets"]["rows"][0], id="p-packet", proposed_at=stamp(40), age_hours=0)]
+        rows = home.decision_rows(model, NOW.date())
+        self.assertEqual([r["id"] for r in rows], ["q-approved", "p-line", "p-packet", "q-pending"])
+        self.assertEqual([r["source"] for r in rows], ["sends", "public", "packets", "queue"])
+        self.assertEqual({r["age_hours"] for r in rows}, {0})
+
+    def test_decisions_exact_ties_and_unknown_times(self):
+        model = self.model()
+        template = model["queue"]["rows"][0]
+        line = model["public"]["lines"][0]
+        keys = set(home.decision_rows(model, NOW.date())[0])
+        model["packets"]["rows"] = []
+        same = "2026-11-04T23:00:00Z"
+        model["queue"]["rows"] = [
+            template | {"id": "b", "created_at": same}, template | {"id": "a", "created_at": same},
+            template | {"id": "x-missing", "created_at": None}, template | {"id": "x-bad", "created_at": "not a time"}]
+        lines = [dict(line, id=ident, proposed_at=value) for ident, value in (
+            ("a", NOW.timestamp() - 3600), ("l-bool", True), ("l-text", same), ("l-nan", float("nan")),
+            ("l-inf", float("inf")), ("l-huge", 1e30), ("l-none", None), ("l-zero", 0))]
+        expected = [("a", "public"), ("a", "queue"), ("b", "queue"), ("l-zero", "public"), ("l-bool", "public"),
+                    ("l-huge", "public"), ("l-inf", "public"), ("l-nan", "public"), ("l-none", "public"),
+                    ("l-text", "public"), ("x-bad", "queue"), ("x-missing", "queue")]
+        for order in (lines, lines[::-1]):
+            model["public"]["lines"] = order
+            rows = home.decision_rows(model, NOW.date())
+            self.assertEqual([(r["id"], r["source"]) for r in rows], expected)
+            self.assertEqual({frozenset(r) for r in rows}, {frozenset(keys)})
+            self.assertEqual([r["age_hours"] for r in rows if r["id"].startswith(("l-b", "l-h", "l-i", "l-n", "l-t", "x-"))],
+                             [None] * 8)
+        home.render_home(model, "")
+
+    def test_decisions_future_times_do_not_collapse_order(self):
+        model = self.model()
+        stamp = lambda minutes: (NOW + timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        template = model["queue"]["rows"][0]
+        model["public"]["lines"], model["packets"]["rows"] = [], []
+        model["queue"]["rows"] = [template | {"id": ident, "created_at": stamp(m)}
+                                  for ident, m in (("past", -10), ("far", 60), ("near", 30))]
+        before = json.dumps(model["queue"]["rows"], sort_keys=True)
+        rows = home.decision_rows(model, NOW.date())
+        self.assertEqual([r["id"] for r in rows], ["far", "near", "past"])
+        self.assertEqual([r["age_hours"] for r in rows], [0, 0, 0])
+        self.assertEqual(json.dumps(model["queue"]["rows"], sort_keys=True), before)
+        self.assertNotIn("BODY-SENTINEL", home.render_home(model, ""))
+
     def test_sends_revision_matching_next_kinds_and_unknown_outcome(self):
         model = self.model(send_config="not-read")
         approved = dict(model["queue"]["rows"][0], status="approved", revision=2)

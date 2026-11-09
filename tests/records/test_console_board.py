@@ -262,11 +262,7 @@ class AgencySections(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.project = Path(self.tmp.name)
         build(self.project)
-        from unittest.mock import patch
         self.retention_path = self.project / "agency-retention.csv"
-        self.patch_path = patch.object(cb, "RETENTION_PATH", self.retention_path)
-        self.patch_path.start()
-        self.addCleanup(self.patch_path.stop)
         self.write_retention([])
         path = self.project / "run-outputs" / RUN / "outcomes" / "response-items.json"
         doc = json.loads(path.read_text())
@@ -357,12 +353,86 @@ class AgencySections(unittest.TestCase):
             self.assertIn("30 days", page)
         self.write_retention([self.statement(), self.statement()])
         model = self.model()
-        self.assertEqual(len(model["retention"][0]), 1)
+        self.assertEqual(len(model["retention"]["rows"]), 1)
         self.assertIn("1 validation problem(s)", cb.render_agency(model, "alpha-pd"))
         self.retention_path.unlink()
         page = cb.render_agency(self.model(), "alpha-pd")
-        self.assertIn("No retention statement on file.", page)
-        self.assertIn("validation problem(s)", page)
+        self.assertIn(cb.RETENTION_ABSENT, page)
+        self.assertNotIn("validation problem(s)", page.split("<h2>Retention</h2>")[1])
+
+    def retention_section(self, agency="alpha-pd"):
+        return cb.render_agency(self.model(), agency).split("<h2>Retention</h2>")[1].split("</section>")[0]
+
+    def test_retention_absent_is_plain_not_a_problem(self):
+        self.retention_path.unlink()
+        self.assertEqual(self.model()["retention"], {"state": "absent"})
+        section = self.retention_section()
+        self.assertIn("No retention statements recorded for this campaign (agency-retention.csv in the project folder).",
+                      section)
+        self.assertNotIn("validation problem", section)
+        self.assertNotIn("<table", section)
+        self.assertNotIn("No retention statement on file.", section)
+
+    def test_retention_from_project_file(self):
+        self.write_retention([self.statement()])
+        section = self.retention_section()
+        self.assertNotIn(cb.RETENTION_ABSENT, section)
+        for text in ("<td>ALPR</td>", "<td>flock</td>", "<td>30 days</td>", "order_form, p.2, doc aaaaaaaaaaaa"):
+            self.assertIn(text, section)
+
+    def test_retention_ignores_repo_pilot_file(self):
+        pilot = Path(cb.__file__).resolve().parents[2] / "data" / "slo-pilot" / "agency-retention.csv"
+        self.assertTrue(pilot.is_file())  # the repo copy exists and is valid but must not be read
+        self.retention_path.unlink()
+        self.assertEqual(self.model()["retention"], {"state": "absent"})
+        section = self.retention_section()
+        self.assertIn(cb.RETENTION_ABSENT, section)
+        self.assertNotIn("<table", section)
+
+    def test_retention_symlink_is_refused(self):
+        real = self.project / "real-retention.csv"
+        real.write_text(self.retention_path.read_text())
+        self.write_retention([self.statement()])
+        real.write_text(self.retention_path.read_text())
+        self.retention_path.unlink()
+        self.retention_path.symlink_to(real)
+        model = self.model()
+        self.assertEqual(model["retention"]["state"], "ok")
+        self.assertEqual(model["retention"]["rows"], [])
+        section = self.retention_section()
+        self.assertIn("1 validation problem(s)", section)
+        self.assertNotIn("<table", section)
+        self.assertNotIn(cb.RETENTION_ABSENT, section)
+
+    def test_retention_bad_header_counts_one_problem(self):
+        self.retention_path.write_text("agency,system\nalpha-pd,ALPR\n")
+        section = self.retention_section()
+        self.assertIn("1 validation problem(s)", section)
+        self.assertNotIn("<table", section)
+
+    def test_retention_text_is_escaped(self):
+        self.write_retention([self.statement(), dict(self.statement(), system="<script>x</script>", data_layer="audit_trail",
+                                                     quote="<script>q</script>")])
+        section = self.retention_section()
+        self.assertNotIn("<script>", section)
+        self.assertIn("&lt;script&gt;x&lt;/script&gt;", section)
+
+    def test_home_and_oversight_still_render(self):
+        from campaign_tool.records import console_oversight as oversight
+        from tests.records import test_console_home as th
+        home_project = Path(tempfile.mkdtemp(dir=self.tmp.name))
+        th.fixture(home_project)
+
+        def render_all():
+            page = oversight.render_oversight(oversight.load(self.project, RUN))
+            self.assertIn("<h1", page)
+            self.assertIn("Requests", th.home.render_home(th.home.load(home_project, RUN, now=th.NOW), "t"))
+
+        (home_project / "agency-retention.csv").write_text(self.retention_path.read_text())
+        render_all()  # with the file
+        self.retention_path.unlink()
+        (home_project / "agency-retention.csv").unlink()
+        render_all()  # without the file
 
 
 if __name__ == "__main__":
