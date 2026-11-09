@@ -9,8 +9,8 @@ CANARY = "CANARY-VALUE-41"
 NOTE = "research view, not a legal conclusion"
 
 
-def counts(a=3, g=3, u=0, t=1, x=0, y=0, d=0):
-    return dict(agencies=a, governed=g, ungoverned=u, types=t, differ=x, agree=y, disputed_skipped=d)
+def counts(a=3, g=3, u=0, t=1, x=0, y=0, d=0, r=0):
+    return dict(agencies=a, governed=g, ungoverned=u, types=t, differ=x, agree=y, disputed_skipped=d, unreadable_skipped=r)
 
 
 def member(agency, *ids):

@@ -47,8 +47,8 @@ def fact(agency, label, fact_type, value, status="unreviewed", page="1"):
     return r
 
 
-def footer(a=3, g=3, u=0, t=1, x=0, y=0, d=0):
-    return (f"agencies={a} governed={g} ungoverned={u} types={t} differ={x} agree={y} disputed_skipped={d}"
+def footer(a=3, g=3, u=0, t=1, x=0, y=0, d=0, r=0):
+    return (f"agencies={a} governed={g} ungoverned={u} types={t} differ={x} agree={y} disputed_skipped={d} unreadable_skipped={r}"
             " | ids only, research view, not a legal conclusion")
 
 
