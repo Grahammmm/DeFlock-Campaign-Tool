@@ -13,9 +13,9 @@ def _number(n):
 
 
 def valid_ring(ring):
-    """A closed linear ring: a list of at least 4 finite numeric [x, y, ...] positions."""
+    """A closed linear ring: at least 4 finite numeric [x, y, ...] positions, first and last equal (never auto-closed)."""
     return isinstance(ring, list) and len(ring) >= 4 and all(
-        isinstance(p, list) and len(p) >= 2 and _number(p[0]) and _number(p[1]) for p in ring)
+        isinstance(p, list) and len(p) >= 2 and _number(p[0]) and _number(p[1]) for p in ring) and ring[0] == ring[-1]
 
 
 def _edges(ring):
@@ -37,9 +37,9 @@ def point_in_ring(x, y, ring):
 
 
 def point_in_polygon(pt, rings):
-    """Inside ring 0 and inside none of the holes (rings 1..n)."""
-    return bool(rings) and point_in_ring(pt[0], pt[1], rings[0]) and not any(
-        point_in_ring(pt[0], pt[1], hole) for hole in rings[1:])
+    """Inside ring 0 and inside none of the holes (rings 1..n); false if any supplied ring is invalid."""
+    return isinstance(rings, list) and bool(rings) and all(valid_ring(r) for r in rings) and point_in_ring(
+        pt[0], pt[1], rings[0]) and not any(point_in_ring(pt[0], pt[1], hole) for hole in rings[1:])
 
 
 class _Ring:
@@ -79,7 +79,7 @@ def _polygons(geometry):
     polygons = [geometry.get("coordinates")] if kind == "Polygon" else geometry.get("coordinates")
     if not isinstance(polygons, list) or not polygons or any(
             not isinstance(rings, list) or not rings or not all(valid_ring(r) for r in rings) for rings in polygons):
-        return "invalid ring (needs 4 or more finite numeric positions)"
+        return "invalid ring (needs a closed ring of 4 or more finite numeric positions)"
     return polygons
 
 
