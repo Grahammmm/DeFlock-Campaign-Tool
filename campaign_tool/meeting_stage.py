@@ -150,7 +150,9 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
         old = _read_json(kept) if replace and kept.is_file() and not os.path.islink(kept) else {}
     except ValueError:
         old = {}  # unreadable: overwritten as before
-    document.update({"outcome": old["outcome"]} if isinstance(old, dict) and "outcome" in old else {})
+    # RF0834-3: only these recorded historical objects are carried over, raw; the submitted comment is exact text
+    # (not draft-kit prose) and an invalid one is refused by load_meeting below, never dropped.
+    document.update({key: old[key] for key in ("outcome", "submitted_comment") if isinstance(old, dict) and key in old})
     loaded = load_meeting(document, f"meetings/{meeting_id}.json", today=today)
     if cosigners:  # the whole new document is checked against the grants and the generated block before any write
         problems = cosign_problems(root, [{**loaded, "id": meeting_id}], today=today)
