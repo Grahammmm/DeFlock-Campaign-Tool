@@ -126,6 +126,10 @@ def propose(root, today=None, law_base=None):
                              f"{_show(items[index].get(field))} -> {_show(value)}")
                 items[index][field] = value
                 changed = True
+        if "updated_on" not in proposal and "updated_on" in items[index]:
+            lines.append(f"content/agencies.json {agency_id}.asked[{index}].updated_on: "
+                         f"{_show(items[index].pop('updated_on'))} -> {_show(None)}")
+            changed = True
     error = None
     try:
         load_agencies(new, "content/agencies.json", today)
