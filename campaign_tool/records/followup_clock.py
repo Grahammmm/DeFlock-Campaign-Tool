@@ -14,6 +14,7 @@ import re
 import stat
 import sys
 from datetime import date, timedelta
+from pathlib import Path
 
 from . import approval_queue, draft_templates
 from .intake.folder import secure_open
@@ -85,21 +86,51 @@ def _off():
                                          "silence_after_days": 0}, "agencies": {}}
 
 
+def _read_bounded(path, limit, *, owner_only=False):
+    """At most ``limit`` bytes of one regular file. Read-only; no symlink is followed at any level.
+
+    The leaf opens with O_NONBLOCK, so a FIFO or device is refused at fstat instead of waiting for a writer.
+    """
+    parts = Path(os.path.abspath(path)).parts
+    parent, leaf = os.open("/", os.O_RDONLY | os.O_DIRECTORY), None
+    try:
+        for part in parts[1:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        leaf = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        info = os.fstat(leaf)
+        if not stat.S_ISREG(info.st_mode) or (owner_only and (
+                info.st_uid != os.geteuid() or info.st_mode & 0o077 or info.st_nlink != 1)):
+            raise ValueError("input_file")
+        if info.st_size > limit:
+            raise ValueError("input_size")
+        chunks, size = [], 0
+        while size <= limit:
+            chunk = os.read(leaf, min(1 << 16, limit + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        if size > limit:
+            raise ValueError("input_size")
+        return b"".join(chunks)
+    finally:
+        if leaf is not None:
+            os.close(leaf)
+        os.close(parent)
+
+
 def load_settings(project):
     """Per-agency settings. Absent file: all agencies off. Any defect: ``invalid`` and all agencies off."""
     invalid = dict(_off(), invalid=True)
     try:
         path = checked_path(os.path.join(project, SETTINGS_FILE), existing=False)
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            raw = _read_bounded(path, MAX_SETTINGS, owner_only=True)
         except FileNotFoundError:
             return _off()
-        with os.fdopen(fd, "rb") as stream:
-            info = os.fstat(stream.fileno())
-            if not (stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o077
-                    and info.st_nlink == 1 and info.st_size <= MAX_SETTINGS):
-                return invalid
-            doc = _strict(stream.read(MAX_SETTINGS + 1))
+        doc = _strict(raw)
         if not isinstance(doc, dict) or doc.get("schema") != SETTINGS_SCHEMA or set(doc) - {"schema", "default", "agencies"}:
             return invalid
         default = _entry(doc.get("default", {}), allow_signature=True)
@@ -288,12 +319,9 @@ def read_register(project, run_id):
         raise ValueError("run_id")
     path = checked_path(os.path.join(project, "run-outputs", run_id, REGISTER_NAME), existing=False)
     try:
-        with secure_open(path) as source:
-            raw = source.read(MAX_REGISTER + 1)
+        raw = _read_bounded(path, MAX_REGISTER)
     except FileNotFoundError:
         return None
-    if len(raw) > MAX_REGISTER:
-        raise ValueError("register_size")
     try:
         doc = _strict(raw)
     except SettingsError as error:
