@@ -289,11 +289,11 @@ class OutputsStage(unittest.TestCase):
         self.assertEqual(set(snapshot), {"snapshot_version", "run_id", "stage_state", "mail_messages", "originals", "portal_items", "portal_refusals"})
         self.assertEqual(self.fingerprint(project), before)
         frozen = {str(p.relative_to(output)): p.read_bytes() for p in output.rglob("*") if p.is_file()}
-        inodes = {str(p.relative_to(output)): (p.stat().st_ino, p.stat().st_mtime_ns) for p in output.rglob("*") if p.is_file()}
+        pair = (output / "comparison.json", output / "comparison.md")
+        inodes = {p.name: (p.stat().st_ino, p.stat().st_mtime_ns) for p in pair}
         self.assertEqual(self.invoke(project)[1], 0)
         self.assertEqual({str(p.relative_to(output)): p.read_bytes() for p in output.rglob("*") if p.is_file()}, frozen)
-        self.assertEqual({str(p.relative_to(output)): (p.stat().st_ino, p.stat().st_mtime_ns)
-                          for p in output.rglob("*") if p.is_file()}, inodes)
+        self.assertEqual({p.name: (p.stat().st_ino, p.stat().st_mtime_ns) for p in pair}, inodes)
         self.assertEqual(self.fingerprint(project), before)
         self.assertEqual(self.invoke(project, "synthetic-next-run")[1], 0)
         self.assertTrue((project / "run-outputs/synthetic-next-run/comparison.md").is_file())

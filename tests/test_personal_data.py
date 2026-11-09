@@ -667,7 +667,7 @@ MODULE_FUNCTIONS = {
         'OcrStage._publish', 'OcrStage.locked', 'OcrStage.process', '_copy_verified', '_publish_noreplace',
         '_write_private', 'main', 'transcribe_png_main'
     ),
-    'records.outcomes.comparison': ('write_run_comparison',),
+    'records.outcomes.comparison': ('_publish_pair', '_stage_file',),
     'records.outcomes.received_items': ('write_run_received_items',),
     'records.outcomes.release_links': ('write_run_release_links',),
     'records.outcomes.timeline': ('write_run_timeline',),
