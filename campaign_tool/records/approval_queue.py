@@ -109,16 +109,35 @@ def _open_approvals(root_fd, create):
 
 
 def _open_file(dir_fd, name, flags, create=False):
+    """Open without ever blocking (a FIFO would otherwise stall the open), then validate the descriptor."""
     try:
-        fd = os.open(name, flags | os.O_NOFOLLOW | (os.O_CREAT | os.O_EXCL if create else 0), 0o600, dir_fd=dir_fd)
+        fd = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_CREAT | os.O_EXCL if create else 0),
+                     0o600, dir_fd=dir_fd)
     except FileNotFoundError:
         return None
-    except OSError as error:
+    except OSError as error:  # includes ENXIO for a write-open of a FIFO that has no reader
         raise ApprovalQueueError("queue_invalid") from error
-    if not _private(os.fstat(fd), False):
+    try:
+        private = _private(os.fstat(fd), False)
+    except OSError as error:
+        os.close(fd)
+        raise ApprovalQueueError("queue_invalid") from error
+    if not private:
         os.close(fd)
         raise ApprovalQueueError("queue_invalid")
     return fd
+
+
+def _read_capped(fd, cap):
+    """Read until EOF, requesting at most the bytes still allowed; returns at most cap + 1 bytes."""
+    chunks, consumed = [], 0
+    while consumed <= cap:
+        chunk = os.read(fd, min(1 << 20, cap + 1 - consumed))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        consumed += len(chunk)
+    return b"".join(chunks)
 
 
 def _lock(dir_fd, exclusive):
@@ -188,12 +207,9 @@ class _Store:
             return b""
         try:
             _need(os.fstat(fd).st_size <= MAX_JOURNAL, "queue_invalid")
-            chunks = []
-            while True:
-                chunk = os.read(fd, 1 << 20)
-                if not chunk:
-                    return b"".join(chunks)
-                chunks.append(chunk)
+            raw = _read_capped(fd, MAX_JOURNAL)  # bytes actually consumed bind, not only the size seen above
+            _need(len(raw) <= MAX_JOURNAL, "queue_invalid")
+            return raw
         except OSError as error:
             raise ApprovalQueueError("queue_io") from error
         finally:
@@ -458,20 +474,26 @@ def edit(root, id, actor, new_body):
         return _public(_row(root, store, id))
 
 
-def _read_source(path):
+def _read_input(path, cap):
+    """Bounded nonblocking read of one regular input file (source, body or signature): cap + 1 bytes at most."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as error:
         raise ApprovalQueueError("source_invalid") from error
     try:
         info = os.fstat(fd)
-        _need(stat.S_ISREG(info.st_mode) and info.st_size <= MAX_SOURCE, "source_invalid")
-        with os.fdopen(os.dup(fd), "rb") as stream:
-            raw = stream.read(MAX_SOURCE + 1)
-        _need(len(raw) <= MAX_SOURCE, "source_invalid")
-        return raw
+        _need(stat.S_ISREG(info.st_mode) and info.st_size <= cap, "source_invalid")
+        raw = _read_capped(fd, cap)
+    except OSError as error:
+        raise ApprovalQueueError("source_invalid") from error
     finally:
         os.close(fd)
+    _need(len(raw) <= cap, "source_invalid")
+    return raw
+
+
+def _read_source(path):
+    return _read_input(path, MAX_SOURCE)
 
 
 def queue_received_items(root, run_id, received_path):
@@ -518,14 +540,7 @@ def queue_received_items(root, run_id, received_path):
 # ---- command line --------------------------------------------------------------------------
 
 def _file(path):
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, "rb") as stream:
-            _need(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "source_invalid")
-            raw = stream.read(MAX_BODY + 1)
-    except OSError as error:
-        raise ApprovalQueueError("source_invalid") from error
-    _need(len(raw) <= MAX_BODY, "source_invalid")
+    raw = _read_input(path, MAX_BODY)
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError as error:
