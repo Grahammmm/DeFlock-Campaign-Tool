@@ -171,6 +171,11 @@ def read_manual(root):
         document = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise ManualMeetingError(f"{MANUAL}: not UTF-8 JSON") from None
+    return _manual_document(document)
+
+
+def _manual_document(document):
+    """Validate an already decoded private document without reading the filesystem."""
     if (not isinstance(document, dict) or set(document) != {"schema_version", "meetings"}
             or type(document["schema_version"]) is not int or document["schema_version"] != 1):
         raise ManualMeetingError(f"{MANUAL}: unsupported schema_version (expected 1)")

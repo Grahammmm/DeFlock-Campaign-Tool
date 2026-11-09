@@ -720,7 +720,7 @@ sends nothing and changes no staging, request owner (`kit-assign`) or other stor
 - `--list` prints one JSON document: `id`, `speaker_minutes` (the organizer-verified per-speaker limit from the staged
   `participation`, or `null` when unknown: nothing is assumed), `points` with their `speakers`, `uncovered` points and
   `multiple_points` (labels on two or more points).
-- A cancelled meeting (staged or in `kit/meetings.json`), one that has started or is past, a symlink anywhere on the path
+- A cancelled meeting (staged or in `kit/meetings.json` or `kit/meetings-manual.json`), one that has started or is past, a symlink anywhere on the path
   or an unknown point is refused.
 - The plan stores a SHA-256 of the staged kit text. If the meeting is re-staged with a different kit, `--list` and `--add`
   refuse (`speaker plan is stale`) rather than silently re-map `ask:N`. Repair: `--remove` every label, then `--add` again.

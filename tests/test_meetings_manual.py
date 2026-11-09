@@ -66,6 +66,31 @@ class ManualBase(unittest.TestCase):
 
 
 class ManualMeetingTests(ManualBase):
+    def test_manual_document_matches_read_manual(self):
+        self.add(starts_at="2026-11-20T18:30:15.5Z")
+        self.replace()
+        cancel_manual(self.root, MID, on="2026-11-10", reason=REASON, today=TODAY)
+        document = self.doc()
+        before = self.manual.read_bytes()
+        self.assertEqual(mm._manual_document(document), read_manual(self.root))
+        self.assertEqual(self.manual.read_bytes(), before)
+        entry = document["meetings"][0]
+        invalid = [None, [], {**document, "schema_version": True},
+                   {**document, "schema_version": 2}, {**document, "extra": 1},
+                   {**document, "meetings": {}}, {**document, "meetings": [entry, entry]}]
+        for changes in ({"status": "gone"}, {"history": "x"}, {"extra": 1},
+                        {"history": [{"action": "cancel", "on": "bad", "reason": REASON}]},
+                        {"body": "<invalid>"}, {"time_known": False}):
+            invalid.append({**document, "meetings": [{**entry, **changes}]})
+        for bad in invalid:
+            with self.subTest(document=bad):
+                self.manual.write_text(json.dumps(bad))
+                with self.assertRaises(ManualMeetingError) as pure:
+                    mm._manual_document(bad)
+                with self.assertRaises(ManualMeetingError) as reader:
+                    read_manual(self.root)
+                self.assertEqual(str(pure.exception), str(reader.exception))
+
     def test_add_manual_only_stage_and_marker(self):
         result = self.add()
         self.assertEqual(result, {"id": MID, "status": "scheduled", "path": "kit/meetings-manual.json"})
