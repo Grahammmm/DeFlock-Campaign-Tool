@@ -612,6 +612,49 @@ def _copy_verified(fd: int, expected: str, destination: Path) -> int:
     return size
 
 
+SOURCE_CHUNK = 1024 * 1024
+
+
+def _read_source_chunk(fd: int, size: int) -> bytes:
+    return os.read(fd, size)
+
+
+def _verify_source_hash(fd: int, expected: str, expected_bytes: int) -> None:
+    """Stream the opened original through SHA-256 before a cache hit is trusted.
+
+    Read-only: nothing is copied or written. Raises ``BackendError`` with
+    ``source_hash_mismatch`` (wrong length, digest, or the file changed while
+    it was read), ``source_oversize`` (more than ``MAX_SOURCE_BYTES`` bytes) or
+    ``source_unreadable``. Only the descriptor opened beneath the source root
+    is read, never the path again.
+    """
+    try:
+        before = os.fstat(fd)
+        if before.st_size != expected_bytes:
+            raise BackendError("source_hash_mismatch")
+        if before.st_size > MAX_SOURCE_BYTES:
+            raise BackendError("source_oversize")
+        digest, total = hashlib.sha256(), 0
+        os.lseek(fd, 0, os.SEEK_SET)
+        while True:
+            chunk = _read_source_chunk(fd, SOURCE_CHUNK)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_SOURCE_BYTES:
+                raise BackendError("source_oversize")
+            if total > expected_bytes:
+                raise BackendError("source_hash_mismatch")
+            digest.update(chunk)
+        after = os.fstat(fd)
+    except OSError:
+        raise BackendError("source_unreadable") from None
+    if total != expected_bytes or (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (
+            before.st_size, before.st_mtime_ns, before.st_ctime_ns) \
+            or digest.hexdigest() != expected:
+        raise BackendError("source_hash_mismatch")
+
+
 class CacheDamaged(Exception):
     """A published result directory exists but does not verify."""
 
@@ -793,8 +836,9 @@ class OcrStage:
 
         The original is opened beneath the source root first, so a vanished,
         symlinked or swapped original is reported even when its content hash
-        already has a published result. Cache hits cost no backend call and
-        never count as work.
+        already has a published result. A cache hit also streams the opened
+        original through SHA-256 (a same-length edit is refused). Cache hits
+        cost no backend call and never count as work.
         """
         try:
             fd = open_source(item)
@@ -807,8 +851,10 @@ class OcrStage:
                 return Outcome(item.document_id, "cache_invalid", "cache_damaged")
             if hit is not None:
                 outcome, source_bytes = hit
-                if os.fstat(fd).st_size != source_bytes:
-                    return Outcome(item.document_id, "source_invalid", "source_hash_mismatch")
+                try:
+                    _verify_source_hash(fd, item.sha256, source_bytes)
+                except BackendError as error:
+                    return Outcome(item.document_id, "source_invalid", error.code)
                 return outcome
             if not allow_work:
                 return None
