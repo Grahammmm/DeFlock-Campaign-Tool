@@ -7,7 +7,10 @@ python3 -B -m unittest tests.test_ingest_eml -v
 """
 
 import contextlib
+from email import policy
+from email.generator import BytesGenerator
 from email.message import EmailMessage
+from email.parser import BytesParser
 import hashlib
 import io
 import json
@@ -25,6 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 HEADER_VALUES = ("Synthetic production subject 7Q", "records-clerk-7q@example.org", "organizer-7q@example.org")
 PDF, CSV = b"%PDF-1.4 synthetic\n\x00\xff binary\n", b"col_a,col_b\n1,2\n"
 REFUSAL = "malformed MIME (InvalidAttachmentEncoding); nothing was imported"
+FWD_INNER = "Subject: Synthetic inner 7Q\r\nContent-Type: text/plain\r\n\r\ninner body\r\n"
 
 
 def message(*attachments, html=True):
@@ -366,6 +370,102 @@ class IngestEmlTests(unittest.TestCase):
                    "--B\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n"
                    f"X-Private: {sentinels[0]}\r\nContent-Disposition: attachment; filename=\"{sentinels[2]}.bin\"\r\n\r\n"
                    f"{sentinels[1]}*\r\n--B--\r\n")
+        path = self.write(data, "sentinel.eml")
+        digest = hashlib.sha256(data).hexdigest()
+        result = self.ingest(path, returncode=1)
+        self.assertEqual(result.stderr.strip(), f"Stopped: {REFUSAL}")
+        for value in sentinels:
+            self.assertNotIn(value, result.stdout + result.stderr)
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+
+    # RF0824-2: the forwarded message/rfc822 wrapper has its own identity-only transfer encoding rule
+    def forward_eml(self, header=None, named=True, nested=False, first=None, inner=FWD_INNER):
+        """Message bytes with one forwarded wrapper; `header` is None, one CTE value or a list of values (one header
+        line each), `first` an optional valid ordinary attachment before it, `nested` wraps it in a multipart."""
+        lines = [] if header is None else [header] if isinstance(header, str) else header
+        part = ("Content-Type: message/rfc822\r\n" + "".join(f"Content-Transfer-Encoding: {v}\r\n" for v in lines)
+                + ('Content-Disposition: attachment; filename="fwd.eml"\r\n' if named else "")
+                + "\r\n" + inner + "\r\n")
+        if nested:
+            part = 'Content-Type: multipart/mixed; boundary="N"\r\n\r\n--N\r\n' + part + "--N--\r\n"
+        body = "--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        if first:
+            body += ("--B\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n"
+                     'Content-Disposition: attachment; filename="first.bin"\r\n\r\nAP8BAgM=\r\n')
+        return raw('Content-Type: multipart/mixed; boundary="B"', body + "--B\r\n" + part + "--B--\r\n")
+
+    def objects(self):
+        return set(os.listdir(self.root / "private" / "objects"))
+
+    def test_forwarded_wrapper_cte_identity_and_legacy_bytes(self):
+        oracle = io.BytesIO()
+        BytesGenerator(oracle, mangle_from_=False, policy=policy.default.clone(refold_source="none")).flatten(
+            BytesParser(policy=policy.default).parsebytes(FWD_INNER.encode()))
+        want = hashlib.sha256(oracle.getvalue()).hexdigest()
+        self.assertEqual(oracle.getvalue(), b"Subject: Synthetic inner 7Q\nContent-Type: text/plain\n\ninner body\n")
+        counts = "SELECT (SELECT count(*) FROM objects), (SELECT count(*) FROM receipts), (SELECT count(*) FROM contains)"
+        for header in (None, "7bit", "8bit", "binary", " 7BIT ", "8Bit\t", "Binary"):
+            for named, nested, first in ((True, False, False), (False, False, False), (True, True, True),
+                                         (False, True, True)):
+                label = (header, named, nested, first)
+                with self.subTest(label):
+                    path = self.write(self.forward_eml(header, named, nested, first), "fwd.eml")
+                    preview = self.ingest(path, dry=True)
+                    report = self.ingest(path)
+                    forwarded = report["attachments"][-1]
+                    self.assertEqual(self.names(report)[-1].endswith(".eml"), True)
+                    self.assertEqual((len(report["attachments"]), report["skipped"]), (2 if first else 1, []))
+                    self.assertEqual(forwarded["sha256"], want)
+                    self.assertEqual(preview["attachments"][-1]["sha256"], want)
+                    self.assertEqual([a["sha256"] for a in preview["attachments"]],
+                                     [a["sha256"] for a in report["attachments"]])
+                    self.assertEqual((self.root / "private" / "objects" / want).read_bytes(), oracle.getvalue())
+                    stored = (self.rows(counts), self.objects())
+                    again = self.ingest(path)
+                    self.assertEqual({a["outcome"] for a in again["attachments"]}, {"present"})
+                    self.assertEqual((self.rows(counts), self.objects()), stored)
+
+    def test_forwarded_wrapper_cte_refused_before_any_write(self):
+        cases = {"unknown": "x-uuencode", "empty": "", "malformed-comment": "7bit (comment)", "malformed-token": "7 bit",
+                 "duplicate-equal": ["7bit", "7bit"], "duplicate-conflicting": ["7bit", "base64"],
+                 "base64": "base64", "base64-mixed-case": " Base64 ", "quoted-printable": "quoted-printable"}
+        for label, header in cases.items():
+            for named, nested, first in ((True, False, False), (False, False, True), (True, True, True)):
+                with self.subTest((label, named, nested, first)):
+                    self.refused(self.forward_eml(header, named, nested, first), label)
+        for label, inner in {"malformed-base64": "AP8B*gM=", "malformed-qp": "caf=Z0 abc="}.items():
+            with self.subTest(label):  # content is never read: the header alone decides
+                self.refused(self.forward_eml("base64" if "base64" in label else "quoted-printable", inner=inner), label)
+
+    def test_forwarded_inner_encodings_remain_opaque(self):
+        inner = ('Content-Type: multipart/mixed; boundary="I"\r\n\r\n--I\r\nContent-Type: text/plain\r\n\r\nfwd\r\n--I\r\n'
+                 'Content-Type: application/pdf\r\nContent-Transfer-Encoding: base64\r\n'
+                 'Content-Disposition: attachment; filename="inner1.pdf"\r\n\r\nAP8BAgM\r\n--I\r\n'
+                 'Content-Type: application/pdf\r\nContent-Transfer-Encoding: base64\r\nContent-Transfer-Encoding: 7bit\r\n'
+                 'Content-Disposition: attachment; filename="inner2.pdf"\r\n\r\nx\r\n--I--\r\n')
+        data = self.forward_eml("7bit", first=True, inner=inner)
+        report = self.ingest(self.write(data, "opaque.eml"))
+        self.assertEqual(self.names(report), ["first.bin", "fwd.eml"])
+        self.assertEqual(len(self.objects()), 3)  # message, first attachment, one forwarded member
+        forwarded = (self.root / "private" / "objects" / report["attachments"][1]["sha256"]).read_bytes()
+        self.assertIn(b'filename="inner1.pdf"', forwarded)
+        self.assertEqual(self.rows("SELECT count(*) FROM contains"), [(2,)])
+        # an invalid wrapper around the same valid-looking inner message still refuses the whole message
+        self.refused(self.forward_eml("x-uuencode", first=True, inner=inner), "invalid wrapper")
+        self.refused(self.forward_eml(["7bit", "7bit"], inner=FWD_INNER), "duplicate wrapper")
+        # ordinary body and unnamed inline parts keep their exemption beside a valid forward
+        exempt = self.forward_eml("8bit").replace(
+            b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n",
+            b"--B\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\nnot*base64\r\n"
+            b"--B\r\nContent-Type: image/png\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nbad=\r\n", 1)
+        self.assertEqual(self.names(self.ingest(self.write(exempt, "exempt.eml"), dry=True)), ["fwd.eml"])
+
+    def test_forwarded_wrapper_diagnostic_has_no_private_values(self):
+        sentinels = ("sentinel-header-8k", "SENTINELBODY8K", "sentinel-name-8k")
+        data = raw('Content-Type: multipart/mixed; boundary="B"',
+                   "--B\r\nContent-Type: message/rfc822\r\nContent-Transfer-Encoding: x-" + sentinels[0] + "\r\n"
+                   f'Content-Disposition: attachment; filename="{sentinels[2]}.eml"\r\n\r\n'
+                   f"Subject: {sentinels[1]}\r\n\r\n{sentinels[1]}\r\n--B--\r\n")
         path = self.write(data, "sentinel.eml")
         digest = hashlib.sha256(data).hexdigest()
         result = self.ingest(path, returncode=1)

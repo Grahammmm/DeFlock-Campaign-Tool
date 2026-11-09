@@ -93,6 +93,79 @@ class EntryTests(unittest.TestCase):
             dl.entries(states, doc, [])
 
 
+def campaign(root, zone):
+    root.mkdir()
+    (root / "campaign.json").write_text(json.dumps({"schema_version": 1, "timezone": zone}))
+    out = root / "run-outputs/run1/outcomes"
+    out.mkdir(parents=True)
+    _, doc = fixtures()
+    (out / "response-items.json").write_text(json.dumps(doc))
+    (out / "received-items.json").write_text(json.dumps({
+        "schema": "records-received-item-v1", "run_id": "run1", "items": doc["sources"]}))
+    (out / "timeline.json").write_text(json.dumps({
+        "schema": "records-timeline-v1", "run_id": "run1", "as_of": "2026-11-06",
+        "requests": [{"agency_key": "alpha-pd", "request_id": "r1", "events": [
+            {"type": "denial", "date": "2026-11-04", "source": {"item_id": "i1"}}]}]}))
+
+
+def tree(root):
+    return {str(p.relative_to(root)): (p.stat().st_mode, p.read_bytes() if p.is_file() else None)
+            for p in root.rglob("*")}
+
+
+class CampaignDateTests(unittest.TestCase):
+    def test_second_fictional_campaign_receipt_midnight(self):
+        with tempfile.TemporaryDirectory() as temp:
+            a, b = Path(temp) / "Harbor Pilot", Path(temp) / "Cedar Civic Records"
+            campaign(a, "America/Los_Angeles")
+            campaign(b, "UTC")
+            before = tree(Path(temp))
+            ids = []
+            for root, date, zone in ((a, "2026-11-04", "Pacific"), (b, "2026-11-05", "UTC"),
+                                     (a, "2026-11-04", "Pacific")):
+                result = dl.load(root, "run1")
+                self.assertEqual(result["state"], "available")
+                row = result["entries"][0]
+                self.assertEqual(row["date"], date)
+                self.assertEqual(row["date_basis"], f"DATED (recorded receipt; {zone} day)")
+                ids.append([r["id"] for r in result["entries"]])
+            self.assertEqual(ids[0], ids[1])
+            self.assertEqual(ids[0], ids[2])
+            self.assertEqual(tree(Path(temp)), before)
+
+    def test_denial_invalid_campaign_unavailable_without_writes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "Cedar Civic Records"
+            campaign(root, "not/a/zone")
+            before = tree(root)
+            self.assertEqual(dl.load(root, "run1"), {
+                "state": "unavailable", "code": "denial_log_invalid_source"})
+            self.assertEqual(tree(root), before)
+            self.assertFalse((root / "approvals").exists())
+
+    def test_denial_calendar_dates_and_dst(self):
+        for value, pacific, utc in (
+                ("2026-11-05", "2026-11-05", "2026-11-05"),
+                ("2026-03-08T09:30:00+00:00", "2026-03-08", "2026-03-08"),
+                ("2026-03-08T10:30:00+00:00", "2026-03-08", "2026-03-08"),
+                ("2026-11-01T08:30:00+00:00", "2026-11-01", "2026-11-01"),
+                ("2026-11-01T09:30:00+00:00", "2026-11-01", "2026-11-01"),
+                ("2026-11-05T01:00:00Z", "2026-11-04", "2026-11-05"),
+                (None, None, None)):
+            for zone, expected in (("America/Los_Angeles", pacific), ("UTC", utc)):
+                with self.subTest(value=value, zone=zone):
+                    states, doc = fixtures()
+                    states["requests"][0]["evidence"]["events"] = []
+                    doc["sources"][0]["received_at"] = value
+                    before = copy.deepcopy((states, doc))
+                    row = dl.entries(states, doc, [], time_zone=zone)[0]
+                    self.assertEqual(row["date"], expected)
+                    self.assertEqual(row["date_basis"] == "UNKNOWN", expected is None)
+                    self.assertEqual((states, doc), before)
+        with self.assertRaisesRegex(ValueError, "denial_log_date_timezone"):
+            dl._day("2026-11-05T01:00:00", time_zone="UTC")
+
+
 class LoadTests(unittest.TestCase):
     def test_real_load_cli_golden_unavailable_and_preservation(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -330,6 +330,32 @@ def load_queue(root):
     return [_public(rows[k]) for k in sorted(rows)]
 
 
+_ENDING_NAMES = {"\r\n": "CRLF", "\r": "CR"}
+
+
+def _display_diff(original, current, label):
+    """Lazy unified diff of two bodies that keeps line terminators visible; LF is the unmarked default.
+
+    Lines are compared with their terminators, so a terminator-only edit is a real change. Output
+    lines never contain terminator characters: a missing final terminator is followed by a
+    ``\\ No newline at end of file`` line and a non-LF terminator by ``\\ Line ending: NAME``.
+    """
+    tokens = difflib.unified_diff(original.splitlines(keepends=True), current.splitlines(keepends=True),
+                                  "original", label, lineterm="")
+    for number, line in enumerate(tokens):
+        if number < 2 or line[0] == "@":  # file headers and hunk headers never carry body text
+            yield line
+            continue
+        text = line[1:]
+        body = text.splitlines()[0] if text else ""
+        ending = text[len(body):]
+        yield line[0] + body
+        if not ending:
+            yield "\\ No newline at end of file"
+        elif ending != "\n":
+            yield "\\ Line ending: " + (_ENDING_NAMES.get(ending) or "U+%04X" % ord(ending))
+
+
 def history(root, id):
     """Original and edited bodies, hashes and bounded diff from the journal; creates nothing."""
     with _Store(root, False) as store:
@@ -355,8 +381,7 @@ def history(root, id):
             else:
                 edits.append(entry)
             current = {k: entry[k] for k in ("body", "sha256", "bytes", "revision")}
-        diff = list(islice(difflib.unified_diff(original["body"].splitlines(), current["body"].splitlines(),
-                                               "original", f"revision {current['revision']}", lineterm=""), 401))
+        diff = list(islice(_display_diff(original["body"], current["body"], f"revision {current['revision']}"), 401))
         return {"id": id, "kind": row["kind"], "status": row["status"], "revision": row["revision"],
                 "original": original, "current": current, "edits": edits,
                 "changed": original["body"] != current["body"], "diff": diff[:400],
