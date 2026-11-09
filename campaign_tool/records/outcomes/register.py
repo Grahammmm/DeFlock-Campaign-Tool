@@ -138,6 +138,23 @@ def read_ledger(path):
     return data, gaps
 
 
+def production_admission(value, today, start):
+    """Admit a recorded production date as completed-event evidence: (day, issue).
+
+    Absent -> (None, None). Unparsable -> invalid_date. After the report day or before the request
+    start (when known) -> production_date_inconsistent. Both bounds are inclusive. Pure.
+    """
+    text = _text(value)
+    if not text:
+        return None, None
+    day = _day(text)
+    if day is None:
+        return None, "invalid_date:production_at"
+    if day > today or (start and day < start):
+        return None, "production_date_inconsistent"
+    return day, None
+
+
 def _roll_weekend(day):
     return day + timedelta(days=7 - day.weekday()) if day.weekday() >= 5 else day
 
@@ -155,6 +172,9 @@ def deadline(row, today, issues):
             issues.append("invalid_date:" + field)
     if start and start > today:
         issues.append("request_date_in_future")
+    issue = production_admission(row.get("production_at"), today, start)[1]
+    if issue:
+        issues.append(issue)
     if determination and (determination > today or (start and determination < start)):
         issues.append("determination_date_inconsistent")
         determination = None
@@ -188,7 +208,10 @@ def promised(row, today, issues):
     if day is None:
         issues.append("invalid_date:promised_at")
         return {"state": "invalid", "date": None}
-    produced = _day(row.get("production_at"))
+    start = _day(row.get("received_at")) or _day(row.get("submitted_at"))
+    produced, issue = production_admission(row.get("production_at"), today, start)
+    if issue:
+        issues.append(issue)
     if produced and produced >= day:
         return {"state": "none", "date": day.isoformat()}
     state = "passed" if day < today else "due_today" if day == today else "upcoming"

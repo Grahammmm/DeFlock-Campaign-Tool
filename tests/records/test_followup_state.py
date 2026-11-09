@@ -2,6 +2,7 @@
 import contextlib
 import copy
 import io
+import itertools
 import json
 from pathlib import Path
 import tempfile
@@ -95,6 +96,83 @@ class ClassifyTests(unittest.TestCase):
         self.check(req, None, "silence")
         req["overdue_marks"][0]["date"] = "2026-11-07"
         self.check(req, None, "unknown")
+
+    def test_same_day_agency_reply_blocks_false_silence(self):
+        for mark in ("statutory_date_passed", "promised_date_passed"):
+            overdue = [{"kind": mark, "date": "2026-11-03"}]
+            for sent_kind in ("sent", "our follow-up sent"):
+                for kind in sorted(fs._AGENCY):
+                    for items, answer in ((None, None), ([ask()], "withheld"), ([ask(rating="answered")], "answered")):
+                        with self.subTest(mark=mark, sent=sent_kind, reply=kind, rated=answer):
+                            req = request(events=[event(sent_kind, "2026-11-04"), event(kind, "2026-11-04")],
+                                          overdue_marks=overdue)
+                            state = fs.classify(req, items, DAY)["state"]
+                            self.assertNotEqual(state, "silence")
+                            if kind == "clarification requested":
+                                self.assertEqual(state, "clarification")
+                            elif answer and kind == "no records":
+                                self.assertEqual(state, "withheld" if answer == "withheld" else "no_records")
+                            elif answer:
+                                self.assertEqual(state, answer)
+        # An acknowledgment alone never implies the asks were answered.
+        req = request(events=[event("our follow-up sent", "2026-11-04"), event("acknowledged", "2026-11-04")],
+                      overdue_marks=[{"kind": "statutory_date_passed", "date": "2026-11-03"}])
+        self.check(req, None, "unknown")
+        self.check(req, [ask(rating="unclear")], "unknown")
+        self.check(req, [ask(), ask(2, "policy", "answered")], "withheld")
+
+    def test_latest_send_day_and_event_filtering(self):
+        overdue = [{"kind": "statutory_date_passed", "date": "2026-11-01"}]
+
+        def classify(state, *events):
+            self.check(request(events=list(events), overdue_marks=overdue), None, state)
+        classify("silence", event("sent", "2026-11-03"), event("acknowledged", "2026-11-02"))  # earlier day
+        classify("unknown", event("sent", "2026-11-03"), event("acknowledged", "2026-11-03"))  # same day
+        classify("unknown", event("sent", "2026-11-03"), event("acknowledged", "2026-11-04"))  # later day
+        # Reply after an older send but before the latest send stays silence; latest send supersedes.
+        classify("silence", event("sent", "2026-11-01"), event("acknowledged", "2026-11-02"),
+                 event("our follow-up sent", "2026-11-04"))
+        # No send: any eligible agency event blocks silence; no agency event keeps the overdue rule.
+        self.check(request(events=[event("acknowledged")], overdue_marks=overdue), None, "unknown")
+        self.check(request(events=[event("sent")], overdue_marks=overdue), None, "silence")
+        self.check(request(overdue_marks=overdue), None, "silence")
+        # Superseded, future and invalid replies never block silence.
+        for extra in ({"superseded": True}, {"date": "2026-11-09"}, {"date": "not-a-day"}):
+            reply = event("acknowledged", "2026-11-04")
+            reply.update(extra)
+            self.check(request(events=[event("sent", "2026-11-04"), reply], overdue_marks=overdue), None, "silence")
+        # Superseded, future and invalid sends are not the latest send.
+        for extra in ({"superseded": True}, {"date": "2026-11-09"}, {"date": "not-a-day"}):
+            later = event("our follow-up sent", "2026-11-05")
+            later.update(extra)
+            self.check(request(events=[event("sent", "2026-11-01"), event("acknowledged", "2026-11-02"), later],
+                               overdue_marks=overdue), None, "unknown")
+        # A future promised date stays governed by the existing overdue rules.
+        promised = event("promised date", "2026-11-10", new_dates=["2026-11-10"])
+        self.check(request(events=[event("sent", "2026-11-04"), promised], overdue_marks=overdue), None, "silence")
+
+    def test_same_day_silence_input_order_and_partition(self):
+        overdue = [{"kind": "promised_date_passed", "date": "2026-11-03"}]
+        sent = event("our follow-up sent", "2026-11-04T09:00:00Z")
+        events = [sent, event("acknowledged", "2026-11-04"), event("denial", "2026-11-04"), event("denial", "2026-11-04")]
+        asks = [ask(3, "contracts", "no_records_stated"), ask(1), ask(2, "policy", "answered")]
+        outcomes = []
+        for ordered in itertools.permutations(events):
+            result = fs.classify(request(events=list(ordered), overdue_marks=overdue), copy.deepcopy(asks), DAY)
+            self.assertNotIn(SENTINEL, json.dumps(result))
+            outcomes.append(json.dumps(result, sort_keys=True))
+        self.assertEqual(len(set(outcomes)), 1)
+        result = json.loads(outcomes[0])
+        self.assertEqual(result["state"], "withheld")
+        self.assertEqual(result["item_needs"], {"withheld": [1], "audit_no_records": [], "other_no_records": [3],
+                                                "not_addressed": [], "produced": [2]})
+        self.assertEqual([e["type"] for e in result["evidence"]["events"]],
+                         ["acknowledged", "denial", "our follow-up sent"])
+        # The same represented day behaves the same whatever the date/timestamp form.
+        for send_day, reply_day in (("2026-11-04", "2026-11-04T23:59:59Z"), ("2026-11-04T00:00:01Z", "2026-11-04"),
+                                    ("2026-11-04T09:00:00Z", "2026-11-04T10:00:00Z")):
+            req = request(events=[event("sent", send_day), event("acknowledged", reply_day)], overdue_marks=overdue)
+            self.check(req, None, "unknown")
 
     def test_expired_cancelled_stale_extensions_and_clarification(self):
         for extra in ({"new_dates": ["2026-11-05"]},

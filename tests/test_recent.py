@@ -137,7 +137,7 @@ class RecentTests(unittest.TestCase):
         self.put("content/meetings/council.json", {
             "id": "council", "body": "Synthetic Council", "starts_at": "2026-11-02T18:00:00-08:00",
             "outcome": {"result": "approved", "on": "2026-11-02", "source_url": "https://agenda.synthetic.example/m",
-                        "verified_by": REVIEWER, "verified_at": "2026-11-03", "vote": "5-0"}})
+                        "verified_by": REVIEWER, "verified_at": "2026-11-03", "vote": "5–0"}})
         code, out, _ = self.report("2026-11-01")
         self.assertEqual(code, 0, out)
         shown = [line.split("  → ")[0] for line in out.splitlines() if line.startswith("2026-")]
@@ -152,7 +152,7 @@ class RecentTests(unittest.TestCase):
             "2026-11-01  Finding published: Title of fnd_fix",
             "2026-11-03  Outcome recorded for Synthetic Council (council): approved",
             "2026-11-02  Meeting on 2026-11-02: Synthetic Council (council)"])
-        for text in (HASH_B, SYNTHETIC_NOTE, REVIEWER, REASON, CORRECTION, "5-0"):
+        for text in (HASH_B, SYNTHETIC_NOTE, REVIEWER, REASON, CORRECTION, "5–0"):
             self.assertNotIn(text, out)
         self.assertNotIn("2026-10-31", out)  # outside the window
 

@@ -286,6 +286,75 @@ class PromisedDateTests(unittest.TestCase):
         self.assertIn("invalid_date:promised_at", row["issues"])
 
 
+class ProductionChronologyTests(unittest.TestCase):
+    """RF0834-1: a production date is completed-event evidence only when usable and consistent."""
+
+    def one(self, tracker_only=True, **values):
+        tracker = [{"agency": "Fable Bay Police", "request_id": "FB-09", "submitted_at": "2030-01-01",
+                    "asked": "Audit logs", "source": {"file": "t.csv", "row": 2}, **values}]
+        rows = register.build_register(data(), tracker, as_of=TODAY)["requests"]
+        return next(r for r in rows if r["request_id"] == "FB-09")
+
+    def test_production_chronology_future_and_before_request_are_issues(self):
+        for production in ("2030-01-13", "2029-12-31"):
+            for extra in ({}, {"promised_at": "2030-01-05"}, {"promised_at": "2030-01-05", "determination_at": "2030-01-04"}):
+                with self.subTest(production=production, extra=extra):
+                    row = self.one(production_at=production, **extra)
+                    self.assertIn("production_date_inconsistent", row["issues"])
+                    self.assertEqual(row["production_at"], production)  # raw assertion retained
+                    self.assertEqual(row["next_action"], "clarify")
+                    self.assertEqual(row["sources"], [{"file": "t.csv", "row": 2}])
+                    if extra.get("promised_at"):
+                        self.assertEqual(row["promised"], {"state": "passed", "date": "2030-01-05"})
+                    self.assertEqual(row["fulfillment"], "not_assessed")
+        report = register.build_register(data(), [{"agency": "Fable Bay Police", "request_id": "FB-09",
+                                                   "submitted_at": "2030-01-01", "production_at": "2030-01-13",
+                                                   "source": {"file": "t.csv", "row": 2}}], as_of=TODAY)
+        text = register.markdown(report)
+        self.assertIn("recorded production: 2030-01-13", text)
+        self.assertIn("CHECK: production_date_inconsistent", text)
+        # The ledger-backed request is checked the same way.
+        for production in ("2030-01-13", "2029-12-31"):
+            ledger = data()
+            ledger["requests"] = [request(production_at=production, promised_at=None)]
+            out = register.build_register(ledger, (), as_of=TODAY)["requests"][0]
+            self.assertIn("production_date_inconsistent", out["issues"])
+            self.assertEqual(out["production_at"], production)
+
+    def test_production_chronology_inclusive_boundaries_and_unknown_start(self):
+        for production in ("2030-01-01", "2030-01-12", "2030-01-03", "2030-01-05", "2030-01-11T20:00:00-08:00"):
+            with self.subTest(production=production):
+                row = self.one(production_at=production, promised_at="2030-01-05")
+                self.assertNotIn("production_date_inconsistent", row["issues"])
+                self.assertFalse([i for i in row["issues"] if i.startswith("invalid_date")])
+        self.assertEqual(self.one(production_at="2030-01-05", promised_at="2030-01-05")["promised"],
+                         {"state": "none", "date": "2030-01-05"})
+        # Valid production before the promised date does not satisfy it.
+        self.assertEqual(self.one(production_at="2030-01-03", promised_at="2030-01-05")["promised"],
+                         {"state": "passed", "date": "2030-01-05"})
+        # An aware timestamp crosses into the next Pacific day only in UTC: Jan 13 04:00Z is Jan 12 Pacific.
+        self.assertNotIn("production_date_inconsistent",
+                         self.one(production_at="2030-01-13T04:00:00Z")["issues"])
+        self.assertIn("production_date_inconsistent", self.one(production_at="2030-01-13T09:00:00Z")["issues"])
+        self.assertIn("invalid_date:production_at", self.one(production_at="2030-02-30")["issues"])
+        self.assertIn("invalid_date:production_at", self.one(production_at="soon")["issues"])
+        self.assertEqual(register.production_admission("", date(2030, 1, 12), None), (None, None))
+        self.assertEqual(register.production_admission(None, date(2030, 1, 12), None), (None, None))
+        self.assertEqual(register.production_admission("2024-02-29", date(2030, 1, 12), None),
+                         (date(2024, 2, 29), None))
+        self.assertEqual(register.production_admission("1999-01-01", date(2030, 1, 12), None),
+                         (date(1999, 1, 1), None))  # no start, no invented lower bound
+        self.assertEqual(register.production_admission("1999-01-01", date(2030, 1, 12), date(2030, 1, 1)),
+                         (None, "production_date_inconsistent"))
+        self.assertEqual(register.production_admission("2030-01-12", date(2030, 1, 12), date(2030, 1, 12)),
+                         (date(2030, 1, 12), None))
+        # Direct calls keep working for the existing helpers.
+        issues = []
+        self.assertEqual(register.promised({"promised_at": "2030-01-05", "production_at": "2030-01-20"},
+                                           date(2030, 1, 12), issues)["state"], "passed")
+        self.assertEqual(issues, ["production_date_inconsistent"])
+
+
 class RegisterIntegrationTests(unittest.TestCase):
     def setUp(self):
         # A normal clone has a .git directory. CI worktrees may use their admitted TMPDIR.

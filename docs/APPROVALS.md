@@ -142,6 +142,13 @@ calculated) and `State: pending-approval`. Nothing is sent.
   send authority.
 - A truncated or malformed journal tail is refused (`queue_invalid`) and left untouched for the
   operator; the outputs stage then reports `OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE`.
+- Input safety: the journal, its lock and the `--body-file`, `--signature` and received-items
+  inputs are opened without blocking and checked as regular files before any read. A FIFO, device or
+  directory is refused at once (`queue_invalid` for the journal and lock, `source_invalid` for the
+  inputs), and a journal that grows past the 64 MiB cap while being read is refused (`queue_invalid`)
+  by counting the bytes actually read. Refusals never repair, truncate or replace a file, never append
+  an event and never send; the existing outputs-stage warning above applies. Removing the offending
+  file is left to the operator.
 
 ## Edit history: diff and hashes from the journal; no second store
 

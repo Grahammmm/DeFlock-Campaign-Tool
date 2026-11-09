@@ -126,6 +126,32 @@ def _pointer(v):
                                    "verification_status")}
 
 
+def _temporal(v, event):
+    """Classify one validated version against the event day.
+
+    "outside": a known boundary alone proves the event is not covered (before a known
+    start, or on/after a known end), whatever the other boundary is.
+    "established": a known start and either a known end or an open end attested
+    through a present retrieval day on/after the event.
+    "unresolved": anything else; dates are never inferred from other fields.
+    """
+    start = _day(v.get("effective_from"), "effective_from", [])
+    end_value = v.get("effective_to") if v.get("effective_to") is not None else v.get("superseded_at")
+    end = _day(end_value, "effective_to", [])
+    if (start is not None and event < start) or (end is not None and event >= end):
+        return "outside"
+    if start is None:
+        return "unresolved"
+    if end is not None:
+        return "established"
+    retrieved = _day(v.get("retrieved_at"), "retrieved_at", [])
+    if (v.get("supersession_status") == "not_superseded_as_of_retrieval"
+            and retrieved is not None and event <= retrieved):
+        # An open interval is only attested through retrieval, never extrapolated.
+        return "established"
+    return "unresolved"
+
+
 def select_version(versions, *, agency_id, jurisdiction, regulated_role, event_at):
     """Select one version only when scope and temporal applicability are bounded."""
     checked = validate_versions(versions)
@@ -160,33 +186,22 @@ def select_version(versions, *, agency_id, jurisdiction, regulated_role, event_a
         return base
     candidates, unknown, outside = [], [], []
     for v in scoped:
-        start = _day(v.get("effective_from"), "effective_from", [])
-        end_value = v.get("effective_to") if v.get("effective_to") is not None else v.get("superseded_at")
-        end = _day(end_value, "effective_to", [])
-        if start is None:
-            unknown.append(v)
-        elif event < start:
-            outside.append(v)
-        elif end is not None and event >= end:
-            outside.append(v)
-        elif end is None and v.get("supersession_status") != "not_superseded_as_of_retrieval":
-            unknown.append(v)
-        elif end is None and v.get("retrieved_at") and event > date.fromisoformat(v["retrieved_at"]):
-            # Open interval is only attested through retrieval, never extrapolated.
-            unknown.append(v)
-        else:
-            candidates.append(v)
+        verdict = _temporal(v, event)
+        {"established": candidates, "unresolved": unknown, "outside": outside}[verdict].append(v)
     if len(candidates) > 1:
         base.update(status="overlapping_versions", candidates=[v["version_id"] for v in candidates],
                     gaps=[{"code": "overlapping_versions"}])
-    elif len(candidates) == 1:
+    elif unknown:
+        # A possibly applicable version with unresolved dates blocks selection, even
+        # when another version is established: no latest/best guess is made.
+        base.update(status="effective_date_unknown",
+                    candidates=sorted(v["version_id"] for v in candidates + unknown),
+                    gaps=[{"code": "applicability_date_unknown", "version_ids":
+                           sorted(v["version_id"] for v in unknown)}])
+    elif candidates:
         v = candidates[0]
         base.update(status="selected", version=v, candidates=[v["version_id"]],
                     source_pointer=_pointer(v))
-    elif unknown:
-        base.update(status="effective_date_unknown", candidates=[v["version_id"] for v in unknown],
-                    gaps=[{"code": "applicability_date_unknown", "version_ids":
-                           [v["version_id"] for v in unknown]}])
     else:
         base.update(status="not_in_force", candidates=[v["version_id"] for v in outside],
                     gaps=[{"code": "no_version_in_force", "event_at": event_at}])

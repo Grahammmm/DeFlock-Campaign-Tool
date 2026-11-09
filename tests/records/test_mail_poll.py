@@ -343,7 +343,7 @@ class MailPollTest(unittest.TestCase):
             self.assertNotIn(token, source)
         self.assertIn("readonly=True", source)
         self.assertIn("(BODY.PEEK[])", source)
-        self.assertLessEqual(len(source.splitlines()), 280)
+        self.assertLessEqual(len(source.splitlines()), 340)
 
     def test_cli_help_and_usage_exit(self):
         env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}

@@ -39,7 +39,9 @@ def named(who):
         return False
     text = "".join(c for c in unicodedata.normalize("NFKC", who) if unicodedata.category(c) != "Cf").casefold().strip()
     words = re.findall(r"[a-z0-9]+", text)
-    return (bool(words) and text not in PLACEHOLDERS and not LANE.search(text) and not MACHINE_WORDS.intersection(words)
+    # Keep ASCII denial tokens visible even beside non-Latin letters (e.g. 李system).
+    has_name = bool(words) or any(unicodedata.category(c).startswith("L") for c in text)
+    return (has_name and text not in PLACEHOLDERS and not LANE.search(text) and not MACHINE_WORDS.intersection(words)
             and not any(w.startswith(MODEL_PREFIXES) for w in words))
 
 

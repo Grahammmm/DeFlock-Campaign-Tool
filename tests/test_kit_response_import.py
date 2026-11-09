@@ -17,6 +17,7 @@ from tests.test_kit_check import ready_drafts  # noqa: E402
 
 SENT_ON = "2026-03-02"
 HEADER = "date,kind,note,amount,expected_on,partial"
+EXT = "2026-03-05,extension,Notice received,,2026-03-20,"
 
 
 def run(*arguments):
@@ -230,6 +231,114 @@ class KitResponseImportTests(unittest.TestCase):
         with self.assertRaises(kit_import_steps.ImportRefused) as raised:
             kit_import_steps.import_steps(self.root, self.agency, path, today=date(2026, 3, 10))
         self.assertIn("line 2: --date 2026-03-20 is in the future", str(raised.exception))
+
+    # An extension's CSV expected_on cell is its stored extension_expected_on: replay identity compares that.
+    def respond(self, *arguments):
+        code, out, err = run("kit-response", "--directory", self.root, "--agency", self.agency, *arguments)
+        self.assertEqual((code, err), (0, ""))
+
+    def stamp(self):
+        info = self.sent.stat()
+        return self.sent.read_bytes(), info.st_mode, info.st_mtime_ns
+
+    def replays(self, path, skipped=1):
+        before = self.stamp()
+        for extra in ((), ("--apply",)):
+            with mock.patch.object(kit, "_write_json", wraps=kit._write_json) as write:
+                code, out, err = self.do(path, *extra)
+            self.assertEqual((code, err), (0, ""))
+            report = json.JSONDecoder().raw_decode(out)[0]
+            self.assertEqual((report["added"], report["skipped"], report["applied"]), (0, skipped, False))
+            self.assertEqual([c for c in write.call_args_list if c.args[0] == self.sent], [])
+            self.assertEqual(self.stamp(), before)
+
+    def test_dated_extension_import_replays_without_writes(self):
+        path = self.write(EXT)
+        code, out, err = self.do(path)
+        self.assertEqual((code, err, json.loads(out.split("Checked only")[0])["added"]), (0, "", 1))
+        self.assertEqual(self.steps(), [])
+        self.assertEqual(self.do(path, "--apply")[0], 0)
+        (step,) = self.steps()
+        self.assertEqual((step["extension_expected_on"], "expected_on" in step), ("2026-03-20", False))
+        self.replays(path)
+        self.assertEqual(self.steps(), [step])
+        self.assertIn("line 2: already recorded, skipped", self.do(path)[1])
+
+    def test_manual_extension_replays_from_csv_after_later_steps(self):
+        self.respond("--date", "2026-03-05", "--kind", "extension", "--note", "Notice received",
+                     "--expected-on", "2026-03-20", "--reason", "Voluminous records")
+        self.respond("--date", "2026-03-10", "--kind", "determination")
+        before = self.steps()
+        self.replays(self.write(EXT))
+        self.assertEqual(self.steps(), before)
+        self.assertEqual(before[0]["extension_reason"], "Voluminous records")
+        self.assertEqual([s["kind"] for s in before], ["extension", "determination"])
+
+    def test_changed_or_omitted_extension_date_is_not_a_duplicate(self):
+        self.respond("--date", "2026-03-05", "--kind", "extension", "--note", "Notice received",
+                     "--expected-on", "2026-03-20")
+        for name, row in (("blank", "2026-03-05,extension,Notice received,,,"),
+                          ("other", "2026-03-05,extension,Notice received,,2026-03-25,")):
+            with self.subTest(name):  # a valid row ahead of the conflict does not authorize a partial commit
+                path = self.write("2026-03-05,fee_estimate,,50.00,,", row, name=name + ".csv")
+                before = self.sent.read_bytes()
+                for extra in ((), ("--apply",)):
+                    self.refused(self.do(path, *extra), "1 bad row(s)", "line 3: extension is allowed only once")
+                self.assertEqual(self.sent.read_bytes(), before)
+
+    def test_stored_undated_extension_versus_supplied_date(self):
+        self.respond("--date", "2026-03-05", "--kind", "extension", "--note", "Notice received")
+        self.refused_untouched(self.write(EXT), "line 2: extension is allowed only once")
+        self.assertNotIn("extension_expected_on", self.steps()[0])
+
+    def test_undated_legacy_extension_still_replays(self):
+        self.respond("--date", "2026-03-05", "--kind", "extension", "--note", "Notice received")
+        self.replays(self.write("2026-03-05,extension,Notice received,,,"))
+        self.refused_untouched(self.write("2026-03-05,extension,Notice received,,2026-03-20,"),
+                               "line 2: extension is allowed only once")
+        self.assertEqual(self.steps()[0].keys() & {"expected_on", "extension_expected_on"}, set())
+
+    def test_extension_and_production_date_projections_stay_separate(self):
+        extension = {"on": "2026-03-05", "kind": "extension", "extension_expected_on": "2026-03-20"}
+        production = {"on": "2026-03-05", "kind": "determination", "expected_on": "2026-03-20"}
+        self.assertEqual(kit_import_steps._step_signature(extension),
+                         ("2026-03-05", "extension", None, None, "2026-03-20", False))
+        self.assertEqual(kit_import_steps._step_signature(production),
+                         ("2026-03-05", "determination", None, None, "2026-03-20", False))
+        self.assertIsNone(kit_import_steps._step_signature({"on": "2026-03-05", "kind": "extension",
+                                                            "expected_on": "2026-03-20"})[4])  # no fallback
+        rows = (EXT, "2026-03-10,determination,,,2026-03-30,", "2026-03-12,produced,First batch,,2026-04-15,yes")
+        path = self.write(*rows)
+        self.assertEqual(self.do(path, "--apply")[0], 0)
+        steps = self.steps()
+        self.assertEqual([("expected_on" in s, "extension_expected_on" in s) for s in steps],
+                         [(False, True), (True, False), (True, False)])
+        self.replays(path, skipped=3)
+        duplicate = self.write(EXT, EXT, name="twice.csv")
+        self.refused_untouched(duplicate, "line 3: same as line 2")
+
+    def test_extension_replay_is_request_local_and_preserves_validation(self):
+        drafts = self.root / "kit" / "requests"
+        (drafts / f"{self.agency}--second.md").write_text((drafts / f"{self.agency}.md").read_text(encoding="utf-8"),
+                                                          encoding="utf-8")
+        self.assertEqual(run("kit-sent", "--directory", self.root, "--agency", self.agency, "--date", SENT_ON,
+                             "--channel", "email", "--request", "second")[0], 0)
+        self.respond("--date", "2026-03-05", "--kind", "extension", "--note", "Notice received",
+                     "--expected-on", "2026-03-20")
+        main_before = self.steps()
+        sent_before = self.sent.read_bytes()
+        for row, words in (("2026-03-05,extension,,,2026-02-30,", "--expected-on"),
+                           ("2026-03-06,extension,,,2026-03-01,", "before the extension step"),
+                           ("2999-01-01,extension,,,2999-02-01,", "in the future"),
+                           ("2026-03-01,extension,,,2026-03-20,", "before the request was sent")):
+            with self.subTest(row=row):
+                self.refused(self.do(self.write(row, name="bad.csv"), "--apply", "--request", "second"),
+                             "line 2:", words)
+                self.assertEqual(self.sent.read_bytes(), sent_before)
+        self.assertEqual(self.do(self.write(EXT), "--apply", "--request", "second")[0], 0)
+        self.assertEqual(self.steps(), main_before)
+        second = kit_track.read_sent(self.root)[f"{self.agency}#second"]["steps"]
+        self.assertEqual([(s["kind"], s["extension_expected_on"]) for s in second], [("extension", "2026-03-20")])
 
 
 if __name__ == "__main__":

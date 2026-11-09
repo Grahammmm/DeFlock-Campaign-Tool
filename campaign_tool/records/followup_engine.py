@@ -1,6 +1,7 @@
 """Draft engine-routed follow-ups into the signed approval queue; never sends."""
 import argparse
 from collections import Counter
+from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -13,6 +14,16 @@ from .outcomes import received_items
 KIND = "followup-playbook"
 
 
+def _receipt_instant(value):
+    """Parse a bounded aware receipt without changing its evidence spelling."""
+    if not isinstance(value, str) or not 1 <= len(value) <= 64:
+        raise ValueError("source_message_date_invalid")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("source_message_date_invalid")
+    return parsed.astimezone(timezone.utc)
+
+
 def _thread(project, route, items):
     vehicle = route["vehicle"]
     if vehicle == "new_request":
@@ -23,8 +34,12 @@ def _thread(project, route, items):
                   (route["agency_key"], route["request_id"]) and r.get("received_at") is not None]
     if not candidates:
         return None, None, "no_source_message"
-    latest = max(r["received_at"] for r in candidates)
-    sources = [r for r in candidates if r["received_at"] == latest]
+    try:
+        dated = [(_receipt_instant(r["received_at"]), r) for r in candidates]
+    except (ValueError, OverflowError):
+        return None, None, "source_message_date_invalid"
+    latest = max(instant for instant, _ in dated)
+    sources = [r for instant, r in dated if instant == latest]
     if len(sources) != 1:
         return None, None, "ambiguous_source_message"
     ident = sources[0].get("item_id")
@@ -33,7 +48,7 @@ def _thread(project, route, items):
     thread, reason = mail_drafts.find_thread(project, ident)
     if thread is None or reason:
         return None, None, reason or "thread_not_found"
-    return ident, "replies to the latest agency message on this request received " + latest, None
+    return ident, "replies to the latest agency message on this request received " + sources[0]["received_at"], None
 
 
 def _identity(route, state, ratings, thread_id):
