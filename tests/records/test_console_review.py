@@ -70,6 +70,30 @@ class ReviewTests(ServerCase):
         self.assertEqual(journal(self.project), before)
         self.assertEqual(self.row()["status"], "pending")
 
+    def test_newline_only_history_diff_is_visible_and_escaped(self):
+        self.draft_row = self.draft(2, body="<script>&\nSecond\n")
+        aq.edit(self.project, self.draft_row["id"], "operator-1", "<script>&\r\nSecond")
+        history = aq.history(self.project, self.draft_row["id"])
+        self.assertTrue(history["changed"] and history["diff"])
+        before = journal(self.project)
+        status, _, page = self.get()
+        self.assertEqual(journal(self.project), before)
+        self.assertEqual(status, 200)
+        shown = unescape(re.search(r"<h2>Edit history</h2>.*?<pre>(.*?)</pre>", page, re.S)[1])
+        self.assertEqual(shown.splitlines(), history["diff"])
+        for text in ("-&lt;script&gt;&amp;", "+&lt;script&gt;&amp;", "\\ Line ending: CRLF",
+                     "\\ No newline at end of file"):
+            self.assertIn(text, page)
+        self.assertNotIn("<script>&", page)
+        self.assertNotIn("\r", page.split("<h2>Edit history</h2>")[1].split("</pre>")[0])
+        body = re.search(r'<textarea id="body"[^>]*>\n(.*?)</textarea>', page, re.S)[1]
+        self.assertEqual(unescape(body), "<script>&\r\nSecond")
+        self.assertEqual(self.row()["body"], "<script>&\r\nSecond")
+        # an edit back to the original bytes leaves nothing to show
+        aq.edit(self.project, self.draft_row["id"], "operator-1", "<script>&\nSecond\n")
+        self.assertEqual(aq.history(self.project, self.draft_row["id"])["diff"], [])
+        self.assertNotIn("Line ending", self.get()[2])
+
     def test_current_signed_approval_terminal_and_duplicate(self):
         signature = self.signer.sign(aq.approval_payload(self.project, self.draft_row["id"]))
         self.assertEqual(self.post("approve", signature=signature)[0], 303)
