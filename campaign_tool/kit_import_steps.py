@@ -2,6 +2,7 @@
 
 Every row goes through ``kit_track.record_step(..., dry_run=True)`` in file order against the recorded steps plus the
 earlier accepted rows, so the step rules are never copied here. Nothing is fetched or sent; a refusal writes nothing.
+See docs/KIT-RESPONSE-IMPORT.md for the replay identity, including the extension dispatch date.
 """
 import csv
 import io
@@ -90,9 +91,10 @@ def _signature(on, kind, note, amount, expected_on, partial):  # a row or a reco
     return (on, kind, note, amount, expected_on or None, bool(partial))
 
 
-def _step_signature(step):
+def _step_signature(step):  # the CSV's expected_on cell is the dispatch date on an extension, a production date otherwise
+    dated = step.get("extension_expected_on") if step.get("kind") == "extension" else step.get("expected_on")
     return _signature(step.get("on"), step.get("kind"), step.get("note"), step.get("amount_cents"),
-                      step.get("expected_on"), step.get("partial") is True)
+                      dated, step.get("partial") is True)
 
 
 def _row(cells):  # (date, kind, record_step keywords, signature); ValueError when the row is malformed

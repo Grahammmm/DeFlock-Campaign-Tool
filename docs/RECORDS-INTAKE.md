@@ -3,7 +3,13 @@
 ## Importing records you already have
 
 Run `python3 -m campaign_tool import-existing --directory ../my-campaign --from ../records --label first-batch`.
-Use an initialized campaign and a folder outside it; the label is 1–40 lowercase letters,
+Use an initialized campaign and a sibling folder outside it. The source and campaign
+directories must be disjoint in both directions: the source may not be the campaign or
+inside it, and the campaign may not be inside the source (for example, do not select
+`~/work` as the source when the campaign is `~/work/my-campaign`; use `~/work/records`).
+An ancestor source is refused even if the campaign subtree is hidden or holds no records
+yet, and nothing is written. The tool does not move or exclude anything for you.
+The label is 1–40 lowercase letters,
 digits or hyphens, starting with a letter or digit. Each top-level subfolder gets a
 separate source label; these labels are not verified agency identities.
 Original bytes are stored by hash, never parsed or OCR'd. Repeating a batch is safe:

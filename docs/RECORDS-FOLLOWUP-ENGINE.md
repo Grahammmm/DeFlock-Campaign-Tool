@@ -77,7 +77,12 @@ Closed requests retain the partition; agency closure does not mean all asks were
 The explicit mixed-answer case (produced + not addressed + other no-records)
 is partial, not no_records; withheld still takes precedence. Register issues yield
 unknown after closed/clarification. Superseded events and expired extensions do not
-activate routes; a later agency acknowledgment prevents silence after the latest send.
+activate routes. Send and reply evidence is compared by calendar day only: an agency
+event on or after the latest send day prevents silence, because the order within one day is
+unknown in the derived timeline. A same-day reply is therefore classified by its item
+ratings (withheld, answered, unknown), not as silence. This tie rule is a conservative
+status lead; it is not evidence of delivery chronology, fulfillment, legal timeliness or
+authorization to send. An acknowledgment alone never marks asks answered.
 These are machine leads for review, not findings or proof that records exist.
 No drafts, sends, approvals, publication or ledger writes occur.
 

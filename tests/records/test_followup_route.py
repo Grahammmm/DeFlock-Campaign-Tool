@@ -8,7 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from campaign_tool.records import cli, followup_route as fr
+from campaign_tool.records import cli, followup_route as fr, followup_state as fs
+from campaign_tool.records.outcomes import timeline
 
 DAY = "2026-11-06"
 SENTINEL = "ASK-TEXT-SENTINEL-1"
@@ -202,3 +203,64 @@ class RunTests(unittest.TestCase):
             with patch("sys.argv", ["followup-route", "--project", tmp, "--run-id", "r1"]), contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(fr.main(), 2)
             self.assertEqual(err.getvalue().strip(), "followup_route_invalid_input")
+
+
+class SameDayReplyRunTests(unittest.TestCase):
+    AS_OF = "2030-02-01"
+    SEND = "2030-01-22T09:00:00Z"
+
+    def build(self, root, reply_day, rating):
+        """Real timeline over synthetic receipts; two agencies share one request id."""
+        rows = [{"agency_key": key, "agency": key.upper(), "request_id": "REQ-1", "ledger_request_id": "led-" + key,
+                 "status": "open", "asked": "1. Search logs", "issues": [],
+                 "deadline": {"state": "past_due_reminder", "due": "2030-01-20", "basis": "recorded_receipt"},
+                 "promised": {"state": "none", "date": None}} for key in ("alpha-pd", "beta-pd")]
+        register = {"schema": "records-request-register-v1", "as_of": self.AS_OF, "requests": rows}
+        outbox = [{"agency_id": row["agency_key"], "request_id": "REQ-1", "state": "sent", "kind": "send_followup",
+                   "sent_at": self.SEND, "idempotency_key": "send-" + row["agency_key"],
+                   "message_id": "<%s@example.test>" % row["agency_key"]} for row in rows]
+        received = {"items": [{"agency_id": "alpha-pd", "request_id": "REQ-1", "item_id": "item-1",
+                               "kind": "response", "received_at": reply_day + "T10:00:00Z", "deadlines": []}]}
+        report = timeline.build_timeline(register, received, [], outbox, [], run_id="r1")
+        asks = [{"ask_id": "ask-1", "text": "Search logs", "rating": rating, "evidence": []}]
+        ratings = {"schema": "records-response-items-v1", "run_id": "r1",
+                   "requests": [{"agency_key": key, "request_id": "REQ-1", "asks": asks}
+                                for key in ("alpha-pd", "beta-pd")]}
+        out = root / "run-outputs" / "r1"
+        (out / "outcomes").mkdir(parents=True)
+        (out / "outcomes" / "timeline.json").write_text(json.dumps(report))
+        (out / "outcomes" / "response-items.json").write_text(json.dumps(ratings))
+        (out / "CURRENT-REQUEST-REGISTER.json").write_text(json.dumps(register))
+        return report
+
+    @staticmethod
+    def snapshot(root):
+        return sorted((str(p.relative_to(root)), p.stat().st_mode, p.read_bytes() if p.is_file() else None)
+                      for p in [root, *root.rglob("*")])
+
+    def test_same_run_same_day_reply_routes_by_item_needs(self):
+        cases = (("2030-01-21", "withheld", "silence", "followup_clock"),
+                 ("2030-01-22", "withheld", "blanket_denial", "engine"),
+                 ("2030-01-23", "withheld", "blanket_denial", "engine"),
+                 ("2030-01-21", "answered", "silence", "followup_clock"),
+                 ("2030-01-22", "answered", None, "none"),
+                 ("2030-01-23", "answered", None, "none"))
+        for reply_day, rating, pattern, owner in cases:
+            with self.subTest(reply=reply_day, rating=rating), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                report = self.build(root, reply_day, rating)
+                dates = {r["agency_key"]: [e["date"] for e in r["events"]] for r in report["requests"]}
+                self.assertEqual(dates["alpha-pd"], sorted(["2030-01-22", reply_day]))
+                self.assertEqual(dates["beta-pd"], ["2030-01-22"])
+                before = self.snapshot(root)
+                states = {r["agency_key"]: r["state"] for r in fs.classify_run(root, "r1")["requests"]}
+                routes = {r["agency_key"]: r for r in fr.route_run(root, "r1")}
+                self.assertEqual(self.snapshot(root), before)
+                self.assertFalse(any(name in ("approvals", "outbox", "receipts")
+                                     for name, _, _ in self.snapshot(root)))
+                self.assertEqual(states["alpha-pd"], "silence" if pattern == "silence" else rating)
+                self.assertEqual((routes["alpha-pd"]["pattern"], routes["alpha-pd"]["handled_by"]), (pattern, owner))
+                # The other agency's send-only request keeps the no-response route.
+                self.assertEqual(states["beta-pd"], "silence")
+                self.assertEqual((routes["beta-pd"]["pattern"], routes["beta-pd"]["handled_by"]),
+                                 ("silence", "followup_clock"))
