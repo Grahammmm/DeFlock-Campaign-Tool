@@ -145,23 +145,23 @@ def _rank(event):
 
 
 def _revisions(events):
-    """RF0854-4: every repeated UID reduced to its latest revision, before any filtering; ``(events, series)``.
+    """RF0854-4: every repeated UID reduced to its latest revision, before any filtering.
 
     The greatest ``(SEQUENCE, DTSTAMP)`` wins whatever the feed order; identical winners collapse and differing winners
-    refuse the feed. A UID that also carries a ``RECURRENCE-ID`` instance is a recurring series, not revisions: all its
-    components are kept and ``series`` names it so each is skipped as recurring.
+    refuse the feed. A ``RECURRENCE-ID`` component is an instance override, not a revision: it is neither ranked nor
+    able to hide a sibling, and is kept so the per-component recurring skip counts it. An ``RRULE`` master plus its
+    overrides is therefore not a conflict.
     """
     groups = {}
     for event in events:
         uid = _uid(event)
-        if uid and len(uid) <= MAX_UID:
+        if uid and len(uid) <= MAX_UID and "RECURRENCE-ID" not in event:
             groups.setdefault(uid, []).append(event)
-    series = {uid for uid, group in groups.items() if any("RECURRENCE-ID" in e for e in group)}
     out, done = [], set()
     for event in events:
         uid = _uid(event)
         group = groups.get(uid)
-        if group is None or len(group) == 1 or uid in series:
+        if group is None or len(group) == 1 or "RECURRENCE-ID" in event:
             out.append(event)
         elif uid not in done:
             done.add(uid)
@@ -171,7 +171,7 @@ def _revisions(events):
             if any(e != winners[0] for e in winners[1:]):
                 raise MeetingsError("feed has conflicting revisions for one UID; nothing was written")
             out.append(winners[0])
-    return out, series
+    return out
 
 
 def _start(event, zone):
@@ -250,10 +250,10 @@ class IcsClient:
             raise MeetingsError(f"{self.label}: not UTF-8 text") from None
         self.skipped = dict.fromkeys(SKIP_KEYS, 0)
         meetings, seen = [], set()
-        events, series = _revisions(parse_events(text))
+        events = _revisions(parse_events(text))
         for event in events:
             uid = _uid(event)
-            if uid in series or any(k in event for k in ("RRULE", "RDATE", "RECURRENCE-ID")):
+            if any(k in event for k in ("RRULE", "RDATE", "RECURRENCE-ID")):
                 self.skipped["recurring"] += 1
                 continue
             if not uid:

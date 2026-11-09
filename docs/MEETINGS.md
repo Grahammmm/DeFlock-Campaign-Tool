@@ -698,8 +698,8 @@ component: the greatest `SEQUENCE` (a decimal 0-2147483647; absent is 0), then t
 absent sorts first), whatever the feed order. Only that component is then filtered, so a newer cancellation, move or
 removal of the ALPR topic is never hidden by an older matching revision, and fields are never mixed across revisions.
 Identical winning copies collapse; differing winners, or a malformed or duplicated `SEQUENCE`/`DTSTAMP` in a repeated
-UID, refuse the run and leave `kit/meetings.json` unchanged. A UID with a `RECURRENCE-ID` component is a recurring series
-and every component of it is skipped as recurring. Revisions are resolved within one feed and one run only: an update
+UID, refuse the run and leave `kit/meetings.json` unchanged. A `RECURRENCE-ID` component is an instance override, not a
+revision: it is never ranked, never hides a sibling revision of the same UID, and is skipped and counted as recurring. Revisions are resolved within one feed and one run only: an update
 published in another feed, a partial update without a usable start or summary, and `LAST-MODIFIED` are not used.
 
 ## Calendar feed

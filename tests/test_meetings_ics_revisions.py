@@ -129,9 +129,26 @@ class RevisionSelectionTests(unittest.TestCase):
                     expected[reason] = 1
                 self.assertEqual(client.skipped, expected, name)
         override = rev(1, extra="RECURRENCE-ID;TZID=America/Los_Angeles:20261111T180000")
-        for order in ((old, override), (override, old)):  # a recurring series is skipped, never a stale one-off
+        for order in ((old, override), (override, old)):  # an override is skipped alone; the one-off is not hidden by it
             found, client = read(*order)
-            self.assertEqual((found, client.skipped["recurring"]), ([], 2))
+            self.assertEqual((len(found), client.skipped["recurring"]), (1, 1))
+            self.assertEqual(found[0]["status"], "scheduled")
+
+    def test_recurrence_id_sibling_never_hides_or_ranks_a_revision(self):
+        a = rev(0, extra="RECURRENCE-ID;TZID=America/Los_Angeles:20261111T180000")
+        b = rev(2, status="CANCELLED")
+        for order in ((a, b), (b, a)):
+            found, client = read(*order)
+            self.assertEqual([m["status"] for m in found], ["cancelled"])
+            self.assertEqual(client.skipped["recurring"], 1)
+        # a plain revision outranked by another plain one is still dropped; the override changes nothing
+        for order in itertools.permutations((a, rev(0), rev(1, status="CANCELLED"))):
+            found, client = read(*order)
+            self.assertEqual(([m["status"] for m in found], client.skipped["recurring"]), (["cancelled"], 1))
+        # an RRULE master with overrides is not a conflict, and is skipped as recurring
+        master = rev(1, extra="RRULE:FREQ=WEEKLY")
+        found, client = read(master, a, rev(0, extra="RECURRENCE-ID;TZID=America/Los_Angeles:20261118T180000"))
+        self.assertEqual((found, client.skipped["recurring"]), ([], 3))
 
     def test_raw_event_bound_and_single_get_remain_in_force(self):
         urls = []
