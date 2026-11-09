@@ -5,11 +5,29 @@ from . import evidence,policy
 VERSION="records-evidence-reconciliation-v1"
 UNKNOWN={"","n/a","na","unknown","not provided","not available","null","none"}
 def unknown(v):return v is None or isinstance(v,str) and v.strip().casefold() in UNKNOWN
+def same_json(a,b):
+ # Private structural equality for equals/not_equals. A boolean equals only the same boolean at every
+ # value position (True is never 1/1.0, False never 0/0.0); other numbers keep Python equality
+ # (1==1.0), lists compare length/order, dicts compare key sets independent of insertion order.
+ # Iterative, so nesting depth cannot exhaust the interpreter stack. Never coerces or rewrites values.
+ todo=[(a,b)]
+ while todo:
+  x,y=todo.pop()
+  if type(x)is bool or type(y)is bool:
+   if type(x)is not type(y) or x!=y:return False
+  elif type(x)is list:
+   if type(y)is not list or len(x)!=len(y):return False
+   todo.extend(zip(x,y))
+  elif type(x)is dict:
+   if type(y)is not dict or x.keys()!=y.keys():return False
+   todo.extend((x[k],y[k]) for k in x)
+  elif x!=y:return False
+ return True
 def test_value(value,test):
  op=test.get("operator");expected=test.get("expected")
  if op=="nonempty":return not unknown(value)
- if op=="equals":return value==expected
- if op=="not_equals":return value!=expected
+ if op=="equals":return same_json(value,expected)
+ if op=="not_equals":return not same_json(value,expected)
  if op=="contains":return isinstance(value,str) and isinstance(expected,str) and expected.casefold() in value.casefold()
  if op in ("at_most","at_least"):
   if type(value)not in (int,float) or type(expected)not in (int,float):return None

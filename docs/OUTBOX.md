@@ -188,7 +188,7 @@ Per click, in order: console POST (csrf, loopback) with the fingerprint the page
 from the Drafts mailbox read-only (SELECT readonly, SEARCH, FETCH BODY.PEEK) and compared byte for byte with the
 placement fingerprint; recipient (the thread's reply address, otherwise typed on the page; an address not on the
 thread and not in `agency_addresses` needs a typed confirmation); the daily cap (`daily_cap`, default 5, 1 to 20, per
-campaign per `America/Los_Angeles` day, on top of the outbox's one-per-agency-per-UTC-day cap); then
+campaign per campaign-local day (see below), on top of the outbox's one-per-agency-per-UTC-day cap); then
 `Outbox.propose`, `Outbox.approve` with G's *outbox* SSH signature over the exact payload shown (a queue signature, a
 typed name or an untrusted key is refused) and `Outbox.send`. The kill switch is checked before approval and again
 immediately before the send. An edited draft has a new revision and fingerprint, so it needs a new click.
@@ -198,3 +198,12 @@ stays in Drafts (this unit never writes to the mailbox); the console shows `Sent
 `AmbiguousFailure` leaves the outbox row in `sending`: the console says "delivery unknown", a second click refuses, and
 the operator runs `python3 -m campaign_tool.outbox --journal ... reconcile KEY delivered|not_delivered --by NAME`.
 There is no CLI send and no bulk send. Social posts and website updates are never sent here.
+
+The console's daily budget counts the campaign's own day: the optional `timezone` key (an IANA zone name) in
+`<project>/campaign.json`, read by `campaign_tool/records/campaign_config.py`. A missing file or key keeps
+`America/Los_Angeles`. A present but invalid file or zone fails closed with `campaign_timezone_invalid`: Settings shows
+sending unavailable and the count unknown, and a click is refused and logged before any mailbox, approval or SMTP step.
+Each click re-reads the file under the send lock, so the preview's count is never trusted. Changing the zone re-buckets
+existing receipts into the new local days; it does not delete receipts or reset a stored counter. This is the console
+budget only: the outbox's own agency/day cap stays on UTC days, and no approval, test-recipient, kill-switch or
+signature gate changes. There is no `send.json` override and no all-state legal-compliance claim.

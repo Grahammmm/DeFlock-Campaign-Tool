@@ -4,6 +4,7 @@ beside the two cited rules, never fetched and with no conclusion drawn. Offline,
 """
 import copy
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -14,7 +15,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from campaign_tool import content_sharing, law
+from campaign_tool import law
 from campaign_tool.content import ContentError, load_agencies
 from campaign_tool.content_check import content_problems
 from campaign_tool.content_sharing import SharingImportError, import_sharing
@@ -257,10 +258,11 @@ class SharingTests(unittest.TestCase):
             self.importing()
 
     def test_a_failed_write_leaves_the_file_as_it_was(self):
-        with mock.patch.object(content_sharing, "_write_json", side_effect=OSError("disk full")):
+        with mock.patch.object(os, "replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 self.importing()
         self.assertEqual(self.path.read_bytes(), self.original)
+        self.assertEqual([p.name for p in self.path.parent.iterdir() if p.name.endswith(".tmp")], [])
 
     # 7
     def test_a_package_missing_a_rule_leaves_that_line_out_and_the_build_goes_on(self):

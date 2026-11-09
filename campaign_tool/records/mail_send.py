@@ -22,7 +22,7 @@ from email.parser import BytesParser
 from email.utils import getaddresses, parseaddr
 from zoneinfo import ZoneInfo
 
-from . import approval_queue, draft_residue, mail_drafts, mail_poll
+from . import approval_queue, campaign_config, draft_residue, mail_drafts, mail_poll
 from .intake import imap_intake
 from .outcomes.reading import esc
 from .. import approval, outbox
@@ -42,6 +42,7 @@ REASONS = {
     "send_disabled": "Sending is switched off in the send config.",
     "kill_switch": "The kill switch file is present.",
     "daily_cap_reached": "The daily send cap for this campaign is reached.",
+    "campaign_timezone_invalid": "The campaign's timezone setting is invalid, so the daily send budget cannot be counted.",
     "not_configured": "The console was started without --send-config.",
 }
 
@@ -111,12 +112,20 @@ def killed(project, config=None):
     return any(os.path.lexists(f) for f in kill_files(project, config))
 
 
-def _local_day(moment):
-    return moment.astimezone(ZoneInfo(TZ)).date()
+def _local_day(moment, *, timezone_name=TZ):
+    return moment.astimezone(ZoneInfo(timezone_name)).date()
 
 
-def sent_today(outbox_path, now):
-    """Console sends (sent or still sending) whose outbox timestamp falls on today's local date."""
+def campaign_timezone(project):
+    """The campaign's local-day zone (``campaign.json`` ``timezone``, Pacific when absent); invalid config fails closed."""
+    try:
+        return campaign_config.load_timezone(project)
+    except ValueError:
+        raise MailSendError("campaign_timezone_invalid") from None
+
+
+def sent_today(outbox_path, now, *, timezone_name=TZ):
+    """Console sends (sent or still sending) whose outbox timestamp falls on today's date in ``timezone_name``."""
     if not os.path.exists(outbox_path):
         return 0
     try:
@@ -130,7 +139,7 @@ def sent_today(outbox_path, now):
         raise MailSendError("outbox_unavailable") from None
     finally:
         con.close()
-    today, count = _local_day(now), 0
+    today, count = _local_day(now, timezone_name=timezone_name), 0
     for draft_json, sent, sending in rows:
         try:
             if not str(json.loads(draft_json).get("intent_id", "")).startswith("recq-"):
@@ -138,7 +147,7 @@ def sent_today(outbox_path, now):
             when = datetime.fromisoformat((sent or sending).replace("Z", "+00:00"))
         except (ValueError, TypeError, AttributeError):
             continue
-        count += _local_day(when) == today
+        count += _local_day(when, timezone_name=timezone_name) == today
     return count
 
 
@@ -149,13 +158,14 @@ def switch_state(project, path, *, now=None):
         return {"can_send": False, "reason": "not_configured", "cap": None, "count": None}
     try:
         config = load_config(path)
-        count = sent_today(config["outbox_path"], now)
+        zone = campaign_timezone(project)
+        count = sent_today(config["outbox_path"], now, timezone_name=zone)
     except MailSendError as error:
         return {"can_send": False, "reason": error.code, "cap": None, "count": None}
     reason = ("send_disabled" if not config["enabled"] else "kill_switch" if killed(project, config)
               else "daily_cap_reached" if count >= config["daily_cap"] else None)
     return {"can_send": reason is None, "reason": reason, "cap": config["daily_cap"], "count": count,
-            "mode": "live" if config["live"] else "test", "test_recipient": config["test_recipient"]}
+            "timezone": zone, "mode": "live" if config["live"] else "test", "test_recipient": config["test_recipient"]}
 
 
 # ---- private files under <project>/approvals ------------------------------------------------
@@ -404,6 +414,7 @@ def send_one(project, path, queue_id, *, actor, page_fingerprint, signature, to=
         _need(config["enabled"], "send_disabled")
         _need(not killed(project, config), "kill_switch")
         _need(isinstance(signature, str) and signature.strip(), "signature_required")
+        zone = campaign_timezone(project)  # resolved here, never taken from the preview or the posted form
         ctx = _context(project, config, queue_id, page_fingerprint=page_fingerprint or "", form_to=to,
                        imap_factory=imap_factory)
         _test_recipient(config, ctx["address"])
@@ -420,14 +431,14 @@ def send_one(project, path, queue_id, *, actor, page_fingerprint, signature, to=
         with _Dir(project, lock=True):
             box = outbox.Outbox(config["outbox_path"], clock=(lambda: _stamp(now)) if now else None)
             try:
-                return _send_locked(project, config, box, draft, key, signature, base, smtp_factory, now)
+                return _send_locked(project, config, box, draft, key, signature, base, smtp_factory, now, zone)
             finally:
                 box.close()
     except MailSendError as error:
         return _refuse(project, "refused", error.code, **base)
 
 
-def _send_locked(project, config, box, draft, key, signature, base, smtp_factory, now):
+def _send_locked(project, config, box, draft, key, signature, base, smtp_factory, now, zone):
     existing = box.propose(draft)
     state = existing["state"]
     if existing["draft_json"] != draft.to_json():  # the key omits the recipient: never send a stored text that is not the one reviewed
@@ -441,7 +452,7 @@ def _send_locked(project, config, box, draft, key, signature, base, smtp_factory
         return _refuse(project, "unknown", "delivery_unknown", **base)
     if state not in ("proposed", "approved"):
         return _refuse(project, "refused", "outbox_" + state, **base)
-    if sent_today(config["outbox_path"], now) >= config["daily_cap"]:
+    if sent_today(config["outbox_path"], now, timezone_name=zone) >= config["daily_cap"]:
         return _refuse(project, "refused", "daily_cap_reached", **base)
     if killed(project, config):
         return _refuse(project, "refused", "kill_switch", **base)
