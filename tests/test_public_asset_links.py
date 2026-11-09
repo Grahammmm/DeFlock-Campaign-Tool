@@ -44,7 +44,8 @@ class CollectorTests(unittest.TestCase):
     def test_rejected_urls_never_match(self):
         assets = ["a.png", "b.png", "docs/c.png", "d.png"]
         hostile = ['//cedar.example.invalid/a.png', 'http://cedar.example.invalid/a.png', 'https://cedar.example.invalid.evil.test/a.png',
-                   'https://user:pw@cedar.example.invalid/a.png', 'https://cedar.example.invalid:8443/a.png', '/%61.png',
+                   'https://user:pw@cedar.example.invalid/a.png',  # pragma: allowlist secret
+                   'https://cedar.example.invalid:8443/a.png', '/%61.png',
                    '/docs%2Fc.png', '..\\a.png', '../../a.png', 'data:image/png;base64,AAAA', 'javascript:a.png', 'mailto:a.png',
                    'https://other.example.invalid/b.png', '/docs/../d.png/', '//a.png']
         files = {"index.html": page(*(f'<a href="{url}">x</a>' for url in hostile))}
