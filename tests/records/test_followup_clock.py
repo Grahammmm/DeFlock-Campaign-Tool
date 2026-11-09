@@ -15,6 +15,7 @@ from campaign_tool.records import followup_clock as fc
 from campaign_tool.records import run_stages, draft_residue, draft_templates
 from campaign_tool.records.ledger.migrations import v001
 from campaign_tool.records.outcomes import register
+from campaign_tool.records.outcomes import timeline as tl
 from tests.approval_signing import Signer
 
 AS_OF = "2030-02-01"
@@ -303,6 +304,72 @@ class LetterText(Base):
             self.assertEqual((result["created"], result["existing"]), (0, 2))
             self.assertEqual(self.queued(), before)
         self.assertNotEqual(body, old_body)
+
+
+class ProductionChronology(Base):
+    """RF0834-1: real register -> timeline -> planner; an impossible production never satisfies a promise."""
+
+    LEDGER = {"agencies": [{"id": "a1", "name": "Fable Bay Police"}], "requests": []}
+
+    def real_register(self, productions):
+        data = {table: [] for table in register.correspondence.TABLES}
+        data["agencies"] = list(self.LEDGER["agencies"])
+        tracker = []
+        for number, (rid, production) in enumerate(productions.items()):
+            tracker.append({"agency": "Fable Bay Police", "request_id": rid, "submitted_at": "2030-01-01",
+                            "determination_at": "2030-01-10", "promised_at": "2030-01-18",
+                            "asked": "Audit logs", "production_at": production,
+                            "source": {"file": "t.csv", "row": number + 2}})
+        return register.build_register(data, tracker, as_of=AS_OF)
+
+    def run_plan(self, report):
+        directory = self.root / "run-outputs" / "run-1"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / fc.REGISTER_NAME).write_text(json.dumps(report), encoding="utf-8")
+        self.enable("a1")
+        return fc.queue_followups(self.root, "run-1")
+
+    def test_impossible_production_blocks_drafting_for_check_not_satisfaction(self):
+        report = self.real_register({"future": "2030-02-15", "early": "2029-12-01", "valid": "2030-01-19",
+                                     "none": None})
+        rows = {r["request_id"]: r for r in report["requests"]}
+        for rid in ("future", "early"):
+            self.assertEqual(rows[rid]["promised"], {"state": "passed", "date": "2030-01-18"})
+            self.assertEqual(rows[rid]["issues"], ["production_date_inconsistent"])
+            self.assertEqual(rows[rid]["next_action"], "clarify")
+        self.assertEqual(rows["future"]["production_at"], "2030-02-15")  # raw assertion kept
+        self.assertEqual(rows["valid"]["promised"], {"state": "none", "date": "2030-01-18"})
+        self.assertEqual(rows["valid"]["issues"], [])
+        timeline = tl.build_timeline(report, None, [], [], [], run_id="run-1")
+        stages = {r["request_id"]: r for r in timeline["requests"]}
+        for rid in ("future", "early"):
+            self.assertNotEqual(stages[rid]["stage"], "produced")
+            self.assertEqual([m["kind"] for m in stages[rid]["overdue_marks"]], ["promised_date_passed"])
+            self.assertEqual(stages[rid]["issues"], ["production_date_inconsistent"])
+        self.assertEqual(stages["valid"]["stage"], "produced")
+        self.assertEqual(stages["valid"]["overdue_marks"], [])
+        out = self.run_plan(report)
+        # future + early are held for checking; valid is satisfied (not_due); no-production still drafts.
+        self.assertEqual((out["created"], out["skipped_issue"], out["not_due"]), (1, 2, 1))
+        self.assertEqual([(r["request_id"], r["kind"], r["status"]) for r in self.queued()],
+                         [("none", "reminder-promised-date", "pending")])
+        self.assertFalse(list(self.root.rglob("outbox.sqlite")))
+
+    def test_impossible_production_is_per_campaign_and_replay_is_stable(self):
+        before = {}
+        for name in ("one", "two"):
+            tmp = tempfile.TemporaryDirectory()
+            self.addCleanup(tmp.cleanup)
+            self.root = Path(tmp.name) / name
+            self.root.mkdir(mode=0o700)
+            out = self.run_plan(self.real_register({"same-id": "2030-02-15"}))
+            self.assertEqual((out["created"], out["skipped_issue"]), (0, 1))
+            self.assertEqual(self.queued(), [])
+            source = self.root / "run-outputs" / "run-1" / fc.REGISTER_NAME
+            before[name] = (source.read_bytes(), os.stat(source).st_mode)
+            self.assertEqual(fc.queue_followups(self.root, "run-1")["skipped_issue"], 1)
+            self.assertEqual((source.read_bytes(), os.stat(source).st_mode), before[name])
+        self.assertEqual(before["one"][0], before["two"][0])
 
 
 class Seam(Base):

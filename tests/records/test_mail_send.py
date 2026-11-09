@@ -5,6 +5,7 @@ import json
 import multiprocessing
 import os
 import smtplib
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -503,3 +504,142 @@ class TestModeTests(SendBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _utc(text):
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+class CampaignDayTests(SendBase):
+    """The console's daily budget counts the campaign's own local day (campaign.json timezone)."""
+    PRIOR = "2026-11-04T23:00:00Z"
+    BOUNDARY = datetime(2026, 11, 5, 1, 0, tzinfo=timezone.utc)  # Nov 4 17:00 Pacific, Nov 5 01:00 UTC
+    PACIFIC = "America/Los_Angeles"
+
+    def campaign(self, project=None, **doc):
+        path = (project or self.project) / "campaign.json"
+        path.write_text(json.dumps({"schema_version": 1, **doc}))
+        path.chmod(0o600)
+
+    def seed(self, rows, db=None):
+        db = db or self.outbox_path
+        outbox.Outbox(db).close()  # creates the real schema
+        con = sqlite3.connect(db)
+        try:
+            for index, (stamp, state, kind, intent, agency) in enumerate(rows):
+                column = "sending_at" if state == "sending" else "sent_at"
+                con.execute("INSERT INTO outbox(idempotency_key, kind, request_id, agency_id, scope_version, channel, "
+                            "draft_json, state, %s, created_at, updated_at) VALUES(?,?,?,?,1,'email',?,?,?,?,?)" % column,
+                            ("seed-%s-%d" % (agency, index), kind, "req-" + agency, agency,
+                             json.dumps({"intent_id": intent}), state, stamp, stamp, stamp))
+            con.commit()
+        finally:
+            con.close()
+
+    def prior(self, agency="agency-prior", stamp=None, state="sent"):
+        self.seed([(stamp or self.PRIOR, state, "send_followup", "recq-" + agency, agency)])
+
+    def test_second_fictional_campaign_cap_midnight(self):
+        campaigns = {}
+        for name, zone in (("Harbor Pilot", self.PACIFIC), ("Cedar Civic Records", "UTC")):
+            root = self.root / name.split()[0].lower()
+            project = root / "project"
+            (project / "approvals").mkdir(parents=True, mode=0o700)
+            self.campaign(project, timezone=zone, name=name)
+            self.seed([(self.PRIOR, "sent", "send_followup", "recq-1", "agency-prior")], root / "outbox.sqlite")
+            send = project / "approvals" / "send.json"
+            send.write_text(json.dumps({**json.loads(self.send_path.read_text()), "enabled": True, "daily_cap": 1,
+                                        "outbox_path": str(root / "outbox.sqlite")}))
+            send.chmod(0o600)
+            campaigns[name] = (project, send)
+        expected = {"Harbor Pilot": (1, "daily_cap_reached", self.PACIFIC), "Cedar Civic Records": (0, None, "UTC")}
+        for name in ("Harbor Pilot", "Cedar Civic Records", "Harbor Pilot"):  # A/B/A in one process
+            state = ms.switch_state(*campaigns[name], now=self.BOUNDARY)
+            self.assertEqual((state["count"], state["reason"], state["timezone"]), expected[name], name)
+
+    def test_locked_cap_uses_campaign_timezone(self):
+        self.on(daily_cap=1)
+        self.prior()
+        fingerprint = md.placements(self.project)[0]["fingerprint"]
+        # Pacific (no campaign.json): the prior receipt is today's, so the locked check refuses.
+        refused = self.click(now=self.BOUNDARY, sign=False, signature="x", fingerprint=fingerprint)
+        self.assertEqual((refused["state"], refused["code"]), ("refused", "daily_cap_reached"))
+        self.assertEqual(self.smtp.connections, 0)
+        # UTC: the same receipt is yesterday's; preview and the locked check both allow it.
+        self.campaign(timezone="UTC")
+        info = self.prepared(now=self.BOUNDARY)
+        self.assertEqual((info["switch"]["count"], info["switch"]["timezone"]), (0, "UTC"))
+        sent = self.click(now=self.BOUNDARY)
+        self.assertEqual((sent["state"], sent["code"]), ("sent", None))
+        self.assertEqual(self.smtp.connections, 1)
+
+    def test_locked_check_refuses_a_receipt_added_after_the_preview(self):
+        self.on(daily_cap=1)
+        self.campaign(timezone="UTC")
+        self.prior()
+        info = self.prepared(now=self.BOUNDARY)
+        self.assertEqual(info["switch"]["count"], 0)
+        self.prior(agency="agency-late", stamp="2026-11-05T00:30:00Z")  # lands between preview and click
+        result = ms.send_one(self.project, self.send_path, self.draft_row["id"], actor="operator-1",
+                             page_fingerprint=info["fingerprint"], signature=self.signer.sign(info["payload"].encode()),
+                             imap_factory=self.imap(), smtp_factory=self.smtp, now=self.BOUNDARY)
+        self.assertEqual((result["state"], result["code"]), ("refused", "daily_cap_reached"))
+        self.assertEqual(self.smtp.connections, 0)
+        self.assertEqual([r["state"] for r in self.outbox_rows() if r["agency_id"] == "agency-1"], ["proposed"])
+
+    def test_campaign_day_dst_and_sending_rows(self):
+        rows = [("2027-03-14T07:59:00Z", "sent"), ("2027-03-14T08:00:00Z", "sent"),
+                ("2027-03-15T06:59:00Z", "sending"), ("2027-03-15T07:00:00Z", "sent"),
+                ("2026-11-01T06:59:00Z", "sent"), ("2026-11-01T07:00:00Z", "sent"),
+                ("2026-11-02T07:59:00Z", "sent"), ("2026-11-02T08:00:00Z", "sending"),
+                ("2026-11-05T18:29:00Z", "sent"), ("2026-11-05T18:30:00Z", "sent")]
+        self.seed([(stamp, state, "send_followup", "recq-%d" % i, "a%d" % i) for i, (stamp, state) in enumerate(rows)])
+        # other kinds, non-recq intents, failed rows and malformed stamps never count
+        self.seed([("2027-03-14T12:00:00Z", "sent", "send_followup", "other-1", "x1"),
+                   ("2027-03-14T12:00:00Z", "sent", "send_email", "recq-x", "x2"),
+                   ("2027-03-14T12:00:00Z", "failed", "send_followup", "recq-y", "x3"),
+                   ("not-a-time", "sent", "send_followup", "recq-z", "x4")])
+        for zone, now, expected in (
+                (self.PACIFIC, "2027-03-14T09:00:00Z", 2),  # spring-forward day (23 h): 08:00Z .. 07:00Z next day
+                (self.PACIFIC, "2027-03-14T20:00:00Z", 2),  # includes the still-sending row at 06:59Z
+                (self.PACIFIC, "2027-03-15T07:30:00Z", 1),
+                (self.PACIFIC, "2026-11-01T12:00:00Z", 2),  # fall-back day (25 h): 07:00Z .. 08:00Z next day
+                (self.PACIFIC, "2026-11-02T09:00:00Z", 1),  # includes the still-sending row at 08:00Z
+                ("UTC", "2027-03-14T12:00:00Z", 2),
+                ("Asia/Kolkata", "2026-11-05T19:00:00Z", 1),  # local midnight is 18:30Z
+                ("Asia/Kolkata", "2026-11-05T12:00:00Z", 1)):
+            with self.subTest(zone=zone, now=now):
+                self.assertEqual(ms.sent_today(str(self.outbox_path), _utc(now), timezone_name=zone), expected)
+        legacy = ms.sent_today(str(self.outbox_path), _utc("2027-03-14T20:00:00Z"))
+        self.assertEqual(legacy, 2)  # direct callers keep the Pacific default
+
+    def test_invalid_campaign_timezone_never_contacts_transport(self):
+        self.on(test_recipient=OWNER)
+        path = self.project / "campaign.json"
+        for raw in ('{"schema_version":1,"timezone":"No/Such_Zone"}', '{"schema_version":1,"timezone":null}', "{"):
+            with self.subTest(raw=raw):
+                path.write_text(raw)
+                path.chmod(0o600)
+                before = (path.read_bytes(), self.send_path.read_bytes())
+                state = ms.switch_state(self.project, self.send_path, now=NOW)
+                self.assertEqual((state["can_send"], state["reason"], state["cap"], state["count"]),
+                                 (False, "campaign_timezone_invalid", None, None))
+                info = ms.prepare(self.project, self.send_path, self.draft_row["id"], imap_factory=self.imap(), now=NOW)
+                self.assertEqual(info["code"], "campaign_timezone_invalid")
+                self.assertNotIn("payload", info)
+                logged = len(self.log())
+                self.fake.calls.clear()
+                result = ms.send_one(self.project, self.send_path, self.draft_row["id"], actor="operator-1",
+                                     page_fingerprint=md.placements(self.project)[0]["fingerprint"], signature="x",
+                                     imap_factory=self.imap(), smtp_factory=self.smtp, now=NOW)
+                self.assertEqual(result, {"state": "refused", "code": "campaign_timezone_invalid"})
+                self.assertEqual(len(self.log()), logged + 1)
+                self.assertEqual(self.log()[-1]["code"], "campaign_timezone_invalid")
+                self.assertEqual((self.smtp.connections, self.fake.calls), (0, []))
+                self.assertFalse(self.outbox_path.exists())
+                self.assertEqual((path.read_bytes(), self.send_path.read_bytes()), before)
+                self.assertEqual(aq.load_queue(self.project)[0]["status"], "approved")
+        path.unlink()  # a missing file, or a file without the key, keeps the legacy Pacific day
+        self.assertEqual(ms.switch_state(self.project, self.send_path, now=NOW)["timezone"], self.PACIFIC)
+        self.campaign(name="No zone key")
+        self.assertEqual(ms.switch_state(self.project, self.send_path, now=NOW)["timezone"], self.PACIFIC)

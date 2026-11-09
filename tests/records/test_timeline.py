@@ -171,6 +171,43 @@ class MergeTests(unittest.TestCase):
             tl.build_timeline({"as_of": "soon", "requests": []}, None, [], [], [], run_id="r")
 
 
+class ProductionAdmissionTests(unittest.TestCase):
+    def prod(self, **kw):
+        return only(build(reg(row(request_date="2026-10-20", production_at="2026-11-01", **kw))))
+
+    def test_register_production_event_requires_admitted_day(self):
+        valid = self.prod()
+        self.assertEqual(valid["stage"], "produced")
+        self.assertEqual([e["date"] for e in valid["events"] if e["type"] == "production"], ["2026-11-01"])
+        for value in ("2026-11-06", "2026-10-19", "soon", "2026-02-30"):
+            with self.subTest(value=value):
+                promise = {"state": "passed", "date": "2026-11-04"}
+                legacy = row(request_date="2026-10-20", production_at=value, promised=promise)
+                before = json.dumps(legacy, sort_keys=True)
+                out = only(build(reg(legacy)))
+                self.assertEqual(json.dumps(legacy, sort_keys=True), before)  # input not mutated
+                self.assertFalse([e for e in out["events"] if e["type"] == "production"])
+                self.assertNotEqual(out["stage"], "produced")
+                self.assertEqual([m["kind"] for m in out["overdue_marks"]], ["promised_date_passed"])
+                self.assertEqual(out["issues"], ["invalid_date:production_at" if value in ("soon", "2026-02-30")
+                                                 else "production_date_inconsistent"])
+        # An issue the register already carries is not duplicated; existing issues are kept.
+        kept = only(build(reg(row(request_date="2026-10-20", production_at="2026-11-06",
+                                  issues=["production_date_inconsistent", "x"]))))
+        self.assertEqual(kept["issues"], ["production_date_inconsistent", "x"])
+        # Boundaries inclusive; unknown request date adds no lower bound.
+        for value, start in (("2026-10-20", "2026-10-20"), ("2026-11-05", "2026-10-20"), ("1999-01-01", None)):
+            out = only(build(reg(row(request_date=start, production_at=value))))
+            self.assertEqual(out["stage"], "produced")
+        # Independent event sources keep their own contract.
+        manual_prod = only(build(reg(row(request_date="2026-10-20", production_at="2026-11-06")),
+                                 manual=[manual("m1", "production", "2026-11-06")]))
+        self.assertEqual(manual_prod["stage"], "produced")
+        received = {"items": [{"agency_id": "ag1", "request_id": "L-1", "item_id": "i1", "kind": "records",
+                               "received_at": "2026-10-10", "deadlines": []}]}
+        self.assertEqual(only(build(reg(row(request_date="2026-10-20")), received=received))["stage"], "produced")
+
+
 def make_project(tmp, register=None, received=None):
     project = Path(tmp) / "proj"
     run_dir = project / "run-outputs" / "run1"

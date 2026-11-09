@@ -24,6 +24,8 @@ import re
 import sqlite3
 import stat
 
+from .register import production_admission
+
 SCHEMA = "records-timeline-v1"
 MAX_INPUT_BYTES = 64 * 1024 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
@@ -160,8 +162,12 @@ def build_timeline(register, received, drafts, outbox, manual, *, run_id):
         if clock.get("determination_at"):
             events.append(_event(_day(clock["determination_at"]), "determination",
                                  "determination recorded in the register", {"kind": "register", "request": row.get("request_id")}))
-        if row.get("production_at"):
-            events.append(_event(_day(row["production_at"]), "production", "production recorded in the register",
+        issues = list(row.get("issues", []))
+        produced, issue = production_admission(row.get("production_at"), today, _day(row.get("request_date")))
+        if issue and issue not in issues:
+            issues.append(issue)
+        if produced:
+            events.append(_event(produced, "production", "production recorded in the register",
                                  {"kind": "register", "request": row.get("request_id")}))
         if clock.get("extension_recorded"):
             events.append(_event(_day(clock.get("extended_due")), "extension notice",
@@ -237,7 +243,7 @@ def build_timeline(register, received, drafts, outbox, manual, *, run_id):
             "extension_chain": chain,
             "overdue_marks": marks,
             "next_action": _next_action(row, stage, draft_rows, closed, marks),
-            "issues": list(row.get("issues", [])),
+            "issues": issues,
             "events": [{k: v for k, v in e.items() if k not in ("analysed", "undated")} for e in events]})
     unmatched = {kind: sum(1 for t, key in (
         [("item", i.get("item_id")) for i in items] + [("draft", d.get("id")) for d in drafts]

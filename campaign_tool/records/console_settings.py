@@ -27,7 +27,9 @@ def render(project, send_config=None, drafts_config=None):
                         _row('Can send now (subject to approval and recipient gates)',
                              'yes' if state['can_send'] else 'no'),
                         _row('Daily cap', state['cap'] if state['cap'] is not None else 'unknown'),
-                        _row('Sent today (America/Los_Angeles; includes sending)',
+                        _row('Sent today (%s; includes sending)' %
+                             (state.get('timezone') if state['count'] is not None and state.get('timezone')
+                              else 'unknown zone'),
                              state['count'] if state['count'] is not None else 'unknown'),
                         _row('Mode', 'live' if config['live'] else 'test'),
                         _row('Test recipient', config['test_recipient'] or 'not configured'),

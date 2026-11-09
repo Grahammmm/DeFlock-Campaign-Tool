@@ -74,6 +74,34 @@ class SettingsTests(Base):
         self.write(self.project / 'outbox.sqlite', 'invalid')
         self.assertIn('includes sending)</dt><dd>unknown</dd>', self.render(config))
 
+    def seed_outbox(self, *stamps):
+        with closing(sqlite3.connect(self.project / 'outbox.sqlite')) as con:
+            con.execute('CREATE TABLE outbox(kind,state,draft_json,sent_at,sending_at)')
+            con.executemany('INSERT INTO outbox VALUES(?,?,?,?,?)', [
+                ('send_followup', 'sent', '{"intent_id":"recq-%d"}' % i, stamp, None) for i, stamp in enumerate(stamps)])
+            con.commit()
+
+    def test_settings_budget_zone_matches_count(self):
+        config = self.config(enabled=True, live=True, daily_cap=5)
+        self.seed_outbox('2026-11-04T23:00:00Z')  # Nov 4 15:00 Pacific, Nov 4 23:00 UTC
+        counts = {}
+        for zone, label in ((None, 'America/Los_Angeles'), ('UTC', 'UTC')):
+            if zone:
+                self.write(self.project / 'campaign.json', dict(schema_version=1, timezone=zone))
+            with mock.patch.object(cs.mail_send, 'datetime', wraps=datetime) as clock:
+                clock.now.return_value = datetime(2026, 11, 5, 1, tzinfo=timezone.utc)
+                html = self.render(config)
+            self.assertIn('Sent today (%s; includes sending)</dt><dd>' % label, html)
+            counts[label] = html.split('includes sending)</dt><dd>')[1].split('<', 1)[0]
+        self.assertEqual(counts, {'America/Los_Angeles': '1', 'UTC': '0'})
+        self.write(self.project / 'campaign.json', dict(schema_version=1, timezone='No/Such_Zone'))
+        html = self.render(config)
+        self.assertIn('Sent today (unknown zone; includes sending)</dt><dd>unknown</dd>', html)
+        self.assertIn('<dt>Can send now (subject to approval and recipient gates)</dt><dd>no</dd>', html)
+        self.assertIn('<dt>Daily cap</dt><dd>unknown</dd>', html)
+        for text in ('America/Los_Angeles', 'No/Such_Zone', 'SYNTHETIC-CANARY-CONTENT', str(self.project)):
+            self.assertNotIn(text, html)
+
     def test_reminder_overrides_and_invalid_duplicate_settings(self):
         path = self.project / 'followup-settings.json'
         self.assertIn('<td>off</td><td>0</td><td>10</td>', self.render())

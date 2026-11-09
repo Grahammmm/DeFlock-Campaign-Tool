@@ -12,7 +12,7 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from campaign_tool import cli, kit_asked, law  # noqa: E402
+from campaign_tool import cli, kit_asked, kit_track, kit_undo, law  # noqa: E402
 from campaign_tool.content import load_content  # noqa: E402
 from campaign_tool.content_check import content_problems  # noqa: E402
 from campaign_tool.site import build_site  # noqa: E402
@@ -360,6 +360,196 @@ class KitAskedTests(unittest.TestCase):
         self.assertEqual(len(content_problems(self.root)), 1)
         self.assertEqual(self.propose("--apply")[0], 0)
         self.assertEqual(content_problems(self.root), [])
+
+    # --- RF0844-2: explicit reconciliation after response undo -------------------------------------------------
+    def private_snapshot(self):
+        return {p.name: (p.read_bytes(), p.stat().st_mode) for p in self.sent_path.parent.glob("*.json")}
+
+    def record_and_undo(self, request="main", imported=False):
+        self.sent((POLICE, request, [], None, {"reference": SECRET[2]}))
+        if imported:
+            document = json.loads(self.sent_path.read_text())
+            entry = next(iter(document["requests"].values()))
+            entry.pop("draft")
+            entry.pop("draft_sha256")
+            entry["imported"] = True
+            self.sent_path.write_text(json.dumps(document), encoding="utf-8")
+        kit_track.record_step(self.root, POLICE, "2026-03-10", "acknowledged", request=request,
+                              note=SECRET[0], today=TODAY)
+        self.assertEqual(self.propose("--apply")[0], 0)
+        before = self.path.read_bytes()
+        kit_undo.undo_step(self.root, POLICE, request=request, reason="PRIVATE-UNDO-7731", today=TODAY)
+        self.assertEqual(self.path.read_bytes(), before)  # undo never implicitly synchronizes public content
+        self.assertEqual(next(iter(kit_track.read_sent(self.root).values()))["steps"], [])
+
+    def test_last_response_undo_removes_linked_update_date(self):
+        for request in ("main", LINKED):
+            for imported in (False, True):
+                with self.subTest(request=request, imported=imported):
+                    self.agencies[self.index(POLICE)].pop("asked", None)
+                    self.save_content()
+                    self.record_and_undo(request, imported)
+                    private = self.private_snapshot()
+                    self.path.chmod(0o640)
+                    before = (self.path.read_bytes(), self.path.stat().st_mode)
+                    removal = f'content/agencies.json {POLICE}.asked[0].updated_on: "2026-03-10" -> (absent)'
+                    code, out, err = self.propose()
+                    self.assertEqual((code, err), (0, ""))
+                    self.assertEqual(out.splitlines().count(removal), 1)
+                    self.assertEqual((self.path.read_bytes(), self.path.stat().st_mode), before)
+                    code, out, err = self.propose("--apply")
+                    self.assertEqual((code, err), (0, ""))
+                    self.assertIn(removal, out)
+                    self.assertEqual(self.asked()[0]["state"], "awaiting_response")
+                    self.assertNotIn("updated_on", self.asked()[0])
+                    self.assertEqual(self.path.stat().st_mode, before[1])
+                    self.assertEqual(self.private_snapshot(), private)
+
+    def test_stale_date_only_change_is_proposed_once(self):
+        self.applied([], scopes=())
+        document = json.loads(self.path.read_text())
+        document[self.index(POLICE)]["asked"][0]["updated_on"] = "2026-03-10"
+        self.path.write_text(json.dumps(document), encoding="utf-8")
+        result = kit_asked.propose(self.root, TODAY)
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["lines"], [
+            f'content/agencies.json {POLICE}.asked[0].updated_on: "2026-03-10" -> (absent)'])
+        with mock.patch.object(kit_asked.kit, "_write_json", wraps=kit_asked.kit._write_json) as write:
+            self.assertEqual(self.propose("--apply")[0], 0)
+            self.assertEqual(write.call_count, 1)
+            before = (self.path.read_bytes(), self.path.stat().st_mtime_ns)
+            self.assertEqual(self.propose("--apply")[0], 0)
+            self.assertEqual(write.call_count, 1)
+        self.assertEqual((self.path.read_bytes(), self.path.stat().st_mtime_ns), before)
+        self.assertFalse(kit_asked.propose(self.root, TODAY)["changed"])
+        self.assertNotIn("updated_on", self.asked()[0])
+
+    def test_undo_retained_response_rewinds_not_removes_date(self):
+        for latest in ("2026-03-10", "2026-03-20"):
+            with self.subTest(latest=latest):
+                self.sent((POLICE, "main", [], None))
+                kit_track.record_step(self.root, POLICE, "2026-03-10", "acknowledged", today=TODAY)
+                kit_track.record_step(self.root, POLICE, latest, "denied", today=TODAY)
+                self.assertEqual(self.propose("--apply")[0], 0)
+                self.assertEqual(self.asked()[0]["state"], "declined_in_writing")
+                kit_undo.undo_step(self.root, POLICE, reason="Correct mistaken denial", today=TODAY)
+                self.assertEqual(self.propose("--apply")[0], 0)
+                self.assertEqual((self.asked()[0]["state"], self.asked()[0]["updated_on"]),
+                                 ("acknowledged", "2026-03-10"))
+                kit_track.record_step(self.root, POLICE, "2026-03-25", "determination", today=TODAY)
+                self.assertEqual(self.propose("--apply")[0], 0)
+                self.assertEqual(self.asked()[0]["updated_on"], "2026-03-25")
+
+    def test_sent_date_correction_after_undo_can_validate(self):
+        self.record_and_undo()
+        document = json.loads(self.sent_path.read_text())
+        document["requests"][POLICE]["sent_on"] = "2026-03-15"
+        self.sent_path.write_text(json.dumps(document), encoding="utf-8")
+        private = self.private_snapshot()
+        before = self.path.read_bytes()
+        result = kit_asked.propose(self.root, TODAY)
+        self.assertIsNone(result["error"])
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.propose("--apply")[0], 0)
+        self.assertEqual(self.asked()[0]["asked_on"], "2026-03-15")
+        self.assertNotIn("updated_on", self.asked()[0])
+        load_content(self.root, TODAY)  # validates the corrected public document
+        self.assertEqual(self.private_snapshot(), private)
+
+    def test_removal_is_request_local_and_preserves_organizer_content(self):
+        base = {"topic": "Records request", "asked_on": "2026-03-02", "state": "awaiting_response",
+                "updated_on": "2026-03-10"}
+        organizer = {**base, "note": "Organizer words"}
+        missing = {**base, "request": "missing"}
+        closed = {**base, "request": "closed", "note": "Choose later"}
+        withdrawn = {**base, "request": "withdrawn", "state": "withdrawn"}
+        self.agencies[self.index(POLICE)]["asked"] = [
+            {**base, "request": "main", "note": "Keep linked note"}, organizer, missing, closed, withdrawn,
+            {**base, "request": LINKED}]
+        self.agencies[self.index(SHERIFF)]["asked"] = [{**base, "request": "main"}]
+        self.agencies[self.index(SHERIFF)]["selected"] = False
+        self.save_content()
+        self.sent((POLICE, "main", [], None), (POLICE, LINKED, [step("2026-03-10", "acknowledged")], None),
+                  (POLICE, "closed", [step("2026-03-10", "closed")], None),
+                  (POLICE, "withdrawn", [step("2026-03-10", "withdrawn")], None),
+                  (SHERIFF, "main", [], None), ("ca-not-in-content", "main", [], None))
+        private = self.private_snapshot()
+        before_sheriff = self.agencies[self.index(SHERIFF)]
+        self.assertEqual(self.propose("--apply")[0], 0)
+        items = self.asked()
+        self.assertNotIn("updated_on", items[0])
+        self.assertEqual(items[0]["note"], "Keep linked note")
+        self.assertEqual(items[1:5], [organizer, missing, closed, withdrawn])
+        self.assertEqual(items[5]["updated_on"], "2026-03-10")
+        self.assertEqual(items[5]["state"], "acknowledged")
+        self.assertEqual(json.loads(self.path.read_text())[self.index(SHERIFF)], before_sheriff)
+        self.assertEqual(self.private_snapshot(), private)
+
+    def test_removal_validates_before_any_write(self):
+        self.record_and_undo()
+        document = json.loads(self.path.read_text())
+        document[self.index(SHERIFF)]["asked"] = [{"topic": "Bad", "asked_on": "2026-03-02", "state": "bogus"}]
+        self.path.write_text(json.dumps(document), encoding="utf-8")
+        before, private = self.path.read_bytes(), self.private_snapshot()
+        for flags in ((), ("--apply",)):
+            code, out, err = self.propose(*flags)
+            self.assertEqual(code, 3)
+            self.assertIn('updated_on: "2026-03-10" -> (absent)', out)
+            self.assertIn("nothing written", err)
+            self.assertEqual(self.path.read_bytes(), before)
+        document[self.index(SHERIFF)].pop("asked")
+        self.path.write_text(json.dumps(document), encoding="utf-8")
+        target = self.path.with_name("synthetic-agencies.json")
+        self.path.rename(target)
+        self.path.symlink_to(target.name)
+        before = target.read_bytes()
+        for flags in ((), ("--apply",)):
+            code, out, err = self.propose(*flags)
+            self.assertEqual(code, 3)
+            self.assertIn("symlinks are not read", err)
+            self.assertEqual(target.read_bytes(), before)
+        self.assertEqual(self.private_snapshot(), private)
+
+    def test_undone_update_disappears_from_public_consumers(self):
+        from datetime import datetime, timezone
+        from campaign_tool.newsletter.draft import build_draft
+        from campaign_tool.newsletter.from_content import manifest_from_content
+        from campaign_tool.site import asked_sentence
+        from campaign_tool.timeline import timeline_events
+
+        self.record_and_undo(LINKED)
+        private = self.private_snapshot()
+        now = datetime(2026, 3, 11, 12, tzinfo=timezone.utc)
+        cfg = {"name": "Synthetic campaign", "county": "Synthetic"}
+        since = "2026-03-09T00:00:00+00:00"
+        old_model = load_content(self.root, TODAY)
+        old_events = timeline_events(old_model, TODAY)
+        old_draft = build_draft(manifest_from_content(self.root, cfg, since=since, now=now), now=now)
+        self.assertEqual(old_draft["counts"]["requests"], 1)
+        self.assertEqual(self.propose("--apply")[0], 0)
+        model = load_content(self.root, TODAY)
+        events = timeline_events(model, TODAY)
+        removed = [e for e in old_events if e["kind"] == "request_update"]
+        self.assertEqual(len(removed), 1)
+        self.assertEqual(events, [e for e in old_events if e not in removed])
+        self.assertTrue(any(e["kind"] == "records_requested" and e["date"] == "2026-03-02" for e in events))
+        item = next(a for a in model["agencies"] if a["agency_id"] == POLICE)["asked"][0]
+        sentence = f"No written response recorded as of {TODAY.isoformat()}."
+        self.assertEqual(asked_sentence(item, TODAY), sentence)
+        build_site(self.root, today=TODAY)
+        timeline = (self.root / "public" / "timeline.html").read_text()
+        self.assertNotIn("2026-03-10", timeline)
+        self.assertIn("2026-03-02", timeline)
+        self.assertIn(sentence, (self.root / "public" / "agencies.html").read_text())
+        draft = build_draft(manifest_from_content(self.root, cfg, since=since, now=now), now=now)
+        self.assertEqual(draft["counts"].get("requests", 0), 0)
+        receipt = json.loads((self.sent_path.parent / "sent-undone.json").read_text())["undos"][0]
+        secrets = (*SECRET, LINKED, "PRIVATE-UNDO-7731", receipt["entry_before_sha256"], receipt["entry_after_sha256"])
+        public = "".join(p.read_text() for p in (self.root / "public").rglob("*")
+                         if p.is_file() and p.suffix in (".html", ".xml", ".json", ".txt"))
+        for secret in secrets:
+            self.assertNotIn(secret, public + draft["text"] + draft["html"])
+        self.assertEqual(self.private_snapshot(), private)
 
     # --- 8. nothing private reaches content ----------------------------------------------------------------------
     def test_private_step_fields_never_appear_in_content_or_the_printout(self):

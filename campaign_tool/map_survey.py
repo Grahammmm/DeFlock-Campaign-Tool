@@ -229,7 +229,7 @@ def _read_sheet(csv_path):
     except UnicodeDecodeError:
         raise SurveyError("--csv: not UTF-8") from None
     try:
-        table = list(csv.reader(io.StringIO(text, newline="")))
+        table = list(csv.reader(io.StringIO(text, newline=""), strict=True))  # malformed quoting is refused, never repaired
     except csv.Error:
         raise SurveyError("--csv: not valid CSV") from None
     if not table or tuple(table[0]) != HEADER:
