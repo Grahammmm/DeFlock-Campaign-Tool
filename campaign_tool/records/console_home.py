@@ -73,6 +73,17 @@ def _age(now, made):
     return None if made is None else max(0, int((now.timestamp() - made) // 3600))
 
 
+def _epoch(value):
+    """Finite, in-range numeric epoch -> float; anything else (bool, NaN, inf, text) is unknown."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        datetime.fromtimestamp(value, timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return float(value)
+
+
 def _overdue(model, agency, request, today):
     marks = []
     if request:
@@ -87,8 +98,10 @@ def _overdue(model, agency, request, today):
 
 def decision_rows(model, today):
     rows, now = [], model["now"]
+    instants = {}
 
-    def add(ident, group, kind, agency, request, why, age, link, source, hours=None):
+    def add(ident, group, kind, agency, request, why, age, link, source, hours=None, when=None):
+        instants[len(rows)] = when
         overdue, day, mark = _overdue(model, agency, request, today)
         rows.append({"id": ident, "kind_group": group, "kind": kind, "agency": agency, "request": request,
                      "what": {"public": "Public status line", "packets": "Update packet"}.get(source, PLAIN_KINDS.get(kind, kind)), "why": why, "age_hours": age,
@@ -100,7 +113,8 @@ def decision_rows(model, today):
     for row in model["queue"].get("rows", []):
         kind, ident = row["kind"], row["id"]
         made = co._parse_ts(row.get("created_at"))
-        age = _age(now, made.timestamp() if made else None)
+        when = made.timestamp() if made else None
+        age = _age(now, when)
         evidence = row.get("evidence") or {}
         why = evidence.get("why") or " ".join(str(evidence.get(k) or "") for k in ("clock_kind", "clock_date")).strip()
         if kind in (*followup_clock.REMINDERS, followup_clock.NOTICE) and evidence.get("clock_date"):
@@ -113,7 +127,7 @@ def decision_rows(model, today):
         if row["status"] == "pending":
             group, _ = NEXT.get(kind, ("request" if kind == "first-request" else "follow-up", None))
             link = "/review?id=" + urllib.parse.quote(ident, safe="")
-            add(ident, group, kind, row["agency_id"], row["request_id"], why or "Draft awaiting decision", age, link, "queue")
+            add(ident, group, kind, row["agency_id"], row["request_id"], why or "Draft awaiting decision", age, link, "queue", when=when)
         elif row["status"] == "approved" and kind not in NEXT and sends.get("configured") and sends["state"] == "ok":
             result = latest.get((ident, row["revision"]))
             if result and result.get("state") == "sent":
@@ -122,7 +136,7 @@ def decision_rows(model, today):
             if result and result.get("state") in ("unknown", "attempt"):
                 note = "Delivery unresolved; reconcile in the outbox before any retry"
             add(ident, "send", kind, row["agency_id"], row["request_id"], note, age,
-                "/send?id=" + urllib.parse.quote(ident, safe=""), "sends")
+                "/send?id=" + urllib.parse.quote(ident, safe=""), "sends", when=when)
     public = model["public"]
     for line in public.get("lines", []):
         if line["state"] != "holding" and not (line["state"] == "proposed" and public.get("switch") == "OFF"):
@@ -130,17 +144,22 @@ def decision_rows(model, today):
         hours = max(0, int((line["hold_until"] - now.timestamp()) // 3600)) if line["state"] == "holding" else None
         event = line.get("event") or {}
         why = "%s %s %s" % (line.get("template", ""), event.get("type", ""), event.get("date", ""))
+        when = _epoch(line.get("proposed_at"))
         add(line["id"], "status-line", line["state"], line["agency_key"], line.get("request_id"), why,
-            _age(now, line["proposed_at"]), "/public-updates", "public", hours)
+            _age(now, when), "/public-updates", "public", hours, when)
     for packet in model["packets"].get("rows", []):
         if packet["status"] != "proposed":
             continue
+        made = co._parse_ts(packet.get("proposed_at"))
+        when = made.timestamp() if made else None
         add(packet["id"], "site-update" if packet["kind"] == "site_update" else "packet", packet["kind"],
             packet["agency_key"], packet["request_id"], "%s %s" % (packet["source"], packet["request_id"]),
-            packet["age_hours"], "/packets", "packets", packet["hours_to_expiry"])
+            packet["age_hours"], "/packets", "packets", packet["hours_to_expiry"], when)
 
-    return sorted(rows, key=lambda row: (row["age_hours"] is None,
-                                        row["age_hours"] if row["age_hours"] is not None else 0, row["id"]))
+    # Newest first by exact creation instant (not the rounded display age); unknown last; ties by id, source.
+    order = sorted(range(len(rows)), key=lambda i: (instants[i] is None, -(instants[i] or 0),
+                                                     rows[i]["id"], rows[i]["source"]))
+    return [rows[i] for i in order]
 
 
 def waiting_rows(board, today):

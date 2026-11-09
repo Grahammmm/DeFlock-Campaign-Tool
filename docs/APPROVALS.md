@@ -154,6 +154,16 @@ with `diff_truncated` marking a cut. Approval/rejection revisions are skipped in
 `edits`; the top-level revision tracks all events while `current.revision` tracks
 the last body edit (zero for the original). Nothing approves or sends.
 
+The diff compares whole lines including their terminators, so an edit that only adds or
+removes the final newline, or switches LF to CRLF, CR or another line separator that
+Python's `splitlines` recognises (for example U+2028), is a real change with a non-empty
+diff. LF is the unmarked default and ordinary LF-terminated text keeps its plain
+`-`/`+`/` ` lines. Displayed lines never contain terminator characters; a body line with no
+final terminator is followed by `\ No newline at end of file`, and a non-LF terminator by
+`\ Line ending: CRLF`, `\ Line ending: CR` or `\ Line ending: U+2028` (uppercase code point
+for other separators). These marker lines count toward the 400-line cap. Stored bodies,
+hashes and signatures are never normalised; the notation exists only in this read-only view.
+
 ## No-response follow-ups (REC-AUTO-7)
 
 After each outputs stage, the records pipeline reads that run's `CURRENT-REQUEST-REGISTER.json` and,

@@ -7,12 +7,13 @@ from zoneinfo import ZoneInfo
 
 from . import approval_queue, followup_route, followup_state, mail_send
 from .outcomes import received_items, response_items
+from .campaign_config import DEFAULT_TIMEZONE, load_timezone
 
 LABEL = "Machine reading of the response; review required; not proof of a lawful or unlawful denial."
 CITATION = "agency's citation; UNVERIFIED by us"
 
 
-def _day(value):
+def _day(value, *, time_zone=DEFAULT_TIMEZONE):
     if not value:
         return None
     if len(value) == 10:
@@ -20,10 +21,10 @@ def _day(value):
     moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if moment.tzinfo is None:
         raise ValueError("denial_log_date_timezone")
-    return moment.astimezone(ZoneInfo("America/Los_Angeles")).date().isoformat()
+    return moment.astimezone(ZoneInfo(time_zone)).date().isoformat()
 
 
-def entries(states, response_items_doc, queue_rows):
+def entries(states, response_items_doc, queue_rows, *, time_zone=DEFAULT_TIMEZONE):
     """Pure, one row per request/ask; optional sources carry same-run receipt metadata."""
     if states["run_id"] != response_items_doc["run_id"]:
         raise ValueError("denial_log_stale_response_items")
@@ -56,7 +57,7 @@ def entries(states, response_items_doc, queue_rows):
             source = sources.get(source_id, {})
             dates = [e["date"] for e in events if e.get("ids", {}).get("item_id") == source_id and source_id]
             day = _day(source.get("received_at") or max(dates, default=None)
-                       or (denied[-1]["date"] if number is None else None))
+                       or (denied[-1]["date"] if number is None else None), time_zone=time_zone)
             matches = []
             for q in queue_rows:
                 if q.get("agency_id") != key[0] or q.get("request_id") not in (key[1], req.get("ledger_request_id") or key[1]):
@@ -88,7 +89,8 @@ def entries(states, response_items_doc, queue_rows):
             citations = [e["quote"] for e in evidence if e.get("quote") and response_items.CITE.search(e["quote"])]
             out.append({"id": hashlib.sha256(response_items.canon([*key, number, identity_source]).encode()).hexdigest(),
                         "agency_key": key[0], "request_id": key[1], "date": day,
-                        "date_basis": "DATED (recorded receipt; Pacific day)" if day else "UNKNOWN",
+                        "date_basis": (f"DATED (recorded receipt; {'Pacific' if time_zone == DEFAULT_TIMEZONE else time_zone} day)"
+                                       if day else "UNKNOWN"),
                         "item_no": number, "item_text": (ask.get("text") or "")[:160],
                         "kind": "denied_whole" if number is None else "exemption_cited" if ask.get("rating") == "exemption_cited" else "withheld",
                         "agency_words": words, "agency_words_note": None if words else "no quote extracted",
@@ -99,6 +101,7 @@ def entries(states, response_items_doc, queue_rows):
 def load(project, run_id):
     """Read existing snapshots and review/send journals, never refresh or create them."""
     try:
+        time_zone = load_timezone(project)
         states = followup_state.classify_run(project, run_id)
         root = received_items._safe_dir(project) / "run-outputs" / run_id / "outcomes"
         doc = followup_state._read(root / "response-items.json")
@@ -117,7 +120,7 @@ def load(project, run_id):
                  s.get("revision") == q["revision"] and s.get("state") == "sent" for s in sent) else q for q in queue]
         return {"state": "available", "schema": "records-denial-log-v1", "run_id": run_id,
                 "visibility": "private", "review_required": True, "label": LABEL,
-                "entries": entries(states, doc, queue)}
+                "entries": entries(states, doc, queue, time_zone=time_zone)}
     except FileNotFoundError:
         return {"state": "unavailable", "code": "denial_log_source_missing"}
     except (OSError, ValueError, KeyError, TypeError, AttributeError, approval_queue.ApprovalQueueError, mail_send.MailSendError):
