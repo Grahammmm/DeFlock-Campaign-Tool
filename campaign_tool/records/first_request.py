@@ -161,8 +161,14 @@ def queue(root, result, *, agency, request_id, run_id):
     ev = result["evidence"]
     item_id = hashlib.sha256(json.dumps([agency, request_id, ev["window"], ev["items"], ev["playbook"]],
                                         sort_keys=True).encode()).hexdigest()
-    return approval_queue.add_draft(root, item_id=item_id, kind=KIND, agency_id=agency, request_id=request_id,
-                                    body=result["body"], evidence=ev, source_run_id=run_id)
+    row = approval_queue.add_draft(root, item_id=item_id, kind=KIND, agency_id=agency, request_id=request_id,
+                                   body=result["body"], evidence=ev, source_run_id=run_id)
+    # The queue keeps the first draft for an identical identity and evidence, even if this generation's
+    # letter differs (agency name, requester, law basis are not evidence). Compare against the immutable
+    # original, never the current body: organizer edits are legitimate and are preserved on exact replay.
+    original = approval_queue.history(root, row["id"])["original"]["body"]
+    _need(original.encode("utf-8") == result["body"].encode("utf-8"), "draft_content_conflict")
+    return row
 
 
 def main(argv=None):
