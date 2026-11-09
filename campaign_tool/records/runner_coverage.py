@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 from campaign_tool.digest.build import redact_units
+from . import extraction_ledger as _extraction_ledger
 from . import semantic_coverage as sc
 
 
@@ -18,7 +19,7 @@ def _hash(raw):
 
 
 def unit_view(pipeline, subject, limit):
-    """Only current accepted extraction IDs; capped/unreadable units stay gaps."""
+    """Current extraction IDs; capped or unsafe/unreadable derivatives stay gaps."""
     content = pipeline._content(subject, "extract")
     if content.get("schema") != "canonical-extraction-content-v1" or content.get("original_sha256") != subject:
         raise ValueError("coverage_extraction_content_unbound")
@@ -52,7 +53,7 @@ def unit_view(pipeline, subject, limit):
                 item = {"unit_id": identity, "locator": locator, "unit_type": row["unit_type"],
                         "hidden": locator.get("state") in ("hidden", "veryHidden")}
                 if index < limit:
-                    raw = Path(row["derived_path"]).read_bytes()
+                    raw = _extraction_ledger.read_file(row["derived_path"], _extraction_ledger.MAX_UNIT)
                     payload = json.loads(raw)
                     text = payload.get("text") if isinstance(payload, dict) else None
                     if (not isinstance(text, str) or _hash(raw) != provenance["payload_sha256"] or

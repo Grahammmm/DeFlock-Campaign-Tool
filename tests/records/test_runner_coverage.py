@@ -29,6 +29,7 @@ class RunnerCoverageTests(unittest.TestCase):
             raw = json.dumps({"text": "synthetic text", "data": {}}).encode()
             path = Path(directory) / str(i)
             path.write_bytes(raw)
+            path.chmod(0o600)
             rows.append({"id": identity, "provenance_json": json.dumps({
                 "extraction_import_id": current["id"], "payload_sha256": sha(raw)}),
                 "locator": json.dumps({"page": i + 1}), "unit_type": "text",
