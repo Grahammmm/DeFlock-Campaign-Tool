@@ -446,8 +446,15 @@ class RegisterIntegrationTests(unittest.TestCase):
             with self.subTest(error=type(error).__name__):
                 with mock.patch.object(register, "read_tracker", side_effect=error):
                     self.assert_register_warning(f"read-error-{index}")
+        real_link = os.link
+
+        def register_link(source, target, *args, **kwargs):
+            # Fail only the register's own link; comparison also publishes with os.link.
+            if "REGISTER" in Path(target).name.upper():
+                raise OSError("Secret output path")
+            return real_link(source, target, *args, **kwargs)
         with mock.patch.object(register.os, "rename", side_effect=OSError("Secret output path")), \
-                mock.patch.object(register.os, "link", side_effect=OSError("Secret output path")):
+                mock.patch.object(register.os, "link", side_effect=register_link):
             self.assert_register_warning("write-error")
 
     def test_register_timeout_preserves_snapshot_but_keeps_timeout_failure(self):

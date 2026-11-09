@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import tempfile
 
 SCHEMA = "records-agency-comparison-v1"
 INPUT_SCHEMA = "records-agency-fact-sheets-v1"
@@ -369,12 +370,75 @@ def write_run_comparison(project, run_id):
     name = "".join(ch for ch in run_id if ch.isalnum() or ch in "-_.") or "run"
     if name in (".", ".."):
         raise OSError("comparison_run_id_invalid")
+    pair = tuple(("comparison." + suffix, text.encode("utf-8")) for suffix, text in (
+        ("json", json.dumps(report, sort_keys=True, indent=2) + "\n"), ("md", markdown(report))))
     directory = _checked(Path(project) / "run-outputs" / name, directory=True, missing=True)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    for suffix, text in (("json", json.dumps(report, sort_keys=True, indent=2) + "\n"), ("md", markdown(report))):
-        target = _checked(directory / ("comparison." + suffix), missing=True)
-        temporary = _checked(directory / (".comparison." + suffix + ".tmp"), missing=True)
-        with temporary.open("w", encoding="utf-8") as output:
-            output.write(text)
-        os.replace(temporary, target)
+    _publish_pair(directory, pair)
     return report
+
+
+def _existing_bytes(path, limit):
+    """Bounded no-follow read of one occupied output; None when absent."""
+    _checked(path, missing=True)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise OSError("comparison_run_already_exists") from None
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError("comparison_run_already_exists")
+        return handle.read(limit + 1)
+
+
+def _stage_file(directory, name, data):
+    fd = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "wb") as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+
+
+def _publish_pair(directory, pair):
+    """Publish a fresh json+md pair; an occupied run is never changed or repaired."""
+    existing = [_existing_bytes(directory / name, len(data)) for name, data in pair]
+    if all(old is None for old in existing):
+        pass
+    elif all(old == data for old, (_, data) in zip(existing, pair)):
+        return  # identical replay: byte-verified no-op, nothing touched
+    else:
+        raise OSError("comparison_run_already_exists")
+    stage = Path(tempfile.mkdtemp(prefix=".comparison-stage-", dir=directory))  # 0700, unpredictable
+    installed = []  # (target, device, inode) of the finals this invocation created
+    try:
+        for name, data in pair:
+            _stage_file(stage, name, data)
+        for name, _ in pair:
+            target = directory / name
+            try:
+                os.link(stage / name, target)  # no-clobber: fails if the target exists
+            except FileExistsError:
+                raise OSError("comparison_run_already_exists") from None
+            info = (stage / name).lstat()
+            installed.append((target, info.st_dev, info.st_ino))
+    except BaseException:
+        for target, device, inode in installed:
+            try:
+                info = target.lstat()
+                if (info.st_dev, info.st_ino) == (device, inode):  # never remove a competing writer's file
+                    target.unlink()
+            except OSError:
+                pass
+        raise
+    finally:
+        for name, _ in pair:
+            try:
+                (stage / name).unlink()
+            except OSError:
+                pass
+        try:
+            stage.rmdir()
+        except OSError:
+            pass
