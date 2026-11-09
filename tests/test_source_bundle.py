@@ -36,8 +36,8 @@ def run_build(root, check=False):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         cli.build(root, check=check)
-    assert err.getvalue() == "", err.getvalue()
-    return "".join(line + "\n" for line in out.getvalue().splitlines() if line.startswith("sources.zip"))  # the skip line; stderr must stay empty
+    assert not [l for l in out.getvalue().splitlines() if l.startswith("sources.zip")], out.getvalue()  # stdout stays clean
+    return "".join(line + "\n" for line in err.getvalue().splitlines() if line.startswith("sources.zip"))  # the skip line, on stderr
 
 
 class Fixture(unittest.TestCase):
