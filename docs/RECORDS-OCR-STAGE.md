@@ -124,7 +124,12 @@ engine counts.
   parser version (`SIDECAR_PARSER`, part of the signature), gets a new
   signature directory and never rewrites the old one.
 - A cache hit is verified before use: the source is still reachable beneath
-  the root with the recorded size, the result directories and files are
+  the root with the recorded size, and a size-matching source is streamed
+  through SHA-256 (read-only, bounded by the source size limit) and must equal
+  the queued hash, so a same-length changed original is `source_invalid` /
+  `source_hash_mismatch` (`OCR_SOURCE_INVALID`) rather than a hit, with the
+  retained result left untouched; unchanged sources still reuse the result
+  with no tool or model call. The result directories and files are
   owner-only and not symlinks (opened by descriptor with `O_NOFOLLOW`), the
   manifest is internally consistent (pages, statuses, engines, counts,
   signature, source hash), and every recorded page text exists with the
