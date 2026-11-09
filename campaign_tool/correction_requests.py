@@ -10,7 +10,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from .content import ContentError, load_content
-from .findings import _read_json, _write_private
+from .findings import _locked, _read_json, _write_private
 from .privacy_patterns import EMAIL  # the shared pattern: everything the old local copy matched, plus the spelled-out forms
 
 NAME = "correction-requests.json"
@@ -128,17 +128,19 @@ def _published(root, finding_id):
 def add(root, finding_id, received, summary, today=None):
     """Log one request against a published finding; returns the new open request."""
     path, today = _path(root), _today(today)
-    document = _load(path) or {"schema_version": 1, "requests": []}
-    finding = _published(root, finding_id)
-    day = _day(received, "--received", today)
-    published = datetime.fromisoformat(finding["published_at"].replace("Z", "+00:00")).date()
-    if day < published:
-        raise ValueError(f"--received {received} is before the finding's publication date {published}")
-    request = {"id": max([r["id"] for r in document["requests"]], default=0) + 1, "finding_id": finding_id,
-               "received_on": day.isoformat(), "summary": _text(summary, "--summary"), "state": "open"}
-    document["requests"].append(request)
-    _write_private(path, document, ".correction-requests-")
-    return request
+    with _locked(path.parent, ".correction-requests.lock"):
+        path = _path(root)
+        document = _load(path) or {"schema_version": 1, "requests": []}
+        finding = _published(root, finding_id)
+        day = _day(received, "--received", today)
+        published = datetime.fromisoformat(finding["published_at"].replace("Z", "+00:00")).date()
+        if day < published:
+            raise ValueError(f"--received {received} is before the finding's publication date {published}")
+        request = {"id": max([r["id"] for r in document["requests"]], default=0) + 1, "finding_id": finding_id,
+                   "received_on": day.isoformat(), "summary": _text(summary, "--summary"), "state": "open"}
+        document["requests"].append(request)
+        _write_private(path, document, ".correction-requests-")
+        return request
 
 
 def decide(root, request_id, decision, on, note, today=None):
@@ -147,23 +149,25 @@ def decide(root, request_id, decision, on, note, today=None):
     if decision not in STATES[1:]:
         raise ValueError("decision must be accepted or declined")
     path, today = _path(root), _today(today)
-    document = _load(path) or {"requests": []}
-    request = next((r for r in document["requests"] if r["id"] == request_id), None)
-    if request is None:
-        raise ValueError(f"no correction request {request_id}")
-    if request["state"] != "open":
-        raise ValueError(f"correction request {request_id} is already {request['state']}; decisions are final")
-    day, note = _day(on, "--on", today), _text(note, "--note")
-    if day.isoformat() < request["received_on"]:
-        raise ValueError(f"--on {on} is before the request was received ({request['received_on']})")
-    if decision == "accepted":
-        finding = _published(root, request["finding_id"])
-        if not any(c["date"] >= request["received_on"] for c in finding["corrections"]):
-            raise ValueError("accept only after recording the correction: finding correct "
-                             f"{request['finding_id']} --date D --note T (dated {request['received_on']} or later)")
-    request.update(state=decision, decided_on=day.isoformat(), note=note)
-    _write_private(path, document, ".correction-requests-")
-    return request
+    with _locked(path.parent, ".correction-requests.lock"):
+        path = _path(root)
+        document = _load(path) or {"requests": []}
+        request = next((r for r in document["requests"] if r["id"] == request_id), None)
+        if request is None:
+            raise ValueError(f"no correction request {request_id}")
+        if request["state"] != "open":
+            raise ValueError(f"correction request {request_id} is already {request['state']}; decisions are final")
+        day, note = _day(on, "--on", today), _text(note, "--note")
+        if day.isoformat() < request["received_on"]:
+            raise ValueError(f"--on {on} is before the request was received ({request['received_on']})")
+        if decision == "accepted":
+            finding = _published(root, request["finding_id"])
+            if not any(c["date"] >= request["received_on"] for c in finding["corrections"]):
+                raise ValueError("accept only after recording the correction: finding correct "
+                                 f"{request['finding_id']} --date D --note T (dated {request['received_on']} or later)")
+        request.update(state=decision, decided_on=day.isoformat(), note=note)
+        _write_private(path, document, ".correction-requests-")
+        return request
 
 
 def list_requests(root, today=None):

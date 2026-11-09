@@ -99,7 +99,7 @@ class CountTests(unittest.TestCase):
                              ' {"geometry": {"coordinates": [NaN, 1.0]}}, {"geometry": {"coordinates": [1.0, Infinity]}}]}')
         counts, problems = count_by_name(cameras, collection(features))
         self.assertEqual(counts, {"Cedar": 1, "Huge": 1})
-        self.assertEqual(problems, [f"city boundary feature {i}: invalid ring (needs 4 or more finite numeric positions)"
+        self.assertEqual(problems, [f"city boundary feature {i}: invalid ring (needs a closed ring of 4 or more finite numeric positions)"
                                     for i in (0, 1, 2)])
 
     def test_twenty_thousand_points_in_a_two_thousand_vertex_boundary_under_five_seconds(self):
@@ -200,7 +200,7 @@ class BuildTests(unittest.TestCase):
                                 cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         notes = [line for line in result.stderr.splitlines() if line.startswith("note: ")]
-        self.assertEqual(notes, ["note: city boundary feature 1: invalid ring (needs 4 or more finite numeric positions)"])
+        self.assertEqual(notes, ["note: city boundary feature 1: invalid ring (needs a closed ring of 4 or more finite numeric positions)"])
         self.assertNotIn("1e309", result.stderr + result.stdout)
         cities, _, _ = self.build()
         self.assertEqual(cities["cedar"]["cameraCount"], "0 community-mapped points" + TAIL)

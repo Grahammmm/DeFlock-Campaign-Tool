@@ -74,6 +74,11 @@ def _finished(report):
     return datetime.strptime(report["finished_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
+def _future(report, now):
+    """True when an already schema-valid report finished strictly after the aware assessment clock."""
+    return _finished(report) > now.astimezone(timezone.utc)
+
+
 def _check(name, state, reason, since=None, **extra):
     item = {"check": name, "state": state, "reason_code": reason, "since": since.isoformat() if since else None}
     item.update(extra)
@@ -132,8 +137,10 @@ def _valid_report(data):
     return True
 
 
-def _recent_reports(target_dir, limits):
-    """Newest ``report_window`` valid reports (oldest first) and the count of invalid ones skipped."""
+def _recent_reports(target_dir, limits, *, now):
+    """Newest ``report_window`` valid reports (oldest first) and the count of invalid or future ones skipped.
+
+    A report that finished after ``now`` is not evidence of completed processing and is never returned."""
     directory = target_dir / "reports"
     try:
         names = sorted(name for name in os.listdir(directory) if re.match(r"^run_[0-9TZ]{16}_[0-9a-f]{8}\.json$", name))
@@ -146,7 +153,7 @@ def _recent_reports(target_dir, limits):
         except (ValueError, OSError):
             bad += 1
             continue
-        if data is not None and _valid_report(data):
+        if data is not None and _valid_report(data) and not _future(data, now):
             valid.append(data)
         else:
             bad += 1
@@ -162,6 +169,8 @@ def _last_run(target_dir, now, limits, spec):
         return _check("last_run", "unknown", "run_report_missing"), None
     if not _valid_report(latest):
         return _check("last_run", "stop", "run_report_invalid"), None
+    if _future(latest, now):
+        return _check("last_run", "stop", "run_report_future"), None
     finished = _finished(latest)
     # A run is only overdue once the hours limit has passed AND two calendar slots have come and gone
     # since it finished. Without the second test a weekend (no slots) would read as "no recent run".
@@ -172,8 +181,8 @@ def _last_run(target_dir, now, limits, spec):
     return _check("last_run", "ok", "run_recent", finished), latest
 
 
-def _run_failures(target_dir, latest, limits):
-    series, _ = _recent_reports(target_dir, limits)
+def _run_failures(target_dir, latest, limits, now):
+    series, _ = _recent_reports(target_dir, limits, now=now)
     if not series and latest is not None:
         series = [latest]
     if not series:
@@ -187,7 +196,7 @@ def _run_failures(target_dir, latest, limits):
     return _check("run_failures", "ok", "runs_succeeding")
 
 
-def _notify(target_dir, limits):
+def _notify(target_dir, limits, now):
     alerts = target_dir / "alerts"
     try:
         failed = [name for name in os.listdir(alerts) if re.match(r"^notify-failed-.*\.json$", name)]
@@ -195,7 +204,7 @@ def _notify(target_dir, limits):
         failed = []
     if not failed:
         return _check("notify", "ok", "notify_ok")
-    series, _ = _recent_reports(target_dir, limits)
+    series, _ = _recent_reports(target_dir, limits, now=now)
     good = [item for item in series if item["overall_status"] != "fail" and not item["notify_failed"]]
     cutoff = _finished(good[-1]).timestamp() if good else None
     newest = 0.0
@@ -232,8 +241,8 @@ def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limi
     target_dir = _target_dir(runtime_dir, target)
     backlog, waiting, age = _arrival_backlog(runtime_dir, now, limits)
     last_run, latest = _last_run(target_dir, now, limits, spec)
-    checks = [backlog, _mail_poll(mail_store, now, limits), last_run, _run_failures(target_dir, latest, limits),
-              _notify(target_dir, limits), _schedule(records_root, now, spec)]
+    checks = [backlog, _mail_poll(mail_store, now, limits), last_run, _run_failures(target_dir, latest, limits, now),
+              _notify(target_dir, limits, now), _schedule(records_root, now, spec)]
     states = {item["state"] for item in checks}
     overall = next(state for state in ("stop", "warn", "unknown", "ok") if state in states)
     report = {"schema": SCHEMA, "now": now.isoformat(), "state": overall, "exit_code": EXIT[overall],
