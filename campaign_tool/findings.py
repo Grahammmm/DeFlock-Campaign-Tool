@@ -448,12 +448,16 @@ def assign(root, draft, role, reviewer, on, today=None, replace=False, now=None)
 
 def assignment_states(root, draft):
     """Read-only ``{role: {state, reviewer?, since?}}`` for all three roles: receipt_recorded when a current-content
-    receipt for that role exists (any reviewer), else assigned (since the assignment date), else unassigned.
-    An assignment is not a review: this feeds no blocker, receipt count or publication check."""
+    receipt for that role exists (any reviewer) bound to this campaign's id, else assigned (since the assignment
+    date), else unassigned. A receipt bound to another campaign, unbound, or read before this campaign has an id
+    completes nothing (no id is created here). An assignment is not a review: this feeds no blocker, receipt count
+    or publication check."""
     digest = reviewed_hash(draft)
+    local = campaign_id(root)
     receipts = _load_receipts(_receipts_path(root, draft))
     assigned = load_assignments(root, draft)
-    done = {r.get("role") for r in receipts if isinstance(r, dict) and r.get("content_sha256") == digest}
+    done = {r["role"] for r in receipts if local and isinstance(r, dict) and r.get("content_sha256") == digest
+            and r.get("campaign_id") == local and isinstance(r.get("role"), str) and r["role"] in ROLES}
     return {role: {"state": "receipt_recorded"} if role in done
             else {"state": "assigned", "reviewer": assigned[role]["reviewer"], "since": assigned[role]["on"]}
             if role in assigned else {"state": "unassigned"} for role in sorted(ROLES)}
