@@ -67,7 +67,10 @@ class CorrectionRequestTests(unittest.TestCase):
         self.assertEqual(lines[-1], "Private log only; nothing was sent or published.")
         self.assertEqual(stat.S_IMODE(self.file.stat().st_mode), 0o600)
         after = self.snapshot()
-        self.assertEqual(set(after) - set(before), {"correction-requests.json"})
+        self.assertEqual(set(after) - set(before), {"correction-requests.json", ".correction-requests.lock"})
+        marker = self.private / ".correction-requests.lock"
+        self.assertEqual(stat.S_IMODE(marker.stat().st_mode), 0o600)
+        self.assertEqual(marker.read_bytes(), b"")
         self.assertEqual({k: v for k, v in after.items() if k in before}, before)
         self.assertEqual(self.add()["id"], 2)
         self.decide(request_id=1)
