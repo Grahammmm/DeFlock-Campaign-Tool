@@ -74,9 +74,30 @@ def check_votes(rows, root, agency_id, today):
     return votes
 
 
-def _find(folder, meeting_id):
+def _check_parents(root):
+    """RF0844-1: ``content`` then ``content/meetings`` (campaign-relative, checked lexically and in that order) must not
+    be symlinks, whatever they point at, and an existing one must be a directory. A missing one is left as it is. Never
+    resolves or reads a link target; the caller's campaign root remains the trust boundary."""
+    for relative in ("content", "content/meetings"):
+        path = root / relative
+        if os.path.islink(path):
+            raise MeetingOutcomeError(f"{relative} must not be a symlink; no staged meeting is read or written through it")
+        if os.path.lexists(path) and not os.path.isdir(path):
+            raise MeetingOutcomeError(f"{relative} must be a directory")
+
+
+def _check_writable(root, path):
+    """Checked again right before every write: the parents (RF0844-1) and the final file must not be symlinks."""
+    _check_parents(root)
+    if os.path.islink(path):
+        raise MeetingOutcomeError(f"content/meetings/{path.name} must not be a symlink")
+
+
+def _find(root, meeting_id):
     """The staged ``content/meetings/<file>`` whose id (or filename stem) is ``meeting_id``; never follows a symlink."""
-    paths = sorted(folder.glob("*.json")) if folder.is_dir() and not os.path.islink(folder) else []
+    _check_parents(root)
+    folder = root / "content" / "meetings"
+    paths = sorted(folder.glob("*.json")) if folder.is_dir() else []
     known = []
     for path in paths:
         if os.path.islink(path):
@@ -106,7 +127,7 @@ def record_outcome(root, meeting_id, result, on, source_url, verified_by, vote=N
         if value is not None and result != "continued":
             raise MeetingOutcomeError(f"{name}: requires result continued")
     rows = read_votes(votes_file) if votes_file is not None else None  # before any read of the meeting
-    path, document = _find(root / "content" / "meetings", meeting_id)
+    path, document = _find(root, meeting_id)
     label = f"meetings/{path.name}"
     meeting = load_meeting(document, label, today=today)
     if meeting["status"] == "cancelled":
@@ -131,8 +152,7 @@ def record_outcome(root, meeting_id, result, on, source_url, verified_by, vote=N
     prospective = load_meeting(updated, label, today=today)
     if continued_to is not None:  # DF0022-07: the staged meetings with only this outcome replaced
         _check_continuation(root, path, prospective, today)
-    if os.path.islink(path):  # checked again right before the write
-        raise MeetingOutcomeError(f"content/meetings/{path.name} must not be a symlink")
+    _check_writable(root, path)  # checked again right before the write
     _write_json(path, updated)
     return outcome
 
@@ -174,6 +194,7 @@ def _check_continuation(root, path, meeting, today):
     """DF0022-07: ``meeting``'s explicit ``continued_to`` must name one scheduled, later meeting of the same body among
     the staged ones. Only this meeting's outcome is replaced in the set, so a broken reference elsewhere (or the one
     being replaced) never blocks it; reads only, no symlink is followed, nothing is written."""
+    _check_parents(root)  # RF0844-1: before the staged meetings are enumerated
     source = {**meeting, "id": meeting["id"] or path.stem}
     staged, unreadable = [source], {}
     for other in sorted((root / "content" / "meetings").glob("*.json")):
@@ -205,7 +226,7 @@ def record_minutes(root, meeting_id, minutes_url, minutes_approved_on, *, replac
     Only ``minutes_url`` and ``minutes_approved_on`` are merged into the stored outcome; every other outcome and
     meeting field stays exactly as stored. Nothing is fetched; the whole document is validated before the write."""
     today = today or date.today()
-    path, document = _find(root / "content" / "meetings", meeting_id)
+    path, document = _find(root, meeting_id)
     label = f"meetings/{path.name}"
     meeting = load_meeting(document, label, today=today)
     if meeting["status"] == "cancelled":
@@ -220,8 +241,7 @@ def record_minutes(root, meeting_id, minutes_url, minutes_approved_on, *, replac
     stored = {key: value for key, value in document["outcome"].items() if key not in MINUTES_KEYS}
     updated = {**document, "outcome": {**stored, "minutes_url": minutes_url, "minutes_approved_on": minutes_approved_on}}
     load_meeting(updated, label, today=today)
-    if os.path.islink(path):  # checked again right before the write
-        raise MeetingOutcomeError(f"content/meetings/{path.name} must not be a symlink")
+    _check_writable(root, path)  # checked again right before the write
     _write_json(path, updated)
     return updated["outcome"]
 
@@ -236,7 +256,7 @@ def record_direction(root, meeting_id, direction, return_by, *, direction_source
     _check_direction_pair(direction, return_by, direction_source)
     if direction is None:
         raise MeetingOutcomeError("direction: required")
-    path, document = _find(root / "content" / "meetings", meeting_id)
+    path, document = _find(root, meeting_id)
     label = f"meetings/{path.name}"
     meeting = load_meeting(document, label, today=today)
     if meeting["status"] == "cancelled":
@@ -253,8 +273,7 @@ def record_direction(root, meeting_id, direction, return_by, *, direction_source
     prospective = load_meeting(updated, label, today=today)
     if "continued_to" in prospective["outcome"]:  # the staged meetings with only this outcome replaced
         _check_continuation(root, path, prospective, today)
-    if os.path.islink(path):  # checked again right before the write
-        raise MeetingOutcomeError(f"content/meetings/{path.name} must not be a symlink")
+    _check_writable(root, path)  # checked again right before the write
     _write_json(path, updated)
     return updated["outcome"]
 
@@ -273,7 +292,7 @@ def record_comment_counts(root, meeting_id, *, spoke=None, written=None, comment
     _check_comment_pair(spoke, written, comment_source_url)
     if spoke is None and written is None:
         raise MeetingOutcomeError("public comment counts: needs --spoke or --written")
-    path, document = _find(root / "content" / "meetings", meeting_id)
+    path, document = _find(root, meeting_id)
     label = f"meetings/{path.name}"
     meeting = load_meeting(document, label, today=today)
     if meeting["status"] == "cancelled":
@@ -291,8 +310,7 @@ def record_comment_counts(root, meeting_id, *, spoke=None, written=None, comment
     prospective = load_meeting(updated, label, today=today)
     if "continued_to" in prospective["outcome"]:  # the staged meetings with only this outcome replaced
         _check_continuation(root, path, prospective, today)
-    if os.path.islink(path):  # checked again right before the write
-        raise MeetingOutcomeError(f"content/meetings/{path.name} must not be a symlink")
+    _check_writable(root, path)  # checked again right before the write
     _write_json(path, updated)
     return updated["outcome"]
 
