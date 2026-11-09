@@ -1,0 +1,7 @@
+event_id	date	time_local	agency	request_ref	event_type	what_happened	source	who	basis	clock_note
+AL-001	2026-07-30		Alpha PD	26-001	request_sent	CANARY-NAME-Zed Quill wrote to us	CANARY-NAME-source	CANARY-NAME-who	DATED	CANARY-NAME-clock
+AL-002	2026-08-01	10:00 PDT	Alpha PD	26-001	acknowledged	CANARY-NAME-Zed Quill acknowledged	CANARY-NAME-source	CANARY-NAME-who	DATED	CANARY-NAME-clock
+AL-003	2026-08-10		Alpha PD	26-001	clock_due	CANARY-NAME due	computed	computed	INFERRED	CANARY-NAME-clock
+AL-004	2026-08-12		Alpha PD	26-001	production	CANARY-NAME produced	CANARY-NAME-source	CANARY-NAME-who	DATED	
+AL-005	2026-08-02		Alpha PD	26-077 (third party)	request_sent	CANARY-NAME other requester	x	x	DATED	
+AL-006	2026-08-03		Alpha PD	context	system_record	CANARY-NAME context row	x	x	DATED	

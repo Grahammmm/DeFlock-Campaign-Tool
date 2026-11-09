@@ -54,6 +54,7 @@ REVIEWED_NOT_PUBLISHING = {
     "tools/custody_report.py": "private custody report", "tools/agency_verify.py": "private verification report",
     "tools/flock_redaction_record.py": "private redaction record", "tools/flock_privacy_scan.py": "the scanner itself",
     "tools/store_inventory.py": "private inventory", "tools/flock_privacy.py": "re-exports the shared patterns",
+    "tools/workspace_seed.py": "local seed.sql for the workspace D1; templated text only, backstop-screened, owner approves by hash",
 }
 # (module, function) writers inside a REGISTERED module that were read and publish nothing (reason each).
 REVIEWED_FUNCTIONS = {

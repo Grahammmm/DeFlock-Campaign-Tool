@@ -14,13 +14,14 @@ import type { Env } from "./env.ts";
 import { exportResponse } from "./export.ts";
 import { mailSenderConfigured } from "./executors/index.ts";
 import { UNSUBSCRIBE_PLACEHOLDER } from "./executors/send_newsletter.ts";
+import { healthReport } from "./health.ts";
 import { emailHandler } from "./mail.ts";
 import { assembleManifest, type BrevoSettings } from "./manifest.ts";
 import { issueCorrection, proposePublication, submitReview, withdrawFinding, WorkflowError } from "./publication.ts";
 import { recomputeState } from "./review_state.ts";
 import { runnerApi } from "./runner.ts";
 import { subscribeWebhook } from "./routes/subscribe_webhook.ts";
-import { signDownload, verifyDownload } from "./signing.ts";
+import { downloadsConfigured, signDownload, verifyDownload } from "./signing.ts";
 import { page } from "./views/layout.ts";
 import * as V from "./views/screens.ts";
 
@@ -57,6 +58,7 @@ app.route("/api/webhooks/subscribe", subscribeWebhook);
 // Signed downloads: HMAC link minted by an authenticated organizer; no Access on this path.
 app.get("/dl/:sha256", async (c) => {
   const sha = c.req.param("sha256");
+  if (!downloadsConfigured(c.env)) return c.json({ error: "download_not_configured" }, 503);
   const exp = Number(c.req.query("exp"));
   const sig = c.req.query("sig") ?? "";
   if (!HEX64.test(sha) || !(await verifyDownload(c.env.DOWNLOAD_SIGNING_KEY, sha, exp, sig))) return c.text("link invalid or expired", 403);
@@ -74,7 +76,10 @@ app.get("/dl/:sha256", async (c) => {
   });
 });
 
-app.get("/healthz", (c) => c.json({ ok: true, campaign: Boolean(c.env.CAMPAIGN_ID) }));
+app.get("/healthz", async (c) => {
+  const { status, body } = await healthReport(c.env);
+  return c.json(body, status);
+});
 
 // Cross-site request forgery: Access authenticates with an ambient cookie, so a
 // state-changing request must come from this origin. Browsers always send Origin (and
@@ -176,6 +181,7 @@ app.get("/records/:sha256", async (c) => {
 });
 
 app.post("/records/:sha256/link", async (c) => {
+  if (!downloadsConfigured(c.env)) return c.json({ error: "download_not_configured" }, 503);
   const sha = c.req.param("sha256");
   const o = await c.var.repo.original(sha);
   if (!o) return c.text("not found", 404);
@@ -448,6 +454,7 @@ function secretPresence(env: Env): V.SecretPresence[] {
     { name: "DOWNLOAD_SIGNING_KEY", present: Boolean(env.DOWNLOAD_SIGNING_KEY), note: "HMAC key for short-lived original download links" },
     { name: "ACCESS_AUD", present: Boolean(env.ACCESS_AUD), note: "Access application audience tag" },
     { name: "ACCESS_TEAM_DOMAIN", present: Boolean(env.ACCESS_TEAM_DOMAIN), note: "Access team domain used to fetch signing certificates" },
+    { name: "ORGANIZER_EMAILS", present: Boolean(env.ORGANIZER_EMAILS?.trim()), note: "Optional organizer email allowlist behind Access; when set, other signed-in identities get 403. Value is never shown" },
     { name: "BREVO_API_KEY", present: Boolean(env.BREVO_API_KEY), note: "Brevo v3 key used only by the send_newsletter executor (campaign create + send)" },
     { name: "SUBSCRIBE_WEBHOOK_SECRET", present: Boolean(env.SUBSCRIBE_WEBHOOK_SECRET), note: "HMAC secret verifying POST /api/webhooks/subscribe deliveries" },
     { name: "OUTBOX_GATEWAY_URL", present: Boolean(env.OUTBOX_GATEWAY_URL), note: "Signed outbox gateway URL; with OUTBOX_SIGNING_KEY lets approved send_request / send_followup cards deliver" },

@@ -10,6 +10,7 @@ import { buildExecutors, type MailSender, type OutboundMessage } from "../src/ex
 import { findingSlug } from "../src/manifest.ts";
 import { issueCorrection, proposePublication, submitReview, withdrawFinding, WorkflowError } from "../src/publication.ts";
 import { seedCampaign } from "./helpers.ts";
+import { dashboard, settings } from "../src/views/screens.ts";
 
 const AUTHOR: AccessIdentity = { email: "author@example.invalid", sub: "a", issued_at: 0, expires_at: 0 };
 const ORG: AccessIdentity = { email: "organizer@example.invalid", sub: "o", issued_at: 0, expires_at: 0 };
@@ -487,5 +488,39 @@ describe("mail content execution identity", () => {
       await approveAction(repo, card.action_id, ORG);
       expect(Boolean(await repo.claimForExecution(card.action_id))).toBe(allowed);
     }
+  });
+});
+
+describe("ADM-SENDLOCK-1: send_newsletter obeys campaign.external_sends", () => {
+  it("refuses external_sends_disabled with a key and list configured, creates nothing, and works again once approval_required", async () => {
+    const repo = await seedCampaign();
+    await repo.putSetting("brevo", { list_id: 42, form_url: null, sender_name: "Example Campaign", sender_email: "news@campaign.example.invalid" });
+    await repo.db.prepare("UPDATE campaign SET external_sends = 'disabled' WHERE campaign_id = ?").bind(repo.campaignId).run();
+    const brevo = new FakeBrevo();
+    const { row } = await repo.propose("send_newsletter", null, { subject: "x", html: HTML, text: "" }, "nl-lock-1", ORG.email);
+    await approveAction(repo, row.action_id, ORG);
+    const blocked = await executeAction(repo, env as Env, row.action_id, ORG, buildExecutors({ brevo }));
+    expect(blocked.error).toMatch(/^external_sends_disabled: /);
+    expect(brevo.created).toHaveLength(0);
+    expect(brevo.sent).toHaveLength(0);
+    await repo.db.prepare("UPDATE campaign SET external_sends = 'approval_required' WHERE campaign_id = ?").bind(repo.campaignId).run();
+    const { row: ok } = await repo.propose("send_newsletter", null, { subject: "y", html: HTML, text: "" }, "nl-lock-2", ORG.email);
+    await approveAction(repo, ok.action_id, ORG);
+    expect((await executeAction(repo, env as Env, ok.action_id, ORG, buildExecutors({ brevo }))).state).toBe("executed");
+    expect(brevo.created).toHaveLength(1);
+  });
+
+  it("home and Settings say Outbound: OFF when disabled and Outbound: ON when approval_required", async () => {
+    const repo = await seedCampaign();
+    const on = await repo.campaign();
+    expect(String(dashboard(on, {}, [], [], []))).toContain("Outbound: ON");
+    expect(String(settings(on, [], [], null, null, false))).toContain("Outbound: ON");
+    await repo.db.prepare("UPDATE campaign SET external_sends = 'disabled' WHERE campaign_id = ?").bind(repo.campaignId).run();
+    const off = await repo.campaign();
+    expect(String(dashboard(off, {}, [], [], []))).toContain("Outbound: OFF");
+    expect(String(settings(off, [], [], null, null, false))).toContain("Outbound: OFF");
+    expect(String(dashboard(null, {}, [], [], []))).toContain("Outbound: OFF");
+    // the test database is shared across tests: put the switch back
+    await repo.db.prepare("UPDATE campaign SET external_sends = 'approval_required' WHERE campaign_id = ?").bind(repo.campaignId).run();
   });
 });

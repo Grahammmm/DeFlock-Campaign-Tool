@@ -70,4 +70,36 @@ describe("Access JWT validation", () => {
     expect(() => requireRunner(new Request("https://x.invalid/"), env as Env)).toThrow(AuthError);
     expect(() => requireRunner(ok, { ...env, RUNNER_TOKEN: "short" } as Env)).toThrow(/not configured/);
   });
+
+  it("ORGANIZER_EMAILS: unset keeps today's behaviour; set admits listed (any case) and refuses others with 403", async () => {
+    await seedCampaign();
+    const s = await makeSigner();
+    const get = async (email: string, extra: Record<string, string | undefined>) =>
+      call(new Request("https://workspace.example.invalid/api/me", { headers: { "cf-access-jwt-assertion": await s.sign(claimsFor(email)) } }), { ACCESS_CERTS_JSON: s.certsJson, ...extra });
+    expect((await get("anyone@example.invalid", {})).status).toBe(200);
+    expect((await get("anyone@example.invalid", { ORGANIZER_EMAILS: "  " })).status).toBe(200);
+    const list = { ORGANIZER_EMAILS: "Boss@Example.invalid, second@example.invalid" };
+    expect((await get("boss@example.invalid", list)).status).toBe(200);
+    expect((await get("SECOND@example.invalid", list)).status).toBe(200);
+    const no = await get("stranger@example.invalid", list);
+    expect(no.status).toBe(403);
+    const body = await no.text();
+    expect(body).toContain("not an organizer");
+    expect(body).not.toContain("boss@example.invalid");
+  });
+
+  it("ORGANIZER_EMAILS: Settings lists it by presence only and never renders the value", async () => {
+    await seedCampaign();
+    const s = await makeSigner();
+    const page = async (extra: Record<string, string | undefined>) => {
+      const r = await call(new Request("https://workspace.example.invalid/settings", { headers: { "cf-access-jwt-assertion": await s.sign(claimsFor("boss@example.invalid")) } }), { ACCESS_CERTS_JSON: s.certsJson, ...extra });
+      expect(r.status).toBe(200);
+      return r.text();
+    };
+    const off = await page({});
+    expect(off).toContain("ORGANIZER_EMAILS");
+    const on = await page({ ORGANIZER_EMAILS: "boss@example.invalid,hidden-second@example.invalid" });
+    expect(on).toContain("ORGANIZER_EMAILS");
+    expect(on).not.toContain("hidden-second@example.invalid");
+  });
 });

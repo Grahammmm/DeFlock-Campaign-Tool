@@ -20,7 +20,6 @@ from pathlib import Path
 from . import agency_policies, draft_templates, playbook as pb
 
 KIND = "first-request"
-MAX_WINDOW_DAYS = 92  # "one named window of at most one quarter"
 EDIT = draft_templates.EDIT
 FOOTER = "---\nDraft only. Not legal advice. Review and G's signed approval are required; sending stays manual."
 _TEXT = re.compile(r"[^\x00-\x1f\x7f]{1,200}")
@@ -51,10 +50,9 @@ def _day(value, name):
 
 
 def check_window(start, end):
-    """Both ends ISO dates, start <= end, at most one quarter. Returns (start_date, end_date)."""
-    first, last = _day(start, "start"), _day(end, "end")
-    _need(first <= last, "window_invalid", "end before start")
-    _need((last - first).days + 1 <= MAX_WINDOW_DAYS, "window_too_long", "more than one quarter")
+    """Start is an ISO date; end is optional (open-ended, no length cap). Returns (start_date, end_date|None)."""
+    first, last = _day(start, "start"), (None if end is None else _day(end, "end"))
+    _need(last is None or first <= last, "window_invalid", "end before start")
     return first, last
 
 
@@ -113,14 +111,14 @@ def _item_lines(number, item, book, window, row, used, omitted):
     return lines
 
 
-def draft(book, rows, *, agency, agency_name, start, end, basis, requester=None, all_items=False):
+def draft(book, rows, *, agency, agency_name, start, end=None, basis, requester=None, all_items=False):
     """Build the first-request draft. Returns a dict; raises FirstRequestError on bad input."""
     pb.validate(book)
     _need(isinstance(agency, str) and _SLUG.match(agency), "agency_invalid")
     name, basis = _text(agency_name, "agency_name"), _text(basis, "basis")
     requester = _text(requester, "requester") if requester else None
     first, last = check_window(start, end)
-    window = f"{first.isoformat()} through {last.isoformat()}"
+    window = f"{first.isoformat()} through {last.isoformat()}" if last else f"{first.isoformat()} onward"
     plan = book["first_request"]
     items = [i for i in plan["items"] if all_items or i.get("lead")]
     _need(items, "no_items")
@@ -128,7 +126,7 @@ def draft(book, rows, *, agency, agency_name, start, end, basis, requester=None,
     used, omitted = [], []
 
     out = [draft_templates.DRAFT_BANNER, "", f"To: Records custodian, {name}",
-           f"Subject: Public records request for access and audit records, {window}", "",
+           "Subject: Public records request for access and audit records", "",
            f"This is a request for existing records under {basis}.", "",
            plan["exit_ramp"].replace(_EXIT_DATE, first.isoformat()), "", "Records requested:"]
     for number, item in enumerate(items, 1):
@@ -148,7 +146,7 @@ def draft(book, rows, *, agency, agency_name, start, end, basis, requester=None,
     if "[EDIT ME:" in body:
         reasons.append("unfilled placeholder")
     evidence = {
-        "playbook": {"id": book["id"], "version": book["version"]}, "agency": agency, "window": [first.isoformat(), last.isoformat()],
+        "playbook": {"id": book["id"], "version": book["version"]}, "agency": agency, "window": [first.isoformat(), last and last.isoformat()],
         "items": [i["key"] for i in items], "policy_row": None if row is None else {
             k: row[k] for k in ("policy_id", "section", "page", "doc_sha256")},
         "citations_used": used, "citations_omitted": omitted, "lint": lint["status"], "needs_edit": reasons,
@@ -174,7 +172,7 @@ def main(argv=None):
     ap.add_argument("--agency-name", required=True)
     ap.add_argument("--policies", required=True, help="agency-policies.csv")
     ap.add_argument("--window-start", required=True, help="YYYY-MM-DD")
-    ap.add_argument("--window-end", required=True, help="YYYY-MM-DD (window at most one quarter)")
+    ap.add_argument("--window-end", help="YYYY-MM-DD (optional; default: no end, longest period held)")
     ap.add_argument("--basis", required=True, help="the public-records law to cite, as you want it written")
     ap.add_argument("--requester")
     ap.add_argument("--playbook")

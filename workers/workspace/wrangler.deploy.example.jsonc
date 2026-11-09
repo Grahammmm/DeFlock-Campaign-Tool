@@ -1,0 +1,19 @@
+// Deploy config TEMPLATE for the workspace Worker. Safe to track: placeholders only.
+// To deploy: copy this file to wrangler.deploy.jsonc (same folder; git-ignored), replace the two
+// <PLACEHOLDER> ids by hand, and pass `-c wrangler.deploy.jsonc` to EVERY wrangler command.
+// Never put an account id, token or secret value in this tracked file. See docs/ADMIN-DEPLOY.md.
+{
+  "name": "deflock-workspace",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "deflock-campaign", "database_id": "<D1_DATABASE_ID>", "migrations_dir": "migrations" }
+  ],
+  "kv_namespaces": [{ "binding": "CACHE", "id": "<KV_NAMESPACE_ID>" }],
+  "triggers": { "crons": [] }
+  // Deliberately absent: r2_buckets, queues, vars. Secrets are set with `wrangler secret put`.
+}

@@ -23,6 +23,8 @@ export interface Env {
   MASTODON_TOKEN?: string;
   /** Optional Legistar events feed URLs (https, whitespace/comma separated) polled inline on each cron slot. Absent: legistar_poll: not configured. */
   LEGISTAR_FEEDS?: string;
+  /** Optional Worker secret: organizer email allowlist (comma/space separated, case-insensitive). Set: a valid Access identity not listed gets 403 "not an organizer". Unset or blank: any identity Access admits is an organizer. */
+  ORGANIZER_EMAILS?: string;
   /** Test hook: replaces global fetch for the Access certificate download. */
   ACCESS_CERTS_JSON?: string;
 }

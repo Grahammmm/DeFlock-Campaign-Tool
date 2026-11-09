@@ -29,6 +29,12 @@ class DraftTests(unittest.TestCase):
         self.assertNotIn("4. ", body)  # lead items only by default
         self.assertNotIn("Contracts", body)
 
+    def test_subject_carries_no_date_window(self):
+        for end in ("2026-09-30", None):
+            body = make(end=end)["body"]
+            self.assertIn("Subject: Public records request for access and audit records\n", body)
+            self.assertNotIn("through 2026", body)
+
     def test_longest_period_fields_and_redaction_pre_offer(self):
         body = make()["body"]
         self.assertIn("with every recorded field, for the longest period held.", body)
@@ -102,12 +108,13 @@ class RefusalTests(unittest.TestCase):
             make(**over)
         self.assertEqual(ctx.exception.code, code)
 
-    def test_window_longer_than_a_quarter_reversed_or_malformed_refused(self):
-        self.refused("window_too_long", start="2026-01-01", end="2026-12-31")
+    def test_reversed_or_malformed_window_refused_and_long_or_open_window_allowed(self):
         self.refused("window_invalid", start="2026-09-30", end="2026-07-01")
         self.refused("window_invalid", start="July 1", end="2026-07-31")
         self.refused("window_invalid", start="2026-02-30", end="2026-03-01")
-        make(start="2026-07-01", end="2026-09-30")  # 92 days is allowed
+        self.refused("window_invalid", start="2026-07-01", end="2026/09/30")
+        make(start="2026-01-01", end="2027-12-31")  # no one-quarter cap
+        self.assertEqual(make(end=None)["evidence"]["window"], ["2026-07-01", None])
 
     def test_bad_agency_or_text_fields_refused(self):
         self.refused("agency_invalid", agency="Not A Slug")
@@ -141,9 +148,12 @@ class QueueAndCliTests(unittest.TestCase):
         self.assertIn("treat this request as complete", out.getvalue())
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
-            code = fr.main(argv[:8] + ["--window-end", "2027-09-30"] + argv[10:])
-        self.assertEqual((code, out.getvalue()), (2, ""))
-        self.assertIn("window_too_long", err.getvalue())
+            code = fr.main(argv[:8] + argv[10:])  # --window-end omitted
+        self.assertEqual(code, 0)
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = fr.main(argv[:8] + ["--window-end", "2026-06-30"] + argv[10:])
+        self.assertEqual(code, 2)
+        self.assertIn("window_invalid", err.getvalue())
 
 
 if __name__ == "__main__":
