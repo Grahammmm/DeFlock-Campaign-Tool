@@ -289,8 +289,11 @@ class OutputsStage(unittest.TestCase):
         self.assertEqual(set(snapshot), {"snapshot_version", "run_id", "stage_state", "mail_messages", "originals", "portal_items", "portal_refusals"})
         self.assertEqual(self.fingerprint(project), before)
         frozen = {str(p.relative_to(output)): p.read_bytes() for p in output.rglob("*") if p.is_file()}
+        inodes = {str(p.relative_to(output)): (p.stat().st_ino, p.stat().st_mtime_ns) for p in output.rglob("*") if p.is_file()}
         self.assertEqual(self.invoke(project)[1], 0)
         self.assertEqual({str(p.relative_to(output)): p.read_bytes() for p in output.rglob("*") if p.is_file()}, frozen)
+        self.assertEqual({str(p.relative_to(output)): (p.stat().st_ino, p.stat().st_mtime_ns)
+                          for p in output.rglob("*") if p.is_file()}, inodes)
         self.assertEqual(self.fingerprint(project), before)
         self.assertEqual(self.invoke(project, "synthetic-next-run")[1], 0)
         self.assertTrue((project / "run-outputs/synthetic-next-run/comparison.md").is_file())
@@ -367,7 +370,7 @@ class OutputsStage(unittest.TestCase):
         with patch.object(c, "_load", side_effect=OSError("synthetic read failure")):
             result, code = self.invoke(project)
         self.assertEqual((code, result["error_code"]), (1, "OUTPUTS_WRITE_FAILED"))
-        with patch.object(c.os, "replace", side_effect=OSError("synthetic write failure")):
+        with patch.object(c.os, "link", side_effect=OSError("synthetic write failure")):
             result, code = self.invoke(project)
         self.assertEqual((code, result["error_code"]), (1, "OUTPUTS_WRITE_FAILED"))
 
