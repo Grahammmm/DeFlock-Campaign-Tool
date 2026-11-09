@@ -342,7 +342,8 @@ def changes(policy_rows, facts): return changes_lines(*changes_rows(policy_rows,
 
 def _compare(policy_rows, facts, on, types=None):  # per fact type: agencies grouped by governing-policy value class on `on`
     ungoverned, rows, kept, n = [], [], {}, {"agencies": 0, "governed": 0, "ungoverned": 0, "types": 0, "differ": 0,
-                                             "agree": 0, "disputed_skipped": 0}  # report: slugs, fact ids, counts only
+                                             "agree": 0, "disputed_skipped": 0, "unreadable_skipped": 0}  # report: slugs, fact ids, counts only
+    discovered = set()  # include extraction-gap types even when no readable policy value exists
     agencies = sorted({slug(r["agency"]) for _, r in policy_rows})
     for a in agencies:  # kept[a] = {fact type: [facts]} from documents governing on `on`; disputed ones counted, not used
         docs, kept[a] = {r["doc_sha256"] for r in governs_on(policy_rows, a, on)}, {}
@@ -352,8 +353,13 @@ def _compare(policy_rows, facts, on, types=None):  # per fact type: agencies gro
             if f["source_sha256"].strip() in docs and f["status"] == "disputed":
                 n["disputed_skipped"] += 1
             elif f["source_sha256"].strip() in docs:
-                kept[a].setdefault(" ".join(f["fact_type"].split()), []).append(f)
-    wanted = sorted({" ".join(t.split()) for t in types} if types else {t for k in kept.values() for t in k})
+                t = " ".join(f["fact_type"].split())
+                discovered.add(t)
+                if f["value"].strip() == "UNREADABLE":
+                    n["unreadable_skipped"] += 1
+                else:
+                    kept[a].setdefault(t, []).append(f)
+    wanted = sorted({" ".join(t.split()) for t in types} if types else discovered)
     for t in wanted:
         classes, undocumented = {}, []
         for a in agencies:  # classes numbered in order of their first agency slug

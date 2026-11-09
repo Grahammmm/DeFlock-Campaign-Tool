@@ -63,6 +63,12 @@ A clean check is machine-valid and review-required, not legal acceptance.
   normalised value (FACTS ids shown, values never); `undocumented:` lists the rest, and an agency with no governing
   policy is named once. Disputed facts are counted, not used. Exit 3 when any type `differ`s: a prompt to read those
   documents, not a legal conclusion.
+- Exact `value.strip() == "UNREADABLE"` citations record extraction gaps, not policy values; lowercase `unreadable`,
+  `N/A` and prose remain ordinary quoted values. Governing, non-disputed gaps count in `unreadable_skipped`, before
+  any `--types` filter, and never supply class members or FACTS ids. Disputed gaps count only in `disputed_skipped`.
+  Unreadable-only types remain visible by default; agencies without readable evidence are `undocumented`, even
+  when their adopted policy governs. Two such agencies do not agree, and one gap beside one readable agency
+  does not differ (null verdict, exit 0). Mixed citations use only readable values for agreement/difference.
 - Machine copy: add `--json` for one `flock-law-policy-compare-v1` document (classes, member slugs, fact ids, verdicts; never values); same exit codes.
 
 ## Outputs
