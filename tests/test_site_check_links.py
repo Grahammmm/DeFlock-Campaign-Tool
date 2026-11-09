@@ -137,7 +137,7 @@ class BuiltSiteTests(unittest.TestCase):
     def test_fictional_example_passes_with_real_links(self):
         out, err, error = self.run_build()
         self.assertIsNone(error, err)
-        self.assertEqual(err, "")
+        self.assertEqual(err, "sources.zip skipped: no local public source copies\n")  # DF0022-11: the skip line is on stderr
         self.assertIn("Public tree check passed (pattern scan, internal links and accessibility pattern lint; "
                       "not an accessibility audit; human review still required).", out)
         hrefs = "".join(p.read_text(encoding="utf-8") for p in self.public.rglob("*.html"))

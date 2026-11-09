@@ -335,6 +335,169 @@ class InventoryTests(LinkCheckBase):
         self.assertEqual(raised.exception.code, 1)
 
 
+class StoredLocatorTests(LinkCheckBase):
+    def write_store(self, name, document):
+        path = self.root / "content" / name
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return path
+
+    def stores(self):
+        actions = [{"agency_id": agency, "on": day, "kind": "policy_posted",
+                    "as_stated": "Synthetic statement", "source_url": url, "checked_on": "2026-10-30"}
+                   for agency, day, url in (
+                       ("ca-cedar-police", "2026-10-20", "https://locator.example.org/shared"),
+                       ("ca-cedar-sheriff", "2026-10-01", "https://locator.example.org/sheriff"),
+                       ("ca-cedar-police", "2026-10-10", "https://locator.example.org/shared"))]
+        terms = [{"term": name, "aliases": [alias], "source_url": url,
+                  "definition_md": f"[one]({url}#part) [two]({url}#part)"}
+                 for name, alias, url in (
+                     (" Zulu café ", "Zed", "https://locator.example.org/zulu"),
+                     ("aLPHa", "First", "https://locator.example.org/alpha"))]
+        self.write_store("agency-actions.json", {"schema_version": 1, "actions": actions})
+        self.write_store("glossary.json", {"schema_version": 1, "terms": terms})
+        return actions, terms
+
+    def assert_round_trips(self, groups):
+        # Resolve emitted coordinates from disk, independently of product location helpers.
+        import re
+        for group in groups:
+            for locator in group["citations"]:
+                if not locator.startswith(("content/agency-actions.json:", "content/glossary.json:terms[")):
+                    continue
+                filename, coordinate = locator.split(":", 1)
+                match = re.fullmatch(r"(actions|terms)\[(\d+)\]\.(source_url|definition_md)(?:\[anchor (\d+)\])?", coordinate)
+                self.assertIsNotNone(match, locator)
+                assert match is not None
+                array, index, field, anchor = match.groups()
+                value = json.loads((self.root / filename).read_text(encoding="utf-8"))[array][int(index)][field]
+                if anchor:
+                    # Fixture Markdown has only explicit inline links; no product parser as oracle.
+                    value = re.findall(r"\]\(([^)]+)\)", value)[int(anchor) - 1]
+                self.assertEqual(value, group["url"], locator)
+
+    def test_action_citations_resolve_global_stored_rows(self):
+        actions, _ = self.stores()
+        urls = self.by_url()
+        self.assertEqual(urls["https://locator.example.org/shared"]["citations"], [
+            "content/agency-actions.json:actions[0].source_url",
+            "content/agency-actions.json:actions[2].source_url"])
+        self.assertEqual(urls["https://locator.example.org/sheriff"]["citations"], [
+            "content/agency-actions.json:actions[1].source_url"])
+        self.assert_round_trips(list(urls.values()))
+        self.write_store("agency-actions.json", {"schema_version": 1, "actions": [actions[1], actions[2], actions[0]]})
+        reordered = self.by_url()
+        self.assertEqual(set(reordered), set(urls))
+        self.assertEqual(reordered["https://locator.example.org/shared"]["citations"], [
+            "content/agency-actions.json:actions[1].source_url",
+            "content/agency-actions.json:actions[2].source_url"])
+        self.assertEqual(reordered["https://locator.example.org/sheriff"]["citations"], [
+            "content/agency-actions.json:actions[0].source_url"])
+        self.assert_round_trips(list(reordered.values()))
+
+    def test_glossary_citations_resolve_unsorted_stored_terms(self):
+        _, terms = self.stores()
+        for rows, zulu, alpha in ((terms, 0, 1), (terms[::-1], 1, 0)):
+            self.write_store("glossary.json", {"schema_version": 1, "terms": rows})
+            model = content_links.load_content(self.root, today=TODAY)
+            self.assertEqual([term["term"] for term in model["glossary"]["terms"]], ["aLPHa", "Zulu café"])
+            urls = self.by_url()
+            for name, index in (("zulu", zulu), ("alpha", alpha)):
+                url = f"https://locator.example.org/{name}"
+                self.assertEqual(urls[url]["citations"], [f"content/glossary.json:terms[{index}].source_url"])
+                self.assertEqual(urls[url + "#part"]["citations"], [
+                    f"content/glossary.json:terms[{index}].definition_md[anchor 1]",
+                    f"content/glossary.json:terms[{index}].definition_md[anchor 2]"])
+            self.assert_round_trips(list(urls.values()))
+
+    def test_locator_optional_stores_and_existing_groups(self):
+        for name in ("agency-actions.json", "glossary.json"):
+            (self.root / "content" / name).unlink(missing_ok=True)
+        baseline = self.groups()
+        self.write_store("agency-actions.json", {"schema_version": 1, "actions": []})
+        self.write_store("glossary.json", {"schema_version": 1, "terms": []})
+        self.assertEqual(self.groups(), baseline)
+        actions, terms = self.stores()
+        terms[0]["source_url"] = actions[0]["source_url"]
+        terms[0]["definition_md"] = "No external links. [local](/local) [same](https://cedar-records.example.invalid/a)"
+        self.write_store("glossary.json", {"schema_version": 1, "terms": terms})
+        groups = self.groups()
+        self.assertEqual(groups, self.groups())
+        shared = next(group for group in groups if group["url"] == actions[0]["source_url"])
+        self.assertEqual(len(shared["citations"]), 3)
+        self.assert_round_trips(groups)
+        targeted = ("content/agency-actions.json:", "content/glossary.json:")
+        unchanged = [{**g, "citations": [c for c in g["citations"] if not c.startswith(targeted)]} for g in groups]
+        self.assertEqual([g for g in unchanged if g["citations"]], baseline)
+
+    def test_locator_resolution_refuses_changed_or_unreadable_source(self):
+        real_load = content_links.load_content
+        for name, array in (("agency-actions.json", "actions"), ("glossary.json", "terms")):
+            for change in ("missing", "malformed", "symlink", "directory", "changed", "empty", "duplicate", "oversize"):
+                for injected in (False, True):
+                    with self.subTest(name=name, change=change, injected=injected):
+                        self.stores()
+                        path = self.root / "content" / name
+                        original = path.read_bytes()
+
+                        def load_then_change(*args, **kwargs):
+                            model = real_load(*args, **kwargs)
+                            if change in ("missing", "symlink", "directory"):
+                                path.unlink()
+                                if change == "symlink":
+                                    path.symlink_to(self.root / "kit" / "drafts.json")
+                                elif change == "directory":
+                                    path.mkdir()
+                            elif change == "malformed":
+                                path.write_text('{"' + SENTINEL, encoding="utf-8")
+                            elif change == "oversize":
+                                path.write_bytes(b" " * (3 * 1024 * 1024))
+                            else:
+                                doc = json.loads(original)
+                                if change == "changed":
+                                    doc[array][0]["source_url"] = SENTINEL
+                                elif change == "empty":
+                                    doc[array] = []
+                                else:
+                                    doc[array].append(doc[array][0])
+                                self.write_store(name, doc)
+                            return model
+
+                        opener = FakeOpener({})
+                        try:
+                            with mock.patch.object(content_links, "load_content", side_effect=load_then_change), \
+                                    mock.patch.object(content_links, "real_opener") as factory:
+                                with self.assertRaises(content_links.LinkCheckError) as raised:
+                                    content_links.run_cli(self.root, True, opener=opener if injected else None, today=TODAY)
+                                self.assertEqual(str(raised.exception), f"content/{name}: cannot resolve stored citation locations")
+                                factory.assert_not_called()
+                            self.assertEqual(opener.requests, [])
+                        finally:
+                            if path.is_dir() and not path.is_symlink():
+                                path.rmdir()
+                            elif path.is_symlink():
+                                path.unlink()
+                            path.write_bytes(original)
+
+    def test_citation_locator_modes_are_read_only(self):
+        self.stores()
+        def state():
+            return {str(p.relative_to(self.root)): (p.stat().st_mode, p.read_bytes() if p.is_file() else None)
+                    for p in self.root.rglob("*")}
+        before = state()
+        with mock.patch.object(socket.socket, "connect", side_effect=AssertionError("socket")), \
+                mock.patch.object(socket, "getaddrinfo", side_effect=AssertionError("DNS")), \
+                mock.patch.object(content_links, "real_opener", side_effect=AssertionError("opener")):
+            offline, code = content_links.run_cli(self.root, today=TODAY)
+            self.assertEqual(code, 0)
+            opener = FakeOpener({"https://locator.example.org/zulu": {"status": 404}})
+            online, code = content_links.run_cli(self.root, True, opener=opener, today=TODAY)
+        self.assertEqual(code, 3)
+        self.assertEqual([line for line in offline.splitlines() if line.startswith("  cited by")],
+                         [line for line in online.splitlines() if line.startswith("  cited by")])
+        self.assertEqual(state(), before)
+        self.assertEqual(len(opener.requests), len({url.split("#")[0] for url in self.by_url()}))
+
+
 class TransportTests(LinkCheckBase):
     def entries(self, *urls):
         return [{"url": url, "citations": ["x"], "archives": []} for url in urls]
