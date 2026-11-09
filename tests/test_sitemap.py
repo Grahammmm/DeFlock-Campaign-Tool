@@ -59,7 +59,7 @@ class SitemapTests(unittest.TestCase):
         err = io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
             cli.build(self.root)
-        return err.getvalue()
+        return "".join(l + "\n" for l in err.getvalue().splitlines() if not l.startswith("sources.zip"))  # DF0022-11: skip line is on stderr
 
     def urls(self):
         root = ET.fromstring((self.public / "sitemap.xml").read_text(encoding="utf-8"))
