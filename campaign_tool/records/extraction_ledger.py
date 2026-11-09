@@ -103,9 +103,28 @@ def private_dir(path):
     return path
 
 
-def read_file(path,limit):
+def open_anchored(path):
+    """Open a checked absolute file path component-by-component from verified descriptors.
+
+    O_NOFOLLOW on the final open protects only the leaf, so each ancestor is opened
+    with O_NOFOLLOW|O_DIRECTORY relative to its already-open parent. An ancestor
+    swapped for a link after checked_path fails the open and no descriptor leaks.
+    """
     path=checked_path(path)
-    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    parts=path.parts
+    if not path.is_absolute() or len(parts)<2:raise ExtractionBindingError("artifact_path")
+    directory_flags=os.O_NOFOLLOW|os.O_DIRECTORY|os.O_NONBLOCK|getattr(os,"O_CLOEXEC",0)|getattr(os,"O_PATH",os.O_RDONLY)
+    current=os.open(parts[0],directory_flags)
+    try:
+        for name in parts[1:-1]:
+            following=os.open(name,directory_flags,dir_fd=current)
+            os.close(current);current=following
+        return os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|getattr(os,"O_CLOEXEC",0),dir_fd=current)
+    finally:os.close(current)
+
+
+def read_file(path,limit):
+    fd=open_anchored(path)
     try:
         before=os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or before.st_uid!=os.geteuid() or before.st_mode&0o077 or before.st_size>limit:

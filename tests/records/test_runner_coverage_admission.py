@@ -186,7 +186,8 @@ class AdmissionTests(unittest.TestCase):
                 def opening(name, flags, *args, **kwargs):
                     self.assertTrue(flags & os.O_NOFOLLOW)
                     self.assertTrue(flags & os.O_NONBLOCK)
-                    if Path(name) == path and kind == "swap":
+                    # Leaf opens are relative to a verified parent descriptor.
+                    if name == path.name and kwargs.get("dir_fd") is not None and kind == "swap":
                         saved = path.with_name("saved")
                         path.rename(saved)
                         path.symlink_to(saved)
@@ -215,6 +216,45 @@ class AdmissionTests(unittest.TestCase):
                             self.assert_denied(p, subject, rows, limit=1)
                 self.assertEqual(closed, descriptors)
                 self.assertLessEqual(sum(consumed), el.MAX_UNIT + 1)
+
+    def test_ancestor_swapped_after_path_check_fails_closed(self):
+        # The pre-open symlink check passes, then an ancestor becomes a link.
+        for swapped_name in ("outer", "inner"):
+            with self.subTest(swapped=swapped_name), tempfile.TemporaryDirectory() as directory:
+                p, subject, rows, _, _ = fixture(directory)
+                original = Path(rows[0]["derived_path"])
+                nested = Path(directory) / "outer" / "inner"
+                nested.mkdir(parents=True, mode=0o700)
+                path = nested / original.name
+                original.rename(path)
+                rows[0]["derived_path"] = str(path)
+                moved = nested.parent if swapped_name == "outer" else nested
+                saved = moved.with_name(moved.name + ".saved")
+                check, swapped = el.checked_path, []
+                def swapping(value):
+                    result = check(value)
+                    if result == path and not swapped:
+                        swapped.append(True)
+                        moved.rename(saved)
+                        moved.symlink_to(saved, target_is_directory=True)
+                    return result
+                real_open, real_close = os.open, os.close
+                opened, closed = [], []
+                def opening(name, flags, *args, **kwargs):
+                    fd = real_open(name, flags, *args, **kwargs)
+                    opened.append(fd)
+                    return fd
+                def closing(fd):
+                    closed.append(fd)
+                    return real_close(fd)
+                with patch.object(el, "checked_path", side_effect=swapping), \
+                        patch.object(el.os, "open", side_effect=opening), \
+                        patch.object(el.os, "close", side_effect=closing):
+                    units, inventory, _ = rc.unit_view(p, subject, 3)
+                self.assertTrue(swapped)
+                self.assertNotIn(rows[0]["id"], [u["unit_id"] for u in units])
+                self.assertEqual(inventory[0]["blocked_reason"], GAP)
+                self.assertEqual(sorted(closed), sorted(opened))
 
     def test_capped_unsafe_unit_is_not_opened_and_checkpoint_remains_denied(self):
         with tempfile.TemporaryDirectory() as directory:
