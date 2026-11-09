@@ -154,21 +154,25 @@ def _projection(model, today, add, notes):
         setting = fc._setting(settings, r["agency_key"])
         if setting["autonomy"] != "draft":
             off.add(r.get("agency") or r["agency_key"])
-        wait = timedelta(days=1 + setting.get("silence_after_days", 0))
         deadline, promised = r.get("deadline") or {}, r.get("promised") or {}
         hits = []  # (candidate, date)
         now_day = fc._day(as_of)
         hits += [(c, now_day) for c in probe(r, now_day)]
-        due = fc._day(deadline.get("due"))
-        if deadline.get("state") in ("running", "due_today", "not_started") and due:
+        eligible = {"determination": (deadline, ("running", "due_today", "not_started", "past_due_reminder"), "past_due_reminder"),
+                    "promised": (promised, ("upcoming", "due_today", "passed"), "passed")}
+        for clock_kind, clock_date, reminder_date in fc.followup_due(r, setting):
+            source, states, passed = eligible[clock_kind]
+            day = fc._day(reminder_date)
+            if day is None or day <= now_day or source.get("state") not in states:
+                continue
             p = copy.deepcopy(r)
-            p["deadline"]["state"], p["promised"] = "past_due_reminder", {"state": "none", "date": None}
-            hits += [(c, due + wait) for c in probe(p, due + wait)]
-        pdate = fc._day(promised.get("date"))
-        if promised.get("state") in ("upcoming", "due_today") and pdate:
-            p = copy.deepcopy(r)
-            p["promised"]["state"], p["deadline"]["state"] = "passed", "running"
-            hits += [(c, pdate + wait) for c in probe(p, pdate + wait)]
+            if clock_kind == "determination":
+                p["deadline"]["state"], p["promised"] = passed, {"state": "none", "date": None}
+            else:
+                p["promised"]["state"] = passed
+            reminder = fc.REMINDERS[0 if clock_kind == "determination" else 1]
+            hits += [(c, day) for c in probe(p, day, reminder)
+                     if c.get("clock_kind") == clock_kind and c.get("clock_date") == clock_date]
         for q in rows:
             changed = fc._day(q.get("updated_at"))
             if q["status"] == "approved" and q["kind"] in fc.REMINDERS and changed and q["agency_id"] == r["agency_key"] \
