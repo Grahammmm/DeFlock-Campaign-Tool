@@ -104,6 +104,132 @@ class EngineTests(Base):
         self.assertEqual(msg["Subject"], "Re: Records")
         self.assertTrue(md.placements(self.project)[0]["threaded"])
 
+    def two_messages(self):
+        self.build_ledger(eml_headers="From: old@agency.example.test\r\n"
+                          "Message-ID: <old@agency.example.test>\r\n\r\nold\r\n")
+        digest = "a" * 64
+        blob = self.root / "blobs" / digest
+        blob.write_text("From: new@agency.example.test\r\nReply-To: records@agency.example.test\r\n"
+                        "Message-ID: <new@agency.example.test>\r\nSubject: New records\r\n"
+                        "References: <ancestor@agency.example.test>\r\n\r\nnew\r\n")
+        with md.store.ledger(self.ledger) as con:
+            con.execute("INSERT INTO originals(sha256,bytes,mime_detected,first_seen_at,role,scope,"
+                        "preservation_status,provenance_json,storage_path) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (digest, blob.stat().st_size, "message/rfc822", DAY, "agency_original", "in_scope",
+                         "verified", "{}", str(blob)))
+            con.execute("INSERT INTO occurrences VALUES('o3',?,'mail','new',NULL,NULL,'t','{}')", (digest,))
+            con.execute("INSERT INTO mail_messages VALUES('msg-2','acct','INBOX',1,2,?,?,?,?,'x')",
+                        ("<new@agency.example.test>", digest, "{}", DAY))
+            con.commit()
+        return [self.source(received_at=DAY + "T12:00:00Z"),
+                self.source(received_at=DAY + "T12:00:00.500000Z", item_id=received_items.item_id(digest))]
+
+    def test_latest_source_fractional_second_end_to_end(self):
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                self.tearDown_project()
+                sources = self.two_messages()
+                self.settings()
+                self.fixture(received=sources[::-1] if reverse else sources)
+                before = self.snapshot()
+                self.assertEqual(fe.run(self.project, "r1")["would_queue"], 1)
+                self.assertEqual(before, self.snapshot())
+                self.assertEqual(fe.run(self.project, "r1", apply=True)["queued"], 1)
+                row, = self.queued()
+                self.assertEqual(row["evidence"]["thread_item_id"], sources[1]["item_id"])
+                self.assertTrue(row["evidence"]["thread_basis"].endswith(sources[1]["received_at"]))
+                self.clean_approve(row)
+                self.assertEqual(self.place()["placed"], 1)
+                msg = self.parsed()
+                self.assertEqual(msg["To"], "records@agency.example.test")
+                self.assertEqual(msg["In-Reply-To"], "<new@agency.example.test>")
+                self.assertEqual(msg["References"], "<ancestor@agency.example.test> <new@agency.example.test>")
+
+    def test_equal_instants_are_ambiguous_across_spellings(self):
+        self.build_ledger()
+        self.settings()
+        for spelling in (DAY + "T12:00:00.000000Z", DAY + "T13:00:00+01:00"):
+            sources = [self.source(), self.source(received_at=spelling, item_id="a" * 64)]
+            for rows in (sources, sources[::-1], [sources[0], sources[0]]):
+                with self.subTest(spelling=spelling, rows=rows):
+                    self.fixture(received=rows)
+                    before = self.snapshot()
+                    result = fe.run(self.project, "r1", apply=True)
+                    self.assertEqual(result["manual_reasons"], {"ambiguous_source_message": 1})
+                    self.assertEqual(result["queued"], 0)
+                    self.assertEqual(before, self.snapshot())
+        earlier = self.source(received_at=DAY + "T11:00:00Z", item_id="a" * 64)
+        self.fixture(received=[earlier, earlier, self.source()])
+        self.assertEqual(fe.run(self.project, "r1", apply=True)["queued"], 1)
+
+    def test_invalid_matching_receipt_is_manual_not_older_fallback(self):
+        self.build_ledger()
+        self.settings()
+        aq.add_draft(self.project, item_id="unrelated", kind="first-request", agency_id="beta-pd",
+                     request_id="B-1", body="Draft", evidence={}, source_run_id="r1")
+        invalid = ["", 123, True, [], {}, DAY, DAY + "T12:00:00", "bad", "x" * 65,
+                   "0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"]
+        for value in invalid:
+            for reverse in (False, True):
+                with self.subTest(value=value, reverse=reverse):
+                    rows = [self.source(), self.source(received_at=value, item_id="a" * 64)]
+                    self.fixture(received=rows[::-1] if reverse else rows)
+                    before = self.snapshot()
+                    result = fe.run(self.project, "r1", apply=True)
+                    self.assertEqual(result["manual_reasons"], {"source_message_date_invalid": 1})
+                    self.assertEqual(result["queued"], 0)
+                    self.assertEqual(before, self.snapshot())
+        self.fixture(received=[self.source(), self.source(agency_id="beta-pd", received_at="bad"),
+                               self.source(request_id="OTHER", received_at=123)])
+        self.assertEqual(fe.run(self.project, "r1")["would_queue"], 1)
+        for source in ({k: v for k, v in self.source().items() if k != "received_at"},
+                       self.source(received_at=None)):
+            self.fixture(received=[source])
+            before = self.snapshot()
+            self.assertEqual(fe.run(self.project, "r1", apply=True)["manual_reasons"], {"no_source_message": 1})
+            self.assertEqual(before, self.snapshot())
+
+    def test_instant_selection_is_campaign_local_and_replay_safe(self):
+        sources_a = self.two_messages()
+        self.settings()
+        # Keep an already signed older draft: selection must not rewrite its binding.
+        self.fixture(received=sources_a[:1])
+        fe.run(self.project, "r1", apply=True)
+        old, = self.queued()
+        self.clean_approve(old)
+        old = self.queued()[0]
+        self.fixture(received=sources_a)
+        self.assertEqual(fe.run(self.project, "r1", apply=True)["queued"], 1)
+        self.assertEqual(self.queued()[0], old)
+        project_a, ledger_a = self.project, self.ledger
+        before_a = self.snapshot()
+        self.tearDown_project()
+        sources_b = self.two_messages()
+        sources_b[0]["received_at"] = DAY + "T13:00:00+00:00"
+        self.settings()
+        self.fixture(received=sources_b)
+        self.assertEqual(fe.run(self.project, "r1", apply=True)["queued"], 1)
+        row_b, = self.queued()
+        self.assertEqual(row_b["evidence"]["thread_item_id"], sources_b[0]["item_id"])
+        self.clean_approve(row_b)
+        before_b = self.snapshot()
+        self.assertEqual(fe.run(self.project, "r1", apply=True)["duplicate"], 1)
+        self.assertEqual(before_b, self.snapshot())
+        self.project, self.ledger = project_a, ledger_a
+        self.assertEqual(fe.run(self.project, "r1", apply=True)["duplicate"], 1)
+        self.assertEqual(before_a, self.snapshot())
+        self.assertEqual(self.queued()[0], old)
+        self.assertEqual(self.queued()[1]["evidence"]["thread_item_id"], sources_a[1]["item_id"])
+
+    def test_new_request_does_not_parse_receipts(self):
+        self.settings()
+        self.fixture(closed=True, received=[self.source(received_at="bad")])
+        with mock.patch.object(fe, "_receipt_instant", side_effect=AssertionError("must not parse")), \
+                mock.patch.object(md, "find_thread", side_effect=AssertionError("must not lookup")):
+            self.assertEqual(fe.run(self.project, "r1", apply=True)["queued"], 1)
+        row, = self.queued()
+        self.assertIsNone(row["evidence"]["thread_item_id"])
+
     def test_new_request_never_looks_up_thread(self):
         self.settings()
         self.fixture(closed=True)

@@ -73,11 +73,13 @@ def classify(request, items, as_of):
         if active:
             flags.append(flag)
     agency = [e for e in events if e["type"] in _AGENCY]
-    sent = max((e["date"] for e in events if e["type"] in ("sent", "our follow-up sent")), default="")
+    sends = [d for d in (timeline._day(e["date"]) for e in events if e["type"] in ("sent", "our follow-up sent")) if d]
     last_answer = max((e["date"] for e in agency if e["type"] in _ANSWERS), default="")
+    # Day resolution only: a reply on the latest send day has unknown order, so it is never silence.
+    replied = any(not sends or timeline._day(e["date"]) >= max(sends) for e in agency)
     silence = any(m.get("kind") in ("statutory_date_passed", "promised_date_passed")
                   and timeline._day(m.get("date")) and timeline._day(m["date"]) < today
-                  for m in request.get("overdue_marks", [])) and not any(e["date"] > sent for e in agency)
+                  for m in request.get("overdue_marks", [])) and not replied
     extension = any(e["type"] in ("extension notice", "promised date") and e["date"] > last_answer
                     and any(timeline._day(d) and timeline._day(d) >= today for d in e.get("new_dates", []))
                     for e in events)

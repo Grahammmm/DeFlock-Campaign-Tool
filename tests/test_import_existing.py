@@ -214,6 +214,86 @@ class ImportExistingTests(unittest.TestCase):
             self.assertEqual(importer._kind("synthetic" + ext), kind)
         self.assertEqual(self.run_import()["counts"]["error"], 0)
 
+    def snapshot(self, top):
+        return {str(p.relative_to(top)): (p.stat().st_mode, p.stat().st_mtime_ns,
+                                          p.read_bytes() if p.is_file() else None)
+                for p in sorted(top.rglob("*"))}
+
+    def cli_refusal(self, source, root=None):
+        result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "import-existing",
+                                 "--directory", str(root or self.root), "--from", str(source), "--label", "l"],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr.count("Stopped:"), 1)
+        self.assertIn("must be disjoint", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("owner-note", result.stderr)
+
+    def test_ancestor_source_refused_before_inventory_or_store(self):
+        (self.root / "private").mkdir()
+        (self.root / "private/owner-note.txt").write_bytes(b"synthetic private")
+        (self.base / "agency-policy.txt").write_bytes(b"synthetic agency")
+        before = self.snapshot(self.base)
+        with patch.object(importer, "_entries") as entries, patch.object(cli, "database") as database, \
+                self.assertRaisesRegex(ValueError, "must be disjoint"):
+            importer.run(self.root, self.base, "l", now=self.instant)
+        entries.assert_not_called()
+        database.assert_not_called()
+        self.assertEqual(self.snapshot(self.base), before)
+        self.cli_refusal(self.base)
+        self.assertEqual(self.snapshot(self.base), before)
+
+    def test_overlap_matrix_and_cli_refusal(self):
+        deep = self.root / "a" / "b"
+        deep.mkdir(parents=True)
+        (self.root / ".hidden").mkdir()
+        alias = self.base / "alias"
+        alias.symlink_to(self.base)
+        cases = (self.root, deep, self.base, self.base / ".", self.root / "a" / "..",
+                 self.root / ".." / "campaign", alias / "campaign", alias, self.base.parent)
+        for case in cases:
+            with self.subTest(case=str(case)):
+                before = self.snapshot(self.base)
+                with self.assertRaisesRegex(ValueError, "must be disjoint"):
+                    importer.run(self.root, case, "l", now=self.instant)
+                self.assertEqual(self.snapshot(self.base), before)
+        for case in (self.root, deep, self.base):
+            with self.subTest(cli=str(case)):
+                self.cli_refusal(case)
+
+    def test_overlap_does_not_depend_on_discoverable_private_files(self):
+        with patch.object(importer, "_entries") as entries, patch.object(cli, "database") as database, \
+                patch.object(importer, "_write_receipt") as receipt:
+            with self.assertRaises(ValueError):
+                importer.run(self.root, self.base, "l", now=self.instant)
+        for spy in (entries, database, receipt):
+            spy.assert_not_called()
+        self.assertFalse((self.root / "private").exists())
+
+    def test_disjoint_siblings_and_prefix_names_repeat_safely(self):
+        for name in ("campaign-records", "records é 2"):
+            with self.subTest(name=name):
+                folder = self.base / name
+                folder.mkdir()
+                (folder / "one.txt").write_bytes(b"synthetic " + name.encode())
+                first = importer.run(self.root, folder, "l", now=self.instant)
+                receipt_bytes = (self.root / first["receipt"]).read_bytes()
+                counts = self.ledger()
+                second = importer.run(self.root, folder, "l", now=self.instant)
+                self.assertEqual(self.ledger(), counts)
+                self.assertNotEqual(second["receipt"], first["receipt"])
+                self.assertEqual((self.root / first["receipt"]).read_bytes(), receipt_bytes)
+        self.assertEqual(self.run_import()["counts"]["error"], 0)
+
+    def test_source_final_symlink_refusal_is_not_resolved_away(self):
+        link = self.base / "link"
+        link.symlink_to(self.folder)
+        for spelling in (link, str(link) + "/", str(link) + "/."):
+            with self.subTest(spelling=str(spelling)), self.assertRaisesRegex(ValueError, "real directory"):
+                importer.run(self.root, spelling, "l", now=self.instant)
+        self.assertFalse((self.root / "private").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
