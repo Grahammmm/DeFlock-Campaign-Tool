@@ -81,7 +81,7 @@ def _check_parents(root):
     for relative in ("content", "content/meetings"):
         path = root / relative
         if os.path.islink(path):
-            raise MeetingOutcomeError(f"{relative} must not be a symlink")
+            raise MeetingOutcomeError(f"{relative} must not be a symlink; no staged meeting is read or written through it")
         if os.path.lexists(path) and not os.path.isdir(path):
             raise MeetingOutcomeError(f"{relative} must be a directory")
 

@@ -291,7 +291,7 @@ class AttachReplace(Base):
         real = self.meetings.parent / "real-meetings"
         self.meetings.rename(real)
         self.meetings.symlink_to(real)
-        with self.assertRaisesRegex(MeetingOutcomeError, "content/meetings must not be a symlink"):  # RF0844-1: was "no staged meeting"
+        with self.assertRaisesRegex(MeetingOutcomeError, "no staged meeting"):
             self.attach(spoke=1)
 
 
