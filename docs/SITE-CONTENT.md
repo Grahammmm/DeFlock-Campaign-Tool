@@ -1521,6 +1521,16 @@ Printing: `style.css` ends with one `@media print` block. Nav, signup, map and p
 each external `http(s)` link prints its address after the text (relative, `#` and `mailto:` links do not). Closed comment
 kits print open only in browsers that support `::details-content`; elsewhere they print closed (open them before printing).
 
+## Unlinked public assets (`site.json.unlinked_assets_ok`, optional)
+
+Every allowed file in `content/public-assets/` is copied to `public/`, so its URL is reachable even when no page links it. `build` prints (on stderr, once per file, sorted) and `content-check` lists (exit 3) one line for each file that no page, published finding, source-library `public_url`, brand logo or favicon, share image or redirect target points at:
+
+```
+public-assets/docs/handout.pdf: published but not linked from any page
+```
+
+A file referenced only by a draft or private file counts as unlinked. An ordinary `build` still succeeds and copies every file unchanged; `build --check` fails, before anything is written, while any unlisted unlinked file remains. `content-check` runs this once the rest of the campaign is valid, because it needs the complete page set. To clear a line: link the file from a page, acknowledge that you mean to publish it unlinked with `"unlinked_assets_ok": ["docs/handout.pdf"]` in `content/site.json` (1 to 50 distinct paths relative to `public-assets/`, each an existing regular file with no symlink), or move an unintended file out of `content/public-assets/` yourself. The tool never deletes, moves, hides or skips a file, and an acknowledgement is not a privacy or consent review.
+
 ## Labels (`content/labels.json`, optional)
 Organizer-reviewed wording for the fixed UI strings of the HTML pages; the tool translates nothing. Without the file
 every page is byte-identical to the English defaults in `campaign_tool/labels.py` (`DEFAULTS`, one entry per key).

@@ -2,7 +2,8 @@
 
 ``load_content`` stops at the first refusal; this calls the same loaders file by file and keeps going. Parity
 invariant: ``content_problems(root) == []`` iff ``load_content(root)`` returns and no public-assets image carries
-metadata (build's ``image_meta.check_asset``). Cross-file rules use loaded files.
+metadata (build's ``image_meta.check_asset``). Cross-file rules use loaded files. Unlinked public assets (DF0237-08) are a lint
+issue reported only when the whole campaign plans (the complete page set is needed); an ordinary build still succeeds.
 """
 from datetime import date
 import json
@@ -325,6 +326,15 @@ def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today
         _attempt(problems, f"{NEWSLETTERS}/{path.name}", lambda: load_public_issue(path))
     check_redirects(root, problems)  # DF2037-16: content/redirects.json with build's own refusal text
     problems.extend(supporter_problems(root))  # DF2207-13: every invalid or unconsented supporter id, no values
+    if not problems:  # DF0237-08: needs the complete plan, so only on an otherwise valid campaign; read-only
+        from .public_asset_links import SUFFIX
+        from .site import _plan_site  # local: site imports this module
+        notes = []
+        try:
+            _plan_site(root, today, notes)
+        except (ContentError, ValueError, OSError):  # a plan that cannot be made names nothing about links
+            notes = []
+        problems.extend(note for note in notes if note.startswith("public-assets/") and note.endswith(": " + SUFFIX))
     return _cap(sorted(set(problems)), limit)
 
 

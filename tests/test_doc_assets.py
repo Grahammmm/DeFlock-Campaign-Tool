@@ -514,8 +514,16 @@ class ContentCheckTests(Campaign):
         self.assertEqual(self.tree(), before)
 
     def test_clean_campaign_has_no_problem(self):
+        # DF0237-08: clean but unlinked files are named; acknowledging both in site.json clears the lines
         (self.assets / "docs" / "ok.pdf").write_bytes(pdf())
         (self.assets / "ok.svg").write_bytes(CLEAN_SVG)
+        self.assertEqual(content_problems(self.root),
+                         ["public-assets/docs/ok.pdf: published but not linked from any page",
+                          "public-assets/ok.svg: published but not linked from any page"])
+        site = self.root / "content" / "site.json"
+        document = json.loads(site.read_text(encoding="utf-8"))
+        document["unlinked_assets_ok"] = ["docs/ok.pdf", "ok.svg"]
+        site.write_text(json.dumps(document), encoding="utf-8")
         self.assertEqual(content_problems(self.root), [])
 
 

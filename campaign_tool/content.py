@@ -160,7 +160,7 @@ def _email(value, label):
 
 SITE_KEYS = {"schema_version", "tagline", "mission_md", "about_md", "contact_email", "signup",
              "social", "language", "base_url", "county_profile", "source_link_label",
-             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image", "license", "comment_asks", "press", "corrections"}
+             "font_family", "not_legal_advice", "brand", "privacy_contact", "share_image", "license", "comment_asks", "press", "corrections", "unlinked_assets_ok"}
 # DF2207-10: the optional reporter page. contact_role is required; the address defaults to site.json.contact_email.
 PRESS_KEYS = {"contact_role", "contact_email", "about_md"}
 MAX_PRESS_ROLE, MAX_PRESS_ABOUT = 80, 1500
@@ -367,6 +367,11 @@ def load_corrections(value):
     return {"show_request_counts": flag}
 
 
+def _unlinked_ok(value, assets_dir):
+    from .public_asset_links import validate_unlinked_assets_ok  # local: that module imports this one
+    return validate_unlinked_assets_ok(value, assets_dir)
+
+
 def load_site(document, assets_dir=None):
     """``assets_dir`` (content/public-assets) lets ``brand`` check its logo and favicon files."""
     _require_keys(document, SITE_KEYS, {"schema_version", "tagline", "about_md"}, "site.json")
@@ -437,6 +442,7 @@ def load_site(document, assets_dir=None):
            if "comment_asks" in document else {}),
         **({"brand": load_brand(document["brand"], assets_dir)} if "brand" in document else {}),
         **({"share_image": load_share_image(document["share_image"], assets_dir)} if "share_image" in document else {}),
+        **({"unlinked_assets_ok": _unlinked_ok(document["unlinked_assets_ok"], assets_dir)} if "unlinked_assets_ok" in document else {}),
         **({"license": load_license(document["license"])} if "license" in document else {}),
         **({"corrections": load_corrections(document["corrections"])} if "corrections" in document else {}),
         **({"press": load_press(document["press"], _email(document.get("contact_email"), "site.json.contact_email"))}
