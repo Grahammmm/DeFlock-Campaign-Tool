@@ -62,12 +62,13 @@ are never touched; a symlinked or foreign-owned alert directory or file is refus
 | `mail_poll_never`, `mail_poll_unreadable`, `mail_poll_not_configured` | unknown | No poll state to judge (or no `--mail-store` given). |
 | `no_recent_run` | stop | The latest run report finished over 26 h ago. |
 | `run_report_invalid` | stop | `run-report.json` fails the run-report schema. |
+| `run_report_future` | stop | `run-report.json` is schema-valid but finished after the assessment clock (compared as UTC instants; finishing exactly at now is accepted). Check the host clock and the report's source; nothing corrects it. No older report is used instead, and the oversight panel shows Runs unavailable and the latest pending count unknown. |
 | `run_report_missing` | unknown | No run report yet. |
 | `repeated_failures` | stop | The last 3 run reports all ended `fail`. `latest_run_failed` (warn): only the latest did. |
 | `notify_failed` | warn | A `notify-failed-*` alert is newer than the last successful report. |
 | `schedule_missed`, `schedule_failed`, `schedule_stalled`, `schedule_gaps`, `schedule_held` | stop | The slot health from `records health`; `schedule_degraded` is warn, `schedule_never` unknown. |
 
-Limits are in `pipeline_health.LIMITS`. A machine-valid report is review-required, not semantic acceptance of the run.
+Historical reports in `reports/` that finished after the assessment clock are ignored by the failure-streak and notify checks and by the oversight run table, so a future-dated success cannot reset a failure streak or suppress a notify alert; they count with the skipped reports. Limits are in `pipeline_health.LIMITS`. A machine-valid report is review-required, not semantic acceptance of the run.
 
 ## Request playbook and banned-phrase lint
 
