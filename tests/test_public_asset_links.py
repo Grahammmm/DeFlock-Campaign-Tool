@@ -70,6 +70,8 @@ class ValidateTests(unittest.TestCase):
             (assets / "docs").mkdir()
             (assets / "docs" / "h.pdf").write_bytes(b"x")
             (assets / "a.pdf").write_bytes(b"x")
+            (assets / "public-assets").mkdir()  # a real nested directory must not make the forbidden prefix acceptable
+            (assets / "public-assets" / "a.pdf").write_bytes(b"x")
             (assets / "link").symlink_to(assets / "docs")
             (assets / "dangling.pdf").symlink_to(assets / "nope")
             self.assertEqual(validate_unlinked_assets_ok(["docs/h.pdf"], assets), ["docs/h.pdf"])

@@ -25,6 +25,8 @@ def _canonical(value):
     parts = value.split("/")
     if not parts or len(parts) > 8 or any(not ASSET_PART.fullmatch(part) for part in parts):
         return None
+    if parts[0] == "public-assets":  # the report prefix, never part of the field value, even if such a subdirectory exists
+        return None
     return parts
 
 
