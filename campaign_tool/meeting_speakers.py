@@ -16,6 +16,7 @@ from pathlib import Path
 from .content import FINDING_ID, SHA256, SLUG, load_comment_asks, load_meeting
 from .kit_assign import owner_label
 from .meetings import ASK_COUNT_WORDS
+from .meetings_manual import MANUAL, ManualMeetingError, _manual_document
 
 MAX_PAIRS = 200
 MAX_STAGED_BYTES = 4 * 1024 * 1024
@@ -28,6 +29,7 @@ UNAVAILABLE = "comment kit points unavailable; re-stage the meeting"
 STALE = "speaker plan is stale; remove its labels and add them again"
 SYMLINK = "symlink on speaker-plan path; use real directories and files"
 BAD_STORE = "speaker plan is not valid private JSON"
+BAD_MANUAL = "kit/meetings-manual.json is not valid private meeting JSON up to 4 MiB"
 NOT_STAGED = "meeting not staged; run meetings-stage first"
 
 
@@ -118,18 +120,27 @@ def _staged(root, meeting_id, now):
 
 
 def _check_imported(root, meeting_id):
-    """A matching cancelled entry in kit/meetings.json wins over older staged content; a missing import is fine."""
+    """Cancellation in either optional private source wins over older staged content."""
     _check_chain(root, ["kit", "meetings.json"])
     bad = MeetingSpeakersError("kit/meetings.json is not a regular UTF-8 JSON file up to 4 MiB")
     data = _read_regular(Path(root) / "kit" / "meetings.json", MAX_STAGED_BYTES, True, bad)
-    if data is None:
-        return
-    document = _json(data, bad)
-    entries = document.get("meetings") if isinstance(document, dict) else None
-    if not isinstance(entries, list):
-        raise bad
-    for entry in entries:
-        if isinstance(entry, dict) and entry.get("id") == meeting_id and entry.get("status") == "cancelled":
+    if data is not None:
+        document = _json(data, bad)
+        entries = document.get("meetings") if isinstance(document, dict) else None
+        if not isinstance(entries, list):
+            raise bad
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("id") == meeting_id and entry.get("status") == "cancelled":
+                raise MeetingSpeakersError(CANCELLED)
+    _check_chain(root, ["kit", "meetings-manual.json"])
+    bad = MeetingSpeakersError(BAD_MANUAL)
+    data = _read_regular(Path(root) / MANUAL, MAX_STAGED_BYTES, True, bad)
+    if data is not None:
+        try:
+            entries = _manual_document(_json(data, bad))
+        except (ManualMeetingError, RecursionError):
+            raise bad from None
+        if any(entry["id"] == meeting_id and entry["status"] == "cancelled" for entry in entries):
             raise MeetingSpeakersError(CANCELLED)
 
 
