@@ -97,7 +97,9 @@ class BrandSite(unittest.TestCase):
         self.assertTrue(built["style.css"].decode("utf-8").endswith(EXTRA_CSS))
         self.assertNotIn(b"--coral:#", built["style.css"].split(EXTRA_CSS.encode())[-1])
         self.assertIn(b'<a class="brand" href="/">Cedar County Records Project</a>', built["index.html"])
-        self.assertEqual(content_problems(self.root), [])
+        # DF0237-08: without a brand setting the two files are unlinked, and only that is reported
+        self.assertEqual(content_problems(self.root), ["public-assets/favicon.ico: published but not linked from any page",
+                                                       "public-assets/logo.png: published but not linked from any page"])
 
     # 2. PNG logo 120x40 + alt -> img with the file's size on every page; favicon link on every page
     def test_logo_and_favicon_on_every_page(self):
