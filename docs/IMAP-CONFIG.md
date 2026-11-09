@@ -132,6 +132,14 @@ each message to intake (`eml_export`), write a `records-mail-poll-v1` receipt, t
 and exits 0, 1 on any refusal (`mail-poll | refused: <code>`; the cursor is unchanged), or 2
 on usage. A crash before the cursor write re-fetches next run; intake writes are idempotent.
 
+Original bytes are shared by SHA-256, but mail without Message-ID has a separate
+occurrence identity for each UIDVALIDITY/UID pair. The first poll receipt keeps
+`receipts/<sha>.json`; another identity sharing those bytes uses
+`receipts/<sha>-<provider_id_sha256>.json`. Replays confirm exact receipt bytes
+without replacing either receipt or the original. Invalid or conflicting receipt
+metadata remains a refusal, not permission to advance the cursor. This is not a
+complete-inbox coverage claim.
+
 Credential rule: no agent handles the mailbox secret. `C` holds only `host`, `port` (993),
 `user`, `password_file` and optional `folder`, `account_id`, `timeout`; both files are
 absolute, outside the repo, regular, owned by the caller, mode 0600 and not symlinks. The

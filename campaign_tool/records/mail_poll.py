@@ -192,6 +192,47 @@ def _write_once(path, data):
                 raise Refused("receipt_conflict") from None
 
 
+def _poll_receipt(receipts, receipt):
+    """Keep the legacy first path; shared bytes may have distinct occurrence receipts."""
+    sha, pid = receipt["sha256"], receipt["provider_id_sha256"]
+    if not all(isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v) for v in (sha, pid)):
+        raise Refused("receipt_conflict")
+    data = (json.dumps(receipt, sort_keys=True) + "\n").encode()
+    receipts.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for alternate in (False, True):
+        path = receipts / (sha + ("-" + pid if alternate else "") + ".json")
+        try:
+            with folder.private_file(path, "wb", exclusive=True) as stream:
+                stream.write(data)
+        except FileExistsError:
+            pass
+        try:
+            # Reject special files before the existing no-follow reader can block.
+            if not stat.S_ISREG(path.lstat().st_mode):
+                raise ValueError
+            with folder.secure_open(path) as stream:
+                info = os.fstat(stream.fileno())
+                if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                    raise ValueError
+                stored = stream.read(64 * 1024 + 1)
+            if len(stored) > 64 * 1024:
+                raise ValueError
+            if stored == data:
+                return path
+            if alternate:
+                raise ValueError
+            prior = json.loads(stored, object_pairs_hook=imap_intake._unique_object,
+                               parse_constant=imap_intake._reject_constant)
+            if (not isinstance(prior, dict) or prior.get("schema") != SCHEMA or prior.get("sha256") != sha
+                    or not isinstance(prior.get("provider_id_sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", prior["provider_id_sha256"])
+                    or prior["provider_id_sha256"] == pid
+                    or any(type(prior.get(k)) is not int or prior[k] <= 0 for k in ("uidvalidity", "uid"))):
+                raise ValueError
+        except (OSError, ValueError, TypeError):
+            raise Refused("receipt_conflict") from None
+
+
 def _guard(code, function, *args):
     try:
         return function(*args)
@@ -247,7 +288,7 @@ def poll(config, store, *, dry_run=False, factory=default_connect, crash_after_f
                     raise Refused("intake:" + imap_intake._failure_code(error)) from None
                 receipt.update(intake_receipt=str(Path(path).relative_to(mail_root)),
                                received_files=0 if notice else attachments)
-            _write_once(receipts / (sha + ".json"), (json.dumps(receipt, sort_keys=True) + "\n").encode())
+            _poll_receipt(receipts, receipt)
             seen[pid] = {"sha256": sha, "kind": receipt["kind"]}
     finally:
         with contextlib.suppress(Exception):
