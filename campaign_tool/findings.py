@@ -897,6 +897,7 @@ def publish(root, draft_path, approved_by, now=None):
     when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     document = dict(reviewed_view(draft), state="published", published_at=when, corrections=[])
     finding = content.load_finding(document, str(draft_path), known_agency_ids=_known_for(root, document))
+    _fitting(document, f"content/findings/{finding['slug']}.json", "publish", True)  # before any folder, lock or log
     if not _real_dir(root / "content"):
         raise ValueError(f"{root / 'content'}: no content/ directory in this campaign")
     if not _real_dir(root / "private"):
@@ -1047,11 +1048,21 @@ def _append(log_fd, entry):
     os.fsync(log_fd)
 
 
+def _fitting(document, label, operation, sort_keys):
+    """RF0844-4: the exact text a finding writer writes, refused when the bounded finding readers (MAX_DRAFT_BYTES of
+    UTF-8, final newline included) would refuse it. The error names the path and limit, never finding text or a note."""
+    text = json.dumps(document, sort_keys=sort_keys, indent=2, ensure_ascii=False) + "\n"
+    if len(text.encode("utf-8")) > MAX_DRAFT_BYTES:
+        raise ValueError(f"{label}: {operation} refused: the finding would be larger than {MAX_DRAFT_BYTES} bytes, "
+                         "which finding readers refuse; nothing was written")
+    return text
+
+
 def _write_logged(root, folder, target, document, entry):
     """Atomically (re)write ``target`` and append ``entry`` to private/publication-log.jsonl (0600)."""
+    data = _fitting(document, f"content/findings/{target.name}", entry["action"], True).encode("utf-8")  # before the log
     log_fd = _open_log(root)  # a bad log refuses before the finding is written, never leaving an unlogged publish
     try:
-        data = (json.dumps(document, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
         fd, temporary = tempfile.mkstemp(dir=folder, prefix=".publish-", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as out:
@@ -1220,6 +1231,8 @@ def _withdraw_locked(root, finding_id, reason, when):
     source, document = _one_published(root / "content" / "findings", finding_id)
     # The filename need not match the slug (load_content accepts both); the slug is what stays reserved.
     slug = content.load_finding(document, f"content/findings/{source.name}")["slug"]
+    archived = dict(document, withdrawn={"at": when, "reason": reason})
+    text = _fitting(archived, f"private/withdrawn/{slug}.json", "withdraw", False)  # before mkdir, chmod, log or unlink
     folder = root / "private" / "withdrawn"
     if not _real_dir(folder):
         folder.mkdir(mode=0o700)
@@ -1229,7 +1242,7 @@ def _withdraw_locked(root, finding_id, reason, when):
         raise ValueError(f"private/withdrawn/{target.name} already exists; nothing was moved")
     log_fd = _open_log(root)  # a bad log refuses before anything is written
     try:
-        _write_private(target, dict(document, withdrawn={"at": when, "reason": reason}), ".withdraw-")
+        _write_private(target, archived, ".withdraw-", text=text)
         if hasattr(os, "O_DIRECTORY"):  # POSIX: make the new entry durable before the content file goes
             dir_fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
             try:
