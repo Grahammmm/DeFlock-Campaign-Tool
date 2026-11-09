@@ -19,6 +19,14 @@ G edits away placeholders/reviewer notes and signs the exact text on the existin
 approval pages. Residue is refused. Sending remains off by default and attended.
 The Python API's optional `as_of` must match the run snapshot, not override it.
 
+Latest-source selection compares receipt instants in UTC, not timestamp spelling.
+Multiple rows at the latest instant are ambiguous, including equivalent offsets
+or zero-fraction spellings and exact duplicates. Invalid non-null receipt dates
+for that agency/request become manual (`source_message_date_invalid`), never an
+older-message fallback. Missing/null dates are excluded. The selected receipt's
+original spelling stays in the evidence; existing drafts and signatures are not
+rewritten. New requests remain deliberately unthreaded.
+
 ## Reminder text
 
 The clock drafter's `reminder-no-response`, `reminder-promised-date` and
