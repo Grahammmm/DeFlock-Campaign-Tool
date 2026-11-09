@@ -6,12 +6,16 @@ and content-check share these rules; every refusal starts ``redirects.json:``, n
 import re
 from pathlib import Path
 
-from .content import ContentError, _read_json
+from .content import SLUG, ContentError, _read_json
 
 MAX_ROWS, MAX_FROM = 500, 300
 FROM = re.compile(r"/[A-Za-z0-9/._~%-]*")  # ASCII path characters only: no ?, #, *, :, space or non-ASCII
 FINDING = re.compile(r"/findings/([^/]+)\.html")
 OPEN_FOLDERS = {"findings", "meetings"}  # generated folders whose unwritten paths may be redirected (renamed slugs)
+# RF1405-2: a retired agency page (renamed slug) may be redirected too, but only as exactly /agencies/<slug>.html; the
+# folder stays closed (not in OPEN_FOLDERS) so unwritten calendars, assets and subfolders are still refused, and
+# ``_key(source) in owned`` still refuses every path this build writes, including live agency pages.
+AGENCY_PAGE = re.compile(r"/agencies/(" + SLUG.pattern + r")\.html")
 
 
 def _key(path):
@@ -76,7 +80,8 @@ def load_redirects(document, built_paths, withdrawn_slugs):
         sources.setdefault(_key(source), (n, source, target))
     for n, source, target in rows:
         top = source.split("/")[1]
-        if _key(source) in owned or (top in GENERATED_TOP_LEVEL and top not in OPEN_FOLDERS):
+        if _key(source) in owned or (top in GENERATED_TOP_LEVEL and top not in OPEN_FOLDERS
+                                          and not AGENCY_PAGE.fullmatch(source)):
             problems.append(f"redirects[{n}]: from {source} is a page this build writes")
         if _key(target) in sources:
             m, next_source, onward = sources[_key(target)]
