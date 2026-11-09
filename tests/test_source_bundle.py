@@ -104,6 +104,29 @@ class MembershipTests(Fixture):
         self.assertEqual(sorted(self.members()), ["files/docs/a.pdf", "files/docs/b.pdf", "manifest.csv"])
         self.assertEqual(self.members()["files/docs/a.pdf"], (self.public / "docs" / "a.pdf").read_bytes())
 
+    def test_fragment_is_ignored_before_the_alias_and_query_checks(self):
+        assets = {"docs/a.pdf", "docs/b.pdf"}
+        for name, fragment in (("encoded search", "#search=public%20records"), ("page", "#page=2"), ("query mark", "#q?x"),
+                               ("encoded and query", "#a%3Fb?c=d"), ("backslash", "#a\\b"), ("empty", "#")):
+            with self.subTest(name):
+                chosen = bundle_selection([entry(1, BASE + "/docs/a.pdf" + fragment)], BASE, assets)
+                self.assertEqual([path for _, path in chosen], ["docs/a.pdf"])
+                self.assertEqual(source_bundle._relative_path(BASE + "/docs/a.pdf" + fragment, BASE + "/docs"), "a.pdf")
+        # a real encoded path, query, backslash or alias stays excluded, with or without a fragment
+        for name, url in (("encoded path", BASE + "/docs/a%20b.pdf"), ("encoded path and fragment", BASE + "/docs/a%20b.pdf#page=2"),
+                          ("query", BASE + "/docs/a.pdf?x=1"), ("query and fragment", BASE + "/docs/a.pdf?x=1#page=2"),
+                          ("query before encoded fragment", BASE + "/docs/a.pdf?x=1#search=public%20records"),
+                          ("backslash path", BASE + "/docs\\a.pdf#page=2"), ("dot", BASE + "/docs/./a.pdf#page=2"),
+                          ("empty segment", BASE + "/docs//a.pdf#page=2"), ("other origin", "https://example.invalid/docs/a.pdf#page=2")):
+            with self.subTest(name):
+                self.assertEqual(bundle_selection([entry(1, url)], BASE, assets), [])
+
+    def test_sole_source_with_an_encoded_fragment_still_yields_an_archive(self):
+        self.add_sources(entry(1, BASE + "/docs/a.pdf#search=public%20records", "Alpha"), replace=True)
+        build_site(self.root)
+        self.assertEqual(sorted(self.members()), ["files/docs/a.pdf", "manifest.csv"])
+        self.assertEqual([row[4] for row in self.manifest()[1:]], ["/docs/a.pdf"])
+
 
 class ManifestTests(Fixture):
     def test_manifest_public_fields_and_safe_csv(self):

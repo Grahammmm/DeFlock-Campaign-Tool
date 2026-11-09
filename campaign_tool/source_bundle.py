@@ -30,7 +30,10 @@ _DATE = (1980, 1, 1, 0, 0, 0)
 def _relative_path(public_url, base_url):
     """The canonical asset path a library ``public_url`` names under ``base_url``, or None when it is not that exact origin and
     path prefix, has a query, an alias (``%``, dot, empty or backslash segment) or credentials. A fragment is ignored."""
-    if not base_url or not isinstance(public_url, str) or "\\" in public_url or "%" in public_url:
+    if not base_url or not isinstance(public_url, str):
+        return None
+    public_url = public_url.split("#", 1)[0]  # drop the fragment FIRST: its ``%``, ``?`` or ``\`` never name another file
+    if "\\" in public_url or "%" in public_url:
         return None
     try:
         url, base = urlsplit(public_url), urlsplit(base_url.rstrip("/"))
