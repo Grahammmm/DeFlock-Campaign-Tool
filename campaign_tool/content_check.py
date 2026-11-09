@@ -331,7 +331,7 @@ def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today
         from .site import _plan_site  # local: site imports this module
         notes = []
         try:
-            _plan_site(root, today, notes)
+            _plan_site(root, today, notes, private_counts=False)  # content-check never opens the private request log
         except (ContentError, ValueError, OSError):  # a plan that cannot be made names nothing about links
             notes = []
         problems.extend(note for note in notes if note.startswith("public-assets/") and note.endswith(": " + SUFFIX))

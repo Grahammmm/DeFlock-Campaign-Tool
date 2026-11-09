@@ -3537,9 +3537,9 @@ def _privacy_gate(model, cfg=None):
                 raise ContentError(note)
 
 
-def _plan_site(root, today=None, notes=None, *, require_linked_assets=False):
+def _plan_site(root, today=None, notes=None, *, require_linked_assets=False, private_counts=True):
     """Render every page and check every copy without writing: ``(files, copies)``, or None without content/."""
-    planned = _plan(root, today, notes, require_linked_assets=require_linked_assets)
+    planned = _plan(root, today, notes, require_linked_assets=require_linked_assets, private_counts=private_counts)
     return None if planned is None else planned[:2]
 
 
@@ -3557,7 +3557,7 @@ def _render_catalogue(site, payloads):
     return site.data_html(records)["html"], datapackage_json(records, site.cfg["name"])
 
 
-def _plan(root, today=None, notes=None, *, require_linked_assets=False):
+def _plan(root, today=None, notes=None, *, require_linked_assets=False, private_counts=True):
     """``(files, copies, site)`` as ``_plan_site`` plus the Site that rendered them, or None without content/."""
     from .cli import read_config
     root = Path(root)
@@ -3570,7 +3570,7 @@ def _plan(root, today=None, notes=None, *, require_linked_assets=False):
     _privacy_gate(model, cfg)
     day = today or date.today()
     counts = None
-    if model["site"].get("corrections", {}).get("show_request_counts"):  # DF1103-14: the only place the private log is opened
+    if private_counts and model["site"].get("corrections", {}).get("show_request_counts"):  # DF1103-14: the only place the private log is opened
         from .correction_requests import quarterly_counts
         counts = quarterly_counts(root, day)
     site = Site(root, cfg, model, today=day, correction_counts=counts)
