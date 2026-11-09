@@ -186,7 +186,12 @@ def project(con, counts, *, overlays=None, since=None, run_id=None, link_validat
     hashes = {row["sha256"] for row in originals}
     _require(all(type(v) is str and HASH.fullmatch(v) for v in hashes), "invalid_original_hash")
     _require(counts.get("originals") == len(originals), "count_denominator_mismatch")
+    # Effective (resolved) scope is authoritative for evidence eligibility too.
+    excluded = {r["sha256"] for r in originals if scope_excluded(r)}
     overlays = validate_overlay(overlays or {}, hashes)
+    for draft in overlays.values():
+        for item in draft.get("evidence", []):
+            _require(item["source_sha256"] not in excluded, "evidence_source_scope_excluded")
     agencies = _rows(con, "agencies", "id,name,jurisdiction")
     requests = _rows(con, "requests", "id,agency_id,external_ref,submitted_at,determination_due_at,determination_at,production_at,status")
     joins = _rows(con, "joins", "id,original_sha256,agency_id,request_id,join_type,evidence,status,blocked_reason")
@@ -218,7 +223,6 @@ def project(con, counts, *, overlays=None, since=None, run_id=None, link_validat
     by_join, by_occurrence, by_prior = ({sha: [] for sha in hashes} for _ in range(3))
     registry_links = []
     registry_keys = set()
-    excluded = {r["sha256"] for r in originals if scope_excluded(r)}
     for row in joins:
         sha = row["original_sha256"]
         _require(sha in hashes, "dangling_join")
@@ -229,6 +233,7 @@ def project(con, counts, *, overlays=None, since=None, run_id=None, link_validat
             _require(type(ev) is dict and ev.get("source_sha256") in hashes and
                      type(ev.get("locator")) is str and 0 < len(ev["locator"]) <= 500,
                      "typed_join_evidence_required")
+            _require(ev["source_sha256"] not in excluded, "evidence_source_scope_excluded")
             _require(row["agency_id"] in agency_map, "unknown_typed_agency")
             key = (sha, row["agency_id"], row["request_id"])
             if row["request_id"] and key not in registry_keys:
