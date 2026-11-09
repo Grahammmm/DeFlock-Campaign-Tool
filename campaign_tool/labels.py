@@ -388,6 +388,9 @@ DATA_DEFAULTS = {
     "data.schema": "Schema", "data.schema_csv": "Source-record schema (JSON)", "data.license": "Licence",
     "data.license_unstated": "licence not stated", "data.package": "Data Package (datapackage.json)",
     "footer.data": "Open data",
+    "sources.bundle": "Download all public source copies (ZIP)",
+    "sources.bundle_details": "{bytes} bytes, SHA-256 {sha256}",
+    "sources.bundle_scope": "Only public copies hosted by this build are included; external links and private originals are excluded.",
 }
 DEFAULTS.update(DATA_DEFAULTS)
 DEFAULTS.update(JS_DEFAULTS)

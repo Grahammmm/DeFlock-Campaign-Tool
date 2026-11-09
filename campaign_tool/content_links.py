@@ -16,8 +16,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urldefrag, urljoin, urlsplit
 
-from . import markdown_lite
-from .content import ContentError, load_content
+from . import agency_actions, markdown_lite
+from .content import ContentError, _read_json, load_content, load_glossary
 
 USER_AGENT = "DeFlock-Campaign-Tool/link-check"
 TIMEOUT = 15
@@ -132,6 +132,35 @@ def _stored_local_rule_positions(root):
             for number, row in enumerate(rules if isinstance(rules, list) else []) if isinstance(row, dict)}
 
 
+def _stored_actions(root, agencies, today):
+    loaded = {agency["agency_id"]: agency["actions"] for agency in agencies if agency.get("actions")}
+    if not loaded:
+        return []
+    try:
+        rows = agency_actions.read_actions(root, agencies, today=today)
+        if rows is None or agency_actions.by_agency(rows) != loaded:
+            raise ValueError
+        return rows
+    except (OSError, ValueError):
+        raise LinkCheckError("content/agency-actions.json: cannot resolve stored citation locations") from None
+
+
+def _stored_glossary_positions(root, loaded):
+    if not loaded or not loaded.get("terms"):
+        return {}
+    try:
+        path = root / "content" / "glossary.json"
+        if path.parent.is_symlink() or path.is_symlink() or not path.is_file():
+            raise ValueError
+        document = _read_json(path)
+        if load_glossary(document, root) != loaded:
+            raise ValueError
+        # The validator trims names but preserves their exact spelling (not glossary_key).
+        return {row["term"].strip(): index for index, row in enumerate(document["terms"])}
+    except (OSError, ValueError):
+        raise LinkCheckError("content/glossary.json: cannot resolve stored citation locations") from None
+
+
 def collect_links(root, *, today=None):
     """Ordered external-link groups ``[{"url", "citations": [locator..], "archives": [{locator, archived_url, archived_on}]}]``.
 
@@ -141,6 +170,8 @@ def collect_links(root, *, today=None):
     if model is None:
         raise LinkCheckError("content/ does not exist; nothing was scaffolded or fetched")
     content_dir = root / "content"
+    stored_actions = _stored_actions(root, model["agencies"], today)
+    glossary_positions = _stored_glossary_positions(root, model.get("glossary"))
     cites = []  # (url, locator, archive dict or None)
 
     def cite(url, locator, source=None):
@@ -193,8 +224,9 @@ def collect_links(root, *, today=None):
             where = f"[{stored_reports[index]}]" if stored_reports[index] is not None else f"[{entry.get('title')!r}]"
             cite(entry.get("source_url"), f"{base}.profile.reports{where}.source_url", entry)
         cite((agency.get("sharing") or {}).get("source_url"), base + ".profile.sharing.source_url")
-        for index, action in enumerate(agency.get("actions") or []):
-            cite(action.get("source_url"), f"content/agency-actions.json:{agency['agency_id']}[{index}].source_url")
+
+    for index, action in enumerate(stored_actions):
+        cite(action.get("source_url"), f"content/agency-actions.json:actions[{index}].source_url")
 
     local_positions = _stored_local_rule_positions(root)
     for rule in model.get("local_rules") or []:  # sorted by (rule_id, effective_from); the locator is the stored index
@@ -249,7 +281,8 @@ def collect_links(root, *, today=None):
     glossary = model.get("glossary")
     if isinstance(glossary, dict):
         prose(glossary.get("notice_md"), "content/glossary.json:notice_md")
-        for index, term in enumerate(glossary.get("terms") or []):
+        for term in glossary.get("terms") or []:
+            index = glossary_positions[term["term"]]
             prose(term.get("definition_md"), f"content/glossary.json:terms[{index}].definition_md")
             cite(term.get("source_url"), f"content/glossary.json:terms[{index}].source_url")
     for index, entry in enumerate(model.get("elsewhere") or []):

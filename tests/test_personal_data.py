@@ -538,7 +538,7 @@ _MODULES = {
     "generated drafts, exports and public content, no catalog store": """
         agency_brief content_init content_sharing coverage flyer kit_calendar kit_copy kit_export kit_fees kit_preserve kit_timing
         map_survey meeting_comment_publish meeting_outcome meeting_pack meeting_stage meetings meetings_manual newsletter.__main__ newsletter.archive
-        newsletter.draft newsletter.sent outbox outbox_batch press recent search_log site site_check social social_threads""",
+        newsletter.draft newsletter.sent outbox outbox_batch press recent search_log site site_check social social_threads source_bundle""",
     "other local files with no catalog store": """
         agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
         finding_search_log kit_fee_reply kit_preserve kit_repeat search_log law law_packet launch_check git_exposure map_controller registry setup_cmd shell sources_cmd records.ask_parity""",
@@ -728,6 +728,7 @@ MODULE_FUNCTIONS = {
     'site_check': ('write_weights',),
     'social': ('_write_drafts', 'build_event_social', 'build_meeting_social', 'build_outcome_social', 'build_social',),
     'social_threads': ('build_thread_social',),
+    'source_bundle': ('bundle_bytes',),  # DF0022-11: builds the archive in memory; the caller writes it
     'sources_cmd': ('_batch_write', '_rewrite', '_write_atomic', 'add_source',),
 }
 
