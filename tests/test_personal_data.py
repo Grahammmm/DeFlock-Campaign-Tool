@@ -658,7 +658,7 @@ MODULE_FUNCTIONS = {
     'records.mail_adoption': ('_snapshot_db',),
     'records.mail_drafts': ('_Journal.append',),  # approvals/mail-drafts.jsonl placement journal, 0600 append-only; sends nothing
     'records.mail_send': ('_Dir.append', 'init',),  # approvals/mail-send.jsonl attempt log + send.json/SEND-STOP at setup; 0600, owner-only
-    'records.mail_poll': ('_write_once', 'poll',),
+    'records.mail_poll': ('_poll_receipt', '_write_once', 'poll',),
     'records.mail_resolution_census': ('inventory',),
     'records.native_extract': ('_write_private', 'run', 'write_awaiting_ocr', 'write_failure_manifest', 'write_private_list',),
     'records.ocr_closure': ('load_cas_page', 'load_cas_vision',),
