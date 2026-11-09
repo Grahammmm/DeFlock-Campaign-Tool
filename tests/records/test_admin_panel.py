@@ -381,11 +381,11 @@ class LiveFormTests(ServerCase):
     def test_approve_reject_edit_persist_only_queue_decisions(self):
         other = self.draft(2, body="second draft")
         third = self.draft(3, body="third draft")
-        before = tree_state(self.project)
         ident = self.draft_row["id"]
-        # edit -> still pending, new body, configured actor; the form's captured revision is sent back
-        revision = self.form_revision(ident)
+        revision = self.form_revision(ident)  # the page a person loaded; reading it opens the ledger
         self.assertEqual(revision, "0")
+        before = tree_state(self.project)
+        # edit -> still pending, new body, configured actor; the form's captured revision is sent back
         status, headers, _ = self.http.post("/approvals/edit", {"csrf_token": self.tok, "id": ident,
                                                                  "body": "new text\r\nline 2", "expected_revision": revision})
         self.assertEqual((status, headers["location"]), (303, "/"))
