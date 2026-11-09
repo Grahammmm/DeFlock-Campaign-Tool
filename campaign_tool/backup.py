@@ -631,6 +631,16 @@ def _archive_members(tar):
     return members
 
 
+def _supported_member_path(name):
+    """True only for names the exporter can produce and restore can recreate (exact string match)."""
+    if name in ("campaign.json", "private/ledger.sqlite", "private/d1-export.json"):
+        return True
+    top, _, rest = name.partition("/")
+    if top in INCLUDED_DIRS:
+        return bool(rest)
+    return name.startswith("private/objects/") and _valid_sha(name[len("private/objects/"):])
+
+
 def _read_manifest(tar, members=None):
     members = _archive_members(tar) if members is None else members
     member = next((m for m in members if m.name == MANIFEST), None)
@@ -656,6 +666,9 @@ def _read_manifest(tar, members=None):
             raise BackupError(f"{name}: object_hash_mismatch")
         if any(parent.as_posix() in files for parent in Path(name).parents if parent != Path(".")):
             raise BackupError("invalid_manifest: conflicting_member_paths")
+    for name in files:
+        if not _supported_member_path(name):
+            raise BackupError("invalid_manifest: unsupported_member_path")
     if "campaign.json" not in files:
         raise BackupError("invalid_manifest: campaign.json missing")
     counts = manifest.get("counts")

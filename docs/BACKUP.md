@@ -24,6 +24,21 @@ Symlinks, `public/` (rebuildable), `.env` and anything else are never archived. 
 to overwrite an existing path and refuses a stored object whose bytes do not match its
 hash-named file (`intake integrity problem`), leaving nothing behind on failure.
 
+### Member namespace
+
+A manifest may list only these `files` names, matched as exact strings (no normalization, no
+prefix-only matching): `campaign.json`; any nonempty path below `content/` or `kit/` (organizer-authored,
+any safe nested name); `private/ledger.sqlite`; `private/d1-export.json`; and
+`private/objects/<64 lowercase hex>`. `manifest.json` is the archive envelope and is never listed. Every
+other name, including a bare `content`, `kit`, `private` or `private/objects` file, a root file such as
+`untracked.txt`, an unknown `private/` file, or components after a listed member, is refused with
+`invalid_manifest: unsupported_member_path` by `verify`, `restore`, `backup-diff`, `backup-list` and
+`backup-drill` before anything is extracted or any restore target is touched. Such names cannot be
+restored or re-exported, so they are refused rather than silently dropped. Older self-consistent
+archives that carry out-of-profile members are therefore now refused; there is no override and no
+partial restore. This is a path profile, not an authenticity check: pass `--expect-manifest-sha256`
+to detect a rewritten manifest.
+
 A plain archive (local or hosted) is built in a private sibling staging directory
 (`.deflock-archive-*`, mode 0700, payload `archive.partial`, mode 0600) in the same folder as the
 requested file, never under the requested name. Only after the complete archive passes the manifest,
