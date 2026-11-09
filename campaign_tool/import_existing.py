@@ -84,8 +84,10 @@ def run(root, folder, label, now=None) -> dict:
         raise ValueError("Label must be 1-40 lowercase letters, digits or hyphens, starting with a letter or digit")
     root, folder = Path(root).resolve(), Path(folder)
     cli.read_config(root)
-    if folder.resolve().is_relative_to(root):
-        raise ValueError("Import folder must not be inside the campaign directory")
+    resolved = folder.resolve()
+    # Path-component ancestry, both directions (equal roots included), before any write.
+    if resolved.is_relative_to(root) or root.is_relative_to(resolved):
+        raise ValueError("Import source and campaign directories must be disjoint; choose a sibling records folder")
     try:
         top_fd = cli._open_root(folder)
     except OSError:
