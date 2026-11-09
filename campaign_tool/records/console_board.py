@@ -11,6 +11,7 @@ timeline, never a legal finding.
 """
 import hashlib
 import json
+import os
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +31,8 @@ CONTACT_SOURCES = ("received_item", "outbox_receipt", "manual")
 # Drafts are ours; a promised date is a date the agency stated, not a contact on that day.
 NOT_CONTACT = ("draft", "promised date", "hand note")
 EXPIRING_DAYS = 14
-RETENTION_PATH = Path(__file__).resolve().parents[2] / "data" / "slo-pilot" / "agency-retention.csv"
+RETENTION_FILE = "agency-retention.csv"  # per campaign: <project>/agency-retention.csv, never the repo's pilot copy
+RETENTION_ABSENT = "No retention statements recorded for this campaign (agency-retention.csv in the project folder)."
 READING_LABEL = "Machine reading and reviewed rows; review required; not a legal finding."
 # CON-HOME-2's clock-basis vocabulary: a recorded receipt is dated, a submission proxy is inferred.
 BASIS_WORD = {"recorded_receipt": "DATED", "submission_proxy": "INFERRED"}
@@ -91,9 +93,27 @@ def load(project, run_id):
         timeline = {"state": "unavailable", "code": "run_mismatch" if doc.get("run_id") != run_id else "shape_invalid"}
     model = cd.load(project, run_id, pages=False)
     return {"run_id": run_id, "timeline": timeline, "links": model["links"], "tiers": model["tiers"],
-            "refusals": denial_log.load(project, run_id), "retention": agency_retention.load(RETENTION_PATH),
+            "refusals": denial_log.load(project, run_id), "retention": load_retention(project),
             "deadlines": computed_dates(project, run_id),
             "received": model["received"], "aliases": model.get("aliases", {"state": "absent"})}
+
+
+def load_retention(project):
+    """``<project>/agency-retention.csv``: {'state': 'absent'} when missing, else {'state': 'ok', rows, problems}.
+
+    The validator refuses symlinked, non-regular and oversized files as a ``file`` problem. Per-project inputs:
+    ``agency-retention.csv`` has the header of ``agency_retention.HEADER``; the SLO pilot's reviewed copy is
+    ``data/slo-pilot/agency-retention.csv`` in the repository and is not read here.
+    """
+    path = Path(project) / RETENTION_FILE
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return {"state": "absent"}
+    except OSError:
+        pass  # present but unreadable: the validator reports it as a file problem
+    rows, problems = agency_retention.load(path)
+    return {"state": "ok", "rows": rows, "problems": problems}
 
 
 def computed_dates(project, run_id):
@@ -400,7 +420,12 @@ def _agency_sections(model, agency):
             out.append("<tr>%s</tr>" % "".join("<td>%s</td>" % c for c in cells))
         out.append("</table>")
     out.extend(["<p>%s</p></section>" % esc(READING_LABEL), "<section><h2>Retention</h2>"])
-    retention, problems = model.get("retention", ([], []))
+    state = model.get("retention", {"state": "absent"})
+    if state.get("state") != "ok":
+        out.append("<p>%s</p>" % esc(RETENTION_ABSENT))
+        out.append("<p>%s</p></section>" % esc(READING_LABEL))
+        return out
+    retention, problems = state["rows"], state["problems"]
     selected = agency_retention.summary(retention, agency)
     if problems:
         out.append("<p>Retention source has %d validation problem(s); invalid rows are not shown.</p>" % len(problems))

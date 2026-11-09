@@ -98,6 +98,58 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(len(h["diff"]), 400)
         self.assertTrue(h["diff_truncated"])
 
+    def edit_history(self, original, edited):
+        self.drafts = getattr(self, "drafts", 0) + 1
+        ident = aq.add_draft(self.root, item_id=f"edit-{self.drafts}",
+                             kind="reply-extension", agency_id="alpha-pd", request_id="request-9",
+                             body=original, evidence={}, source_run_id="run-1")["id"]
+        aq.edit(self.root, ident, "editor", edited)
+        return self.history(ident)
+
+    def test_final_newline_added_and_removed(self):
+        h = self.edit_history("Letter\n", "Letter")
+        self.assertTrue(h["changed"])
+        self.assertNotEqual(h["original"]["sha256"], h["current"]["sha256"])
+        self.assertEqual(h["diff"], ["--- original", "+++ revision 1", "@@ -1 +1 @@", "-Letter", "+Letter",
+                                     "\\ No newline at end of file"])
+        h = self.edit_history("Letter", "Letter\n")
+        self.assertEqual(h["diff"], ["--- original", "+++ revision 1", "@@ -1 +1 @@", "-Letter",
+                                     "\\ No newline at end of file", "+Letter"])
+        self.assertEqual((h["original"]["body"], h["current"]["body"]), ("Letter", "Letter\n"))
+        self.assertEqual((h["original"]["bytes"], h["current"]["bytes"]), (6, 7))
+        self.assertEqual(h["current"]["sha256"], digest("Letter\n"))
+        command = [sys.executable, "-B", "-m", "campaign_tool.records", "approvals", "history",
+                   "--project", str(self.root), "--id", h["id"]]
+        before = self.snapshot()
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["diff"], h["diff"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_crlf_cr_and_unicode_separator_edits(self):
+        for ending, name in (("\r\n", "CRLF"), ("\r", "CR"), ("\u2028", "U+2028"), ("\u2029", "U+2029"),
+                             ("\x0b", "U+000B")):
+            with self.subTest(name=name):
+                original, edited = "Caf\u00e9 one\nTwo\n", f"Caf\u00e9 one{ending}Two\n"
+                h = self.edit_history(original, edited)
+                self.assertTrue(h["changed"])
+                self.assertEqual(h["diff"], ["--- original", "+++ revision 1", "@@ -1,2 +1,2 @@",
+                                             "-Caf\u00e9 one", f"+Caf\u00e9 one", f"\\ Line ending: {name}", " Two"])
+                self.assertEqual(h["current"]["body"], edited)
+                self.assertEqual(h["current"]["sha256"], digest(edited))
+                self.assertEqual(h["current"]["bytes"], len(edited.encode("utf-8")))
+                self.assertFalse(any(c in line for line in h["diff"] for c in "\r\n\u2028\u2029\x0b"))
+
+    def test_diff_marker_lines_obey_cap(self):
+        # 3 header lines + "-x" + its no-newline marker + one line per added row = 5 + adds
+        for adds, expected, truncated in ((394, 399, False), (395, 400, False), (396, 400, True)):
+            with self.subTest(adds=adds):
+                h = self.edit_history("x", "".join(f"n{n}\n" for n in range(adds)))
+                self.assertEqual((len(h["diff"]), h["diff_truncated"]), (expected, truncated))
+                self.assertEqual(h["diff"][4], "\\ No newline at end of file")
+        h = self.edit_history("a", "a\r\n")
+        self.assertEqual((len(h["diff"]), h["diff_truncated"]), (7, False))
+
     def test_missing_store_unknown_id_and_malformed_journal(self):
         self.history("unknown", error="unknown_id")
         empty = self.root / "empty"

@@ -157,7 +157,7 @@ class PreMeetingTests(unittest.TestCase):
         self.assertIn(f"{self.label}: must be an object", self.refusal("found"))
         self.write(dict(FOUND, note="n" * 200))
         self.build()
-        everything = self.problems({"status": "found", "checked_on": "2026-11-09", "extra": 1, "note": "n" * 201,
+        everything = self.problems({"status": "found", "checked_on": "2999-01-01", "extra": 1, "note": "n" * 201,
                                     "source_url": "http://example.org/x"})
         for fragment in (": unknown field 'extra'", ".checked_on: must not be after the build date",
                          ".meeting_on: required when status is found", ".body: required when status is found",
