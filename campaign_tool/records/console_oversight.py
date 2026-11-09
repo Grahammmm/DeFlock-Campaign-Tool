@@ -63,12 +63,14 @@ def _load_runs(target_dir, now):
     if target_dir is None:
         return _unavailable("run_report_not_configured")
     try:
-        reports, _bad = pipeline_health._recent_reports(target_dir, pipeline_health.LIMITS)
+        reports, _bad = pipeline_health._recent_reports(target_dir, pipeline_health.LIMITS, now=now)
         try:
             latest = pipeline_health._read_json(target_dir / "run-report.json")
         except (ValueError, OSError):
             latest = None
         if latest is not None and pipeline_health._valid_report(latest):
+            if pipeline_health._future(latest, now):
+                return _unavailable("run_report_future")  # never fall back to an older "latest"
             reports.append(latest)
     except (OSError, ValueError, KeyError, TypeError):
         return _unavailable("runs_unreadable")
