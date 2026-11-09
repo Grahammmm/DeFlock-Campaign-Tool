@@ -330,6 +330,7 @@ class LabelsTest(unittest.TestCase):
                   "sharing.kind", "sharing.kind_federal", "sharing.kind_local", "sharing.kind_private", "sharing.kind_state",
                   "sharing.kind_unknown", "sharing.law_status", "sharing.lead", "sharing.out_of_state", "sharing.receiver",
                   "sharing.source_list", "sharing.sources", "sharing.state", "sharing.title",
+                  "sources.bundle", "sources.bundle_details", "sources.bundle_scope",  # DF0022-11: only with a local public copy (tests/test_source_bundle.py)
                   "standings.deadline",  # DF1952-10: only with a verified upcoming deadline (tests/test_site_standings.py)
                   "statements.campaign_context", "statements.checked", "statements.context_interview",
                   "statements.context_meeting", "statements.context_newsletter", "statements.context_other",

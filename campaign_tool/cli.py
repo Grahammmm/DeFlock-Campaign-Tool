@@ -546,10 +546,18 @@ def build(root, check=False, budget=None, weights_out=None, weights_baseline=Non
     if check and any(os.path.lexists(public / name) for name in ("data.html", "data/datapackage.json")):
         from .site_check import check_data_catalogue  # DF2207-12: refuse an already-missing or changed listed file first
         check_data_catalogue(public)
-    notes = []
-    written = build_site(root, notes=notes)
+    expected = None
+    if check and (root / "content").is_dir():  # DF0022-11: the archive a rebuild would write, computed before anything is written
+        from .site import planned_source_bundle
+        from .source_bundle import check_source_bundle
+        _, expected = planned_source_bundle(root)
+        check_source_bundle(public, expected)
+    notes, bundle_notes = [], []
+    written = build_site(root, notes=notes, bundle_notes=bundle_notes)
     for note in notes:  # informational: the exit code is unchanged
         print(f"note: {note}", file=sys.stderr)
+    for note in bundle_notes:  # DF0022-11: the sources.zip skip line, on stderr
+        print(note, file=sys.stderr)
     content_mode = (root / "content").is_dir()
     print(("Site" if content_mode else "Starter") + " written to " + str(public)
           + ". No private documents exported.")
@@ -565,6 +573,7 @@ def build(root, check=False, budget=None, weights_out=None, weights_baseline=Non
         from .site_check import check_accessibility, check_data_catalogue, check_links
         if content_mode:
             check_data_catalogue(public)  # DF2207-12: the fresh output, before any success line
+            check_source_bundle(public, expected)  # DF0022-11: the written archive is what the precheck computed
         hits = check_public_tree(public)
         for path, line, label in hits:
             print(f"public/{path}:{line}: {label}", file=sys.stderr)

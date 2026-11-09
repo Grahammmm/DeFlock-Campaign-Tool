@@ -44,6 +44,16 @@ fails (503), the event may already be durable: retry the unchanged form rather
 than opening a new one. Malformed, incomplete, linked or non-private journals
 refuse further writes. The form does not send, approve or publish anything.
 
+## Agency retention per campaign (RF0753-4)
+
+The agency page's Retention section reads `<project>/agency-retention.csv` (header
+`agency,system,vendor,data_layer,stated_period,period_days,bound,source_kind,quote,doc_sha256,page,confidence,checked`,
+validated by `agency_retention.load`). An absent file shows one plain line, "No retention statements recorded for
+this campaign (agency-retention.csv in the project folder).", not a validation problem; a present symlinked,
+non-regular, oversized or malformed file shows the validation-problem count. The repository's
+`data/slo-pilot/agency-retention.csv` is the SLO pilot's reviewed copy and is no longer read by the console: an
+operator copies it into the SLO project folder as `agency-retention.csv`.
+
 ## Documents agency aliases (CDATA-ALIAS-1)
 
 An operator may hand-stage `<project>/agency-aliases.tsv` (UTF-8), header

@@ -40,8 +40,8 @@ def leaking_content(text_for):
 
 
 def build_without(name):
-    def build(root, today=None, notes=None):
-        written = REAL_BUILD_SITE(root, today, notes)
+    def build(root, today=None, notes=None, **kwargs):
+        written = REAL_BUILD_SITE(root, today, notes, **kwargs)
         if (Path(root) / "content").is_dir():
             target = Path(root) / "public" / name
             target.unlink()
@@ -99,8 +99,8 @@ class ContentRehearsalTests(unittest.TestCase):
                 self.assertFailsWith("content_build_missing_page")
 
     def test_broken_internal_link_with_every_page_present_is_refused(self):
-        def build(root, today=None, notes=None):
-            written = REAL_BUILD_SITE(root, today, notes)
+        def build(root, today=None, notes=None, **kwargs):
+            written = REAL_BUILD_SITE(root, today, notes, **kwargs)
             if (Path(root) / "content").is_dir():
                 page = Path(root) / "public" / "sources.html"
                 page.write_text(page.read_text(encoding="utf-8").replace(

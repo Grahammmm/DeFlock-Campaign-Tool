@@ -380,6 +380,84 @@ class IngestMboxTests(unittest.TestCase):
         self.ingest(refused, returncode=1)
         self.assertEqual(self.files(), after | {str(refused.relative_to(self.base)): refused.read_bytes()})
 
+    # RF0824-2: an ambiguous forwarded-message transfer encoding skips only its own message
+    def forwarded(self, header, named=True, valid_first=False):
+        """A message with a forwarded message/rfc822 part whose own Content-Transfer-Encoding header lines are
+        `header` (a string or a list, one line each); an optional valid base64 attachment comes before it."""
+        lines = [header] if isinstance(header, str) else header
+        first = ("--B\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n"
+                 'Content-Disposition: attachment; filename="ok.bin"\r\n\r\n'
+                 f"{base64.b64encode(VALID_FIRST).decode()}\r\n") if valid_first else ""
+        wrapper = ("--B\r\nContent-Type: message/rfc822\r\n" + "".join(f"Content-Transfer-Encoding: {v}\r\n" for v in lines)
+                   + ('Content-Disposition: attachment; filename="fwd.eml"\r\n' if named else "")
+                   + "\r\nSubject: Fictional forward\r\n\r\nforwarded body\r\n")
+        head = (f"Subject: {HEADER_VALUES[0]}\r\nFrom: {HEADER_VALUES[1]}\r\nTo: {HEADER_VALUES[2]}\r\nMIME-Version: 1.0\r\n"
+                'Content-Type: multipart/mixed; boundary="B"\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n')
+        return (head + first + wrapper + "--B--\r\n").encode()
+
+    def unique(self, label):
+        """A valid message with one attachment whose bytes exist nowhere else in this test's campaign."""
+        return message((PDF + label.encode(), "application", "pdf", f"{len(label)}.pdf"))
+
+    def test_mbox_forwarded_wrapper_skips_only_bad_messages(self):
+        bad_headers = {"unknown": "x-uuencode", "empty": "", "duplicate-equal": ["7bit", "7bit"],
+                       "duplicate-conflicting": ["7bit", "base64"], "base64": "base64", "quoted-printable": "quoted-printable"}
+        self.ingest(self.write(mbox(self.unique("seed")), "seed.mbox"))  # a populated campaign
+        for crlf in (False, True):
+            for label, header in bad_headers.items():
+                for named in (True, False):
+                    with self.subTest(label=label, named=named, crlf=crlf):
+                        tag = f"{label}-{named}-{crlf}"
+                        m1, m3 = self.unique(f"a-{tag}"), self.unique(f"c-{tag}")
+                        bad = self.forwarded(header, named, valid_first=True)
+                        if crlf:
+                            m1, m3 = m1.replace(b"\n", b"\r\n"), m3.replace(b"\n", b"\r\n")
+                            data = self.crlf_mbox(m1, bad, m3)
+                        else:
+                            data = mbox(m1, bad, m3)
+                        path = self.write(data, f"{tag}.mbox")
+                        before, counts = self.files(), self.counts()
+                        report = self.ingest(path)
+                        self.assertEqual(report["skipped"], [{"number": 2, "code": "malformed"}])
+                        self.assertEqual([(m["number"], m["sha256"]) for m in report["messages"]],
+                                         [(1, sha(m1)), (3, sha(m3))])
+                        self.assertEqual(report["count"], 3)
+                        objects = self.root / "private" / "objects"
+                        self.assertEqual((objects / report["mailbox"]["sha256"]).read_bytes(), data)
+                        self.assertEqual(path.read_bytes(), data)
+                        self.assertNotIn(sha(bad), os.listdir(objects))
+                        self.assertNotIn(sha(VALID_FIRST), os.listdir(objects))
+                        # mailbox + 2 messages + 2 attachments; 2 message rows + 2 attachment rows
+                        self.assertEqual([b - a for a, b in zip(counts[0], self.counts()[0])], [5, 5, 4])
+                        names = [r[0] for r in self.rows("SELECT original_name FROM receipts")]
+                        self.assertFalse([n for n in names if n.startswith(f"{tag}.mbox/message-2")], names)
+                        self.assertTrue(set(before) <= set(self.files()))
+        every = self.write(mbox(self.forwarded("x-uuencode"), self.forwarded(["7bit", "7bit"], named=False)), "all-bad.mbox")
+        report = self.ingest(every)
+        self.assertEqual((report["skipped"], report["messages"], report["count"]),
+                         ([{"number": 1, "code": "malformed"}, {"number": 2, "code": "malformed"}], [], 2))
+        self.assertEqual((self.root / "private" / "objects" / report["mailbox"]["sha256"]).read_bytes(), every.read_bytes())
+
+    def test_mbox_forwarded_wrapper_dry_run_and_replay(self):
+        good_forward = self.forwarded("8bit", valid_first=True)
+        path = self.write(mbox(self.unique("x"), self.forwarded("x-uuencode", valid_first=True), good_forward,
+                               self.forwarded("base64", named=False), self.unique("y")))
+        before = self.files()
+        preview = self.ingest(path, dry=True)
+        self.assertEqual(self.files(), before)
+        self.assertEqual(preview["skipped"], [{"number": 2, "code": "malformed"}, {"number": 4, "code": "malformed"}])
+        real = self.ingest(path)
+        shape = lambda r: (r["skipped"], [(m["number"], m["sha256"]) for m in r["messages"]], r["count"])
+        self.assertEqual(shape(preview), shape(real))
+        self.assertEqual([n for n, _ in shape(real)[1]], [1, 3, 5])
+        self.assertEqual([a["name"] for a in real["messages"][1]["attachments"]], ["ok.bin", "fwd.eml"])
+        self.assertEqual(self.counts(), [(8, 8, 7)])  # mailbox, 3 messages, 4 attachments; 3 + 4 contains rows
+        stored, objects = self.counts(), sorted(os.listdir(self.root / "private" / "objects"))
+        again = self.ingest(path)
+        self.assertEqual(shape(again), shape(real))
+        self.assertEqual(set(self.outcomes(again)), {"present"})
+        self.assertEqual((self.counts(), sorted(os.listdir(self.root / "private" / "objects"))), (stored, objects))
+
     def test_derived_size_boundary_excludes_complete_frame(self):
         import contextlib
         import io

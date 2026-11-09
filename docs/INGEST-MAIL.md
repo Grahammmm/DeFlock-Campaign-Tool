@@ -26,15 +26,29 @@ compared case-insensitively after trimming surrounding whitespace. Supported val
 An empty, repeated (even if equal), malformed or unknown value is refused. The importer never repairs padding,
 guesses an encoding or stores encoded text as if it were decoded.
 
+### Forwarded messages
+
+A forwarded `message/rfc822` part, named or not and at any multipart depth, is checked first, and on its own
+`Content-Transfer-Encoding` header only. It follows the same rule (exactly one header, or none; trimmed,
+case-insensitive; empty, repeated, malformed or unknown is refused) but accepts identity encodings only:
+`7bit`, `8bit`, `binary` or none. An explicit `base64` or `quoted-printable` wrapper is refused even if it is
+well formed: the importer has no decoder for an encoded forwarded message, never salvages it and never stores
+encoded text as if it were a message. Accepted forwards are serialized exactly as before, so their hashes, names
+and links do not change. This is the importer's established serialization of the forwarded message, not the
+byte-exact wire capture of the separate records intake.
+
 ## What is checked
 
-Only named attachments. Message bodies and inline parts without a filename are not newly decoded or validated. A
-forwarded `message/rfc822` part stays one opaque `.eml` member; its own attachments are not opened or checked.
+Only named attachments, plus the transfer encoding header of each forwarded message wrapper. Message bodies and
+inline parts without a filename are not newly decoded or validated. A forwarded `message/rfc822` part stays one
+opaque `.eml` member: its inner headers and its own attachments (including their encodings) are not opened or
+checked.
 
 ## Refusal
 
-- **`--eml`**: every attachment is checked before anything is written, so one malformed attachment refuses the whole
-  message, in a real run and in `--dry-run` alike. Nothing in the campaign changes, and the input file is untouched.
+- **`--eml`**: every attachment and forwarded wrapper is checked before anything is written, so one malformed
+  attachment or forward refuses the whole message, in a real run and in `--dry-run` alike. Nothing in the campaign
+  changes, and the input file is untouched.
   The output is exactly `Stopped: malformed MIME (InvalidAttachmentEncoding); nothing was imported` and exit status 1.
 - **`--mbox`**: the malformed message alone is listed in the report's `skipped` as
   `{"number": N, "code": "malformed"}`, with no objects, receipts or links of its own. The other messages import
@@ -47,4 +61,5 @@ The message never repeats header values, body data, filenames or decoder text, s
 
 1. Export the mail again, or ask for a corrected copy of the message from the sender; then import that file.
 2. To keep the raw message as it is without claiming its attachments were decoded, store it with the existing
-   `ingest --file saved.eml --source-id example-1`. That keeps the original bytes only; no attachment is extracted.
+   `ingest --file saved.eml --source-id example-1`. That keeps the original bytes only; no attachment (or forwarded
+   message) is extracted.
