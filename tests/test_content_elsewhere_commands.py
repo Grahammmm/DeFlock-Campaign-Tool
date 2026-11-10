@@ -18,9 +18,10 @@ from pathlib import Path
 from unittest import mock
 
 from campaign_tool import cli, elsewhere_cmd
+from campaign_tool.content import ContentError
 from campaign_tool.content_check import content_problems
 from campaign_tool.content_elsewhere import read_elsewhere
-from campaign_tool.elsewhere_cmd import ElsewhereError, add_entry, list_entries, parse_index, remove_entry
+from campaign_tool.elsewhere_cmd import ElsewhereError, _category, add_entry, list_entries, parse_index, remove_entry
 from campaign_tool.meeting_stage import stage
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -147,7 +148,7 @@ class CommandTests(Base):
         self.assert_refused(lambda: add_entry(self.root, **entry(100), today=TODAY), "1 to 100 entries")
         self.put([entry(1)])
         cases = ((dict(source_url="https://other.example.test/x", state="WA"), r"\[1\]: duplicate of elsewhere.json\[0\]"),
-                 (dict(checked_on="2026-11-02"), r"checked_on: 2026-11-02 is in the future"),
+                 (dict(checked_on="2026-11-02"), r"^elsewhere\.json\[1\]\.checked_on: must not be in the future; nothing was written$"),
                  (dict(decided_on="2026-09-16"), "must not be after checked_on"),
                  (dict(decided_on="2026-02-29"), "real YYYY-MM-DD"), (dict(state="or"), "state"),
                  (dict(source_url="https://u:p@records.example.test/"), "source_url"),
@@ -155,6 +156,9 @@ class CommandTests(Base):
         for change, pattern in cases:
             with self.subTest(change=change):
                 self.assert_refused(lambda: add_entry(self.root, **dict(entry(1), **change), today=TODAY), pattern)
+        with self.assertRaises(ElsewhereError) as caught:
+            add_entry(self.root, **entry(1, checked_on="2026-11-02"), today=TODAY)
+        self.assertNotIn("2026-11-02", str(caught.exception))
         add_entry(self.root, **entry(1, kind="declined"), today=TODAY)  # a different kind is a different decision
         add_entry(self.root, **entry(1, decided_on="2024-02-29", place="  Springfield 1  ", as_stated="y" * 200), today=TODAY)
         stored = json.loads(self.path.read_text(encoding="utf-8"))
@@ -562,6 +566,118 @@ class FolderIdentityTests(Base):
             with self.assertRaisesRegex(ElsewhereError, "written, but the folder could not be flushed to disk"):
                 add_entry(self.root, **entry(9), today=TODAY)
         self.assertEqual(len(json.loads(self.path.read_text(encoding="utf-8"))), 4)
+
+
+FUTURE = ("2099-12-31", "2030-01-02", "2026-11-02")  # all after the fixed TODAY (2026-11-01); the CLI uses the real clock
+CLI_FUTURE = FUTURE[:2]
+STOPPED = "Stopped: {}; nothing was written\n"
+
+
+def refusal(label, kind="must not be in the future"):
+    return f"{label}: {kind}; nothing was written"
+
+
+class FutureDateRefusals(Base):
+    def refused(self, call, message, dates):
+        before = self.tree()
+        with self.assertRaises(ElsewhereError) as caught:
+            call()
+        self.assertEqual(str(caught.exception), message)
+        self.assertIsNone(caught.exception.__cause__)
+        for supplied in dates:
+            self.assertNotIn(supplied, str(caught.exception))
+        self.assertEqual(self.tree(), before)
+
+    def test_new_add_future_date_refusal_withholds_value(self):
+        for stored in (None, [entry(1)]):
+            for supplied in FUTURE:
+                with self.subTest(stored=stored is not None, supplied=supplied):
+                    self.path.unlink(missing_ok=True)
+                    if stored:
+                        self.put(stored)
+                    index = len(stored or [])
+                    self.refused(lambda: add_entry(self.root, **entry(2, checked_on=supplied), today=TODAY),
+                                 refusal(f"elsewhere.json[{index}].checked_on"), FUTURE)
+                    self.assertEqual(self.path.exists(), stored is not None)
+
+    def test_future_date_in_old_row_refuses_every_verb_without_echo(self):
+        for supplied in FUTURE:
+            for position, rows in ((0, [entry(1, checked_on=supplied), entry(2), entry(3)]),
+                                   (2, [entry(1), entry(2), entry(3, checked_on=supplied)]),
+                                   (0, [entry(1, checked_on=supplied)])):
+                self.put(rows)
+                message = refusal(f"elsewhere.json[{position}].checked_on")
+                for label, call in (("list", lambda: list_entries(self.root, today=TODAY)),
+                                    ("add", lambda: add_entry(self.root, **entry(9), today=TODAY)),
+                                    ("remove-good", lambda: remove_entry(self.root, len(rows) - position if len(rows) > 1 else 1, today=TODAY)),
+                                    ("remove-bad", lambda: remove_entry(self.root, position + 1, today=TODAY))):
+                    with self.subTest(supplied=supplied, position=position, rows=len(rows), verb=label):
+                        self.refused(call, message, FUTURE)
+
+    def test_staged_future_date_refuses_both_remove_paths_privately(self):
+        for supplied in FUTURE:
+            for rows, removed in (([entry(1)], 1), ([entry(1), entry(2), entry(3)], 1), ([entry(1), entry(2), entry(3)], 3)):
+                with self.subTest(supplied=supplied, rows=len(rows), removed=removed):
+                    self.put(rows)
+                    self.meeting("future-snapshot.json", entry(2), entry(7, checked_on=supplied))
+                    self.refused(lambda: remove_entry(self.root, removed, today=TODAY),
+                                 refusal("meetings/future-snapshot.json.cited_elsewhere[1].checked_on"), FUTURE)
+                    (self.content / "meetings" / "future-snapshot.json").unlink()
+
+    def test_cli_future_refusals_are_single_stopped_lines(self):
+        D = str(self.root)
+        for supplied in CLI_FUTURE:
+            with self.subTest(supplied=supplied):
+                self.path.unlink(missing_ok=True)
+                before = self.tree()
+                done = self.cli("add", "--directory", D, *flags(entry(1, checked_on=supplied)))
+                self.assertEqual((done.returncode, done.stdout, done.stderr),
+                                 (1, "", STOPPED.format("elsewhere.json[0].checked_on: must not be in the future")))
+                self.assertEqual(self.tree(), before)
+                self.put([entry(1), entry(2, checked_on=supplied)])
+                before = self.tree()
+                message = STOPPED.format("elsewhere.json[1].checked_on: must not be in the future")
+                for args in (("list", "--directory", D), ("remove", "--directory", D, "--index", "1"),
+                             ("add", "--directory", D, *flags(entry(3)))):
+                    done = self.cli(*args)
+                    self.assertEqual((done.returncode, done.stdout, done.stderr), (1, "", message), args[0])
+                self.assertEqual(self.tree(), before)
+                self.put([entry(1)])
+                self.meeting("future-snapshot.json", entry(1, checked_on=supplied))
+                before = self.tree()
+                done = self.cli("remove", "--directory", D, "--index", "1")
+                self.assertEqual((done.returncode, done.stdout, done.stderr), (1, "", STOPPED.format(
+                    "meetings/future-snapshot.json.cited_elsewhere[0].checked_on: must not be in the future")))
+                self.assertEqual(self.tree(), before)
+
+    def test_today_and_past_dates_still_list_and_mutate_normally(self):
+        self.put([entry(1, checked_on="2026-11-01"), entry(2, checked_on="2026-10-31")])
+        self.assertEqual([row["checked_on"] for row in list_entries(self.root, today=TODAY)], ["2026-11-01", "2026-10-31"])
+        self.assertEqual(add_entry(self.root, **entry(3, checked_on="2026-11-01"), today=TODAY)["index"], 3)
+        self.assertEqual(remove_entry(self.root, 2, today=TODAY)["index"], 2)
+        self.assertEqual([row["checked_on"] for row in json.loads(self.path.read_text(encoding="utf-8"))],
+                         ["2026-11-01", "2026-11-01"])
+        listed = self.cli("list", "--directory", str(self.root))
+        self.assertEqual((listed.returncode, listed.stdout.count("2026-11-01")), (0, 2), listed.stderr)
+
+
+class CategoryHelper(unittest.TestCase):
+    def test_future_category_preserves_locator_dates_and_other_diagnostics(self):
+        future = "meetings/2026-10-02-council.json.cited_elsewhere[3].checked_on: 2099-12-31 is in the future"
+        self.assertEqual(_category(ContentError(future)),
+                         "meetings/2026-10-02-council.json.cited_elsewhere[3].checked_on: must not be in the future")
+        self.assertEqual(_category(ContentError("elsewhere.json[0].checked_on: 2099-12-31 is in the future")),
+                         "elsewhere.json[0].checked_on: must not be in the future")
+        for untouched in ("elsewhere.json[0]: decided_on 2026-03-10 must not be after checked_on",
+                          "elsewhere.json: needs 1 to 100 entries, found 101",
+                          "elsewhere.json[0].decided_on: must be a real YYYY-MM-DD date",
+                          "meetings/2026-10-02-council.json.starts_at: 2099-12-31 is in the future",
+                          "elsewhere.json[0]: duplicate of elsewhere.json[0]"):
+            self.assertEqual(_category(ContentError(untouched)), untouched)
+        self.assertEqual(_category(ContentError("elsewhere.json[0]: unknown field(s) 'ZQ-PRIVATE', 'x'")),
+                         "elsewhere.json[0]: unknown field(s)")
+        self.assertEqual(_category(ContentError("elsewhere.json[0].place: 'ZQ-PRIVATE' bad \"ZQ-2\"")),
+                         "elsewhere.json[0].place: <value withheld> bad <value withheld>")
 
 
 if __name__ == "__main__":

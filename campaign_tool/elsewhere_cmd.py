@@ -163,8 +163,11 @@ def _state(root, today):
 
 
 def _category(exc):
-    """A loader message with stored text removed: the unknown-key list and every quoted value (repr) are dropped."""
+    """A loader message with stored text removed: the unknown-key list and every quoted value (repr) are dropped, and
+    the loader's one unquoted supplied value, the date in its terminal ``.checked_on: <date> is in the future``
+    diagnostic, is replaced by a category (only that tail: a dated meeting filename in the locator is kept)."""
     text = re.sub(r"unknown field\(s\) .*", "unknown field(s)", str(exc))
+    text = re.sub(r"(\.checked_on: )[0-9]{4}-[0-9]{2}-[0-9]{2} is in the future$", r"\1must not be in the future", text)
     return re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", "<value withheld>", text)
 
 
