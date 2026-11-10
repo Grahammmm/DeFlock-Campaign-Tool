@@ -1526,8 +1526,8 @@ def main():
     sharing_p.add_argument("--source-url", required=True, help="https URL of the portal page (transparency.flocksafety.com)")
     sharing_p.add_argument("--replace", action="store_true", help="Overwrite an existing sharing list")
     profile_cmds = content_cmds.add_parser(
-        "agency-profile", help="List every dated agency-profile check, or record the day you re-read one source "
-        "(content/agencies.json only; nothing is fetched, built or published)").add_subparsers(
+        "agency-profile", help="List every dated agency-profile check, record the day you re-read one source, or record "
+        "a whole policy or contract document (content/agencies.json only; nothing is fetched, built or published)").add_subparsers(
         dest="agency_profile_command", required=True)
     profile_list = profile_cmds.add_parser("list", help="Each recorded checked_on with its age in days, oldest first (read-only)")
     profile_list.add_argument("--directory", required=True)

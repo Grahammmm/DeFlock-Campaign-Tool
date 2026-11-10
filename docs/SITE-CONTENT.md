@@ -373,6 +373,28 @@ reading as a new snapshot instead). Every refusal writes nothing; a success repl
 `content/` directory it read, and refuses if that directory or the file changed meanwhile. Nothing is fetched, built
 or published, and the tool cannot tell whether you actually re-read the source.
 
+### Recording a policy or contract document
+
+`python3 -m campaign_tool content agency-profile policy --directory D --agency ID --url URL --source-url URL
+--checked-on YYYY-MM-DD [--replace [--drop-check]]` writes `profile.alpr_policy`, and `content agency-profile contract
+--directory D --agency ID --vendor TEXT --start D --end D [--renewal-note TEXT] --source-url URL --checked-on
+YYYY-MM-DD [--cost-usd AMOUNT --period annual|total|one_time --as-stated-in TITLE] [--replace [--drop-check]]` writes
+`profile.contract` (the three cost flags together or none; the amount is kept as the typed decimal string). The agency
+must be selected; nothing creates the file or an agency. The new document is the whole value: an existing one needs
+`--replace`, and unsupplied optional fields are then removed. An `archived_url`/`archived_on` pair stays only while the
+document URL (`alpr_policy.url`, `contract.source_url`) is unchanged; otherwise it is removed with a notice.
+
+A reading is never rebound to another document. Changing the document URL while `policy_check` (`contract_check`)
+exists is refused (`... changes while policy_check exists; pass --replace --drop-check, then record a new reading with
+policy-check`); with `--drop-check` the new document and the removal of that reading are one atomic write, and the
+output adds `Dropped profile.policy_check (checked_on D); record a new reading with content agency-profile
+policy-check.` On the same URL, a new `checked_on` later than the reading's is refused (`pass --drop-check or redo
+policy-check first with --checked-on not before D`); an equal date, or a changed policy `--source-url` alone, keeps the
+reading. `--drop-check` without `--replace` is refused. Before anything is written the whole prospective file must pass
+the build's loader, the new document's text the shared privacy lint, and every agency the build's privacy gate; a
+refusal names the place and the rule or category (never the text) and writes nothing. Success replaces the file
+atomically as `recheck` does and ends `Recorded only. Nothing was fetched, built, published or sent.`
+
 ### Archived copies of agency sources (optional)
 
 Five organizer-verified link objects may carry a manually checked archive copy: `profile.alpr_policy`,
