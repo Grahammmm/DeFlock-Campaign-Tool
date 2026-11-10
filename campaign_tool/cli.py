@@ -1821,7 +1821,11 @@ def main():
             sys.exit(1)
         print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
         sys.exit(exit_code(report))
-    root = Path(args.directory).expanduser().resolve()
+    root = Path(args.directory).expanduser()
+    if not (args.command == "content" and args.content_command == "add-starter"):  # add-starter refuses a symlinked root itself
+        root = root.resolve()
+    elif not root.is_absolute():
+        root = Path.cwd() / root
     try:
         if args.command == "init":
             initialize(args, root)

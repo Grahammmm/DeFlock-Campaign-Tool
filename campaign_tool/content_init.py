@@ -134,11 +134,16 @@ def _present(name, dir_fd):
 def _open_campaign(root, fds):
     """The campaign config; appends no-follow handles on root, content/ and content/pages/ (None when missing)."""
     try:
+        fds.append(os.open(root, _DIR))  # no-follow: a symlinked campaign folder is refused like content/ and pages/
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise StarterError("the campaign folder must be a real folder, not a symlink or a file; nothing was written") from None
+        raise StarterError("campaign.json is missing or not a valid campaign file; nothing was written") from None
+    try:
         cfg = read_config(Path(root))
     except _FAILED:
         raise StarterError("campaign.json is missing or not a valid campaign file; nothing was written") from None
     try:
-        fds.append(os.open(root, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)))
         fds.append(_open_dir("content", fds[0], "content/"))
         if fds[1] is None:
             raise StarterError("content/ does not exist; a new campaign runs content init; nothing was written")

@@ -169,6 +169,29 @@ class AddStarterTests(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
         self.assertFalse((root / "content.moved" / "faq.json").exists())
 
+    def test_symlinked_campaign_root_is_refused_unchanged(self):
+        root = self.older()
+        link = self.work / "campaign-link"
+        link.symlink_to(root, target_is_directory=True)
+        before = snapshot(root)
+        for name in TARGETS:
+            with self.subTest(name=name):
+                with self.assertRaises(StarterError) as caught:
+                    add_starter(link, name)
+                self.assertIn("campaign folder must be a real folder", str(caught.exception))
+                result = cli("content", "add-starter", name, "--directory", link)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("Stopped: the campaign folder must be a real folder", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+        with self.assertRaises(StarterError):
+            starter_status(link)
+        result = cli("content", "add-starter", "--list", "--directory", link)
+        self.assertEqual((result.returncode, result.stdout), (2, ""))
+        self.assertEqual(snapshot(root), before)  # nothing was written in the target
+        self.assertFalse((root / "content" / "faq.json").exists())
+        result = cli("content", "add-starter", "faq", "--directory", root)  # the real folder still works
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_corrupt_resource_or_selfcheck_failure_writes_nothing(self):
         root = self.older()
         broken = self.work / "broken.json"
