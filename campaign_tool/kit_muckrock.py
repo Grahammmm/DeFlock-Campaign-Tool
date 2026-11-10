@@ -30,6 +30,8 @@ def _load(path):  # a regular, small, UTF-8 JSON object; refused before kit/sent
         raise ValueError(f"{path}: larger than 1 MiB")
     try:
         document = json.loads(raw.decode("utf-8"))
+    except RecursionError:  # translate decoder exhaustion, without imposing a separate depth limit
+        raise ValueError(f"{path}: JSON nesting is too deep") from None
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise ValueError(f"{path}: not UTF-8 JSON") from None
     if not isinstance(document, dict):
