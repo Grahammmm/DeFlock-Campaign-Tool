@@ -78,7 +78,7 @@ class _Context:
         self._events = None
         self.event_now = now or datetime.now(timezone.utc)
         if self.event_now.tzinfo is None:
-            self.event_now = self.event_now.replace(tzinfo=timezone.utc)
+            self.event_now = datetime.combine(self.event_now.date(), self.event_now.time(), timezone.utc)
 
     def events(self):
         if self._events is None:

@@ -494,6 +494,31 @@ class Events(FolderCheckCase):
             self.assertIn("original window is unknown", reason[0])
         sidecar.write_text("{bad", encoding="utf-8")
         self.assertTrue(self.folder("events")["folder_problems"])
+        # Unbound metadata cannot widen selection to invent a missing distant post.
+        self.put(event("one"), event("distant", "2026-12-01T18:00:00-08:00"))
+        original["drafts"]["one"].update(sha256="wrong", within_days=60)
+        sidecar.write_text(json.dumps(original), encoding="utf-8")
+        self.assertNotIn("distant", self.states("events"))
+
+    def test_online_edits_generated_title_and_suggested_hash_binding(self):
+        from campaign_tool.social import build_event_social
+        from tests.test_social_events import online
+        self.put(online("one", "2026-11-12T18:00:00-08:00"))
+        build_event_social(self.root, now=NOW)
+        draft = self.social / "events/one.md"
+        text = draft.read_text()
+        draft.write_text(text.replace("Online", "Elsewhere"), encoding="utf-8")
+        self.assertIn("outdated", self.states("events")["one"][1])
+        build_event_social(self.root, now=NOW)
+        suggested = self.social / "events.suggested/one.md"
+        suggested.write_text(suggested.read_text() + " changed", encoding="utf-8")
+        self.assertEqual(self.states("events.suggested")["one"], ("outdated", ["outdated"]))
+        self.assertIn("cannot be checked", self.folder("events.suggested")["drafts"][0]["note"])
+        draft.write_text(text, encoding="utf-8")
+        source = online("one", "2026-11-12T18:00:00-08:00")
+        source["title"] = "Changed title"
+        self.put(source)
+        self.assertEqual(self.states("events")["one"], ("outdated", ["outdated"]))
 
     def test_source_refusal_direct_folder_failure_and_no_raw_error(self):
         from campaign_tool.social import _published
