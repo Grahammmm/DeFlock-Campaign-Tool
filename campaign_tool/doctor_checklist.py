@@ -78,11 +78,23 @@ def _short(value, limit=80):
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
+def _control_free_directory(directory):
+    """Return the directory as text, refusing terminal controls and line separators.
+
+    Shell quoting keeps shell argument boundaries but not terminal display: an ESC sequence or a line break in the
+    path would reach the terminal or forge an extra checklist line. Same policy as kit_agencies._has_control; the
+    message never echoes the path."""
+    raw = str(directory)
+    if any(ord(c) < 32 or 127 <= ord(c) < 160 or c in "\u2028\u2029" for c in raw):
+        raise ValueError("checklist directory contains a control character; use a control-free path to this campaign")
+    return raw
+
+
 def checklist(report, directory, agency_list_exists=False, *, git_row=None):
     """Rows in RULES order, then unknown keys as info, then the derived production_ready row.
 
     agency_list_exists: kit/agencies.json is present, so the agencies_selected fix is a kit-agency selection."""
-    raw = str(directory)
+    raw = _control_free_directory(directory)
     # Shell quoting alone does not keep argparse from treating a leading '-' as an option.
     d = shlex.quote("./" + raw if raw.startswith("-") else raw)
     facts = dict(report, agency_list_exists=agency_list_exists)
@@ -110,6 +122,7 @@ def checklist(report, directory, agency_list_exists=False, *, git_row=None):
 
 def render(report, directory, as_json=False, agency_list_exists=False):
     from .git_exposure import git_exposure_row
+    _control_free_directory(directory)  # before the Git lookup, in text and JSON alike
     rows = checklist(report, directory, agency_list_exists, git_row=git_exposure_row(directory))
     if as_json:
         return json.dumps(rows, indent=2, ensure_ascii=False)
