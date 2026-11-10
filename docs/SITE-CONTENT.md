@@ -1470,6 +1470,21 @@ page shows a paragraph linking `/findings/` and `/sources.html` (with the second
 message). The "Search" link is in the footer beside the feed link and `/search.html` is in `sitemap.xml` when `base_url`
 is set; the slug `search` and `public-assets/search.html` are refused. Finding bodies and private records are not searched.
 
+**Agencies and meetings (DF1109-09).** When the site has at least one agency page (the agencies `data/agencies.json`
+lists) or at least one staged meeting, `search.js` also fetches `/data/agencies.json` and/or `/data/meetings.json`, once
+each and only for a kind the site publishes. An agency matches by its name, its `kind` code and the kind's label and
+links to its agency page (or its `agencies.html` card when the exported link is missing or not a path or http(s) URL); a
+meeting matches by its body, its agenda item and its recorded `starts_at` text (so `2026-10-14` finds it; no time zone
+conversion) and links to its `meetings/<id>.html` page, titled `body — agenda item`. Results come in the order finding,
+source, agency, meeting, each kind in its file's order, under the same 50-result cap, and are tagged `Agency` or
+`Meeting`. The agenda items come from a `data-search-extra` attribute on the form (meeting id to agenda item, and each
+agency's card link and kind label), joined only to meetings the published `data/meetings.json` lists; no other meeting or
+agency field is copied. A missing, refused or malformed optional file (or a malformed row) only leaves that kind empty:
+findings and sources stay searchable; a failure of either required file still shows the unavailable message and the
+fallback. The page then uses `search.label_all`, `search.intro_all` and `search.description_all`, and the fallback adds
+`search.fallback_more` with links to `/agencies.html` and/or `/meetings.html`. No new file, header or CSP change. A site
+with neither builds byte-identical `search.js` and `search.html`, even though both JSON files are still written (empty).
+
 ### Privacy page
 `privacy.html` is always generated and is not editable (DF1207-16). It states, in plain words, that scripts, stylesheets
 and fonts come from this site only, that the site sets no cookies and runs no analytics, which hosts the interactive map
@@ -1566,7 +1581,11 @@ facts when site.json lists none); `js.city_points_one`/`js.city_points_many`, `j
 Search page labels: `footer.search` (footer link), `search.title`, `search.description`, `search.label` (the box label),
 `search.intro`, `search.fallback` (`{findings}` and `{sources}` are the two links, text from `nav.findings`/`nav.sources`);
 script texts `js.search_hint`, `js.search_none`, `js.search_count_one`/`js.search_count_many` (`{count}`),
-`js.search_unavailable`, `js.search_finding` and `js.search_source` (the tag after each result). `search.js` is the same
+`js.search_unavailable`, `js.search_finding` and `js.search_source` (the tag after each result). With agencies or
+meetings (DF1109-09): page labels `search.label_all`, `search.intro_all`, `search.description_all` and
+`search.fallback_more` (`{links}` is the agencies and/or meetings index links, text from `nav.agencies`/`nav.meetings`),
+script texts `js.search_agency`, `js.search_meeting` (tags) and `js.search_none_all` (no match); only that script
+carries their defaults. Without agencies or meetings `search.js` is the same
 file for every site: it carries the English defaults and reads `LABELS` when `site-data.js` is loaded first, which
 `search.html` does only once a `js.*` label differs from its default.
 Stays English by design: the starter page, `feed.xml`/agency feeds, `sitemap.xml`, `robots.txt`, `_headers`,
