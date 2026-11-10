@@ -1548,6 +1548,25 @@ def main():
     sharing_p.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD", help="Day the organizer read the portal")
     sharing_p.add_argument("--source-url", required=True, help="https URL of the portal page (transparency.flocksafety.com)")
     sharing_p.add_argument("--replace", action="store_true", help="Overwrite an existing sharing list")
+    profile_cmds = content_cmds.add_parser(
+        "agency-profile", help="List every dated agency-profile check, or record the day you re-read one source "
+        "(content/agencies.json only; nothing is fetched, built or published)").add_subparsers(
+        dest="agency_profile_command", required=True)
+    profile_list = profile_cmds.add_parser("list", help="Each recorded checked_on with its age in days, oldest first (read-only)")
+    profile_list.add_argument("--directory", required=True)
+    profile_list.add_argument("--agency", default=None, help="Only this selected agency_id")
+    profile_list.add_argument("--json", dest="as_json", action="store_true", help="One JSON array of rows")
+    profile_recheck = profile_cmds.add_parser("recheck", help="Set one existing checked_on after you re-read its source; "
+                                              "only that date changes, and only if the whole file still loads")
+    profile_recheck.add_argument("--directory", required=True)
+    profile_recheck.add_argument("--agency", required=True, help="agency_id in content/agencies.json")
+    profile_recheck.add_argument("--field", required=True, choices=("alpr_policy", "policy_check", "contract", "contract_check",
+                                                                   "pre_implementation_meeting", "sharing", "funding",
+                                                                   "transparency", "reports"))
+    profile_recheck.add_argument("--index", default=None, help="funding, transparency and reports only: the 1-based stored "
+                                 "position that list prints (doctor names the same entry zero-based in brackets)")
+    profile_recheck.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD",
+                                 help="Day you re-read the source: not after today, not before the stored date")
     links_p = content_cmds.add_parser("link-check", help="List every external https URL the public content cites; with --online "
                                       "also request each once (GET, first 64 KiB, no cookies, 15 s, 5 redirects). Writes nothing")
     links_p.add_argument("--directory", required=True)
@@ -2347,6 +2366,14 @@ def main():
             print(json.dumps(import_sharing(root, args.agency, Path(args.csv).expanduser(), args.checked_on, args.source_url,
                                             replace=args.replace), indent=2))
             print("Recorded only. Nothing was fetched or published.")
+        elif args.command == "content" and args.content_command == "agency-profile":
+            from . import content_profile
+            if args.agency_profile_command == "list":
+                sys.stdout.write(content_profile.format_profile_checks(
+                    content_profile.list_profile_checks(root, args.agency), as_json=args.as_json))
+            else:
+                sys.stdout.write(content_profile.format_recheck(content_profile.recheck_profile(
+                    root, args.agency, args.field, args.checked_on, index=args.index)))
         elif args.command == "content" and args.content_command == "coverage":
             from .coverage import add_coverage, remove_coverage
             if args.coverage_command == "remove":
