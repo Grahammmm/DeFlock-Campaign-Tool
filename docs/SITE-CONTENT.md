@@ -1604,6 +1604,19 @@ Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descri
 `intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
 `signup.*`, `glossary.*`, `schedule.*`, `js.*` (scripts, below), `handout.*` (the private meeting-pack handout, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
 keeps its English default.
+Timeline, methods, packet, newsletters, cameras page and legal basis (DF1109-16): `nav.timeline`, `title.timeline*`,
+`timeline.*` (heading, lead, the agency-actions note and "Also shown: {kinds}." without their leading space, which
+the page adds; the three kind names with `timeline.join_two`/`timeline.join_three`; the empty state, the
+"official record" link, `timeline.unknown_agency` and one `timeline.event_<kind>` template per event, whose
+placeholders take the event's name, title, topic, body, outlet or official exactly as stored), `month.01` to
+`month.12` with `timeline.month_year` ("{month} {year}"; the timeline's month headings use these, never the
+computer's locale), `methods.*` (page text and `methods.classification_<code>`/`methods.confidence_<code>`, the label
+definitions), `packet.*`, `newsletters.*`, `cameras.page_*`, `legal.*`, `finding.share`, `outcome.official_record`
+and `footer.cameras`/`footer.newsletters`/`footer.methods`. The packet reuses `finding.agency`, `finding.sources`,
+`finding.limitations`, `finding.none_stated`, `finding.corrections`, `finding.published` and `finding.updated`.
+Still English whatever the labels say: request-state sentences, meeting outcome names, comment deadlines, policy
+and contract checks, local rules, sharing tables and the record-number explainer. Each of these keys allows exactly
+the placeholders its default shows.
 A complete Spanish draft of every key is in [`examples/labels/es.json`](../examples/labels/es.json) ([README](../examples/labels/README.md)).
 Machine-made draft. A fluent Spanish reader must check every line before a campaign uses it; nothing here is reviewed.
 Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds
