@@ -28,6 +28,19 @@ when a line names no file, and the same exit codes, so an editor or CI step can 
 
 `python3 -m campaign_tool content init --directory D` writes the minimal valid tree (`site.json` and a draft `faq.json` with `[EDIT ME: ...]` placeholders, draft `pages/help-map.json` and `pages/background.json` starter pages, empty `findings/` and `meetings/`, `sources.json` `[]`); it refuses an existing `content/`.
 
+### Adding a starter to an existing campaign
+
+An existing campaign (a valid `campaign.json` and a real `content/` with a valid `site.json`) adds one of the three
+starters a fresh init writes, from the same packaged copy with the same campaign wording and self-check:
+`python3 -m campaign_tool content add-starter NAME --directory D`, where NAME is `faq` (`content/faq.json`),
+`help-map` (`content/pages/help-map.json`) or `background` (`content/pages/background.json`).
+`python3 -m campaign_tool content add-starter --list --directory D` writes nothing and prints one tab-separated line per
+starter: name, target and `present` or `absent`. The starter is written only when nothing is at its target: an existing
+file, folder, FIFO or symlink there, a `content/` or `content/pages/` that is a symlink or a file, a missing `content/`
+or an invalid `campaign.json` or `site.json` is refused with exit 2 and nothing is written; there is no overwrite. A
+missing `content/pages/` is created. The output warns `This content is published by the next build until edited or
+deleted. Nothing was built, sent or deployed.` Edit the new file or delete it before the next build.
+
 ### Help-map page starter
 
 A fresh `content init` also writes `content/pages/help-map.json`, the page `/help-map.html` titled "Help map the cameras":
@@ -83,7 +96,8 @@ organizer copy: the marker stays visible on `/faq.html` until you replace it, an
 - To publish no FAQ, remove `content/faq.json` and rebuild; the page and its links disappear. `content init --from OLD`
   still copies only public branding: a source `faq.json` is listed as skipped and no starter is added.
 - Before any publication run `content-check` and `build --check` offline. Neither approves wording: the legal-claim
-  guard stays advisory and a clean run does not mean the answers were reviewed. Existing campaigns are not changed.
+  guard stays advisory and a clean run does not mean the answers were reviewed. Existing campaigns are not changed;
+  one adds this starter only with `content add-starter faq` (see above).
 
 ### Second locality
 
