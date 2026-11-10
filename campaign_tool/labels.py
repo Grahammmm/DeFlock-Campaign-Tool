@@ -29,6 +29,14 @@ DEFAULTS = {
     "search.intro": ("Looks through the titles, summaries and agency names of published findings and the titles of the "
                      "sources they cite. Everything is matched in your browser; what you type is not sent anywhere."),
     "search.fallback": "Search needs JavaScript. Without it, browse the {findings} or the {sources}.",
+    # DF1109-09: used instead of search.label/intro/description, plus the fallback's extra links, only when the site
+    # has an agency page or a staged meeting (search.js then also finds agencies and meetings).
+    "search.label_all": "Search findings, sources, agencies and meetings",
+    "search.intro_all": ("Looks through the titles, summaries and agency names of published findings, the titles of the "
+                         "sources they cite, the names and kinds of agencies, and the body, agenda item and date of "
+                         "meetings. Everything is matched in your browser; what you type is not sent anywhere."),
+    "search.description_all": "Search the published findings, the source library, agencies and meetings",
+    "search.fallback_more": "Also browse: {links}.",
     "footer.privacy": "Privacy", "footer.glossary": "Glossary", "privacy.title": "Privacy",
     "privacy.signup_policy": "Read the provider's privacy policy",
     "privacy.lead": "What this site loads, whether it stores anything on your device, and where a signup goes.",
@@ -344,6 +352,9 @@ JS_DEFAULTS = {
     "js.search_hint": "Type 2 to 100 characters to search.", "js.search_none": "No published finding or source matches.",
     "js.search_count_one": "{count} result", "js.search_count_many": "{count} results",
     "js.search_unavailable": "Search is unavailable.", "js.search_finding": "Finding", "js.search_source": "Source",
+    # DF1109-09: only the agencies-and-meetings search.js carries these three as defaults.
+    "js.search_agency": "Agency", "js.search_meeting": "Meeting",
+    "js.search_none_all": "No published finding, source, agency or meeting matches.",
     "js.group_vendor": "Not applicable", "js.group_status": "Ownership unconfirmed",
     "js.group_summary": "{name}. Points outside city boundaries without an operator tag are research leads, not evidence of agency ownership.",
     "js.group_fact": "Community-mapped points; verify with records requests.",
