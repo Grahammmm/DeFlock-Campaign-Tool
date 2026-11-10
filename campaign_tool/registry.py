@@ -5,10 +5,12 @@ serializes its read-modify-write, held only for that transaction: never in a cam
 """
 import argparse
 import contextlib
+import errno
 import fcntl
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from datetime import date, datetime, timezone
@@ -18,6 +20,7 @@ REPO = Path(__file__).resolve().parents[1]
 ENV = "DEFLOCK_CAMPAIGN_REGISTER"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
 KEYS = {"name", "directory", "added_at"}
+MAX_BYTES = 1 << 20  # RF1025-6: raw register bytes read, and exact serialized bytes written; a byte budget, not a sandbox
 
 
 def _within(path, other):
@@ -48,12 +51,41 @@ def _transaction(path):
             os.close(fd)  # closing releases the lock
 
 
+def _read_bounded(path):
+    """The register's raw bytes from one admitted regular-file descriptor, at most MAX_BYTES; None when absent."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:  # a symlink (including a dangling one) is never followed
+            raise ValueError("the register is not a regular file") from None
+        raise
+    try:
+        info = os.fstat(fd)  # the descriptor actually read, not an earlier pathname stat
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("the register is not a regular file")
+        if info.st_size > MAX_BYTES:
+            raise ValueError("the register is larger than 1 MiB")
+        chunks, total = [], 0
+        while total <= MAX_BYTES:  # MAX_BYTES + 1 bytes at most: the extra byte catches growth after the fstat
+            chunk = os.read(fd, MAX_BYTES + 1 - total)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if total > MAX_BYTES:
+            raise ValueError("the register is larger than 1 MiB")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def _load(path):
-    if not os.path.lexists(path):
+    raw = _read_bounded(path)
+    if raw is None:
         return []
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("the register is not a regular file")
-    entries = json.loads(path.read_text(encoding="utf-8") or "[]")
+    entries = json.loads(raw.decode("utf-8") or "[]")
     if not isinstance(entries, list) or not all(
             isinstance(e, dict) and set(e) == KEYS and all(isinstance(v, str) for v in e.values()) for e in entries):
         raise ValueError("the register must hold only a list of {name, directory, added_at}")
@@ -63,7 +95,11 @@ def _load(path):
 def _store(path, entries):
     """Same-directory staging file, then an atomic replace. The stage is a fresh, exclusively created 0600 file (mkstemp):
     a pre-existing entry, such as a hardlink at `<register>.tmp`, is never opened, truncated, chmodded or consumed. Only
-    this call's own stage is ever removed, and only when it did not become the register."""
+    this call's own stage is ever removed, and only when it did not become the register. The exact serialized bytes are
+    measured before the stage exists: a register the bounded reader would refuse is never installed."""
+    text = json.dumps(entries, indent=2) + "\n"
+    if len(text.encode("utf-8")) > MAX_BYTES:
+        raise ValueError("the register would be larger than 1 MiB; register not updated")
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
     try:
         try:
@@ -73,7 +109,7 @@ def _store(path, entries):
             raise
         with out:
             os.fchmod(out.fileno(), 0o600)
-            out.write(json.dumps(entries, indent=2) + "\n")
+            out.write(text)
             out.flush()
             os.fsync(out.fileno())
         os.replace(name, path)
