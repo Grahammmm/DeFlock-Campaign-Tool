@@ -519,6 +519,113 @@ class IsolationTests(Case):
             self.assertEqual(flags & (os.O_NOFOLLOW | os.O_NONBLOCK), os.O_NOFOLLOW | os.O_NONBLOCK)
 
 
+DEEP = 10000
+TOO_DEEP = "{}: JSON nesting too deep"
+
+
+class NestingTests(Case):
+    """RF2345-5: a decoder RecursionError is a fixed named refusal, never a traceback."""
+
+    target, document, put = BoundedReadTests.target, BoundedReadTests.document, BoundedReadTests.put
+    LABELS = {"page": "content/pages/probe.json", "faq": "content/faq.json", "glossary": "content/glossary.json"}
+
+    def deep_bytes(self, kind, opener="[", closer="]"):
+        """A usable document whose ignored `extra` field nests DEEP containers (built by repetition, not recursion)."""
+        nested = (opener if opener == "[" else '{"k":') * DEEP + "0" + closer * DEEP
+        base = json.dumps(self.document(kind), ensure_ascii=False)
+        raw = (base[:-1] + ', "extra": ' + nested + "}").encode("utf-8")
+        self.assertLess(len(raw), CAP)
+        return raw
+
+    def test_real_parser_excessive_nesting_refuses_page_faq_glossary(self):
+        for kind in SURFACES:
+            for opener, closer in (("[", "]"), ("{", "}")):
+                with self.subTest(kind=kind, opener=opener):
+                    self.write(self.target(kind), self.deep_bytes(kind, opener, closer))
+                    with self.assertRaises(content_plain.ContentError) as caught:
+                        content_plain.check_content(self.root)
+                    self.assertEqual(str(caught.exception), TOO_DEEP.format(self.LABELS[kind]))
+                    for mode in ((), ("--json",)):
+                        result = self.cli(*mode, returncode=1)
+                        self.assertEqual(result.stderr, "Stopped: " + TOO_DEEP.format(self.LABELS[kind]) + "\n")
+                    self.target(kind).unlink()
+
+    def test_decoder_recursion_refusal_is_fixed_and_suppresses_cause(self):
+        for kind in SURFACES:
+            with self.subTest(kind=kind):
+                self.put(kind)
+                marker = RecursionError("PRIVATE-MARKER /home/secret/path")
+                with mock.patch.object(content_plain.json, "loads", side_effect=marker):
+                    with self.assertRaises(content_plain.ContentError) as caught:
+                        content_plain.check_content(self.root)
+                self.assertEqual(str(caught.exception), TOO_DEEP.format(self.LABELS[kind]))
+                self.assertIsNone(caught.exception.__cause__)
+                self.assertTrue(caught.exception.__suppress_context__)
+                self.assertNotIn("PRIVATE-MARKER", str(caught.exception))
+                self.target(kind).unlink()
+
+    def test_later_nested_source_emits_no_partial_advisory(self):
+        for kind in SURFACES:
+            with self.subTest(kind=kind):
+                self.page("first", body="The ALPR. " + sentence(31))
+                self.write(self.target(kind), self.deep_bytes(kind))
+                for mode in ((), ("--json",)):
+                    result = self.cli(*mode, returncode=1)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn(TOO_DEEP.format(self.LABELS[kind]), result.stderr)
+                    self.assertNotIn(str(self.base), result.stderr)
+                    self.assertNotIn("ALPR", result.stderr)
+                self.target(kind).unlink()
+
+    def test_parser_failure_closes_descriptor_once_and_does_not_reopen(self):
+        self.write(self.target("page"), self.deep_bytes("page"))
+        real_open, real_close = os.open, os.close
+        opened, closed = [], []
+
+        def spy_open(*args, **kwargs):
+            opened.append(real_open(*args, **kwargs))
+            return opened[-1]
+
+        def spy_close(fd):
+            closed.append(fd)
+            return real_close(fd)
+
+        with mock.patch.object(content_plain.os, "open", side_effect=spy_open), \
+                mock.patch.object(content_plain.os, "close", side_effect=spy_close):
+            with self.assertRaises(content_plain.ContentError):
+                content_plain.check_content(self.root)
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened, closed)
+
+    def test_oversize_still_refused_before_the_parser(self):
+        self.put("page", CAP + 1)
+        with mock.patch.object(content_plain.json, "loads", side_effect=AssertionError("parsed")):
+            with self.assertRaises(content_plain.ContentError) as caught:
+                content_plain.check_content(self.root)
+        self.assertEqual(str(caught.exception), "content/pages/probe.json: file too large")
+
+    def test_moderate_nested_metadata_and_shallow_reports_are_unchanged(self):
+        self.page("a", body="The ALPR.", meta={"a": [[{"b": [1, 2]}], "]\"["], "c": {}, "d": []})
+        self.faq(("Q", "Short."))
+        report = self.report()
+        self.assertEqual([row["rule"] for row in report["warnings"]], ["unexplained_abbreviation"])
+        self.assertEqual(self.cli(returncode=0).stdout.splitlines()[0], FIRST)
+
+    def test_only_decoder_recursion_is_normalized(self):
+        self.put("page")
+        for error in (RuntimeError("boom"), MemoryError()):
+            with mock.patch.object(content_plain.json, "loads", side_effect=error):
+                with self.assertRaises(type(error)):
+                    content_plain.check_content(self.root)
+        with mock.patch.object(content_plain.plain_language, "check_fields", side_effect=RecursionError("engine")):
+            with self.assertRaises(RecursionError):
+                content_plain.check_content(self.root)
+        self.write(self.target("page"), b"{")
+        with self.assertRaises(content_plain.ContentError) as caught:
+            content_plain.check_content(self.root)
+        self.assertIn("not valid UTF-8 JSON", str(caught.exception))
+
+
 class LargePageTests(Case):
     def test_large_page_uses_shared_engine_without_truncation(self):
         self.page('scale', title='Synthetic', body='word. ' * 16000)

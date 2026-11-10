@@ -80,6 +80,9 @@ def _read(path, label):
         return json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         _fail(label, f"not valid UTF-8 JSON ({exc})")
+    except RecursionError:
+        # The decoder, not this module, sets the nesting limit: refuse with a fixed line (no cause, path or fragment).
+        raise ContentError(f"{label}: JSON nesting too deep") from None
 
 
 def _string(document, key, label):
