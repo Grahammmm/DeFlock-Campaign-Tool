@@ -7,6 +7,11 @@ by ``content.load_agencies`` before the one atomic write; any bad row stops ever
 RF0804-4: the selected campaign root is opened once; ``content`` and ``agencies.json`` are admitted relative to it without
 following links, and the read, the temporary file and the replacement all go through those descriptors, so a linked
 ``content`` directory (or one swapped in later) can never send the import to another campaign.
+
+RF1835-2: the existing file is read only up to ``MAX_JSON_BYTES``, and the complete new document is held to the same
+limit in the exact UTF-8 bytes that would be written (indentation and non-ASCII text included). A larger document, or
+one that cannot be encoded as UTF-8, is refused before any temporary file is created, so a successful import always
+leaves a file the content reader accepts.
 """
 import csv
 import io
@@ -184,7 +189,12 @@ def import_sharing(root, agency_id, csv_path, checked_on, source_url, replace=Fa
         profile["sharing"] = {"checked_on": checked_on, "source_url": source_url, "recipients": recipients}
         profile["sharing"] = _sharing(profile["sharing"], "profile.sharing", today)  # sorted as stored
         load_agencies(document, "content/agencies.json", today)  # the whole document, as build reads it
-        text = (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        try:  # the exact buffer written below, measured before any temporary file exists
+            text = (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        except UnicodeEncodeError:
+            raise SharingImportError("content/agencies.json: import cannot be encoded as UTF-8; nothing was written") from None
+        if len(text) > MAX_JSON_BYTES:
+            raise SharingImportError(f"content/agencies.json: import would exceed {MAX_JSON_BYTES} bytes; nothing was written")
         name = f".{TARGET}.{secrets.token_hex(8)}.tmp"
         temp_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=content_fd)
         temp = name
