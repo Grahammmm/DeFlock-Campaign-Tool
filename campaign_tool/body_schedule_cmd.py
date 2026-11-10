@@ -54,7 +54,30 @@ def _target_mode(content):
     return stat.S_IMODE(info.st_mode)
 
 
+_KEPT = "body-schedules.json: could not be written; the previous file was kept"
+_UNCONFIRMED = ("body-schedules.json: the change was installed, but directory sync failed; "
+                "durability is not confirmed; inspect the store before retrying")
+
+
+def _open_directory(content):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(content, flags)
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("not a directory")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def _write(content, rows, day):
+    """Persist rows as: file fsync -> atomic replace -> content/ directory fsync -> return.
+
+    Before the replacement succeeds, any OSError means the previous file was kept. After it,
+    a directory-sync failure means the new store IS installed but its durability is unconfirmed;
+    that state is never rolled back and never reported as ordinary success.
+    """
     rows = schedules.load_body_schedules({"schema_version": 1, "schedules": rows}, today=day)
     try:
         data = (json.dumps({"schema_version": 1, "schedules": rows}, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
@@ -64,19 +87,33 @@ def _write(content, rows, day):
         raise BodyScheduleError(f"body-schedules.json: would exceed {MAX_JSON_BYTES} bytes; nothing was changed")
     mode = _target_mode(content)
     name = None
+    dir_fd = None
+    installed = False
     try:
-        handle, name = tempfile.mkstemp(dir=content, prefix=".body-schedules-", suffix=".tmp")
-        with os.fdopen(handle, "wb") as out:
-            os.fchmod(out.fileno(), mode)
-            out.write(data)
-            out.flush()
-            os.fsync(out.fileno())
-        _target_mode(content)  # refuse a changed entry type before replacement; not a writer lock
-        os.replace(name, content / schedules.FILE)
-    except OSError:
-        raise BodyScheduleError("body-schedules.json: could not be written; the previous file was kept") from None
+        try:
+            dir_fd = _open_directory(content)
+            handle, name = tempfile.mkstemp(dir=content, prefix=".body-schedules-", suffix=".tmp")
+            with os.fdopen(handle, "wb") as out:
+                os.fchmod(out.fileno(), mode)
+                out.write(data)
+                out.flush()
+                os.fsync(out.fileno())
+            _target_mode(content)  # refuse a changed entry type before replacement; not a writer lock
+            os.replace(name, content / schedules.FILE)
+            installed = True
+        except OSError:
+            raise BodyScheduleError(_KEPT) from None
+        try:
+            os.fsync(dir_fd)
+        except OSError:
+            raise BodyScheduleError(_UNCONFIRMED) from None
     finally:
-        if name is not None:
+        if dir_fd is not None:
+            try:
+                os.close(dir_fd)
+            except OSError:
+                pass
+        if name is not None and not installed:
             try:
                 os.unlink(name)
             except OSError:
