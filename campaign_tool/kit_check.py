@@ -93,6 +93,31 @@ def _unique(items):
     return list(dict.fromkeys(items))
 
 
+def _status(lines):
+    """Law-status line groups of one draft, visiting each physical line at most once.
+
+    A normal block starts at a line containing STATUS_MARK and runs through the first line ending in a period, to
+    the next blank line, or to the end; a fallback block starts at a NO REVIEWED LAW PACKAGE line and runs to the
+    next blank line or the end. Markers inside a consumed block are ordinary continuation text.
+    """
+    status, index, total = [], 0, len(lines)
+    while index < total:
+        line = lines[index]
+        index += 1
+        if STATUS_MARK in line:
+            status.append(line)
+            while not line.rstrip().endswith(".") and index < total and lines[index].strip():
+                line = lines[index]
+                status.append(line)
+                index += 1
+        elif line.startswith("NO REVIEWED LAW PACKAGE:"):
+            status.append(line)
+            while index < total and lines[index].strip():
+                status.append(lines[index])
+                index += 1
+    return status
+
+
 def _summary(data):
     """Scope headings, date-range, fee-cap and law-status line groups and rule citation lines of one draft."""
     lines = _lines(data)
@@ -100,17 +125,7 @@ def _summary(data):
     date = [line for line in lines if line.startswith(RANGE_MARK)] or [line for line in lines
                                                                        if line.startswith("Subject:")]
     fee = [line for line in lines if "Please advise" in line or "before incurring fees beyond" in line]
-    status = []
-    for index, line in enumerate(lines):
-        if STATUS_MARK in line:
-            status.append(line)
-            while not status[-1].rstrip().endswith(".") and index + 1 < len(lines) and lines[index + 1].strip():
-                index += 1
-                status.append(lines[index])
-        elif line.startswith("NO REVIEWED LAW PACKAGE:"):
-            while index < len(lines) and lines[index].strip():
-                status.append(lines[index])
-                index += 1
+    status = _status(lines)
     citations = []
     if "Rules the scopes relate to:" in lines:
         for line in lines[lines.index("Rules the scopes relate to:") + 1:]:
