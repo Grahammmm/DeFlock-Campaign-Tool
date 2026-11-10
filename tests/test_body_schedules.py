@@ -4,10 +4,13 @@ Synthetic bodies and URLs only; no network. Run from the repository root:
 python3 -B -m unittest tests.test_body_schedules -v
 """
 import calendar
+import contextlib
+import io
 import json
 import os
 import shutil
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -17,9 +20,9 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
-from campaign_tool import body_schedules, today
+from campaign_tool import body_schedule_cmd, body_schedules, cli, today
 from campaign_tool.body_schedules import load_body_schedules, next_expected_dates, read_body_schedules, stale
-from campaign_tool.content import ContentError, load_content
+from campaign_tool.content import MAX_JSON_BYTES, ContentError, load_content
 from campaign_tool.content_check import content_problems
 from campaign_tool.site import build_site
 
@@ -495,6 +498,283 @@ class SiteTests(Base):
         section = page.split('id="regular-meetings"')[1].split("</section>")[0].lower()
         for word in ("deadline", "holiday", "overdue", "late", "posted", "expected"):
             self.assertNotIn(word, section)
+
+
+CAP = MAX_JSON_BYTES
+
+
+def padded(rows=(), size=None):
+    """Valid schedule JSON followed by legal whitespace to exactly ``size`` encoded bytes."""
+    data = json.dumps(document(*rows), ensure_ascii=False).encode("utf-8")
+    return data if size is None else data + b" " * (size - len(data))
+
+
+class SpyBytes(bytes):
+    """Payload bytes that record whether the reader decoded them."""
+    decoded = []
+
+    def decode(self, *args, **kwargs):
+        SpyBytes.decoded.append(len(self))
+        return super().decode(*args, **kwargs)
+
+
+class SpyHandle:
+    """Delegates to the real binary stream; records every read size and returned length."""
+
+    def __init__(self, handle, spy):
+        self.handle, self.spy = handle, spy
+
+    def __enter__(self):
+        self.handle.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self.handle.__exit__(*exc)
+
+    def fileno(self):
+        return self.handle.fileno()
+
+    def read(self, size=-1):
+        self.spy.reads.append(size)
+        if self.spy.read_error:
+            raise OSError("synthetic read failure")
+        data = self.handle.read(size)
+        self.spy.lengths.append(len(data))
+        return SpyBytes(data)
+
+
+class Spy:
+    """Thin wrappers over the real os.open/fdopen/fstat that observe only the target schedule file."""
+
+    def __init__(self, test, after_fstat=None, open_error=None, fdopen_error=False, fstat_error=False,
+                 read_error=False):
+        self.test, self.after_fstat, self.open_error = test, after_fstat, open_error
+        self.fdopen_error, self.fstat_error, self.read_error = fdopen_error, fstat_error, read_error
+        self.opened, self.fds, self.handles, self.reads, self.lengths, self.stats = [], [], [], [], [], []
+        self.unrestricted = []
+        self.real_open, self.real_fdopen, self.real_fstat = os.open, os.fdopen, os.fstat
+        self.real_read_bytes, self.real_read_text = Path.read_bytes, Path.read_text
+        SpyBytes.decoded = []
+
+    def open(self, path, *args, **kwargs):
+        if os.fspath(path) != os.fspath(self.test.path):
+            return self.real_open(path, *args, **kwargs)
+        self.opened.append(path)
+        if self.open_error:
+            raise self.open_error
+        fd = self.real_open(path, *args, **kwargs)
+        self.fds.append(fd)
+        return fd
+
+    def fdopen(self, fd, *args, **kwargs):
+        if fd not in self.fds:
+            return self.real_fdopen(fd, *args, **kwargs)
+        if self.fdopen_error:
+            raise OSError("synthetic fdopen failure")
+        handle = self.real_fdopen(fd, *args, **kwargs)
+        self.handles.append(handle)
+        return SpyHandle(handle, self)
+
+    def fstat(self, fd):
+        result = self.real_fstat(fd)
+        if fd in self.fds:
+            self.stats.append(result)
+            if self.fstat_error:
+                raise OSError("synthetic fstat failure")
+            if self.after_fstat:
+                self.after_fstat()
+        return result
+
+    def whole_file(self, path, *args, **kwargs):  # Path.read_bytes / read_text
+        if path.name == body_schedules.FILE:
+            self.unrestricted.append(path)
+            raise AssertionError("unrestricted whole-file read of the schedule")
+        return self.real_read_bytes(path, *args, **kwargs)
+
+    def __enter__(self):
+        self.stack = contextlib.ExitStack()
+        for target, name, value in ((os, "open", self.open), (os, "fdopen", self.fdopen), (os, "fstat", self.fstat),
+                                    (Path, "read_bytes", lambda p, *a, **k: self.whole_file(p, *a, **k)),
+                                    (Path, "read_text", lambda p, *a, **k: self.whole_file(p, *a, **k))):
+            self.stack.enter_context(mock.patch.object(target, name, value))
+        return self
+
+    def __exit__(self, *exc):
+        self.stack.close()
+        return False
+
+    def closed(self):
+        """Every descriptor this reader acquired is closed (checked with the real fstat, outside the spy)."""
+        for fd in self.fds:
+            with self.test.assertRaises(OSError):
+                self.real_fstat(fd)
+        for handle in self.handles:
+            self.test.assertTrue(handle.closed)
+
+
+class BoundedReadTests(Base):
+    """RF0325-2: one open schedule file is read at most MAX_JSON_BYTES + 1 bytes, refused before decode/parse."""
+
+    def read(self, **options):
+        with Spy(self, **options) as spy:
+            try:
+                return spy, read_body_schedules(self.root, today=TODAY), None
+            except ContentError as exc:
+                return spy, None, str(exc)
+
+    def refused(self, needle, **options):
+        spy, rows, error = self.read(**options)
+        self.assertIsNone(rows)
+        self.assertIsNotNone(error, "expected a refusal")
+        self.assertIn(needle, error)
+        return spy
+
+    @staticmethod
+    def fd_open(fd):
+        try:
+            os.fstat(fd)
+        except OSError:
+            return False
+        return True
+
+    def test_schedule_reader_exact_byte_cap_and_non_ascii(self):
+        unicode_row = row(body="Conseil municipal d\u00e9mocratique \u2014 \u7c73")
+        self.assertLess(len(unicode_row["body"]), len(unicode_row["body"].encode("utf-8")))
+        for size in (CAP - 1, CAP):
+            self.path.write_bytes(padded([unicode_row], size))
+            self.assertEqual(self.path.stat().st_size, size)
+            spy, rows, error = self.read()
+            self.assertIsNone(error)
+            self.assertEqual([r["body"] for r in rows], [unicode_row["body"]])
+            self.assertEqual((spy.reads, spy.lengths, SpyBytes.decoded), ([CAP + 1], [size], [size]))
+            spy.closed()
+        for size in (CAP + 1, 4 * CAP):
+            self.path.write_bytes(padded([], size))
+            spy = self.refused("body-schedules.json: file too large")
+            self.assertEqual((spy.reads, spy.lengths, SpyBytes.decoded), ([], [], []))
+            spy.closed()
+
+    def test_known_oversize_schedule_has_no_payload_read(self):
+        self.path.write_bytes(padded([], 8 * 1024 * 1024))
+        with mock.patch.object(body_schedules.json, "loads", side_effect=AssertionError("parsed")):
+            spy = self.refused("body-schedules.json: file too large")
+        self.assertEqual((len(spy.fds), len(spy.stats)), (1, 1))
+        self.assertTrue(stat.S_ISREG(spy.stats[0].st_mode))
+        self.assertGreater(spy.stats[0].st_size, CAP)
+        self.assertEqual((spy.reads, spy.unrestricted, SpyBytes.decoded), ([], [], []))
+        spy.closed()
+
+    def test_schedule_growth_after_real_fstat_is_bounded_and_refused(self):
+        def grow(extra):
+            def append():
+                with open(self.path, "ab") as handle:
+                    handle.write(b" " * extra)
+            return append
+        self.path.write_bytes(padded([row()], CAP - 10))
+        spy = self.refused("body-schedules.json: file too large", after_fstat=grow(100))
+        self.assertEqual(spy.stats[0].st_size, CAP - 10)  # the below-cap observation is what the reader saw
+        self.assertEqual(self.path.stat().st_size, CAP + 90)
+        self.assertEqual((spy.reads, spy.lengths, SpyBytes.decoded, spy.unrestricted), ([CAP + 1], [CAP + 1], [], []))
+        spy.closed()
+        self.path.write_bytes(padded([row()], CAP - 10))  # control: growth to exactly the cap is accepted
+        spy, rows, error = self.read(after_fstat=grow(10))
+        self.assertIsNone(error)
+        self.assertEqual([r["body"] for r in rows], [BODY])
+        self.assertEqual((spy.reads, spy.lengths), ([CAP + 1], [CAP]))
+        spy.closed()
+
+    def test_schedule_shrink_and_malformed_inputs_keep_controlled_errors(self):
+        for after in (b"", b"\xff\xfe", b'{"schema_version": 1,'):
+            self.path.write_bytes(padded([row()], 4096))
+            spy = self.refused("not valid UTF-8 JSON", after_fstat=lambda after=after: self.path.write_bytes(after))
+            self.assertEqual(spy.stats[0].st_size, 4096)
+            spy.closed()
+        for value, needle in ((b"\xff", "not valid UTF-8 JSON"), (b"{not json", "not valid UTF-8 JSON"),
+                              (b"[]", "expected an object"), (b"null", "expected an object"),
+                              (json.dumps(document(row(), row())).encode(), "duplicate body"),
+                              (json.dumps(document(row(checked_on="2026-11-05"))).encode(), "is in the future"),
+                              (json.dumps({"schema_version": 1, "schedules": {}}).encode(), "must be a list")):
+            self.path.write_bytes(value)
+            self.refused(needle).closed()
+        self.path.write_bytes(padded([row(checked_on="2000-01-01")]))  # stale rows stay valid
+        spy, rows, error = self.read()
+        self.assertEqual((error, [r["checked_on"] for r in rows]), (None, ["2000-01-01"]))
+        spy.closed()
+
+    def test_schedule_descriptor_admission_and_cleanup(self):
+        sentinel = os.open(__file__, os.O_RDONLY)
+        self.addCleanup(lambda: os.close(sentinel) if self.fd_open(sentinel) else None)
+        spy, rows, error = self.read()  # absent optional store: [] and never opened
+        self.assertEqual((rows, error, spy.opened), ([], None, []))
+        self.path.mkdir()
+        self.assertEqual(self.refused("must be a regular file").opened, [])
+        self.path.rmdir()
+        real = self.tmp / "real.json"
+        real.write_text(json.dumps(document(row())), encoding="utf-8")
+        for target in (real, self.tmp / "missing.json"):  # live, then dangling
+            os.symlink(target, self.path)
+            self.assertEqual(self.refused("body-schedules.json: symlinks are not read").opened, [])
+            self.path.unlink()
+        os.mkfifo(self.path)
+        self.assertEqual(self.refused("must be a regular file").opened, [])
+        with Spy(self) as spy:  # a FIFO that did reach the descriptor check is refused before any payload read
+            with self.assertRaisesRegex(ContentError, "must be a regular file"):
+                body_schedules._read_document(self.path)
+        self.assertEqual((len(spy.fds), spy.reads), (1, []))
+        spy.closed()
+        self.path.unlink()
+        for text, expected in ((document(), []), (document(row()), [BODY])):  # successful empty and nonempty reads
+            self.write(text)
+            spy, rows, error = self.read()
+            self.assertEqual((error, [r["body"] for r in rows]), (None, expected))
+            spy.closed()
+        for options in ({"open_error": PermissionError(13, "denied")}, {"fdopen_error": True},
+                        {"fstat_error": True}, {"read_error": True}):
+            self.refused("body-schedules.json: could not be read", **options).closed()
+        self.assertTrue(self.fd_open(sentinel))  # unrelated descriptors are never closed
+        self.assertTrue(self.path.exists())  # and no failure is mistaken for absence
+
+    def test_oversize_schedule_refusal_propagates_without_partial_results(self):
+        self.path.write_bytes(padded([], CAP + 1))
+        before = snapshot(self.root)
+        message = "body-schedules.json: file too large"
+        calls = ((body_schedule_cmd.list_schedules, {}), (body_schedule_cmd.add_schedule, row()),
+                 (body_schedule_cmd.recheck_schedule, dict(body=BODY, checked_on="2026-11-04")),
+                 (body_schedule_cmd.remove_schedule, dict(body=BODY)))
+        with Spy(self) as spy, mock.patch.object(body_schedule_cmd, "_write", side_effect=AssertionError("writer")):
+            for function, kwargs in calls:
+                with self.assertRaisesRegex(body_schedule_cmd.BodyScheduleError, message):
+                    function(self.root, today=TODAY, **kwargs)
+        self.assertEqual((len(spy.fds), spy.reads, spy.unrestricted), (4, [], []))
+        spy.closed()
+        self.assertEqual(snapshot(self.root), before)
+        for args in (["list"], ["remove", "--body", BODY]):
+            out, err = io.StringIO(), io.StringIO()
+            argv = ["campaign_tool", "body-schedule", *args, "--directory", str(self.root)]
+            with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit) as caught:
+                    cli.main()
+            self.assertEqual((caught.exception.code, out.getvalue()), (2, ""))
+            self.assertIn(message, err.getvalue())
+        items = today.todo(self.root, TODAY)
+        self.assertEqual([item["kind"] for item in items if "body-schedules.json" in item["what"]], ["unreadable"])
+        self.assertIn(message, [item["what"] for item in items if "body-schedules.json" in item["what"]][0])
+        self.assertFalse([item for item in items if item["kind"] in ("expected_regular_meeting", "stale_body_schedule")])
+        with self.assertRaisesRegex(ContentError, message):
+            load_content(self.root, today=TODAY)
+        self.assertEqual([line for line in content_problems(self.root) if "body-schedules.json" in line], [message])
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_valid_schedule_outputs_and_old_pins_are_unchanged(self):
+        self.write(document(row(body="Zed"), row(body="Alpha", ordinals=["last", 1], checked_on="2025-11-04")))
+        expected = load_body_schedules(json.loads(self.path.read_text(encoding="utf-8")), today=TODAY)
+        self.assertEqual(read_body_schedules(self.root, today=TODAY), expected)
+        self.assertEqual([r["body"] for r in expected], ["Alpha", "Zed"])
+        self.assertEqual(expected[0]["ordinals"], [1, "last"])
+        before = snapshot(self.root)
+        listing = body_schedule_cmd.list_schedules(self.root, today=TODAY)
+        self.assertLess(listing.index("Alpha"), listing.index("Zed"))
+        self.assertEqual(snapshot(self.root), before)
 
 
 def body_schedules_labels():

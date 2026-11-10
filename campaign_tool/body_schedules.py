@@ -5,13 +5,16 @@ yields dates to *watch for an agenda*, never a scheduled meeting: holidays, spec
 unknown until an organizer stages a verified meeting. Nothing here fetches, sends or publishes anything.
 """
 import calendar
+import errno
+import json
 import os
 import re
+import stat
 from datetime import date
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .content import ContentError, _https, _read_json, _require_keys, plain_text, utc_moment
+from .content import MAX_JSON_BYTES, ContentError, _https, _require_keys, plain_text, utc_moment
 
 FILE = "body-schedules.json"
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
@@ -86,17 +89,54 @@ def load_body_schedules(document, *, today=None):
     return sorted(loaded, key=lambda item: item["body"])
 
 
+def _read_document(path):
+    """RF0325-2: the parsed JSON of one opened schedule file, never holding more than the cap plus one byte.
+
+    Per-open payload contract: the file is opened read-only, no-follow and nonblocking, and its descriptor must be a
+    regular file. A descriptor size over ``MAX_JSON_BYTES`` is refused before any payload read; otherwise at most
+    ``MAX_JSON_BYTES + 1`` bytes are read from that same descriptor, so growth after the size observation is still
+    caught by the actual length, before decoding or parsing. This bounds this one read, not process memory or any
+    other file an aggregate command reads."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:  # a final-component symlink swapped in after the path check
+            raise ContentError(f"{FILE}: symlinks are not read") from None
+        raise
+    try:
+        handle = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    with handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ContentError(f"{FILE}: must be a regular file, not a folder")
+        if info.st_size > MAX_JSON_BYTES:
+            raise ContentError(f"{FILE}: file too large")
+        data = handle.read(MAX_JSON_BYTES + 1)
+    if len(data) > MAX_JSON_BYTES:
+        raise ContentError(f"{FILE}: file too large")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ContentError(f"{FILE}: not valid UTF-8 JSON ({exc})") from None
+
+
 def read_body_schedules(root, *, today=None):
     """``load_body_schedules`` of ``<root>/content/body-schedules.json``; [] only when nothing is there at all.
 
-    A symlink (even a dangling one) is refused by ``_read_json``, never mistaken for absence."""
+    A symlink (even a dangling one) is refused, never mistaken for absence. The file is read through
+    ``_read_document``: at most ``MAX_JSON_BYTES + 1`` bytes per open."""
     path = Path(root) / "content" / FILE
     if not os.path.lexists(path):
         return []
-    if not path.is_symlink() and not path.is_file():
+    if path.is_symlink():
+        raise ContentError(f"{FILE}: symlinks are not read")
+    if not path.is_file():
         raise ContentError(f"{FILE}: must be a regular file, not a folder")
     try:
-        document = _read_json(path)
+        document = _read_document(path)
     except OSError:
         raise ContentError(f"{FILE}: could not be read") from None
     return load_body_schedules(document, today=today)
