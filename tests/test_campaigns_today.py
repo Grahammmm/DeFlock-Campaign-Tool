@@ -140,26 +140,22 @@ class CampaignsToday(unittest.TestCase):
                 self.assertIn(f"--directory {quoted}", after["command"])
                 continue
             self.assertIn(f"--directory {quoted}", before["command"])
-            self.assertEqual(after["command"], before["command"].replace(f"--directory {quoted}",
-                                                                          "--campaign north.county-1"))
+            if "campaign_tool.newsletter" in before["command"]:  # that module has no --campaign flag: unchanged
+                self.assertEqual(after["command"], before["command"])
+            else:
+                self.assertEqual(after["command"], before["command"].replace(f"--directory {quoted}",
+                                                                              "--campaign north.county-1"))
             self.assertEqual({k: v for k, v in after.items() if k not in ("command", "campaign")},
                              {k: v for k, v in before.items() if k != "command"})
         commands = {r["kind"]: r["command"] for r in rows}
         draft = root / "private" / "drafts" / "td-block.json"  # the positional draft path stays a real path
         self.assertEqual(commands["finding_blocked"], f"finding review-status {shlex.quote(str(draft))} "
                                                       "--campaign north.county-1")
-        self.assertEqual(commands["outreach_not_checked"],
-                         "python3 -m campaign_tool.newsletter --campaign north.county-1 --from-content")
+        self.assertEqual(commands["outreach_not_checked"],  # the newsletter module has no --campaign: path selector
+                         f"python3 -m campaign_tool.newsletter --directory {quoted} --from-content")
         code, out, err = self.run_cli(*shlex.split(commands["finding_blocked"]))  # printed hints run as printed
         self.assertEqual(code, 0, err)
         self.assertEqual(self.run_cli(*shlex.split(commands["request_past_due"]))[0], 0)
-        from campaign_tool.newsletter.__main__ import main as newsletter
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            try:  # the newsletter module takes --campaign too (read-only --check)
-                self.assertEqual(newsletter(["--campaign", "north.county-1", "--check"]), 3)
-            finally:
-                registry.release()
-        self.assertIn("not checked", out.getvalue())
 
     def legacy(self):
         root = self.campaign("beta", "b campaign", full=True)

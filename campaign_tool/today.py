@@ -384,7 +384,8 @@ def _newsletter(root, as_of, selector):
         return []
     from .newsletter.check import check_draft
     report = check_draft(root, now=_moment(as_of))
-    command = f"python3 -m campaign_tool.newsletter {selector}"
+    # the newsletter module takes only --directory (no --campaign flag, by design), so its hint always names the path
+    command = f"python3 -m campaign_tool.newsletter --directory {shlex.quote(str(root))}"
     if report["status"] == "not_checked":
         return [_item("outreach_not_checked", "newsletter draft not checked; rebuild with --from-content",
                       command + " --from-content", key=NEWSLETTER)]

@@ -16,8 +16,7 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from .. import registry
-from ..cli import _campaign_option, read_config
+from ..cli import read_config
 from ..content import ContentError
 from ..site_check import resolve
 from .archive import publish_issue
@@ -52,10 +51,7 @@ def main(argv=None):
     parser.add_argument("--check", action="store_true",
                         help="Read-only: does kit/newsletter-draft.json still match current content? Takes no other flag")
     parser.add_argument("--json", action="store_true", help="With --check: print the report as JSON")
-    _campaign_option(parser)  # DF1109-15: --campaign NAME, exactly as every main command that takes --directory
     args = parser.parse_args(argv)
-    if getattr(args, "campaign", None):  # confined to that campaign, as cli.main does
-        registry.confine(args.directory, args.registered)
     if args.json and not args.check:
         parser.error("--json belongs to --check")
     if args.check:

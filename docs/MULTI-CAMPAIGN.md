@@ -73,7 +73,7 @@ campaign | NAME | NOT CURRENT: <ErrorType> | private; review-required
 - Every command that names the campaign uses `--campaign NAME` instead of `--directory PATH`. Path operands stay paths
   (a finding draft file, `--into`), and human instructions (submit a written comment, check an official source, fix a
   file) are unchanged. Nothing listed is run, fixed, sent or published. The newsletter module
-  (`python3 -m campaign_tool.newsletter`) takes `--campaign NAME` too, confined the same way, so its hint runs as printed.
+  (`python3 -m campaign_tool.newsletter`) takes only `--directory`, so its hint keeps `--directory PATH` and runs as printed.
 - A campaign that cannot be read (missing directory or `campaign.json`, a refused path, a source that `today` would
   list as `unreadable`) prints one `NOT CURRENT: <ErrorType>` line instead of any of its items, never the error text;
   the other campaigns still print, and the command exits 3. Run `today --campaign NAME` to see what is wrong. A source
