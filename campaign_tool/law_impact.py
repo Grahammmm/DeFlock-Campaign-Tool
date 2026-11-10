@@ -74,6 +74,8 @@ def load_file(path):
             package = json.loads(data.decode("utf-8"))
         except json.JSONDecodeError as exc:
             raise ValueError(f"invalid JSON: {exc}") from None
+        except RecursionError:  # the decoder's own failure on excessive nesting; schema/report recursion is not translated
+            raise ValueError("JSON nesting is too deep") from None
         law.validate(package, law.load_schema())
         if not law._valid_jurisdiction(package["jurisdiction"]):
             raise ValueError(f"$.jurisdiction: {package['jurisdiction']!r} is not like 'us-ca'")
