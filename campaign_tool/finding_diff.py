@@ -10,7 +10,9 @@ from .findings import _real_dir, load_draft
 FIELDS = ("title", "summary", "body_md", "sources", "classification", "confidence", "limitations", "counterevidence",
           "agency_id", "also_agency_ids")
 LISTS = ("limitations", "counterevidence", "also_agency_ids")
-SOURCE_FIELDS = ("locator", "title", "rule_id", "quote")
+SOURCE_FIELDS = ("locator", "title", "rule_id", "page", "quote")
+OPTIONAL_SOURCE_FIELDS = ("page", "quote")  # reported only when some row on either side carries a value
+MAX_PAGE = 100000  # the content loader's bound for sources[].page
 
 
 def load(path):
@@ -27,6 +29,9 @@ def load(path):
     if not isinstance(sources, list) or not all(isinstance(s, dict) and isinstance(s.get("sha256"), str)
                                                 for s in sources):
         raise ValueError(f"{path}: every entry of 'sources' must be an object with a 'sha256' string")
+    for index, source in enumerate(sources):  # raw page: same contract as content.load_finding (never coerced)
+        if "page" in source and not (type(source["page"]) is int and 1 <= source["page"] <= MAX_PAGE):
+            raise ValueError(f"{path}: sources[{index}].page: must be a whole number from 1 to {MAX_PAGE}")
     return document
 
 
@@ -66,7 +71,7 @@ def _sources(old, new):
         a, b = before[sha], after[sha]
         keys = (["count"] if len(a) != len(b) else []) + [
             k for k in SOURCE_FIELDS if [s.get(k) for s in a] != [s.get(k) for s in b]
-            and (k != "quote" or any(s.get(k) is not None for s in a + b))]  # quote-free sources never report 'quote'
+            and (k not in OPTIONAL_SOURCE_FIELDS or any(s.get(k) is not None for s in a + b))]  # page/quote-free never report
         if keys:
             changed.append({"sha256": sha[:12], "keys": keys})
     return {"field": "sources", "removed": [sha[:12] for sha in before if sha not in after],
