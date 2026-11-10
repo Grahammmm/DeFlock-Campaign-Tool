@@ -544,6 +544,7 @@ _MODULES = {
         finding_search_log kit_fee_reply kit_preserve kit_repeat search_log law law_packet launch_check git_exposure map_controller registry setup_cmd shell sources_cmd records.ask_parity""",
     "organizer-maintained public roster content/officials.json (built by the site), no catalog store": "officials_cmd",
     "organizer-maintained public statements content/statements.json (built by the site), no catalog store": "statements",
+    "agenda PDF bytes to the converter's stdin pipe only; no file written": "meeting_pdf_scan",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -604,6 +605,7 @@ MODULE_FUNCTIONS = {
     'meeting_stage': ('stage',),
     'meetings': ('write_matters', 'write_meetings',),
     'meetings_manual': ('_save',),  # private kit/meetings-manual.json, 0600 atomic write, organizer-entered meetings only
+    'meeting_pdf_scan': ('_convert',),  # os.write of in-memory PDF bytes to pdftotext's stdin pipe; no file, no store
     'newsletter.__main__': ('main',),
     'newsletter.archive': ('publish_issue',),
     'newsletter.draft': ('write_draft',),
