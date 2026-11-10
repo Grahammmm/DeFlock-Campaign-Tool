@@ -442,8 +442,8 @@ class WithdrawnReadersTests(Base):
 
 class WithdrawnAskedTests(ExampleBase):
     def test_asked_withdrawn_precedes_produced(self):
-        self.write_sent([step("2026-03-12", "produced", scope_answers={A: "produced", B: "produced"}),
-                         step("2026-03-15", "produced", partial=True, correspondence=["c" * 64]),
+        self.write_sent([step("2026-03-12", "produced", partial=True, scope_answers={A: "produced", B: "produced"}),
+                         step("2026-03-15", "produced", correspondence=["c" * 64]),
                          step("2026-03-25", "withdrawn", note=SYNTHETIC_PRIVATE_NOTE, correspondence=["d" * 64])],
                         extra={"reference": "PRIVATE-REF-5519"})
         before = self.path.read_bytes()
