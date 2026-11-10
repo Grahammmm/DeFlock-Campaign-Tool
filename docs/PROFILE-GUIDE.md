@@ -51,7 +51,8 @@ python3 -m campaign_tool content-check --directory $CAMPAIGN
 
 Add this synthetic agency to the list in `$CAMPAIGN/content/agencies.json` (one more element of the top-level list). It is
 verified, has a Flock transparency slug (needed for the transparency task) and an official-looking but fictional home
-page. Every task below merges one block into its `profile` object; nothing replaces the whole file.
+page. Every task below records one block into its `profile` object, by a command where one exists and otherwise by
+merging the JSON block shown; nothing replaces the whole file.
 
 ```json
 {
@@ -87,12 +88,15 @@ by `kit-verify-agency`, which is separate from everything below).
 
 Field: `profile.alpr_policy` = `{"url", "source_url", "checked_on"}`, exactly those three keys. `url` is the policy
 document, `source_url` the agency page where you found it (both https), `checked_on` the day you read it. Linking a policy
-says only that it was posted. Merge into `profile`:
+says only that it was posted. Record it with a command (it checks the whole file the way `build` does, and the shared
+privacy lint, before it writes anything):
 
-```json
-{"alpr_policy": {"url": "https://example.invalid/example-profile/alpr-policy.pdf",
-                 "source_url": "https://example.invalid/example-profile/policies", "checked_on": "2026-10-21"}}
+```sh
+python3 -m campaign_tool content agency-profile policy --directory $CAMPAIGN --agency ca-example-profile-pd --url https://example.invalid/example-profile/alpr-policy.pdf --source-url https://example.invalid/example-profile/policies --checked-on 2026-10-21
 ```
+
+An agency that already has a policy needs `--replace`; see [replacing a policy or contract](#replacing-a-policy-or-contract-you-recorded)
+under task 5.
 
 Reference: [SITE-CONTENT.md, agencies, cards and the picker](SITE-CONTENT.md#agencies-cards-and-the-picker) (the
 `alpr_policy` paragraph).
@@ -126,13 +130,12 @@ Field: `profile.contract` = `{vendor, start, end, renewal_note?, source_url, che
 `cost` = `{amount_usd, period, as_stated_in}`. Copy the dates and the vendor from the signed agreement; `source_url` is the
 agreement itself and `checked_on` your reading date. `amount_usd` is a *string* (`"12345.60"`, never a JSON number),
 `period` is `annual`, `total` or `one_time` exactly as the document states it, and `as_stated_in` is the document's title.
-Do not total several years, divide by cameras or write a renewal date the document does not give. Merge into `profile`:
+Do not total several years, divide by cameras or write a renewal date the document does not give. `--renewal-note` is
+optional; `--cost-usd`, `--period` and `--as-stated-in` go together (all three or none), and the amount is stored exactly
+as you typed it:
 
-```json
-{"contract": {"vendor": "Synthetic vendor", "start": "2025-01-01", "end": "2027-12-31",
-              "renewal_note": "Renews yearly unless either side gives notice.",
-              "source_url": "https://example.invalid/example-profile/agreement.pdf", "checked_on": "2026-10-23",
-              "cost": {"amount_usd": "12345.60", "period": "annual", "as_stated_in": "Example services agreement"}}}
+```sh
+python3 -m campaign_tool content agency-profile contract --directory $CAMPAIGN --agency ca-example-profile-pd --vendor "Synthetic vendor" --start 2025-01-01 --end 2027-12-31 --renewal-note "Renews yearly unless either side gives notice." --source-url https://example.invalid/example-profile/agreement.pdf --checked-on 2026-10-23 --cost-usd 12345.60 --period annual --as-stated-in "Example services agreement"
 ```
 
 Reference: [AGENCY-CARDS.md, agency contract term](AGENCY-CARDS.md#agency-contract-term) and
@@ -161,6 +164,35 @@ page rule is looser than the policy check's. "Not found" describes your reading 
 
 Reference: [SITE-CONTENT.md, agencies, cards and the picker](SITE-CONTENT.md#agencies-cards-and-the-picker) (the
 `contract_check` paragraph).
+
+### Replacing a policy or contract you recorded
+
+When the agency posts a new policy or signs a new agreement, record the whole document again with `--replace`. It is a
+full replacement, not a patch: an optional value you leave out (the renewal note, the cost) is removed. An archived copy
+(task 11) stays only while the document URL is unchanged; a new URL removes it and the command says so.
+
+Your reading from task 3 (task 5) describes one document. It is never moved to a new one:
+
+- If the document URL changes (`alpr_policy.url`, or `contract.source_url`) while a `policy_check` (`contract_check`)
+  exists, the command refuses unless you add `--drop-check`. With it, the new document and the removal of the old
+  reading are one write, and the output names the dropped reading's `checked_on` and tells you to record a new reading.
+- If the URL stays the same but your new `checked_on` is later than the reading's, the command refuses: pass
+  `--drop-check`, or redo the reading first with a `checked_on` not before the new date. An equal date is fine, and
+  changing only the policy's `--source-url` (the page where you found it) keeps the reading.
+- `--drop-check` without `--replace` is refused; with no reading recorded it changes nothing more.
+
+The replacement sequence for a new policy and a new agreement (next-unit handoff: `policy-check` and `contract-check`
+are not commands yet, so until they are, record the fresh reading by merging a new task 3 or task 5 block whose
+`policy_url` / `contract_url` is the new document):
+
+```text
+python3 -m campaign_tool content agency-profile policy --directory $CAMPAIGN --agency ca-example-profile-pd --replace --drop-check --url https://example.invalid/example-profile/alpr-policy-2027.pdf --source-url https://example.invalid/example-profile/policies --checked-on 2026-10-30
+(next unit) python3 -m campaign_tool content agency-profile policy-check ... --checked-on 2026-10-30 or later
+python3 -m campaign_tool content agency-profile contract --directory $CAMPAIGN --agency ca-example-profile-pd --replace --drop-check --vendor "Synthetic vendor" --start 2028-01-01 --end 2030-12-31 --source-url https://example.invalid/example-profile/agreement-2028.pdf --checked-on 2026-10-30
+(next unit) python3 -m campaign_tool content agency-profile contract-check ... --checked-on 2026-10-30 or later
+```
+
+Reference: [SITE-CONTENT.md, recording a policy or contract document](SITE-CONTENT.md#recording-a-policy-or-contract-document).
 
 ## 6. Record how the agency is paid for
 
@@ -296,7 +328,9 @@ python3 -m campaign_tool content agency-profile list --directory $CAMPAIGN
 python3 -m campaign_tool content agency-profile list --directory $CAMPAIGN --agency ca-example-profile-pd --json
 ```
 
-For each source older than you are comfortable with, open it again. If it changed, update the fields by hand first. If
+For each source older than you are comfortable with, open it again. If it changed, record it again first (a new policy
+or agreement with `--replace`, see [replacing a policy or contract](#replacing-a-policy-or-contract-you-recorded); other
+fields by hand). If
 it still says the same thing, record the day you re-read it; only that `checked_on` changes. A reading may not be older
 than its document, so recheck `policy_check` before `alpr_policy` (and `contract_check` before `contract`). The
 practice run repeats the dates already recorded, which changes nothing; use the day you actually re-read the source:

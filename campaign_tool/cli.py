@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import fixes, registry
 from .agency_actions import ACTION_KINDS
+from .content_elsewhere import KINDS as ELSEWHERE_KINDS
 from .supporters import HOWS as SUPPORTER_HOWS, KINDS as SUPPORTER_KINDS
 
 MAX_BYTES = 50 * 1024 * 1024
@@ -1418,6 +1419,14 @@ def main():
                                      "phone or address: counts and dates only, never values (read-only)")
     personal_p.add_argument("--directory", required=True)
     personal_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
+    personal_p.add_argument("--find", metavar="TEXT", help="Where TEXT (3+ characters, any case) appears in the stores' "
+                            "name and contact fields: kind, path, position and field only, never a value")
+    if sys.argv[1:2] == ["personal-data"] and any(arg.startswith("--f") for arg in sys.argv[2:]):
+        def _find_misuse(_message):  # argparse would repeat the offending argument, which may be the --find text
+            print(personal_p.format_usage().rstrip(), file=sys.stderr)
+            print("personal-data: error: invalid arguments (not repeated here)", file=sys.stderr)
+            sys.exit(2)
+        parser.error = personal_p.error = _find_misuse
     withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
                                      "section number in the agency's own words (read-only)")
     withheld_p.add_argument("--directory", required=True)
@@ -1517,6 +1526,28 @@ def main():
     action_list.add_argument("--directory", required=True, help="Campaign directory (required)")
     action_list.add_argument("--agency", default=None, help="Only this agency's actions (indices are not renumbered)")
     action_list.add_argument("--json", dest="as_json", action="store_true", help="A JSON array instead of text lines")
+    elsewhere_cmds = content_cmds.add_parser(  # DF1109B-07
+        "elsewhere", help="Maintain content/elsewhere.json, decisions by other governments you read off their official "
+        "record (nothing is fetched, built, sent or deployed)").add_subparsers(dest="elsewhere_command", required=True)
+    elsewhere_add = elsewhere_cmds.add_parser("add", allow_abbrev=False, help="Append one decision; the whole file is "
+                                              "validated first and the first add creates it")
+    for flag, text in (("--directory", "Campaign directory (required)"), ("--place", "Place as the official source names it"),
+                       ("--state", "Two-letter uppercase state code, for example CA"),
+                       ("--body", "Deciding body as the official source names it"),
+                       ("--decided-on", "YYYY-MM-DD of the decision"),
+                       ("--as-stated", "1-200 plain-text characters as the official source states the decision"),
+                       ("--source-url", "https:// address of the deciding body's own record (recorded, never fetched)"),
+                       ("--checked-on", "YYYY-MM-DD you re-read that record (not before --decided-on, not in the future)")):
+        elsewhere_add.add_argument(flag, required=True, help=text)
+    elsewhere_add.add_argument("--kind", required=True, choices=ELSEWHERE_KINDS, help="What the body decided")
+    elsewhere_add.add_argument("--news-url", default=None, help="Optional https:// news coverage (never replaces --source-url)")
+    elsewhere_remove = elsewhere_cmds.add_parser("remove", allow_abbrev=False, help="Remove the entry at a 1-based stored "
+                                                 "position and name the staged meetings citing the same place, body and date")
+    elsewhere_remove.add_argument("--directory", required=True, help="Campaign directory (required)")
+    elsewhere_remove.add_argument("--index", required=True, help="1-based stored position from content elsewhere list, not the page order")
+    elsewhere_list = elsewhere_cmds.add_parser("list", allow_abbrev=False, help="Print each entry with the N meetings-stage "
+                                               "--elsewhere takes (stored order; read-only)")
+    elsewhere_list.add_argument("--directory", required=True, help="Campaign directory (required)")
     sharing_p = content_cmds.add_parser("agency-sharing", help="Record the agencies the vendor transparency portal names as receiving data, "
                                         "as the organizer transcribed them (CSV header name,state,kind; 1-2000 rows, all or none; never fetched)")
     sharing_p.add_argument("--directory", required=True)
@@ -1526,8 +1557,8 @@ def main():
     sharing_p.add_argument("--source-url", required=True, help="https URL of the portal page (transparency.flocksafety.com)")
     sharing_p.add_argument("--replace", action="store_true", help="Overwrite an existing sharing list")
     profile_cmds = content_cmds.add_parser(
-        "agency-profile", help="List every dated agency-profile check, or record the day you re-read one source "
-        "(content/agencies.json only; nothing is fetched, built or published)").add_subparsers(
+        "agency-profile", help="List every dated agency-profile check, record the day you re-read one source, or record "
+        "a whole policy or contract document (content/agencies.json only; nothing is fetched, built or published)").add_subparsers(
         dest="agency_profile_command", required=True)
     profile_list = profile_cmds.add_parser("list", help="Each recorded checked_on with its age in days, oldest first (read-only)")
     profile_list.add_argument("--directory", required=True)
@@ -1544,6 +1575,29 @@ def main():
                                  "position that list prints (doctor names the same entry zero-based in brackets)")
     profile_recheck.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD",
                                  help="Day you re-read the source: not after today, not before the stored date")
+    for verb, about in (("policy", "profile.alpr_policy: the posted ALPR policy document and the page you found it on"),
+                        ("contract", "profile.contract: the signed agreement's vendor, term and optional stated cost")):
+        writer = profile_cmds.add_parser(verb, help=f"Record {about} (the whole document; nothing is fetched)")
+        writer.add_argument("--directory", required=True)
+        writer.add_argument("--agency", required=True, help="agency_id in content/agencies.json")
+        if verb == "policy":
+            writer.add_argument("--url", required=True, help="https URL of the policy document itself")
+            writer.add_argument("--source-url", required=True, help="https URL of the agency page where you found it")
+        else:
+            writer.add_argument("--vendor", required=True, help="Vendor as the agreement names it, 1-80 characters")
+            writer.add_argument("--start", required=True, metavar="YYYY-MM-DD", help="Term start as the agreement states it")
+            writer.add_argument("--end", required=True, metavar="YYYY-MM-DD", help="Term end; not before --start")
+            writer.add_argument("--renewal-note", default=None, help="Renewal as the agreement states it, up to 200 characters")
+            writer.add_argument("--source-url", required=True, help="https URL of the agreement itself")
+            writer.add_argument("--cost-usd", default=None, help="Amount exactly as stated, a decimal string such as "
+                                "12345.60 (with --period and --as-stated-in, all three or none)")
+            writer.add_argument("--period", default=None, choices=("annual", "total", "one_time"),
+                                help="The period the document states for the amount")
+            writer.add_argument("--as-stated-in", default=None, help="Title of the document that states the amount")
+        writer.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD", help="Day you read it, not after today")
+        writer.add_argument("--replace", action="store_true", help="Record the whole document again over an existing one")
+        writer.add_argument("--drop-check", action="store_true", help="With --replace: remove the existing reading "
+                            f"({'policy_check' if verb == 'policy' else 'contract_check'}) in the same write")
     links_p = content_cmds.add_parser("link-check", help="List every external https URL the public content cites; with --online "
                                       "also request each once (GET, first 64 KiB, no cookies, 15 s, 5 redirects). Writes nothing")
     links_p.add_argument("--directory", required=True)
@@ -1815,12 +1869,17 @@ def main():
                                     ).add_subparsers(dest="campaigns_command", required=True)
     for verb, text in (("add", "Register NAME at --directory"), ("remove", "Unregister NAME; deletes nothing"),
                        ("list", "The registered names and directories"),
-                       ("status", "One private line per campaign: counts and waiting gates; publishes nothing")):
+                       ("status", "One private line per campaign: counts and waiting gates; publishes nothing"),
+                       ("today", "One private to-do list across every campaign, each item with its --campaign "
+                                 "command; read-only")):
         verb_p = campaigns.add_parser(verb, help=text)
         if verb in ("add", "remove"):
             verb_p.add_argument("name")
         if verb == "add":
             verb_p.add_argument("--directory", required=True)
+        if verb == "today":  # DF1109-15
+            verb_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
+            verb_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
     args = parser.parse_args()
     if args.command == "campaigns":
         sys.exit(registry.run(args))
@@ -1939,13 +1998,23 @@ def main():
         from .law_packet import main as law_packet_main
         sys.exit(law_packet_main(args))
     if args.command == "personal-data":  # the folder is not resolved: the register refuses a symlinked root itself
-        from .personal_data import PersonalDataError, exit_code, personal_data_register, render_text
+        from .personal_data import (FindQueryError, PersonalDataError, exit_code, personal_data_find,
+                                    personal_data_register, render_find_text, render_text)
         try:
-            report = personal_data_register(Path(args.directory).expanduser())
+            if args.find is None:
+                report = personal_data_register(Path(args.directory).expanduser())
+            else:  # the text is checked before the folder is opened and is never printed
+                report = personal_data_find(Path(args.directory).expanduser(), args.find)
+        except FindQueryError as exc:
+            print("Stopped: " + str(exc), file=sys.stderr)
+            sys.exit(2)
         except PersonalDataError as exc:
             print("Stopped: " + str(exc), file=sys.stderr)
             sys.exit(1)
-        print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
+        if args.as_json:
+            print(json.dumps(report, ensure_ascii=True))
+        else:
+            print(render_text(report) if args.find is None else render_find_text(report))
         sys.exit(exit_code(report))
     if args.command == "supporters" and args.supporters_command == "list":  # unresolved: the reader refuses links
         from .supporters import format_supporters_list, list_supporters
@@ -2349,6 +2418,13 @@ def main():
                 done = agency_actions.remove_action(root, args.agency, agency_actions.parse_index(args.index))
                 print(f"Agency action removed: {done['agency_id']}, index {done['index']}.")
             print("Content only; nothing was built, sent or deployed.")
+        elif args.command == "content" and args.content_command == "elsewhere":  # DF1109B-07
+            from .elsewhere_cmd import run_cli as elsewhere_cli
+            read_config(root)
+            text, notes = elsewhere_cli(root, args)
+            for note in notes:  # alert-only legal-claim notes: stderr, never the supplied text, exit unchanged
+                print(note, file=sys.stderr)
+            print(text)
         elif args.command == "content" and args.content_command == "link-check":
             from .content_links import run_cli as link_check_cli
             report, code = link_check_cli(root, args.online)
@@ -2365,6 +2441,16 @@ def main():
             if args.agency_profile_command == "list":
                 sys.stdout.write(content_profile.format_profile_checks(
                     content_profile.list_profile_checks(root, args.agency), as_json=args.as_json))
+            elif args.agency_profile_command == "policy":
+                sys.stdout.write(content_profile.format_document(content_profile.write_policy(
+                    root, args.agency, url=args.url, source_url=args.source_url, checked_on=args.checked_on,
+                    replace=args.replace, drop_check=args.drop_check)))
+            elif args.agency_profile_command == "contract":
+                sys.stdout.write(content_profile.format_document(content_profile.write_contract(
+                    root, args.agency, vendor=args.vendor, start=args.start, end=args.end, source_url=args.source_url,
+                    checked_on=args.checked_on, renewal_note=args.renewal_note, cost_usd=args.cost_usd,
+                    period=args.period, as_stated_in=args.as_stated_in, replace=args.replace,
+                    drop_check=args.drop_check)))
             else:
                 sys.stdout.write(content_profile.format_recheck(content_profile.recheck_profile(
                     root, args.agency, args.field, args.checked_on, index=args.index)))

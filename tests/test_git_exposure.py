@@ -248,5 +248,112 @@ class RowTests(Base):
             self.assertTrue(set(argv[3:4]) <= {"rev-parse", "check-ignore", "ls-files"})
 
 
+OK_ROW = {"key": "git_exposure", "state": "ok", "label": "Campaign kit/, private/ and public/ are ignored by git",
+          "next": None, "owner": None}
+NOTE = ".gitignore does not untrack existing files; review tracked files manually before any push."
+NESTED = "deep/camp [x]'s"
+
+
+def tracked_row(affected, advice):
+    return {"key": "git_exposure", "state": "todo", "label": "Campaign files may be included in git",
+            "next": f"Affected: {affected}. {advice}, then rerun doctor --checklist. {NOTE}", "owner": "organizer"}
+
+
+def one_line(name):
+    return tracked_row(f"{name}/", f"Add /{name}/ as a line in the campaign directory's .gitignore")
+
+
+class IndexedRootTests(Base):
+    """A git index entry exactly at kit, private or public is tracked exposure, whatever the work tree holds."""
+
+    def checked(self, root, campaign):
+        """Row from two checks that leave the repository, its index and the campaign byte-identical."""
+        before = snapshot(root)
+        calls = []
+        real = subprocess.run
+
+        def spy(argv, **kw):
+            calls.append(argv[3])
+            return real(argv, **kw)
+
+        with mock.patch.object(git_exposure.subprocess, "run", spy):
+            row = git_exposure_row(campaign)
+            self.assertEqual(git_exposure_row(campaign), row)
+        self.assertEqual(snapshot(root), before)
+        self.assertTrue(set(calls) <= {"rev-parse", "check-ignore", "ls-files"}, calls)
+        return row
+
+    def indexed_root(self, name, sub, label):
+        root = self.tree(list(NAMES), name=label)  # unanchored: the root file itself is ignored
+        campaign = root / sub if sub else root
+        campaign.mkdir(parents=True, exist_ok=True)
+        (campaign / name).write_text("synthetic\n")
+        self.assertEqual(self.checked(root, campaign), OK_ROW)  # untracked and ignored: still fine
+        git(root, "add", "-f", f"{sub}/{name}" if sub else name)
+        self.assertEqual(git(root, "ls-files", "--cached", "-z").split("\0")[0], f"{sub}/{name}" if sub else name)
+        return root, campaign
+
+    def test_indexed_protected_root_files_are_exposed(self):
+        for index, (name, sub) in enumerate(itertools.product(NAMES, ("", NESTED))):
+            root, campaign = self.indexed_root(name, sub, f"r{index}")
+            row = self.checked(root, campaign)
+            self.assertEqual(row, one_line(name), (name, sub))
+            self.assertNotIn("deep", json.dumps(row))
+            self.assertNotIn("synthetic", json.dumps(row))
+
+    def test_indexed_root_survives_worktree_deletion_or_directory_replacement(self):
+        for index, (name, sub) in enumerate(itertools.product(NAMES, ("", NESTED))):
+            root, campaign = self.indexed_root(name, sub, f"d{index}")
+            (campaign / name).unlink()
+            self.assertEqual(self.checked(root, campaign), one_line(name), ("absent", name, sub))
+            (campaign / name).mkdir()
+            (campaign / name / "child.txt").write_text("synthetic\n")
+            self.assertEqual(self.checked(root, campaign), one_line(name), ("directory", name, sub))
+            git(root, "rm", "-q", "--cached", f"{sub}/{name}" if sub else name)  # fixture setup, never the checker
+            self.assertEqual(self.checked(root, campaign), OK_ROW, ("untracked", name, sub))
+
+    def test_exact_and_descendant_index_entries_share_stable_order(self):
+        root = self.tree(["kit", "private"])
+        (root / "private").write_text("synthetic\n")
+        (root / "kit").mkdir()
+        (root / "kit" / "a.txt").write_text("synthetic\n")
+        git(root, "add", "-f", "private", "kit/a.txt")
+        (root / "private").unlink()
+        advice = "Add /kit/, /private/ and /public/ as separate lines in the campaign directory's .gitignore"
+        self.assertEqual(self.checked(root, root), tracked_row("kit/, private/, public/", advice))
+
+    def test_index_root_boundary_does_not_match_lookalikes(self):
+        root = self.tree(["/camp/kit/", "/camp/private/", "/camp/public/"])
+        campaign = root / "camp"
+        for rel in ("camp/private-old", "camp/private.txt", "camp/kitten", "camp/publicity", "camp-old/private",
+                    "camp-old/kit/a.txt", "notes.txt"):
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text("synthetic\n")
+        git(root, "add", ".")
+        self.assertEqual(self.checked(root, campaign), OK_ROW)
+        (campaign / "private").mkdir()
+        (campaign / "private" / "child.txt").write_text("synthetic\n")
+        git(root, "add", "-f", "camp/private/child.txt")  # positive control: a tracked descendant
+        self.assertEqual(self.checked(root, campaign), one_line("private"))
+
+    def test_exact_root_exposure_reaches_text_json_and_counts(self):
+        root, campaign = self.indexed_root("public", NESTED, "render")
+        (campaign / "public").unlink()
+        report = {"config_readable": True}
+        text = render(report, campaign)
+        rows = json.loads(render(report, campaign, as_json=True))
+        self.assertEqual([r for r in rows if r["key"] == "git_exposure"], [one_line("public")])
+        self.assertIn("[todo] Campaign files may be included in git", text)
+        self.assertIn("→ " + one_line("public")["next"] + " (organizer)", text)
+        self.assertIn("1 to do", text)
+        self.assertEqual(rows[-1]["label"],
+                         "Production ready: not yet, 1 to do; ready only when every todo above is done")
+        self.assertNotIn("deep", text + json.dumps(rows))
+        git(root, "rm", "-q", "--cached", f"{NESTED}/public")
+        healthy = json.loads(render(report, campaign, as_json=True))
+        self.assertEqual([r for r in healthy if r["key"] == "git_exposure"], [OK_ROW])
+        self.assertEqual(healthy[-1]["label"], "Production ready: no todo remains above; a person still decides")
+
+
 if __name__ == "__main__":
     unittest.main()

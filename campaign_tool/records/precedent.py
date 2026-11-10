@@ -61,8 +61,36 @@ def names_agency(text, agencies):
     return False
 
 
+def _records(text):
+    """(physical start line, cells) per nonblank record, plus width problems.
+
+    Strict CSV: a quoting error or an over-long field raises csv.Error. A record
+    without exactly len(HEADER) cells is a problem and never evidence.
+    """
+    reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+    if next(reader, None) != HEADER:
+        return None, [_problem(0, "header", "expected " + ",".join(HEADER))]
+    records, problems = [], []
+    while True:
+        start = reader.line_num + 1  # physical line where this record starts
+        cells = next(reader, None)
+        if cells is None:
+            return records, problems
+        if not cells:
+            continue
+        if len(cells) != len(HEADER):
+            problems.append(_problem(start, "row", "%d columns, expected %d" % (len(cells), len(HEADER))))
+            continue
+        records.append((start, cells))
+
+
 def load(path):
-    """Read a register. Returns (rows, problems); rows hold only valid entries."""
+    """Read a register. Returns (rows, problems); rows hold only valid entries.
+
+    Problems carry the physical line where the record starts. A record with extra or
+    missing cells is a problem, not evidence. Malformed CSV (broken quoting, a field
+    over the csv field limit) refuses the whole file without echoing its content.
+    """
     p = Path(path)
     try:
         if p.is_symlink() or not p.is_file():
@@ -72,14 +100,17 @@ def load(path):
         text = p.read_bytes().decode("utf-8-sig")
     except (OSError, UnicodeDecodeError):
         return [], [_problem(0, "file", "unreadable")]
-    reader = csv.DictReader(io.StringIO(text))
-    if reader.fieldnames != HEADER:
-        return [], [_problem(0, "header", "expected " + ",".join(HEADER))]
-    raw = list(reader)
-    agencies = sorted({(r.get("agency") or "").strip() for r in raw if SLUG_RE.match((r.get("agency") or "").strip())})
-    rows, problems, seen = [], [], set()
-    for line, r in enumerate(raw, start=2):
-        row = {c: (r.get(c) or "").strip() for c in HEADER}
+    try:
+        raw, problems = _records(text)
+    except csv.Error:
+        return [], [_problem(0, "file", "malformed CSV")]
+    if raw is None:
+        return [], problems
+    raw = [(line, dict(zip(HEADER, cells))) for line, cells in raw]
+    agencies = sorted({r["agency"].strip() for _, r in raw if SLUG_RE.match(r["agency"].strip())})
+    rows, seen = [], set()
+    for line, r in raw:
+        row = {c: r[c].strip() for c in HEADER}
         bad = [_problem(line, c, "required") for c in HEADER if not row[c]]
         if row["agency"] and not SLUG_RE.match(row["agency"]):
             bad.append(_problem(line, "agency", "not a lowercase slug"))
@@ -104,6 +135,7 @@ def load(path):
             problems.extend(bad)
         else:
             rows.append(row)
+    problems.sort(key=lambda p: p["line"])  # width and field problems in file order
     return rows, problems
 
 
