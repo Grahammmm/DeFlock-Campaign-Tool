@@ -161,7 +161,10 @@ def main(argv=None):
         raw = sys.stdin.buffer.read(MAX_BYTES + 1)
         if len(raw) > MAX_BYTES:
             raise ValueError("Map input too large")
-        value = json.loads(raw)
+        try:
+            value = json.loads(raw)
+        except RecursionError:  # decoder-only: the stdlib's own refusal of overdeep nesting
+            raise ValueError("JSON nesting is too deep") from None
         if not isinstance(value, dict) or set(value) not in ({"config", "profile_renderer"}, {"config", "profile_renderer", "point_context_renderer"}):
             raise ValueError("Invalid map build payload")
         sys.stdout.write(json.dumps({"javascript": render(value["config"], value["profile_renderer"], value.get("point_context_renderer", ""))}))
