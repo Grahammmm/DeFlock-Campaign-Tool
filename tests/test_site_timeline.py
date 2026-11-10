@@ -596,7 +596,8 @@ class TimelineTests(unittest.TestCase):
 
 # DF1109-07 pins: sha256 over sorted (path, bytes) of builds made with the pre-change timeline.py (main 45551bd9).
 MAIN_TIMELINE_DIGEST = "efa29cd2bb4b6da62d6e72a69410785a5dc93ddd8bc6700954e5f6295bf55abc"  # pragma: allowlist secret -- public rendered-file SHA-256
-MAIN_POPULATED_OTHER_DIGEST = "b3cdffb99a1017196865098d3049b5cf1d957458a30d77fff5ad6a9a87b98c18"  # pragma: allowlist secret -- public rendered-file SHA-256
+# DF1109-10: the populated build now writes data/officials.*, so data.html and data/datapackage.json list them; re-pinned from b3cdffb9 (main) after confirming that is the only difference
+MAIN_POPULATED_OTHER_DIGEST = "7bd8a5cec9f2987db7dd18d7c13408026fa383cf64e81db4f45f9c286f758b52"  # pragma: allowlist secret -- public rendered-file SHA-256
 COUNCIL = "ca-cedar-city-council"
 NEW_KINDS = ("finding_update", "statement", "coverage")
 

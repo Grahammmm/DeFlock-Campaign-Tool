@@ -9,7 +9,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from campaign_tool.content import ContentError, load_content
+from campaign_tool.content import ContentError, load_content, load_officials
 from campaign_tool.site import build_site
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -81,7 +81,7 @@ class OfficialsTests(unittest.TestCase):
         self.assertEqual(set(after) - set(before), {"data/officials.json", "data/officials.csv"})  # DF1622-11
         self.assertEqual(set(before) - set(after), set())
         changed = {name for name in before if after[name] != before[name]}
-        self.assertEqual(changed, {COUNCIL_PAGE, COUNCIL_MEETING, "agencies.html"})
+        self.assertEqual(changed, {COUNCIL_PAGE, COUNCIL_MEETING, "agencies.html", "data.html", "data/datapackage.json"})  # DF1109-10
         self.assertNotIn("who-decides", self.read(POLICE_PAGE))
 
     # labels: every officials.* string comes from Site.t(), so labels.json replaces each one
@@ -176,6 +176,23 @@ class OfficialsTests(unittest.TestCase):
         (self.content / "officials.json").write_text("{not json", encoding="utf-8")
         self.refused("officials.json: not valid UTF-8 JSON")
         self.assertEqual(self.snapshot(), before)
+
+    # DF1109-12: only the officials maintenance commands pass require_fresh=False, which skips just the 365-day limit
+    def test_strict_default_and_nonfresh_loader_matrix(self):
+        agencies, stale = [{"agency_id": COUNCIL}], official(checked_on="2025-10-19")  # 366 days before BUILD_DAY
+        document = lambda *people: {"schema_version": 1, "bodies": [{"agency_id": COUNCIL, "officials": list(people)}]}  # noqa: E731
+        with self.assertRaisesRegex(ContentError, "older than 365 days"):
+            load_officials(document(stale), agencies, BUILD_DAY)
+        self.assertEqual(load_officials(document(stale), agencies, BUILD_DAY, require_fresh=False)[COUNCIL][0]["checked_on"],
+                         "2025-10-19")
+        for bad, needle in ((official(checked_on="2026-10-21"), "after the build date"), (official(checked_on="2026-02-30"), "checked_on"),
+                            (official(name="a@b.example"), "no contact details"), (official(source_url="http://x.example"), "https")):
+            for fresh in (True, False):
+                with self.assertRaisesRegex(ContentError, needle):
+                    load_officials(document(bad), agencies, BUILD_DAY, require_fresh=fresh)
+        twice = document(official(), official())  # an existing duplicate name stays loadable in both modes
+        for fresh in (True, False):
+            self.assertEqual(len(load_officials(twice, agencies, BUILD_DAY, require_fresh=fresh)[COUNCIL]), 2)
 
 
 if __name__ == "__main__":
