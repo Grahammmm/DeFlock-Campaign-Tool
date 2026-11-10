@@ -8,6 +8,7 @@ context. Nothing here fetches an address, shortens, merges or paraphrases a quot
 
 Every refusal names ``statements.json[N].FIELD`` (N counts from 0) and never repeats a supplied quote, note or address.
 """
+import contextlib
 import json
 import os
 import re
@@ -140,6 +141,26 @@ def _parse(data):
         raise ContentError(f"{FILE}: not valid UTF-8 JSON") from None
 
 
+def _open_admitted(path):
+    """The open file object for ``path`` once the OPENED descriptor is a regular file within MAX_BYTES, else a refusal.
+
+    The pathname checks in ``_read_document`` can be outrun, so the descriptor itself is verified before any read. The raw
+    descriptor belongs to this function until ``os.fdopen`` succeeds (the file object then owns it); every earlier exit,
+    refusal or error alike, closes it here exactly once."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ContentError(f"{FILE}: must be a regular file")
+        if opened.st_size > MAX_BYTES:
+            raise ContentError(f"{FILE}: file too large")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        with contextlib.suppress(OSError):  # the original refusal or error is what the caller must see
+            os.close(fd)
+        raise
+
+
 def _read_document(root):
     """The parsed document (JSON null included), or ABSENT when there is no file. A link, folder, FIFO or oversized file is refused unread."""
     path = Path(root) / "content" / FILE
@@ -156,8 +177,7 @@ def _read_document(root):
     if info.st_size > MAX_BYTES:
         raise ContentError(f"{FILE}: file too large")
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-        with os.fdopen(fd, "rb") as handle:
+        with _open_admitted(path) as handle:
             data = handle.read(MAX_BYTES + 1)
     except OSError:
         raise ContentError(f"{FILE}: could not be read") from None
