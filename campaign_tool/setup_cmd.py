@@ -1,5 +1,4 @@
 """Guided, offline composition of the existing campaign commands."""
-import json
 import re
 from contextlib import redirect_stdout
 from types import SimpleNamespace
@@ -48,8 +47,13 @@ def run_cli(args, root, parser, stdin, stdout):
 
 
 def run_setup(root, answers, out=print):
-    """Run init → offline kit → starter build → doctor, retaining finished work."""
-    from .cli import doctor_report, initialize
+    """Run init → offline kit → starter build → doctor, retaining finished work.
+
+    An existing campaign.json is admitted through the shared ``read_config`` before its
+    identity is compared or step 1 is called kept; any read, decoding, JSON or schema
+    failure stops at step 1 with one fixed message and changes nothing.
+    """
+    from .cli import doctor_report, initialize, read_config
     from .kit import build_kit
     from .site import build_site
 
@@ -61,7 +65,11 @@ def run_setup(root, answers, out=print):
             if number == 1:
                 path = root / "campaign.json"
                 if path.exists():
-                    cfg = json.loads(path.read_text(encoding="utf-8"))
+                    try:
+                        cfg = read_config(root)
+                    except (OSError, ValueError, RecursionError):
+                        raise ValueError("campaign.json could not be read as a supported campaign "
+                                         "configuration; nothing changed. Repair it and run setup again.") from None
                     if any(cfg.get(key) != answers[key] for key in ("name", "county")) or str(
                             cfg.get("state", "")).upper() != answers["state"].upper():
                         raise ValueError(f"campaign.json already describes {cfg.get('name')}, "
