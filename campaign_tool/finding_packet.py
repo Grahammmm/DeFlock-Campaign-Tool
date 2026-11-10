@@ -78,13 +78,25 @@ def _open_object(objects, sha):
     return os.fdopen(fd, "rb")
 
 
-def _copy_hash(source, sink=None):
-    digest = hashlib.sha256()
-    while chunk := source.read(CHUNK):
+def _too_large():
+    return ValueError(f"packet too large; cited records exceed {MAX_RECORD_BYTES >> 20} MiB")
+
+
+def _copy_hash(source, sink=None, *, limit):
+    """Hash (and copy to ``sink``) at most ``limit`` bytes; returns (hex digest, bytes read).
+
+    Every read asks for at most remaining+1 bytes, so growth is seen as one overflow byte; a crossing chunk is
+    refused before it is hashed or written. Short reads are not EOF: reading continues until an empty read.
+    """
+    digest, total = hashlib.sha256(), 0
+    while chunk := source.read(min(CHUNK, limit - total + 1)):
+        if total + len(chunk) > limit:
+            raise _too_large()
         digest.update(chunk)
         if sink is not None:
             sink.write(chunk)
-    return digest.hexdigest()
+        total += len(chunk)
+    return digest.hexdigest(), total
 
 
 def _create(path, data=None):
@@ -127,10 +139,11 @@ def build_packet(root, draft_path, out):
     objects, total = root / "private" / "objects", 0
     for sha in shas:  # size guard and every object re-hashed before anything is written
         with _open_object(objects, sha) as handle:
-            total += os.fstat(handle.fileno()).st_size
-            if total > MAX_RECORD_BYTES:
-                raise ValueError(f"packet too large; cited records exceed {MAX_RECORD_BYTES >> 20} MiB")
-            if _copy_hash(handle) != sha:
+            if os.fstat(handle.fileno()).st_size > MAX_RECORD_BYTES - total:  # early hint only
+                raise _too_large()
+            digest, size = _copy_hash(handle, limit=MAX_RECORD_BYTES - total)  # the actual bytes are authoritative
+            total += size
+            if digest != sha:
                 raise ValueError(f"cited record {sha[:PREFIX]} hash_mismatch; nothing was written")
     reviews = findings._load_receipts(findings._receipts_path(root, draft))
     status = findings.review_status(root, draft)
@@ -143,9 +156,12 @@ def build_packet(root, draft_path, out):
                            ("README.txt", README.encode("utf-8"))):
             _create(staging / name, data)
             manifest[name] = hashlib.sha256(data).hexdigest()
+        copied = 0  # independent of the preflight count: these are newly opened streams
         for sha in shas:
             with _open_object(objects, sha) as handle, _create(staging / "records" / sha) as sink:
-                if _copy_hash(handle, sink) != sha:
+                digest, size = _copy_hash(handle, sink, limit=MAX_RECORD_BYTES - copied)
+                copied += size
+                if digest != sha:
                     raise ValueError(f"cited record {sha[:PREFIX]} changed while copying; nothing was written")
             manifest[f"records/{sha}"] = sha
         _create(staging / "MANIFEST.sha256", "".join(f"{manifest[p]}  {p}\n" for p in sorted(manifest)).encode())
