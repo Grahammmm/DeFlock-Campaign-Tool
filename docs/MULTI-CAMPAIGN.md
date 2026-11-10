@@ -28,6 +28,10 @@ python3 -m campaign_tool campaigns remove humboldt      # unregisters; the direc
   serialized by an advisory lock on the register file itself, so two concurrent `add`s both land. This is the one lock in
   the feature: it is taken only for that transaction, never inside a campaign directory, and never while a campaign
   command runs or a campaign is read for `campaigns status`. There is no cache, index or database across campaigns.
+- The register has a ceiling of 1 MiB (1,048,576 raw bytes, whitespace and the final newline included). A larger
+  register is refused whole, with no truncation, partial listing or automatic repair, before any campaign is read. A
+  compact register that is readable can still be refused by `add` or `remove` when the pretty-printed candidate it
+  would write is above the ceiling; the register is then left as it was. This is an offline resource guard only.
 
 ## `--campaign NAME`
 
