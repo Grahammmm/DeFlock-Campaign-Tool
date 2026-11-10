@@ -12,7 +12,9 @@ for each finding; whether a correction is needed stays a human legal decision. E
 3: at least one affected; 2: an input error.
 """
 import json
+import os
 import shlex
+import stat
 import sys
 from datetime import date
 from pathlib import Path
@@ -37,16 +39,39 @@ class ImpactError(ValueError):
     """An input error (exit 2)."""
 
 
+def _read_package_bytes(path):
+    """The package bytes through one regular-file descriptor; never requests more than the ceiling plus one byte."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except (FileNotFoundError, NotADirectoryError):
+        raise ValueError("not a file") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("not a file")
+        if info.st_size > MAX_PACKAGE_BYTES:
+            raise ValueError(f"larger than {MAX_PACKAGE_BYTES} bytes")
+        chunks, total = [], 0
+        while total <= MAX_PACKAGE_BYTES:
+            chunk = os.read(fd, MAX_PACKAGE_BYTES + 1 - total)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if total > MAX_PACKAGE_BYTES:
+            raise ValueError(f"larger than {MAX_PACKAGE_BYTES} bytes")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def load_file(path):
     """A package file read with the loader's schema and semantic checks; any failure names the file."""
     path = Path(path)
     try:
-        if not path.is_file():
-            raise ValueError("not a file")
-        if path.stat().st_size > MAX_PACKAGE_BYTES:
-            raise ValueError(f"larger than {MAX_PACKAGE_BYTES} bytes")
+        data = _read_package_bytes(path)
         try:
-            package = json.loads(path.read_text(encoding="utf-8"))
+            package = json.loads(data.decode("utf-8"))
         except json.JSONDecodeError as exc:
             raise ValueError(f"invalid JSON: {exc}") from None
         law.validate(package, law.load_schema())
