@@ -2,20 +2,51 @@
 
 A finding cites a rule through ``rule_ids`` or any non-null ``sources[].rule_id``. ``load_content`` (build) refuses
 the first problem and ``content-check`` names them all, with the same text. Nothing is read when no rule is cited and
-the campaign has no ``law/local-rules.json``, and a tree without ``campaign.json`` is not checked. A present local
+the campaign has no ``law/local-rules.json``, and a tree with no ``campaign.json`` entry at all is not checked (a
+present but unusable entry, such as a directory, FIFO or dangling link, is refused, not treated as absent). A present local
 overlay (organizer-transcribed city or county rules, DF1952-01) is validated even when nothing cites it; a finding may
 cite its ``local-`` ids. This is not a legal-sufficiency review.
 """
+import os
+import stat
 from pathlib import Path
 
 from . import law
 from .content import ContentError
 
 
+UNUSABLE_CONFIG = "campaign.json: must resolve to a readable regular file"
+
+
+def _config_present(root):
+    """False only when ``root/campaign.json`` genuinely does not exist; a present entry must resolve to a regular file.
+
+    Inspects without opening: a directory, FIFO, dangling or looping link, or link to a non-regular object is present
+    but unusable and is refused with a fixed message that names no path or system error.
+    """
+    path = root / "campaign.json"
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise ContentError(UNUSABLE_CONFIG) from None
+    try:
+        regular = stat.S_ISREG(os.stat(path).st_mode)
+    except (OSError, ValueError):
+        regular = False
+    if not regular:
+        raise ContentError(UNUSABLE_CONFIG) from None
+    return True
+
+
 def jurisdiction(root):
-    """``country-state`` from ``root/campaign.json`` (lowercase), or None when there is no campaign.json."""
+    """``country-state`` from ``root/campaign.json`` (lowercase); None only when campaign.json is genuinely absent.
+
+    A present entry that is not (or does not resolve to) a regular file raises ``ContentError``, never None.
+    """
     root = Path(root)
-    if not (root / "campaign.json").is_file():
+    if not _config_present(root):
         return None
     from .cli import read_config
     try:
