@@ -1,5 +1,5 @@
 """Plain-language provenance; byte identity is not authorship or truth."""
-from datetime import date
+from datetime import datetime
 
 EXPLAINER = (
     "Record numbers are the first 12 characters of a SHA-256 fingerprint of the file exactly as we received "
@@ -15,7 +15,9 @@ def source_line(library_entry, finding_source, agency_name):
     entry = library_entry
     sentence = f'From a document we hold: {e((entry or finding_source)["title"])}'
     if entry is not None:
-        received = date.fromisoformat(entry["received_at"][:10])
+        # Parse the whole admitted timestamp exactly as content._timestamp validates it (never a 10-character
+        # slice: ISO week dates without a weekday are admitted), and show the date as written, not converted to UTC.
+        received = datetime.fromisoformat(entry["received_at"].replace("Z", "+00:00")).date()
         sentence += f', received {received.day} {MONTHS[received.month - 1]} {received.year}'
         if agency_name:
             sentence += f' from {e(agency_name)}'
