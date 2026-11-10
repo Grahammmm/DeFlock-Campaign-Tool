@@ -57,7 +57,8 @@ def _structure(summary, agency_id):
     try:
         source = summary["input"]
         sha, columns, custom = source["sha256"], source["columns"], source["categories_sha256"]
-        ok = (summary["schema_version"] == 1 and isinstance(sha, str) and FULL_SHA.fullmatch(sha)
+        ok = (type(summary["schema_version"]) is int and summary["schema_version"] == 1
+              and isinstance(sha, str) and FULL_SHA.fullmatch(sha)
               and isinstance(columns, dict) and set(columns) == set(ROLES)
               and all(columns[role] is None or isinstance(columns[role], str) for role in ROLES))
     except (KeyError, TypeError):
@@ -95,13 +96,33 @@ def _verified_object(root, agency_id, sha):
     return objects / sha
 
 
+def _same_json(left, right):
+    """Equal values AND exact JSON types at every node (bool, int and float never alias); an explicit stack, no recursion."""
+    stack = [(left, right)]
+    while stack:
+        a, b = stack.pop()
+        if type(a) is not type(b):
+            return False
+        if type(a) is dict:
+            if a.keys() != b.keys():
+                return False
+            stack.extend((value, b[key]) for key, value in a.items())
+        elif type(a) is list:
+            if len(a) != len(b):
+                return False
+            stack.extend(zip(a, b))
+        elif a != b or (type(a) is float and repr(a) != repr(b)):
+            return False
+    return True
+
+
 def _verify(root, agency, sha, columns, summary):
     path = _verified_object(root, agency["agency_id"], sha)
     fresh = search_log.summarize_csv(path, agency, columns=columns)
     if fresh["input"]["sha256"] != sha:
         raise ValueError("the stored record's bytes no longer match its sha256")
     fresh, claimed = dict(fresh, agency_name=None), dict(summary, agency_name=None)
-    if fresh != claimed:
+    if not _same_json(fresh, claimed):
         raise ValueError("the summary's counts no longer match a fresh read of the stored record")
     return fresh
 
