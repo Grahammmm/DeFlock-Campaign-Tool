@@ -18,9 +18,57 @@ from tests import test_kit_response_undo as base  # noqa: E402
 
 FIXED = "kit/sent-undone.json cannot be serialized; nothing was changed"
 STDERR = "Stopped: " + FIXED + "\n"
-DEPTH = 2000  # compact JSON the decoder admits; the indented encoder needs far more recursion than the interpreter allows
+DEPTH = 400  # compact JSON every supported decoder admits (3.11 refuses decoding near 1000 levels)
+BUDGET = 150  # frames the indented encoder may use above its caller; DEPTH levels need more
 CANARY = "CANARY-private-archive-text"
 real_size = kit_undo.serialized_size
+# In the CLI subprocess the encoder is replaced by the RecursionError it raises on an over-deep archive.
+CLI_RUNNER = ("import sys\nfrom campaign_tool import cli, kit_undo\n"
+              "def fake(document):\n    if 'undos' in document:\n        raise RecursionError('maximum recursion depth exceeded')\n"
+              "    raise AssertionError('active preflight reached')\n"
+              "kit_undo.serialized_size = fake\ncli.main()\n")
+
+
+def stack_depth():
+    count, frame = 0, sys._getframe()
+    while frame is not None:
+        count, frame = count + 1, frame.f_back
+    return count
+
+
+class recursion_budget:
+    """Lower the interpreter recursion limit to BUDGET frames above the caller (so only the encoder is squeezed)."""
+
+    def __enter__(self):
+        self.old = sys.getrecursionlimit()
+        sys.setrecursionlimit(stack_depth() + BUDGET)
+
+    def __exit__(self, *exc):
+        sys.setrecursionlimit(self.old)
+
+
+def _encoder_honors_budget():
+    """3.13+ no longer bounds the pure-Python encoder's generator nesting by the recursion limit; 3.11/3.12 do."""
+    document = json.loads("[" * DEPTH + "]" * DEPTH)
+    try:
+        with recursion_budget():
+            real_size(document)
+    except RecursionError:
+        return True
+    return False
+
+
+ENCODER_HONORS_BUDGET = _encoder_honors_budget()
+
+
+def deep_size(document):
+    """serialized_size where the deep receipt really overflows the encoder (simulated where the interpreter cannot)."""
+    if "undos" not in document:
+        return real_size(document)
+    if not ENCODER_HONORS_BUDGET:
+        raise RecursionError("maximum recursion depth exceeded")
+    with recursion_budget():
+        return real_size(document)
 
 
 def nesting(shape):
@@ -62,7 +110,7 @@ class KitUndoSerializationTests(unittest.TestCase):
 
     def cli(self):
         env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-        return subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "kit-response-undo", "--directory",
+        return subprocess.run([sys.executable, "-B", "-c", CLI_RUNNER, "kit-response-undo", "--directory",
                                str(self.root), "--agency", self.agency, "--reason", base.REASON],
                               cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=120)
 
@@ -72,7 +120,8 @@ class KitUndoSerializationTests(unittest.TestCase):
                 self.prior_receipt_then_deep(shape)
                 self.assertEqual(len(kit_undo.read_archive(self.root / "kit")[1]), 1)  # the decoder admits it
                 before = self.files()
-                with self.assertRaises(ValueError) as caught:
+                with mock.patch.object(kit_undo, "serialized_size", new=deep_size), \
+                        self.assertRaises(ValueError) as caught:
                     kit_undo.undo_step(self.root, self.agency, reason="second")
                 self.assertEqual(str(caught.exception), FIXED)
                 self.assertIsNone(caught.exception.__cause__)
@@ -129,7 +178,8 @@ class KitUndoSerializationTests(unittest.TestCase):
         self.assertEqual(len(self.receipts()), 2)
         self.deepen("mixed")
         before = self.files()
-        with mock.patch.object(kit, "_write_json", side_effect=AssertionError("written")), \
+        with mock.patch.object(kit_undo, "serialized_size", new=deep_size), \
+                mock.patch.object(kit, "_write_json", side_effect=AssertionError("written")), \
                 mock.patch.object(kit_undo, "_fsync", side_effect=AssertionError("synced")), \
                 mock.patch("os.chmod", side_effect=AssertionError("chmod")), \
                 mock.patch("os.mkdir", side_effect=AssertionError("mkdir")):
