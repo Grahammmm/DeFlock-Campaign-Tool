@@ -48,10 +48,29 @@ def _write(fd, name, data):
             os.close(raw)
 
 
+_EXTRA_ERROR = "draft extra must be an object for batch comparison"
+
+
+def _extra(draft):
+    """Pure admission of the optional comparison metadata: absent means ``{}``; anything else must be an object."""
+    extra = draft.get("extra", {})
+    if not isinstance(extra, dict):
+        raise OutboxError(_EXTRA_ERROR) from None
+    return extra
+
+
+def _preflight(rows):
+    """Refuse the whole selection for malformed metadata before any output or payload effect."""
+    for row in rows:
+        draft = json.loads(row["draft_json"])
+        if isinstance(draft, dict):  # other top-level shapes keep their existing later failure
+            _extra(draft)
+
+
 def _masked(row):
     draft = json.loads(row["draft_json"])
     text = preview(row["draft_json"])
-    names = [row["agency_id"], draft.get("extra", {}).get("agency_name", "")]
+    names = [row["agency_id"], _extra(draft).get("agency_name", "")]
     for name in sorted({n for n in names if isinstance(n, str) and n}, key=len, reverse=True):
         text = text.replace(name, "<AGENCY>")
     return text.splitlines()
@@ -61,6 +80,7 @@ def export(box, out_dir, agencies=None):
     """Write exact proposed payloads and a readable index into an empty directory."""
     rows = sorted((r for r in box.rows("proposed") if agencies is None or r["agency_id"] in agencies),
                   key=lambda r: (r["agency_id"], r["idempotency_key"]))
+    _preflight(rows)
     path = Path(out_dir)
     fd = None
     created = None
