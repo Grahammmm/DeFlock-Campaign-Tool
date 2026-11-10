@@ -62,6 +62,19 @@ def mixed(*parts):
     return raw('Content-Type: multipart/mixed; boundary="B"', body + "--B--\r\n")
 
 
+DEEP_REFUSAL = "malformed MIME (RecursionError); nothing was imported"
+
+
+def deep(depth):
+    """A complete message of `depth` nested multiparts around one text leaf (depth + 1 parts); each level has its
+    own boundary `D<n>`, opened and closed."""
+    part = "Content-Type: text/plain\r\n\r\nleaf\r\n"
+    for n in range(depth):
+        part = f'Content-Type: multipart/mixed; boundary="D{n}"\r\n\r\n--D{n}\r\n{part}\r\n--D{n}--\r\n'
+    head = f"Subject: {HEADER_VALUES[0]}\r\nFrom: {HEADER_VALUES[1]}\r\nTo: {HEADER_VALUES[2]}\r\nMIME-Version: 1.0\r\n"
+    return (head + part).encode()
+
+
 class IngestEmlTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="synthetic-ingest-eml-")
@@ -266,11 +279,12 @@ class IngestEmlTests(unittest.TestCase):
 
     # RF0200-1: strict attachment transfer decoding (docs/INGEST-MAIL.md)
     def snapshot(self):
-        return {str(p.relative_to(self.base)): (p.stat().st_mtime_ns, p.read_bytes())
+        return {str(p.relative_to(self.base)): (p.stat().st_mode, p.stat().st_mtime_ns, p.read_bytes())
                 for p in self.base.rglob("*") if p.is_file()}
 
-    def refused(self, data, label=""):
-        """Real and dry-run both exit 1 with the one fixed message and change no byte or mtime, fresh or populated."""
+    def refused(self, data, label="", text=REFUSAL):
+        """Real and dry-run both exit 1 with the one fixed message and change no byte, mode or mtime (so a fresh
+        campaign gets no ledger), fresh or populated."""
         path = self.write(data, "bad.eml")
         for populated in (False, True):
             if populated:
@@ -278,7 +292,7 @@ class IngestEmlTests(unittest.TestCase):
             before = self.snapshot()
             for dry in (False, True):
                 result = self.ingest(path, dry=dry, returncode=1)
-                self.assertEqual(result.stderr.strip(), f"Stopped: {REFUSAL}", label)
+                self.assertEqual(result.stderr.strip(), f"Stopped: {text}", label)
                 self.assertEqual(result.stdout, "", label)
                 self.assertEqual(self.snapshot(), before, label)
 
@@ -473,6 +487,44 @@ class IngestEmlTests(unittest.TestCase):
         for value in sentinels:
             self.assertNotIn(value, result.stdout + result.stderr)
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+
+    # RF1355-1: a MIME tree nested deeper than the stdlib parser can follow is one malformed message
+    def test_deep_multipart_eml_refused_before_any_write(self):
+        data = deep(1200)
+        self.assertLess(len(data), 100_000)  # a small, complete tree: every level opens and closes its own boundary
+        self.assertEqual((data.count(b'boundary="D'), data.count(b"--\r\n")), (1200, 1200))
+        self.refused(data, "deep", text=DEEP_REFUSAL)
+
+    def test_recursion_normalized_during_parse_walk_and_forward_serialization(self):
+        from email.message import Message
+        from campaign_tool import ingest_eml
+        sentinel = RecursionError("sentinel-recursion-3x")
+        forward = message(html=False)
+        forward.add_attachment(message((PDF, "application", "pdf", "inner.pdf"), html=False))
+        sites = {"parse": (mock.patch.object(ingest_eml.BytesParser, "parsebytes", side_effect=sentinel), message()),
+                 "walk": (mock.patch.object(Message, "walk", side_effect=sentinel), message()),
+                 "attachments": (mock.patch.object(ingest_eml, "_attachments", side_effect=sentinel), message()),
+                 "forward": (mock.patch.object(ingest_eml.BytesGenerator, "flatten", side_effect=sentinel), forward)}
+        for site, (patch, msg) in sites.items():
+            data = msg.as_bytes()  # serialized before the patch: only _extract meets the injected error
+            with self.subTest(site), patch, self.assertRaises(ValueError) as caught:
+                ingest_eml._extract(data, "m.eml")
+            self.assertEqual(str(caught.exception), DEEP_REFUSAL)
+            self.assertTrue(caught.exception.__suppress_context__)
+            self.assertIsNone(caught.exception.__cause__)
+            self.assertNotIn("sentinel", repr(caught.exception.args))
+
+    def test_nested_part_limit_boundary_preserved(self):
+        from campaign_tool import ingest_eml
+        self.assertEqual(ingest_eml._extract(deep(199), "fits.eml"), ([], 200))
+        with self.assertRaises(ValueError) as caught:
+            ingest_eml._extract(deep(200), "over.eml")
+        self.assertEqual(str(caught.exception), "over.eml: more than 200 MIME parts; nothing was imported")
+        shallow = message((PDF, "application", "pdf", "a.pdf"), (CSV, "text", "csv", "b.csv"))
+        self.assertEqual(ingest_eml._extract(shallow.as_bytes(), "m.eml"), ([("a.pdf", PDF), ("b.csv", CSV)], 6))
+        report = self.ingest(self.write(deep(199), "fits.eml"), dry=True)
+        self.assertEqual((report["parts"], report["attachments"]), (200, []))
+        self.assertEqual(report["message"]["outcome"], "would_store")
 
 
 if __name__ == "__main__":

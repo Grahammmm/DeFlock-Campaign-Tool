@@ -1649,6 +1649,27 @@ def main():
                                   "(kit/corrections/replies/N.md; an existing draft is never replaced)")
     cr_reply.add_argument("--id", type=int, required=True)
     cr_reply.add_argument("--directory", required=True)
+    officials_cmds = commands.add_parser(
+        "officials", help="Maintain content/officials.json, the organizer-checked roster of decision makers (nothing is "
+        "fetched, built, published or sent)").add_subparsers(dest="officials_command", required=True)
+    officials_flags = {"--directory": "Campaign directory (required)", "--agency": "agency_id of a loaded agency",
+                       "--name": "The official's name exactly as the official site lists it",
+                       "--role": "Role as the official site lists it, for example Council member, District 2",
+                       "--source-url": "https:// page you checked the roster on (recorded, never fetched)",
+                       "--checked-on": "YYYY-MM-DD you checked that page (not in the future, at most 365 days ago)"}
+    for verb, flags, text in (
+            ("add", ("--directory", "--agency", "--name", "--role", "--source-url", "--checked-on"),
+             "Append one official to a body; refuses a name the body already lists. The first add creates the file"),
+            ("recheck", ("--directory", "--agency", "--name", "--checked-on"),
+             "Move one official's checked_on forward after re-checking the official site (never back)"),
+            ("remove", ("--directory", "--agency", "--name"),
+             "Remove one official; refused while a recorded vote or statement names them"),
+            ("list", ("--directory",), "Print the roster with each checked_on age against the 365-day rule (read-only)")):
+        verb_p = officials_cmds.add_parser(verb, help=text, allow_abbrev=False)
+        for flag in flags:
+            verb_p.add_argument(flag, required=True, help=officials_flags[flag])
+        if verb == "add":
+            verb_p.add_argument("--profile-url", help="Optional https:// page of this official on the official site")
     today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
@@ -2147,6 +2168,14 @@ def main():
             print(json.dumps(result, indent=2, ensure_ascii=False) + (
                 "\nPrivate draft only; nothing was sent or published." if args.cr_command == "reply"
                 else "\nPrivate log only; nothing was sent or published."))
+        elif args.command == "officials":
+            from .officials_cmd import run_cli as officials_cli
+            try:
+                read_config(root)
+                print(officials_cli(root, args))
+            except (OSError, ValueError) as exc:  # one Stopped: line, never a traceback or a supplied value
+                fixes.emit(exc)
+                sys.exit(2)
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root, as_json=args.as_json)
