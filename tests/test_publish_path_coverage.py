@@ -41,6 +41,7 @@ REVIEWED_NOT_PUBLISHING = {
     "campaign_tool/recent.py": "private recent-activity report under kit/",
     "campaign_tool/finding_search_log.py": "composes a private draft from a verified summary; the only write is findings._write_draft into private/drafts",
     "campaign_tool/search_log.py": "read-only private stdout aggregates of a local search log; writes nothing",
+    "campaign_tool/today.py": "read-only to-do list on stdout; names kit/social only as a check label; writes nothing",
     "campaign_tool/setup_cmd.py": "writes the starter config",
     "campaign_tool/site_check.py": "reads the built tree",
     "campaign_tool/correction_requests.py": "private log; the site build never reads it",
