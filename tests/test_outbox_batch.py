@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from unittest.mock import patch
 
 from campaign_tool import approval, outbox as ob, outbox_batch as batch
@@ -55,6 +55,243 @@ class BatchTests(unittest.TestCase):
         with redirect_stdout(output):
             code = ob.main(["--journal", str(self.box.path), *args])
         return code, [json.loads(line) for line in output.getvalue().splitlines()]
+
+    @contextmanager
+    def fault(self, number=1, stage="write", hook=None, error=None):
+        """Fail a real opened stream, after writing bytes or closing it."""
+        original = os.fdopen
+        streams = []
+        failure = error or OSError(28, "synthetic disk full")
+
+        class Stream:
+            def __init__(inner, real, fail):
+                inner.real, inner.fail = real, fail
+
+            def __enter__(inner):
+                return inner
+
+            def fileno(inner):
+                return inner.real.fileno()
+
+            def write(inner, data):
+                if inner.fail and stage == "write":
+                    inner.real.write(data[:7])
+                    inner.real.flush()
+                    if hook:
+                        hook()
+                    raise failure
+                return inner.real.write(data)
+
+            def __exit__(inner, *args):
+                try:
+                    if inner.fail and stage == "flush":
+                        inner.real.flush()
+                        raise failure
+                finally:
+                    inner.real.close()
+                if inner.fail and stage == "close":
+                    if hook:
+                        hook()
+                    raise failure
+
+        def opened(*args, **kwargs):
+            real = original(*args, **kwargs)
+            streams.append(real)
+            return Stream(real, len(streams) == number)
+
+        before = self.snapshot()
+        with patch.object(batch.os, "fdopen", side_effect=opened), patch.object(
+                ob.Outbox, "approve", side_effect=AssertionError("must not approve")):
+            yield
+        self.assertEqual(self.snapshot(), before)
+        self.assertTrue(streams)
+        self.assertTrue(all(stream.closed for stream in streams))
+
+    def snapshot(self):
+        return [dict(row) for row in self.box.rows()]
+
+    def retry_exact(self):
+        reference = self.root / "reference"
+        batch.export(self.box, reference)
+        batch.export(self.box, self.out)
+        self.assertEqual({p.name: p.read_bytes() for p in self.out.iterdir()},
+                         {p.name: p.read_bytes() for p in reference.iterdir()})
+        self.assertEqual(self.out.stat().st_mode & 0o777, 0o700)
+        self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in self.out.iterdir()))
+
+    def test_second_payload_partial_write_rolls_back_and_retry_succeeds(self):
+        self.propose()
+        self.propose("two")
+        before = self.snapshot()
+        with self.fault(2), self.assertRaises(ob.OutboxError):
+            batch.export(self.box, self.out)
+        self.assertFalse(self.out.exists())
+        self.assertEqual(self.snapshot(), before)
+        self.retry_exact()
+
+    def test_partial_index_failure_removes_payloads_and_index(self):
+        self.propose()
+        self.propose("two")
+        before = self.snapshot()
+        for stage in ("write", "flush", "close"):
+            with self.subTest(stage=stage):
+                with self.fault(3, stage), self.assertRaises(ob.OutboxError):
+                    batch.export(self.box, self.out)
+                self.assertFalse(self.out.exists())
+                self.assertEqual(self.snapshot(), before)
+        self.retry_exact()
+
+    def test_first_payload_open_write_and_close_failures_leave_no_partial_file(self):
+        self.propose()
+        before = self.snapshot()
+        original = os.open
+        def refused(name, *args, **kwargs):
+            if str(name).endswith(".txt"):
+                raise OSError(28, "synthetic open failure")
+            return original(name, *args, **kwargs)
+        with patch.object(batch.os, "open", side_effect=refused), self.assertRaises(ob.OutboxError):
+            batch.export(self.box, self.out)
+        self.assertFalse(self.out.exists())
+        for stage in ("write", "flush", "close"):
+            with self.subTest(stage=stage):
+                with self.fault(stage=stage), self.assertRaises(ob.OutboxError):
+                    batch.export(self.box, self.out)
+                self.assertFalse(self.out.exists())
+        self.assertEqual(self.snapshot(), before)
+        self.retry_exact()
+
+    def test_fdopen_failure_closes_raw_descriptor_and_removes_output(self):
+        self.propose()
+        descriptors = []
+        def refused(fd, *args, **kwargs):
+            descriptors.append(fd)
+            raise OSError(28, "synthetic fdopen failure")
+        with patch.object(batch.os, "fdopen", side_effect=refused), self.assertRaises(ob.OutboxError):
+            batch.export(self.box, self.out)
+        self.assertEqual(len(descriptors), 1)
+        with self.assertRaises(OSError):
+            os.fstat(descriptors[0])
+        self.assertFalse(self.out.exists())
+        self.retry_exact()
+
+    def test_empty_selection_preserves_existing_directory_mode(self):
+        self.out.mkdir()
+        self.out.chmod(0o750)
+        self.assertEqual(batch.export(self.box, self.out), {"written": 0})
+        self.assertEqual(self.out.stat().st_mode & 0o777, 0o750)
+        self.assertEqual(list(self.out.iterdir()), [])
+
+    def test_existing_empty_directory_survives_failed_export(self):
+        self.propose()
+        self.out.mkdir(mode=0o750)
+        self.out.chmod(0o750)
+        identity = self.out.stat().st_ino
+        with self.fault(), self.assertRaises(ob.OutboxError):
+            batch.export(self.box, self.out)
+        self.assertEqual(self.out.stat().st_ino, identity)
+        self.assertEqual(self.out.stat().st_mode & 0o777, 0o750)
+        self.assertEqual(list(self.out.iterdir()), [])
+        self.retry_exact()
+
+    def test_foreign_file_arriving_during_export_survives_rollback(self):
+        self.propose()
+        sentinel = self.out / "foreign"
+        def arrive():
+            sentinel.write_bytes(b"foreign")
+            sentinel.chmod(0o640)
+        with self.fault(hook=arrive), self.assertRaisesRegex(ob.OutboxError, "partial local output remains"):
+            batch.export(self.box, self.out)
+        self.assertEqual(sentinel.read_bytes(), b"foreign")
+        self.assertEqual(sentinel.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(list(self.out.iterdir()), [sentinel])
+        with self.assertRaisesRegex(ob.OutboxError, "must be empty"):
+            batch.export(self.box, self.out)
+
+    def test_replaced_payload_is_not_unlinked_by_rollback(self):
+        keys = sorted([self.propose(), self.propose("two")])
+        target = self.out / (keys[0] + ".txt")
+        saved = self.root / "saved"
+        foreign = self.root / "foreign"
+        foreign.write_bytes(b"foreign")
+        for kind in ("regular", "symlink", "directory"):
+            with self.subTest(kind=kind):
+                def replace():
+                    target.rename(saved)  # Keep the original inode alive (no inode reuse).
+                    if kind == "regular":
+                        target.write_bytes(b"replacement")
+                    elif kind == "symlink":
+                        target.symlink_to(foreign)
+                    else:
+                        target.mkdir()
+                with self.fault(2, hook=replace), self.assertRaisesRegex(ob.OutboxError, "partial local output remains"):
+                    batch.export(self.box, self.out)
+                self.assertEqual(list(self.out.iterdir()), [target])
+                if kind == "directory":
+                    self.assertTrue(target.is_dir())
+                    target.rmdir()
+                else:
+                    self.assertEqual(target.read_bytes(), b"foreign" if kind == "symlink" else b"replacement")
+                    self.assertEqual(target.is_symlink(), kind == "symlink")
+                    target.unlink()
+                saved.unlink()
+                self.out.rmdir()
+        self.assertEqual(foreign.read_bytes(), b"foreign")
+
+    def test_partial_payload_replacement_is_preserved(self):
+        key = self.propose()
+        target = self.out / (key + ".txt")
+        def replace():
+            target.rename(self.root / "saved")
+            target.symlink_to(self.root / "absent")
+        with self.fault(hook=replace), self.assertRaisesRegex(ob.OutboxError, "partial local output remains"):
+            batch.export(self.box, self.out)
+        self.assertTrue(target.is_symlink())
+
+    def test_cleanup_failure_is_reported_without_abandoning_other_cleanup(self):
+        keys = sorted([self.propose(), self.propose("two")])
+        original = os.unlink
+        attempted = []
+        def unlink(name, *args, **kwargs):
+            attempted.append(name)
+            if name == keys[0] + ".txt":
+                raise PermissionError("synthetic cleanup failure")
+            return original(name, *args, **kwargs)
+        with self.fault(3), patch.object(batch.os, "unlink", side_effect=unlink), self.assertRaisesRegex(
+                ob.OutboxError, "partial local output remains"):
+            batch.export(self.box, self.out)
+        self.assertEqual(set(attempted), {k + ".txt" for k in keys} | {"INDEX.md"})
+        self.assertEqual([p.name for p in self.out.iterdir()], [keys[0] + ".txt"])
+        with self.assertRaisesRegex(ob.OutboxError, "must be empty"):
+            batch.export(self.box, self.out)
+
+    def test_replaced_output_directory_is_not_removed(self):
+        self.propose()
+        moved = self.root / "moved"
+        def replace():
+            self.out.rename(moved)
+            self.out.mkdir()
+            (self.out / "sentinel").write_bytes(b"foreign")
+        with self.fault(hook=replace), self.assertRaisesRegex(ob.OutboxError, "partial local output remains"):
+            batch.export(self.box, self.out)
+        self.assertEqual(list(moved.iterdir()), [])
+        self.assertEqual((self.out / "sentinel").read_bytes(), b"foreign")
+
+    def test_export_faults_never_send_approve_or_update_journal(self):
+        self.propose()
+        before = self.snapshot()
+        with patch.object(ob.Outbox, "approve", side_effect=AssertionError("must not approve")), self.fault():
+            code, lines = self.cli("payload-batch", "--out", str(self.out))
+        self.assertEqual(code, 2)
+        self.assertEqual(lines[0]["state"], "refused")
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.out.exists())
+
+    def test_programming_exception_is_rolled_back_and_preserved(self):
+        self.propose()
+        self.propose("two")
+        with self.fault(2, error=ValueError("synthetic bug")), self.assertRaisesRegex(ValueError, "synthetic bug"):
+            batch.export(self.box, self.out)
+        self.assertFalse(self.out.exists())
 
     def test_export_exact_proposed_payloads_modes_and_order(self):
         keys = [self.propose("one", "Agency B"), self.propose("two"), self.propose("three")]

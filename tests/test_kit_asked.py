@@ -112,8 +112,11 @@ class KitAskedTests(unittest.TestCase):
 
     # --- 2. state map --------------------------------------------------------------------------------------------
     def test_waiting_kinds_map_to_acknowledged_with_latest_step_date(self):
-        for kind in ("acknowledged", "extension", "determination", "fee_estimate", "clarification_requested"):
-            item = self.applied([step("2026-03-04", "acknowledged"), step("2026-03-09", kind)])
+        waiting = {"extension": {}, "determination": {}, "fee_estimate": {"amount_cents": 24550},
+                   "clarification_requested": {}}
+        for kind in ("acknowledged", *waiting):
+            prefix = [] if kind == "acknowledged" else [step("2026-03-04", "acknowledged")]  # acknowledged: first, once
+            item = self.applied([*prefix, step("2026-03-09", kind, **waiting.get(kind, {}))])
             self.assertEqual((item["state"], item["updated_on"]), ("acknowledged", "2026-03-09"), kind)
 
     def test_denied_without_production_is_declined_in_writing(self):
@@ -213,7 +216,7 @@ class KitAskedTests(unittest.TestCase):
         self.assertIn("ca-not-in-content: agency not in content/agencies.json; skipped", out)
 
     def test_nothing_to_add_leaves_the_file_byte_equal(self):
-        self.sent((POLICE, "main", [step("2026-03-20", "closed")], [A]))
+        self.sent((POLICE, "main", [step("2026-03-04", "acknowledged"), step("2026-03-20", "closed")], [A]))
         before = self.path.read_bytes()
         self.assertEqual(self.propose("--apply")[0], 0)
         self.assertEqual(self.path.read_bytes(), before)
@@ -247,7 +250,7 @@ class KitAskedTests(unittest.TestCase):
         before = self.path.read_bytes()
         code, out, err = self.propose("--apply")
         self.assertEqual(code, 3)
-        self.assertIn("updated_on", err)
+        self.assertIn("before the request was sent on 2026-03-02", err)  # the source replay refuses it first
         self.assertEqual(self.path.read_bytes(), before)
 
     def test_unreadable_sent_json_and_missing_content_are_stopped(self):
@@ -470,8 +473,8 @@ class KitAskedTests(unittest.TestCase):
         self.agencies[self.index(SHERIFF)]["selected"] = False
         self.save_content()
         self.sent((POLICE, "main", [], None), (POLICE, LINKED, [step("2026-03-10", "acknowledged")], None),
-                  (POLICE, "closed", [step("2026-03-10", "closed")], None),
-                  (POLICE, "withdrawn", [step("2026-03-10", "withdrawn")], None),
+                  (POLICE, "closed", [step("2026-03-09", "acknowledged"), step("2026-03-10", "closed")], None),
+                  (POLICE, "withdrawn", [step("2026-03-10", "withdrawn", note=SECRET[0])], None),
                   (SHERIFF, "main", [], None), ("ca-not-in-content", "main", [], None))
         private = self.private_snapshot()
         before_sheriff = self.agencies[self.index(SHERIFF)]
@@ -555,8 +558,8 @@ class KitAskedTests(unittest.TestCase):
     def test_private_step_fields_never_appear_in_content_or_the_printout(self):
         note, basis, reference, records = SECRET
         steps = [step("2026-03-04", "acknowledged", note=note),
-                 step("2026-03-12", "denied", note=note, withheld_basis=[basis], records=[records])]
-        self.sent((POLICE, "main", steps, [A, B], {"reference": reference, "correspondence": [records]}))
+                 step("2026-03-12", "denied", note=note, withheld_basis=[basis], correspondence=[records])]
+        self.sent((POLICE, "main", steps, [A, B], {"reference": reference}))
         code, out, err = self.propose("--apply")
         self.assertEqual(code, 0, err)
         content = self.path.read_text(encoding="utf-8")
@@ -564,6 +567,131 @@ class KitAskedTests(unittest.TestCase):
             self.assertNotIn(secret, content)
             self.assertNotIn(secret, out + err)
         self.assertEqual(set(self.asked()[0]), {"topic", "asked_on", "state", "updated_on", "request"})
+
+    # --- RF2045-3: the recorded response history is validated before anything is proposed -----------------------
+    OK = [step("2026-03-04", "acknowledged")]
+
+    def assert_refused(self, expected, flags_list=((), ("--apply",))):
+        """Every flag set stops with exit 3 and the expected stderr text, prints nothing and changes no file."""
+        public, private = (self.path.read_bytes(), self.path.stat().st_mode), self.private_snapshot()
+        for flags in flags_list:
+            code, out, err = self.propose(*flags)
+            self.assertEqual((code, out), (3, ""), (flags, out, err))
+            self.assertIn(expected, err)
+            self.assertEqual((self.path.read_bytes(), self.path.stat().st_mode), public)
+            self.assertEqual(self.private_snapshot(), private)
+
+    def test_unknown_kind_and_hidden_bad_date_refuse_before_projection(self):
+        cases = {"unknown kind": self.OK + [step("2026-03-12", "mystery")],
+                 "hidden bad date": self.OK + [step("2026-02-30", "denied")]}
+        for name, steps in cases.items():
+            with self.subTest(name):
+                self.sent((POLICE, "main", steps, [A]))
+                self.assert_refused("kit/sent.json unreadable: malformed steps for 'ca-cedar-police'")
+
+    def test_descending_and_post_terminal_histories_refuse(self):
+        cases = {"descending": ([step("2026-03-12", "acknowledged"), step("2026-03-04", "determination")],
+                                "is before the previous step"),
+                 "after closed": ([*self.OK, step("2026-03-10", "closed"),
+                                   step("2026-03-12", "produced", scope_answers={A: "produced"})],
+                                  "is closed; no step can follow closed"),
+                 "after withdrawn": ([*self.OK, step("2026-03-10", "withdrawn", note="Changed our mind"),
+                                      step("2026-03-12", "determination")],
+                                     "withdrawn by us; no step can follow withdrawn")}
+        for name, (steps, expected) in cases.items():
+            with self.subTest(name):
+                self.sent((POLICE, "main", steps, [A]))
+                self.assert_refused(expected)
+
+    def test_bad_history_in_later_or_skipped_request_is_all_or_nothing(self):
+        bad = [step("2026-03-12", "mystery")]
+        self.agencies[self.index(SHERIFF)]["selected"] = False
+        self.save_content()
+        variants = {"named request": (POLICE, "second"), "absent agency": ("ca-not-in-content", "main"),
+                    "deselected agency": (SHERIFF, "main")}
+        for name, (agency, request) in variants.items():
+            with self.subTest(name):
+                self.sent((POLICE, "main", self.OK, [A]), (agency, request, bad, [B]))
+                self.assert_refused("kit/sent.json unreadable: malformed steps")
+        self.sent((POLICE, "main", self.OK, [A]), (POLICE, "second", bad, [B]))
+        self.assert_refused("malformed steps for 'ca-cedar-police/second'")
+
+    def test_invalid_fee_partial_scope_and_clarification_steps_use_tracker_rules(self):
+        cases = {"fee without amount": [*self.OK, step("2026-03-09", "fee_estimate")],
+                 "partial expected date before the step": [step("2026-03-12", "produced", partial=True,
+                                                                expected_on="2026-03-10")],
+                 "scope never asked": [step("2026-03-12", "produced", scope_answers={C: "produced"})],
+                 "clarified without request": [*self.OK, step("2026-03-09", "clarified")]}
+        for name, steps in cases.items():
+            with self.subTest(name):
+                self.sent((POLICE, "main", steps, [A, B]))
+                self.assert_refused("no open clarification request to answer" if name == "clarified without request"
+                                    else "Stopped: kit/sent.json unreadable")
+
+    def test_future_send_without_steps_and_future_hidden_step_refuse(self):
+        for name, sent_on, steps, expected in (
+                ("future send, no steps", "2026-11-02", [], "was sent after 2026-11-01"),
+                ("future hidden step", "2026-03-02", [*self.OK, step("2026-11-02", "denied")], "is in the future")):
+            with self.subTest(name):
+                self.sent((POLICE, "main", steps, [A], {"sent_on": sent_on}))
+                before = self.path.read_bytes()
+                with self.assertRaises(ValueError) as caught:
+                    kit_asked.propose(self.root, TODAY)  # one fixed effective clock: 2026-11-01
+                self.assertIn(expected, str(caught.exception))
+                self.assertEqual(self.path.read_bytes(), before)
+        self.sent((POLICE, "main", [], [A], {"sent_on": "2099-01-01"}))
+        self.assert_refused("sent after")
+        self.sent((POLICE, "main", [], [A], {"sent_on": "2026-11-01"}))
+        self.assertIsNone(kit_asked.propose(self.root, TODAY)["error"])  # sent on the effective day is not future
+
+    def test_valid_history_dry_run_apply_and_repeat_preserve_contract(self):
+        note = {"topic": "Hand typed", "asked_on": "2026-02-01", "state": "answered", "note": "my own words"}
+        self.agencies[self.index(POLICE)]["asked"] = [note]
+        self.save_content()
+        self.path.chmod(0o640)
+        self.sent((POLICE, "main", [*self.OK, step("2026-03-09", "fee_estimate", amount_cents=24550)], [A, B]),
+                  (POLICE, "second", [step("2026-03-12", "produced", scope_answers={A: "produced"})], [A, B]),
+                  (POLICE, LINKED, [], [B]))
+        document = json.loads(self.sent_path.read_text())
+        imported = document["requests"][f"{POLICE}#{LINKED}"]
+        imported.pop("draft")
+        imported.pop("draft_sha256")
+        imported["imported"] = True
+        self.sent_path.write_text(json.dumps(document), encoding="utf-8")
+        before, private = (self.path.read_bytes(), self.path.stat().st_mode), self.private_snapshot()
+        code, out, err = self.propose()
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out.count("+ new item"), 3)
+        self.assertEqual((self.path.read_bytes(), self.path.stat().st_mode), before)
+        with mock.patch.object(kit_asked.kit, "_write_json", wraps=kit_asked.kit._write_json) as write:
+            self.assertEqual(self.propose("--apply")[0], 0)
+            self.assertEqual(write.call_count, 1)
+            self.assertEqual(self.propose("--apply")[0], 0)
+            self.assertEqual(write.call_count, 1)
+        self.assertEqual([(i.get("request"), i["state"], i.get("updated_on")) for i in self.asked()],
+                         [(None, "answered", None), ("main", "acknowledged", "2026-03-09"),
+                          ("second", "partly_answered", "2026-03-12"), (LINKED, "awaiting_response", None)])
+        self.assertEqual(self.asked()[0], note)
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(self.private_snapshot(), private)
+        self.sent_path.write_text(json.dumps({"schema_version": 1, "requests": {}}), encoding="utf-8")
+        after = self.path.read_bytes()
+        code, out, err = self.propose("--apply")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("nothing to propose", out)
+        self.assertEqual(self.path.read_bytes(), after)
+
+    def test_refusal_never_echoes_private_payloads(self):
+        note, basis, reference, records = SECRET
+        steps = [step("2026-03-04", "acknowledged", note=note),
+                 step("2026-03-12", "denied", note=note, withheld_basis=[basis], correspondence=[records]),
+                 step("2026-03-13", "mystery", note=note)]
+        self.sent((POLICE, LINKED, steps, [A], {"reference": reference}))
+        self.assert_refused("Stopped: kit/sent.json unreadable")
+        for flags in ((), ("--apply",)):
+            code, out, err = self.propose(*flags)
+            for secret in SECRET:
+                self.assertNotIn(secret, out + err + self.path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 """Propose public ``asked`` items for content/agencies.json from the private kit/sent.json (DF1207-03).
 
 Reads ``kit/sent.json`` and ``content/agencies.json`` only; a dry run prints one line per field-level change and writes
-nothing. ``--apply`` builds the whole new document, validates it with ``content.load_agencies`` and then makes one atomic
+nothing. Before anything is proposed every recorded request is replayed through the tracker's pure
+``kit_track.validate_steps`` (also when its agency is absent or deselected), and a send dated after the effective day is
+refused; a malformed history stops the run (exit 3) with no change line and no write. ``--apply`` builds the whole new document, validates it with ``content.load_agencies`` and then makes one atomic
 write. Only ``topic``, ``asked_on``, ``state`` and ``updated_on`` are derived, and the private request name is kept as
 ``asked.request`` so the next run finds the same item. Notes, bases, references and record hashes of a request never reach
 content. A request closed without production is left for the organizer to choose; one the campaign withdrew itself is
@@ -11,6 +13,7 @@ import copy
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 from . import kit, kit_track, law
@@ -85,6 +88,16 @@ def _show(value):
     return "(absent)" if value is None else json.dumps(value, ensure_ascii=False)
 
 
+def _validate_history(sent, today):
+    """Refuse the whole store when any recorded request fails the tracker's replay rules or was sent after ``today``."""
+    day = today or date.today()
+    for key, entry in sent.items():
+        label = kit_track._label(*kit_track._split(key))
+        kit_track.validate_steps(entry, label, today=day)
+        if not kit_track._day(entry.get("sent_on")) or kit_track._day(entry["sent_on"]) > day:
+            raise ValueError(f"kit/sent.json unreadable: {label!r} was sent after {day.isoformat()}")
+
+
 def propose(root, today=None, law_base=None):
     """``{"lines", "document", "changed", "error"}``: the printed changes, the proposed whole document, and the
     first refusal of ``load_agencies`` on it (None when it validates). Writes nothing."""
@@ -95,7 +108,9 @@ def propose(root, today=None, law_base=None):
     document = _read_json(path)
     if not isinstance(document, list):
         raise ContentError("content/agencies.json: must be a list of agencies")
-    sent, titles = kit_track.read_sent(root), _titles(root, law_base)
+    sent = kit_track.read_sent(root)
+    _validate_history(sent, today)
+    titles = _titles(root, law_base)
     new, lines, changed = copy.deepcopy(document), [], False
     agencies = {e["agency_id"]: e for e in new
                 if isinstance(e, dict) and isinstance(e.get("agency_id"), str) and e.get("selected", True) is True}

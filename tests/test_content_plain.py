@@ -2,6 +2,7 @@
 
 Synthetic data only. Run from the repository root: python3 -B -m unittest tests.test_content_plain -v
 """
+import errno
 import json
 import os
 import socket
@@ -250,7 +251,7 @@ class ReadTests(Case):
         (self.root / "content").unlink()
         moved.rename(self.root / "content")
         self.page("ok")
-        with mock.patch.object(content_plain, "_read_json", side_effect=PermissionError("denied /secret")):
+        with mock.patch.object(content_plain.os, "open", side_effect=PermissionError("denied /secret")):
             with self.assertRaises(content_plain.ContentError) as caught:
                 content_plain.check_content(self.root)
         self.assertEqual(str(caught.exception), "content/pages/ok.json: could not be read")
@@ -259,6 +260,185 @@ class ReadTests(Case):
         self.page("a", body="The ALPR.")
         self.write(self.root / "content" / "glossary.json", b"{")
         self.refused("content/glossary.json: not valid UTF-8 JSON")
+
+
+CAP = content_plain.MAX_JSON_BYTES
+SURFACES = ("page", "faq", "glossary")
+
+
+class BoundedReadTests(Case):
+    def target(self, kind):
+        return {"page": self.root / "content" / "pages" / "probe.json",
+                "faq": self.root / "content" / "faq.json",
+                "glossary": self.root / "content" / "glossary.json"}[kind]
+
+    def document(self, kind):
+        body = "Café ALPR. 😀"
+        return {"page": {"title": "Café", "body_md": body},
+                "faq": {"entries": [{"question": "Café?", "answer_md": body}]},
+                "glossary": {"terms": [{"term": "T", "definition_md": body}]}}[kind]
+
+    def put(self, kind, size=None):
+        raw = json.dumps(self.document(kind), ensure_ascii=False).encode("utf-8")
+        if size is not None:
+            self.assertGreaterEqual(size, len(raw))
+            raw += b" " * (size - len(raw))
+        self.write(self.target(kind), raw)
+        return self.target(kind)
+
+    def recording_read(self):
+        calls = []
+        real = os.read
+
+        def spy(fd, count):
+            data = real(fd, count)
+            calls.append((count, len(data)))
+            return data
+        return calls, spy
+
+    def test_static_oversize_page_faq_glossary_refuse_before_payload_read(self):
+        for kind in SURFACES:
+            with self.subTest(kind=kind):
+                self.put(kind, CAP + 1)
+                calls, spy = self.recording_read()
+                with mock.patch.object(content_plain.os, "read", side_effect=spy), \
+                        mock.patch.object(Path, "read_bytes", side_effect=AssertionError("legacy full read")):
+                    with self.assertRaises(content_plain.ContentError) as caught:
+                        content_plain.check_content(self.root)
+                self.assertEqual(calls, [], "an oversized descriptor is refused before any payload read")
+                self.assertTrue(str(caught.exception).endswith(": file too large"), str(caught.exception))
+                result = self.refused(str(self.target(kind).relative_to(self.root)) + ": file too large")
+                self.assertNotIn(str(self.base), result.stderr)
+                self.target(kind).unlink()
+
+    def test_exact_cap_and_one_under_accept_utf8_bytes(self):
+        for kind in SURFACES:
+            self.put(kind)
+            control = self.report()
+            self.assertEqual(len(control["warnings"]), 1)
+            for size in (CAP - 1, CAP):
+                with self.subTest(kind=kind, size=size):
+                    path = self.put(kind, size)
+                    self.assertEqual(path.stat().st_size, size)
+                    self.assertLess(len(path.read_text(encoding="utf-8")), size, "multibyte text: bytes, not characters")
+                    self.assertEqual(self.report(), control)
+            self.target(kind).unlink()
+
+    def test_growth_after_real_fstat_is_capped_and_refused(self):
+        for kind in SURFACES:
+            with self.subTest(kind=kind):
+                path = self.put(kind)
+                real_fstat, grown = os.fstat, []
+
+                def fstat(fd):
+                    info = real_fstat(fd)
+                    if not grown:
+                        grown.append(True)
+                        with open(path, "ab") as handle:
+                            handle.write(b" " * (CAP + 4096))
+                    return info  # the pre-growth result
+
+                calls, spy = self.recording_read()
+                with mock.patch.object(content_plain.os, "fstat", side_effect=fstat), \
+                        mock.patch.object(content_plain.os, "read", side_effect=spy), \
+                        mock.patch.object(content_plain.json, "loads", side_effect=AssertionError("parsed")):
+                    with self.assertRaises(content_plain.ContentError) as caught:
+                        content_plain.check_content(self.root)
+                self.assertTrue(str(caught.exception).endswith(": file too large"), str(caught.exception))
+                self.assertEqual(sum(got for _, got in calls), CAP + 1)
+                served = 0
+                for asked, got in calls:
+                    self.assertLessEqual(asked, CAP + 1 - served, "each request fits the remaining allowance")
+                    served += got
+                path.unlink()
+
+    def test_short_reads_and_read_failure_close_descriptor(self):
+        self.put("page")
+        self.faq(("Q", "Short."))
+        real_open, real_close, real_read = os.open, os.close, os.read
+        opened, closed = [], []
+
+        def spy_open(*args, **kwargs):
+            fd = real_open(*args, **kwargs)
+            opened.append(fd)
+            return fd
+
+        def spy_close(fd):
+            closed.append(fd)
+            return real_close(fd)
+
+        def short(fd, count):
+            return real_read(fd, min(count, 7))
+
+        with mock.patch.object(content_plain.os, "open", side_effect=spy_open), \
+                mock.patch.object(content_plain.os, "close", side_effect=spy_close), \
+                mock.patch.object(content_plain.os, "read", side_effect=short):
+            self.assertEqual(len(content_plain.check_content(self.root)["warnings"]), 1)
+        self.assertEqual(len(opened), 2)
+        self.assertEqual(sorted(opened), sorted(closed))
+
+        opened.clear()
+        closed.clear()
+        reads = []
+
+        def failing(fd, count):
+            reads.append(count)
+            if len(reads) == 2:
+                raise OSError(errno.EIO, "injected /secret failure")
+            return real_read(fd, min(count, 7))
+
+        with mock.patch.object(content_plain.os, "open", side_effect=spy_open), \
+                mock.patch.object(content_plain.os, "close", side_effect=spy_close), \
+                mock.patch.object(content_plain.os, "read", side_effect=failing):
+            with self.assertRaises(content_plain.ContentError) as caught:
+                content_plain.check_content(self.root)
+        self.assertEqual(str(caught.exception), "content/pages/probe.json: could not be read")
+        self.assertEqual(len(opened), 1, "no second open or fallback full read")
+        self.assertEqual(opened, closed)
+        self.assertEqual(len(reads), 2)
+
+    def test_leaf_swap_to_link_or_fifo_is_prompt_refusal(self):
+        outside = self.write(self.base / "outside.json", {"title": "ABC", "body_md": "XYZ"})
+        for how in ("symlink", "fifo", "directory"):
+            with self.subTest(how=how):
+                path = self.put("page")
+                real_open, calls = os.open, []
+
+                def swap(target, *args, **kwargs):
+                    os.unlink(target)
+                    if how == "symlink":
+                        os.symlink(outside, target)
+                    elif how == "fifo":
+                        os.mkfifo(target)
+                    else:
+                        os.mkdir(target)
+                    return real_open(target, *args, **kwargs)
+
+                reads, spy = self.recording_read()
+                with mock.patch.object(content_plain.os, "open", side_effect=swap), \
+                        mock.patch.object(content_plain.os, "read", side_effect=spy):
+                    with self.assertRaises(content_plain.ContentError) as caught:
+                        content_plain.check_content(self.root)
+                self.assertEqual(str(caught.exception), "content/pages/probe.json: " + content_plain.NOT_REGULAR)
+                self.assertEqual(reads, [], "neither the outside file nor the FIFO was read")
+                if how == "directory":
+                    path.rmdir()
+                else:
+                    path.unlink()
+        self.assertEqual(outside.read_bytes(), b'{"title": "ABC", "body_md": "XYZ"}')
+
+    def test_later_oversize_source_has_no_partial_text_or_json(self):
+        for kind in ("faq", "glossary"):
+            with self.subTest(kind=kind):
+                self.page("first", body="The ALPR. " + sentence(31))
+                self.put(kind, CAP + 1)
+                for mode in ((), ("--json",)):
+                    result = self.cli(*mode, returncode=1)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn(f"{self.target(kind).relative_to(self.root)}: file too large", result.stderr)
+                    self.assertNotIn(str(self.base), result.stderr)
+                    self.assertNotIn("ALPR", result.stderr)
+                self.target(kind).unlink()
 
 
 class CliTests(Case):
@@ -319,7 +499,24 @@ class IsolationTests(Case):
         users = sorted(p.name for p in (REPO_ROOT / "campaign_tool").glob("*.py")
                        if p.name != "content_plain.py" and "content_plain" in p.read_text(encoding="utf-8"))
         self.assertEqual(users, ["cli.py"])
-        self.assertNotIn("open(", (REPO_ROOT / "campaign_tool" / "content_plain.py").read_text(encoding="utf-8"))
+
+    def test_advisory_and_isolation_contract_survives_bounded_reader(self):
+        self.page("a", body="The ALPR.")
+        self.faq(("Q", "Short."))
+        self.glossary(("T", "Plain.", None))
+        real_open, flags_seen = os.open, []
+
+        def spy(path, flags, *args, **kwargs):
+            flags_seen.append(flags)
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(content_plain.os, "open", side_effect=spy):
+            self.assertEqual(len(content_plain.check_content(self.root)["warnings"]), 1)
+        self.assertEqual(len(flags_seen), 3)
+        forbidden = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND | os.O_EXCL
+        for flags in flags_seen:
+            self.assertEqual(flags & forbidden, 0, "production opens are read-only")
+            self.assertEqual(flags & (os.O_NOFOLLOW | os.O_NONBLOCK), os.O_NOFOLLOW | os.O_NONBLOCK)
 
 
 if __name__ == "__main__":

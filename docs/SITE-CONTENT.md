@@ -598,6 +598,14 @@ Labels: `agency.contract_cost`, `agency.cost_annual`, `agency.cost_total`, `agen
 
 ### How an agency is paid for, as stated (`profile.funding`)
 
+Use `content agency-profile funding add --directory D --agency ID` to append one transcribed entry,
+or `content agency-profile funding remove --directory D --agency ID --index N` to remove its 1-based
+stored position printed by `content agency-profile list`. The writer refuses an exact duplicate `source_url`
+within that agency's `profile.funding` only; it validates the original and whole prospective document and
+writes atomically. Removing the last entry omits the field. No source is fetched and nothing is built, sent
+or deployed. [PROFILE-GUIDE.md](PROFILE-GUIDE.md) shows every required flag and a complete practice sequence.
+Amounts remain literal decimal strings, never totals or rankings. Check that the name is not a person.
+
 An optional `profile.funding` is a list of 1 to 10 entries (`null`, `[]` and a single object are refused), each
 transcribed by an organizer from one document: `kind` (`grant`, `general_fund`, `asset_forfeiture`, `donation` or
 `other`), `name` (the program or donor organization exactly as the document writes it, 1 to 120 characters, already
@@ -687,6 +695,13 @@ lead ends with " Also shown: finding updates, public statements and press covera
 order; a campaign without any of them builds a byte-identical `timeline.html`, and no other page changes.
 
 ### Reports the agency has published about its ALPR use (`profile.reports`)
+
+Use `content agency-profile report add --directory D --agency ID` to append one transcribed entry,
+or `content agency-profile report remove --directory D --agency ID --index N` to remove its 1-based
+stored position printed by `content agency-profile list`. The writer refuses an exact duplicate `source_url`
+within that agency's `profile.reports` only; it validates the original and whole prospective document and
+writes atomically. Removing the last entry omits the field. No source is fetched and nothing is built, sent
+or deployed. [PROFILE-GUIDE.md](PROFILE-GUIDE.md) shows every required flag and a complete practice sequence.
 
 An optional `profile.reports` is a list of 1 to 20 entries (`null`, `[]`, a single object and 21 entries are refused). The
 organizer reads each report on the agency's own site and transcribes it: `title` (as published, 1 to 160 characters, already

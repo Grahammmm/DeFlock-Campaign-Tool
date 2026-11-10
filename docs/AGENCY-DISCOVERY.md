@@ -604,6 +604,11 @@ Atlas rows that match no seed agency; and every selected agency in `kit/agencies
 that no Atlas row matched. The last list is not a finding about use. `--json` prints the same report as JSON and
 nothing else. Use `kit-agency select` yourself if a lead is worth a request; this command never does.
 
+The text report shows `City` separately for each listed or unmatched CSV row, including ambiguous rows.
+An empty or whitespace-only City shows `city not supplied`; nonblank values are printed exactly as supplied.
+City is context only, not a matching or filtering rule. JSON values and agency selection are unchanged;
+selected agencies without a corresponding Atlas row have no invented City.
+
 ## Agencies that receive our agencies' data, as request leads (private, read-only)
 
 `kit-agency suggest --from-sharing --directory D` reads the recorded vendor-portal sharing lists

@@ -59,7 +59,10 @@ def _check_chain(root, parts):
 
 
 def _read_regular(path, limit, absent_ok, on_bad):
-    """The bytes of a regular, unlinked-once file; None when absent and ``absent_ok``. Never follows a link."""
+    """The bytes of a regular, unlinked-once file; None when absent and ``absent_ok``. Never follows a link.
+
+    The byte limit is enforced twice: on the opened descriptor before reading, and on the bytes actually returned, so a
+    file that grew after the size check is refused. This is a bounded-input guard, not a snapshot guarantee."""
     try:
         info = os.lstat(path)
     except FileNotFoundError:
@@ -72,10 +75,14 @@ def _read_regular(path, limit, absent_ok, on_bad):
         raise on_bad
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
-        if os.fstat(fd).st_size > limit:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or opened.st_size > limit:
             raise on_bad
         with os.fdopen(fd, "rb", closefd=False) as handle:
-            return handle.read(limit + 1)
+            data = handle.read(limit + 1)
+        if len(data) > limit:
+            raise on_bad
+        return data
     finally:
         os.close(fd)
 

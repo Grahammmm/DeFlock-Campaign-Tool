@@ -628,7 +628,7 @@ Finding and meeting drafts are unchanged. Nothing goes to `content/` or `public/
 ### Checking every draft folder (read-only)
 
 `social --check [--text]` names each draft's state in every private folder it finds: `kit/social/` (as always),
-`kit/social/<x|bluesky|mastodon>/`, `kit/social/{meetings,outcomes,threads}/` and their `<platform>/` sub-folders, and each
+`kit/social/<x|bluesky|mastodon>/`, `kit/social/{meetings,outcomes,threads,events}/` and their `<platform>/` sub-folders, and each
 `.suggested` sibling (including `kit/social.suggested/`). Absent folders are skipped; a link or non-folder in that list is
 named as a folder problem and never entered. States are `ok`, `missing`, `outdated`, `edited` and `not_regular`, each
 folder using its own length rule (a thread is checked post by post, `(n/N)` counters included). A valid edit is not a
@@ -642,6 +642,15 @@ Meeting and outcome drafts keep a private `kit/social/<kind>/.check.json` next t
 `starts_at`, or the whole recorded outcome, plus the window; no draft text). Drafts made before it existed have no
 original value to compare: they are checked against a fresh 14-day draft and, when different, reported `outdated` with the
 command to rebuild them. A kept organizer edit keeps its original entry; the fresh suggestion gets its own.
+
+Event drafts also keep schema-1 private `.check.json` entries containing only the generated-byte hash, kind,
+exact source `starts_at` and N-day window (no title, venue or description). Removed sources, events already started
+(even if still underway), literal timestamp changes including seconds/offsets, and starts outside the draft's own
+inclusive `now` through `now + N days` window are stale. Without bound metadata, removal and past checks still apply;
+starts beyond the default 14-day window report an unknown original window and recommend `social --events` rebuild.
+Original timestamps are never reconstructed from minute-only draft text. Edited event posts must retain the current
+events-page anchor, displayed time and venue or `Online`, and fit the platform cap. Checking never backfills metadata,
+creates output, or changes file bytes or mtimes. Malformed source input retains the normal content-loader refusal.
 
 
 ## Posting one approved social draft (Worker `post_social`)
