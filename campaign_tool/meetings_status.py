@@ -19,7 +19,6 @@ from datetime import date, datetime
 from .content import MAX_JSON_BYTES, SLUG, load_finding, load_meeting
 from .meeting_comments import read as read_sent
 from .meeting_speakers import read_plan
-from .meeting_stage import stale_kits
 from .meetings import _clean
 from .meetings_manual import MAX_BYTES as KIT_BYTES, ManualMeetingError, _stored_entry
 
@@ -190,23 +189,27 @@ def _staged(root, today, errors):
 
 
 def _findings_ok(root, errors):
-    """True when every content/findings/*.json is a regular file that load_finding accepts (as stale_kits reads it)."""
+    """Completeness and latest corrections from this call's bounded, validated findings."""
     names = _listing(root, "content/findings", errors)
     if names is None:
-        return False
-    ok = True
+        return False, {}
+    ok, latest = True, {}
     for name in names:
         rel = f"content/findings/{name}"
         try:
-            load_finding(_read(os.path.join(root, rel), MAX_JSON_BYTES), "findings/" + name)
+            finding = load_finding(_read(os.path.join(root, rel), MAX_JSON_BYTES), "findings/" + name)
         except (_Bad, *FAULTS):
             errors.append(_error(rel))
             ok = False
-    return ok
+            continue
+        if finding["corrections"]:
+            slug = finding["slug"]
+            latest[slug] = max(latest.get(slug, ""), *(c["date"] for c in finding["corrections"]))
+    return ok, latest
 
 
-def _stale(root):
-    """meeting ids stale_kits names, or None when the helper cannot be used safely (a link or non-file it would open)."""
+def _stale(root, loaded, latest):
+    """Stale identities from accepted objects, or None when the metadata safety gate is unavailable."""
     for folder in ("content/findings", "content/meetings"):
         kind = _kind(root, folder)
         if kind not in (None, "dir"):
@@ -215,13 +218,13 @@ def _stale(root):
             for name in os.listdir(os.path.join(root, folder)) if kind else []:
                 mode = os.lstat(os.path.join(root, folder, name)).st_mode
                 if name.endswith(".json") and not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
-                    return None  # a FIFO or folder named *.json: the helper's plain read could block
+                    return None  # preserve unknown for unsafe content trees, without opening their contents
         except OSError:
             return None
-    try:
-        return {entry["meeting"] for entry in stale_kits(root)}
-    except FAULTS:
-        return None
+    return {meeting["id"] or stem for _, stem, meeting in loaded
+            if any(f"/findings/{slug}.html" in meeting["comment_kit_md"]
+                   and f"/findings/{slug}.html (corrected {day};" not in meeting["comment_kit_md"]
+                   for slug, day in latest.items())}
 
 
 def _sent(root, kit_ok, errors):
@@ -355,8 +358,8 @@ def inventory(root, as_of=None, directory=None, today=None):
         raise MeetingsStatusError(BAD_ROOT)
     errors = []
     loaded, file_errors, observed = _staged(root, today, errors)
-    findings_ok = _findings_ok(root, errors)
-    stale = _stale(root) if loaded else set()
+    findings_ok, latest = _findings_ok(root, errors)
+    stale = _stale(root, loaded, latest) if loaded else set()
     kit_ok = _kind(root, "kit") in (None, "dir")
     if not kit_ok:
         errors.append(_error("kit"))
