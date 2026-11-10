@@ -114,18 +114,22 @@ class OutreachGuideTests(unittest.TestCase):
         self.assertEqual(len(check_links(GUIDE, text + "\n[x](MISSING.md)\n")), 1)
 
     def test_every_command_and_nested_flag_parses(self):
-        seen = set()
+        seen, list_modes = set(), set()
         for module, tokens, number in commands():
             namespace, path = parse_only(module, self.argv(tokens))
             seen.add((module, path))
+            if path == ("supporters", "list"):
+                list_modes.add(namespace.as_json)
             if path == ("press", "letter"):
                 self.assertEqual((namespace.words, namespace.outlet), (250, "Example News"))
             if path == ("social",):
                 self.assertTrue(namespace.thread == ("--thread" in tokens))
+        self.assertEqual(list_modes, {False, True})
         for needed in (("campaign_tool", ("social",)), ("campaign_tool", ("press", "draft")),
                        ("campaign_tool", ("press", "letter")), ("campaign_tool", ("flyer",)),
                        ("campaign_tool", ("content", "coverage", "add")),
                        ("campaign_tool", ("content", "coverage", "remove")),
+                       ("campaign_tool", ("supporters", "list")),
                        ("campaign_tool", ("content-check",)), ("campaign_tool.newsletter", ())):
             self.assertIn(needed, seen)
         with self.assertRaises(DocumentError):
@@ -174,6 +178,33 @@ class OutreachGuideTests(unittest.TestCase):
         changed = {k for k, v in tree(self.root).items() if k.startswith("content") and content_before.get(k) != v}
         self.assertEqual(changed, {"content/coverage.json"})
         self.assertIn("separately authorised", read(GUIDE))
+
+    def test_supporter_inventory_commands_are_private_and_read_only(self):
+        from campaign_tool.supporters import add_supporter, set_cosign_consent
+        listing = [c for c in commands() if c[1][:2] == ["supporters", "list"]]
+        self.assertEqual([("--json" in c[1]) for c in listing], [False, True])
+        self.assertFalse({"consent", "remove", "add"} & {c[1][1] for c in commands() if c[1][0] == "supporters"})
+        before = tree(self.root)
+        self.assertEqual([self.run_command(m, t)[:2] for m, t, _ in listing], [(0, "none recorded\n"), (0, "[]\n")])
+        self.assertEqual(tree(self.root), before)  # no kit/ or private store is created
+        add_supporter(self.root, name="Cedar Valley Tenants", kind="community", organization=True,
+                      confirmed_on="2026-09-01", how="letter")
+        set_cosign_consent(self.root, "cedar-valley-tenants", cosign=["any"], confirmed_on="2026-09-02", how="form")
+        stored = (self.root / "kit" / "supporters-consent.json").read_text()
+        before = tree(self.root)
+        (code, text, err), (_, data, _) = [self.run_command(m, t) for m, t, _ in listing]
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(text, 'cedar-valley-tenants | community | "Cedar Valley Tenants" | joined 2026-09-01 | '
+                               "consent present | confirmed 2026-09-01 | co-sign any | co-sign confirmed 2026-09-02 | "
+                               "staged none\n")
+        self.assertEqual(json.loads(data)[0]["cosign"], "any")
+        for private in (json.loads(stored)["supporters"]["cedar-valley-tenants"]["public_sha256"], "letter", "form"):
+            self.assertNotIn(private, text + data)
+        self.assertEqual(tree(self.root), before)
+        section = sections(read(GUIDE))["Supporting organizations and co-signers (private, read-only)"]
+        for promise in ("not co-sign approval", "`content-check`", "private record without public entry",
+                        "SITE-CONTENT.md#supporting-organizations"):
+            self.assertIn(promise, section)
 
     def test_refusal_and_edit_guidance_is_honest(self):
         social = ["social", "--directory", "$CAMPAIGN", "--platform", "bluesky"]

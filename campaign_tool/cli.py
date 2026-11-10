@@ -1020,6 +1020,10 @@ def main():
     supporters_remove = supporters.add_parser("remove", help="Drop one organization's public entry and private record")
     supporters_remove.add_argument("--directory", required=True)
     supporters_remove.add_argument("--id", required=True)
+    supporters_list = supporters.add_parser("list", help="Print each organization's id, listing, consent dates, co-sign "
+                                            "grant and staged meetings; private, read-only")
+    supporters_list.add_argument("--directory", required=True)
+    supporters_list.add_argument("--json", action="store_true", dest="as_json", help="Print JSON only")
     press_check = press_commands.add_parser("check", help="Check private press drafts and letters against current findings and meetings; read-only")
     press_check.add_argument("--directory", required=True)
     press_check.add_argument("--json", action="store_true", dest="as_json", help="Print JSON only")
@@ -1874,6 +1878,16 @@ def main():
             sys.exit(1)
         print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
         sys.exit(exit_code(report))
+    if args.command == "supporters" and args.supporters_command == "list":  # unresolved: the reader refuses links
+        from .supporters import format_supporters_list, list_supporters
+        try:
+            rows = list_supporters(Path(args.directory).expanduser())
+        except (OSError, ValueError, RecursionError):  # SupporterError and ContentError are ValueErrors
+            print("Stopped: supporters list: cannot read valid supporter and staged meeting files", file=sys.stderr)
+            sys.exit(2)
+        sys.stdout.write(json.dumps(rows, indent=2, ensure_ascii=False) + "\n" if args.as_json
+                         else format_supporters_list(rows))
+        return
     if args.command == "meetings-status":  # read-only; the folder is not resolved, so a symlinked root is refused
         from .meetings_status import run_cli as meetings_status
         sys.exit(meetings_status(args, Path(args.directory).expanduser()))
