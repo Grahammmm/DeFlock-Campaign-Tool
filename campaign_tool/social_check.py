@@ -8,7 +8,13 @@ codes (ok, missing, outdated, edited, not_regular); each folder uses its own len
 or changed is listed as stale with reasons, never as an ordinary problem. Meeting, outcome and event provenance comes from the
 private ``.check.json`` that ``social._write_drafts`` writes; without a usable one the original starts_at / window is
 unknown and is never guessed.
+
+Byte bound (RF0725-3): every Markdown draft and private sidecar this module opens is read through ``_read_bounded``
+(1 MiB per draft, 2 MiB per ``.written.json`` / ``.check.json``), checked on the opened descriptor and enforced on the
+bytes actually read. The bound is per opened file; it is not an aggregate memory budget, a folder-count limit, or a
+bound on any other read made by ``social --check`` (the legacy top-level ``social.check_social`` reader is unchanged).
 """
+import json
 import os
 import re
 import stat
@@ -18,14 +24,65 @@ from . import social as S
 from . import social_threads as T
 
 ROSTER_KINDS = ("meetings", "outcomes", "threads", "events")
+MAX_DRAFT_BYTES = 1024 * 1024
+MAX_STATE_BYTES = 2 * 1024 * 1024
 _COUNTER = re.compile(r"^\(\d+/\d+\) ")
+_CHUNK = 64 * 1024
+
+
+def _read_bounded(path, limit):
+    """Bytes of a regular file of at most ``limit`` bytes, opened without following links; ``None`` if it is not
+    regular or larger than ``limit``. OSError (missing, unreadable) propagates. Never requests more than
+    ``limit + 1`` bytes in total, so a file that grows after the size check cannot be read unbounded."""
+    if not stat.S_ISREG(os.lstat(path).st_mode):
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            return None
+        chunks, total = [], 0
+        while total <= limit:
+            chunk = os.read(fd, min(_CHUNK, limit + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+    finally:
+        os.close(fd)
+    return None if total > limit else b"".join(chunks)
 
 
 def _read(path):
     try:
-        return S._read_regular(path)
+        return _read_bounded(path, MAX_DRAFT_BYTES)
     except OSError:
         return None
+
+
+def _read_state(path, what):
+    """Bounded twin of ``social._read_state`` with the same ``({}, 'absent')`` / ``(entries, 'ok')`` / ``({}, 'bad')``."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return {}, "absent"
+    except OSError:
+        return {}, "bad"
+    try:
+        data = _read_bounded(path, MAX_STATE_BYTES)
+        document = json.loads(data.decode("utf-8")) if data is not None else None
+    except (OSError, ValueError, RecursionError):
+        return {}, "bad"
+    if what == "record":
+        ok = isinstance(document, dict) and all(isinstance(v, str) for v in document.values())
+        return (document, "ok") if ok else ({}, "bad")
+    entries = document.get("drafts") if isinstance(document, dict) and document.get("schema_version") == 1 else None
+    if isinstance(entries, dict) and all(S._meta_valid(e) for e in entries.values()):
+        return entries, "ok"
+    return {}, "bad"
 
 
 def _dir_state(path):
@@ -277,8 +334,8 @@ def _folder(root, parts, kind, platform, suggested, ctx):
         out["folder_problems"], out["problems"] = ["folder cannot be read"], 1
         return out
     stems = {n[:-3] for n in names if n.endswith(".md") and len(n) > 3}
-    record, rstate = ({}, "absent") if suggested else S._read_state(path / ".written.json", "record")
-    meta, mstate = S._read_state(path / ".check.json", "meta") if kind in ("meetings", "outcomes", "events") else ({}, "absent")
+    record, rstate = ({}, "absent") if suggested else _read_state(path / ".written.json", "record")
+    meta, mstate = _read_state(path / ".check.json", "meta") if kind in ("meetings", "outcomes", "events") else ({}, "absent")
     for state, name in ((rstate, ".written.json"), (mstate, ".check.json")):
         if state == "bad":
             notes.append(f"{name} is not a usable regular file; its contents are ignored")
@@ -300,9 +357,15 @@ def _folder(root, parts, kind, platform, suggested, ctx):
         return out
 
     # Required membership uses the same provenance binding as each draft row.
+    reads = {}  # per-folder-check only: a suggested draft is read once for window binding and row analysis
+
+    def draft(stem):
+        if stem not in reads:
+            reads[stem] = _read(path / (stem + ".md"))
+        return reads[stem]
+
     window = max((e["within_days"] for stem, e in meta.items()
-                  if _bound(e, kind, stem, suggested, record,
-                            _read(path / (stem + ".md")) if suggested else None)), default=14)
+                  if _bound(e, kind, stem, suggested, record, draft(stem) if suggested else None)), default=14)
     required = set()
     if not suggested:
         if kind == "findings":
@@ -318,7 +381,7 @@ def _folder(root, parts, kind, platform, suggested, ctx):
     command = f"social --{kind}" + (f" --platform {platform}" if platform else "")
     for stem in sorted(stems | required):
         exists = stem in stems
-        data = _read(path / (stem + ".md")) if exists else None
+        data = draft(stem) if exists else None
         entry_meta = _bound(meta.get(stem), kind, stem, suggested, record, data)
         reasons, subject, fresh = [], None, None
         if kind in ("findings", "threads"):
