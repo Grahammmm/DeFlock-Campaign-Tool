@@ -298,12 +298,16 @@ def _row(kind, path, purpose, status, count=None, days=()):
 def _walk(dir_fd, parts, state):
     try:
         with os.scandir(dir_fd) as scan:
-            entries = sorted(scan, key=lambda item: item.name)
+            entries = []
+            for item in scan:
+                # One excess yield detects overflow; never retain or inspect that entry.
+                if state["seen"] >= MAX_ENTRIES:
+                    raise PersonalDataError(INCOMPLETE)
+                state["seen"] += 1
+                entries.append(item)
     except OSError:
         raise PersonalDataError(INCOMPLETE) from None
-    state["seen"] += len(entries)
-    if state["seen"] > MAX_ENTRIES:
-        raise PersonalDataError(INCOMPLETE)
+    entries.sort(key=lambda item: item.name)
     for item in entries:
         try:
             st = item.stat(follow_symlinks=False)
