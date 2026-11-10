@@ -1419,6 +1419,14 @@ def main():
                                      "phone or address: counts and dates only, never values (read-only)")
     personal_p.add_argument("--directory", required=True)
     personal_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
+    personal_p.add_argument("--find", metavar="TEXT", help="Where TEXT (3+ characters, any case) appears in the stores' "
+                            "name and contact fields: kind, path, position and field only, never a value")
+    if sys.argv[1:2] == ["personal-data"] and any(arg.startswith("--f") for arg in sys.argv[2:]):
+        def _find_misuse(_message):  # argparse would repeat the offending argument, which may be the --find text
+            print(personal_p.format_usage().rstrip(), file=sys.stderr)
+            print("personal-data: error: invalid arguments (not repeated here)", file=sys.stderr)
+            sys.exit(2)
+        parser.error = personal_p.error = _find_misuse
     withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
                                      "section number in the agency's own words (read-only)")
     withheld_p.add_argument("--directory", required=True)
@@ -1943,13 +1951,23 @@ def main():
         from .law_packet import main as law_packet_main
         sys.exit(law_packet_main(args))
     if args.command == "personal-data":  # the folder is not resolved: the register refuses a symlinked root itself
-        from .personal_data import PersonalDataError, exit_code, personal_data_register, render_text
+        from .personal_data import (FindQueryError, PersonalDataError, exit_code, personal_data_find,
+                                    personal_data_register, render_find_text, render_text)
         try:
-            report = personal_data_register(Path(args.directory).expanduser())
+            if args.find is None:
+                report = personal_data_register(Path(args.directory).expanduser())
+            else:  # the text is checked before the folder is opened and is never printed
+                report = personal_data_find(Path(args.directory).expanduser(), args.find)
+        except FindQueryError as exc:
+            print("Stopped: " + str(exc), file=sys.stderr)
+            sys.exit(2)
         except PersonalDataError as exc:
             print("Stopped: " + str(exc), file=sys.stderr)
             sys.exit(1)
-        print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
+        if args.as_json:
+            print(json.dumps(report, ensure_ascii=True))
+        else:
+            print(render_text(report) if args.find is None else render_find_text(report))
         sys.exit(exit_code(report))
     if args.command == "supporters" and args.supporters_command == "list":  # unresolved: the reader refuses links
         from .supporters import format_supporters_list, list_supporters

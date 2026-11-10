@@ -122,6 +122,15 @@ python3 -m campaign_tool personal-data --directory NEW_EMPTY_DIR --json
 
 Run one of the two lines on the incoming machine; the outgoing organizer may run the same on `D` to compare. It lists the private files that can hold a person's name, email, phone or postal address, by kind, purpose and date, without printing any value. Discuss each kind, and each unknown kind, and why it is kept, together and privately. Never paste the output into an issue or a public document. It is not a retention or deletion policy and not an inventory of the whole host or of the backups; unknown files need an organizer's review and are never deleted automatically. See [the private personal-data register](DATA-HANDLING.md#private-personal-data-register).
 
+When a person asks what the campaign holds about them, or a volunteer leaves, search their name or contact privately on the incoming machine (`SYNTHETIC` stands for at least 3 characters of it):
+
+```sh
+python3 -m campaign_tool personal-data --directory NEW_EMPTY_DIR --find SYNTHETIC
+python3 -m campaign_tool personal-data --directory NEW_EMPTY_DIR --find SYNTHETIC --json
+```
+
+It prints only the kind, the catalog path, the file and record position and the field of each match, never a value, and lists every file it did not search. It searches only names, request owners, speaker labels and the requester contact lines: free-text notes, originals, drafts, the ledger, unknown files and backups are not searched, so no match is not proof that nothing is held. The search text stays in your shell history; keep the output and the history private. Its `--find` section in the same document lists the exact fields.
+
 Next: task 10.
 
 ## 10. Accounts, by role, and sign-off
