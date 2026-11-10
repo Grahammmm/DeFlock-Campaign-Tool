@@ -3,8 +3,20 @@ from datetime import datetime
 
 LEAD = "Dates from published sources, findings, corrections, records requests, meetings and recorded decisions."
 KINDS = ("records_received", "finding_published", "correction", "meeting", "records_requested", "request_update",
-         "decision", "agency_action")
+         "decision", "agency_action", "finding_update", "statement", "coverage")
 ACTIONS_NOTE = " Agency actions are transcribed from their cited official sources."  # DF0237-01: only when an event exists
+# DF1109-07: the lead names a new kind only when at least one such event is shown, in this fixed order.
+ALSO_SHOWN = (("finding_update", "finding updates"), ("statement", "public statements"), ("coverage", "press coverage"))
+
+
+def also_shown(events):
+    """`` Also shown: <kinds>.`` for the DF1109-07 kinds present in ``events``; "" when none is."""
+    present = {event["kind"] for event in events}
+    names = [name for kind, name in ALSO_SHOWN if kind in present]
+    if not names:
+        return ""
+    listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return f" Also shown: {listed}."
 
 
 def _day(value):
@@ -50,6 +62,8 @@ def timeline_events(model, today, agency_pages=None):
         add(finding["published_at"], "finding_published", f'Finding published: {finding["title"]}', href)
         for correction in finding["corrections"]:
             add(correction["date"], "correction", f'Correction to {finding["title"]}', href + "#corrections")
+        for update in finding.get("updates", ()):  # DF1109-07: one event per update, never merged; the note stays on its page
+            add(update["date"], "finding_update", f'Update to {finding["title"]}', href + "#updates")
     for meeting in model["meetings"]:
         # Cancellation must never masquerade as a scheduled or held meeting.
         if meeting.get("status") == "cancelled":
@@ -61,6 +75,15 @@ def timeline_events(model, today, agency_pages=None):
         if outcome:
             add(outcome["on"], "decision", f'Decision at {meeting["body"]}: {OUTCOME_LABELS[outcome["result"]]}',
                 f'/meetings/{meeting["id"]}.html', source_url=outcome["source_url"])
+    agencies = {a["agency_id"]: a for a in model["agencies"]}
+    for row in model.get("statements", ()):  # DF1109-07: the agency page that shows the statement, plus its official source
+        agency = agencies[row["agency_id"]]
+        href = (agency_pages or {}).get(agency["agency_id"]) or f'/agencies/{agency["slug"]}.html'
+        add(row["said_on"], "statement", f'{row["official"]}, {agency["name"]}: public statement', href,
+            source_url=row["source_url"])
+    for entry in model.get("coverage") or ():  # DF1109-07: press is not an official record, so no source link
+        # frozen exact text (spec design 4); a labels.json override of news.title does not change it (DF1109-16 owns the sweep)
+        add(entry["published_on"], "coverage", f'In the news: {entry["outlet"]}', "/news.html")
     events.sort(key=lambda event: (KINDS.index(event["kind"]), event["href"], event["text"]))
     events.sort(key=lambda event: event["date"], reverse=True)
     return events
@@ -71,7 +94,7 @@ def render_timeline(site, events):
     from .site import e
 
     note = ACTIONS_NOTE if any(event["kind"] == "agency_action" for event in events) else ""
-    parts = ['<section class="section" id="content"><h2>Campaign timeline</h2>', f'<p>{LEAD}{note}</p>']
+    parts = ['<section class="section" id="content"><h2>Campaign timeline</h2>', f'<p>{LEAD}{note}{e(also_shown(events))}</p>']
     month = None
     for event in events:
         current = event["date"][:7]
