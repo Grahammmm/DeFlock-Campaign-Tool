@@ -37,7 +37,7 @@ TODAY = date(2026, 11, 1)
 ACTION_REFUSAL = "Stopped: content/agency-actions.json: cannot list; fix the file and its agency references.\n"
 COVERAGE_REFUSAL = "Stopped: content/coverage.json: cannot list; fix the file and its published finding references.\n"
 SELECTOR_REFUSAL = "Stopped: --agency: unknown agency\n"
-SECRET = "ZQ-SECRET-SENTINEL-71"
+SENTINEL = "ZQ-PRIVATE-SENTINEL-71"
 NO_NETWORK = AssertionError("no network in these tests")
 
 
@@ -192,7 +192,7 @@ class ActionListTests(Base):
 
     def test_bad_or_unknown_selector_is_one_line_exit_two(self):
         self.put_actions(B1, A1)
-        for selector in ("ca-unknown-pd", "../../" + SECRET, f"x; rm -rf / {SECRET}", "", SHERIFF.upper()):
+        for selector in ("ca-unknown-pd", "../../" + SENTINEL, f"x; rm -rf / {SENTINEL}", "", SHERIFF.upper()):
             for extra in ((), ("--json",)):
                 with self.subTest(selector=selector, extra=extra):
                     self.assert_refused(self.actions_list("--agency", selector, *extra), SELECTOR_REFUSAL)
@@ -212,7 +212,7 @@ class ActionListTests(Base):
 
     def test_whole_store_validation_precedes_action_filter(self):
         bad = {"date": action(SHERIFF, "2026-02-30"), "kind": action(SHERIFF, "2026-09-01", kind="banned"),
-               "text": action(SHERIFF, "2026-09-01", text=f"<b>{SECRET}</b>"),
+               "text": action(SHERIFF, "2026-09-01", text=f"<b>{SENTINEL}</b>"),
                "agency": action("ca-unknown-pd", "2026-09-01"), "duplicate": A1,
                "future": action(SHERIFF, "2026-09-01", checked="2999-01-01")}
         for name, row in bad.items():
@@ -273,7 +273,7 @@ class CoverageListTests(Base):
         self.put_coverage(cited, story("https://news.example.test/b"))
         private = self.root / "private" / "findings"
         private.mkdir(parents=True)
-        (private / "draft.json").write_text("{" + SECRET, encoding="utf-8")  # drafts are never opened
+        (private / "draft.json").write_text("{" + SENTINEL, encoding="utf-8")  # drafts are never opened
         (self.content / "meetings" / "2026-10-cedar-council.json").write_text("{", encoding="utf-8")
         (self.content / "map" / "cameras.geojson").write_text("{", encoding="utf-8")
         self.assertEqual(len(list_coverage(self.root, today=TODAY)), 2)  # unrelated broken stores do not block
@@ -287,7 +287,7 @@ class CoverageListTests(Base):
                 self.assert_refused(self.coverage_list("--json"), COVERAGE_REFUSAL)
         finding = self.content / "findings" / "cedar-policy-posted.json"
         original = finding.read_bytes()
-        finding.write_text("{" + SECRET, encoding="utf-8")  # a malformed cited public finding
+        finding.write_text("{" + SENTINEL, encoding="utf-8")  # a malformed cited public finding
         self.put_coverage(cited)
         self.assert_refused(self.coverage_list(), COVERAGE_REFUSAL)
         finding.unlink()  # withdrawn: the reference is stale; listing refuses but the legacy repair still removes it
@@ -300,12 +300,12 @@ class CoverageListTests(Base):
 class RefusalAndReadOnlyTests(Base):
     def broken_cases(self, target, valid):
         big = json.dumps({"pad": "x" * (2 * 1024 * 1024 + 10)})
-        return {"invalid utf-8": lambda: target.write_bytes(b"\xff\xfe" + SECRET.encode()),
-                "invalid json": lambda: target.write_text("{" + SECRET, encoding="utf-8"),
+        return {"invalid utf-8": lambda: target.write_bytes(b"\xff\xfe" + SENTINEL.encode()),
+                "invalid json": lambda: target.write_text("{" + SENTINEL, encoding="utf-8"),
                 "empty bytes": lambda: target.write_bytes(b""),
                 "null": lambda: target.write_text("null", encoding="utf-8"),
-                "wrong envelope": lambda: target.write_text(json.dumps([SECRET]), encoding="utf-8"),
-                "unknown field": lambda: target.write_text(json.dumps({**valid, SECRET: 1}), encoding="utf-8"),
+                "wrong envelope": lambda: target.write_text(json.dumps([SENTINEL]), encoding="utf-8"),
+                "unknown field": lambda: target.write_text(json.dumps({**valid, SENTINEL: 1}), encoding="utf-8"),
                 "oversize": lambda: target.write_text(big, encoding="utf-8"),
                 "directory": lambda: target.mkdir(),
                 "symlink": lambda: (self.tmp.joinpath("real.json").write_text(json.dumps(valid), encoding="utf-8"),
@@ -329,7 +329,7 @@ class RefusalAndReadOnlyTests(Base):
                     with self.subTest(store=target.name, case=name, extra=extra):
                         result = listing(*extra)
                         self.assert_refused(result, refusal)
-                        self.assertNotIn(SECRET, result[2])
+                        self.assertNotIn(SENTINEL, result[2])
             self.reset(target)
         self.actions.write_text('{"schema_version": 1, "actions": [], "actions": []}', encoding="utf-8")
         self.assert_refused(self.actions_list(), ACTION_REFUSAL)  # the action reader's duplicate-key rule
@@ -338,7 +338,7 @@ class RefusalAndReadOnlyTests(Base):
         self.assert_refused(self.actions_list(), ACTION_REFUSAL)  # hard links are refused as today
         (self.tmp / "second-link.json").unlink()
         self.put_coverage(story("https://news.example.test/a"))
-        for error in (PermissionError(13, "denied", SECRET), RecursionError("deep")):
+        for error in (PermissionError(13, "denied", SENTINEL), RecursionError("deep")):
             with self.subTest(error=type(error).__name__):
                 with mock.patch("campaign_tool.agency_actions._load", side_effect=error):
                     self.assert_refused(self.actions_list(), ACTION_REFUSAL)
@@ -348,7 +348,7 @@ class RefusalAndReadOnlyTests(Base):
     def test_all_listing_paths_are_read_only(self):
         sentinel = self.root / "private" / "sentinel.txt"
         sentinel.parent.mkdir()
-        sentinel.write_text(SECRET, encoding="utf-8")
+        sentinel.write_text(SENTINEL, encoding="utf-8")
         refuse = AssertionError("a list command tried to write or build")
         spies = [mock.patch("tempfile.mkstemp", side_effect=refuse), mock.patch("os.replace", side_effect=refuse),
                  mock.patch("campaign_tool.site.build_site", side_effect=refuse),
