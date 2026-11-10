@@ -1557,8 +1557,8 @@ def main():
     sharing_p.add_argument("--source-url", required=True, help="https URL of the portal page (transparency.flocksafety.com)")
     sharing_p.add_argument("--replace", action="store_true", help="Overwrite an existing sharing list")
     profile_cmds = content_cmds.add_parser(
-        "agency-profile", help="List every dated agency-profile check, or record the day you re-read one source "
-        "(content/agencies.json only; nothing is fetched, built or published)").add_subparsers(
+        "agency-profile", help="List every dated agency-profile check, record the day you re-read one source, or record "
+        "a whole policy or contract document (content/agencies.json only; nothing is fetched, built or published)").add_subparsers(
         dest="agency_profile_command", required=True)
     profile_list = profile_cmds.add_parser("list", help="Each recorded checked_on with its age in days, oldest first (read-only)")
     profile_list.add_argument("--directory", required=True)
@@ -1575,6 +1575,29 @@ def main():
                                  "position that list prints (doctor names the same entry zero-based in brackets)")
     profile_recheck.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD",
                                  help="Day you re-read the source: not after today, not before the stored date")
+    for verb, about in (("policy", "profile.alpr_policy: the posted ALPR policy document and the page you found it on"),
+                        ("contract", "profile.contract: the signed agreement's vendor, term and optional stated cost")):
+        writer = profile_cmds.add_parser(verb, help=f"Record {about} (the whole document; nothing is fetched)")
+        writer.add_argument("--directory", required=True)
+        writer.add_argument("--agency", required=True, help="agency_id in content/agencies.json")
+        if verb == "policy":
+            writer.add_argument("--url", required=True, help="https URL of the policy document itself")
+            writer.add_argument("--source-url", required=True, help="https URL of the agency page where you found it")
+        else:
+            writer.add_argument("--vendor", required=True, help="Vendor as the agreement names it, 1-80 characters")
+            writer.add_argument("--start", required=True, metavar="YYYY-MM-DD", help="Term start as the agreement states it")
+            writer.add_argument("--end", required=True, metavar="YYYY-MM-DD", help="Term end; not before --start")
+            writer.add_argument("--renewal-note", default=None, help="Renewal as the agreement states it, up to 200 characters")
+            writer.add_argument("--source-url", required=True, help="https URL of the agreement itself")
+            writer.add_argument("--cost-usd", default=None, help="Amount exactly as stated, a decimal string such as "
+                                "12345.60 (with --period and --as-stated-in, all three or none)")
+            writer.add_argument("--period", default=None, choices=("annual", "total", "one_time"),
+                                help="The period the document states for the amount")
+            writer.add_argument("--as-stated-in", default=None, help="Title of the document that states the amount")
+        writer.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD", help="Day you read it, not after today")
+        writer.add_argument("--replace", action="store_true", help="Record the whole document again over an existing one")
+        writer.add_argument("--drop-check", action="store_true", help="With --replace: remove the existing reading "
+                            f"({'policy_check' if verb == 'policy' else 'contract_check'}) in the same write")
     links_p = content_cmds.add_parser("link-check", help="List every external https URL the public content cites; with --online "
                                       "also request each once (GET, first 64 KiB, no cookies, 15 s, 5 redirects). Writes nothing")
     links_p.add_argument("--directory", required=True)
@@ -2394,6 +2417,16 @@ def main():
             if args.agency_profile_command == "list":
                 sys.stdout.write(content_profile.format_profile_checks(
                     content_profile.list_profile_checks(root, args.agency), as_json=args.as_json))
+            elif args.agency_profile_command == "policy":
+                sys.stdout.write(content_profile.format_document(content_profile.write_policy(
+                    root, args.agency, url=args.url, source_url=args.source_url, checked_on=args.checked_on,
+                    replace=args.replace, drop_check=args.drop_check)))
+            elif args.agency_profile_command == "contract":
+                sys.stdout.write(content_profile.format_document(content_profile.write_contract(
+                    root, args.agency, vendor=args.vendor, start=args.start, end=args.end, source_url=args.source_url,
+                    checked_on=args.checked_on, renewal_note=args.renewal_note, cost_usd=args.cost_usd,
+                    period=args.period, as_stated_in=args.as_stated_in, replace=args.replace,
+                    drop_check=args.drop_check)))
             else:
                 sys.stdout.write(content_profile.format_recheck(content_profile.recheck_profile(
                     root, args.agency, args.field, args.checked_on, index=args.index)))
