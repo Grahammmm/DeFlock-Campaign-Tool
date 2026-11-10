@@ -317,19 +317,60 @@ class MultiCampaign(unittest.TestCase):
         self.assertEqual([p for p in self.base.rglob("*") if "lock" in p.name.lower()], [])
 
     def test_static_registry_has_no_delete_copy_sync_network_or_campaign_lock(self):
-        tree = ast.parse((REPO / "campaign_tool" / "registry.py").read_text(encoding="utf-8"))
-        imported = {n.name.split(".")[0] for x in ast.walk(tree) if isinstance(x, ast.Import) for n in x.names}
-        imported |= {x.module.split(".")[0] for x in ast.walk(tree) if isinstance(x, ast.ImportFrom) and x.module}
-        self.assertFalse(imported & {"socket", "http", "urllib", "ssl", "shutil", "requests", "sqlite3", "tempfile", "threading"})
-        calls = {x.func.attr for x in ast.walk(tree) if isinstance(x, ast.Call) and isinstance(x.func, ast.Attribute)}
-        self.assertFalse(calls & {"remove", "unlink", "rmdir", "removedirs", "rmtree", "copy", "copyfile", "copytree", "move",
-                                  "symlink", "link", "rename", "system", "Popen", "run", "urlopen", "connect"})
-        callers = {f.name for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
-                   for x in ast.walk(f) if isinstance(x, ast.Call) and getattr(x.func, "attr", "") == "flock"}
-        self.assertEqual(callers, {"_transaction"})  # the register's own transaction is the only lock, taken on register_path()
-        opened = [x.args[0] for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name == "_transaction"
-                  for x in ast.walk(f) if isinstance(x, ast.Call) and ast.unparse(x.func) == "os.open"]
-        self.assertEqual([ast.unparse(a) for a in opened], ["path"])  # the lock is on the register file passed in, nothing else
+        self.assertEqual(static_policy_problems((REPO / "campaign_tool" / "registry.py").read_text(encoding="utf-8")), [])
+
+    def test_static_stage_exception_does_not_authorize_general_deletion(self):
+        base = ("import os, tempfile\n"
+                "def _store(path, entries):\n    fd, name = tempfile.mkstemp()\n    {body}\n"
+                "def _transaction(path):\n    os.open(path, 0)\n    fcntl.flock(1, 2)\n{extra}")
+        controls = {
+            "allowed": ("os.unlink(name)", "", False),
+            "register": ("os.unlink(path)", "", True),
+            "campaign": ("os.unlink(entries)", "", True),
+            "remove": ("os.remove(name)", "", True),
+            "rmtree": ("os.rmdir(name)", "", True),
+            "other function": ("os.unlink(name)", "def remove(path):\n    os.unlink(path)\n", True),
+            "other function, staging name": ("os.unlink(name)", "def add(path):\n    os.unlink(name)\n", True),
+            "second allocation": ("os.unlink(name)", "def add(path):\n    tempfile.mkstemp()\n", True),
+            "network": ("os.unlink(name)", "import socket\n", True),
+        }
+        for label, (body, extra, refused) in controls.items():
+            problems = static_policy_problems(base.format(body=body, extra=extra))
+            self.assertEqual(bool(problems), refused, (label, problems))
+
+
+def static_policy_problems(source):
+    """What registry source may not do: network/copy/delete calls, a delete outside `_store` or aimed at anything but
+    its own allocated staging name, tempfile used outside `_store`, a flock caller other than `_transaction`, or a lock
+    on anything but the register path."""
+    tree, problems = ast.parse(source), []
+    imported = {n.name.split(".")[0] for x in ast.walk(tree) if isinstance(x, ast.Import) for n in x.names}
+    imported |= {x.module.split(".")[0] for x in ast.walk(tree) if isinstance(x, ast.ImportFrom) and x.module}
+    problems += sorted(imported & {"socket", "http", "urllib", "ssl", "shutil", "requests", "sqlite3", "threading"})
+    banned = {"remove", "rmdir", "removedirs", "rmtree", "copy", "copyfile", "copytree", "move", "symlink", "link",
+              "rename", "system", "Popen", "run", "urlopen", "connect"}
+    for function in (f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)):
+        for call in (x for x in ast.walk(function) if isinstance(x, ast.Call) and isinstance(x.func, ast.Attribute)):
+            attr = call.func.attr
+            if attr in banned:
+                problems.append(f"{function.name}: {attr}")
+            elif attr == "unlink" and not (function.name == "_store" and ast.unparse(call) == "os.unlink(name)"):
+                problems.append(f"{function.name}: unlink")
+            elif attr in ("mkstemp", "mkdtemp", "NamedTemporaryFile", "TemporaryDirectory") and function.name != "_store":
+                problems.append(f"{function.name}: {attr}")
+    for statement in tree.body:  # module level code may not delete either
+        if not isinstance(statement, (ast.FunctionDef, ast.ClassDef)):
+            problems += ["module: unlink" for x in ast.walk(statement)
+                         if isinstance(x, ast.Call) and getattr(x.func, "attr", "") == "unlink"]
+    callers = {f.name for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+               for x in ast.walk(f) if isinstance(x, ast.Call) and getattr(x.func, "attr", "") == "flock"}
+    if callers != {"_transaction"}:  # the register's own transaction is the only lock
+        problems.append(f"flock callers: {sorted(callers)}")
+    opened = [ast.unparse(x.args[0]) for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name == "_transaction"
+              for x in ast.walk(f) if isinstance(x, ast.Call) and ast.unparse(x.func) == "os.open"]
+    if opened != ["path"]:  # the lock is on the register file passed in, nothing else
+        problems.append(f"lock opens: {opened}")
+    return problems
 
 
 if __name__ == "__main__":
