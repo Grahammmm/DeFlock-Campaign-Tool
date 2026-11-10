@@ -355,5 +355,208 @@ class IndexedRootTests(Base):
         self.assertEqual(healthy[-1]["label"], "Production ready: no todo remains above; a person still decides")
 
 
+NESTED_LABEL = "Git exposure: not checked"
+NESTED_ADVICE = ("Campaign is inside nested git work trees; review tracked files in every enclosing work tree manually "
+                 "before any push. Moving files does not untrack existing entries. Rerun doctor --checklist from a "
+                 "campaign outside nested work trees.")
+NESTED_ROW = {"key": "git_exposure", "state": "todo", "label": NESTED_LABEL, "next": NESTED_ADVICE,
+              "owner": "organizer"}
+GENERIC_ROW = {"key": "git_exposure", "state": "todo", "label": NESTED_LABEL, "owner": "organizer",
+               "next": "Rerun doctor --checklist once git can read this work tree; "
+                       "do not commit campaign files until checked."}
+
+
+class NestedWorkTreeTests(Base):
+    """An inner work tree must never vouch for protected paths when an enclosing git marker exists."""
+
+    def inner(self, path, ignored=NAMES):
+        path.mkdir(parents=True, exist_ok=True)
+        git(path, "init", "-q")
+        (path / ".gitignore").write_text("".join(f"/{n}/\n" for n in ignored))
+        return path
+
+    def no_git_calls(self):
+        return mock.patch.object(git_exposure.subprocess, "run", side_effect=AssertionError("git was asked"))
+
+    def test_nested_repository_cannot_hide_outer_tracked_private_files(self):
+        for index, (name, sub, deleted) in enumerate(itertools.product(NAMES, ("campaign", f"a b/{NESTED}"),
+                                                                       (False, True))):
+            outer = self.tree([], name=f"outer{index}")
+            camp = outer / sub
+            (camp / name).mkdir(parents=True)
+            (camp / name / "synthetic.txt").write_text("synthetic\n")
+            git(outer, "add", "-f", f"{sub}/{name}/synthetic.txt")
+            if deleted:
+                (camp / name / "synthetic.txt").unlink()
+            self.inner(camp)
+            self.assertEqual(git(camp, "ls-files").strip(), "")  # inner index is empty and fully ignored
+            self.assertEqual(git(outer, "ls-files", "--cached").strip(), f"{sub}/{name}/synthetic.txt")
+            self.assertEqual(git_exposure_row(camp), NESTED_ROW, (name, sub, deleted))
+            self.assertEqual(git_exposure_row(camp / "kit" / "deeper"), NESTED_ROW)
+
+    def test_nested_marker_refusal_does_not_depend_on_exposure_or_git_installation(self):
+        outer = self.tree([], name="outer")
+        for ignored in (NAMES, ()):
+            camp = self.inner(outer / f"camp{len(ignored)}", ignored)
+            with self.no_git_calls():
+                self.assertEqual(git_exposure_row(camp), NESTED_ROW)
+            with self.no_git_calls(), mock.patch.object(git_exposure.shutil, "which", return_value=None):
+                self.assertEqual(git_exposure_row(camp), NESTED_ROW)
+        absent = outer / "camp3" / "not" / "created" / "yet"
+        with self.no_git_calls():
+            self.assertEqual(git_exposure_row(absent), NESTED_ROW)
+        three = self.inner(outer / "mid" / "campaign")
+        self.inner(outer / "mid")
+        with self.no_git_calls():
+            self.assertEqual(git_exposure_row(three), NESTED_ROW)
+        single = self.tree(list(NAMES), name="single")
+        with mock.patch.object(git_exposure.shutil, "which", return_value=None):
+            self.assertEqual(git_exposure_row(single)["label"], "Git exposure: not checked (git is not installed)")
+
+    def test_pointer_and_directory_marker_combinations_are_conservative(self):
+        outer = self.tree(list(NAMES), name="outer")
+        pointer = outer / "sub" / "camp"
+        pointer.mkdir(parents=True)
+        (pointer / ".git").write_text("gitdir: ../../.git/modules/camp\n")  # submodule-style, never followed
+        with self.no_git_calls():
+            self.assertEqual(git_exposure_row(pointer), NESTED_ROW)
+        main = self.tree(list(NAMES), name="main")
+        git(main, "add", ".gitignore")
+        git(main, "commit", "-q", "-m", "init")
+        inside = outer / "linked"
+        git(main, "worktree", "add", "-q", str(inside), "-b", "inside")
+        self.assertTrue((inside / ".git").is_file())
+        self.assertEqual(git_exposure_row(inside), NESTED_ROW)
+        beside = self.base / "beside"
+        git(main, "worktree", "add", "-q", str(beside), "-b", "beside")
+        self.assertEqual(git_exposure_row(beside)["state"], "ok")  # sibling checkout is not an ancestor
+        sibling = self.inner(self.base / "sibling", NAMES)
+        self.assertEqual(git_exposure_row(sibling)["state"], "ok")
+
+    def test_outer_bad_marker_is_not_hidden_by_valid_inner_marker(self):
+        def layout(label, make_bad):
+            outer = self.base / label
+            outer.mkdir()
+            make_bad(outer / ".git")
+            return self.inner(outer / "camp")
+
+        def junk(marker):
+            marker.write_text("not a gitdir pointer\n")
+
+        def link(marker):
+            (marker.parent / "real").mkdir()
+            marker.symlink_to(marker.parent / "real")
+
+        def fifo(marker):
+            os.mkfifo(marker)
+
+        for label, make in (("junk", junk), ("link", link), ("fifo", fifo)):
+            camp = layout(label, make)
+            with self.no_git_calls():
+                self.assertEqual(git_exposure_row(camp), GENERIC_ROW, label)
+        outer = self.base / "perm"
+        outer.mkdir()
+        (outer / ".git").write_text("gitdir: elsewhere\n")
+        camp = self.inner(outer / "camp")
+        real_open = Path.open
+
+        def deny(self_, *a, **kw):
+            if self_ == outer / ".git":
+                raise PermissionError("synthetic denial")
+            return real_open(self_, *a, **kw)
+
+        with mock.patch.object(Path, "open", deny), self.no_git_calls():
+            self.assertEqual(git_exposure_row(camp), GENERIC_ROW)
+        stat = self.base / "stat"
+        camp = self.inner(stat / "camp")
+        real_lstat = os.lstat
+
+        def lstat(path, *a, **kw):
+            if Path(path) == stat / ".git":
+                raise PermissionError("synthetic denial")
+            return real_lstat(path, *a, **kw)
+
+        with mock.patch.object(git_exposure.os, "lstat", lstat), self.no_git_calls():
+            self.assertEqual(git_exposure_row(camp), GENERIC_ROW)
+
+    def test_marker_read_stays_bounded(self):
+        outer = self.tree([], name="outer")
+        camp = self.base / "outer" / "pointer"
+        camp.mkdir()
+        (camp / ".git").write_bytes(b"gitdir:" + b"x" * 100000)
+        reads = []
+        real_open = Path.open
+
+        class Spy:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return self.handle.__exit__(*exc)
+
+            def read(self, size=-1):
+                reads.append(size)
+                return self.handle.read(size)
+
+        def spy(self_, *a, **kw):
+            handle = real_open(self_, *a, **kw)
+            return Spy(handle) if self_.name == ".git" else handle
+
+        with mock.patch.object(Path, "open", spy):
+            self.assertEqual(git_exposure_row(camp), NESTED_ROW)
+        self.assertEqual(reads, [512])
+        self.assertTrue(outer.is_dir())
+
+    def test_nested_refusal_reaches_text_json_counts_and_engine_precedence(self):
+        outer = self.tree([], name="outer")
+        camp = self.inner(outer / "camp")
+        report = {"config_readable": True}
+        text = render(report, camp)
+        rows = json.loads(render(report, camp, as_json=True))
+        self.assertEqual([r for r in rows if r["key"] == "git_exposure"], [NESTED_ROW])
+        self.assertIn("[todo] Git exposure: not checked", text)
+        self.assertIn("→ " + NESTED_ADVICE + " (organizer)", text)
+        self.assertIn("1 to do", text)
+        self.assertEqual(rows[-1]["label"],
+                         "Production ready: not yet, 1 to do; ready only when every todo above is done")
+        with mock.patch.object(git_exposure, "engine_checkout_root", return_value=camp), self.no_git_calls():
+            row = git_exposure_row(camp / "kit")
+        self.assertEqual(row["label"], "Campaign is inside the engine checkout")
+        self.assertEqual(row["next"], "Move the campaign outside the engine checkout (docs/FORK-AND-RUN.md step 2). "
+                         + NESTED_ADVICE)
+        self.assertEqual(row["state"], "todo")
+
+    def test_nested_warning_contains_no_paths_or_git_payload(self):
+        outer = self.tree([], name="outer-zq-sentinel")
+        camp = self.inner(outer / "private-zq-sentinel" / "camp")
+        (camp / "private").mkdir()
+        (camp / "private" / "zq-secret-name.txt").write_text("zq-secret-content")
+        (camp / ".git").rename(camp / ".gitold")
+        (camp / ".git").write_text("gitdir: /zq-pointer-target\n")
+        report = {"config_readable": True}
+        shown = json.dumps(git_exposure_row(camp)) + render(report, camp) + render(report, camp, as_json=True)
+        self.assertIn(NESTED_ADVICE, shown)
+        for sentinel in ("zq-sentinel", "zq-secret", "zq-pointer", "gitdir"):
+            self.assertNotIn(sentinel, shown)
+
+    def test_nested_checks_are_repeatable_and_read_only(self):
+        outer = self.tree([], name="outer")
+        (outer / "camp" / "private").mkdir(parents=True)
+        (outer / "camp" / "private" / "a.txt").write_text("synthetic\n")
+        git(outer, "add", "-f", "camp/private/a.txt")
+        camp = self.inner(outer / "camp")
+        before = snapshot(self.base)
+        report = {"config_readable": True}
+        with self.no_git_calls():
+            for _ in range(2):
+                self.assertEqual(git_exposure_row(camp), NESTED_ROW)
+                render(report, camp)
+                render(report, camp, as_json=True)
+        self.assertEqual(snapshot(self.base), before)
+
+
 if __name__ == "__main__":
     unittest.main()
