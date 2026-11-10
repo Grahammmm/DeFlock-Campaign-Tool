@@ -197,8 +197,13 @@ def _read_scan(root):
         return None
     if path.stat().st_size > MAX_BYTES:
         raise ManualMeetingError("kit/meetings.json: larger than 4 MiB")
+    # The file may grow after the stat above: never read past the ceiling.
+    with open(path, "rb") as handle:
+        data = handle.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise ManualMeetingError("kit/meetings.json: larger than 4 MiB")
     try:
-        document = json.loads(path.read_bytes().decode("utf-8"))
+        document = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ManualMeetingError(f"kit/meetings.json: not UTF-8 JSON ({exc.__class__.__name__})") from None
     if not isinstance(document, dict) or document.get("schema_version") != 1:
