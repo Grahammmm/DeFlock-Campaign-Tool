@@ -19,6 +19,12 @@ from campaign_tool.content import ContentError, load_content
 from campaign_tool.site import Site, build_site
 from campaign_tool.timeline import LEAD, render_timeline, timeline_events
 from tests.test_site_build import EXPECTED_CSP
+from tests.test_site_packet import PACKET, strip_packet_counterevidence
+
+# DF1109-08: the packet's Updates section for populate()'s two same-day notes (newest stored first).
+PACKET_UPDATES = ('<h4 id="packet-updates-cedar-policy-posted">Updates</h4><ul>'
+                  '<li>Update · <time datetime="2026-02-02">2026-02-02</time>: Synthetic note B</li>'
+                  '<li>Update · <time datetime="2026-02-02">2026-02-02</time>: Synthetic note A</li></ul>').encode()
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "fictional-campaign"
 TODAY = date(2026, 2, 15)
@@ -586,7 +592,11 @@ class TimelineTests(unittest.TestCase):
         self.populate()
         self.build()
         populated = self.tree()
-        self.assertEqual(digest({k: v for k, v in populated.items() if k != "timeline.html"}), MAIN_POPULATED_OTHER_DIGEST)
+        other = {k: v for k, v in populated.items() if k != "timeline.html"}
+        # DF1109-08: the packet now also states the finding's Updates and counterevidence; assert and strip exactly those.
+        self.assertEqual(other[PACKET].count(PACKET_UPDATES), 1)
+        other[PACKET] = strip_packet_counterevidence(self, PACKET, other[PACKET].replace(PACKET_UPDATES, b"", 1))
+        self.assertEqual(digest(other), MAIN_POPULATED_OTHER_DIGEST)
         self.assertNotEqual(populated["timeline.html"], new["timeline.html"])
         sentinel = "SYNTHETIC-PRIVATE-SENTINEL-DO-NOT-PUBLISH"
         self.write("private/notes.json", {"secret": sentinel})

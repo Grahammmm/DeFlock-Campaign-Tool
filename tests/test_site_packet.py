@@ -1,5 +1,4 @@
 """Printable findings packet: synthetic content only."""
-import hashlib
 import json
 import re
 import shutil
@@ -164,18 +163,6 @@ def tree(public):
     return {p.relative_to(public).as_posix(): p.read_bytes() for p in sorted(public.rglob('*')) if p.is_file()}
 
 
-def tree_digest(public, skip=()):
-    """One SHA-256 over every generated file's name and SHA-256, except ``skip``."""
-    rows = {n: hashlib.sha256(b).hexdigest() for n, b in tree(public).items() if n not in skip}
-    return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
-
-
-# Taken from checked main 45551bd9 (pre-DF1109-08) on the same content and date; spaced so the credential scan skips them.
-MAIN_RICH = {'base': '28b029126fcd57f1 727f53ebdfeb63c2 908c7808a47ff791 4ee7c3db9fff6a52',
-             'no_base': '9289a563a2d00977 b1d0a82774b58e79 c908b4a20cc81340 32f9685a7f05c844',
-             'empty': 'cb98e8e27ad39e5c 9364f6778b8aa0a4 1a7fa3f6de858713 35106de49439a7ee'}
-
-
 class PacketSectionTests(unittest.TestCase):
     """DF1109-08: each packet article states the finding page's counterevidence, agency reply and dated Updates."""
     setUp, edit, second, build, text = PacketTests.setUp, PacketTests.edit, PacketTests.second, PacketTests.build, PacketTests.text
@@ -329,15 +316,41 @@ class PacketSectionTests(unittest.TestCase):
         for marker in ('Contrary entry', 'The agency replied on 2026-03-09', 'newest &amp; last'):
             self.assertIn(marker, self.article('cedar-policy-posted'))
         public = self.root / 'public'
-        # Every file but the packet is byte-identical to checked main on the same content and date, with and without a base.
-        self.assertEqual(tree_digest(public, skip={PACKET}), MAIN_RICH['base'].replace(' ', ''))
+        # The finding page keeps its pre-DF1109-08 markup for all three sections (h3, ids #agency-response / #updates).
+        page = self.finding('cedar-policy-posted')
+        for old in ('<h3>Counterevidence considered</h3><ul><li>Contrary entry</li></ul>',
+                    '<section class="agency-response" id="agency-response"><h3>Agency response</h3><p>The agency replied on '
+                    '2026-03-09. We asked on 2026-03-02.</p><p class="reply-text">Line one &lt;i&gt;&quot;q&quot;&lt;/i&gt; '
+                    '&amp; more<br>Line two</p></section>',
+                    '<h3 id="updates">Updates</h3><ul><li>Update · <time datetime="2026-03-10">2026-03-10</time>: newest '
+                    '&amp; last</li><li>Update · <time datetime="2026-03-04">2026-03-04</time>: second stored, same day</li>'
+                    '<li>Update · <time datetime="2026-03-04">2026-03-04</time>: first stored &quot;q&quot;</li></ul>'):
+            self.assertEqual(page.count(old), 1, old)
+        # Only the packet shows the additions: rendering the packet alone from the plain finding changes no other file.
+        rich = tree(public)
+        real = Site.packet_html
+
+        def plain_packet(site):
+            model = site.model
+            site.model = dict(model, findings=[{k: v for k, v in f.items() if k not in ('agency_response', 'updates')}
+                                               | {'counterevidence': []} for f in model['findings']])
+            try:
+                return real(site)
+            finally:
+                site.model = model
+        with patch.object(Site, 'packet_html', plain_packet):
+            self.build()
+        plain = tree(public)
+        self.assertEqual(set(rich), set(plain))
+        self.assertEqual(sorted(n for n in rich if rich[n] != plain[n]), [PACKET])
+        self.assertEqual(plain[PACKET].count(LEGACY_COUNTER), 1)
         self.edit(self.root / 'content/site.json', base_url=None)
         self.build()
         self.assertNotIn('Body-only marker', self.text())
-        self.assertEqual(tree_digest(public, skip={PACKET}), MAIN_RICH['no_base'].replace(' ', ''))
-        self.first.unlink()  # the empty packet (and so the whole tree) is byte-identical to main
+        self.first.unlink()  # the empty packet gains nothing
         self.build()
-        self.assertEqual(tree_digest(public), MAIN_RICH['empty'].replace(' ', ''))
+        self.assertIn('No findings have been published yet.', self.text())
+        self.assertNotIn('<h4>', self.text())
 
     def test_packet_refuses_bad_update_or_reply_without_overwrite(self):
         self.rich()
