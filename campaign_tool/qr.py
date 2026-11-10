@@ -2,8 +2,12 @@
 
 ``encode(url)`` returns the module matrix (True = dark, no quiet zone); ``svg(url)`` renders it as inline SVG with a
 four-module quiet zone. The URL must satisfy the campaign's ASCII ``https://`` contract and is encoded byte for byte:
-nothing is rewritten, shortened, fetched or segment-optimized. Nothing here reads or writes a file.
+nothing is rewritten, shortened, fetched or segment-optimized. An explicit authority port must follow the standard
+library's own rule: absent or empty is allowed, otherwise an integer from 0 to 65535 (spelling is kept as given).
+Nothing here reads or writes a file.
 """
+from urllib.parse import urlsplit
+
 from .content import ContentError, _https
 
 MAX_BYTES = 213  # version 10, level M, byte mode
@@ -286,7 +290,8 @@ def _check(url):
         raise QrError(_LENGTH_MESSAGE)
     try:
         _https(url, "QR URL")
-    except ContentError:
+        urlsplit(url).port  # lazy stdlib validation: a non-numeric, out-of-range or multi-colon port raises ValueError
+    except (ContentError, ValueError):
         raise QrError("QR URL must be an ASCII https:// URL with a valid host.") from None
     return url.encode("ascii")
 
