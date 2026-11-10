@@ -114,7 +114,8 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
     field = '<label for="body">Draft text</label><textarea id="body" name="body" rows="28"%s>\n%s</textarea>' % (
         " required" if pending else " readonly", esc(row["body"]))
     if pending:
-        out.append(ap._form("/approvals/edit", token, row["id"], "", field, "Save edit", back="review"))
+        out.append(ap._form("/approvals/edit", token, row["id"], "", ap.revision_field(row) + field, "Save edit",
+                            back="review"))
     else:
         out.append(field)
     edits = history["edits"]

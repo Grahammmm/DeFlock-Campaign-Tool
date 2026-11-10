@@ -59,7 +59,8 @@ class ReviewTests(ServerCase):
     def test_save_history_hashes_diff_and_stale_signature(self):
         old_signature = self.signer.sign(aq.approval_payload(self.project, self.draft_row["id"]))
         new_body = "Edited <b>&\ncomplete body"
-        status, headers, _ = self.post("edit", body=new_body)
+        revision = self.form_revision(path="/review?id=" + self.draft_row["id"])
+        status, headers, _ = self.post("edit", body=new_body, expected_revision=revision)
         self.assertEqual((status, headers["location"]), (303, "/review?id=" + self.draft_row["id"]))
         page = self.get()[2]
         digest = hashlib.sha256(new_body.encode()).hexdigest()
@@ -124,13 +125,14 @@ class ReviewTests(ServerCase):
 
     def test_redirect_csrf_origin_and_expired_token_refused(self):
         before = journal(self.project)
-        self.assertEqual(self.post("edit", body="x", **{"return": "/elsewhere"})[0], 400)
-        self.assertEqual(self.post("edit", body="x", csrf_token="")[0], 403)
-        self.assertEqual(self.post("edit", body="x", csrf_token="old-start-token")[0], 403)
+        self.assertEqual(self.post("edit", body="x", expected_revision="0", **{"return": "/elsewhere"})[0], 400)
+        self.assertEqual(self.post("edit", body="x", expected_revision="0", csrf_token="")[0], 403)
+        self.assertEqual(self.post("edit", body="x", expected_revision="0", csrf_token="old-start-token")[0], 403)
         self.assertEqual(self.http.post("/approvals/edit", {"id": self.draft_row["id"], "body": "x",
-                                                          "return": "review"})[0], 400)
+                                                          "expected_revision": "0", "return": "review"})[0], 400)
         self.assertEqual(self.http.post("/approvals/edit", {"csrf_token": self.tok, "id": self.draft_row["id"],
-                            "body": "x", "return": "review"}, headers={"Origin": "http://foreign.invalid"})[0], 403)
+                            "body": "x", "expected_revision": "0", "return": "review"},
+                                        headers={"Origin": "http://foreign.invalid"})[0], 403)
         self.assertEqual(journal(self.project), before)
 
     def test_static_render_unchanged(self):
