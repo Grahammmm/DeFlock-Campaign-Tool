@@ -102,29 +102,34 @@ class KitTimingTests(Base):
 
     def test_organizer_steps_do_not_count_as_first_agency_response(self):
         noisy = {"note": "SECRET-NOTE", "reference": "REF-1", "contact": "someone@example.invalid"}
-        self.sent(
-            (A, "main", entry(A, "2026-03-01", [step("2026-03-03", "fee_paid", amount_cents=500, note="PAID-NOTE"),
-                                                step("2026-03-05", "fee_waived")], **noisy)),
-            (A, "paid", entry(A, "2026-03-01", [step("2026-03-03", "fee_paid"), step("2026-03-06", "acknowledged")],
-                              "paid")),
-            (A, "ask", entry(A, "2026-03-01", [step("2026-03-04", "clarification_requested"),
-                                               step("2026-03-06", "clarified"), step("2026-03-08", "acknowledged")],
-                             "ask")))
+        estimate = lambda on, cents, **extra: step(on, "fee_estimate", amount_cents=cents, **extra)  # noqa: E731
+
+        def history(cents, paid_note):
+            return [(A, "main", entry(A, "2026-03-01", [estimate("2026-03-03", cents), step("2026-03-05", "fee_paid",
+                                                                                          amount_cents=cents, note=paid_note)],
+                                      **noisy)),
+                    (A, "waive", entry(A, "2026-03-01", [estimate("2026-03-04", cents), step("2026-03-06", "fee_waived")],
+                                       "waive")),
+                    (A, "ask", entry(A, "2026-03-01", [step("2026-03-04", "clarification_requested"),
+                                                       step("2026-03-06", "clarified"), step("2026-03-08", "determination")],
+                                     "ask"))]
+        self.sent(*history(51234, "PAID-NOTE"))
         rows = self.rows()
-        self.assertEqual([rows[(A, r)]["first_step_days"] for r in ("main", "paid", "ask")], [4, 5, 3])
+        # the agency's estimate (not the organizer's payment or waiver) and its clarification request are the first steps
+        self.assertEqual([rows[(A, r)]["first_step_days"] for r in ("main", "waive", "ask")], [2, 3, 3])
+        self.assertEqual(rows[(A, "ask")]["determination_days"], 7)
         report = self.report()
         out = self.private / "t.csv"
         kit_timing.write_csv(self.root, out, report)
         exported = out.read_text() + kit_timing.format_report(report) + json.dumps(report)
-        for secret in ("SECRET-NOTE", "REF-1", "someone@example.invalid", "PAID-NOTE", "recorded_at", "0" * 64, "500"):
+        for secret in ("SECRET-NOTE", "REF-1", "someone@example.invalid", "PAID-NOTE", "recorded_at", "0" * 64, "51234"):
             self.assertNotIn(secret, exported)
-        self.sent((A, "main", entry(A, "2026-03-01", [step("2026-03-03", "fee_paid"), step("2026-03-05", "fee_waived")])),
-                  (A, "paid", entry(A, "2026-03-01", [step("2026-03-03", "fee_paid"), step("2026-03-06", "acknowledged")],
-                                    "paid")),
-                  (A, "ask", entry(A, "2026-03-01", [step("2026-03-04", "clarification_requested"),
-                                                     step("2026-03-06", "clarified"), step("2026-03-08", "acknowledged")],
-                                   "ask")))
+        self.sent(*[(a, r, {k: v for k, v in e.items() if k not in noisy}) for a, r, e in history(700, "OTHER-NOTE")])
         self.assertEqual(self.report(), report)  # notes, reference, contact, amount and recorded_at do not set any span
+        # organizer-only tuples never become the first agency step (the calculator, independent of replay admission)
+        organizer = [(kind, date(2026, 3, 3 + i), False) for i, kind in enumerate(kit_timing.ORGANIZER)]
+        row = kit_timing._row(A, "main", A, entry(A, "2026-03-01"), organizer, TODAY)
+        self.assertIsNone(row["first_step_days"])
 
     def test_waits_separate_never_subtracted(self):
         self.sent(
@@ -248,6 +253,156 @@ class KitTimingTests(Base):
         self.assertIn("Stopped: " + MALFORMED, err)
         self.assertEqual(list(self.private.iterdir()), [])  # no partial CSV
         self.assertEqual(tree(self.root), before)
+
+    def refuses(self, steps, as_of=None, sent_on="2026-03-01", **kwargs):
+        """A valid first agency plus one request carrying ``steps``: the whole report must be refused, generically."""
+        self.sent((A, "main", entry(A, "2026-03-01", [step("2026-03-02", "acknowledged")])),
+                  (B, "main", entry(B, sent_on, steps, **kwargs)))
+        with self.assertRaisesRegex(ValueError, "^" + MALFORMED + "$"):
+            self.report(as_of=as_of)
+
+    def test_duplicate_ack_and_determination_refuse_whole_report(self):
+        bad = {"ack same day": [step("2026-03-02", "acknowledged"), step("2026-03-02", "acknowledged")],
+               "ack later": [step("2026-03-02", "acknowledged"), step("2026-03-04", "acknowledged")],
+               "determination same day": [step("2026-03-05", "determination"), step("2026-03-05", "determination")],
+               "determination later": [step("2026-03-05", "determination"), step("2026-03-09", "determination")]}
+        for name, steps in bad.items():
+            for as_of in (None, "2026-03-01"):
+                with self.subTest(name, as_of=as_of):
+                    self.refuses(steps, as_of)
+        self.sent((A, "main", entry(A, "2026-03-01", [step("2026-03-02", "acknowledged"), step("2026-03-05", "determination")])))
+        row = self.rows()[(A, "main")]
+        self.assertEqual((row["first_step_days"], row["determination_days"]), (1, 4))
+
+    def test_settlement_without_estimate_and_first_step_closure_refuse(self):
+        estimate = step("2026-03-02", "fee_estimate", amount_cents=500)
+        bad = {"paid without estimate": [step("2026-03-02", "fee_paid")],
+               "waived without estimate": [step("2026-03-02", "fee_waived")],
+               "settled twice": [estimate, step("2026-03-03", "fee_paid"), step("2026-03-04", "fee_waived")],
+               "closed first": [step("2026-03-02", "closed")],
+               "withdrawn without note": [step("2026-03-02", "acknowledged"), step("2026-03-03", "withdrawn")]}
+        for name, steps in bad.items():
+            for as_of in (None, "2026-03-01"):
+                with self.subTest(name, as_of=as_of):
+                    self.refuses(steps, as_of)
+        self.sent((A, "closed", entry(A, "2026-03-01", [step("2026-03-02", "acknowledged"), step("2026-03-04", "closed")],
+                                      "closed")),
+                  (A, "paid", entry(A, "2026-03-01", [estimate, step("2026-03-03", "fee_paid", amount_cents=500)], "paid")),
+                  (A, "waived", entry(A, "2026-03-01", [estimate, step("2026-03-03", "fee_waived")], "waived")),
+                  (A, "withdrawn", entry(A, "2026-03-01", [step("2026-03-02", "acknowledged"),
+                                                           step("2026-03-03", "withdrawn", note="we changed course")],
+                                         "withdrawn")))
+        rows = self.rows()
+        self.assertEqual([rows[(A, r)]["first_step_days"] for r in ("closed", "paid", "waived", "withdrawn")], [1, 1, 1, 1])
+        self.assertEqual([rows[(A, r)]["open_age_days"] for r in ("closed", "paid", "waived", "withdrawn")],
+                         [None, 60, 60, None])
+
+    def test_malformed_ignored_fields_refuse(self):
+        bad = {"negative amount": [step("2026-03-02", "fee_estimate", amount_cents=-1)],
+               "bool amount": [step("2026-03-02", "fee_estimate", amount_cents=True)],
+               "string amount": [step("2026-03-02", "fee_estimate", amount_cents="5")],
+               "amount on acknowledgment": [step("2026-03-02", "acknowledged", amount_cents=5)],
+               "malformed expiry": [step("2026-03-02", "produced", download_expires_on="2026-13-01")],
+               "expiry before step": [step("2026-03-03", "produced", download_expires_on="2026-03-02")],
+               "expiry on acknowledgment": [step("2026-03-02", "acknowledged", download_expires_on="2026-03-09")],
+               "expected date before determination": [step("2026-03-02", "acknowledged", expected_on="2026-03-09")],
+               "bad recorded_at": [step("2026-03-02", "acknowledged", recorded_at="yesterday")],
+               "unknown stored key": [step("2026-03-02", "acknowledged", mystery="x")]}
+        for name, steps in bad.items():
+            for as_of in (None, "2026-03-01"):
+                with self.subTest(name, as_of=as_of):
+                    self.refuses(steps, as_of)
+
+    def test_full_history_validated_before_as_of_filter(self):
+        later = [step("2026-03-02", "acknowledged"), step("2026-03-20", "determination"), step("2026-03-25", "determination")]
+        for named in (False, True):
+            if named:
+                self.names(**{A: "Alpha", B: "Beta"})
+            with self.subTest("bad steps after the cutoff", named=named):
+                self.refuses(later, "2026-03-10")
+            with self.subTest("bad entry sent after the cutoff", named=named):
+                self.refuses([step("2026-03-22", "acknowledged"), step("2026-03-22", "acknowledged")], "2026-03-10",
+                             sent_on="2026-03-20")
+            with self.subTest("valid first request, bad second", named=named):
+                self.sent((A, "main", entry(A, "2026-03-01", [step("2026-03-02", "acknowledged")])),
+                          (A, "named", entry(A, "2026-03-01", [step("2026-03-02", "closed")], "named")))
+                with self.assertRaisesRegex(ValueError, "^" + MALFORMED + "$"):
+                    self.report()
+                with self.assertRaisesRegex(ValueError, "^" + MALFORMED + "$"):
+                    kit_timing.format_report(self.report(as_of="2026-03-02"))
+                self.assertFalse(list(self.private.iterdir()))
+
+    def test_cli_replay_refusal_creates_no_export_and_leaks_no_payload(self):
+        sentinel = "PRIVATE-MARKER-77"
+        self.sent((A, "main", entry(A, "2026-03-01", [step("2026-03-02", "acknowledged", note=sentinel),
+                                                      step("2026-03-04", "acknowledged", note=sentinel)],
+                                    reference=sentinel, contact=sentinel)))
+        before = tree(self.tmp)
+        out_csv = self.private / "t.csv"
+        with mock.patch.object(kit_timing, "write_csv", side_effect=AssertionError("write_csv used")) as write, \
+                mock.patch.object(kit_timing, "format_report", side_effect=AssertionError("table built")), \
+                mock.patch("campaign_tool.kit_export.write_rows", side_effect=AssertionError("write_rows used")):
+            for extra in ((), ("--csv", out_csv), ("--as-of", "2026-03-01", "--csv", out_csv)):
+                with self.subTest(extra=[str(e) for e in extra]):
+                    code, out, err = run("kit-timing", "--directory", self.root, *extra)
+                    self.assertEqual((code, out), (1, ""))
+                    self.assertEqual(err, "Stopped: " + MALFORMED + "\n")
+                    self.assertNotIn(sentinel, err)
+        write.assert_not_called()
+        self.assertFalse(out_csv.exists())
+        self.assertEqual(tree(self.tmp), before)  # bytes, modes' mtimes and the file set are unchanged
+
+    def test_valid_replay_projection_and_exports_preserve_contract(self):
+        estimate = step("2026-03-07", "fee_estimate", amount_cents=2500)
+        self.names(**{A: "Alpha Police"})
+        self.sent(
+            (A, "main", entry(A, "2026-03-01", [
+                step("2026-03-02", "acknowledged"), step("2026-03-03", "clarification_requested"),
+                step("2026-03-06", "clarified"), step("2026-03-07", "extension"), estimate,
+                step("2026-03-08", "fee_paid", amount_cents=2500), step("2026-03-12", "determination",
+                                                                         expected_on="2026-04-01"),
+                step("2026-03-20", "produced", partial=True), step("2026-03-25", "produced"),
+                step("2026-04-02", "produced")], received_on="2026-03-02", receipt_evidence="portal")),
+            (A, "zero", entry(A, "2026-03-01", [step("2026-03-01", "produced")], "zero")),
+            (B, "main", entry(B, "2026-03-01", [step("2026-03-02", "acknowledged"),
+                                                step("2026-03-05", "withdrawn", note="withdrawn by the campaign")])))
+        report = self.report()
+        main = report["requests"][0]
+        self.assertEqual([main[m] for m in kit_timing.SCALARS], [1, 11, 19, 24, None])
+        self.assertEqual(main["extension_spans"], [{"start_on": "2026-03-07", "end_on": "2026-03-12", "days": 5, "open": False}])
+        self.assertEqual(main["clarification_spans"], [{"start_on": "2026-03-03", "end_on": "2026-03-06", "days": 3,
+                                                       "open": False}])
+        rows = self.rows()
+        self.assertEqual(rows[(A, "zero")]["final_production_days"], 0)
+        self.assertEqual((rows[(B, "main")]["first_step_days"], rows[(B, "main")]["open_age_days"]), (1, None))
+        early = self.report(as_of="2026-03-10")
+        self.assertEqual([r["determination_days"] for r in early["requests"]], [None, None, None])
+        self.assertEqual(self.report(), report)  # deterministic repeated reads
+        out = self.private / "valid.csv"
+        summary = kit_timing.write_csv(self.root, out, report)
+        with open(out, encoding="utf-8", newline="") as handle:
+            written = list(csv.reader(handle))
+        self.assertEqual(written[0], CSV_HEADER)
+        self.assertEqual(summary["rows"], len(written) - 1)
+        self.assertIn("Alpha Police", kit_timing.format_report(report))
+        code, text, err = run("kit-timing", "--directory", self.root, "--as-of", "2026-04-30")
+        self.assertEqual((code, err), (0, "Read-only. Nothing was sent.\n"))
+        self.assertEqual(text, kit_timing.format_report(report) + "\n")
+
+    def test_empty_and_future_sent_guard_survive(self):
+        self.sent((A, "main", entry(A, "2026-03-01", [])))
+        self.assertEqual(self.rows()[(A, "main")]["open_age_days"], 60)  # an empty history is valid
+        self.sent((A, "main", entry(A, "2026-05-01", [])))  # sent after today, no steps at all
+        with self.assertRaisesRegex(ValueError, "^kit/sent.json unreadable: a request was sent after today$"):
+            self.report()
+        with self.assertRaisesRegex(ValueError, "after today"):
+            self.report(as_of="2026-03-01")
+        self.sent((A, "main", entry(A, "2026-03-01", [step("2026-03-02", "acknowledged")])))
+        real = kit_timing.kit_track.validate_steps
+        with mock.patch.object(kit_timing.kit_track, "validate_steps", wraps=real) as spy:
+            self.report(as_of="2026-03-03")
+        spy.assert_called_once()
+        self.assertEqual(spy.call_args.kwargs, {"today": TODAY})  # the effective day, never the as-of cutoff
 
     def test_csv_private_exclusive_formula_safe(self):
         weird = ["=cmd", "+x", "-x", "@x", "\tx", "\rx", 'a"b,c']

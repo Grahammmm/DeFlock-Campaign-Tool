@@ -1,7 +1,9 @@
 """kit-timing: private, read-only response-time report from kit/sent.json (recorded history only).
 
 Every number is a whole count of calendar days between two recorded dates. Waits (extensions, clarification requests)
-are listed as their own spans and never subtracted from another number. Nothing is sent, fetched or repaired here."""
+are listed as their own spans and never subtracted from another number. Every recorded request history is replayed
+through the shared kit-response rules first; one the replay rejects refuses the whole report. Nothing is sent,
+fetched or repaired here."""
 import os
 import statistics
 from datetime import date
@@ -53,34 +55,16 @@ def _names(root):
 
 
 def _parse(entry, today):
-    """[(kind, date, partial)] of one entry's steps, fully validated; ValueError for any malformed timing step."""
-    sent = date.fromisoformat(entry["sent_on"])
-    if sent > today:
+    """[(kind, date, partial)] of one entry's steps. The whole recorded history is first replayed through the shared
+    kit-response rules (``kit_track.validate_steps``, as of the effective day ``today``, never the as-of cutoff);
+    ValueError, always the same generic message, for any history that replay rejects."""
+    if date.fromisoformat(entry["sent_on"]) > today:
         raise ValueError(UNREADABLE + "a request was sent after today")
-    steps, previous = [], sent
-    waiting = extended = answered = closed = False
-    for step in entry["steps"]:
-        kind = step.get("kind") if isinstance(step, dict) else None
-        on = kit_track._day(step.get("on")) if isinstance(step, dict) else None
-        if kind not in kit_track.KINDS or on is None or on < previous or on > today or closed:
-            raise ValueError(MALFORMED)
-        if "partial" in step and (step["partial"] is not True or kind != "produced"):
-            raise ValueError(MALFORMED)
-        if kind == "clarification_requested":
-            waiting, bad = True, waiting
-        elif kind == "clarified":
-            waiting, bad = False, not waiting
-        elif kind == "extension":
-            extended, bad = True, extended or answered
-        else:
-            bad = False
-        if bad:
-            raise ValueError(MALFORMED)
-        answered = answered or kind in ("determination", "produced", "denied")
-        closed = kind in ("closed", "withdrawn")
-        previous = on
-        steps.append((kind, on, step.get("partial") is True))
-    return steps
+    try:
+        kit_track.validate_steps(entry, "recorded request", today=today)
+    except ValueError:  # the diagnostic can name private values: report only that the history is malformed
+        raise ValueError(MALFORMED) from None
+    return [(step["kind"], kit_track._day(step["on"]), step.get("partial") is True) for step in entry["steps"]]
 
 
 def _span(start, end, cutoff):
