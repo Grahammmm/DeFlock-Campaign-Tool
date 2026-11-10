@@ -11,14 +11,18 @@ info item, never a match claim. Absent drafts add nothing; no draft is generated
 import argparse
 import json
 import os
+import re
 import shlex
+import stat
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import body_schedules, correction_requests, findings, kit, kit_assign, kit_track, meeting_comments, meeting_stage
+from . import (body_schedules, correction_requests, findings, kit, kit_assign, kit_track, meeting_comments, meeting_stage,
+               meetings_ics)
 from .body_schedules import read_body_schedules
 from .content import (CONTINUATION_KEYS, _agency_response, _read_json, continuation_issues, continuation_targets,
                       load_agencies, load_meeting)
+from .content_events import build_cutoff
 from .meetings_manual import ManualMeetingError, _read_scan
 
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_waiting_on_you", "request_fee_unpaid",
@@ -27,7 +31,7 @@ KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_w
          "finding_reply_due", "correction_request_open", "finding_ready",
          "finding_blocked", "outreach_stale", "outreach_not_checked",
          "contract_ending", "outcome_missing", "participation_unverified", "meeting_not_staged",
-         "minutes_pending", "continued_pending", "direction_pending", "stale_comment_kit", "stale_contact", "review_waiting",
+         "official_recheck_due", "site_rebuild_due", "minutes_pending", "continued_pending", "direction_pending", "stale_comment_kit", "stale_contact", "review_waiting",
          "stale_body_schedule", "expected_regular_meeting", "backup_due", "unreadable")
 WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS, REVIEW_DAYS = 7, 180, 120, 7
 BACKUP_DAYS = 7
@@ -35,6 +39,11 @@ FINDING_REPLY_DAYS = 3  # DF1109-02: a pending reply window is listed from three
 CORRECTION_LOG = "private/" + correction_requests.NAME
 WITHHELD = "could not be read (reason withheld: it can quote the file)"
 CONTRACT_DAYS, CONTRACT_ENDED_DAYS, MINUTES_DAYS, DIRECTION_DAYS = 90, 30, 45, 14
+OFFICIAL_LIMIT_DAYS, OFFICIAL_WARN_DAYS = 365, 30  # DF1109B-16: build accepts a check through age 365; warn from 30 days before
+BUILT_ICS_BYTES = 2 * 1024 * 1024
+BUILT_UID = re.compile(r"(meeting|event)-([a-z][a-z0-9-]{0,63})@([^@\s]+)")  # the writers' UID: generated id, one host
+BUILT_START = re.compile(r"[0-9]{8}T[0-9]{6}Z")  # the writers' DTSTART: always UTC
+BUILT_RECURRENCE = ("RRULE", "RDATE", "EXRULE", "EXDATE", "RECURRENCE-ID")
 
 
 def contract_days(text):
@@ -66,8 +75,10 @@ def _unreadable(label, exc):
     return _item("unreadable", f"fix {label}: {str(exc)[:ERROR_CHARS]}", f"open {label} and fix it", key=label)
 
 
-def _meetings(root, as_of, selector):
+def _meetings(root, as_of, selector, snapshot=None):
+    """``snapshot`` (DF1109B-16, optional) receives this one read of content/meetings for ``_site_rebuild``."""
     folder, items = root / "content" / "meetings", []
+    broken = 0
     try:
         submitted = meeting_comments.read(root)  # a comment already sent by hand is not due again (DF1207-09)
     except ValueError as exc:  # bad file: say so once, keep listing every deadline
@@ -83,10 +94,19 @@ def _meetings(root, as_of, selector):
             day = datetime.fromisoformat(due.replace("Z", "+00:00")).date() if due else None
         except (ValueError, OSError) as exc:
             items.append(_unreadable(label, exc))
+            broken += 1
             continue
         loaded.append((label, {**meeting, "id": meeting["id"] or path.stem}, written, due, day))
     staged = [entry[1] for entry in loaded]
+    snapshot_entry = {"meetings": {}, "labels": {}, "broken": broken}  # by effective id; a repeated id is ambiguous
+    for label, meeting, *_ in loaded:
+        snapshot_entry["labels"].setdefault(meeting["id"], []).append(label)
+        snapshot_entry["meetings"][meeting["id"]] = meeting
+    if snapshot is not None:
+        snapshot.update(snapshot_entry)
     unreliable = _continuation_unreadable(loaded, items)  # pass 2: relationships between the files read
+    if snapshot is not None:
+        snapshot["flagged"] = unreliable
     for label, meeting, written, due, day in loaded:  # pass 3: the reminders of each readable meeting
         ident = meeting["id"]
         if (pending := _minutes_item(meeting, ident, as_of, selector)) is not None:
@@ -557,6 +577,191 @@ def _body_schedules(root, as_of):
     return items
 
 
+def _official_rechecks(root, as_of, selector):
+    """DF1109B-16: one ``official_recheck_due`` per stored official whose ``checked_on`` is 335 or more days old (within
+    30 days of the 365-day limit, or past it). The build accepts a check through age 365 and refuses it from
+    checked_on + 366 days. Read with the maintenance loader (no age limit), so an expired row is listed, never published.
+    No roster adds nothing; a roster that cannot be read is one unreadable item and no partial rows."""
+    from .content import _calendar_day, default_agencies, load_officials
+    from .officials_cmd import FILE, LABEL, _content_fd, _parse, _read, same_name
+    if not os.path.lexists(root / "content" / FILE):
+        return []
+    folder = _content_fd(root)
+    try:
+        roster = _read(folder, FILE, LABEL)
+        if roster is None:
+            return []
+        document = _parse(roster[0], LABEL)
+        stored = _read(folder, "agencies.json", "content/agencies.json")
+        agencies = (default_agencies(root, as_of) if stored is None else
+                    load_agencies(_parse(stored[0], "content/agencies.json"), "content/agencies.json", today=as_of))
+    finally:
+        os.close(folder)
+    people = load_officials(document, agencies, as_of, require_fresh=False)
+    names = {agency["agency_id"]: agency["name"] for agency in agencies}
+    items = []
+    for agency_id, rows in people.items():
+        for index, person in enumerate(rows):
+            checked = _calendar_day(person["checked_on"], LABEL)
+            if (as_of - checked).days < OFFICIAL_LIMIT_DAYS - OFFICIAL_WARN_DAYS:
+                continue
+            try:
+                refused = (checked + timedelta(OFFICIAL_LIMIT_DAYS + 1)).isoformat()
+            except OverflowError:
+                raise ValueError(f"{LABEL}: a checked_on date is too late to calculate its refusal date") from None
+            items.append(_item("official_recheck_due", f"{person['name']}, {names[agency_id]}: checked "
+                               f"{person['checked_on']}; build refuses this row from {refused}",
+                               f"officials recheck {selector} --agency {shlex.quote(agency_id)} "
+                               f"--name {shlex.quote(person['name'])} --checked-on YYYY-MM-DD", refused,
+                               f"{agency_id}\0{same_name(person['name'])}\0{index:04d}"))
+    return items
+
+
+def _built_file(root, name):
+    """The bytes of ``public/<name>``, or None when ``public/`` or the file is absent. Anchored at the campaign folder,
+    links are never followed; a link, folder, FIFO, device, oversized or unreadable file is refused unread."""
+    try:
+        top = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise ValueError("the campaign folder cannot be opened") from None
+    try:
+        try:
+            folder = os.open("public", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=top)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            raise ValueError("public/ is not a real folder (links are never followed)") from None
+    finally:
+        os.close(top)
+    try:
+        try:
+            info = os.stat(name, dir_fd=folder, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            raise ValueError("cannot be inspected") from None
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError("is a symbolic link; links are never followed")
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("is not a regular file")
+        if info.st_size > BUILT_ICS_BYTES:
+            raise ValueError("file too large")
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
+            with os.fdopen(fd, "rb") as handle:
+                opened = os.fstat(handle.fileno())
+                data = handle.read(BUILT_ICS_BYTES + 1)
+        except OSError:
+            raise ValueError("cannot be read") from None
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+            raise ValueError("changed while it was being read")
+        if len(data) > BUILT_ICS_BYTES:
+            raise ValueError("file too large")
+        return data
+    finally:
+        os.close(folder)
+
+
+def _built_calendar(root, name, prefix):
+    """DF1109B-16: ``[(slug, utc start)]`` of one generated calendar (``meetings.ics`` or ``events.ics``, UIDs
+    ``<prefix>-<slug>@host``), None when it is absent. Only the folder's own file is read, with meetings_ics.py's
+    unfolding and property parser. A calendar that is not a complete one of the writers' shape (an incomplete or
+    nested VEVENT, a recurrence, a missing or repeated UID or DTSTART, a non-UTC start) is refused, never read as
+    empty; the same UID repeated identically counts once, conflicting repeats refuse the whole file."""
+    data = _built_file(root, name)
+    if data is None:
+        return None
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("not valid UTF-8") from None
+    lines = [line for line in meetings_ics.unfold(text) if line.strip()]
+    if not lines or lines[0].strip().upper() != "BEGIN:VCALENDAR" or lines[-1].strip().upper() != "END:VCALENDAR":
+        raise ValueError("not a complete VCALENDAR")
+    inside, count, versions = False, 0, []
+    for line in lines[1:-1]:
+        parsed = meetings_ics.split_line(line)
+        if parsed is None:
+            raise ValueError("a line is not a calendar property")
+        field, _, value = parsed
+        if field == "BEGIN":
+            if inside or value.strip().upper() != "VEVENT":
+                raise ValueError("an unexpected or nested component")
+            inside, count = True, count + 1
+        elif field == "END":
+            if not inside or value.strip().upper() != "VEVENT":
+                raise ValueError("an unbalanced component")
+            inside = False
+        elif field == "VERSION" and not inside:
+            versions.append(value.strip())
+    if inside or versions != ["2.0"]:
+        raise ValueError("an unclosed VEVENT or no single VERSION:2.0")
+    events = meetings_ics.parse_events(text)  # more than 2000 refuses
+    if len(events) != count:
+        raise ValueError("a VEVENT could not be read")
+    found, seen = [], {}
+    for event in events:
+        if any(field in event for field in BUILT_RECURRENCE):
+            raise ValueError("a recurring event is not one of the writers' events")
+        if len(event.get("UID", ())) != 1 or len(event.get("DTSTART", ())) != 1:
+            raise ValueError("each event needs exactly one UID and one DTSTART")
+        (_, uid), (params, start) = event["UID"][0], event["DTSTART"][0]
+        parts = BUILT_UID.fullmatch(uid)
+        if parts is None or parts[1] != prefix or params or BUILT_START.fullmatch(start) is None:
+            raise ValueError("an event UID or UTC DTSTART is not the writers' form")
+        try:
+            moment = datetime.strptime(start, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise ValueError("an event DTSTART is not a real date") from None
+        if uid in seen:
+            if seen[uid] != event:
+                raise ValueError("an event UID is repeated with different content")
+            continue
+        seen[uid] = event
+        found.append((parts[2], moment))
+    return found
+
+
+def _site_rebuild(root, as_of, selector, snapshot):
+    """DF1109B-16: one ``site_rebuild_due`` counting what the built public/meetings.ics and public/events.ics still list as
+    upcoming that the site's own rules now call past, cancelled or no longer staged. Meetings: the UID's id is resolved to
+    the staged file today already read and judged by ``site.meeting_is_upcoming`` (the typed day, not the calendar's UTC
+    DTSTART); an id with no staged file is no longer staged; a staged file that cannot be read, or an id several files
+    claim, is not counted (that file is its own item). Events: UTC DTSTART before ``build_cutoff(as_of)``.
+    agencies/*.ics repeat the same list and public/ HTML is not read. A bad calendar is one unreadable item."""
+    from . import site as site_module
+    items, meetings, events = [], 0, 0
+    try:
+        listed = _built_calendar(root, "meetings.ics", "meeting")
+    except (ValueError, OSError) as exc:
+        items.append(_unreadable("public/meetings.ics", exc))
+        listed = None
+    if listed and "meetings" in snapshot:  # the staged read finished
+        folder = root / "content" / "meetings"
+        for ident in sorted({slug for slug, _ in listed}):
+            if ident in snapshot["labels"] and len(snapshot["labels"][ident]) > 1:  # which file is it? not a guess
+                items.extend(_unreadable(label, f"duplicate meeting ID {ident}")
+                             for label in snapshot["labels"][ident] if label not in snapshot.get("flagged", ()))
+            elif ident in snapshot["meetings"]:
+                meetings += not site_module.meeting_is_upcoming(snapshot["meetings"][ident], as_of)
+            elif not snapshot["broken"] and not os.path.lexists(folder / f"{ident}.json"):
+                meetings += 1  # no staged file: the site would no longer list it
+    try:
+        listed = _built_calendar(root, "events.ics", "event")
+    except (ValueError, OSError) as exc:
+        items.append(_unreadable("public/events.ics", exc))
+        listed = None
+    cutoff = build_cutoff(as_of)
+    events = sum(1 for _, start in listed or () if start < cutoff)
+    if meetings or events:
+        items.append(_item("site_rebuild_due", f"the built site still lists {meetings} meetings and {events} events as "
+                           "upcoming that are now past, cancelled or no longer staged; rebuild and publish",
+                           f"build {selector}", key="site"))
+    return items
+
+
 def _show(text):
     """A filesystem name for display: control and non-printable characters become escaped text."""
     return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") if ord(c) < 256
@@ -611,7 +816,8 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days
     if backups is not None and (type(backup_days) is not int or not 1 <= backup_days <= 90):
         from .backup import BackupError
         raise BackupError("backup_days must be an integer 1-90")
-    sources = ((lambda: _meetings(root, as_of, selector), "content/meetings/"),
+    snapshot = {}  # DF1109B-16: the one read of content/meetings, shared with the rebuild check below
+    sources = ((lambda: _meetings(root, as_of, selector, snapshot), "content/meetings/"),
                (lambda: _requests(root, as_of, selector, law_base, owner), "kit/sent.json"),
                (lambda: _findings(root, as_of, selector), "private/drafts/"),
                (lambda: _correction_requests(root, as_of, selector), CORRECTION_LOG),
@@ -622,7 +828,9 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days
                (lambda: _review_waiting(root, as_of, selector, review_days), "private/review-assignments/"),
                (lambda: _stale_kits(root, selector), "content/"),
                (lambda: _contacts(root, as_of, selector), "kit/agencies.json"),
-               (lambda: _body_schedules(root, as_of), "content/body-schedules.json"))
+               (lambda: _body_schedules(root, as_of), "content/body-schedules.json"),
+               (lambda: _official_rechecks(root, as_of, selector), "content/officials.json"),
+               (lambda: _site_rebuild(root, as_of, selector, snapshot), "public/"))
     items = []
     for read, label in sources:
         try:
