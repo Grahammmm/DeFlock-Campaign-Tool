@@ -53,8 +53,8 @@ class MeetingWork(unittest.TestCase):
         self.assertEqual(self.new("2026-10-10"), [])  # the day of the meeting: not yet
         items = self.new("2026-10-11")
         self.assertEqual([i["what"] for i in items],
-                         ["Cedar Board met on 2026-10-10 (a-late): record what happened",
-                          "Cedar Board met on 2026-10-10 (b-early): record what happened"])
+                         ["Cedar Board was scheduled for 2026-10-10 (a-late) with no outcome recorded: verify what happened, then record it",
+                          "Cedar Board was scheduled for 2026-10-10 (b-early) with no outcome recorded: verify what happened, then record it"])
         self.assertEqual(items[0]["command"], "meetings-outcome --directory '%s' --id a-late --result RESULT "
                          "--on YYYY-MM-DD --source OFFICIAL_URL --verified-by NAME" % self.root)
         self.assertEqual(len(self.new("2027-06-01")), 2)  # no expiry
@@ -139,7 +139,7 @@ class MeetingWork(unittest.TestCase):
         self.assertEqual(self.new("2026-10-10"), [])
         text = today.run_cli(self.root, "2026-10-10")
         json.loads(today.run_cli(self.root, "2026-10-10", as_json=True))
-        self.assertNotIn("record what happened", text)
+        self.assertNotIn("no outcome recorded", text)
         self.scan(None, raw="{")
         today.run_cli(self.root, "2026-10-10")
         self.assertEqual({p: p.read_bytes() for p in self.root.rglob("*") if p.is_file() and p.name != "meetings.json"},

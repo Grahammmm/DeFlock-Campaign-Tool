@@ -116,7 +116,8 @@ def _meeting_work(meeting, ident, as_of, selector):
         return None
     start, quoted = meeting["starts_at"][:10], shlex.quote(ident)
     if meeting["outcome"] is None and start < as_of.isoformat():
-        return _item("outcome_missing", f"{meeting['body']} met on {start} ({ident}): record what happened",
+        return _item("outcome_missing", f"{meeting['body']} was scheduled for {start} ({ident}) with no outcome "
+                     "recorded: verify what happened, then record it",
                      f"meetings-outcome {selector} --id {quoted} --result RESULT --on YYYY-MM-DD "
                      "--source OFFICIAL_URL --verified-by NAME", start, ident)
     if meeting["participation"] is None and as_of.isoformat() <= start <= (as_of + timedelta(14)).isoformat():
