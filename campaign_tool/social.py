@@ -9,7 +9,7 @@ Drafts for slugs that are no longer published are listed as stale, never deleted
 (ok, missing, outdated, edited, not_regular) with problem codes and the stale drafts.
 ``build_social(root, platforms=[...])`` sizes drafts by each platform's own count
 (``post_length``) into ``kit/social/<platform>/``; ``check_social`` also checks every platform, meeting, outcome and
-thread draft folder (``social_check``), still read-only. Meeting and outcome drafts keep a private ``.check.json``
+thread and event draft folder (``social_check``), still read-only. Meeting, outcome and event drafts keep a private ``.check.json``
 (original starts_at / outcome and window) next to ``.written.json`` so a later change can be named.
 ``build_meeting_social(root)`` drafts one post per scheduled, upcoming, organizer-verified staged meeting into
 ``kit/social/meetings/`` (same rules, never posted); finding drafts do not change.
@@ -151,10 +151,12 @@ def _read_state(path, what):
 
 
 def _meta_valid(entry):
-    if not (isinstance(entry, dict) and isinstance(entry.get("sha256"), str) and entry.get("kind") in ("meetings", "outcomes")):
+    if not (isinstance(entry, dict) and isinstance(entry.get("sha256"), str) and entry.get("kind") in ("meetings", "outcomes", "events")):
         return False
     if type(entry.get("within_days")) is not int or not 1 <= entry["within_days"] <= 60:
         return False
+    if entry["kind"] == "events":
+        return parse_moment(entry.get("starts_at")) is not None
     return isinstance(entry.get("starts_at") if entry["kind"] == "meetings" else entry.get("outcome"),
                       str if entry["kind"] == "meetings" else dict)
 
@@ -597,6 +599,10 @@ def event_review_notes(root, within_days=14, now=None):
         return ["review-required: social: legal-claim wording (event posts could not be scanned; read them before use)"]
 
 
+def _event_provenance(events, within_days):
+    return {e["id"]: {"kind": "events", "within_days": within_days, "starts_at": e["starts_at"]} for e in events}
+
+
 def build_event_social(root, platforms=None, within_days=14, now=None):
     """Write event drafts into ``kit/social/events/`` (``<platform>/`` each with ``platforms``) and return
     ``{events, skipped, posted}``; ``events`` is ``build_social``'s dict (per platform with ``platforms``)."""
@@ -604,12 +610,20 @@ def build_event_social(root, platforms=None, within_days=14, now=None):
     kit_dir = root / "kit"
     social_dir = kit_dir / "social"
     event_dir = social_dir / "events"
+    provenance = _event_provenance(events, within_days)
     if platforms is None:
         drafts = {e["id"]: _event_draft(e, base_url) for e in events}
-        for folder in (kit_dir, social_dir, event_dir, social_dir / "events.suggested"):
-            if folder in (kit_dir, social_dir) or os.path.lexists(folder):
+        folders = [event_dir, social_dir / "events.suggested"]
+        for folder in [kit_dir, social_dir] + folders:
+            if os.path.lexists(folder):
                 _kit_folder(folder)
-        result = _write_drafts(event_dir, social_dir / "events.suggested", drafts)
+        for folder in folders:
+            target = folder / ".check.json"
+            if os.path.lexists(target) and not stat.S_ISREG(os.lstat(target).st_mode):
+                raise ValueError("event .check.json is not a regular file; remove it and rebuild the drafts")
+        for folder in (kit_dir, social_dir):
+            _kit_folder(folder)
+        result = _write_drafts(event_dir, social_dir / "events.suggested", drafts, provenance)
     else:
         platforms = list(dict.fromkeys(platforms))
         unknown = [p for p in platforms if p not in PLATFORMS]
@@ -620,7 +634,11 @@ def build_event_social(root, platforms=None, within_days=14, now=None):
         for folder in [kit_dir, social_dir, event_dir] + folders:
             if os.path.lexists(folder):
                 _kit_folder(folder)
+        for folder in folders:
+            target = folder / ".check.json"
+            if os.path.lexists(target) and not stat.S_ISREG(os.lstat(target).st_mode):
+                raise ValueError("event .check.json is not a regular file; remove it and rebuild the drafts")
         for folder in (kit_dir, social_dir, event_dir):
             _kit_folder(folder)
-        result = {"platforms": {p: _write_drafts(event_dir / p, event_dir / (p + ".suggested"), plan[p]) for p in platforms}}
+        result = {"platforms": {p: _write_drafts(event_dir / p, event_dir / (p + ".suggested"), plan[p], provenance) for p in platforms}}
     return {"events": result, "skipped": skipped, "posted": False}
