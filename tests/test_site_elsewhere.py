@@ -26,6 +26,7 @@ from campaign_tool.legal_claims import elsewhere_notes, site_notes
 from campaign_tool.site import GENERATED_TOP_LEVEL, build_site
 from campaign_tool.site_check import check_accessibility, check_links
 from tests.test_site_faq import BASELINE
+from tests.test_site_packet import strip_packet_counterevidence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
@@ -84,9 +85,9 @@ class Case(unittest.TestCase):
     def digests(self, files):
         return {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
 
-    @staticmethod
-    def without_catalogue(files):
-        """DF2207-12 adds exactly two outputs, one footer paragraph and one sitemap URL; remove only those, keep every pinned digest."""
+    def without_catalogue(self, files):
+        """DF2207-12 adds exactly two outputs, one footer paragraph and one sitemap URL; remove only those, keep every pinned digest.
+        DF1109-08: the packet's default counterevidence block is asserted and removed the same way."""
         data_link = b'<p><a href="/data.html">Open data</a></p>'
         data_url = b'<url><loc>https://cedar-records.example.invalid/data.html</loc></url>'
         legacy = {}
@@ -99,7 +100,7 @@ class Case(unittest.TestCase):
             if name == "sitemap.xml":
                 assert data.count(data_url) == 1
                 data = data.replace(data_url, b"", 1)
-            legacy[name] = data
+            legacy[name] = strip_packet_counterevidence(self, name, data)
         return legacy
 
     def refused(self, value, pattern):
