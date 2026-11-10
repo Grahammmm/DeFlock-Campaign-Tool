@@ -187,7 +187,14 @@ class VerdictTests(Base):
         self.assertEqual(len(row["rejected_quotes"]), 1)
         self.assertIn("phone", row["rejected_quotes"][0]["categories"])
         self.assertNotIn("quote", row["rejected_quotes"][0])  # the refused text is never stored
-        self.assertNotIn("555", (self.out / MOD.OUT_NAME).read_text(encoding="utf-8"))
+        # The double's ephemeral port is random and can contain "555" by chance (e.g. 42555): remove only the
+        # known URL before checking that no phone digits leaked from the refused page text.
+        written = (self.out / MOD.OUT_NAME).read_text(encoding="utf-8")
+        url = "https://127.0.0.1:%d/staff" % double.port
+        self.assertIn(url, written)
+        written = written.replace(url, "")
+        self.assertNotIn("555", written)
+        self.assertNotIn("1234", written)
 
     def test_name_bypass_flock_safety_police_department_without_citation(self):
         # an agency NAMED "Flock Safety Police Department" whose page names nothing stays no-evidence
