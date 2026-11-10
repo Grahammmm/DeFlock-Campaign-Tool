@@ -209,6 +209,99 @@ class CorrectionRequestTests(unittest.TestCase):
         self.assertEqual(built(), without)
         self.assertFalse(any(b"UNIQUE-" in data for data in without.values()))
 
+    # RF1935-8: a repeated JSON object key makes the whole log ambiguous and is refused by every consumer.
+    DUP_NEEDLE = "correction-requests.json unreadable: duplicate object key; nothing was changed"
+
+    def dup_text(self, extra_member=None, **override):
+        """Raw log text whose one request repeats a member (default: the reproduced declined-then-open state pair)."""
+        request = {"id": 1, "finding_id": FID, "received_on": "2026-03-06", "summary": "S.", "state": "open"}
+        request.update(override)
+        body = json.dumps(request)[:-1] + (extra_member if extra_member is not None else ', "state": "declined"') + "}"
+        return '{"schema_version": 1, "requests": [' + body + "]}"
+
+    def test_duplicate_state_is_refused_before_last_value_wins(self):
+        for extra in (', "state": "declined"', ', "state": "open"'):  # conflicting and identical repeats
+            for text in (self.dup_text(extra), self.dup_text(extra).replace('"state": "open"', '"state": "declined"', 1)):
+                self.file.write_text(text, encoding="utf-8")
+                self.file.chmod(0o600)
+                self.refused(self.DUP_NEEDLE, cr.list_requests, self.root)
+                self.refused(self.DUP_NEEDLE, cr.open_overdue, self.root, TODAY)
+        result = self.cli("correction-request", "list", "--directory", self.root, returncode=3)
+        self.assertIn(self.DUP_NEEDLE, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_duplicate_keys_at_document_and_request_levels(self):
+        good = '{"id": 1, "finding_id": "%s", "received_on": "2026-03-06", "summary": "S.", "state": "open"}' % FID
+        decided = ('{"id": 1, "finding_id": "%s", "received_on": "2026-03-06", "summary": "S.", "state": "declined", '
+                   '"decided_on": "2026-03-08", "note": "N."}' % FID)
+        cases = [('{"schema_version": 1, "schema_version": 1, "requests": []}'),
+                 ('{"schema_version": 1, "requests": [], "requests": []}')]
+        for member in ('"id": 2', '"finding_id": "x"', '"received_on": "2026-03-07"', '"summary": "T."', '"state": "open"'):
+            cases.append('{"schema_version": 1, "requests": [' + good[:-1] + ", " + member + "}]}")
+        cases.append('{"schema_version": 1, "requests": [' + decided[:-1] + ', "note": "M."}]}')
+        for text in cases:
+            with self.subTest(text=text[:70]):
+                self.file.write_text(text, encoding="utf-8")
+                self.refused(self.DUP_NEEDLE, cr.list_requests, self.root)
+        # the same field names in different request objects are not duplicates
+        second = good.replace('"id": 1', '"id": 2')
+        self.file.write_text('{"schema_version": 1, "requests": [' + good + ", " + second + "]}", encoding="utf-8")
+        self.assertEqual([r["id"] for r in cr.list_requests(self.root, TODAY)], [1, 2])
+
+    def test_unicode_escaped_duplicate_member_is_the_same_key(self):
+        self.file.write_text(self.dup_text(', "st\\u0061te": "declined"'), encoding="utf-8")
+        self.refused(self.DUP_NEEDLE, cr.list_requests, self.root)
+        # near-looking but distinct keys still get ordinary schema validation, not the duplicate refusal
+        self.file.write_text(self.dup_text(', "State": "declined"'), encoding="utf-8")
+        self.refused("unknown key 'State'", cr.list_requests, self.root)
+
+    def test_duplicate_log_cannot_be_silently_rewritten_by_add_or_decide(self):
+        for text in (self.dup_text(), self.dup_text(id=1).replace("]}", ', {"id": 2, "id": 2}]}')):
+            self.file.write_text(text, encoding="utf-8")
+            self.file.chmod(0o600)
+            os.utime(self.file, (1_700_000_000, 1_700_000_000))
+            before, mtime = self.file.read_bytes(), self.file.stat().st_mtime_ns
+            with mock.patch.object(cr, "_write_private") as writer:
+                self.refused(self.DUP_NEEDLE, self.add)
+                self.refused(self.DUP_NEEDLE, self.decide)
+            writer.assert_not_called()
+            self.assertEqual((self.file.read_bytes(), self.file.stat().st_mtime_ns,
+                              stat.S_IMODE(self.file.stat().st_mode)), (before, mtime, 0o600))
+            self.assertEqual(sorted(p.name for p in self.private.iterdir() if p.name.startswith(".correction")),
+                             [".correction-requests.lock"])
+            result = self.cli("correction-request", "add", "--directory", self.root, "--finding", FID,
+                              "--received", "2026-03-06", "--summary", "x", returncode=3)
+            self.assertIn(self.DUP_NEEDLE, result.stderr)
+            self.assertEqual(self.file.read_bytes(), before)
+
+    def test_duplicate_error_is_fixed_and_private_marker_free(self):
+        marker = "HOSTILE-MARKER-\\u0001-ZQMARK"
+        text = ('{"schema_version": 1, "requests": [], "%s": 1, "%s": "%s"}' % (marker, marker, marker))
+        self.file.write_text(text, encoding="utf-8")
+        shown = []
+        for call in (lambda: cr.list_requests(self.root), lambda: self.add(), lambda: self.decide()):
+            with self.assertRaises(ValueError) as caught:
+                call()
+            shown.append(str(caught.exception))
+        shown.append(doctor_report(self.root)["correction_requests_error"])
+        shown.append(self.cli("correction-request", "list", "--directory", self.root, returncode=3).stderr)
+        for message in shown:
+            self.assertIn("duplicate object key", message)
+            self.assertNotIn("HOSTILE", message)
+            self.assertNotIn("ZQMARK", message)
+
+    def test_duplicate_free_log_keeps_all_existing_contracts(self):
+        self.assertEqual(cr.list_requests(self.root, TODAY), [])  # missing file
+        self.file.write_text('{"schema_version": 1, "requests": []}', encoding="utf-8")
+        self.assertEqual(cr.list_requests(self.root, TODAY), [])  # empty log
+        self.add(received="2026-03-06")
+        self.add(received="2026-03-07")
+        self.decide(request_id=1)
+        self.assertEqual([(r["id"], r["state"]) for r in cr.list_requests(self.root, TODAY)], [(2, "open"), (1, "declined")])
+        self.refused("already declined; decisions are final", self.decide)
+        self.assertEqual(self.add()["id"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()
