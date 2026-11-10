@@ -1710,12 +1710,17 @@ def main():
                                     ).add_subparsers(dest="campaigns_command", required=True)
     for verb, text in (("add", "Register NAME at --directory"), ("remove", "Unregister NAME; deletes nothing"),
                        ("list", "The registered names and directories"),
-                       ("status", "One private line per campaign: counts and waiting gates; publishes nothing")):
+                       ("status", "One private line per campaign: counts and waiting gates; publishes nothing"),
+                       ("today", "One private to-do list across every campaign, each item with its --campaign "
+                                 "command; read-only")):
         verb_p = campaigns.add_parser(verb, help=text)
         if verb in ("add", "remove"):
             verb_p.add_argument("name")
         if verb == "add":
             verb_p.add_argument("--directory", required=True)
+        if verb == "today":  # DF1109-15
+            verb_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
+            verb_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
     args = parser.parse_args()
     if args.command == "campaigns":
         sys.exit(registry.run(args))
