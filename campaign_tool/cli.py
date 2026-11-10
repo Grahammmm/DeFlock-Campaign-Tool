@@ -1076,6 +1076,12 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    status_p = commands.add_parser("meetings-status", help="Private read-only inventory: every staged meeting's workflow "
+                                   "state and first missing step, then unstaged matches; writes and sends nothing")
+    status_p.add_argument("--directory", required=True)
+    status_p.add_argument("--as-of", metavar="YYYY-MM-DD", help="Day that splits upcoming from past (default today); "
+                          "recorded facts stay visible")
+    status_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     add_p = commands.add_parser("meetings-add", help="Record an organizer-entered meeting for a body on no supported agenda platform "
                                 "(private kit/meetings-manual.json; nothing is fetched, sent or published)")
     add_p.add_argument("--directory", required=True)
@@ -1842,6 +1848,9 @@ def main():
             sys.exit(1)
         print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
         sys.exit(exit_code(report))
+    if args.command == "meetings-status":  # read-only; the folder is not resolved, so a symlinked root is refused
+        from .meetings_status import run_cli as meetings_status
+        sys.exit(meetings_status(args, Path(args.directory).expanduser()))
     root = Path(args.directory).expanduser()
     if not (args.command == "content" and args.content_command == "add-starter"):  # add-starter refuses a symlinked root itself
         root = root.resolve()
