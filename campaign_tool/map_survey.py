@@ -170,13 +170,17 @@ def _private_dir(path):
         raise SurveyError(f"{path.name}: not a folder")
 
 
-def _install_new(directory, name, data):
-    """Stage ``data`` in a fresh exclusive temp file, then link it to ``name`` without overwriting anything."""
+def _install_new(directory, name, data, owned=None):
+    """Stage ``data`` in a fresh exclusive temp file, then link it to ``name`` without overwriting anything.
+
+    Once the link exists, ``(installed path, open descriptor of the staged file)`` is appended to ``owned`` before any
+    further fallible step; the caller then owns that descriptor and closes it. A descriptor never handed over is
+    closed here, exactly once."""
     fd, temp = tempfile.mkstemp(dir=directory, prefix=f".{name}.", suffix=".tmp")
+    transferred = False
     try:
         os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as handle:
-            fd = None
+        with os.fdopen(fd, "wb", closefd=False) as handle:  # the stream must not close the descriptor that proves ownership
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
@@ -184,10 +188,31 @@ def _install_new(directory, name, data):
             os.link(temp, directory / name)
         except FileExistsError:
             raise SurveyError(f"kit/survey/{name}: exists; nothing was overwritten") from None
+        if owned is not None:
+            owned.append((directory / name, fd))
+            transferred = True
     finally:
-        if fd is not None:
-            os.close(fd)
-        os.unlink(temp)
+        try:
+            if not transferred:
+                os.close(fd)
+        finally:
+            os.unlink(temp)
+
+
+def _rollback(owned):
+    """Best-effort removal of installed members that are still the very file this invocation created.
+
+    An entry is removed only when it is a regular file with the same device and inode as the retained descriptor.
+    Missing, replaced, linked, nonregular or uninspectable entries are left alone; no failure escapes, so the caller's
+    original error is the one raised. Not atomic: a replacement made after the comparison is not detected."""
+    for path, fd in owned:
+        try:
+            held, current = os.fstat(fd), os.lstat(path)
+            if stat.S_ISREG(held.st_mode) and stat.S_ISREG(current.st_mode) \
+                    and (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino):
+                os.unlink(path)
+        except Exception:
+            continue
 
 
 def survey_sheet(root, city, *, today=None):
@@ -204,15 +229,20 @@ def survey_sheet(root, city, *, today=None):
             raise SurveyError(f"kit/survey/{name}: exists; nothing was overwritten")
     _private_dir(root / "kit")
     _private_dir(folder)
-    done = []
+    owned = []  # (path, descriptor of the staged file); descriptors stay open until rollback has compared identities
     try:
-        for name, data in zip(names, (html_bytes, csv_bytes)):
-            _install_new(folder, name, data)
-            done.append(folder / name)
-    except BaseException:
-        for path in done:
-            os.unlink(path)
-        raise
+        try:
+            for name, data in zip(names, (html_bytes, csv_bytes)):
+                _install_new(folder, name, data, owned)
+        except BaseException:
+            _rollback(owned)
+            raise
+    finally:
+        for _, fd in owned:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     return {"written": [f"kit/survey/{name}" for name in names], "city": city, "date": day.isoformat(),
             "points": len(rows), "note": NOTE}
 
