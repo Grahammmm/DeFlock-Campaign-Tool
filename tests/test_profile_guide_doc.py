@@ -181,7 +181,7 @@ class GuideTests(unittest.TestCase):
         parts = sections(text)
         required = {2: ["alpr_policy"], 3: ["policy_check"], 4: ["profile.contract", "amount_usd"],
                     5: ["contract_check"], 6: ["profile.funding"], 7: ["profile.transparency", "flock_transparency_slug"],
-                    8: ["agency-sharing", "profile.sharing"], 9: ["profile.reports"], 10: ["agency-action add"],
+                    8: ["agency-sharing", "profile.sharing"], 9: ["profile.reports"], 10: ["agency-action add", "agency-action list"],
                     11: ["archived_url", "archived_on"], 12: ["--stale-days", "build"]}
         for number, title in headings:
             body = parts[f"{number}. {title}"]
@@ -208,6 +208,20 @@ class GuideTests(unittest.TestCase):
         self.assertEqual(len(stored["profile"]["sharing"]["recipients"]), 2)
         for field in ("alpr_policy", "policy_check", "contract", "contract_check", "funding", "transparency", "reports"):
             self.assertIn(field, stored["profile"])
+        self.assertEqual(len(json.loads(read(self.root / "content" / "agency-actions.json"))["actions"]), 1)
+
+    def test_documented_list_precedes_optional_remove(self):
+        """DF1109B-05: task 10 lists before its optional remove, and the listed index is the one remove takes."""
+        body = sections(self.guide)["10. Record agency actions outside a meeting"]
+        listing = next(line for kind, block in fences(body) if kind == "sh" for line in block.splitlines()
+                       if "agency-action list" in line)
+        self.assertLess(body.index("agency-action list"), body.index("agency-action remove"))
+        self.assertNotIn("agency-action remove", "".join(block for _, block in fences(body)))  # never rehearsed
+        self.walk(self.guide)
+        argv = [token.replace("$CAMPAIGN", str(self.root)) for token in shlex.split(listing)[3:]]
+        self.assertEqual(run(*argv), (0, f"{AGENCY} | 1 | 2026-09-01 | Policy posted | Use policy posted on the department "
+                                         "website | https://example.invalid/example-profile/policies | checked 2026-10-29\n", ""))
+        self.assertIn(f"--agency {AGENCY} --index 1", body)
         self.assertEqual(len(json.loads(read(self.root / "content" / "agency-actions.json"))["actions"]), 1)
 
     def test_unknown_flag_and_broken_anchor_fail(self):
