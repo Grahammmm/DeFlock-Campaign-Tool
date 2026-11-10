@@ -239,10 +239,10 @@ class WidthTests(fixtures.Base):
         admitted_fixture(self.root)
         before = fixtures.tree(self.root)
         # Captured on unmodified main 0d5b1c3b, not refreshed after the repair.
-        expected = ["34a238090872c096483789061857579bebd83b39e982728cae2ef3ca4b6cb6b8",
-                    "2b40205824b5af732146f0f0615ed84f7764b0d377cb9c822c349d61c5feed51",
-                    "9ba3fdd3f6c7868bd0e5fd6eb66b2e1ce56b0d16685d9ed80fd337df0caecc76",
-                    "a70d600f7f5673e7efca0fd583367a6241940332e7efe299b911cfd2071aefab"]
+        expected = ["34a238090872c096483789061857579bebd83b39e982728cae2ef3ca4b6cb6b8",  # pragma: allowlist secret -- SHA-256 of synthetic report output, not a credential
+                    "2b40205824b5af732146f0f0615ed84f7764b0d377cb9c822c349d61c5feed51",  # pragma: allowlist secret -- SHA-256 of synthetic report output, not a credential
+                    "9ba3fdd3f6c7868bd0e5fd6eb66b2e1ce56b0d16685d9ed80fd337df0caecc76",  # pragma: allowlist secret -- SHA-256 of synthetic report output, not a credential
+                    "a70d600f7f5673e7efca0fd583367a6241940332e7efe299b911cfd2071aefab"]  # pragma: allowlist secret -- SHA-256 of synthetic report output, not a credential
         with mock.patch.object(pd, "MAX_ENTRIES", 12):
             self.assertEqual(report_digests(self.root), expected)
             register = pd.personal_data_register(self.root)
