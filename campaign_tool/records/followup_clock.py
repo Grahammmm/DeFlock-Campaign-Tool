@@ -5,6 +5,8 @@ statutory determination reminder date and the agency's promised date), an option
 file and the approval queue. A past clock yields a pending draft in the queue; approval stays with a
 human. Autonomy is ``off`` (default) or ``draft``; there is no sending value. The campaign project
 directory, agency keys and the register's own law wording are inputs, never constants here.
+Every day here is on the register's Pacific calendar: a reminder approved at 00:30Z counts from the
+previous Pacific day, and the formal-notice wait adds ``notice_after_days`` calendar days to that day.
 """
 import argparse
 import hashlib
@@ -13,8 +15,9 @@ import os
 import re
 import stat
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from . import approval_queue, draft_templates
 from .intake.folder import secure_open
@@ -32,6 +35,9 @@ NOTICE = "formal-notice-no-response"
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 REGISTER_NAME = "CURRENT-REQUEST-REGISTER.json"
 REGISTER_SCHEMA = "records-request-register-v1"
+REGISTER_ZONE = ZoneInfo("America/Los_Angeles")  # the register's own calendar (outcomes.register)
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_ISO_STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2})")
 
 
 class SettingsError(ValueError):
@@ -157,10 +163,22 @@ def item_id(agency_key, request_id, clock_kind, clock_date):
 
 
 def _day(value):
-    try:
-        return date.fromisoformat(value[:10])
-    except (TypeError, ValueError):
+    """A day on the register's Pacific calendar, or None when unavailable.
+
+    A canonical ``YYYY-MM-DD`` is that recorded date. A complete timezone-aware ISO timestamp (``Z`` or
+    ``±HH:MM``, as the approval queue writes ``updated_at``) is the America/Los_Angeles date of that
+    instant, the same day the register uses for ``as_of``. Anything else is unavailable: no prefix fallback.
+    """
+    if not isinstance(value, str):
         return None
+    try:
+        if _ISO_DATE.fullmatch(value):
+            return date.fromisoformat(value)
+        if _ISO_STAMP.fullmatch(value):
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(REGISTER_ZONE).date()
+    except (ValueError, OverflowError):
+        pass
+    return None
 
 
 def followup_due(row, setting):

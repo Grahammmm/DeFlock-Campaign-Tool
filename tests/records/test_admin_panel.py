@@ -3,6 +3,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import socket
 import sqlite3
 import stat
@@ -351,6 +352,18 @@ class ServerCase(Base):
         rows = {r["id"]: r for r in aq.load_queue(self.project)}
         return rows[ident or self.draft_row["id"]]
 
+    def form_revision(self, ident=None, path="/dashboard"):
+        """The expected_revision a real GET of ``path`` puts in this draft's one edit form (a captured page)."""
+        ident = ident or self.draft_row["id"]
+        status, _, page = self.http.send("GET", path, headers={"Content-Length": None, "Content-Type": None})
+        self.assertEqual(status, 200)
+        forms = [f for f in re.findall(r'<form method="post" action="/approvals/edit">.*?</form>', page, re.S)
+                 if '<input type="hidden" name="id" value="%s">' % ident in f]
+        self.assertEqual(len(forms), 1)
+        values = re.findall(r'<input type="hidden" name="expected_revision" value="([^"]*)">', forms[0])
+        self.assertEqual(len(values), 1)
+        return values[0]
+
 
 class LiveFormTests(ServerCase):
     def test_get_page_has_token_forms_and_security_headers(self):
@@ -368,11 +381,13 @@ class LiveFormTests(ServerCase):
     def test_approve_reject_edit_persist_only_queue_decisions(self):
         other = self.draft(2, body="second draft")
         third = self.draft(3, body="third draft")
-        before = tree_state(self.project)
         ident = self.draft_row["id"]
-        # edit -> still pending, new body, configured actor
+        revision = self.form_revision(ident)  # the page a person loaded; reading it opens the ledger
+        self.assertEqual(revision, "0")
+        before = tree_state(self.project)
+        # edit -> still pending, new body, configured actor; the form's captured revision is sent back
         status, headers, _ = self.http.post("/approvals/edit", {"csrf_token": self.tok, "id": ident,
-                                                                 "body": "new text\r\nline 2"})
+                                                                 "body": "new text\r\nline 2", "expected_revision": revision})
         self.assertEqual((status, headers["location"]), (303, "/"))
         row = self.row()
         self.assertEqual((row["status"], row["body"], row["actor"]), ("pending", "new text\nline 2", "operator-1"))
@@ -429,7 +444,7 @@ class LiveFormTests(ServerCase):
         self.assertNotIn("SENTINEL-REASON", body)
         with mock.patch.object(aq, "edit", side_effect=aq.ApprovalQueueError("queue_io")):
             self.assertEqual(self.http.post("/approvals/edit", {"csrf_token": self.tok, "id": ident,
-                                                                 "body": "x"})[0], 503)
+                                                                 "body": "x", "expected_revision": "0"})[0], 503)
 
     def test_local_only_csrf_and_host(self):
         ident = self.draft_row["id"]

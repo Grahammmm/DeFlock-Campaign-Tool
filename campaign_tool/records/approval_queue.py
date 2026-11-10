@@ -490,11 +490,15 @@ def reject(root, id, actor, reason):
         return _public(_row(root, store, id))
 
 
-def edit(root, id, actor, new_body):
+def edit(root, id, actor, new_body, *, expected_revision=None):
+    """Append one edit. ``expected_revision`` (the revision the editor displayed) is checked under the
+    writer lock; a mismatch raises ``stale_revision`` and appends nothing. Omitted keeps the unconditional edit."""
     label = _label(actor)
     _need(isinstance(new_body, str) and new_body.strip() and len(new_body.encode("utf-8")) <= MAX_BODY, "invalid_draft")
+    _need(expected_revision is None or (type(expected_revision) is int and expected_revision >= 0), "invalid_draft")
     with _Store(root, True) as store:
         row = _row(root, store, id)
+        _need(expected_revision is None or row["revision"] == expected_revision, "stale_revision")
         store.append([_event("edited", id, row["revision"] + 1, label, body=new_body)])
         return _public(_row(root, store, id))
 

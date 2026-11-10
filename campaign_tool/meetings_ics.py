@@ -19,6 +19,9 @@ MAX_BODY = 120
 SKIP_KEYS = ("floating_time", "unknown_zone", "recurring", "uid_too_long", "no_uid", "bad_start")
 _BAD_TEXT = re.compile(r"[\x00-\x1f\x7f<>]")
 _UNESCAPE = re.compile(r"\\([nN,;\\])")
+_SEQUENCE = re.compile(r"[0-9]+")
+_DTSTAMP = re.compile(r"[0-9]{8}T[0-9]{6}Z")
+MAX_SEQUENCE = 2147483647
 
 
 def check_feed_url(url):
@@ -121,6 +124,56 @@ def _first(event, name):
     return found[0] if found else None
 
 
+def _uid(event):
+    return (_first(event, "UID") or ({}, ""))[1].strip()
+
+
+def _rank(event):
+    """``(SEQUENCE, DTSTAMP)`` of one revision of a repeated UID: absent SEQUENCE is 0, absent DTSTAMP sorts first."""
+    seqs, stamps = event.get("SEQUENCE", []), event.get("DTSTAMP", [])
+    sequence, stamp = (seqs[0][1].strip() if seqs else "0"), (stamps[0][1].strip() if stamps else "")
+    digits = sequence.lstrip("0") or "0"
+    ok = len(seqs) < 2 and len(stamps) < 2 and _SEQUENCE.fullmatch(sequence) and len(digits) <= 10
+    ok = ok and int(digits) <= MAX_SEQUENCE and (not stamps or _DTSTAMP.fullmatch(stamp))
+    try:
+        ok = ok and (not stamps or datetime.strptime(stamp, "%Y%m%dT%H%M%SZ"))
+    except ValueError:
+        ok = False
+    if not ok:
+        raise MeetingsError("feed has an invalid SEQUENCE or DTSTAMP on a repeated UID; nothing was written")
+    return int(digits), stamp
+
+
+def _revisions(events):
+    """RF0854-4: every repeated UID reduced to its latest revision, before any filtering.
+
+    The greatest ``(SEQUENCE, DTSTAMP)`` wins whatever the feed order; identical winners collapse and differing winners
+    refuse the feed. A ``RECURRENCE-ID`` component is an instance override, not a revision: it is neither ranked nor
+    able to hide a sibling, and is kept so the per-component recurring skip counts it. An ``RRULE`` master plus its
+    overrides is therefore not a conflict.
+    """
+    groups = {}
+    for event in events:
+        uid = _uid(event)
+        if uid and len(uid) <= MAX_UID and "RECURRENCE-ID" not in event:
+            groups.setdefault(uid, []).append(event)
+    out, done = [], set()
+    for event in events:
+        uid = _uid(event)
+        group = groups.get(uid)
+        if group is None or len(group) == 1 or "RECURRENCE-ID" in event:
+            out.append(event)
+        elif uid not in done:
+            done.add(uid)
+            ranked = [(_rank(e), e) for e in group]
+            top = max(rank for rank, _ in ranked)
+            winners = [e for rank, e in ranked if rank == top]
+            if any(e != winners[0] for e in winners[1:]):
+                raise MeetingsError("feed has conflicting revisions for one UID; nothing was written")
+            out.append(winners[0])
+    return out
+
+
 def _start(event, zone):
     """``(starts_at, time_known)``; a string reason (a SKIP_KEYS entry) when the event cannot be placed."""
     prop = _first(event, "DTSTART")
@@ -197,11 +250,12 @@ class IcsClient:
             raise MeetingsError(f"{self.label}: not UTF-8 text") from None
         self.skipped = dict.fromkeys(SKIP_KEYS, 0)
         meetings, seen = [], set()
-        for event in parse_events(text):
+        events = _revisions(parse_events(text))
+        for event in events:
+            uid = _uid(event)
             if any(k in event for k in ("RRULE", "RDATE", "RECURRENCE-ID")):
                 self.skipped["recurring"] += 1
                 continue
-            uid = (_first(event, "UID") or ({}, ""))[1].strip()
             if not uid:
                 self.skipped["no_uid"] += 1
                 continue

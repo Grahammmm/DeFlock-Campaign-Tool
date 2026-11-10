@@ -10,7 +10,9 @@ still say "the vehicle [PLATE-2] appears on page 3 and again on page 9".
 The function returns the redacted text and counts per category only. The
 mapping from token to original value is never returned or logged. Over-
 redaction is acceptable; under-redaction is the failure this module guards
-against, so patterns are deliberately broad.
+against, so patterns are deliberately broad. Overlapping matches are removed
+as their complete union and counted once, under the category of the match
+that starts first (longest, then category order, on a tie).
 
 Limits (also stated in docs/RUNNER.md): names are matched only after a rank
 title or a name-like label (Name:, Requester:, Sincerely, ...) and from the
@@ -77,14 +79,19 @@ def _collect(text, allow, deny):
     # Earliest start wins; on a tie the longest match wins; then category order.
     order = {name: index for index, name in enumerate(CATEGORIES)}
     spans.sort(key=lambda s: (s[0], -(s[1] - s[0]), order[s[2]]))
-    chosen = []
-    cursor = 0
-    for start, end, category, value in spans:
-        if start < cursor:
-            continue
-        chosen.append((start, end, category, value))
-        cursor = end
-    return chosen
+    # Strictly overlapping spans form one component removed as their full
+    # union, so a later match never leaves its uncovered suffix behind (a
+    # bridging member extends the component to later members). Touching spans
+    # (start == end) stay separate. The component keeps the first span's
+    # category and is counted once; its value is the whole union substring,
+    # so tokens are keyed on what is actually removed.
+    components = []
+    for start, end, category, _value in spans:
+        if components and start < components[-1][1]:
+            components[-1][1] = max(components[-1][1], end)
+        else:
+            components.append([start, end, category])
+    return [(start, end, category, text[start:end]) for start, end, category in components]
 
 
 class Redactor:
