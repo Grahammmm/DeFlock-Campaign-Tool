@@ -17,6 +17,7 @@ import re
 import stat
 import tempfile
 import unicodedata
+from contextlib import ExitStack
 from datetime import date
 from pathlib import Path
 
@@ -29,6 +30,9 @@ ROW_KEYS = ("agency_id", "on", "kind", "as_stated", "source_url", "checked_on")
 PARTS = ("content", "agency-actions.json")
 LABEL = "/".join(PARTS)
 MAX_BYTES = 2 * 1024 * 1024
+# Bound at import: descriptor-relative opens need the keyword-only dir_fd, which other modules'
+# positional-only os.open test doubles do not forward.
+_open = os.open
 MAX_PER_AGENCY = 50
 MAX_STATEMENT = 200
 MAX_URL = 500
@@ -177,27 +181,38 @@ def _parse(data):
         raise ActionError(f"{LABEL}: not valid UTF-8 JSON") from None
 
 
-def _walk(root):
-    """The target Path when it exists as one regular unlinked file, None when absent. A link, non-regular or
-    hardlinked entry on the way (root excluded) is refused, never followed."""
-    current = Path(root)
-    for index, part in enumerate(PARTS):
-        current = current / part
-        where = "/".join(PARTS[:index + 1])
-        try:
-            info = os.lstat(current)
-        except FileNotFoundError:
-            return None
-        except OSError:
-            raise ActionError(f"{where}: cannot be inspected") from None
-        if stat.S_ISLNK(info.st_mode):
-            raise ActionError(f"{where}: is a symbolic link; links are never followed")
-        if index < len(PARTS) - 1:
-            if not stat.S_ISDIR(info.st_mode):
-                raise ActionError(f"{where}: must be a folder")
-        elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise ActionError(f"{where}: must be a regular file with a single link")
-    return current
+def _entry(directory, name, where):
+    """No-follow metadata admission; an absent entry is not a dangling link."""
+    try:
+        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise ActionError(f"{where}: cannot be inspected") from None
+    if stat.S_ISLNK(info.st_mode):
+        raise ActionError(f"{where}: is a symbolic link; links are never followed")
+    if name == "content":
+        if not stat.S_ISDIR(info.st_mode):
+            raise ActionError(f"{where}: must be a folder")
+    elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ActionError(f"{where}: must be a regular file with a single link")
+    return info
+
+
+def _directory_identity(info):
+    return None if info is None else (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode))
+
+
+def _check_content(root_fd, admitted):
+    """Recheck only the entry in the pinned root, never a substituted parent's target."""
+    try:
+        current = os.stat("content", dir_fd=root_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        current = None
+    except OSError:
+        raise ActionError(f"{LABEL}: changed while it was being read") from None
+    if _directory_identity(current) != _directory_identity(admitted):
+        raise ActionError(f"{LABEL}: changed while it was being read")
 
 
 def _identity(info):
@@ -205,22 +220,49 @@ def _identity(info):
 
 
 def _load(root):
-    """-> (bytes, identity, mode) or None when the file is absent."""
-    target = _walk(root)
-    if target is None:
-        return None
-    try:
-        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError:
-        raise ActionError(f"{LABEL}: cannot be read") from None
-    with os.fdopen(fd, "rb") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise ActionError(f"{LABEL}: must be a regular file with a single link")
-        data = handle.read(MAX_BYTES + 1)
-    if len(data) > MAX_BYTES:
-        raise ActionError(f"{LABEL}: file too large")
-    return data, _identity(info), stat.S_IMODE(info.st_mode)
+    """Bounded bytes, identity and mode, or honest absence under stable parents.
+
+    The supplied root is the trust anchor (its own symlinks are allowed). All
+    subsequent opens are descriptor-relative and no-follow. This confines reads,
+    not the writer's separate pathname-based staging/replacement operations.
+    """
+    with ExitStack() as stack:
+        try:
+            try:
+                root_fd = _open(root, os.O_RDONLY | os.O_DIRECTORY)
+            except FileNotFoundError:
+                return None
+            stack.callback(os.close, root_fd)
+            admitted = _entry(root_fd, "content", "content")
+            if admitted is None:
+                _check_content(root_fd, None)
+                return None
+            try:
+                content_fd = _open("content", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                     dir_fd=root_fd)
+            except OSError:
+                _check_content(root_fd, admitted)
+                raise ActionError(f"{LABEL}: cannot be read") from None
+            stack.callback(os.close, content_fd)
+            if _directory_identity(os.fstat(content_fd)) != _directory_identity(admitted):
+                raise ActionError(f"{LABEL}: changed while it was being read")
+            _check_content(root_fd, admitted)
+            if _entry(content_fd, PARTS[1], LABEL) is None:
+                _check_content(root_fd, admitted)
+                return None
+            fd = _open(PARTS[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=content_fd)
+            stack.callback(os.close, fd)
+            with os.fdopen(fd, "rb", closefd=False) as handle:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ActionError(f"{LABEL}: must be a regular file with a single link")
+                data = handle.read(MAX_BYTES + 1)
+            _check_content(root_fd, admitted)
+            if len(data) > MAX_BYTES:
+                raise ActionError(f"{LABEL}: file too large")
+            return data, _identity(info), stat.S_IMODE(info.st_mode)
+        except OSError:
+            raise ActionError(f"{LABEL}: cannot be read") from None
 
 
 def read_actions(root, agencies, *, today=None):
