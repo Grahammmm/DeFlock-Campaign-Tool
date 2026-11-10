@@ -27,6 +27,7 @@ def opener(data=DATA, code=200, url=URL):
     response.getcode.return_value = code
     response.geturl.return_value = url
     response.read.return_value = data
+    response.getheader.return_value = None
     return Mock(open=Mock(return_value=response))
 
 
