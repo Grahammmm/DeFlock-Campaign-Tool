@@ -116,7 +116,10 @@ def _hit(detector, rule, locator, excerpt, kind, detail=None):
 
 def _days(value, unit):
     n = int(value)
-    unit = unit.lower().rstrip("s")
+    # DURATION matches under Unicode IGNORECASE, so a plural may end in U+017F (long s)
+    # or contain U+212A (Kelvin sign); lower() leaves those intact. casefold() maps them
+    # to the ASCII letters the conversion table is keyed on.
+    unit = unit.casefold().rstrip("s")
     return {"hour": n / 24, "day": n, "week": n * 7, "month": n * 30, "year": n * 365}[unit]
 
 
