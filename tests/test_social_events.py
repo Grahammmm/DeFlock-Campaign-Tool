@@ -1,5 +1,6 @@
 """DF1407-10: private never-posted social drafts for campaign events (synthetic only)."""
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -217,6 +218,52 @@ class SocialEventTests(unittest.TestCase):
         summary = json.loads(result.stdout[:result.stdout.rindex("}") + 1])
         self.assertEqual((summary["events"]["platforms"]["bluesky"]["written"], summary["posted"]), (["soon"], False))
         self.assertTrue((self.out / "bluesky" / "soon.md").is_file())
+
+    def test_provenance_kept_primary_and_suggestion_bindings(self):
+        from campaign_tool.social import _sha, check_social
+        self.put([event("one")])
+        build_event_social(self.root, now=NOW)
+        old = json.loads((self.out / ".check.json").read_text())["drafts"]["one"]
+        self.assertEqual(set(old), {"kind", "sha256", "starts_at", "within_days"})
+        self.assertEqual(old["sha256"], _sha((self.out / "one.md").read_bytes()))
+        self.assertEqual((self.out / ".check.json").stat().st_mode & 0o777, 0o600)
+        draft = self.out / "one.md"
+        draft.write_text(draft.read_text() + " organizer note", encoding="utf-8")
+        self.put([event("one", "2026-11-12T19:00:00-08:00")])
+        build_event_social(self.root, now=NOW)
+        suggested = self.root / "kit/social/events.suggested"
+        self.assertEqual(json.loads((self.out / ".check.json").read_text())["drafts"]["one"], old)
+        fresh = json.loads((suggested / ".check.json").read_text())["drafts"]["one"]
+        self.assertEqual(fresh["starts_at"], "2026-11-12T19:00:00-08:00")
+        self.assertEqual(fresh["sha256"], _sha((suggested / "one.md").read_bytes()))
+        self.assertEqual((suggested / ".check.json").stat().st_mode & 0o777, 0o600)
+        report = check_social(self.root, now=NOW)
+        self.assertEqual(report["folders"]["kit/social/events"]["stale"], ["one"])
+        self.assertEqual(report["folders"]["kit/social/events.suggested"]["problems"], 0)
+        before = {p: p.read_bytes() for p in (self.root / "kit").rglob("*") if p.is_file()}
+        build_event_social(self.root, now=NOW)
+        self.assertEqual({p: p.read_bytes() for p in (self.root / "kit").rglob("*") if p.is_file()}, before)
+
+    def test_all_platform_metadata_preflight_no_partial_writes(self):
+        self.put([event("one")])
+        for platforms, rel in ((None, "events"), (None, "events.suggested"),
+                               (["x", "bluesky", "mastodon"], "events/mastodon"),
+                               (["x", "bluesky", "mastodon"], "events/mastodon.suggested")):
+            for kind in ("fifo", "link", "directory"):
+                folder = self.root / "kit/social" / rel
+                folder.mkdir(parents=True)
+                target = folder / ".check.json"
+                if kind == "fifo":
+                    os.mkfifo(target)
+                elif kind == "link":
+                    target.symlink_to(self.root / "content/site.json")
+                else:
+                    target.mkdir()
+                before = self.kit()
+                with self.assertRaisesRegex(ValueError, "not a regular file"):
+                    build_event_social(self.root, platforms, now=NOW)
+                self.assertEqual(self.kit(), before)
+                shutil.rmtree(self.root / "kit")
 
 
 if __name__ == "__main__":
