@@ -117,9 +117,25 @@ def check_statements(document, officials, today):
     return rows, problems
 
 
+class _DuplicateKey(ValueError):
+    pass
+
+
+def _unique_object(pairs):
+    """Refuse repeated decoded keys in every object, even subsequently overwritten values."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateKey
+        result[key] = value
+    return result
+
+
 def _parse(data):
     try:
-        return json.loads(data.decode("utf-8"))
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object)
+    except _DuplicateKey:
+        raise ContentError(f"{FILE}: a JSON object repeats a key") from None
     except (ValueError, RecursionError):  # includes UnicodeDecodeError and JSONDecodeError
         raise ContentError(f"{FILE}: not valid UTF-8 JSON") from None
 
