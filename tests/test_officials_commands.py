@@ -2,6 +2,8 @@
 
 Temp copies of the fictional example, synthetic names and .example hosts only; nothing is fetched or built.
 """
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -15,6 +17,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
+from campaign_tool import cli
 from campaign_tool import officials_cmd as oc
 from campaign_tool.content import ContentError, load_content, load_officials
 from campaign_tool.meeting_outcome import record_outcome
@@ -27,6 +30,7 @@ COUNCIL, POLICE = "ca-cedar-city-council", "ca-cedar-police"
 MID = "cedar-council-2026-10"
 SRC = "https://cedar.example/council"
 PAYLOAD = "Unmistakable Payload"
+FILE_NAME = oc.FILE
 
 
 def day(days_ago, today=TODAY):
@@ -309,6 +313,227 @@ class OfficialsCommandTests(unittest.TestCase):
             self.assertEqual(self.temps(), [])
             if first:
                 self.file.unlink()
+
+    # --- RF2205-1: writes are bound to the content/ folder the inputs were read from -------------------------------
+
+    FOLDER_REFUSAL = "content/: changed while it was being edited; nothing was written"
+
+    def tree(self, folder):
+        """Every entry of a folder as {name: (bytes, mode, mtime_ns)} so a refusal can prove nothing else moved."""
+        return {p.name: (p.read_bytes(), stat.S_IMODE(os.lstat(p).st_mode), os.lstat(p).st_mtime_ns)
+                for p in Path(folder).iterdir() if p.is_file()}
+
+    def swap_in_real_folder(self, link_roster=False, copy_roster=False):
+        """Rename the validated content/ aside and put a new real content/ (with a marker, no site.json) in its place."""
+        aside = self.tmp / "content-aside"
+        self.content.rename(aside)
+        self.content.mkdir()
+        (self.content / "marker.txt").write_text("replacement marker\n", encoding="utf-8")
+        if link_roster:
+            os.link(aside / FILE_NAME, self.file)
+        elif copy_roster:
+            shutil.copy2(aside / FILE_NAME, self.file)
+        return aside
+
+    def restore_folder(self, aside):
+        if os.path.islink(self.content):
+            self.content.unlink()
+        elif self.content.exists():
+            shutil.rmtree(self.content)
+        aside.rename(self.content)
+
+    def swap_before_install(self, **kwargs):
+        """Patch the installer so the swap happens after the real state read and before installation starts."""
+        real, box = oc._install, {}
+
+        def swapping(*args, **options):
+            box["aside"] = self.swap_in_real_folder(**kwargs)
+            box["before_new"], box["before_old"] = self.tree(self.content), self.tree(box["aside"])
+            return real(*args, **options)
+        return mock.patch.object(oc, "_install", side_effect=swapping), box
+
+    def swap_after_staging(self, action):
+        """Patch fsync so ``action`` runs once, right after the staged file was fsynced and before publication."""
+        real, box = os.fsync, {"calls": 0}
+
+        def hooked(fd):
+            real(fd)
+            box["calls"] += 1
+            if box["calls"] == 1:
+                box["aside"] = action()
+        return mock.patch.object(oc.os, "fsync", side_effect=hooked), box
+
+    def mutations(self):
+        """The three mutating verbs against a roster holding Ash and Birch (first create is covered separately)."""
+        return (("add", lambda: self.add("Cedar Example")),
+                ("recheck", lambda: oc.recheck_official(self.root, agency_id=COUNCIL, name="Ash Example",
+                                                        checked_on=day(1), today=TODAY)),
+                ("remove", lambda: oc.remove_official(self.root, agency_id=COUNCIL, name="Birch Example", today=TODAY)))
+
+    def test_first_add_refuses_real_content_substitution_before_staging(self):
+        patch, box = self.swap_before_install()
+        with patch, self.assertRaises(ContentError) as caught:
+            self.add("Ash Example")
+        self.assertEqual(str(caught.exception), self.FOLDER_REFUSAL)
+        self.assertNotIn("Ash Example", str(caught.exception))
+        self.assertFalse(os.path.lexists(self.file))
+        self.assertFalse(os.path.lexists(box["aside"] / FILE_NAME))
+        self.assertEqual(self.tree(self.content), box["before_new"])  # marker untouched, no temp created
+        self.assertEqual(self.tree(box["aside"]), box["before_old"])
+
+    def test_existing_mutators_refuse_substituted_parent_even_with_same_roster_inode(self):
+        self.add("Ash Example")
+        self.add("Birch Example")
+        for verb, call in self.mutations():
+            patch, box = self.swap_before_install(link_roster=True)
+            with patch, self.assertRaises(ContentError) as caught:
+                call()
+            self.assertEqual(str(caught.exception), self.FOLDER_REFUSAL, verb)
+            old, new = os.stat(box["aside"] / FILE_NAME), os.stat(self.file)
+            self.assertEqual((old.st_dev, old.st_ino), (new.st_dev, new.st_ino), verb)  # file identity alone matches
+            self.assertEqual(self.tree(self.content), box["before_new"], verb)
+            self.assertEqual(self.tree(box["aside"]), box["before_old"], verb)
+            self.assertEqual(self.names(), [(COUNCIL, "Ash Example"), (COUNCIL, "Birch Example")], verb)
+            self.restore_folder(box["aside"])
+
+    def test_parent_substitution_during_staging_refuses_and_cleans_original_temp(self):
+        for first in (True, False):
+            if not first:
+                self.add("Ash Example")
+            before = self.tree(self.content)
+            patch, box = self.swap_after_staging(lambda: self.swap_in_real_folder(copy_roster=not first))
+            with patch, self.assertRaises(ContentError) as caught:
+                self.add("Ash Example" if first else "Birch Example")
+            self.assertEqual(str(caught.exception), self.FOLDER_REFUSAL)
+            self.assertEqual(self.tree(box["aside"]), before)  # only this operation's own temp was removed
+            self.assertEqual(sorted(p.name for p in self.content.iterdir()),
+                             ["marker.txt"] + ([] if first else [FILE_NAME]))
+            self.assertEqual((self.content / "marker.txt").read_text(encoding="utf-8"), "replacement marker\n")
+            if not first:
+                self.assertEqual(self.names(), [(COUNCIL, "Ash Example")])  # the replacement's roster is unchanged
+            self.restore_folder(box["aside"])
+            if first:
+                self.assertFalse(os.path.lexists(self.file))
+
+    def test_parent_missing_or_symlink_at_prepublication_check_refuses(self):
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / "marker.txt").write_text("outside marker\n", encoding="utf-8")
+        outside_before = self.tree(outside)
+        for first in (True, False):
+            for variant in ("missing", "symlink"):
+                if not first and not self.file.exists():
+                    self.add("Ash Example")
+                before = self.tree(self.content)
+
+                def action(variant=variant):
+                    aside = self.tmp / "content-aside"
+                    self.content.rename(aside)
+                    if variant == "symlink":
+                        self.content.symlink_to(outside)
+                    return aside
+                patch, box = self.swap_after_staging(action)
+                with patch, self.assertRaises(ContentError) as caught:
+                    self.add("Ash Example" if first else "Birch Example")
+                self.assertEqual(str(caught.exception), self.FOLDER_REFUSAL)
+                self.assertEqual(self.tree(box["aside"]), before)  # nothing published to the detached folder
+                self.assertEqual(self.tree(outside), outside_before)  # nothing written through the link
+                self.assertEqual(sorted(p.name for p in outside.iterdir()), ["marker.txt"])
+                self.restore_folder(box["aside"])
+                self.assertEqual(self.tree(self.content), before)
+            if first:
+                self.assertFalse(os.path.lexists(self.file))
+
+    def test_directory_identity_ignores_size_and_mtime_changes(self):
+        sibling = b"a sibling that arrived while staging\n"
+        patch, _ = self.swap_after_staging(lambda: (self.content / "arrived.txt").write_bytes(sibling))
+        with patch:
+            self.assertEqual(self.add("Ash Example"), {"agency_id": COUNCIL, "position": 1, "created": True})
+        patch, _ = self.swap_after_staging(lambda: (self.content / "arrived-2.txt").write_bytes(sibling))
+        with patch:
+            self.assertEqual(self.add("Birch Example")["position"], 2)
+        self.assertEqual(self.names(), [(COUNCIL, "Ash Example"), (COUNCIL, "Birch Example")])
+        self.assertEqual(((self.content / "arrived.txt").read_bytes(), (self.content / "arrived-2.txt").read_bytes()),
+                         (sibling, sibling))
+        self.assertEqual(self.temps(), [])
+
+    def test_legacy_state_shape_and_statement_roster_consumer_remain_compatible(self):
+        agencies, document, loaded = oc._state(self.root, TODAY)
+        self.assertEqual((document, loaded), (None, None))
+        self.assertTrue(agencies)
+        self.add("Ash Example")
+        legacy = oc._state(self.root, TODAY)
+        self.assertEqual(len(legacy), 3)
+        info = os.lstat(self.file)
+        self.assertEqual(legacy[2], ((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns), stat.S_IMODE(info.st_mode)))
+        folder = os.stat(self.content)
+        for state in (oc._state(self.root, TODAY, with_folder_identity=True),
+                      oc._existing(self.root, TODAY, with_folder_identity=True)):
+            self.assertEqual(len(state), 4)
+            self.assertEqual(state[:3], legacy)
+            self.assertEqual(state[3], (folder.st_dev, folder.st_ino))
+        self.assertEqual(len(oc._existing(self.root, TODAY)), 3)
+        os.unlink(self.file)
+        self.assertEqual(oc._state(self.root, TODAY, with_folder_identity=True)[1:],
+                         (None, None, (folder.st_dev, folder.st_ino)))
+
+    def test_parent_refusals_are_private_and_descriptors_are_closed(self):
+        opened = set()
+        real_open, real_close = os.open, os.close
+
+        def track_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if flags & os.O_DIRECTORY:
+                opened.add(fd)
+            return fd
+
+        def track_close(fd):
+            opened.discard(fd)
+            return real_close(fd)
+        tracking = (mock.patch.object(oc.os, "open", side_effect=track_open),
+                    mock.patch.object(oc.os, "close", side_effect=track_close))
+        with tracking[0], tracking[1]:
+            self.add("Ash Example")  # success
+            self.assertEqual(opened, set())
+            patch, box = self.swap_before_install(link_roster=True)
+            with patch, self.assertRaises(ContentError):
+                self.add("Birch Example")  # mismatch at entry
+            self.assertEqual(opened, set())
+            self.restore_folder(box["aside"])
+            patch, box = self.swap_after_staging(lambda: self.swap_in_real_folder(link_roster=True))
+            with patch, self.assertRaises(ContentError):
+                self.add("Birch Example")  # mismatch at the final check
+            self.assertEqual(opened, set())
+            self.restore_folder(box["aside"])
+
+            def vanish():
+                aside = self.tmp / "content-aside"
+                self.content.rename(aside)
+                return aside
+            patch, box = self.swap_after_staging(vanish)
+            with patch, self.assertRaises(ContentError):
+                self.add("Birch Example")  # the reopen at the final check fails
+            self.assertEqual(opened, set())
+            self.restore_folder(box["aside"])
+            before = self.snap()
+            oc.list_officials(self.root, today=TODAY)
+            self.assertFalse(oc.recheck_official(self.root, agency_id=COUNCIL, name="Ash Example", checked_on="2026-09-01",
+                                                 today=TODAY)["changed"])
+            self.assertEqual((self.snap(), opened), (before, set()))  # list and same-day recheck install nothing
+
+        args = ["campaign_tool", "officials", "add", "--agency", COUNCIL, "--name", PAYLOAD, "--role", "Mayor",
+                "--source-url", SRC, "--checked-on", (date.today() - timedelta(days=3)).isoformat(),
+                "--directory", str(self.root)]
+        patch, box = self.swap_before_install()
+        out, err = io.StringIO(), io.StringIO()
+        with patch, mock.patch.object(sys, "argv", args), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            cli.main()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("changed while it was being edited", err.getvalue())
+        for text in (PAYLOAD, "content-aside", str(self.tmp), "Traceback"):
+            self.assertNotIn(text, err.getvalue())
 
     def test_commands_never_fetch_build_or_publish(self):
         build_site(self.root, today=TODAY)
