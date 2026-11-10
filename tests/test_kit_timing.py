@@ -555,5 +555,153 @@ class KitTimingTests(Base):
         self.assertIn("exists", err)
 
 
+class AgencyIdentityTests(Base):
+    ERROR = "kit/agencies.json unreadable: duplicate agency_id"
+
+    def agencies(self, rows):
+        (self.root / "kit" / "agencies.json").write_text(json.dumps(rows))
+
+    def snapshot(self):
+        return {str(p.relative_to(self.tmp)): (p.lstat().st_mode, p.lstat().st_mtime_ns,
+                                               p.read_bytes() if p.is_file() else None)
+                for p in sorted(self.tmp.rglob("*"))}
+
+    def refuse(self, as_of=None):
+        before = self.snapshot()
+        for _ in range(2):
+            with self.assertRaises(ValueError) as caught:
+                self.report(as_of=as_of)
+            self.assertEqual(str(caught.exception), self.ERROR)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_duplicate_agency_ids_refuse_before_last_name_wins(self):
+        a = {"agency_id": A, "name": "Alpha"}
+        other = {"agency_id": A, "name": "Private alternate"}
+        b = {"agency_id": B, "name": "Beta"}
+        self.sent((A, "main", entry(A, "2026-03-01")),
+                  (A, "named", entry(A, "2026-03-01", request="named")))
+        for rows in ([a, other], [other, a], [a, a], [a, b, other], [b, a, other], [a, other, b],
+                     [a, dict(a, selected=False)]):
+            with self.subTest(rows=rows):
+                self.agencies(rows)
+                self.refuse()
+
+    def test_duplicate_identity_is_whole_file_not_current_selection(self):
+        for selected in ({}, {"selected": True}, {"selected": False}, {"selected": "legacy"}):
+            for second in ({}, {"selected": True}, {"selected": False}):
+                self.agencies([{"agency_id": A, "name": "Alpha"},
+                               {"agency_id": B, "name": "Unreferenced", **selected},
+                               {"agency_id": B, "name": "Unreferenced", **second}])
+                for state in ("missing", "empty", "requests", "early"):
+                    with self.subTest(selected=selected, second=second, state=state):
+                        if state == "missing":
+                            (self.root / "kit" / "sent.json").unlink(missing_ok=True)
+                        elif state == "empty":
+                            self.sent()
+                        else:
+                            self.sent((A, "main", entry(A, "2026-03-01")),
+                                      (A, "named", entry(A, "2026-03-01", request="named")))
+                        self.refuse("2026-02-28" if state == "early" else None)
+
+    def test_duplicate_cli_refuses_before_format_or_csv_output(self):
+        self.agencies([{"agency_id": A, "name": "Alpha"}, {"agency_id": A, "name": "Other"}])
+        self.sent((A, "main", entry(A, "2026-03-01")))
+        target = self.private / "timing.csv"
+        before = self.snapshot()
+        with contextlib.ExitStack() as stack:
+            spies = [stack.enter_context(mock.patch.object(kit_timing, name,
+                        side_effect=AssertionError(name + " reached")))
+                     for name in ("format_report", "check_csv", "write_csv")]
+            spies.append(stack.enter_context(mock.patch.object(kit_timing.kit_export, "write_rows",
+                                    side_effect=AssertionError("writer reached"))))
+            for extra in ((), ("--csv", target), ("--as-of", "2026-02-28", "--csv", target),
+                          ("--csv", self.root / "public" / "bad.csv")):
+                with self.subTest(extra=extra):
+                    self.assertEqual(run("kit-timing", "--directory", self.root, *extra),
+                                     (1, "", "Stopped: " + self.ERROR + "\n"))
+            for spy in spies:
+                spy.assert_not_called()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_duplicate_diagnostic_never_echoes_identity_or_private_fields(self):
+        row = {"agency_id": "ca-private-marker-police", "name": "PRIVATE-NAME-MARKER",
+               "contact": "PRIVATE-CONTACT-MARKER", "note": "PRIVATE-NOTE-MARKER"}
+        self.agencies([row, row])
+        self.refuse()
+        code, out, err = run("kit-timing", "--directory", self.root)
+        self.assertEqual((code, out, err), (1, "", "Stopped: " + self.ERROR + "\n"))
+        for value in (*row.values(), str(self.root)):
+            self.assertNotIn(value, err)
+
+    def compatibility_outputs(self):
+        self.sent((A, "main", entry(A, "2026-03-01", [step("2026-03-02", "acknowledged")])),
+                  (A, "named", entry(A, "2026-03-01", [step("2026-03-01", "produced")], "named")),
+                  (B, "main", entry(B, "2026-03-01")))
+        self.agencies([{"agency_id": B, "name": "Málaga, Police — East", "selected": "legacy", "kind": 7},
+                       {"agency_id": A, "name": "Málaga, Police — East", "selected": False}])
+        before = self.snapshot()
+        report = self.report()
+        self.assertEqual(self.report(), report)
+        code, text, err = run("kit-timing", "--directory", self.root, "--as-of", "2026-04-30")
+        self.assertEqual((code, err), (0, "Read-only. Nothing was sent.\n"))
+        self.assertEqual(text, kit_timing.format_report(report) + "\n")
+        self.assertEqual(self.snapshot(), before)
+        target = self.private / "valid.csv"
+        # An independently supplied report is exported without reloading the names file.
+        with mock.patch.object(kit_timing, "_names", side_effect=AssertionError("names reloaded")):
+            kit_timing.write_csv(self.root, target, report)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+        data = target.read_bytes()
+        target.unlink()
+        self.assertEqual(tree(self.root), {k.removeprefix("campaign/"): (v[1], v[2])
+                         for k, v in before.items() if k.startswith("campaign/")})
+        return json.dumps(report, sort_keys=True).encode(), text.encode(), data
+
+    def test_unique_agency_name_maps_preserve_exact_report_and_export(self):
+        import hashlib
+        outputs = self.compatibility_outputs()
+        self.assertEqual([hashlib.sha256(value).hexdigest() for value in outputs], BASELINE_HASHES)
+        path = self.root / "kit" / "agencies.json"
+        for rows in ([], [{"agency_id": "ca-unmatched-police", "name": "Other"}], None):
+            if rows is None:
+                path.unlink()
+            else:
+                self.agencies(rows)
+            before = self.snapshot()
+            self.assertEqual([r["name"] for r in self.report()["requests"]], [A, A, B])
+            self.assertEqual(self.snapshot(), before)
+
+    def test_existing_name_and_history_refusals_keep_their_precedence(self):
+        duplicate = [{"agency_id": A, "name": "Alpha"}] * 2
+        structural = "kit/agencies.json unreadable: not a JSON list of agencies with names"
+        for bad in ("not json", json.dumps(duplicate + ["bad row"]),
+                    json.dumps(duplicate + [{"agency_id": B, "name": 7}])):
+            (self.root / "kit" / "agencies.json").write_text(bad)
+            with self.assertRaises(ValueError) as caught:
+                self.report()
+            self.assertEqual(str(caught.exception), structural)
+        self.agencies(duplicate)
+        with self.assertRaisesRegex(ValueError, "--as-of must be a real"):
+            self.report(as_of="bad-date")
+        self.names(**{A: "Alpha"})
+        self.sent((A, "main", entry(A, "2026-03-01", [step("2026-03-20", "closed")])))
+        with self.assertRaisesRegex(ValueError, "^" + MALFORMED + "$"):
+            self.report(as_of="2026-02-28")
+        path = self.root / "kit" / "agencies.json"
+        path.unlink()
+        path.mkdir()
+        with self.assertRaisesRegex(ValueError, "not a regular file"):
+            self.report()
+
+
+# Captured from the unique synthetic fixture before the duplicate-admission repair:
+# complete report JSON (sorted keys), CLI text, and private CSV bytes, respectively.
+BASELINE_HASHES = [
+    "ed0e1c274d70db1c45a5628a39a53f3438366ca41e8f61e54e2fada0edb9ba4f",
+    "afa41c6acb80e7e6de4bf04507283f51b57ce42e6af0e2afb0022f8ea77d1b10",
+    "06cd3efbdeb21d064cf8f101df5bba97466485e53340cc89371970be861bead2",
+]
+
+
 if __name__ == "__main__":
     unittest.main()

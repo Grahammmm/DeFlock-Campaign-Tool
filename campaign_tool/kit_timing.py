@@ -39,7 +39,10 @@ def _as_of(as_of, today):
 
 
 def _names(root):
-    """{agency_id: name} from a regular kit/agencies.json when present; {} when absent (the id is then shown)."""
+    """Names from a regular kit/agencies.json, or {} when absent (show IDs).
+
+    Exact agency IDs must be unique; repetitions receive a fixed, value-free refusal.
+    """
     kit_dir = Path(root) / "kit"
     if kit_dir.is_symlink():
         raise ValueError("kit/ must not be a symlink")
@@ -49,9 +52,15 @@ def _names(root):
     if path.is_symlink() or not path.is_file():
         raise ValueError("kit/agencies.json unreadable: not a regular file")
     try:
-        return {entry["agency_id"]: entry["name"] for entry in kit._load_existing(path)}
+        agencies = kit._load_existing(path)
     except (OSError, ValueError):  # includes JSON and encoding errors
         raise ValueError("kit/agencies.json unreadable: not a JSON list of agencies with names") from None
+    names = {}
+    for entry in agencies:
+        if entry["agency_id"] in names:
+            raise ValueError("kit/agencies.json unreadable: duplicate agency_id") from None
+        names[entry["agency_id"]] = entry["name"]
+    return names
 
 
 def _parse(entry, today):
