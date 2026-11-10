@@ -8,6 +8,7 @@ requester block from kit/request-settings.json, today's date, the verified posta
 Nothing is printed or sent. The two files are replaced one after the other, not as a pair: if the second write
 fails the first may already be new; the command reports the failure and running it again rewrites both.
 """
+import errno
 import html
 import json
 import os
@@ -40,11 +41,40 @@ def sendable(text):
 
 
 def _regular(path, label):
+    """The draft's text, strictly UTF-8 decoded, read from the opened file with at most MAX_BYTES + 1 bytes consumed.
+
+    The pathname checks give early diagnostics only: the opened descriptor is re-checked (regular file, size) and
+    the bytes actually read are counted, so a file that grows after those checks is still refused before decoding.
+    """
+    regular = f"{label} must be a regular file (not a symlink)"
     if path.is_symlink() or not path.is_file():
-        raise ValueError(f"{label} must be a regular file (not a symlink)")
+        raise ValueError(regular)
     if path.stat().st_size > MAX_BYTES:
         raise ValueError(f"{label} is larger than 1 MiB")
-    return path.read_bytes().decode("utf-8")  # bytes, not read_text: universal newlines would hide a CR
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ELOOP, errno.EISDIR, errno.ENXIO, errno.ENOTDIR):
+            raise ValueError(regular) from None
+        raise
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(regular)
+        if info.st_size > MAX_BYTES:
+            raise ValueError(f"{label} is larger than 1 MiB")
+        chunks, size = [], 0
+        while True:
+            chunk = os.read(fd, min(1 << 16, MAX_BYTES + 1 - size))
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_BYTES:
+                raise ValueError(f"{label} is larger than 1 MiB")
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+    return b"".join(chunks).decode("utf-8")  # bytes, not read_text: universal newlines would hide a CR
 
 
 def _agency(root, agency_id):
