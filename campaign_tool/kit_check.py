@@ -18,6 +18,7 @@ from . import kit
 
 PLACEHOLDER = re.compile(r"\[[^\]\n]{1,160}\](?!\()")
 HIT_CHARS, HITS_MAX = 160, 50
+MAX_DRAFT_BYTES = 1 << 20
 MISSING = "draft missing or not a regular file"
 SUGGESTED_DIR = "requests.suggested"
 STATUS_MARK, RANGE_MARK = "Law package status:", "The date range for this request is "
@@ -35,7 +36,7 @@ def draft_problems(text):
 
 
 def _read_regular(path):
-    """(bytes, None) of a regular file opened without following links; (None, "absent"|"unsafe"|"unreadable")."""
+    """Admitted regular-file bytes, or (None, absent|unsafe|unreadable|too_large)."""
     try:
         if not stat.S_ISREG(os.lstat(path).st_mode):
             return None, "unsafe"
@@ -45,13 +46,20 @@ def _read_regular(path):
     except OSError as exc:
         return None, "unsafe" if exc.errno in (40, 21, 6) else "unreadable"  # ELOOP, EISDIR, ENXIO
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
             return None, "unsafe"
+        if info.st_size > MAX_DRAFT_BYTES:
+            return None, "too_large"
         chunks = []
+        size = 0
         while True:
-            chunk = os.read(fd, 1 << 16)
+            chunk = os.read(fd, min(1 << 16, MAX_DRAFT_BYTES + 1 - size))
             if not chunk:
                 return b"".join(chunks), None
+            size += len(chunk)
+            if size > MAX_DRAFT_BYTES:
+                return None, "too_large"
             chunks.append(chunk)
     except OSError:
         return None, "unreadable"
@@ -73,7 +81,8 @@ def _read_suggestion(root, agency_id):
     data, why = _read_regular(directory / (agency_id + ".md"))
     if why == "absent":
         return None, None
-    return data, {"unsafe": NOT_REGULAR, "unreadable": UNREADABLE}.get(why)
+    return data, {"unsafe": NOT_REGULAR, "unreadable": UNREADABLE,
+                  "too_large": "suggestion exceeds 1 MiB"}.get(why)
 
 
 def _lines(data):
@@ -112,7 +121,7 @@ def _summary(data):
     return {"scopes": scopes, "date": date, "fee": fee, "status": status, "citations": _unique(citations)}
 
 
-def _suggested_differs(root, agency_id, primary_ok):
+def _suggested_differs(root, agency_id, primary):
     """The row's ``suggested_differs`` object, or None when there is no suggestion or it equals the draft."""
     suggested, error = _read_suggestion(root, agency_id)
     if suggested is None and error is None:
@@ -120,7 +129,6 @@ def _suggested_differs(root, agency_id, primary_ok):
     path = f"kit/{SUGGESTED_DIR}/{agency_id}.md"
     if error:
         return {"path": path, "error": error, "compare_command": None}
-    primary = _read_regular(Path(root) / "kit" / "requests" / (agency_id + ".md"))[0] if primary_ok else None
     if primary is None:
         return {"path": path, "error": "primary draft unavailable for comparison", "compare_command": None}
     if primary == suggested:
@@ -145,17 +153,20 @@ def agency_report(root, entry, *, include_suggestion=False):
     agency_id = entry["agency_id"]
     path = Path(root) / "kit" / "requests" / (agency_id + ".md")
     row = {"agency_id": agency_id, "recipient_verified": entry.get("verified") is True}
-    primary_ok = not (path.is_symlink() or not path.is_file())
-    if not primary_ok:
-        report = {**row, "draft": None, "ok": False, "error": MISSING}
+    primary, why = _read_regular(path)
+    if why:
+        error = {"absent": MISSING, "unsafe": MISSING, "unreadable": "draft unreadable",
+                 "too_large": "draft exceeds 1 MiB"}[why]
+        report = {**row, "draft": None, "ok": False, "error": error}
     else:
-        hits = draft_problems(path.read_text(encoding="utf-8", errors="replace"))
+        text = primary.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+        hits = draft_problems(text)
         words = [hit["placeholder"].lower() for hit in hits]
         report = {**row, "draft": f"kit/requests/{agency_id}.md", "placeholders": hits[:HITS_MAX],
                   "placeholder_count": len(hits), "fee_cap_missing": any("cap" in word for word in words),
                   "date_range_missing": any("date range" in word for word in words),
                   "ok": not hits and row["recipient_verified"]}
-    differs = _suggested_differs(root, agency_id, primary_ok) if include_suggestion else None
+    differs = _suggested_differs(root, agency_id, primary) if include_suggestion else None
     if differs is not None:
         report["suggested_differs"], report["ok"] = differs, False
     return report
