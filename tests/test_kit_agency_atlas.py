@@ -395,6 +395,104 @@ class CompareTests(AtlasTestCase):
         self.assertEqual(json.loads((self.root / "kit" / "agencies.json").read_text()), self.entries)
 
 
+class AgencyNameTextTests(AtlasTestCase):
+    ERROR = "Atlas report: an agency name contains a control or format character"
+
+    def assert_name_refused(self, report):
+        original = copy.deepcopy(report)
+        with forbidden(), self.assertRaises(AtlasError) as caught:
+            kit_atlas.render_atlas(report)
+        self.assertEqual(str(caught.exception), self.ERROR)
+        self.assertEqual(report, original)
+        self.assertEqual(list(report), list(original))
+
+    def test_each_rendered_name_source_control_class_and_late_row(self):
+        baseline = self.compare(self.atlas([row("East Fictional Police"),
+                                            row("North Fictional Police Department")]))
+        # Renderer injection isolates characters that cannot match a safe CSV name.
+        for control in ("\x00", "\t", "\r", "\n", "\x1b", "\x7f", "\x85",
+                        "\u202e", "\u200b", "\u2028", "\u2029"):
+            for section in ("listed_seed", "selected_not_listed"):
+                for position in (0, -1):
+                    with self.subTest(control=repr(control), section=section, position=position):
+                        report = copy.deepcopy(baseline)
+                        report[section]["rows"][position]["name"] = SENTINEL + control + "Board"
+                        self.assert_name_refused(report)
+        # A selected listed parent and a deselected listed parent both refuse.
+        for selected in (True, False):
+            report = copy.deepcopy(baseline)
+            report["listed_seed"]["rows"][-1].update(name="Bad\nName", selected=selected)
+            report["selected_not_listed"]["rows"][-1]["name"] = "Also\x1bBad"
+            self.assert_name_refused(report)
+
+    def test_seed_whitespace_controls_refuse_after_real_matching(self):
+        path = self.atlas([row("North Fictional Police Department")])
+        for control in ("\t", "\n", "\u2028", "\u2029"):
+            with self.subTest(control=repr(control)):
+                seed = copy.deepcopy(SEED)
+                name = "North" + control + "Fictional Police Department"
+                seed["counties"][0]["agencies"][1]["name"] = name
+                original = copy.deepcopy(seed)
+                before = snapshot(self.tmp)
+                with forbidden():
+                    report = self.compare(path, seed=seed)
+                self.assertEqual([(r["agency_id"], r["name"]) for r in report["listed_seed"]["rows"]],
+                                 [("ca-fict-north-police", name)])
+                self.assert_name_refused(report)
+                self.assertEqual(seed, original)
+                self.assertEqual(snapshot(self.tmp), before)
+
+    def test_unrendered_names_do_not_expand_scope(self):
+        path = self.atlas([])
+        baseline = self.compare(path)
+        expected = kit_atlas.render_atlas(baseline)
+        self.entries[-1]["name"] = "Deselected\x1b" + SENTINEL
+        self.write_campaign()
+        seed = copy.deepcopy(SEED)
+        seed["counties"][0]["agencies"][1]["name"] = "Unmatched\u202e" + SENTINEL
+        before = snapshot(self.tmp)
+        with forbidden():
+            report = self.compare(path, seed=seed)
+            self.assertEqual(report, baseline)
+            self.assertEqual(kit_atlas.render_atlas(report), expected)
+        self.assertEqual(snapshot(self.tmp), before)
+        # Even a header-only CSV must check selected kit names.
+        self.entries[-2]["name"] = "Selected\n" + SENTINEL
+        self.write_campaign()
+        self.assert_name_refused(self.compare(path, seed=seed))
+        self.entries = []
+        self.write_campaign()
+        with forbidden():
+            empty = self.compare(path, seed=seed)
+            self.assertEqual(kit_atlas.render_atlas(empty).count("(none)"), 3)
+
+    def test_valid_names_preserve_complete_literal_text(self):
+        name = "  Cañón d'Oro\u00a0  <b>**Board**</b>=SUM(1)  "
+        seed = copy.deepcopy(SEED)
+        seed["counties"][0]["agencies"][1]["name"] = name
+        self.entries = [{"agency_id": "ca-fict-added", "name": name, "kind": "other", "selected": True}]
+        self.write_campaign()
+        path = self.atlas([row(name, city=" Cité "), row(name, vendor="V", city=""), row("Twin Police")])
+        before = snapshot(self.tmp)
+        with forbidden():
+            report = self.compare(path, seed=seed)
+            original = copy.deepcopy(report)
+            text = kit_atlas.render_atlas(report)
+        expected = [
+            "Atlas cross-check for Fictional County, CA", "", "Seed agencies listed in Atlas", NOTICE,
+            f"- {name} [ca-fict-north-police]: not selected",
+            f"    CSV line 2: {name}; vendor: vendor not supplied; city:  Cité ",
+            f"    CSV line 3: {name}; vendor: V; city: city not supplied",
+            "", "Atlas rows without a unique seed match", NOTICE,
+            "- CSV line 4: Twin Police; vendor: vendor not supplied; reason: ambiguous_seed_name; city: Somewhere",
+            "    candidates: ca-fict-twin-police-a, ca-fict-twin-police-b",
+            "", "Selected agencies not listed in Atlas", NOTICE,
+            f"- {name} [ca-fict-added]", "", kit_atlas.TRAILER]
+        self.assertEqual(text, "\n".join(expected))
+        self.assertEqual(report, original)
+        self.assertEqual(snapshot(self.tmp), before)
+
+
 class CityTextTests(AtlasTestCase):
     def test_text_city_for_each_listed_csv_row(self):
         path = self.atlas([
@@ -507,6 +605,50 @@ class CliTests(AtlasTestCase):
         self.write_campaign(county="San Luis Obispo")
         self.csv = self.atlas([row(self.sheriff["name"].replace("Office", "Department"), "Flock Safety",
                                    county="San Luis Obispo County"), row("Nowhere PD", county="San Luis Obispo")])
+
+    def test_existing_kit_names_refuse_text_but_preserve_json(self):
+        for name in ("Added\x1b[2J" + SENTINEL, "Added\n" + SENTINEL, "Added\u202e" + SENTINEL):
+            with self.subTest(name=repr(name)):
+                self.entries[-1]["name"] = name
+                self.write_campaign(county="San Luis Obispo")
+                before = snapshot(self.tmp)
+                with forbidden():
+                    loaded = kit_agencies.load_agencies(self.root)
+                    self.assertEqual(loaded[-1]["name"], name)
+                    report = kit_atlas.compare_atlas(self.root, self.csv)
+                original = copy.deepcopy(report)
+                serialized = json.dumps(report, indent=2, ensure_ascii=False) + "\n"
+                self.assertEqual(report["selected_not_listed"]["rows"][0]["name"], name)
+                for _ in range(2):
+                    result = cli("kit-agency", "atlas", "--csv", self.csv, "--directory", self.root)
+                    self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                     (1, "", "Stopped: " + AgencyNameTextTests.ERROR + "\n"))
+                    result = cli("kit-agency", "atlas", "--csv", self.csv, "--directory", self.root, "--json")
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+                    self.assertEqual(result.stdout, serialized)
+                    self.assertEqual(json.loads(result.stdout), original)
+                    self.assertEqual(report, original)
+                self.assertEqual(snapshot(self.tmp), before)
+
+    def test_csv_controls_remain_earlier_and_field_specific(self):
+        self.entries[-1]["name"] = "Bad\n" + SENTINEL
+        self.write_campaign(county="San Luis Obispo")
+        for position, field in ((0, "Agency"), (1, "City"), (5, "Vendor")):
+            for county in ("San Luis Obispo", "Otherland"):
+                with self.subTest(field=field, county=county):
+                    cells = row("Unknown", county=county)
+                    cells[position] = SENTINEL + "\x1b"
+                    path = self.atlas([row(self.sheriff["name"], county="San Luis Obispo"), cells])
+                    before = snapshot(self.tmp)
+                    message = f"Atlas CSV: line 3: {field} contains a control or format character"
+                    with forbidden(), self.assertRaises(AtlasError) as caught:
+                        kit_atlas.compare_atlas(self.root, path)
+                    self.assertEqual(str(caught.exception), message)
+                    for extra in ([], ["--json"]):
+                        result = cli("kit-agency", "atlas", "--csv", path, "--directory", self.root, *extra)
+                        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                         (1, "", "Stopped: " + message + "\n"))
+                    self.assertEqual(snapshot(self.tmp), before)
 
     def test_city_controls_refuse_entire_file_before_output(self):
         for control in ("\x1b", "\u202e", "\u2028", "\u2029"):
