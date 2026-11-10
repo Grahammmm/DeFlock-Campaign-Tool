@@ -15,7 +15,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from campaign_tool import content_sharing
+from campaign_tool import content, content_sharing
 from campaign_tool.content import MAX_JSON_BYTES, ContentError
 from campaign_tool.content_sharing import SharingImportError, import_sharing
 
@@ -293,6 +293,206 @@ class NormalImportTests(Base):
         for root in (self.a, self.b):
             self.assertEqual(stat.S_IMODE(os.stat(root / "content").st_mode), content_modes[root])
         self.assertTrue(issubclass(SharingImportError, ContentError))
+
+
+PAD = 20000  # the per-field plain-text limit: padding is spread over many valid profiles, none truncated
+
+
+def canonical(document):
+    """The writer's format, computed here independently: two-space indent, raw UTF-8, one trailing newline."""
+    return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def compact(document):
+    return (json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def padded(document, total, encode=canonical):
+    """``document`` plus retained selected profiles whose ASCII summaries make ``encode`` exactly ``total`` bytes."""
+    count = 0
+    while len(encode(document + retained(count))) + count * PAD < total:
+        count += 1
+    extra = retained(count)
+    remaining = total - len(encode(document + extra))
+    assert 0 <= remaining <= count * PAD, remaining
+    for entry in extra:
+        entry["profile"]["summary"] = "a" * min(PAD, remaining)
+        remaining -= len(entry["profile"]["summary"])
+    result = document + extra
+    assert len(encode(result)) == total
+    return result
+
+
+def retained(count):
+    return [{"agency_id": f"ca-retained-{i}-police", "name": f"Retained Police {i}", "profile": {"summary": ""}} for i in range(count)]
+
+
+def with_sharing(document, recipients):
+    """A copy of ``document`` with the sharing list the import is expected to store for ``AGENCY``."""
+    result = json.loads(json.dumps(document))
+    for entry in result:
+        if entry["agency_id"] == AGENCY:
+            entry.setdefault("profile", {})["sharing"] = {"checked_on": CHECKED, "source_url": URL, "recipients": recipients}
+    return result
+
+
+def without_sharing(document):
+    result = json.loads(json.dumps(document))
+    for entry in result:
+        if entry["agency_id"] == AGENCY:
+            entry["profile"].pop("sharing", None)
+    return result
+
+
+ONE_CSV = "name,state,kind\nCedar Hills PD,CA,local\n"
+ONE = [{"name": "Cedar Hills PD", "state": "CA", "kind": "local"}]
+CAP_REFUSAL = f"content/agencies.json: import would exceed {MAX_JSON_BYTES} bytes; nothing was written"
+ENCODING_REFUSAL = "content/agencies.json: import cannot be encoded as UTF-8; nothing was written"
+
+
+class SizeLimitTests(Base):
+    """RF1835-2: the complete prospective document is measured in written bytes before any temporary file exists."""
+
+    def setUp(self):
+        super().setUp()
+        self.target = self.a / "content" / "agencies.json"
+        self.example = json.loads(self.target.read_text(encoding="utf-8"))
+        self.csv.write_text(ONE_CSV, encoding="utf-8", newline="")
+
+    def readable(self):
+        """The bounded content reader (as build uses it) still admits the stored file."""
+        return content.load_agencies(content._read_json(self.target), "content/agencies.json", TODAY)
+
+    def candidate(self, size, recipients=ONE):
+        """Write an original whose import of ``recipients`` produces exactly ``size`` canonical bytes; -> expected bytes."""
+        expected = padded(with_sharing(self.example, recipients), size)
+        self.target.write_bytes(canonical(without_sharing(expected)))
+        self.readable()
+        return canonical(expected)
+
+    def assertRefusedBeforeOutput(self, message, **kwargs):
+        info = os.stat(self.target)
+        with mock.patch.object(content_sharing.secrets, "token_hex", wraps=content_sharing.secrets.token_hex) as naming, \
+                mock.patch.object(content_sharing, "_before_install") as install, \
+                mock.patch.object(os, "fsync", wraps=os.fsync) as fsync, mock.patch.object(os, "replace", wraps=os.replace) as replace:
+            got = self.assertRefusedUntouched(self.a, **kwargs)
+        self.assertEqual(got, message)
+        for seam in (naming, install, fsync, replace):
+            seam.assert_not_called()  # no temporary name, file, fsync or replacement was ever made
+        now = os.stat(self.target)
+        self.assertEqual((now.st_ino, now.st_mode, now.st_mtime_ns, now.st_size), (info.st_ino, info.st_mode, info.st_mtime_ns, info.st_size))
+        self.readable()
+        return got
+
+    def test_canonical_near_cap_sharing_add_refuses_without_touching_store(self):
+        self.candidate(MAX_JSON_BYTES + 1)
+        self.assertLess(self.target.stat().st_size, MAX_JSON_BYTES)  # the old file is readable and below the cap
+        self.assertRefusedBeforeOutput(CAP_REFUSAL)
+        stored = json.loads(self.target.read_text(encoding="utf-8"))
+        self.assertNotIn("sharing", next(a for a in stored if a["agency_id"] == AGENCY)["profile"])
+
+    def test_compact_input_expansion_is_checked_as_written(self):
+        document = padded(self.example, MAX_JSON_BYTES - 100, compact)
+        self.target.write_bytes(compact(document))
+        self.readable()
+        self.assertGreater(len(canonical(with_sharing(document, ONE))), MAX_JSON_BYTES)
+        self.assertRefusedBeforeOutput(CAP_REFUSAL)
+        self.assertEqual(self.target.read_bytes(), compact(document))
+
+    def test_candidate_exact_limit_and_one_byte_neighbors(self):
+        for size in (MAX_JSON_BYTES - 1, MAX_JSON_BYTES, MAX_JSON_BYTES + 1):
+            with self.subTest(size=size):
+                expected = self.candidate(size)
+                self.assertEqual(len(expected), size)
+                self.assertTrue(expected.endswith(b"}\n]\n"))
+                if size > MAX_JSON_BYTES:
+                    self.assertRefusedBeforeOutput(CAP_REFUSAL)
+                    continue
+                self.assertEqual(self.run_import(), {"agency_id": AGENCY, "recipients": 1, "checked_on": CHECKED, "source_url": URL})
+                self.assertEqual(self.target.read_bytes(), expected)
+                self.assertEqual(stat.S_IMODE(self.target.stat().st_mode), 0o600)
+                self.readable()
+                self.assertEqual(sorted(p.name for p in self.target.parent.iterdir() if p.name.endswith(".tmp")), [])
+
+    def test_non_ascii_content_counts_utf8_bytes_not_characters(self):
+        self.csv.write_text("name,state,kind\nCaf\u00e9 PD,CA,local\n", encoding="utf-8", newline="")
+        cafe = [{"name": "Caf\u00e9 PD", "state": "CA", "kind": "local"}]
+        # 34 summaries of 20,000 three-byte characters each: the candidate is far below the cap in characters.
+        self.example += [{"agency_id": f"ca-wide-{i}-police", "name": f"Wide Police {i}", "profile": {"summary": "\u540d" * PAD}}
+                         for i in range(34)]
+        for size in (MAX_JSON_BYTES, MAX_JSON_BYTES + 1):
+            with self.subTest(size=size):
+                written = self.candidate(size, cafe)
+                self.assertLess(len(written.decode("utf-8")), MAX_JSON_BYTES - 1_000_000)
+                if size > MAX_JSON_BYTES:
+                    self.assertRefusedBeforeOutput(CAP_REFUSAL)
+                    continue
+                self.run_import()
+                self.assertEqual(self.target.read_bytes(), written)  # raw UTF-8, not escapes
+                self.assertIn("Caf\u00e9 PD".encode("utf-8"), written)
+                self.readable()
+
+    def test_replace_larger_and_smaller_sharing_lists_obey_same_cap(self):
+        two = [{"name": "Cedar Hills PD", "state": "CA", "kind": "local"}, {"name": "Reno Test PD", "state": "NV", "kind": "local"}]
+        # The near-cap campaign also holds a deselected agency whose profile is kept exactly as it is.
+        aside = {"agency_id": "ca-set-aside-police", "name": "Set Aside", "selected": False, "profile": {"summary": "kept <as is>"}}
+        self.example.append(aside)
+        expected = padded(with_sharing(self.example, two), MAX_JSON_BYTES)
+        self.target.write_bytes(canonical(expected))
+        self.readable()
+        self.csv.write_text(BASIC, encoding="utf-8", newline="")  # three recipients: larger than the stored two
+        self.assertRefusedBeforeOutput(CAP_REFUSAL, replace=True)
+        self.assertEqual(self.target.read_bytes(), canonical(expected))
+        self.csv.write_text(ONE_CSV, encoding="utf-8", newline="")  # one recipient: smaller
+        self.assertEqual(self.run_import(replace=True)["recipients"], 1)
+        stored = json.loads(self.target.read_text(encoding="utf-8"))
+        self.assertEqual(self.target.read_bytes(), canonical(with_sharing(expected, ONE)))
+        self.assertIn(aside, stored)
+        self.assertEqual([len(a.get("profile", {}).get("summary", "")) for a in stored], [len(a.get("profile", {}).get("summary", "")) for a in expected])
+        self.readable()
+
+    def test_encoding_refusal_is_safe_and_pre_temp(self):
+        # An escaped lone surrogate in an unrelated summary is admitted by the reader but cannot be written as UTF-8.
+        self.example.append({"agency_id": "ca-surrogate-police", "name": "Surrogate", "profile": {"summary": "x\ud800y"}})
+        self.target.write_bytes((json.dumps(self.example, indent=2) + "\n").encode("ascii"))
+        self.readable()
+        message = self.assertRefusedBeforeOutput(ENCODING_REFUSAL)
+        self.assertNotIn("ud800", message.lower())
+        self.assertNotIn("surrogate", message)
+
+    def test_cli_oversize_refuses_and_no_partial_artifacts(self):
+        self.candidate(MAX_JSON_BYTES + 1)
+        original, before = self.target.read_bytes(), tree(self.tmp)
+        first = self.cli(self.a)
+        again = self.cli(self.a)
+        for done in (first, again):
+            self.assertEqual(done.returncode, 1, done.stderr)  # the CLI's existing exit for every agency-sharing refusal
+            self.assertEqual(done.stdout, "")
+            self.assertEqual(done.stderr.splitlines(), [f"Stopped: {CAP_REFUSAL}"])
+        self.assertEqual(before, tree(self.tmp))
+        self.assertEqual(self.target.read_bytes(), original)
+        self.readable()
+
+    def test_cli_import_at_exactly_the_cap_is_read_back(self):
+        expected = self.candidate(MAX_JSON_BYTES)
+        done = self.cli(self.a)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("Recorded only. Nothing was fetched or published.", done.stdout)
+        self.assertEqual(self.target.read_bytes(), expected)
+        self.readable()
+
+    def test_successful_import_and_boundary_failures_keep_existing_installer_contract(self):
+        self.candidate(MAX_JSON_BYTES)
+        os.chmod(self.target, 0o640)
+        before = tree(self.a)
+        for name in ("write", "fsync", "replace"):
+            with self.subTest(name), mock.patch.object(os, name, side_effect=OSError(28, "No space left on device")):
+                with self.assertRaises(OSError):
+                    self.run_import()
+                self.assertEqual(before, tree(self.a))
+        self.run_import()
+        self.assertEqual(stat.S_IMODE(self.target.stat().st_mode), 0o600)
+        self.readable()
 
 
 if __name__ == "__main__":

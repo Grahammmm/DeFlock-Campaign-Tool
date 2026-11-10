@@ -4,10 +4,11 @@ synthetic agency profile and checked by the real ``content-check``. Synthetic da
 
 Run from the repository root: python3 -B -m unittest tests.test_profile_guide_doc -v
 
-Conventions the guide keeps and these tests read: ```sh blocks are commands run in order ($CAMPAIGN and $CSV are filled in
-here); the one ```json block with an "agency_id" is appended to content/agencies.json; every other ```json block is an
-object whose keys are merged into that agency's profile, in document order; the ```text block with a ``name,state,kind``
-header is the sharing CSV.
+Conventions the guide keeps and these tests read: the guide is replayed in document order; ```sh blocks are commands run
+where they stand ($CAMPAIGN and $CSV are filled in here); the one ```json block with an "agency_id" is appended to
+content/agencies.json where it stands; every other ```json block is an object whose keys are merged into that agency's
+profile where it stands; the ```text block with a ``name,state,kind`` header is the sharing CSV, and the ```text block of
+task 5 is the replacement sequence, whose ``(next unit)`` lines are not commands yet.
 """
 import contextlib
 import copy
@@ -116,36 +117,27 @@ class GuideTests(unittest.TestCase):
         self.guide = read(GUIDE)
 
     # --- helpers ---------------------------------------------------------------------------------------------------
-    def profile_from(self, text):
-        """The synthetic agency with every profile fragment of ``text`` merged in document order."""
-        agency, merged = None, {}
-        for kind, body in fences(text):
-            if kind != "json":
-                continue
-            value = json.loads(body)
-            if "agency_id" in value:
-                agency = value
-            else:
-                merged.update(value)
-        self.assertIsNotNone(agency, "the guide has no agency fixture")
-        agency = copy.deepcopy(agency)
-        agency["profile"].update(merged)
-        return agency
-
-    def install(self, agency):
-        listing = json.loads(read(self.agencies))
-        listing.append(agency)
-        self.agencies.write_text(json.dumps(listing), encoding="utf-8")
-
-    def walk(self, text):
-        """Run the guide's sh blocks in order, merging the fixture before the first command that needs it; the list of
-        (command, exit code, stderr) for every command."""
+    def replay(self, text, root, writers_only=False):
+        """Replay the guide in document order against the campaign ``root``: the ```json block with an "agency_id" is
+        appended where it stands, every other ```json block is merged into that agency's profile where it stands, and
+        each ```sh line runs when reached (with ``writers_only``, only the document writers, each of which must
+        succeed). The list of (command, exit code, stderr) for every command run."""
+        agencies = root / "content" / "agencies.json"
         csv = next((body for kind, body in fences(text) if kind == "text" and body.startswith("name,state,kind")), "")
-        csv_path = self.base / "sharing.csv"
+        csv_path = root.parent / f"{root.name}-sharing.csv"
         csv_path.write_text(csv, encoding="utf-8")
-        mapping = {"CAMPAIGN": str(self.root), "CSV": str(csv_path)}
-        results, installed = [], False
+        mapping = {"CAMPAIGN": str(root), "CSV": str(csv_path)}
+        results = []
         for kind, body in fences(text):
+            if kind == "json":
+                value, listing = json.loads(body), json.loads(read(agencies))
+                if "agency_id" in value:
+                    listing.append(value)
+                else:
+                    entry = next((a for a in listing if a.get("agency_id") == AGENCY), None)
+                    self.assertIsNotNone(entry, "a profile fragment precedes the agency fixture")
+                    entry["profile"].update(value)
+                agencies.write_text(json.dumps(listing), encoding="utf-8")
             if kind != "sh":
                 continue
             for line in re.sub(r"\\\n\s*", " ", body).splitlines():
@@ -154,13 +146,36 @@ class GuideTests(unittest.TestCase):
                 argv = shlex.split(line)
                 if argv[:3] != ["python3", "-m", "campaign_tool"]:
                     raise AssertionError(f"not a campaign_tool command: {line}")
-                if not installed and argv[3] != "content-check":
-                    self.install(self.profile_from(text))
-                    installed = True
+                writer = argv[3:5] == ["content", "agency-profile"] and argv[5] in ("policy", "contract")
+                if writers_only and not writer:
+                    continue
                 arguments = [re.sub(r"\$([A-Z]+)", lambda m: mapping[m.group(1)], token) for token in argv[3:]]
                 code, _, err = run(*arguments)
+                if writers_only:
+                    self.assertEqual(code, 0, f"{line}: {err}")
                 results.append((" ".join(argv[3:]), code, err))
         return results
+
+    def profile_from(self, text):
+        """The synthetic agency exactly as the guide's own ordered replay leaves it (its JSON blocks and its document
+        commands), built in a separate copy of the example campaign."""
+        self.isolated = getattr(self, "isolated", 0) + 1
+        root = self.base / f"profile-{self.isolated}"
+        shutil.copytree(EXAMPLE, root, ignore=shutil.ignore_patterns("public"))
+        self.replay(text, root, writers_only=True)
+        agency = next((a for a in json.loads(read(root / "content" / "agencies.json")) if a.get("agency_id") == AGENCY),
+                      None)
+        self.assertIsNotNone(agency, "the guide has no agency fixture")
+        return agency
+
+    def install(self, agency):
+        listing = json.loads(read(self.agencies))
+        listing.append(agency)
+        self.agencies.write_text(json.dumps(listing), encoding="utf-8")
+
+    def walk(self, text):
+        """Run the guide in document order against the practice campaign; see ``replay``."""
+        return self.replay(text, self.root)
 
     def check(self, *arguments):
         return run("content-check", "--directory", self.root, *arguments)
@@ -182,8 +197,9 @@ class GuideTests(unittest.TestCase):
         for (_, title), keyword in zip(headings, keywords):
             self.assertIn(keyword, title.lower())
         parts = sections(text)
-        required = {2: ["alpr_policy"], 3: ["policy_check"], 4: ["profile.contract", "amount_usd"],
-                    5: ["contract_check"], 6: ["profile.funding"], 7: ["profile.transparency", "flock_transparency_slug"],
+        required = {2: ["alpr_policy", "content agency-profile policy"],
+                    3: ["policy_check"], 4: ["profile.contract", "amount_usd", "content agency-profile contract"],
+                    5: ["contract_check", "--replace --drop-check", "never moved to a new one"], 6: ["profile.funding"], 7: ["profile.transparency", "flock_transparency_slug"],
                     8: ["agency-sharing", "profile.sharing"], 9: ["profile.reports"], 10: ["agency-action add", "agency-action list"],
                     11: ["archived_url", "archived_on"],
                     12: ["--stale-days", "build", "agency-profile list", "agency-profile recheck", "`policy_check` before"]}
@@ -233,6 +249,32 @@ class GuideTests(unittest.TestCase):
                                          "website | https://example.invalid/example-profile/policies | checked 2026-10-29\n", ""))
         self.assertIn(f"--agency {AGENCY} --index 1", body)
         self.assertEqual(len(json.loads(read(self.root / "content" / "agency-actions.json"))["actions"]), 1)
+
+    def test_documented_replacement_sequence_drops_each_reading_and_never_rebinds_it(self):
+        """DF1109B-17: task 5's replacement sequence, run after the practice walk; the old readings go, the loader and
+        content-check accept the file after every command, and no hand edit is needed between them."""
+        body = sections(self.guide)["5. Read the contract against the checklist"]
+        block = next(block for kind, block in fences(body) if kind == "text")
+        lines = block.splitlines()
+        self.assertEqual([line.startswith("(next unit)") for line in lines], [False, True, False, True])
+        self.walk(self.guide)
+        outputs = []
+        for line in lines[0::2]:
+            argv = [token.replace("$CAMPAIGN", str(self.root)) for token in shlex.split(line)[3:]]
+            code, out, err = run(*argv)
+            self.assertEqual((code, err), (0, ""), line)
+            outputs.append(out)
+            self.assertEqual(self.check()[0], 0, line)
+        self.assertIn("Dropped profile.policy_check (checked_on 2026-10-22); record a new reading with content "
+                      "agency-profile policy-check.", outputs[0])
+        self.assertIn("Removed profile.alpr_policy archived_url and archived_on", outputs[0])  # task 11's copy
+        self.assertIn("Dropped profile.contract_check (checked_on 2026-10-24); record a new reading with content "
+                      "agency-profile contract-check.", outputs[1])
+        stored = next(a for a in json.loads(read(self.agencies)) if a["agency_id"] == AGENCY)["profile"]
+        self.assertEqual(stored["alpr_policy"]["url"], "https://example.invalid/example-profile/alpr-policy-2027.pdf")
+        self.assertEqual(stored["contract"]["source_url"], "https://example.invalid/example-profile/agreement-2028.pdf")
+        self.assertNotIn("cost", stored["contract"])  # a full replacement, not a patch
+        self.assertFalse({"policy_check", "contract_check"} & set(stored))
 
     def test_unknown_flag_and_broken_anchor_fail(self):
         results = self.walk(self.guide.replace("--stale-days 90", "--stale-day 90", 1))

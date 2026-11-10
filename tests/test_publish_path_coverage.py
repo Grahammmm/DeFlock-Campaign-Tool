@@ -34,6 +34,9 @@ REVIEWED_NOT_PUBLISHING = {
     "campaign_tool/content.py": "loads and validates content; its only writes are the scaffold helpers",
     "campaign_tool/content_events.py": "validates content/events.json (shared privacy lint on every text field); it writes nothing",
     "campaign_tool/content_init.py": "writes the starter content/ templates for the organizer to edit",
+    "campaign_tool/content_profile.py": "organizer content writer for content/agencies.json (shared lint on the new document and "
+                                        "the site's privacy gate over the whole file before the write); only the next "
+                                        "explicit site build publishes it",
     "campaign_tool/content_statements.py": "reads and validates content/statements.json (its lint runs in the build); it writes nothing",
     "campaign_tool/finding_packet.py": "private reviewer packet; refuses to write inside public/ or content/",
     "campaign_tool/image_meta.py": "reads image metadata; the writer is the copy step in site.py",

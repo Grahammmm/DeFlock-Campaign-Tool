@@ -44,7 +44,7 @@ def client(events=None, text="Routine business"):
 
 
 class PdfScanTests(unittest.TestCase):
-    @patch.object(pdf.subprocess, "run", return_value=SimpleNamespace(stdout=b"Budget\fParks\fALPR renewal\f"))
+    @patch.object(pdf, "_convert", return_value=b"Budget\fParks\fALPR renewal\f")
     def test_page_three_memory_only_and_bounded_get(self, convert):
         http = opener()
         with patch("builtins.open", side_effect=AssertionError("no disk writes")):
@@ -54,8 +54,9 @@ class PdfScanTests(unittest.TestCase):
         req = http.open.call_args.args[0]
         self.assertEqual((req.full_url, req.get_method(), http.open.call_args.kwargs), (URL, "GET", {"timeout": 20}))
         http.open.return_value.read.assert_called_once_with(pdf.MAX_BYTES + 1)
-        convert.assert_called_once_with(["pdftotext", "-layout", "-", "-"], input=DATA,
-                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, check=True)
+        convert.assert_called_once_with(DATA)
+        self.assertEqual(pdf._PDFTOTEXT, ("pdftotext", "-layout", "-", "-"))
+        self.assertEqual(pdf.CONVERT_SECONDS, 30)
 
     def test_refusals_before_get_and_platform_rules(self):
         http = opener()
@@ -73,7 +74,7 @@ class PdfScanTests(unittest.TestCase):
             self.assertTrue(allowed(good))
             self.assertFalse(allowed(bad))
 
-    @patch.object(pdf.subprocess, "run")
+    @patch.object(pdf, "_convert")
     def test_bad_response_size_redirect_and_timeouts(self, convert):
         for http, status in ((opener(b"x" * (11 * 1024 * 1024)), "too_large"),
                              (opener(b"<html>no pdf"), "not_pdf"), (opener(code=302), "refused"),
@@ -89,11 +90,15 @@ class PdfScanTests(unittest.TestCase):
         self.assertIsNone(pdf.NoRedirect().redirect_request(None, None, 302, "redirect", {}, URL))
         for error, status in ((FileNotFoundError(), "unavailable_pdftotext"),
                               (subprocess.TimeoutExpired("pdftotext", 30), "failed"),
-                              (subprocess.CalledProcessError(1, "pdftotext"), "failed")):
+                              (subprocess.CalledProcessError(1, "pdftotext"), "failed"),
+                              (pdf._TextTooLarge(pdf.MAX_TEXT_BYTES + 1), "failed"),
+                              (BrokenPipeError(), "failed")):
             convert.side_effect = error
-            self.assertEqual(pdf.scan(URL, opener(), platform_host_rule=lambda u: True)["pdf_scan"], status)
+            self.assertEqual(pdf.scan(URL, opener(), platform_host_rule=lambda u: True),
+                             {"pdf_scan": status, "pdf_sha256": hashlib.sha256(DATA).hexdigest(), "pages": 0,
+                              "pages_matched": [], "matched_terms": []})
 
-    @patch.object(pdf.subprocess, "run", return_value=SimpleNamespace(stdout=b"Parks only\f"))
+    @patch.object(pdf, "_convert", return_value=b"Parks only\f")
     def test_no_match_missing_converter_and_default_off(self, convert):
         scans = pdf.AgendaScans(opener())
         self.assertEqual(meetings.relevant_events(client(), pdf_scans=scans), [])
@@ -106,7 +111,7 @@ class PdfScanTests(unittest.TestCase):
         self.assertEqual(meetings.relevant_events(client()), [])
         convert.assert_not_called()
 
-    @patch.object(pdf.subprocess, "run", return_value=SimpleNamespace(stdout=b"One\fTwo\fFlock\f"))
+    @patch.object(pdf, "_convert", return_value=b"One\fTwo\fFlock\f")
     def test_kept_cancelled_unscanned_feed_hits_and_per_body_cap(self, convert):
         events = [dict(client().events()[0], EventId=n, EventAgendaFile=URL + f"?id={n}") for n in range(21)]
         events[0]["EventAgendaStatusName"] = "Cancelled"
@@ -134,7 +139,7 @@ class PdfScanTests(unittest.TestCase):
                          meetings.relevant_events(client(text="ALPR")))
         self.assertEqual(http.open.call_count, before)
 
-    @patch.object(pdf.subprocess, "run", return_value=SimpleNamespace(stdout=b"ALPR\f"))
+    @patch.object(pdf, "_convert", return_value=b"ALPR\f")
     def test_multi_stale_preserved_no_refetch(self, convert):
         sources = [{"platform": "legistar", "client": n, "label": n} for n in ("alpha", "beta")]
         previous = {"schema_version": 1, "client": "multi", "clients": ["beta"], "meetings": [
@@ -147,7 +152,7 @@ class PdfScanTests(unittest.TestCase):
         self.assertTrue(next(m for m in found if m["id"] == "old")["stale"])
         self.assertEqual(scans.counts, {"ok": 1})
 
-    @patch.object(pdf.subprocess, "run", return_value=SimpleNamespace(stdout=b"One\fTwo\fALPR\f"))
+    @patch.object(pdf, "_convert", return_value=b"One\fTwo\fALPR\f")
     def test_single_multi_cli_counts_and_only_kit_written(self, convert):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
