@@ -61,6 +61,15 @@ python3 -m campaign_tool meetings-stage --directory $D --id ID --agency-id AGENC
 
 `--finding` is repeatable (1 to 3 published finding ids, in the order you give them); without it the tool chooses up to three. `--replace` is needed to overwrite an already staged meeting, and a cancelled meeting is refused. A staged hand-entered meeting uses its saved agency. This command writes `content/meetings/ID.json` including the **comment kit**: there is no separate "comment kit" or "spoken version" command. A meeting with no finding says so in the kit; a meeting with no participation file says only that participation was not verified. Reference: [Comment kit](MEETINGS.md#comment-kit).
 
+To cite decisions other governments made (`content/elsewhere.json`), list them first and pass the printed index, up to three times:
+
+```
+python3 -m campaign_tool content elsewhere list --directory $D
+python3 -m campaign_tool meetings-stage --directory $D --id ID --agency-id AGENCY --elsewhere N [--elsewhere N ...]
+```
+
+The index is the file's stored position, not the order on `elsewhere.html`. The kit keeps a full copy of each cited entry, so later edits to the file never change it. `content elsewhere remove --index N` names every staged meeting citing the same place, body and date; review those, restage them with `meetings-stage --replace`, then rebuild (build refuses a citation whose entry is gone). Positions after a removed entry shift down by one, so list again before staging. Reference: [Decisions elsewhere](SITE-CONTENT.md#decisions-elsewhere-contentelsewherejson-optional).
+
 ## 4. Verify participation
 
 Only what you checked on the agency's own page goes in. Write it to a JSON file and pass it as `--participation FILE` when you stage (or re-stage with `--replace`):

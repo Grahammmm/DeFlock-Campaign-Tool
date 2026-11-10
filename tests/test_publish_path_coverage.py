@@ -46,6 +46,8 @@ REVIEWED_NOT_PUBLISHING = {
     "campaign_tool/correction_requests.py": "private log; the site build never reads it",
     "campaign_tool/officials_cmd.py": "stages the organizer's content/officials.json roster (shared lint on admitted fields); only the "
                                       "next explicit site build publishes it, through the build's strict officials loader",
+    "campaign_tool/elsewhere_cmd.py": "maintains the organizer's content/elsewhere.json only (build loader and shared privacy lint "
+                                      "on every field before storage); only the next explicit site build publishes it, gated in site.py",
     "campaign_tool/newsletter/archive.py": "reads sent newsletters; the lint is draft.py's",
     "campaign_tool/supporters.py": "writes the organizer's content/supporters.json and a private consent record; the public rows are "
                                    "linted by the site build's privacy gate",
