@@ -22,6 +22,7 @@ any regex, so the denylist should carry every name the organizers know of
 is the switch for campaigns that want nothing to leave the box.
 """
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 TITLES = r"(?:Officer|Deputy|Sheriff|Sgt\.?|Sergeant|Det\.?|Detective|Lt\.?|Lieutenant|Capt\.?|Captain|Chief|Cpl\.?|Corporal|Trooper|Agent|Investigator|Mr\.?|Mrs\.?|Ms\.?|Dr\.?)"
@@ -96,6 +97,22 @@ def _collect(text, allow, deny):
     return [(start, end, category, text[start:end]) for start, end, category in components]
 
 
+def _canonical_decimal(digits):
+    # PLACEHOLDER admits Unicode decimals of any width. Whole-number int/str
+    # conversions would impose the process-wide digit limit on valid tokens.
+    return "".join(str(unicodedata.decimal(digit)) for digit in digits).lstrip("0") or "0"
+
+
+def _decimal_successor(number):
+    digits = list(number)
+    for index in range(len(digits) - 1, -1, -1):
+        if digits[index] != "9":
+            digits[index] = chr(ord(digits[index]) + 1)
+            return "".join(digits)
+        digits[index] = "0"
+    return "1" + "".join(digits)
+
+
 class Redactor:
     """One placeholder table shared across several texts (the units of one record).
 
@@ -108,12 +125,14 @@ class Redactor:
         self.allow = {str(a).lower() for a in allowlist if a}
         self.deny = [str(d) for d in denylist if d]
         self.tokens = {}
-        self.counters = {name: 0 for name in CATEGORIES}
+        self.counters = {name: "0" for name in CATEGORIES}
 
     def reserve(self, text):
         for match in PLACEHOLDER.finditer(text):
-            category, number = match.group(1), int(match.group(2))
-            self.counters[category] = max(self.counters[category], number)
+            category, number = match.group(1), _canonical_decimal(match.group(2))
+            current = self.counters[category]
+            if (len(number), number) > (len(current), current):
+                self.counters[category] = number
 
     def redact(self, text):
         if not isinstance(text, str):
@@ -125,7 +144,7 @@ class Redactor:
         for start, end, category, value in _collect(text, self.allow, self.deny):
             key = (category, value.strip().upper() if category != "DENYLIST" else value.lower())
             if key not in self.tokens:
-                self.counters[category] += 1
+                self.counters[category] = _decimal_successor(self.counters[category])
                 self.tokens[key] = f"[{category}-{self.counters[category]}]"
             counts[category] += 1
             out.append(text[cursor:start])
