@@ -9,18 +9,23 @@ import shlex
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from . import body_schedules, findings, kit, kit_assign, kit_track, meeting_comments, meeting_stage
+from . import body_schedules, correction_requests, findings, kit, kit_assign, kit_track, meeting_comments, meeting_stage
 from .body_schedules import read_body_schedules
-from .content import CONTINUATION_KEYS, _read_json, continuation_issues, continuation_targets, load_agencies, load_meeting
+from .content import (CONTINUATION_KEYS, _agency_response, _read_json, continuation_issues, continuation_targets,
+                      load_agencies, load_meeting)
 
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_waiting_on_you", "request_fee_unpaid",
          "request_stated_date_passed", "request_installment_passed",
-         "request_installment_due", "request_stated_extension_date_passed", "request_download_pending", "request_download_expired", "finding_ready",
+         "request_installment_due", "request_stated_extension_date_passed", "request_download_pending", "request_download_expired",
+         "finding_reply_due", "correction_request_open", "finding_ready",
          "finding_blocked",
          "contract_ending", "minutes_pending", "continued_pending", "direction_pending", "stale_comment_kit", "stale_contact", "review_waiting",
          "stale_body_schedule", "expected_regular_meeting", "backup_due", "unreadable")
 WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS, REVIEW_DAYS = 7, 180, 120, 7
 BACKUP_DAYS = 7
+FINDING_REPLY_DAYS = 3  # DF1109-02: a pending reply window is listed from three days before its reply_by date
+CORRECTION_LOG = "private/" + correction_requests.NAME
+WITHHELD = "could not be read (reason withheld: it can quote the file)"
 CONTRACT_DAYS, CONTRACT_ENDED_DAYS, MINUTES_DAYS, DIRECTION_DAYS = 90, 30, 45, 14
 
 
@@ -256,9 +261,37 @@ def _requests(root, as_of, directory, law_base, owner=None):
     return items
 
 
-def _findings(root, directory):
+def _reply_item(row, as_of, directory):
+    """DF1109-02: one ``finding_reply_due`` for a private draft whose agency_response is pending with reply_by at most
+    FINDING_REPLY_DAYS days away or already past (listed until a reply is recorded); None otherwise. A recorded window,
+    never a legal deadline: preparing a request is not proof anyone asked, so no asked date or lateness is claimed. The
+    command's STATUS is the organizer's own choice of received, declined or no_response (``finding reply`` keeps its
+    guards: the real asked date, no_response only on or after reply_by, the text a received reply needs). A draft
+    that cannot be reloaded or whose response is invalid raises ValueError/OSError for the caller to name."""
+    draft = findings.load_draft(row["draft_path"])
+    if "agency_response" not in draft:
+        return None
+    response = _agency_response(draft["agency_response"], "agency_response", findings._cited_hashes(draft))
+    if response["status"] != "pending" or (date.fromisoformat(response["reply_by"]) - as_of).days > FINDING_REPLY_DAYS:
+        return None
+    by, ident = response["reply_by"], draft["id"]
+    what = (f"reply window for {ident} ends {by}" if by >= as_of.isoformat() else
+            f"reply window for {ident} ended {by}: record the reply or no_response")
+    return _item("finding_reply_due", what, f"finding reply {shlex.quote(row['draft_path'])} --directory {directory} "
+                 "--status STATUS --on YYYY-MM-DD --asked-on YYYY-MM-DD", by, f"{ident} {row['draft_path']}")
+
+
+def _findings(root, as_of, directory):
+    """Draft work from status_rows' private draft rows: ready/blocked, and (DF1109-02) pending reply windows. A draft
+    status_rows already reports unreadable is named once; one whose response cannot be checked is its own item."""
     items = []
     for row in findings.status_rows(root, draft_paths=True):
+        if "draft_path" in row and row["state"] != "withdrawn":
+            try:
+                if (reply := _reply_item(row, as_of, directory)) is not None:
+                    items.append(reply)
+            except (ValueError, OSError):  # the reason can quote the file: withheld, the other drafts still listed
+                items.append(_unreadable(row["draft_path"], f"agency_response {WITHHELD}"))
         if row["state"] == "unreadable":
             items.append(_unreadable(row["path"], row["error"]))  # status_rows' own path and withheld-reason text
         elif row["state"] in ("ready", "blocked"):  # only drafts reach these states; name the file actually read
@@ -269,6 +302,24 @@ def _findings(root, directory):
                          _item("finding_blocked", f"Finding {row['id']} is blocked: {', '.join(row['blockers'])}",
                                f"finding review-status {draft} --directory {directory}", key=key))
     return items
+
+
+def _correction_requests(root, as_of, directory):
+    """DF1109-02: one ``correction_request_open`` per correction request open more than 14 days (correction_requests'
+    own open_overdue rule, as doctor uses it), with its integer days_open. No log: nothing, and nothing is created.
+    Each id is rechecked in list_requests, so a decision recorded between the two reads lists no stale work. Never the
+    summary, decision note or requester; the command's DECISION is the organizer's (accepted needs a recorded
+    correction first). A broken log is one ``unreadable`` item with a fixed reason: its own text can quote the file."""
+    try:
+        overdue = correction_requests.open_overdue(root, as_of) or []
+        rows = correction_requests.list_requests(root, today=as_of) if overdue else []
+    except (ValueError, OSError):
+        return [_unreadable(CORRECTION_LOG, f"the correction request log {WITHHELD}")]
+    return [{**_item("correction_request_open", f"Correction request {row['id']} for finding {_show(row['finding_id'])} "
+                     f"has been open {row['days_open']} days; record a decision",
+                     f"correction-request decide DECISION --directory {directory} --id {row['id']} --on YYYY-MM-DD "
+                     "--note NOTE", row["received_on"], f"{row['id']:012d}"), "days_open": row["days_open"]}
+            for row in rows if row["id"] in overdue and row["state"] == "open" and row["days_open"] > 14]
 
 
 def _review_waiting(root, as_of, directory, days):
@@ -414,7 +465,8 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days
         raise BackupError("backup_days must be an integer 1-90")
     sources = ((lambda: _meetings(root, as_of, directory), "content/meetings/"),
                (lambda: _requests(root, as_of, directory, law_base, owner), "kit/sent.json"),
-               (lambda: _findings(root, directory), "private/drafts/"),
+               (lambda: _findings(root, as_of, directory), "private/drafts/"),
+               (lambda: _correction_requests(root, as_of, directory), CORRECTION_LOG),
                (lambda: _contracts(root, as_of, directory, contract_days), "content/agencies.json"),
                (lambda: _review_waiting(root, as_of, directory, review_days), "private/review-assignments/"),
                (lambda: _stale_kits(root, directory), "content/"),
