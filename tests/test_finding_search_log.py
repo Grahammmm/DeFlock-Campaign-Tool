@@ -352,9 +352,13 @@ class FindingSearchLogTests(unittest.TestCase):
         baseline = self.written(self.draft())
         variants = {"compact sorted": json.dumps(summary, sort_keys=True, separators=(",", ":")),
                     "reversed keys": json.dumps(reverse(summary), indent=4),
-                    "escape-only change": json.dumps(summary).replace("Org01", "Org\\u0030\\u0031"),
+                    "escape-only change": json.dumps(summary).replace("Org01", r"Org\u0030\u0031"),
                     "other agency name": json.dumps(dict(summary, agency_name="Some Other Display Name")),
                     "null agency name": json.dumps(dict(summary, agency_name=None))}
+        escaped = variants["escape-only change"]
+        self.assertIn("Org\\u0030\\u0031", escaped)  # one backslash at runtime, i.e. a JSON escape
+        self.assertNotIn("Org01", escaped)
+        self.assertEqual(json.loads(escaped), summary)  # decodes to the very same summary
         for name, text in variants.items():
             with self.subTest(name):
                 path = self.base / "variant.json"
