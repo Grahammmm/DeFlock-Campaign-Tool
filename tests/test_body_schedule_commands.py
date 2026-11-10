@@ -559,7 +559,15 @@ class CommandTests(Base):
     def test_list_equal_recheck_and_refusals_do_not_reach_writer(self):
         self.add()
         before = snapshot(self.root)
-        with mock.patch.object(cmd.os, 'open', side_effect=AssertionError('writer reached')), \
+        real_open = os.open
+        write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | getattr(os, 'O_DIRECTORY', 0)
+
+        def open_guard(path, flags, *args, **kwargs):
+            # RF0325-2: the bounded schedule reader opens the file read-only; only a writer-side open is a failure.
+            if flags & write_flags:
+                raise AssertionError('writer reached')
+            return real_open(path, flags, *args, **kwargs)
+        with mock.patch.object(cmd.os, 'open', side_effect=open_guard), \
                 mock.patch.object(cmd.os, 'fsync', side_effect=AssertionError('writer reached')):
             cmd.recheck_schedule(self.root, body=BODY, checked_on=row()['checked_on'], today=DAY)
             cmd.list_schedules(self.root, today=DAY) if hasattr(cmd, 'list_schedules') else None
