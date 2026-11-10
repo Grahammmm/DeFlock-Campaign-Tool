@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from datetime import date, datetime, timezone
 
 ROLES = frozenset(("factual", "legal", "privacy"))
 CLASSIFICATIONS = frozenset(("documented_fact", "apparent_conflict",
@@ -81,6 +82,45 @@ def _rostered_entry(roster, name):
                 None) if isinstance(reviewers, list) else None
 
 
+_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def retired_on(entry, role):
+    """DF1109B-14: the day a rostered reviewer's ``role`` was retired (``retired_on`` in the roster), else None.
+    A malformed stored value reads as retired since the earliest day (fail closed); findings validates the roster."""
+    stored = entry.get("retired_on") if isinstance(entry, dict) else None
+    if not isinstance(stored, dict) or role not in stored:
+        return None
+    value = stored[role]
+    try:
+        return date.fromisoformat(value) if isinstance(value, str) and _DAY.fullmatch(value) else date.min
+    except ValueError:
+        return date.min
+
+
+def role_active_on(entry, role, day):
+    """True when ``role`` may take new work on ``day`` (a UTC date): retirement counts from the start of its day."""
+    cutoff = retired_on(entry, role)
+    return cutoff is None or day < cutoff
+
+
+def counted_before_retirement(entry, role, reviewed_at):
+    """True with no retirement for ``role``; otherwise only for a timezone-aware ``reviewed_at`` strictly before
+    00:00:00Z of the retirement day. Missing, naive or malformed times cannot show that and do not count."""
+    cutoff = retired_on(entry, role)
+    if cutoff is None:
+        return True
+    if not isinstance(reviewed_at, str) or len(reviewed_at) > 64:
+        return False
+    try:
+        moment = datetime.fromisoformat(reviewed_at)
+        if moment.tzinfo is None or moment.utcoffset() is None:
+            return False
+        return moment.astimezone(timezone.utc) < datetime(cutoff.year, cutoff.month, cutoff.day, tzinfo=timezone.utc)
+    except (ValueError, OverflowError):
+        return False
+
+
 def review_blockers(finding, receipts, campaign_id=None, roster=None):
     """Caller must separately authenticate receipt issuers and validate artifacts.
 
@@ -89,7 +129,8 @@ def review_blockers(finding, receipts, campaign_id=None, roster=None):
     instead of being skipped silently. A challenge blocks whatever its binding. None keeps the unbound check.
 
     ``roster`` (findings passes the validated current one): an approval from a rostered reviewer who declared an
-    interest in an agency the finding is about counts toward no role and no person; challenges still block."""
+    interest in an agency the finding is about counts toward no role and no person; challenges still block.
+    DF1109B-14: an approval for a role the reviewer has retired counts only when reviewed before that day (UTC)."""
     if not isinstance(finding, dict):
         return ["invalid_finding"]
     published_view = receipts == []  # content.load_finding: see the wording gate below
@@ -128,6 +169,8 @@ def review_blockers(finding, receipts, campaign_id=None, roster=None):
              and _who(r.get("reviewer")) not in (None, _who(finding.get("author")))
              and r.get("rationale") and r.get("reviewed_at")
              and not (roster and declared_interest_agencies(finding, _rostered_entry(roster, r.get("reviewer"))))
+             and (not roster or counted_before_retirement(_rostered_entry(roster, r.get("reviewer")), r["role"],
+                                                          r.get("reviewed_at")))
              and (campaign_id is None or (bool(campaign_id) and r.get("campaign_id") == campaign_id))]
     if campaign_id is not None:
         approvals = [r for r in receipts if r.get("content_sha256") == digest and r.get("decision") == "approve"]

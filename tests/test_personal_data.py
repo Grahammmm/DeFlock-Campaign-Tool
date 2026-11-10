@@ -186,6 +186,18 @@ class RegisterTests(Base):
         self.assertEqual([(r["kind"], r["path"]) for r in report["files"]],
                          sorted((r["kind"], r["path"]) for r in report["files"]))
 
+    def test_personal_data_retirement_dates_without_person_values(self):
+        put(self.root, "private/reviewers.json", {"schema_version": 1, "reviewers": [
+            {"name": "Private Person One", "roles": ["legal", "privacy"], "added_on": "2026-01-10",
+             "retired_on": {"legal": "2026-04-02", "privacy": "2026-03-01"}, "interest_note": "Private note text"},
+            {"name": "Private Person Two", "roles": ["factual"], "added_on": "2026-02-20", "retired_on": {}}]})
+        row = self.row("reviewer_roster")
+        self.assertEqual((row["status"], row["record_count"], row["oldest_record_date"], row["newest_record_date"]),
+                         ("present", 2, "2026-01-10", "2026-04-02"))  # people, not roles; retirement dates included
+        text = json.dumps(self.register())
+        for value in ("Private Person", "Private note text"):
+            self.assertNotIn(value, text)
+
     def test_undated_absent_empty_and_orphans(self):
         report = self.register()  # no kit/ and no private/ at all
         self.assertEqual({(r["kind"], r["path"]) for r in report["files"]}, {(k, v[0]) for k, v in KINDS.items()})
@@ -254,7 +266,18 @@ class RegisterTests(Base):
             "reviewer_roster": [("private/reviewers.json", {"schema_version": True, "reviewers": []}),
                                 ("private/reviewers.json", {**good, "reviewers": [
                                     {"name": "n", "roles": ["legal"], "added_on": "2026-02-30"}]}),
-                                ("private/reviewers.json", {**good, "reviewers": {}})],
+                                ("private/reviewers.json", {**good, "reviewers": {}}),
+                                ("private/reviewers.json", {**good, "reviewers": [  # DF1109B-14 retired_on maps
+                                    {"name": "n", "roles": ["legal"], "added_on": "2026-02-01", "retired_on": []}]}),
+                                ("private/reviewers.json", {**good, "reviewers": [
+                                    {"name": "n", "roles": ["legal"], "added_on": "2026-02-01",
+                                     "retired_on": {"privacy": "2026-03-01"}}]}),
+                                ("private/reviewers.json", {**good, "reviewers": [
+                                    {"name": "n", "roles": ["legal"], "added_on": "2026-02-01",
+                                     "retired_on": {"legal": "2026-3-1"}}]}),
+                                ("private/reviewers.json", {**good, "reviewers": [  # retired before added_on
+                                    {"name": "n", "roles": ["legal"], "added_on": "2026-02-01",
+                                     "retired_on": {"legal": "2026-01-01"}}]})],
             "review_assignments": [("private/review-assignments/a.json", {**good, "assignments": {
                 "legal": {"reviewer": "r", "on": "2026-1-5", "recorded_at": STAMP}}})],
             "comments_sent": [("kit/comments-sent.json", b"\xff\xfe not utf-8"),
@@ -880,7 +903,8 @@ def detect_writers(package):
 
 # Writers of the nine kinds, by function identity, each tied to its catalog kind.
 CATALOG_WRITERS = {
-    "findings.add_reviewer": "reviewer_roster", "findings.assign": "review_assignments",
+    "findings.add_reviewer": "reviewer_roster", "findings.retire_reviewer": "reviewer_roster",
+    "findings.assign": "review_assignments",
     "meeting_comments.record": "comments_sent",
     "correction_requests.add": "correction_requests", "correction_requests.decide": "correction_requests",
     "kit_track.record_sent": "contact_log", "kit_track.record_step": "contact_log",
