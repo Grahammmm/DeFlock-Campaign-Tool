@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from campaign_tool.cli import database
 from campaign_tool.content import ContentError, load_content
@@ -186,6 +187,19 @@ class SourcesAddBatchTests(unittest.TestCase):
         document[2]["agency_id"] = "ca-cedar-city-council"
         self.sources.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         self.assertEqual(self.batch()["already_listed"], 1)
+
+    def test_batch_oversize_preserves_library(self):
+        from campaign_tool import ledger_list
+        self.three()
+        ledger = self.root / "private" / "ledger.sqlite"
+        before = (self.sources.stat().st_mode, self.sources.stat().st_mtime_ns, ledger.read_bytes(),
+                  ledger.stat().st_mtime_ns, sorted(os.listdir(ledger.parent)))
+        with mock.patch.object(ledger_list, "MAX_LEDGER_BYTES", ledger.stat().st_size - 1):
+            self.assertRefused(ledger_list.LEDGER_SIZE_ERROR)
+            self.assertRefused(ledger_list.LEDGER_SIZE_ERROR, dry_run=True)
+        self.assertEqual(before, (self.sources.stat().st_mode, self.sources.stat().st_mtime_ns, ledger.read_bytes(),
+                                  ledger.stat().st_mtime_ns, sorted(os.listdir(ledger.parent))))
+        self.assertEqual(self.batch(dry_run=True)["added"], [digest("a")[:12], digest("c")[:12]])  # under the limit again
 
     def test_no_ledger_or_invalid_library_is_refused(self):
         self.assertRefused("no receipts for source_id")

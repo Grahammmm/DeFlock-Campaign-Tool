@@ -186,6 +186,112 @@ class StatusListTests(unittest.TestCase):
         self.assertEqual(counts.returncode, 0, counts.stderr)
         self.assertEqual(json.loads(counts.stdout)["receipt_occurrences"], 3)
 
+    def fd_count(self):
+        return len(os.listdir("/proc/self/fd"))
+
+    def test_snapshot_size_budget_exact_and_plus_one(self):
+        self.populate()
+        size = self.ledger.stat().st_size
+        with mock.patch.object(ledger_list, "MAX_LEDGER_BYTES", size):
+            self.assertEqual(ledger_list.list_receipts(self.root)["count"], 3)  # exactly at the limit
+        with open(self.ledger, "ab") as handle:
+            handle.write(b"\0")  # one physical trailing byte past the limit
+        before = (self.ledger.read_bytes(), self.ledger.stat().st_mtime_ns, sorted(os.listdir(self.ledger.parent)))
+        with mock.patch.object(ledger_list, "MAX_LEDGER_BYTES", size), \
+                mock.patch.object(ledger_list.os, "fdopen") as opened, \
+                mock.patch.object(ledger_list.sqlite3, "connect") as connect:
+            with self.assertRaises(ValueError) as caught:
+                ledger_list.list_receipts(self.root)
+        self.assertEqual(str(caught.exception), ledger_list.LEDGER_SIZE_ERROR)
+        opened.assert_not_called()
+        connect.assert_not_called()
+        self.assertEqual(before, (self.ledger.read_bytes(), self.ledger.stat().st_mtime_ns,
+                                  sorted(os.listdir(self.ledger.parent))))
+        # under the limit, empty and malformed files keep the generic refusal
+        for content in (b"", b"not a synthetic sqlite database"):
+            self.ledger.write_bytes(content)
+            with mock.patch.object(ledger_list, "MAX_LEDGER_BYTES", 1024):
+                with self.assertRaises(ValueError) as caught:
+                    ledger_list.list_receipts(self.root)
+            self.assertEqual(str(caught.exception), "private/ledger.sqlite is not a readable ledger")
+
+    def test_snapshot_growth_after_fstat_is_bounded(self):
+        self.populate()
+        size = self.ledger.stat().st_size
+        inode = self.ledger.stat().st_ino
+        real_fstat, real_fdopen = os.fstat, os.fdopen
+        reads, handles, grown = [], [], []
+
+        def fstat(fd):
+            info = real_fstat(fd)  # the genuine descriptor size, then the file grows
+            if info.st_ino == inode and not grown:
+                with open(self.ledger, "ab") as handle:
+                    handle.write(b"\0" * 4096)
+                grown.append(True)
+            return info
+
+        class Spy:
+            def __init__(self, handle):
+                self.handle = handle
+                handles.append(handle)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.handle.close()
+
+            def read(self, *arguments):
+                data = self.handle.read(*arguments)
+                reads.append((arguments, len(data)))
+                return data
+
+        descriptors = self.fd_count()
+        with mock.patch.object(ledger_list, "MAX_LEDGER_BYTES", size), \
+                mock.patch.object(ledger_list.os, "fstat", fstat), \
+                mock.patch.object(ledger_list.os, "fdopen", lambda *a, **k: Spy(real_fdopen(*a, **k))), \
+                mock.patch.object(ledger_list.sqlite3, "connect") as connect:
+            with self.assertRaises(ValueError) as caught:
+                ledger_list.list_receipts(self.root)
+        self.assertEqual(str(caught.exception), ledger_list.LEDGER_SIZE_ERROR)
+        self.assertEqual(grown, [True])
+        self.assertEqual(reads, [((size + 1,), size + 1)])  # one finite read, stopped at limit + 1
+        self.assertTrue(all(handle.closed for handle in handles))
+        self.assertEqual(self.fd_count(), descriptors)
+        connect.assert_not_called()
+
+    def test_oversized_status_cli_has_no_output_or_side_effects(self):
+        self.ledger.parent.mkdir(exist_ok=True)
+        with open(self.ledger, "wb") as handle:
+            handle.truncate(ledger_list.MAX_LEDGER_BYTES + 1)  # sparse: production limit plus one byte
+        before = (self.ledger.stat().st_size, self.ledger.stat().st_mode, self.ledger.stat().st_mtime_ns,
+                  sorted(os.listdir(self.ledger.parent)))
+        self.assertEqual(before[0], 64 * 1024 * 1024 + 1)
+        self.assertStopped("--list", message="private/ledger.sqlite exceeds the 64 MiB snapshot limit")
+        self.assertStopped("--list", "--source-id", "source-one", message=ledger_list.LEDGER_SIZE_ERROR)
+        after = self.ledger.stat()
+        self.assertEqual(before, (after.st_size, after.st_mode, after.st_mtime_ns, sorted(os.listdir(self.ledger.parent))))
+
+    def test_snapshot_size_gate_preserves_sidecar_and_file_type_refusals(self):
+        self.populate()
+        size = self.ledger.stat().st_size
+        with mock.patch.object(ledger_list, "MAX_LEDGER_BYTES", size - 1):
+            Path(str(self.ledger) + "-wal").write_bytes(b"")
+            with self.assertRaises(ValueError) as caught:
+                ledger_list.list_receipts(self.root)
+            self.assertEqual(str(caught.exception), ledger_list.SIDECAR_ERROR)  # the sidecar check still comes first
+            Path(str(self.ledger) + "-wal").unlink()
+            with self.assertRaises(ValueError) as caught:
+                ledger_list.list_receipts(self.root)
+            self.assertEqual(str(caught.exception), ledger_list.LEDGER_SIZE_ERROR)
+        real = self.tmp / "elsewhere.sqlite"
+        self.ledger.rename(real)
+        self.ledger.symlink_to(real)
+        with mock.patch.object(ledger_list, "MAX_LEDGER_BYTES", size - 1):
+            with self.assertRaises(ValueError) as caught:
+                ledger_list.list_receipts(self.root)
+        self.assertEqual(str(caught.exception), "private/ledger.sqlite must be a regular file, not a symlink")
+
     def test_cap_reports_more(self):
         self.populate()
         with mock.patch.object(ledger_list, "MAX_ROWS", 2):

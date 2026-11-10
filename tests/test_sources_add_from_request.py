@@ -194,6 +194,20 @@ class SourcesAddFromRequestTests(unittest.TestCase):
         self.assertEqual(no_request_file.returncode, 1)
         self.assertIn("no hand-sent request recorded for ca-unknown", no_request_file.stderr)
 
+    def test_batch_oversize_preserves_library(self):
+        from campaign_tool import ledger_list
+        self.two_steps()
+        self.receive([("a", "Policy A.pdf"), ("b", "Contract B.pdf"), ("c", "Audit C.pdf")])
+        ledger = self.root / "private" / "ledger.sqlite"
+        before = (self.sources.stat().st_mode, self.sources.stat().st_mtime_ns, ledger.read_bytes(),
+                  ledger.stat().st_mtime_ns, sorted(p.name for p in ledger.parent.iterdir()))
+        with mock.patch.object(ledger_list, "MAX_LEDGER_BYTES", ledger.stat().st_size - 1):
+            self.assertRefused(ledger_list.LEDGER_SIZE_ERROR)
+            self.assertRefused(ledger_list.LEDGER_SIZE_ERROR, dry_run=True)
+        self.assertEqual(before, (self.sources.stat().st_mode, self.sources.stat().st_mtime_ns, ledger.read_bytes(),
+                                  ledger.stat().st_mtime_ns, sorted(p.name for p in ledger.parent.iterdir())))
+        self.assertEqual(add_from_request(self.root, AGENCY, dry_run=True)["added"], [digest(x)[:12] for x in "abc"])
+
     def test_no_sent_file_is_refused(self):
         self.assertRefused("no hand-sent request recorded for " + AGENCY)
 
