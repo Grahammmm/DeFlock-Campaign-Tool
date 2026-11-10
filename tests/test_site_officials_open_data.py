@@ -198,7 +198,7 @@ class OfficialsOpenDataTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), first)
         self.assertEqual(set(first) - set(before), EXPORTS)
         changed = {n for n in before if before[n] != first[n]}
-        self.assertEqual(changed, {COUNCIL_PAGE, COUNCIL_MEETING, "agencies.html"})
+        self.assertEqual(changed, {COUNCIL_PAGE, COUNCIL_MEETING, "agencies.html", "data.html", "data/datapackage.json"})  # DF1109-10
         self.assertEqual(before["data/meetings.json"], first["data/meetings.json"])
         self.assertEqual(before["data/meetings.csv"], first["data/meetings.csv"])
 
