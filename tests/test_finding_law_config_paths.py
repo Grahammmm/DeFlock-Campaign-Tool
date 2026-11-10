@@ -138,16 +138,16 @@ class PresentUnusableConfigTests(ConfigPathCase):
                     self.assertEqual(content_problems(self.root), [REFUSAL])
 
     def test_path_inspection_error_is_controlled_not_absent(self):
-        secret = "SYNTHETIC-SENTINEL-errno-text"
+        sentinel = "SYNTHETIC-SENTINEL-errno-text"
         real_stat = os.stat
         cases = {
-            "lstat denied": (mock.patch.object(finding_law.os, "lstat", side_effect=PermissionError(secret)), True),
-            "lstat not a directory": (mock.patch.object(finding_law.os, "lstat", side_effect=NotADirectoryError(secret)),
+            "lstat denied": (mock.patch.object(finding_law.os, "lstat", side_effect=PermissionError(sentinel)), True),
+            "lstat not a directory": (mock.patch.object(finding_law.os, "lstat", side_effect=NotADirectoryError(sentinel)),
                                       True),
-            "stat denied": (mock.patch.object(finding_law.os, "stat", side_effect=PermissionError(secret)), True),
+            "stat denied": (mock.patch.object(finding_law.os, "stat", side_effect=PermissionError(sentinel)), True),
             "target vanished after lstat": (mock.patch.object(finding_law.os, "stat",
-                                                              side_effect=FileNotFoundError(secret)), True),
-            "entry not found": (mock.patch.object(finding_law.os, "lstat", side_effect=FileNotFoundError(secret)), False),
+                                                              side_effect=FileNotFoundError(sentinel)), True),
+            "entry not found": (mock.patch.object(finding_law.os, "lstat", side_effect=FileNotFoundError(sentinel)), False),
         }
         for name, (patcher, refused) in cases.items():
             with self.subTest(name=name), patcher:
@@ -155,7 +155,7 @@ class PresentUnusableConfigTests(ConfigPathCase):
                     with self.assertRaises(ContentError) as caught:
                         finding_law.jurisdiction(self.root)
                     self.assertEqual(str(caught.exception), REFUSAL)
-                    self.assertNotIn(secret, str(caught.exception))
+                    self.assertNotIn(sentinel, str(caught.exception))
                     self.assertNotIn(str(self.tmp), str(caught.exception))
                 else:
                     self.assertIsNone(finding_law.jurisdiction(self.root))
