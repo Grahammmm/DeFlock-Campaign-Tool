@@ -55,6 +55,13 @@ checked.
   normally, the complete original mailbox is stored unchanged, and the exit status stays 0. `--dry-run` reports the
   same skipped numbers and hashes without writing.
 
+A message whose MIME parts are nested more deeply than Python's email parser can follow (for example a
+multipart inside a multipart, a thousand levels down) is refused the same way, as a structural problem rather than
+an encoding one: `--eml` stops before anything is written with exactly
+`Stopped: malformed MIME (RecursionError); nothing was imported` and exit status 1, and `--mbox` lists only that
+message as `{"number": N, "code": "malformed"}` while the other messages, their attachments and the original
+mailbox import as above. No part of the deep message is stored on its own; keep it with `ingest --file` (below).
+
 The message never repeats header values, body data, filenames or decoder text, so it is safe to paste into a ticket.
 
 ## Recovery

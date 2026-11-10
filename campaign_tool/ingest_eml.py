@@ -164,7 +164,8 @@ def _extract(data, name):
             if part.get_content_type() == "message/rfc822" and raw is None:
                 label += ".eml"
             found.append((_unique(label, taken), _payload(part)))
-    except (errors.MessageError, LookupError, TypeError, IndexError, AttributeError) as exc:
+    except (errors.MessageError, LookupError, TypeError, IndexError, AttributeError, RecursionError) as exc:
+        # RecursionError: a MIME tree nested deeper than the stdlib parser, walk or generator can follow.
         raise ValueError(f"malformed MIME ({type(exc).__name__}); nothing was imported") from None
     return found, count
 
