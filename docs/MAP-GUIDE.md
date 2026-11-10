@@ -167,7 +167,16 @@ python3 -m campaign_tool content init --directory "$NEW_CAMPAIGN"
 
 Run it in a new folder just made by `init` (README, "Start locally").
 
-This writes `content/pages/help-map.json`, and the next build produces `/help-map.html`. Every section starts with `[EDIT ME: verify for this campaign]`; the marker stays visible until you replace it and is not an approval. Read the page and edit it for your campaign. Every loaded page is published; `"nav": false` only removes the navigation link, so delete the page file when it must not be published. `content init` refuses a folder that already has `content/`, so an existing campaign copies the JSON file into `content/pages/` by hand after checking that nothing is already there; there is no overwrite recipe.
+This writes `content/pages/help-map.json`, and the next build produces `/help-map.html`. Every section starts with `[EDIT ME: verify for this campaign]`; the marker stays visible until you replace it and is not an approval. Read the page and edit it for your campaign. Every loaded page is published; `"nav": false` only removes the navigation link, so delete the page file when it must not be published.
+
+`content init` refuses a folder that already has `content/`. An existing campaign adds the same packaged page, with the same checks, by name:
+
+```sh
+python3 -m campaign_tool content add-starter --list --directory "$CAMPAIGN"
+python3 -m campaign_tool content add-starter help-map --directory "$CAMPAIGN"
+```
+
+`--list` writes nothing and prints one line per starter: its name, its target and `present` or `absent`. The second command writes `content/pages/help-map.json` (and `content/pages/` when it is missing) only when nothing is there yet: an existing file, folder or symlink at the target, or a `content/` or `content/pages/` that is a symlink or a file, is refused with exit 2 and nothing is written. There is no overwrite. The output ends `This content is published by the next build until edited or deleted. Nothing was built, sent or deployed.`
 
 Adding or correcting a camera on OpenStreetMap or the DeFlock reporting page is something a person does outside this tool. This tool never edits OpenStreetMap, and a new point appears on your map only after you refresh (steps 2 and 3) and rebuild. The page names the methods page in words; see "How to read our findings" in the generated site, described under [Generated pages and files](SITE-CONTENT.md#generated-pages-and-files).
 

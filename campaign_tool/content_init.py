@@ -96,6 +96,184 @@ def _write(path, text):
         out.write(text)
 
 
+class StarterError(ValueError):
+    """An expected `content add-starter` refusal: exit 2, no traceback, nothing written."""
+    exit_code = 2
+
+
+# DF1109-11: the starters a fresh init writes, in this order, by fixed name; a name is never a user path.
+STARTERS = (("faq", ("faq.json",)), ("help-map", ("pages", "help-map.json")), ("background", ("pages", "background.json")))
+PUBLISHED_WARNING = "This content is published by the next build until edited or deleted. Nothing was built, sent or deployed."
+_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+_FAILED = (OSError, ValueError, UnicodeError, RuntimeError, KeyError, TypeError, AttributeError, RecursionError)
+
+
+def _open_dir(name, dir_fd, label):
+    """A no-follow handle on folder ``name`` under ``dir_fd``; None when it is missing."""
+    try:
+        return os.open(name, _DIR, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise StarterError(f"{label} must be a real folder, not a symlink or a file; nothing was written") from None
+        raise
+
+
+def _present(name, dir_fd):
+    """Whether anything at all (a file, folder, FIFO or even a dangling symlink) is named ``name``."""
+    if dir_fd is None:
+        return False
+    try:
+        os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _open_campaign(root, fds):
+    """The campaign config; appends no-follow handles on root, content/ and content/pages/ (None when missing)."""
+    try:
+        fds.append(os.open(root, _DIR))  # no-follow: a symlinked campaign folder is refused like content/ and pages/
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise StarterError("the campaign folder must be a real folder, not a symlink or a file; nothing was written") from None
+        raise StarterError("campaign.json is missing or not a valid campaign file; nothing was written") from None
+    try:
+        cfg = read_config(Path(root))
+    except _FAILED:
+        raise StarterError("campaign.json is missing or not a valid campaign file; nothing was written") from None
+    try:
+        fds.append(_open_dir("content", fds[0], "content/"))
+        if fds[1] is None:
+            raise StarterError("content/ does not exist; a new campaign runs content init; nothing was written")
+        try:
+            fd = os.open("site.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fds[1])
+            with os.fdopen(fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("site.json: not a regular file")
+                load_site(json.loads(stream.read(256 * 1024 + 1).decode("utf-8")))
+        except _FAILED:
+            raise StarterError("content/site.json is missing or not valid (run content-check); nothing was written") from None
+        fds.append(_open_dir("pages", fds[1], "content/pages/"))
+    except StarterError:
+        raise
+    except _FAILED:
+        raise StarterError("content/ could not be read; nothing was written") from None
+    return cfg
+
+
+def _close(fds):
+    for fd in fds:
+        if fd is not None:
+            os.close(fd)
+
+
+def starter_status(root):
+    """[(name, target, present)] for every starter, in catalogue order; reads only, never creates content/pages/."""
+    fds = []
+    try:
+        _open_campaign(root, fds)
+        return [(name, "content/" + "/".join(parts), _present(parts[-1], fds[1] if len(parts) == 1 else fds[2]))
+                for name, parts in STARTERS]
+    except StarterError:
+        raise
+    except _FAILED:
+        raise StarterError("content/ could not be read; nothing was written") from None
+    finally:
+        _close(fds)
+
+
+def starter_text(name, cfg):
+    """The starter's exact bytes as init writes them, self-checked; a page is loaded from a scratch tree first."""
+    document = faq_document(cfg) if name == "faq" else help_map_document() if name == "help-map" else background_document()
+    text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    if name != "faq":  # faq_document already ran the real FAQ loader and the Markdown lint
+        with tempfile.TemporaryDirectory(prefix=".page-check-") as folder:
+            os.mkdir(Path(folder) / "pages", 0o700)
+            _write(Path(folder) / "pages" / (name + ".json"), text)
+            if len(load_pages(Path(folder), set())) != 1:
+                raise RuntimeError("the page starter would be refused by the build")
+    return text
+
+
+def add_starter(root, name):
+    """Write one packaged starter into an existing content/, only when nothing is at its target.
+
+    Every step is anchored on no-follow folder handles; the complete bytes go to a private temporary file in the same
+    folder and are published with a hard link, which never replaces anything that arrived meanwhile."""
+    parts = dict(STARTERS).get(name) if isinstance(name, str) else None
+    if parts is None:
+        raise StarterError("unknown starter; choose faq, help-map or background")
+    target, fds, temp, created = "content/" + "/".join(parts), [], None, None
+    exists = StarterError(f"{target} already exists; it is never replaced and nothing was written")
+    try:
+        cfg = _open_campaign(root, fds)
+        parent = fds[1] if len(parts) == 1 else fds[2]
+        if _present(parts[-1], parent):
+            raise exists
+        try:
+            data = starter_text(name, cfg).encode("utf-8")
+        except _FAILED:
+            raise StarterError("the packaged starter failed its self-check; nothing was written") from None
+        if parent is None:  # content/pages/ is missing: create it only now, after validation
+            try:
+                os.mkdir("pages", 0o700, dir_fd=fds[1])
+                made = True
+            except FileExistsError:
+                made = False
+            fds.append(_open_dir("pages", fds[1], "content/pages/"))
+            parent = fds[-1]
+            if parent is None:
+                raise OSError(errno.ENOENT, "content/pages/ vanished")
+            created = os.fstat(parent) if made else None
+            if _present(parts[-1], parent):
+                raise exists
+        temp_name = f".{parts[-1]}.new-{os.urandom(6).hex()}"
+        fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+        temp = (temp_name, parent, os.fstat(fd))
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        try:
+            os.link(temp_name, parts[-1], src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+        except FileExistsError:
+            raise exists from None
+        new_pages, created = created is not None, None  # published: a new folder now holds the starter and stays
+        try:
+            os.fsync(parent)
+        except OSError:
+            pass
+    except StarterError:
+        raise
+    except _FAILED:
+        raise StarterError(f"{target} could not be written; nothing was written") from None
+    finally:
+        _discard(temp, created, fds)
+    return {"written": target, "created_pages": new_pages, "placeholders": data.decode("utf-8").count(PLACEHOLDER)}
+
+
+def _discard(temp, created, fds):
+    """Remove only this run's temporary file and, after a failure, its own still-empty new content/pages/."""
+    try:
+        if temp is not None:
+            name, parent, mine = temp
+            now = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if (now.st_dev, now.st_ino) == (mine.st_dev, mine.st_ino):
+                os.unlink(name, dir_fd=parent)
+    except OSError:
+        pass
+    try:
+        if created is not None:
+            now = os.stat("pages", dir_fd=fds[1], follow_symlinks=False)
+            if (now.st_dev, now.st_ino) == (created.st_dev, created.st_ino):
+                os.rmdir("pages", dir_fd=fds[1])  # refuses a folder that is no longer empty
+    except OSError:
+        pass
+    _close(fds)
+
+
 def _renameat2():
     """Linux renameat2(2), or None where it is unavailable."""
     if not sys.platform.startswith("linux"):

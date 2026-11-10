@@ -542,6 +542,7 @@ _MODULES = {
     "other local files with no catalog store": """
         agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
         finding_search_log kit_fee_reply kit_preserve kit_repeat search_log law law_packet launch_check git_exposure map_controller registry setup_cmd shell sources_cmd records.ask_parity""",
+    "organizer-maintained public roster content/officials.json (built by the site), no catalog store": "officials_cmd",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -553,6 +554,7 @@ MODULE_FUNCTIONS = {
     "map_survey": ("_install_new", "_write_checks", "render_csv", "survey_import"),
     'agency_brief': ('_write_file', 'build_brief',),  # private kit/briefs html+txt from published content; kept unless --replace
     'agency_actions': ('_install',),
+    'officials_cmd': ('_install',),  # content/officials.json only: staged in content/, fsync, one rename; never a private store
     'agency_brief': ('_write_file', 'build_brief',),
     'agency_cards': ('main',),
     'approval': ('verify',),
@@ -565,7 +567,7 @@ MODULE_FUNCTIONS = {
         '_meetings_multi', '_store_bytes', 'backup_drill_cmd', 'finding_preview', 'initialize', 'main', 'meetings_cmd',
         'readiness', 'weight_budget'
     ),
-    'content_init': ('_rename_noreplace', '_write', 'faq_document', 'init_content', 'init_from',),
+    'content_init': ('_rename_noreplace', '_write', 'add_starter', 'faq_document', 'init_content', 'init_from', 'starter_text',),
     'content_sharing': ('import_sharing',),
     'coverage': ('_write', 'add_coverage', 'remove_coverage',),
     'finding_packet': ('_copy_hash', '_create', 'build_packet',),

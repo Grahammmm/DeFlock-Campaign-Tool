@@ -1453,6 +1453,13 @@ def main():
     )
     content_init.add_argument("--directory", required=True)
     content_init.add_argument("--from", dest="source_campaign")
+    add_starter_p = content_cmds.add_parser(
+        "add-starter", help="Add one packaged starter a fresh content init writes (faq, help-map or background) to an "
+                            "existing content/; refuses an existing target. --list shows which are present")
+    add_starter_p.add_argument("starter", nargs="?", choices=("faq", "help-map", "background"), metavar="NAME")
+    add_starter_p.add_argument("--directory", required=True)
+    add_starter_p.add_argument("--list", dest="list_starters", action="store_true",
+                               help="Print each starter, its target and present or absent; writes nothing")
     content_plain_p = content_cmds.add_parser("check-plain", help="Advisory plain-language check of content/pages, faq.json and "
                                               "glossary.json (read-only, never a gate; exit 0 with suggestions)")
     content_plain_p.add_argument("--directory", required=True)
@@ -1623,6 +1630,27 @@ def main():
                                   "(kit/corrections/replies/N.md; an existing draft is never replaced)")
     cr_reply.add_argument("--id", type=int, required=True)
     cr_reply.add_argument("--directory", required=True)
+    officials_cmds = commands.add_parser(
+        "officials", help="Maintain content/officials.json, the organizer-checked roster of decision makers (nothing is "
+        "fetched, built, published or sent)").add_subparsers(dest="officials_command", required=True)
+    officials_flags = {"--directory": "Campaign directory (required)", "--agency": "agency_id of a loaded agency",
+                       "--name": "The official's name exactly as the official site lists it",
+                       "--role": "Role as the official site lists it, for example Council member, District 2",
+                       "--source-url": "https:// page you checked the roster on (recorded, never fetched)",
+                       "--checked-on": "YYYY-MM-DD you checked that page (not in the future, at most 365 days ago)"}
+    for verb, flags, text in (
+            ("add", ("--directory", "--agency", "--name", "--role", "--source-url", "--checked-on"),
+             "Append one official to a body; refuses a name the body already lists. The first add creates the file"),
+            ("recheck", ("--directory", "--agency", "--name", "--checked-on"),
+             "Move one official's checked_on forward after re-checking the official site (never back)"),
+            ("remove", ("--directory", "--agency", "--name"),
+             "Remove one official; refused while a recorded vote or statement names them"),
+            ("list", ("--directory",), "Print the roster with each checked_on age against the 365-day rule (read-only)")):
+        verb_p = officials_cmds.add_parser(verb, help=text, allow_abbrev=False)
+        for flag in flags:
+            verb_p.add_argument(flag, required=True, help=officials_flags[flag])
+        if verb == "add":
+            verb_p.add_argument("--profile-url", help="Optional https:// page of this official on the official site")
     today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
@@ -1732,6 +1760,8 @@ def main():
             kit_cmd.error(", ".join(fee_only) + " only work with fee-reply")
     if args.command == "today" and args.backup_days is not None and args.backups is None:
         parser.error("--backup-days requires --backups")
+    if args.command == "content" and args.content_command == "add-starter" and (args.starter is None) != args.list_starters:
+        add_starter_p.error("give one starter NAME to add it, or --list alone to see them")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
     if getattr(args, "stale_days", None) is not None and not 1 <= args.stale_days <= 3650:
@@ -1812,7 +1842,11 @@ def main():
             sys.exit(1)
         print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
         sys.exit(exit_code(report))
-    root = Path(args.directory).expanduser().resolve()
+    root = Path(args.directory).expanduser()
+    if not (args.command == "content" and args.content_command == "add-starter"):  # add-starter refuses a symlinked root itself
+        root = root.resolve()
+    elif not root.is_absolute():
+        root = Path.cwd() / root
     try:
         if args.command == "init":
             initialize(args, root)
@@ -2121,6 +2155,14 @@ def main():
             print(json.dumps(result, indent=2, ensure_ascii=False) + (
                 "\nPrivate draft only; nothing was sent or published." if args.cr_command == "reply"
                 else "\nPrivate log only; nothing was sent or published."))
+        elif args.command == "officials":
+            from .officials_cmd import run_cli as officials_cli
+            try:
+                read_config(root)
+                print(officials_cli(root, args))
+            except (OSError, ValueError) as exc:  # one Stopped: line, never a traceback or a supplied value
+                fixes.emit(exc)
+                sys.exit(2)
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root, as_json=args.as_json)
@@ -2190,6 +2232,16 @@ def main():
                                       published_on=args.published_on, finding_ids=args.finding, kind=args.kind)
             print(json.dumps(result))
             print("Nothing was built, published or sent.")
+        elif args.command == "content" and args.content_command == "add-starter":
+            from .content_init import PUBLISHED_WARNING, add_starter, starter_status
+            if args.list_starters:
+                sys.stdout.write("".join(f"{name}\t{target}\t{'present' if present else 'absent'}\n"
+                                         for name, target, present in starter_status(root)))
+            else:
+                done = add_starter(root, args.starter)
+                print(f"{done['written']} written from the packaged {args.starter} starter. Replace every "
+                      f"\"[EDIT ME: ...]\" ({done['placeholders']}) before you publish.")
+                print(PUBLISHED_WARNING)
         elif args.command == "content":
             from .content_init import init_content
             print(json.dumps(init_content(root, args.source_campaign), indent=2))
