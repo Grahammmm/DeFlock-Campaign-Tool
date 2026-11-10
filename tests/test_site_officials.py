@@ -81,7 +81,7 @@ class OfficialsTests(unittest.TestCase):
         self.assertEqual(set(after) - set(before), {"data/officials.json", "data/officials.csv"})  # DF1622-11
         self.assertEqual(set(before) - set(after), set())
         changed = {name for name in before if after[name] != before[name]}
-        self.assertEqual(changed, {COUNCIL_PAGE, COUNCIL_MEETING, "agencies.html"})
+        self.assertEqual(changed, {COUNCIL_PAGE, COUNCIL_MEETING, "agencies.html", "data.html", "data/datapackage.json"})  # DF1109-10
         self.assertNotIn("who-decides", self.read(POLICE_PAGE))
 
     # labels: every officials.* string comes from Site.t(), so labels.json replaces each one
