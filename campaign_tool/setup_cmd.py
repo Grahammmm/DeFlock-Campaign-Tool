@@ -49,11 +49,14 @@ def run_cli(args, root, parser, stdin, stdout):
 def run_setup(root, answers, out=print):
     """Run init → offline kit → starter build → doctor, retaining finished work.
 
+    Destination admission (the engine-checkout refusal) runs first for both a new campaign and
+    resuming an existing campaign.json, before any configuration is read or any writer runs.
     An existing campaign.json is admitted through the shared ``read_config`` before its
     identity is compared or step 1 is called kept; any read, decoding, JSON or schema
     failure stops at step 1 with one fixed message and changes nothing.
     """
     from .cli import doctor_report, initialize, read_config
+    from .git_exposure import refuse_engine_directory
     from .kit import build_kit
     from .site import build_site
 
@@ -63,6 +66,7 @@ def run_setup(root, answers, out=print):
         try:
             result = "done"
             if number == 1:
+                refuse_engine_directory(root)
                 path = root / "campaign.json"
                 if path.exists():
                     try:
