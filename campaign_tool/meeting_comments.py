@@ -36,12 +36,15 @@ def _day(text, label):
 
 
 def _entry(value, meeting_id):
-    """One stored entry, or MeetingCommentError naming it; extra keys and wrong types are refused."""
-    bad = MeetingCommentError(f"{LABEL}: entry {meeting_id!r} is malformed")
+    """One stored entry, or MeetingCommentError; extra keys and wrong types are refused.
+
+    The stored key is private, unchecked text: ``meeting_id`` is never part of a diagnostic, so the messages are
+    fixed strings that name only the store and the failing condition."""
+    bad = MeetingCommentError(f"{LABEL}: a stored comment entry is malformed")
     if not isinstance(value, dict) or not {"on", "channel", "recorded_at"} <= set(value) <= {
             "on", "channel", "recorded_at", "letter_sha256", "letter_bytes"}:
         raise bad
-    _day(value["on"], f"{LABEL} entry {meeting_id!r} on")
+    _day(value["on"], f"{LABEL}: stored comment on")
     if value["channel"] not in CHANNELS or not isinstance(value["recorded_at"], str):
         raise bad
     if ("letter_sha256" in value) != ("letter_bytes" in value):
