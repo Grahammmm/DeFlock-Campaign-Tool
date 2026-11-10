@@ -158,7 +158,9 @@ def _member_bytes(data, info, start):
 
     Every method is decoded here from the member's raw bytes (zipfile's own reader trims bzip2/lzma output to
     the header size, which would hide a longer real stream). The decoded length, ratio and CRC are therefore
-    measured on what the stream actually holds, and a stream that does not reach its end marker is unreadable."""
+    measured on what the stream actually holds, and a stream that does not reach its end marker is unreadable.
+    A compressed member must be exactly one stream: any unused bytes left in its declared compressed payload
+    after the end marker (junk, zeros or another stream) make it unreadable. Stored bytes are plain content."""
     cap = MAX_BYTES + 1
     try:
         raw = memoryview(data)[start:start + info.compress_size]
@@ -174,7 +176,7 @@ def _member_bytes(data, info, start):
             else:
                 return None, "unreadable"
             out = decoder.decompress(stream, cap)
-            complete = decoder.eof
+            complete = decoder.eof and not decoder.unused_data
     except (EOFError, OSError, ValueError, MemoryError, lzma.LZMAError, zlib.error, struct.error):
         return None, "unreadable"
     if len(out) > MAX_BYTES:
