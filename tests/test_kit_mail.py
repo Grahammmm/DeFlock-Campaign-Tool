@@ -455,6 +455,29 @@ class KitMailTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in self.out.iterdir()), sorted(names))
         self.assertEqual(self.private_snapshot(), before)
 
+    def test_staging_collisions_are_preserved_for_either_twin(self):
+        self.ready()
+        self.out.mkdir(mode=0o755)
+        before = self.private_snapshot()
+        self.mail(date(2026, 3, 4))
+        names = [f"{self.a}.letter.html", f"{self.a}.letter.txt"]
+        for index in (0, 1):
+            stage = self.out / f".{names[index]}.{os.getpid()}.tmp"
+            stage.write_bytes(b"someone else's staging")
+            stage.chmod(0o640)
+            marker = (stage.stat().st_ino, stage.stat().st_mode)
+            with self.assertRaises(ValueError) as caught:
+                self.mail(date(2026, 3, 8))
+            self.assertEqual("already replaced" in str(caught.exception), bool(index))
+            self.assertEqual(stage.read_bytes(), b"someone else's staging")
+            self.assertEqual((stage.stat().st_ino, stage.stat().st_mode), marker)
+            html_page, twin = ((self.out / n).read_text(encoding="utf-8") for n in names)
+            self.assertEqual(("2026-03-08" in html_page, "2026-03-08" in twin), (bool(index), False))
+            stage.unlink()
+            self.mail(date(2026, 3, 4))  # clean rerun replaces both again
+        self.assertEqual(self.private_snapshot(), before)
+        self.assertFalse((self.kit / "sent.json").exists())
+
     def test_public_model_strips_postal_and_legacy_copy_unchanged(self):
         self.verify(records_email="records@police.example")
         document = [{k: v for k, v in e.items() if k != "suggested"}

@@ -366,7 +366,14 @@ rule-citation lines (`- <rule_id>: ...`) only in one of the two. `--json` adds a
 only. Compare with `diff -u -- kit/requests/<id>.md kit/requests.suggested/<id>.md` from the campaign directory
 (`kit-check` never runs it). This is a prompt to review, not a verdict that your edit is wrong; nothing is merged or
 overwritten. A suggestion that is a symlink, a directory or another non-regular file, or cannot be read, is named and
-never followed. Without a suggestion the output is unchanged. `kit-sent` and `kit-copy` gates were not expanded.
+never followed. Without a suggestion, ordinary admitted files have unchanged output. `kit-sent` and `kit-copy`
+remain suggestion-blind.
+
+Each primary draft and suggestion read by `kit-check` has a per-file limit of 1 MiB (1,048,576 bytes, not
+characters). An over-limit primary is not scanned; an over-limit suggestion is not compared. Either needs
+attention (exit 3). Review and reduce the file manually; nothing is automatically truncated or rewritten.
+This limit also applies to the shared draft check, but does not bound independent earlier reads by `kit-sent`
+or `kit-copy`, or guarantee total process memory or CPU.
 
 To copy a draft out, `kit-copy --directory D --agency ID --for portal|email|mail [--json]` writes only the sendable part,
 the Subject line and the request text after it, to `kit/outgoing/ID.txt` (with its `characters` count, to compare a

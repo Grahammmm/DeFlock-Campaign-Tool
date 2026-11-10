@@ -196,11 +196,33 @@ class SuggestedTests(unittest.TestCase):
         expect("suggestion is not a regular file")
         target.unlink()
         target.write_text(draft(fee="$1"), encoding="utf-8")
-        with mock.patch("os.open", side_effect=PermissionError(13, "denied")):
+        real_open, real_fstat = os.open, os.fstat
+
+        def fail_suggestion(error):
+            def opening(path, flags):
+                if Path(path) == target:
+                    raise error
+                return real_open(path, flags)
+            return opening
+
+        with mock.patch("os.open", side_effect=fail_suggestion(PermissionError(13, "denied"))):
             expect("suggestion unreadable")
-        with mock.patch("os.open", side_effect=OSError(40, "loop")):  # swapped for a link after lstat
+        with mock.patch("os.open", side_effect=fail_suggestion(OSError(40, "loop"))):
             expect("suggestion is not a regular file")
-        with mock.patch("os.fstat", return_value=os.stat(self.tmp)):  # descriptor is not a regular file
+        suggestion_fds = set()
+
+        def opening(path, flags):
+            fd = real_open(path, flags)
+            if Path(path) == target:
+                suggestion_fds.add(fd)
+            else:
+                suggestion_fds.discard(fd)
+            return fd
+
+        def stating(fd):
+            return os.stat(self.tmp) if fd in suggestion_fds else real_fstat(fd)
+
+        with mock.patch("os.open", side_effect=opening), mock.patch("os.fstat", side_effect=stating):
             expect("suggestion is not a regular file")
         target.unlink()
         suggestion.rmdir()
