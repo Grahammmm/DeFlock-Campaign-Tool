@@ -274,7 +274,10 @@ class RegisterTests(Base):
                                      "retired_on": {"privacy": "2026-03-01"}}]}),
                                 ("private/reviewers.json", {**good, "reviewers": [
                                     {"name": "n", "roles": ["legal"], "added_on": "2026-02-01",
-                                     "retired_on": {"legal": "2026-3-1"}}]})],
+                                     "retired_on": {"legal": "2026-3-1"}}]}),
+                                ("private/reviewers.json", {**good, "reviewers": [  # retired before added_on
+                                    {"name": "n", "roles": ["legal"], "added_on": "2026-02-01",
+                                     "retired_on": {"legal": "2026-01-01"}}]})],
             "review_assignments": [("private/review-assignments/a.json", {**good, "assignments": {
                 "legal": {"reviewer": "r", "on": "2026-1-5", "recorded_at": STAMP}}})],
             "comments_sent": [("kit/comments-sent.json", b"\xff\xfe not utf-8"),

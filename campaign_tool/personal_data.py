@@ -90,8 +90,12 @@ def _roster(data):
                 or not isinstance(entry.get("retired_on", {}), dict)
                 or not all(role in entry["roles"] for role in entry.get("retired_on", {}))):
             raise _Bad
-        days.append(_day(entry["added_on"]))
-        days.extend(_day(day) for day in entry.get("retired_on", {}).values())  # DF1109B-14: dates only
+        added = _day(entry["added_on"])
+        days.append(added)
+        for day in entry.get("retired_on", {}).values():  # DF1109B-14: dates only, none before added_on (as the loader)
+            if _day(day) < added:
+                raise _Bad
+            days.append(day)
     return len(document["reviewers"]), days
 
 

@@ -211,6 +211,24 @@ def settle_clock():
         time.sleep(7)
 
 
+def pin_utc_day(case):
+    """The guide's commands mix the local day (assign, reply) with the UTC day (publish, correct); on a host whose
+    local date differs from UTC the walk's one \"today\" cannot satisfy both. Run the walk with the process clock zone
+    set to UTC so both agree, and put the zone back afterwards. The tests' expectations are unchanged."""
+    saved = os.environ.get("TZ")
+
+    def restore():
+        if saved is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = saved
+        time.tzset()
+
+    case.addCleanup(restore)
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+
+
 def match(*words):
     return lambda arguments: arguments[:len(words)] == list(words)
 
@@ -221,6 +239,7 @@ class Walk:
 
     def __init__(self, case):
         settle_clock()
+        pin_utc_day(case)
         temporary = tempfile.TemporaryDirectory(prefix="synthetic-findings-guide-")
         case.addCleanup(temporary.cleanup)
         self.case, self.base = case, Path(temporary.name).resolve()
