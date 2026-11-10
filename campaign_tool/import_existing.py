@@ -129,6 +129,13 @@ def run(root, folder, label, now=None) -> dict:
                        "outcome": code, "new_receipt": False, "kind": _kind(name)}
                 if not code:
                     try:
+                        # Admit the basename _ingest_one will persist before any open/read/store,
+                        # so an unencodable name cannot leave an object without a ledger row.
+                        try:
+                            name.encode("utf-8")
+                        except UnicodeEncodeError:
+                            raise ValueError(
+                                "Filename cannot be represented as UTF-8; original was not imported") from None
                         fd = cli._open_dir(top_fd, parts)
                         try:
                             result = cli._ingest_one(db, root, name, source, dir_fd=fd)

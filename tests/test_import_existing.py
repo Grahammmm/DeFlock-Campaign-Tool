@@ -529,5 +529,101 @@ importer.run(Path(root), Path(folder), "l", now=datetime(2026, 1, 1, tzinfo=time
         self.assertEqual(self.stages(), [])
 
 
+    def raw(self, name_bytes, data):
+        path = os.path.join(os.fsencode(self.folder), name_bytes)
+        with open(path, "wb") as handle:
+            handle.write(data)
+
+    def objects_on_disk(self):
+        directory = self.root / "private/objects"
+        return sorted(directory.iterdir()) if directory.is_dir() else []
+
+    def test_undecodable_basename_errors_before_preservation_and_continues(self):
+        from campaign_tool import store_check
+        self.write("a.txt")
+        self.raw(b"m-invalid-\xff.txt", b"bad bytes")
+        self.write("z.txt")
+        seen = []
+        real = cli._ingest_one
+        def watch(db, root, name, *args, **kwargs):
+            seen.append(name)
+            return real(db, root, name, *args, **kwargs)
+        with patch.object(cli, "_ingest_one", watch):
+            summary = self.run_import()
+        self.assertEqual(seen, ["a.txt", "z.txt"])
+        self.assertEqual((summary["counts"]["stored"], summary["counts"]["error"], summary["stopped"]), (2, 1, False))
+        files = self.receipt(summary)["files"]
+        self.assertEqual([row["outcome"] for row in files], ["stored", "error", "stored"])
+        bad = files[1]
+        self.assertEqual(bad["error"], "Filename cannot be represented as UTF-8; original was not imported")
+        self.assertIsNone(bad["sha256_prefix"])
+        self.assertFalse(bad["new_receipt"])
+        self.assertEqual(os.fsencode(bad["path"]), b"m-invalid-\xff.txt")
+        self.assertEqual(len(self.objects_on_disk()), 2)
+        self.assertEqual(self.ledger(), (2, 2))
+        self.assertEqual(store_check.check_store(self.root)["problems"], [])
+
+    def test_cli_bad_basename_exit_three_rerun_and_manual_rename(self):
+        self.write("a.txt")
+        self.raw(b"bad-\xff\xfe.txt", b"bad bytes")
+        first = self.run_cli(3)
+        files = self.receipt(first)["files"]
+        self.assertEqual([row["outcome"] for row in files], ["stored", "error"])
+        self.assertNotIn("codec", json.dumps(files))
+        again = self.run_cli(3)
+        self.assertEqual([row["outcome"] for row in self.receipt(again)["files"]], ["present", "error"])
+        self.assertEqual(len(self.objects_on_disk()), 1)
+        self.assertEqual(self.ledger(), (1, 1))
+        os.rename(os.path.join(os.fsencode(self.folder), b"bad-\xff\xfe.txt"),
+                  os.path.join(os.fsencode(self.folder), b"good.txt"))
+        third = self.run_cli(0)
+        self.assertEqual([row["outcome"] for row in self.receipt(third)["files"]], ["present", "stored"])
+        self.assertEqual(self.ledger(), (2, 2))
+
+    def test_all_bad_names_read_nothing_and_publish_receipt(self):
+        self.raw(b"\xc3.txt", b"one")
+        self.raw(b"\xe2\x82.txt", b"two")
+        with patch.object(cli, "_ingest_one", side_effect=AssertionError("must not ingest")):
+            summary = self.run_import()
+        self.assertEqual(summary["counts"]["error"], 2)
+        self.assertFalse(summary["stopped"])
+        self.assertEqual(self.objects_on_disk(), [])
+        self.assertEqual(self.ledger(), (0, 0))
+        self.assertEqual(stat.S_IMODE((self.root / summary["receipt"]).stat().st_mode), 0o600)
+
+    def test_bad_name_leaves_preexisting_same_digest_untouched(self):
+        self.write("ok.txt", b"same")
+        self.run_import()
+        before = [(p.name, p.read_bytes()) for p in self.objects_on_disk()]
+        self.raw(b"x-\xff.txt", b"same")
+        summary = self.run_import()
+        self.assertEqual([r["outcome"] for r in self.receipt(summary)["files"]], ["present", "error"])
+        self.assertEqual(summary["counts"]["error"], 1)
+        self.assertEqual([(p.name, p.read_bytes()) for p in self.objects_on_disk()], before)
+        self.assertEqual(self.ledger(), (1, 1))
+
+    def test_skip_precedence_and_unicode_names_unchanged(self):
+        from campaign_tool import store_check
+        self.raw(b".hidden-\xff", b"h")
+        os.symlink("nowhere", os.path.join(os.fsencode(self.folder), b"link-\xff"))
+        for name in ("caf\u00e9.txt", "cafe\u0301.txt", "\u6587\u4ef6.txt", "\U0001f600.txt"):
+            self.write(name)
+        summary = self.run_import()
+        self.assertEqual(summary["counts"]["hidden"], 1)
+        self.assertEqual(summary["counts"]["symlink"], 1)
+        self.assertEqual(summary["counts"]["error"], 0)
+        self.assertEqual(summary["counts"]["stored"], 4)
+        self.assertEqual(store_check.check_store(self.root)["problems"], [])
+
+    def test_valid_leaf_under_raw_directory_remains_eligible(self):
+        directory = os.path.join(os.fsencode(self.folder), b"dir-\xff")
+        os.mkdir(directory)
+        with open(os.path.join(directory, b"ok.txt"), "wb") as handle:
+            handle.write(b"ok")
+        summary = self.run_import()
+        self.assertEqual(summary["counts"]["stored"], 1)
+        self.assertEqual(summary["counts"]["error"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

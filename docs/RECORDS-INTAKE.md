@@ -29,6 +29,10 @@ removed by later runs and may be deleted by hand. Rerun the same command: it reu
 preserved bytes (reported as `present`) and writes a new complete receipt, but does not
 recreate the interrupted run's original report.
 
+A file whose own name cannot be stored as UTF-8 text (for example a name with an invalid byte) is
+reported as a per-file error before its bytes are read or preserved, so no object is left
+without a ledger row; other files continue. Rename the file yourself and rerun the batch.
+
 This is the second M0 code-port slice, independent of the gate PR. It brings the
 existing intake, preservation, extraction, quarantine and repair implementation
 into the public engine. It does not activate a live campaign or scan a corpus.
