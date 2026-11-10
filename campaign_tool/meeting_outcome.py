@@ -185,8 +185,10 @@ def _comment_group(spoke, written, comment_source_url, default_source):
 
 def comment_count(text, flag):
     """DF0022-09: a CLI count: ASCII decimal digits only, 0 to 999 (leading zeros allowed); anything else is refused by flag."""
-    if isinstance(text, str) and re.fullmatch(r"[0-9]+", text) and len(text.lstrip("0")) <= 3:
-        return int(text)
+    if isinstance(text, str) and re.fullmatch(r"[0-9]+", text):
+        significant = text.lstrip("0")  # RF0535-6: convert at most three digits, never the padded original
+        if len(significant) <= 3:
+            return int(significant or "0")
     raise MeetingOutcomeError(f"{flag}: must be a whole number from 0 to 999")
 
 

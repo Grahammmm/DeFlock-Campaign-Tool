@@ -454,5 +454,86 @@ class LegacyBytes(Base):
         self.assertEqual(run("content-check", "--directory", str(self.root)).returncode, 0)
 
 
+class LongZeroPadding(Base):
+    """RF0535-6: zero padding of any length is read by value, independent of the interpreter's digit limit."""
+
+    LIMITED = {"PYTHONINTMAXSTRDIGITS": "640"}  # the supported minimum, set only in the child
+
+    def child(self, *args, limit=True):
+        import os
+        env = {**os.environ, **(self.LIMITED if limit else {"PYTHONINTMAXSTRDIGITS": "0"})}
+        return subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "meetings-outcome", "--directory", str(self.root),
+                               "--id", MID, *args], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60, env=env)
+
+    def test_direct_parser_long_padding_and_grammar(self):
+        for pad in (5, 700, 5000):
+            for text, number in (("7", 7), ("999", 999), ("0", 0), ("1", 1), ("", 0)):
+                if not text and pad < 5:
+                    continue
+                token = "0" * pad + text
+                with self.subTest(pad=pad, text=text):
+                    for flag in ("--spoke", "--written"):
+                        value = comment_count(token, flag)
+                        self.assertIs(type(value), int)
+                        self.assertEqual(value, number)
+        for bad in ("0" * 5000 + "1000", "1" * 5000, "0" * 5000 + "x", "x" + "0" * 5000 + "7", "0" * 5000 + "7\n",
+                    " " + "0" * 5000, "0" * 5000 + "٣", "-" + "0" * 5000, "0" * 5000 + "1_0", None, True, 7, 7.0, [], {}):
+            with self.subTest(bad=repr(bad)[:20]):
+                with self.assertRaises(MeetingOutcomeError) as caught:
+                    comment_count(bad, "--spoke")
+                self.assertEqual(str(caught.exception), f"--spoke: {RANGE}")
+
+    def test_cli_long_padding_with_a_small_child_digit_limit(self):
+        before = sys.get_int_max_str_digits()
+        padded = "0" * 5000
+        control = self.child(*CREATE, "--spoke", "0" * 3 + "7", "--replace")
+        self.assertEqual(control.returncode, 0, control.stderr)
+        for limit in (True, False):
+            for flag_values in ((("--spoke", padded + "7"),), (("--written", padded + "999"),),
+                                (("--spoke", padded), ("--written", padded + "7"))):
+                with self.subTest(limit=limit, flags=[f for f, _ in flag_values]):
+                    self.meeting.write_bytes(self.original)
+                    args = [a for pair in flag_values for a in pair]
+                    done = self.child(*CREATE, *args, limit=limit)
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertEqual(done.stdout.rstrip().splitlines()[-1], NOTICE)
+                    stored = self.doc()["outcome"]
+                    expected = {f[2:]: (0 if v == padded else 999 if v.endswith("999") else 7) for f, v in flag_values}
+                    self.assertEqual({k: stored[k] for k in ("spoke", "written") if k in stored}, expected)
+                    self.assertTrue(all(type(stored[k]) is int for k in expected))
+        self.assertEqual(sys.get_int_max_str_digits(), before)
+
+    def test_cli_long_padding_counts_only_attach_and_replace(self):
+        padded = "0" * 5000
+        self.set_outcome()
+        done = self.child("--spoke", padded + "4", "--written", padded + "12")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        outcome = self.doc()["outcome"]
+        self.assertEqual((outcome["spoke"], outcome["written"]), (4, 12))
+        before = self.staged()
+        done = self.child("--spoke", padded + "5")  # still a duplicate without --replace
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("pass --replace", done.stderr)
+        self.assertEqual(self.staged(), before)
+        done = self.child("--written", padded + "9", "--replace")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        outcome = self.doc()["outcome"]
+        self.assertEqual(outcome["written"], 9)
+        self.assertNotIn("spoke", outcome)
+
+    def test_cli_long_padded_out_of_range_is_refused_unchanged(self):
+        self.set_outcome()
+        before = self.staged()
+        for flag in ("--spoke", "--written"):
+            for token in ("0" * 5000 + "1000", "0" * 5000 + "x"):
+                with self.subTest(flag=flag, token=token[-5:]):
+                    done = self.child(flag, token)
+                    self.assertEqual(done.returncode, 1)
+                    self.assertEqual(done.stderr.strip(), f"Stopped: {flag}: {RANGE}")
+                    self.assertEqual(done.stdout, "")
+                    self.assertNotIn("Traceback", done.stderr)
+                    self.assertEqual(self.staged(), before)
+
+
 if __name__ == "__main__":
     unittest.main()
