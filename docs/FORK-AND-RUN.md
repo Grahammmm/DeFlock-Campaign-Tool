@@ -86,6 +86,10 @@ A `.gitignore` does not untrack files already committed, and a later negation (`
 can re-include files: both need manual review before any push. If git is not installed the
 row says `not checked` and never passes. A campaign outside every work tree gets no row.
 
+If the campaign sits inside more than one nested git work tree, the row says `not checked`:
+an inner ignore cannot certify files tracked by an enclosing work tree, and the checklist
+never inspects them. Review the index of every enclosing work tree manually before any push.
+
 ## 7. Pull upstream fixes
 
 ```sh

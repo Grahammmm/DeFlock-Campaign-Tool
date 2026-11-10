@@ -18,6 +18,9 @@ ENGINE_MESSAGE = ("Campaign directory must be outside the engine checkout; choos
 NOT_CHECKED_NEXT = ("Rerun doctor --checklist once git can read this work tree; "
                     "do not commit campaign files until checked.")
 NO_GIT_NEXT = "Install git and rerun doctor --checklist; do not commit campaign files until checked."
+NESTED_NEXT = ("Campaign is inside nested git work trees; review tracked files in every enclosing work tree manually "
+               "before any push. Moving files does not untrack existing entries. Rerun doctor --checklist from a "
+               "campaign outside nested work trees.")
 TRACKED_NOTE = (".gitignore does not untrack existing files; review tracked files manually before any push.")
 
 
@@ -27,6 +30,10 @@ class GitExposureError(ValueError):
 
 class _Unchecked(Exception):
     """Something prevented a trustworthy answer; the row must say 'not checked'."""
+
+
+class _Nested(_Unchecked):
+    """The campaign sits inside more than one git work tree; this check does not certify that layout."""
 
 
 def engine_checkout_root():
@@ -62,7 +69,12 @@ def refuse_engine_directory(directory):
 
 
 def _find_marker(resolved):
-    """True when a .git directory or worktree .git file exists at or above resolved, else False."""
+    """True when exactly one acceptable .git directory or worktree .git file exists at or above resolved.
+
+    The whole ancestor chain is scanned: False when there is none, _Nested on a second acceptable marker (an inner
+    work tree cannot vouch for an enclosing index), and the generic _Unchecked for a bad marker anywhere reached.
+    """
+    found = False
     for folder in (resolved, *resolved.parents):
         marker = folder / ".git"
         try:
@@ -71,18 +83,19 @@ def _find_marker(resolved):
             continue
         except OSError:
             raise _Unchecked() from None
-        if os.path.isdir(marker) and not os.path.islink(marker):
-            return True
-        if mode & 0o170000 != 0o100000:
-            raise _Unchecked()
-        try:
-            with marker.open("rb") as handle:
-                if not handle.read(512).startswith(b"gitdir:"):
-                    raise _Unchecked()
-        except OSError:
-            raise _Unchecked() from None
-        return True
-    return False
+        if not (os.path.isdir(marker) and not os.path.islink(marker)):
+            if mode & 0o170000 != 0o100000:
+                raise _Unchecked()
+            try:
+                with marker.open("rb") as handle:
+                    if not handle.read(512).startswith(b"gitdir:"):
+                        raise _Unchecked()
+            except OSError:
+                raise _Unchecked() from None
+        if found:
+            raise _Nested()
+        found = True
+    return found
 
 
 def _env():
@@ -200,6 +213,8 @@ def git_exposure_row(directory):
         if not _find_marker(resolved) and not in_engine:
             return None
         names, tracked = _exposure(resolved)
+    except _Nested:
+        note = NESTED_NEXT
     except _Unchecked as exc:
         missing = str(exc) == NO_GIT
         note = NO_GIT_NEXT if missing else NOT_CHECKED_NEXT
