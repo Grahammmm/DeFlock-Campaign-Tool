@@ -165,10 +165,10 @@ def _target(document, agency_id, name):
     body = _body(document, agency_id)
     found = [n for n, person in enumerate(body["officials"]) if person["name"] == name] if body else []
     if not found:
-        raise OfficialsError(f"--name: no official with exactly this name is listed for {agency_id} "
+        raise OfficialsError("--name: no official with exactly this name is listed for this --agency "
                              f"(names match exactly; see officials list); {UNTOUCHED}")
     if len(found) > 1:
-        raise OfficialsError(f"--name: this exact name is listed more than once for {agency_id}; edit {LABEL} by hand "
+        raise OfficialsError(f"--name: this exact name is listed more than once for this --agency; edit {LABEL} by hand "
                              f"to tell them apart; {UNTOUCHED}")
     return body, found[0]
 
@@ -192,6 +192,7 @@ def _install(root, data, loaded):
     folder = _content_fd(root)
     temp = f".officials-{os.getpid()}-{os.urandom(4).hex()}.tmp"
     staged = False
+    committed = False  # True once the rename/link has published the new roster: from then on the old bytes are gone
     try:
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
         staged = True
@@ -208,15 +209,20 @@ def _install(root, data, loaded):
             if current is not None:
                 raise FileExistsError
             os.link(temp, FILE, src_dir_fd=folder, dst_dir_fd=folder, follow_symlinks=False)  # never replaces
+            committed = True
         else:
             if current is None or not stat.S_ISREG(current.st_mode) or _identity(current) != loaded[0]:
                 raise FileExistsError
             os.replace(temp, FILE, src_dir_fd=folder, dst_dir_fd=folder)
+            committed = True
             staged = False
         os.fsync(folder)
     except FileExistsError:
         raise OfficialsError(f"{LABEL}: changed while it was being edited; {UNTOUCHED}") from None
     except OSError:
+        if committed:  # the new roster is already in place; only its durability could not be confirmed
+            raise OfficialsError(f"{LABEL}: the new roster was written but the folder could not be flushed to disk; "
+                                 "check the file with officials list before relying on it") from None
         raise OfficialsError(f"{LABEL}: write failed; the previous file was kept") from None
     finally:
         if staged:

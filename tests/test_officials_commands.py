@@ -273,6 +273,43 @@ class OfficialsCommandTests(unittest.TestCase):
         self.add("Birch Example")
         self.assertEqual(stat.S_IMODE(os.lstat(self.file).st_mode), 0o640)  # the existing mode is kept
 
+    def test_refusals_never_echo_the_agency_value(self):
+        self.add("Ash Example")
+        marker = "ca-" + PAYLOAD.replace(" ", "-").lower()
+        for call in (lambda: oc.recheck_official(self.root, agency_id=marker, name="Ash Example", checked_on=day(1),
+                                                 today=TODAY),
+                     lambda: oc.remove_official(self.root, agency_id=marker, name="Ash Example", today=TODAY)):
+            message = self.refused(call, "no official with exactly this name is listed for this --agency")
+            self.assertNotIn(marker, message)
+        self.write([{"agency_id": COUNCIL, "officials": [person("Dup Example"), person("Dup Example")]}])
+        for call in (lambda: oc.recheck_official(self.root, agency_id=COUNCIL, name="Dup Example", checked_on=day(1),
+                                                 today=TODAY),
+                     lambda: oc.remove_official(self.root, agency_id=COUNCIL, name="Dup Example", today=TODAY)):
+            message = self.refused(call, "listed more than once for this --agency")
+            self.assertNotIn(COUNCIL, message)
+
+    def test_folder_flush_failure_after_commit_does_not_claim_the_old_file_was_kept(self):
+        real_fsync = os.fsync
+        for first in (True, False):  # first create (link) and later edit (rename)
+            if not first:
+                self.add("Ash Example")
+            calls = []
+            def fail_folder(fd):  # the staged file's fsync succeeds; the folder's, after the commit, fails
+                calls.append(fd)
+                if len(calls) == 2:
+                    raise OSError("injected")
+                real_fsync(fd)
+            with mock.patch.object(oc.os, "fsync", side_effect=fail_folder), self.assertRaises(ContentError) as caught:
+                self.add("Birch Example" if not first else "Ash Example")
+            message = str(caught.exception)
+            self.assertNotIn("previous file was kept", message)
+            self.assertNotIn("nothing was written", message)
+            self.assertIn("new roster was written", message)
+            self.assertIn("Birch Example" if not first else "Ash Example", [n for _, n in self.names()])  # it did commit
+            self.assertEqual(self.temps(), [])
+            if first:
+                self.file.unlink()
+
     def test_commands_never_fetch_build_or_publish(self):
         build_site(self.root, today=TODAY)
         public = {p: p.read_bytes() for p in (self.root / "public").rglob("*") if p.is_file()}
