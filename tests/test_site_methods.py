@@ -174,9 +174,9 @@ class MethodsPageTests(unittest.TestCase):
         for name in before:
             self.assertNotIn("methods", self.read(name), name)
         self.assertIn("[Documented fact; Verified against the record;", self.read("feed.xml"))
-        reworded = {k: "Reworded." for k in CLASSIFICATION_DEFINITIONS}
-        with mock.patch.object(site_module, "CLASSIFICATION_DEFINITIONS", reworded):
-            self.build()
+        reworded = {f"methods.classification_{k}": "Reworded." for k in CLASSIFICATION_DEFINITIONS}  # DF1109-16: via labels
+        (self.root / "content" / "labels.json").write_text(json.dumps({"schema_version": 1, "labels": reworded}), encoding="utf-8")
+        self.build()
         self.assertIn("<dd>Reworded.</dd>", self.read("methods.html"))
         self.assertEqual({n: hashlib.sha256((self.public / n).read_bytes()).hexdigest() for n in before}, before)
 
