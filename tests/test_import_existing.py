@@ -294,6 +294,240 @@ class ImportExistingTests(unittest.TestCase):
                 importer.run(self.root, spelling, "l", now=self.instant)
         self.assertFalse((self.root / "private").exists())
 
+    # --- Atomic, no-clobber receipt publication (RF1925-8) ---
+
+    CHILD = '''import os, sys
+from datetime import datetime, timezone
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from campaign_tool import import_existing as importer
+mode, root, folder = sys.argv[2:5]
+if mode == "serialize":
+    def dump(obj, fp, **kwargs):
+        fp.write('{"schema":')
+        fp.flush()
+        os.fsync(fp.fileno())
+        os._exit(73)
+    importer.json.dump = dump
+else:
+    real_link = os.link
+    def link(*args, **kwargs):
+        real_link(*args, **kwargs)
+        os._exit(73)
+    importer.os.link = link
+importer.run(Path(root), Path(folder), "l", now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+'''
+
+    def imports(self):
+        directory = self.root / "private/imports"
+        return directory, sorted(p.name for p in directory.iterdir()) if directory.is_dir() else []
+
+    def finals(self):
+        return [n for n in self.imports()[1] if n.endswith(".json")]
+
+    def stages(self):
+        return [n for n in self.imports()[1] if not n.endswith(".json")]
+
+    def child_exit(self, mode):
+        script = self.base / "child.py"
+        script.write_text(self.CHILD)
+        result = subprocess.run([sys.executable, "-B", str(script), str(Path(cli.__file__).resolve().parent.parent),
+                                 mode, str(self.root), str(self.folder)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 73, result.stderr)
+
+    def expected_bytes(self, receipt):
+        return (json.dumps(receipt, indent=2) + "\n").encode("utf-8")
+
+    def test_process_exit_during_receipt_write_never_exposes_final_json(self):
+        self.write("one.pdf")
+        self.child_exit("serialize")
+        directory, names = self.imports()
+        self.assertEqual(self.finals(), [])
+        self.assertEqual(len(names), 1)
+        stage = directory / names[0]
+        self.assertTrue(names[0].startswith("."))
+        self.assertEqual(stat.S_IMODE(stage.stat().st_mode), 0o600)
+        torn = stage.read_bytes()
+        self.assertEqual(torn, b'{"schema":')
+        self.assertEqual(self.ledger(), (1, 1))  # Preserved object and ledger survive the interruption.
+        retry = self.run_import()
+        self.assertEqual(retry["receipt"], "private/imports/20260101T000000Z-l.json")
+        self.assertEqual(retry["counts"]["present"], 1)
+        self.assertEqual(retry["counts"]["stored"], 0)
+        self.assertEqual(self.ledger(), (1, 1))
+        for name in self.finals():
+            json.loads((directory / name).read_text())
+        self.assertEqual(stage.read_bytes(), torn)  # Never trusted, resumed or deleted.
+
+    def test_ordinary_serialization_flush_and_file_fsync_errors_leave_no_final(self):
+        self.write("one.pdf")
+        first = self.run_import()
+        directory = self.root / "private/imports"
+        before = (directory / "20260101T000000Z-l.json").read_bytes()
+        receipt = {"schema": "import-receipt-v1", "files": []}
+        closed = []
+        real_fdopen, real_fsync = os.fdopen, os.fsync
+
+        class FlushFails:
+            def __init__(self, handle):
+                self.handle = handle
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                self.handle.close()
+                closed.append(self.handle.closed)
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+            def flush(self):
+                raise OSError("synthetic flush failure")
+
+        def file_fsync_fails(fd):
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("synthetic fsync failure")
+            return real_fsync(fd)
+
+        cases = {
+            "serialize": patch.object(importer.json, "dump", side_effect=OSError("synthetic dump failure")),
+            "flush": patch.object(importer.os, "fdopen", lambda *a, **k: FlushFails(real_fdopen(*a, **k))),
+            "fsync": patch.object(importer.os, "fsync", side_effect=file_fsync_fails),
+        }
+        for label, context in cases.items():
+            with self.subTest(case=label), context, self.assertRaises(OSError):
+                importer._write_receipt(self.root, "20260101T000000Z", "l", receipt)
+            self.assertEqual(self.finals(), ["20260101T000000Z-l.json"])
+            self.assertEqual(self.stages(), [])  # Owned stage cleaned on ordinary failure.
+            self.assertEqual((directory / "20260101T000000Z-l.json").read_bytes(), before)
+        self.assertEqual(closed, [True])
+        self.assertEqual(self.receipt(first)["schema"], "import-receipt-v1")
+
+    def test_publish_collision_preserves_existing_file_symlink_and_other_stage(self):
+        directory = self.root / "private/imports"
+        directory.mkdir(parents=True)
+        other = directory / ".receipt-other-run.tmp"
+        other.write_bytes(b"{partial")
+        other.chmod(0o600)
+        outside = self.base / "outside.txt"
+        outside.write_bytes(b"outside sentinel")
+        sentinel = directory / "20260101T000000Z-l.json"
+        real_link = os.link
+        arrivals = [lambda: sentinel.write_bytes(b"concurrent sentinel"),
+                    lambda: (directory / "20260101T000000Z-l-2.json").symlink_to(outside)]
+
+        def racing_link(*args, **kwargs):
+            if arrivals:
+                arrivals.pop(0)()
+            return real_link(*args, **kwargs)
+
+        other_mtime = other.lstat().st_mtime_ns
+        receipt = {"schema": "import-receipt-v1", "n": 1}
+        with patch.object(importer.os, "link", side_effect=racing_link):
+            name = importer._write_receipt(self.root, "20260101T000000Z", "l", receipt)
+        self.assertEqual(name, "private/imports/20260101T000000Z-l-3.json")
+        self.assertEqual(sentinel.read_bytes(), b"concurrent sentinel")
+        self.assertEqual(outside.read_bytes(), b"outside sentinel")
+        self.assertTrue((directory / "20260101T000000Z-l-2.json").is_symlink())
+        self.assertEqual((self.root / name).read_bytes(), self.expected_bytes(receipt))
+        self.assertEqual(other.read_bytes(), b"{partial")
+        self.assertEqual(other.lstat().st_mtime_ns, other_mtime)
+        self.assertEqual(self.stages(), [".receipt-other-run.tmp"])
+
+    def test_two_writers_in_the_same_second_publish_distinct_valid_receipts(self):
+        import threading
+        (self.root / "private").mkdir()
+        barrier, results, real_link = threading.Barrier(2, timeout=20), {}, os.link
+        waited = set()
+
+        def synchronized_link(*args, **kwargs):
+            if threading.get_ident() not in waited:  # Meet only before each writer's first attempt.
+                waited.add(threading.get_ident())
+                barrier.wait()
+            return real_link(*args, **kwargs)
+
+        def writer(number):
+            results[number] = importer._write_receipt(self.root, "20260101T000000Z", "l", {"n": number})
+
+        with patch.object(importer.os, "link", side_effect=synchronized_link):
+            threads = [threading.Thread(target=writer, args=(n,)) for n in (1, 2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+        self.assertEqual(sorted(results), [1, 2])
+        self.assertEqual(len(set(results.values())), 2)
+        for number, name in results.items():
+            self.assertEqual((self.root / name).read_bytes(), self.expected_bytes({"n": number}))
+        self.assertEqual(self.stages(), [])
+
+    def test_crash_after_publication_keeps_complete_receipt(self):
+        self.write("one.pdf")
+        self.child_exit("link")
+        directory, _ = self.imports()
+        self.assertEqual(self.finals(), ["20260101T000000Z-l.json"])
+        published = (directory / "20260101T000000Z-l.json").read_bytes()
+        self.assertTrue(published.endswith(b"}\n"))
+        self.assertEqual(json.loads(published)["schema"], "import-receipt-v1")
+        self.assertEqual(len(self.stages()), 1)  # Both names may remain after a crash.
+        retry = self.run_import()
+        self.assertEqual(retry["receipt"], "private/imports/20260101T000000Z-l-2.json")
+        self.assertEqual((directory / "20260101T000000Z-l.json").read_bytes(), published)
+
+    def test_directory_fsync_and_cleanup_errors_after_publication_keep_final(self):
+        receipt, real_fsync = {"schema": "import-receipt-v1", "n": 1}, os.fsync
+        (self.root / "private").mkdir()
+
+        def directory_fsync_fails(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("synthetic directory fsync failure")
+            return real_fsync(fd)
+
+        with patch.object(importer.os, "fsync", side_effect=directory_fsync_fails), self.assertRaises(OSError):
+            importer._write_receipt(self.root, "20260101T000000Z", "l", receipt)
+        self.assertEqual(self.finals(), ["20260101T000000Z-l.json"])
+        self.assertEqual((self.root / "private/imports/20260101T000000Z-l.json").read_bytes(), self.expected_bytes(receipt))
+        self.assertEqual(self.stages(), [])
+        with patch.object(importer.os, "unlink", side_effect=OSError("synthetic cleanup failure")), \
+                self.assertRaises(OSError):
+            importer._write_receipt(self.root, "20260101T000000Z", "l", receipt)
+        self.assertEqual(self.finals(), ["20260101T000000Z-l-2.json", "20260101T000000Z-l.json"])
+        self.assertEqual((self.root / "private/imports/20260101T000000Z-l-2.json").read_bytes(), self.expected_bytes(receipt))
+        self.assertEqual(len(self.stages()), 1)
+
+    def test_full_import_receipt_failure_retains_ledger_and_retry_is_present(self):
+        path = self.write("one.pdf")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        with patch.object(importer.json, "dump", side_effect=OSError("synthetic dump failure")), \
+                self.assertRaises(OSError):
+            self.run_import()
+        self.assertEqual((self.root / "private/objects" / digest).read_bytes(), path.read_bytes())
+        self.assertEqual(self.ledger(), (1, 1))
+        self.assertEqual(self.finals(), [])
+        self.assertEqual(self.stages(), [])
+        retry = self.run_import()
+        self.assertEqual((retry["counts"]["present"], retry["counts"]["stored"]), (1, 0))
+        self.assertEqual(self.ledger(), (1, 1))
+        self.assertEqual(self.finals(), ["20260101T000000Z-l.json"])
+
+    def test_receipt_exact_bytes_modes_suffixes_and_empty_import_preserved(self):
+        old = os.umask(0)
+        self.addCleanup(os.umask, old)
+        directory = self.root / "private/imports"
+        directory.mkdir(parents=True)
+        directory.chmod(0o755)
+        receipt = {"schema": "import-receipt-v1", "label": "l", "note": "caf\u00e9", "files": []}
+        names = [importer._write_receipt(self.root, "20260101T000000Z", "l", receipt) for _ in range(3)]
+        self.assertEqual(names, [f"private/imports/20260101T000000Z-l{s}.json" for s in ("", "-2", "-3")])
+        for name in names:
+            self.assertEqual((self.root / name).read_bytes(), self.expected_bytes(receipt))
+            self.assertEqual(stat.S_IMODE((self.root / name).stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+        self.assertEqual(self.stages(), [])
+        empty = self.run_import()
+        self.assertEqual(empty["receipt"], "private/imports/20260101T000000Z-l-4.json")
+        text = (self.root / empty["receipt"]).read_bytes()
+        self.assertEqual(text, self.expected_bytes(json.loads(text)))
+        self.assertEqual(self.receipt(empty)["files"], [])
+        self.assertEqual(self.stages(), [])
+
 
 if __name__ == "__main__":
     unittest.main()
