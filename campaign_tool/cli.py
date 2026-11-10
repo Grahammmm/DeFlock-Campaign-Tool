@@ -878,7 +878,7 @@ def _content_list(load, as_json, line, refusal):
     except (ValueError, OSError, RecursionError):
         print(refusal, file=sys.stderr)
         sys.exit(2)
-    sys.stdout.write(text)
+    print(text, end="")
 
 
 def main():
