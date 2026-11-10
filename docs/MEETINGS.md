@@ -123,7 +123,8 @@ only); the kit is still written ([LEGAL-CLAIM-GUARD.md](LEGAL-CLAIM-GUARD.md)).
 
 **Decisions elsewhere in the kit (DF1107-06).** `meetings-stage --elsewhere N` (repeatable, at most 3, distinct) cites
 decision N of `content/elsewhere.json`, counted 1-based in the file's STORED order (never the page's kind/date sorting).
-An index of zero, below zero, past the end or given twice is refused by flag and value; with no `content/elsewhere.json`
+An index of zero, below zero, past the end or given twice is refused by flag and value (an integer beyond six digits is
+omitted from the message, and a malformed selection is never echoed back); with no `content/elsewhere.json`
 the flag is refused. The kit gets a plain `Elsewhere:` paragraph after the cited findings in the two-minute, spoken and
 written versions (a spoken or written version still needs its verified participation), one line each in the order
 given: `PLACE, STATE: BODY, DECIDED_ON: as_stated (official source URL)`. The lines are never shortened or dropped: if
