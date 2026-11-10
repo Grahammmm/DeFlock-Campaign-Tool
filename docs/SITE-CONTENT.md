@@ -589,6 +589,15 @@ rule names, never the text) and still succeeds, and the build's review notes cov
 for a human at the publish gate and is never an error. Meeting decisions stay separate (`meetings/*.json` outcomes); nothing is
 merged with, or removed because of, a meeting.
 
+`timeline.html` also lists, after every older kind on the same day, a finding's dated updates (kind `finding_update`, "Update
+to TITLE", linked to the finding's `#updates` heading; one item per update, the note stays on the finding page), recorded public
+statements from `content/statements.json` (kind `statement`, "OFFICIAL, AGENCY: public statement", linked to the agency page
+that shows it with the statement's official source as its "official record" link; the quote is not copied) and press coverage
+from `content/coverage.json` (kind `coverage`, "In the news: OUTLET", linked to `/news.html`; press is not an official record, so
+no source link). Each keeps the day written in its file (`date`, `said_on`, `published_on`). Only when at least one is shown, the
+lead ends with " Also shown: finding updates, public statements and press coverage." naming just the kinds present, in that
+order; a campaign without any of them builds a byte-identical `timeline.html`, and no other page changes.
+
 ### Reports the agency has published about its ALPR use (`profile.reports`)
 
 An optional `profile.reports` is a list of 1 to 20 entries (`null`, `[]`, a single object and 21 entries are refused). The
