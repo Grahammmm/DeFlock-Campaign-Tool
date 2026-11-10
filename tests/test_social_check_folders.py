@@ -1,4 +1,5 @@
 """DF1622-04: ``social --check`` covers platform, meeting, outcome and thread draft folders (synthetic only)."""
+import io
 import json
 import os
 import shutil
@@ -6,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -287,6 +290,242 @@ class Outcomes(FolderCheckCase):
         draft = self.social / "outcomes" / "m-one.md"
         draft.write_text(draft.read_text(encoding="utf-8").replace("approved", "rejected"), encoding="utf-8")
         self.assertEqual(self.states("outcomes"), {"m-one": ("edited", ["outdated"])})
+
+
+class RequiredWindows(FolderCheckCase):
+    """Selection trusts the folder's generated baseline, not arbitrary metadata."""
+
+    def seed(self, kind, window=1):
+        now = NOW if kind == "meetings" else NOW_O
+        if kind == "meetings":
+            self.meeting("seed", starts=(now + timedelta(hours=1)).isoformat())
+        else:
+            self.meeting("seed", starts="2026-10-01T09:00:00-07:00", facts=None, outcome=outcome())
+        build_social(self.root)
+        builder = build_meeting_social if kind == "meetings" else build_outcome_social
+        builder(self.root, within_days=window, now=now)
+        builder(self.root, ["x", "bluesky", "mastodon"], within_days=window, now=now)
+        return now, builder
+
+    def layouts(self, kind):
+        return [kind] + [kind + "/" + p for p in ("x", "bluesky", "mastodon")]
+
+    def metadata(self, rel, **changes):
+        path = self.social / rel / ".check.json"
+        doc = json.loads(path.read_text())
+        doc["drafts"]["seed"].update(changes)
+        path.write_text(json.dumps(doc), encoding="utf-8")
+
+    def target(self, kind, mid="target", days=7, **extra):
+        if kind == "meetings":
+            self.meeting(mid, starts=(NOW + timedelta(days=days)).isoformat(), **extra)
+        else:
+            on = (NOW_O.date() - timedelta(days=days)).isoformat()
+            self.meeting(mid, starts="2026-09-01T09:00:00-07:00", facts=None, outcome=outcome(on), **extra)
+
+    def missing(self, rel, now):
+        return {r["slug"] for r in self.folder(rel, now)["drafts"] if r["state"] == "missing"}
+
+    def snapshot(self):
+        return {str(p.relative_to(self.root)): (p.read_bytes() if p.is_file() else None,
+                p.stat().st_mode, p.stat().st_mtime_ns) for p in self.root.rglob("*")}
+
+    def test_unbound_one_day_meeting_window_cannot_hide_default_missing(self):
+        now, _ = self.seed("meetings")
+        self.target("meetings")
+        self.target("meetings", "edge", 14)
+        self.meeting("beyond", starts=(NOW + timedelta(days=14, seconds=1)).isoformat())
+        self.target("meetings", "cancelled", 2, status="cancelled")
+        self.target("meetings", "expired", -1)
+        self.meeting("unverified", facts=None)
+        self.assert_default_fallback("meetings", now, {"target", "edge"})
+
+    def test_unbound_one_day_outcome_window_cannot_hide_default_missing(self):
+        now, _ = self.seed("outcomes")
+        self.target("outcomes", days=4)
+        self.target("outcomes", "edge", 13)
+        self.target("outcomes", "beyond", 14)
+        self.meeting("cancelled", starts="2026-11-01T09:00:00-08:00", facts=None, status="cancelled")
+        self.assert_default_fallback("outcomes", now, {"target", "edge"})
+        # Calendar boundaries remain inclusive at midnight and with aware offset input.
+        for clock in (datetime(2026, 11, 5, tzinfo=timezone.utc),
+                      datetime.fromisoformat("2026-11-05T00:00:01-08:00")):
+            for rel in self.layouts("outcomes"):
+                self.assertEqual(self.missing(rel, clock), {"target", "edge"})
+
+    def assert_default_fallback(self, kind, now, expected):
+        for rel in self.layouts(kind):
+            self.metadata(rel, sha256="0" * 64)
+        before = self.snapshot()
+        report = self.check(now)
+        for rel in self.layouts(kind):
+            with self.subTest(rel=rel):
+                block = report["folders"]["kit/social/" + rel]
+                self.assertEqual(self.missing(rel, now), expected)
+                self.assertEqual(block["problems"], len(expected))
+                self.assertNotIn("folder_problems", block)
+                self.assertEqual([r["slug"] for r in block["drafts"]], sorted(expected | {"seed"}))
+        self.assertEqual(report["problems"], len(expected) * 4)
+        self.assertFalse(report["posted"])
+        self.assertEqual(self.snapshot(), before)
+        for rel in self.layouts(kind):
+            (self.social / rel / ".check.json").unlink()
+        for rel in self.layouts(kind):
+            self.assertEqual(self.missing(rel, now), expected)
+
+    def test_unbound_wide_meeting_window_cannot_invent_distant_missing(self):
+        now, _ = self.seed("meetings")
+        self.target("meetings", days=20)
+        for rel in self.layouts("meetings"):
+            self.metadata(rel, sha256="0" * 64, within_days=60)
+            self.assertEqual(self.missing(rel, now), set())
+            self.assertEqual(self.folder(rel, now)["problems"], 0)
+
+    def test_bound_custom_windows_and_missing_recorded_drafts_are_preserved(self):
+        for kind in ("meetings", "outcomes"):
+            now, _ = self.seed(kind)
+            self.target(kind, days=7)
+            for window in (1, 14, 60):
+                for rel in self.layouts(kind):
+                    self.metadata(rel, within_days=window)
+                    draft = self.social / rel / "seed.md"
+                    original = draft.read_bytes()
+                    draft.write_bytes(original + b" organizer note")
+                    block = self.folder(rel, now)
+                    self.assertEqual(next(r["state"] for r in block["drafts"] if r["slug"] == "seed"), "edited")
+                    self.assertEqual(self.missing(rel, now), {"target"} if window > 1 else set())
+                    draft.unlink()
+                    expected = {"seed", "target"} if window > 1 else {"seed"}
+                    self.assertEqual(self.missing(rel, now), expected)
+                    draft.write_bytes(original)
+            shutil.rmtree(self.social / kind)
+            shutil.rmtree(self.meetings)
+            self.meetings.mkdir()
+
+    def test_wide_outcome_fallback_and_missing_bound_baselines(self):
+        now, _ = self.seed("outcomes", window=60)
+        self.target("outcomes", days=20)
+        later = now + timedelta(days=20)
+        for rel in self.layouts("outcomes"):
+            self.metadata(rel, sha256="0" * 64)
+            self.assertEqual(self.missing(rel, now), set())  # no wide-outcome false-positive claim
+            record = json.loads((self.social / rel / ".written.json").read_text())
+            self.metadata(rel, sha256=record["seed"])
+            (self.social / rel / "seed.md").unlink()
+            self.assertEqual(self.missing(rel, later), {"seed"})
+            self.metadata(rel, within_days=1)
+            self.assertEqual(self.missing(rel, later), set())
+
+    def test_bound_window_survives_ineligible_seed_source(self):
+        now, _ = self.seed("meetings", window=60)
+        self.target("meetings", days=20)
+        (self.meetings / "seed.json").unlink()
+        for rel in self.layouts("meetings"):
+            block = self.folder(rel, now)
+            self.assertEqual(self.missing(rel, now), {"target"})
+            self.assertEqual(block["stale"], ["seed"])
+            self.assertEqual(block["problems"], 2)  # missing target and stale seed, once each
+
+    def test_mixed_windows_use_only_bound_maximum_and_folder_local_records(self):
+        for kind in ("meetings", "outcomes"):
+            now, _ = self.seed(kind)
+            self.target(kind, days=7)
+            for rel in self.layouts(kind):
+                path = self.social / rel / ".check.json"
+                original = json.loads(path.read_text())
+                record_path = self.social / rel / ".written.json"
+                record = json.loads(record_path.read_text())
+                for bound, other, bind_other, expected in (
+                        (1, 60, False, set()), (60, 1, False, {"target"}),
+                        (1, 14, True, {"target"})):
+                    doc = json.loads(json.dumps(original))
+                    doc["drafts"]["seed"]["within_days"] = bound
+                    doc["drafts"]["ghost"] = dict(doc["drafts"]["seed"], within_days=other)
+                    path.write_text(json.dumps(doc))
+                    record_path.write_text(json.dumps({**record, **({"ghost": record["seed"]} if bind_other else {})}))
+                    self.assertEqual(self.missing(rel, now), expected)
+                # Missing/bad/baseline-mismatched records cannot borrow another layout's baseline.
+                path.write_text(json.dumps(original))
+                for content in (None, "{bad", json.dumps({"seed": "0" * 64})):
+                    record_path.unlink(missing_ok=True)
+                    if content is not None:
+                        record_path.write_text(content)
+                    block = self.folder(rel, now)
+                    self.assertEqual(self.missing(rel, now), {"target"})
+                    self.assertEqual(bool(block.get("folder_problems")), content == "{bad")
+                record_path.write_text(json.dumps(record))
+                wrong = json.loads(json.dumps(original))
+                wrong["drafts"]["seed"].update(kind="events", starts_at=NOW.isoformat())
+                path.write_text(json.dumps(wrong))
+                self.assertEqual(self.missing(rel, now), {"target"})
+                path.write_text("{bad")
+                self.assertEqual(self.missing(rel, now), {"target"})
+                self.assertEqual(len(self.folder(rel, now)["folder_problems"]), 1)
+            shutil.rmtree(self.social / kind)
+            shutil.rmtree(self.meetings)
+            self.meetings.mkdir()
+
+    def test_suggestions_never_require_absent_targets_and_bind_own_bytes(self):
+        for kind in ("meetings", "outcomes"):
+            now, builder = self.seed(kind)
+            for rel in self.layouts(kind):
+                draft = self.social / rel / "seed.md"
+                draft.write_bytes(draft.read_bytes() + b" organizer note")
+            builder(self.root, within_days=1, now=now)
+            builder(self.root, ["x", "bluesky", "mastodon"], within_days=1, now=now)
+            self.target(kind)
+            for rel in self.layouts(kind):
+                suggested = rel + ".suggested"
+                self.assertEqual(self.states(suggested, now), {"seed": ("ok", [])})
+                draft = self.social / suggested / "seed.md"
+                draft.write_bytes(draft.read_bytes() + b" changed")
+                block = self.folder(suggested, now)
+                self.assertEqual(self.missing(suggested, now), set())
+                self.assertEqual(block["drafts"][0]["state"], "outdated")
+                self.assertIn("cannot be checked", block["drafts"][0]["note"])
+                draft.unlink()
+                self.assertNotIn("kit/social/" + suggested, self.check(now)["folders"])
+            shutil.rmtree(self.social / kind)
+            shutil.rmtree(self.social / (kind + ".suggested"))
+            shutil.rmtree(self.meetings)
+            self.meetings.mkdir()
+
+    def test_cli_reports_required_membership_counts_and_is_read_only(self):
+        from campaign_tool import cli
+        from campaign_tool.social_check import format_text
+        for kind in ("meetings", "outcomes"):
+            now, _ = self.seed(kind)
+            # Keep only the primary layout to make one missing row exactly one problem.
+            for platform in ("x", "bluesky", "mastodon"):
+                shutil.rmtree(self.social / kind / platform)
+            for bad in (False, True):
+                if bad:
+                    self.target(kind, days=4)
+                    self.metadata(kind, sha256="0" * 64)
+                report = self.check(now)
+                before = self.snapshot()
+                for text in (False, True):
+                    args = ["campaign-tool", "social", "--directory", str(self.root), "--check"] + (["--text"] if text else [])
+                    output = io.StringIO()
+                    # Exercise the real parser/checker/formatter with only its clock fixed.
+                    with patch.object(sys, "argv", args), redirect_stdout(output), patch(
+                            "campaign_tool.social.check_social", side_effect=lambda root: check_social(root, now=now)), patch(
+                            "campaign_tool.social.build_social", side_effect=AssertionError("check must not generate")):
+                        with self.assertRaises(SystemExit) as exited:
+                            cli.main()
+                    self.assertEqual(exited.exception.code, 3 if bad else 0)
+                    if text:
+                        self.assertEqual(output.getvalue(), format_text(report))
+                    else:
+                        self.assertEqual(json.loads(output.getvalue()), report)
+                    self.assertEqual(self.snapshot(), before)
+                self.assertEqual(report["problems"], int(bad))
+                self.assertFalse(report["posted"])
+                self.assertNotIn("sha256", json.dumps(report))
+                self.assertNotIn("Synthetic Organizer", json.dumps(report))
+            shutil.rmtree(self.social / kind)
+            shutil.rmtree(self.meetings)
+            self.meetings.mkdir()
 
 
 class Threads(FolderCheckCase):

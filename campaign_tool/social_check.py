@@ -299,9 +299,10 @@ def _folder(root, parts, kind, platform, suggested, ctx):
         out["folder_problems"], out["problems"] = notes, len(notes)
         return out
 
-    window = max((e["within_days"] for stem, e in meta.items() if e.get("kind") == kind
-                  and (kind != "events" or _bound(e, kind, stem, suggested, record,
-                                                 _read(path / (stem + ".md")) if suggested else None))), default=14)
+    # Required membership uses the same provenance binding as each draft row.
+    window = max((e["within_days"] for stem, e in meta.items()
+                  if _bound(e, kind, stem, suggested, record,
+                            _read(path / (stem + ".md")) if suggested else None)), default=14)
     required = set()
     if not suggested:
         if kind == "findings":
