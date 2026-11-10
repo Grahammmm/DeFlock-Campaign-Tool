@@ -34,15 +34,18 @@ def _read_rows(csv_path):  # [(physical start line, trimmed cells)] of the non-e
         fd = os.open(csv_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:  # O_NOFOLLOW: a symlink fails here with ELOOP
         raise SentImportError("csv cannot be opened as a regular file (symlinks are refused)") from None
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise SentImportError("csv must be a regular file")
-        with os.fdopen(fd, "rb") as handle:
-            fd = None
-            data = handle.read(MAX_BYTES + 1)
-    finally:
-        if fd is not None:
-            os.close(fd)
+    try:  # after open, the raw fd is ours until fdopen succeeds; then the stream owns it
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise SentImportError("csv must be a regular file")
+            with os.fdopen(fd, "rb") as handle:
+                fd = None
+                data = handle.read(MAX_BYTES + 1)
+        finally:
+            if fd is not None:
+                os.close(fd)
+    except OSError:  # fixed, value-free refusal: no path, errno or detail of a private input
+        raise SentImportError("csv cannot be read; nothing was written") from None
     if len(data) > MAX_BYTES:
         raise SentImportError("csv is larger than 512 KiB")
     try:
