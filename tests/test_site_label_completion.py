@@ -1,7 +1,8 @@
 """DF1109-16: the remaining fixed page strings of site.py and timeline.py go through labels; English is unchanged.
 
-The English digests in tests/fixtures/site-label-completion/english-digests.json were captured from main before the
+The English digests in tests/fixtures/site-label-completion/english-digests.py were captured from main before the
 sweep (see its provenance block) and are compared with the current build; they are never regenerated from this code."""
+import ast
 import hashlib
 import json
 import shutil
@@ -19,7 +20,7 @@ from campaign_tool.timeline import render_timeline, timeline_events
 from tests.test_site_labels import _write, bare, enrich, tree
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "fictional-campaign"
-FIXTURE = Path(__file__).resolve().parent / "fixtures" / "site-label-completion" / "english-digests.json"
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "site-label-completion" / "english-digests.py"
 SOON, LATE = date(2026, 10, 1), date(2027, 1, 1)
 MONTHS = "January February March April May June July August September October November December"
 
@@ -74,7 +75,7 @@ class TmpTest(unittest.TestCase):
 
 class EnglishTreeTest(TmpTest):
     def test_english_tree_matches_presweep_base(self):
-        fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        fixture = ast.literal_eval(FIXTURE.read_text(encoding="utf-8"))
         self.assertEqual(sorted(fixture["cases"]), sorted(CASES))
         for case in CASES:
             for labels in (None, {}, {key: DEFAULTS[key] for key in NEW_KEYS}):
