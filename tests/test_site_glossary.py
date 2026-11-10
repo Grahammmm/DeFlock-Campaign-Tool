@@ -73,8 +73,9 @@ BASELINE = {
     "privacy.html": "cc3d674eb2de1cb73a2f9fff648fafa678f67bfebb104f33e2ba907de9aca810",  # pragma: allowlist secret -- public rendered-file SHA-256
     "requests.html": "a7859d48818804273e42979188ec04437c24ea77b91382184c474825f13d8de4",  # pragma: allowlist secret -- public rendered-file SHA-256
     "robots.txt": "f520ce90da728c1ea72afb9c9f22a0976b5e2c16ac6aa7256e1218479b4f2b80",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "search.html": "c72bc9a364645d20f94816be5cd60e1e0909237a2277d2b199ebd507d7382d01",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "search.js": "0f6185d1995caa68bb3292cf15417996ee917bf5b3c48c81d05cbd057d0da1f6",  # pragma: allowlist secret -- public rendered-file SHA-256
+    # DF1109-09: the fixture has an agency page and a staged meeting, so search also finds agencies and meetings.
+    "search.html": "1b636cf313ac7c45c33720f41f52a3e33fa8e036c175f988497d82feb7ea8149",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "search.js": "653f9af520755fbd804e0631bf9035dbf15505aed2bf11fd49a67c0438c85ae4",  # pragma: allowlist secret -- public rendered-file SHA-256
     "site-data.js": "992aa92b3f544c4deaba28d2661f8b9ed995939a7da592540f269f0fb0a23e7e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "sitemap.xml": "c6f4a4c4f99195fd57e81b386af2989c5ffd2dd44c2b7eda13abfac09a0ff77f",  # pragma: allowlist secret -- public rendered-file SHA-256
     "sources.html": "8e4d0a4d68ac30dc7e3bec07fe6140d7e780942a37f0ffe858f0618a886adca3",  # pragma: allowlist secret -- public rendered-file SHA-256

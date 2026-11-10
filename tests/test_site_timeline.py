@@ -606,7 +606,9 @@ class TimelineTests(unittest.TestCase):
 
 # DF1109-07 pins: sha256 over sorted (path, bytes) of builds made with the pre-change timeline.py (main 45551bd9).
 MAIN_TIMELINE_DIGEST = "efa29cd2bb4b6da62d6e72a69410785a5dc93ddd8bc6700954e5f6295bf55abc"  # pragma: allowlist secret -- public rendered-file SHA-256
-MAIN_POPULATED_OTHER_DIGEST = "b3cdffb99a1017196865098d3049b5cf1d957458a30d77fff5ad6a9a87b98c18"  # pragma: allowlist secret -- public rendered-file SHA-256
+# DF1109-10: the populated build now writes data/officials.*, so data.html and data/datapackage.json list them (main pin 7bd8a5ce).
+# DF1109-09 recaptured MAIN_POPULATED_OTHER_DIGEST on top of that: its tree holds search.html/search.js, which now also search agencies and meetings.
+MAIN_POPULATED_OTHER_DIGEST = "dd95244327a919543f7086328004ed586f44c9070f7fbd26d71e0d3ae8a694c6"  # pragma: allowlist secret -- public rendered-file SHA-256
 COUNCIL = "ca-cedar-city-council"
 NEW_KINDS = ("finding_update", "statement", "coverage")
 

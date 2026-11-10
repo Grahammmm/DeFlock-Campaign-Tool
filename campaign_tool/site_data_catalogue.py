@@ -5,8 +5,10 @@ media type, the byte length, the SHA-256 of the final bytes, the schema and the 
 ``datapackage_json`` writes ``data/datapackage.json`` from those records and ``Site.data_html`` writes ``data.html`` from the
 same records, so both agree with the written bytes. ``verify_data_package`` re-reads a built ``public/`` tree offline.
 
-The registry is explicit: the four JSON and four CSV documents, ``cameras.geojson``, ``county.geojson`` and the one city
-boundary copy. Nothing is discovered by walking ``public/``, and the catalogue never lists itself (no hash cycle).
+The registry is explicit: the four JSON and four CSV documents, the optional officials JSON/CSV pair (DF1109-10),
+``cameras.geojson``, ``cameras.csv``, ``county.geojson``, ``sources.zip`` and the one city boundary copy. Nothing is
+discovered by walking ``public/``, and the catalogue never lists itself (no hash cycle).
+For the county and city boundaries the check also rederives the licence and credit from the listed bytes (RF1415-1).
 """
 import csv
 import hashlib
@@ -45,6 +47,9 @@ DATASETS = {
     "data/agencies.csv": ("agencies-csv", "Agencies (CSV)", "The agencies as one flat row per agency; every cell is text.", CSV, "agencies"),
     "data/meetings.json": ("meetings-json", "Meetings (JSON)", "Staged public meetings with recorded outcomes and votes.", JSON, "meetings"),
     "data/meetings.csv": ("meetings-csv", "Meetings (CSV)", "The meetings as one flat row per meeting; every cell is text.", CSV, "meetings"),
+    # DF1109-10: the DF1622-11 roster exports, listed only when the build writes them (someone is on content/officials.json)
+    "data/officials.json": ("officials-json", "Officials (JSON)", "The organizer-checked public roster of decision makers, with roles and official source links.", JSON, "officials"),
+    "data/officials.csv": ("officials-csv", "Officials (CSV)", "The public roster as one flat row per official; every cell is text.", CSV, "officials"),
     "data/cameras.geojson": ("cameras-geojson", "Mapped camera points (GeoJSON)", "Community-mapped camera points from OpenStreetMap, as reviewed for the map.", GEO, None),
     "data/cameras.csv": ("cameras-csv", "Mapped camera points (CSV)", "Community-mapped camera points; ownership unconfirmed.", CSV, None),  # DF0237-12
     "data/county.geojson": ("county-geojson", "County boundary (GeoJSON)", "County boundary used by the map.", GEO, None),
@@ -281,7 +286,24 @@ def _check_resource(public, resource, seen, problems, city_names):
             break
     if "attribution" in resource and not isinstance(resource["attribution"], str):
         problems.append((full, "attribution must be text"))
+    if full == "data/county.geojson" or meta is CITY_META:
+        _check_boundary_rights(full, resource, data, problems)
     return full
+
+
+def _check_boundary_rights(full, resource, data, problems):
+    """RF1415-1: a boundary's listed licences and credit must be exactly what ``_licenses`` derives from its own bytes.
+
+    Agreement with the file's own ``license`` member only, never a legal rights review; the reasons are fixed text."""
+    try:
+        licenses, attribution = _licenses(full, GEO, data, None)
+    except RecursionError:
+        problems.append((full, "boundary file is too deeply nested to check"))
+        return
+    if resource.get("licenses") != licenses:
+        problems.append((full, "licenses differ from the licence the boundary file states"))
+    if resource.get("attribution") != attribution:
+        problems.append((full, "attribution differs from the credit the boundary file's licence requires"))
 
 
 def verify_data_package(public):

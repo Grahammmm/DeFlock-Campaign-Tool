@@ -717,10 +717,44 @@ it: re-check and update it. The body's agency page and each meeting page with it
 `agency_id` show a "Who decides" list (names linked to `profile_url` when given) with the
 newest `checked_on` and its source link. Labels: `officials.*`.
 
+**Maintaining the roster (DF1109-12).** `officials add|recheck|remove|list --directory D` edit `content/officials.json`
+so you do not have to. Nothing is fetched: `--source-url` records where you checked, it is never opened or verified.
+Each change validates the whole new file with the build's own loader, then writes it beside the old one and swaps it in
+with one rename (a refusal leaves the old bytes; one organizer edits at a time). The commands only change the file: the
+next explicit build publishes the change. Errors exit 2 with one `Stopped:` line that never repeats what you typed.
+
+```
+python3 -m campaign_tool officials add --directory D --agency ca-cedar-city-council --name "Rowan Example" \
+  --role "Council member, District 2" --source-url https://cedar.example/council --checked-on 2026-09-01 \
+  [--profile-url https://cedar.example/council/rowan]
+python3 -m campaign_tool officials list --directory D
+python3 -m campaign_tool officials recheck --directory D --agency ca-cedar-city-council --name "Rowan Example" --checked-on 2026-10-15
+python3 -m campaign_tool officials remove --directory D --agency ca-cedar-city-council --name "Rowan Example"
+```
+
+- `add` appends one person to the body (or a new body at the end). The first `add` creates the file (mode 0600);
+  `list` on a campaign without it prints `No officials listed.` and creates nothing. A name the body already lists is
+  refused, compared after Unicode NFC and whitespace collapsing but case-sensitive (the rule `meetings-outcome --votes`
+  matches by); the same name in another body is fine. The shared privacy lint runs on name, role and both URLs.
+- `list` prints the roster in stored order as JSON (`agency_id`, `name`, `role`, `profile_url`, `source_url`,
+  `checked_on`, `age_days`, `status`) and a summary. `status` is `current` up to 365 days and `stale` from day 366,
+  the day the build starts refusing. It writes nothing.
+- `recheck` moves one person's `checked_on` forward after you re-checked the official site: not in the future, not
+  more than 365 days ago, never earlier than the stored day; the same day changes nothing. It edits no other field.
+  Listing and re-checking accept a roster with stale people so you can repair them one at a time (it warns how many
+  are still stale); `add`, `remove` and the build stay strict until every person is current.
+- `remove` drops one person, refused while a recorded vote in `content/meetings/*.json` or a row of
+  `content/statements.json` names them for that body (votes and statements are never rewritten). A body left with
+  nobody is dropped; removing the last person leaves `"bodies": []`.
+- A name listed twice in one body by hand stays loadable and is listed, but `recheck` and `remove` refuse it: edit the
+  file to tell the two apart. Links, FIFOs and folders in place of these files are refused, never followed.
+
 **Officials as open data (DF1622-11).** When `content/officials.json` lists at least one person (a missing file or
 `"bodies": []` lists nobody), the build also writes `data/officials.json` (`schemas/officials-open-data.schema.json`) and
 `data/officials.csv`; with nobody listed neither file exists, a rebuild removes stale ones, and every other file is
-byte-identical. Every loaded body with people is exported, also one without an agency page, sorted by agency `name` then
+byte-identical. When the files exist, `data.html` and `data/datapackage.json` also list them (DF1109-10, `officials-json` and
+`officials-csv`, campaign licence), so those two catalogue files change too; with nobody listed they are byte-identical as well.
+Every loaded body with people is exported, also one without an agency page, sorted by agency `name` then
 `agency_id`. Top level: `schema_version` 1, `campaign`, `generated_from` (`content/officials.json`), `base_url` (or null),
 `url_kind`, `bodies`, plus `license` and `license_url` only when `site.json` sets a licence. Each body has `agency_id`, `name`
 and `officials`; each official has exactly `name`, `role`, `profile_url` (null when absent), `source_url` and `checked_on`,
@@ -1352,7 +1386,8 @@ JSON (`{"checked_on":"2026-10-20","url":"..."}`), never spread over more columns
 `findings.csv`: UTF-8 without a byte-order mark, CRLF line ends, standard quoting, and a cell that begins with `=`, `+`, `-`, `@`,
 a tab or a carriage return is written with a leading `'` (interior characters are not touched; the JSON is not changed).
 `data.html` and `data/datapackage.json` (DF2207-12) are the open-data catalogue: the page lists, for each file the build
-wrote among the four JSON and four CSV documents, `data/cameras.geojson`, `data/county.geojson` and the city-boundary copy
+wrote among the four JSON and four CSV documents, the optional `data/officials.json` and `data/officials.csv` (DF1109-10),
+`data/cameras.geojson`, `data/cameras.csv`, `data/county.geojson`, `data/sources.zip` and the city-boundary copy
 (files the build did not write are not listed; vendor files, assets, schemas and the two catalogue files never are), a fixed one-line
 description, the byte length, all 64 characters of the SHA-256 of the final written bytes, a schema link and the licence; the
 descriptor is a generic Frictionless Data Package (`profile: data-package`, name `campaign-open-data`, each resource with
@@ -1479,6 +1514,21 @@ page shows a paragraph linking `/findings/` and `/sources.html` (with the second
 message). The "Search" link is in the footer beside the feed link and `/search.html` is in `sitemap.xml` when `base_url`
 is set; the slug `search` and `public-assets/search.html` are refused. Finding bodies and private records are not searched.
 
+**Agencies and meetings (DF1109-09).** When the site has at least one agency page (the agencies `data/agencies.json`
+lists) or at least one staged meeting, `search.js` also fetches `/data/agencies.json` and/or `/data/meetings.json`, once
+each and only for a kind the site publishes. An agency matches by its name, its `kind` code and the kind's label and
+links to its agency page (or its `agencies.html` card when the exported link is missing or not a path or http(s) URL); a
+meeting matches by its body, its agenda item and its recorded `starts_at` text (so `2026-10-14` finds it; no time zone
+conversion) and links to its `meetings/<id>.html` page, titled `body — agenda item`. Results come in the order finding,
+source, agency, meeting, each kind in its file's order, under the same 50-result cap, and are tagged `Agency` or
+`Meeting`. The agenda items come from a `data-search-extra` attribute on the form (meeting id to agenda item, and each
+agency's card link and kind label), joined only to meetings the published `data/meetings.json` lists; no other meeting or
+agency field is copied. A missing, refused or malformed optional file (or a malformed row) only leaves that kind empty:
+findings and sources stay searchable; a failure of either required file still shows the unavailable message and the
+fallback. The page then uses `search.label_all`, `search.intro_all` and `search.description_all`, and the fallback adds
+`search.fallback_more` with links to `/agencies.html` and/or `/meetings.html`. No new file, header or CSP change. A site
+with neither builds byte-identical `search.js` and `search.html`, even though both JSON files are still written (empty).
+
 ### Privacy page
 `privacy.html` is always generated and is not editable (DF1207-16). It states, in plain words, that scripts, stylesheets
 and fonts come from this site only, that the site sets no cookies and runs no analytics, which hosts the interactive map
@@ -1575,7 +1625,11 @@ facts when site.json lists none); `js.city_points_one`/`js.city_points_many`, `j
 Search page labels: `footer.search` (footer link), `search.title`, `search.description`, `search.label` (the box label),
 `search.intro`, `search.fallback` (`{findings}` and `{sources}` are the two links, text from `nav.findings`/`nav.sources`);
 script texts `js.search_hint`, `js.search_none`, `js.search_count_one`/`js.search_count_many` (`{count}`),
-`js.search_unavailable`, `js.search_finding` and `js.search_source` (the tag after each result). `search.js` is the same
+`js.search_unavailable`, `js.search_finding` and `js.search_source` (the tag after each result). With agencies or
+meetings (DF1109-09): page labels `search.label_all`, `search.intro_all`, `search.description_all` and
+`search.fallback_more` (`{links}` is the agencies and/or meetings index links, text from `nav.agencies`/`nav.meetings`),
+script texts `js.search_agency`, `js.search_meeting` (tags) and `js.search_none_all` (no match); only that script
+carries their defaults. Without agencies or meetings `search.js` is the same
 file for every site: it carries the English defaults and reads `LABELS` when `site-data.js` is loaded first, which
 `search.html` does only once a `js.*` label differs from its default.
 Stays English by design: the starter page, `feed.xml`/agency feeds, `sitemap.xml`, `robots.txt`, `_headers`,

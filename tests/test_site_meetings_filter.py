@@ -28,9 +28,10 @@ TODAY = date(2026, 11, 1)
 AGENCY = "ca-cedar-city-council"
 # Digest of every public file on main d2470763 (fixed-date fixtures below), captured in an independent detached
 # worktree after DF1622-09 merged; mixed still drops only the two filter files. Recapture from main, not this PR.
-ROOTS = {"empty": "436a847c11bc96a7efed55cd3e7d757f6c4849d975c7e013f9589c2d9ece005a",  # pragma: allowlist secret
-         "one-body": "29d2105320cccbc1d517a1aa4943c8643a82df22a71d2321c08c03a8c0f6d230",  # pragma: allowlist secret
-         "mixed": "305aa75ce445b14b1a4f3d4c62a11fef9a42f88b5a44073dc25f06dcb54493c3"}  # pragma: allowlist secret
+# DF1109-09 recaptured all three: search.js and search.html now also search the fixture's agency page and meetings.
+ROOTS = {"empty": "5b6ae62bbb1cd1141a0c08093520263b2ab603f9c8a5edc3ebd618290a099133",  # pragma: allowlist secret
+         "one-body": "98a8e56216d53953eaba397d54cb4aba49faa62ba526c8d59327962d2daa395e",  # pragma: allowlist secret
+         "mixed": "fb02e9766150fce24b1177913671861bf3e399eb486564a3fc6210fc87604d1c"}  # pragma: allowlist secret
 MIXED = (("alpha-up", "Council A", "2026-11-10", None), ("beta-up", "Council B", "2026-11-11", None),
          ("alpha-past", "Council A", "2026-10-01", None), ("beta-cancel", "Council B", "2026-11-12", "cancelled"))
 

@@ -2415,10 +2415,12 @@ OFFICIAL_KEYS = {"name", "role", "profile_url", "source_url", "checked_on"}
 CONTACT_LIKE = re.compile(r"@|\d(?:[\s().+-]*\d){6}")  # an address or a phone-like run of 7+ digits
 
 
-def load_officials(document, agencies, today):
+def load_officials(document, agencies, today, *, require_fresh=True):
     """``content/officials.json`` (DF2237-13): organizer-checked decision makers per loaded agency, ``{agency_id: [..]}``.
 
-    No contact fields exist; each ``checked_on`` must fall within the 365 days up to ``today``. Never fetched."""
+    No contact fields exist; each ``checked_on`` must fall within the 365 days up to ``today``. Never fetched.
+    ``require_fresh=False`` (DF1109-12, the ``officials`` maintenance commands only) skips just that age limit so a
+    stale roster can be listed and re-checked; every other check, future days included, still applies."""
     _require_keys(document, OFFICIALS_KEYS, OFFICIALS_KEYS, "officials.json")
     if document["schema_version"] != 1:
         raise ContentError("officials.json.schema_version: must be 1")
@@ -2449,7 +2451,7 @@ def load_officials(document, agencies, today):
             checked = _calendar_day(person["checked_on"], f"{item}.checked_on")
             if checked > today:
                 raise ContentError(f"{item}.checked_on: must not be after the build date")
-            if (today - checked).days > 365:
+            if require_fresh and (today - checked).days > 365:
                 raise ContentError(f"{item}.checked_on: older than 365 days; re-check on the official site")
             result[body["agency_id"]].append({
                 "name": person["name"], "role": person["role"],
