@@ -528,6 +528,246 @@ class DoctorStaleTests(unittest.TestCase):
             self.report()
         self.assertEqual(before, (path.read_bytes(), path.stat().st_mtime_ns))
 
+    # --- DF1109B-01: profile reports, officials, body schedules and public-copy checks ---
+    OFFICIAL, SCHEDULE, COPY = ("content/officials.json:bodies[0].officials[0]", "content/body-schedules.json:schedules[0]",
+                                "content/sources.json:[0].public_copy")
+    HINTS = {"officials": "re-check the official's page and update checked_on",
+             "body-schedules": "re-check the body's calendar page and update checked_on",
+             "sources": "re-download the public copy and run sources verify-copy"}
+    NEW = ("content/officials.json", "content/body-schedules.json", "content/sources.json",
+           "content/agencies.json:ex-city.reports")
+
+    def write_content(self, name, document):
+        (self.root / "content").mkdir(exist_ok=True)
+        (self.root / "content" / name).write_text(json.dumps(document), encoding="utf-8")
+
+    @staticmethod
+    def dated(row, day):
+        return row if day is NO_DATE else dict(row, checked_on=day)
+
+    def write_officials(self, *bodies):
+        self.write_content("officials.json", {"schema_version": 1, "bodies": [
+            {"agency_id": f"ex-city{i or ''}", "officials": [self.dated(
+                {"name": "Synthetic Member", "role": "Member", "source_url": "https://example.org/o"}, day) for day in days]}
+            for i, days in enumerate(bodies)]})
+
+    def write_schedules(self, *days):
+        self.write_content("body-schedules.json", {"schema_version": 1, "schedules": [self.dated(
+            {"body": f"Synthetic Council {i}", "weekday": "tuesday", "ordinals": [1], "local_start_time": "18:30",
+             "time_zone": "America/Los_Angeles", "source_url": "https://example.org/c"}, day) for i, day in enumerate(days)]})
+
+    def write_sources(self, *days, sha="0"):  # NO_COPY: a library entry without a public_copy check
+        self.write_content("sources.json", [dict(
+            {"sha256": sha * 64, "title": "Synthetic record", "agency_id": "ex-city", "received_at": "2026-01-02T00:00:00Z",
+             "public_url": "https://example.org/r.pdf", "fragment": f"record-{i}"},
+            **({} if day is NO_COPY else {"public_copy": self.dated({"matches": True}, day)})) for i, day in enumerate(days)])
+
+    def write_all(self, day):
+        self.write_officials([day])
+        self.write_schedules(day)
+        self.write_sources(day)
+        self.write_agencies({"reports": [self.dated({"title": "Synthetic report", "period_start": "2025-01-01"}, day)]})
+
+    def new_entries(self, days=90):
+        return {e["input"]: e for e in self.report(days)["stale_inputs"] if e["input"].startswith(self.NEW)}
+
+    def expected_hints(self):
+        return ((self.OFFICIAL, self.HINTS["officials"]), (self.SCHEDULE, self.HINTS["body-schedules"]),
+                (self.COPY, self.HINTS["sources"]), (self.PREFIX + "reports[0]", freshness.PROFILE_REFRESH))
+
+    def test_new_families_all_checked_dates_and_hints(self):
+        for offset, status in ((89, None), (90, None), (0, None), (91, "stale"), (400, "stale"), (-1, "future")):
+            with self.subTest(offset=offset):
+                self.write_all(ago(offset))
+                found = self.new_entries()
+                if status is None:
+                    self.assertEqual(found, {})
+                    continue
+                self.assertEqual(len(found), 4)
+                for name, hint in self.expected_hints():
+                    self.assertEqual(found[name], {"input": name, "status": status, "date": ago(offset), "age_days": offset,
+                                                   "refresh": hint if status == "stale" else FUTURE + hint})
+        for bad in ("2026-1-05", "2026-02-30", "2026-10-01T00:00:00Z", 20261001, None, NO_DATE):
+            with self.subTest(bad=bad):
+                self.write_all(bad)
+                found = self.new_entries()
+                for name, hint in self.expected_hints():
+                    self.assertEqual(found[name], {"input": name, "status": "unknown", "date": None, "refresh": hint})
+                self.assertNotIn("content/officials.json", found)  # a bad date is a row unknown, not a file warning
+        self.assertIn("Refresh stale inputs: ", " ".join(self.report()["next_actions"]))
+        self.assertIn(self.OFFICIAL, [a for a in self.report()["next_actions"] if a.startswith("Refresh")][0])
+
+    def test_report_checks_not_periods_and_historical_exclusions(self):
+        old = {"period_start": ago(2000), "period_end": ago(1500), "published_on": ago(1400), "date": ago(1400)}
+        self.write_agencies({"reports": [dict(old, checked_on=ago(5)), dict(old, checked_on=ago(400))],
+                             "transparency": [{"checked_on": ago(3)}, {"checked_on": ago(400)}]})
+        for name in ("agency-actions.json", "statements.json", "coverage.json", "elsewhere.json"):
+            self.write_content(name, {"schema_version": 1, "entries": [{"checked_on": ago(900), "date": ago(900)}],
+                                      "actions": [{"checked_on": ago(900)}], "statements": [{"checked_on": ago(900)}]})
+        found = {e["input"]: e["status"] for e in self.report()["stale_inputs"]
+                 if e["input"].startswith("content/") and e["input"] != MAP}  # history files and older snapshots stay silent
+        self.assertEqual(found, {self.PREFIX + "reports[1]": "stale"})
+
+    def test_optional_absent_empty_and_legacy_bytes(self):
+        command = [sys.executable, "-B", "-m", "campaign_tool", "doctor", "--directory", str(self.root)]
+
+        def outputs():
+            return [subprocess.run(command + extra, cwd=REPO_ROOT, capture_output=True, text=True, timeout=60).stdout
+                    for extra in ([], ["--checklist", "--json"])]
+        baseline = outputs()
+        # A feature-absent campaign: exactly the entries main reported (pinned, not recomputed).
+        self.assertEqual(self.report()["stale_inputs"], [
+            {"input": MAP, "status": "absent", "date": None, "refresh": freshness.MAP_REFRESH.format(self.root)},
+            {"input": MEETINGS, "status": "absent", "date": None, "refresh": f"python3 -m campaign_tool meetings "
+             f"--directory {self.root} --online --client <legistar client>"}])
+        absent = self.report()
+        self.write_officials()
+        self.write_content("body-schedules.json", {"schema_version": 1, "schedules": []})
+        self.write_sources(NO_COPY, NO_COPY)
+        self.write_content("agencies.json", [{"agency_id": "ex-city", "selected": False,
+                                              "profile": {"reports": [{"checked_on": ago(900)}]}},
+                                             {"agency_id": "ex-city2", "profile": {"reports": []}}])
+        self.assertEqual(self.report(), absent)
+        self.write_all(ago(900))  # stale facts change no byte without the flag
+        self.assertEqual(outputs()[0], baseline[0])
+        self.assertNotIn("stale_inputs", outputs()[0])
+
+    def test_each_copy_alias_and_official_position_is_independent(self):
+        self.write_officials([ago(5), ago(400), ago(5)], [ago(400)])
+        self.write_sources(ago(400), NO_COPY, ago(5), ago(400), sha="1")  # one digest, several fragments
+        self.write_schedules(ago(5), ago(400))
+        found = self.new_entries()
+        self.assertEqual(sorted(found), [
+            "content/body-schedules.json:schedules[1]", "content/officials.json:bodies[0].officials[1]",
+            "content/officials.json:bodies[1].officials[0]", self.COPY, "content/sources.json:[3].public_copy"])
+        self.write_sources(ago(400), NO_COPY, ago(5), ago(5), sha="1")  # re-checking one alias clears only that one
+        self.assertEqual(sorted(set(found) - set(self.new_entries())), ["content/sources.json:[3].public_copy"])
+        for prose in ("Synthetic Member", "Synthetic Council", "Synthetic record"):  # never part of an id
+            self.assertNotIn(prose, json.dumps(self.report()))
+
+    def test_new_files_unreadable_one_unknown_no_leak(self):
+        leak = "LEAK-MARKER"
+        bad_envelopes = {"officials.json": [{"bodies": []}, {"schema_version": 2, "bodies": []},
+                                            {"schema_version": 1, "bodies": {}}],
+                         "body-schedules.json": [{"schema_version": True, "schedules": []},
+                                                 {"schema_version": 1, "schedules": leak}],
+                         "sources.json": [{"0": leak}, leak]}
+        for name, envelopes in bad_envelopes.items():
+            label, path = "content/" + name, self.root / "content" / name
+            for case in ["bytes", "text", "null", "oversize", "dir", "dangling", "fifo", "symlink"] + envelopes:
+                with self.subTest(file=name, case=case):
+                    if path.is_dir() and not path.is_symlink():
+                        path.rmdir()
+                    elif path.exists() or path.is_symlink():
+                        path.unlink()
+                    self.write_all(ago(400))
+                    path.unlink()
+                    if case == "bytes":
+                        path.write_bytes(b"\xff\xfe" + leak.encode())
+                    elif case == "text":
+                        path.write_text("{" + leak, encoding="utf-8")
+                    elif case == "null":
+                        path.write_text("null", encoding="utf-8")
+                    elif case == "oversize":
+                        path.write_text('["' + "a" * (2 * 1024 * 1024) + '"]', encoding="utf-8")
+                    elif case == "dir":
+                        path.mkdir()
+                    elif case == "dangling":
+                        os.symlink(self.root / leak, path)
+                    elif case == "fifo":
+                        os.mkfifo(path)
+                    elif case == "symlink":  # a valid target is still never followed
+                        target = self.root / "content" / (leak + name)
+                        target.write_text(json.dumps({"schema_version": 1, "bodies": [], "schedules": []}), "utf-8")
+                        os.symlink(target, path)
+                    else:
+                        self.write_content(name, case)
+                    found = {e["input"]: e for e in self.report()["stale_inputs"] if e["input"].startswith(self.NEW)}
+                    family = [key for key in found if key.startswith(label)]
+                    self.assertEqual(family, [label])
+                    self.assertEqual(found[label], {"input": label, "status": "unknown", "date": None,
+                                                    "refresh": self.HINTS[name.removesuffix(".json")]})
+                    self.assertEqual(len(found), 4)  # the three valid sibling families are still dated
+                    self.assertNotIn(leak, json.dumps(self.report()))
+        # A bad row shape adds one bounded warning; valid rows are kept.
+        self.write_content("officials.json", {"schema_version": 1, "bodies": [
+            {"agency_id": "ex-city", "officials": [{"checked_on": ago(400)}, leak, [leak]]}, {"officials": leak}, leak]})
+        self.write_content("sources.json", [leak, {"public_copy": leak}, {"public_copy": {"checked_on": ago(400)}}])
+        self.write_content("body-schedules.json", {"schema_version": 1, "schedules": [7, {"checked_on": ago(400)}]})
+        found = {e["input"]: e["status"] for e in self.report()["stale_inputs"] if e["input"].startswith(self.NEW[:3])}
+        self.assertEqual(found, {"content/officials.json": "unknown", self.OFFICIAL: "stale",
+                                 "content/sources.json": "unknown", "content/sources.json:[2].public_copy": "stale",
+                                 "content/body-schedules.json": "unknown", "content/body-schedules.json:schedules[1]": "stale"})
+        self.assertNotIn(leak, json.dumps(self.report()))
+
+    def test_large_scan_merged_cap_and_readiness_parity(self):
+        self.write_officials(*[[ago(400)] * 30] * 3)
+        self.write_schedules(*[ago(400)] * 20)
+        self.write_sources(*[ahead(2)] * 20)
+        self.write_agencies({"reports": [{"checked_on": ago(400)}] * 10, "contract": {"checked_on": ago(400)}})
+        report = self.report()
+        names = [e["input"] for e in report["stale_inputs"]]
+        total = 90 + 20 + 20 + 11 + 2  # + absent map and meetings
+        self.assertEqual((len(names), report["stale_inputs_more"]), (100, total - 100))
+        self.assertEqual(names, sorted(names))
+        full = freshness.stale_inputs(self.root, cli.read_config(self.root), 90)
+        self.assertEqual(report["stale_inputs"], full[:100])
+        config = json.loads((self.root / "campaign.json").read_text(encoding="utf-8"))
+        (self.root / "campaign.json").write_text(json.dumps(dict(config, campaign_id="synthetic-campaign")),
+                                                 encoding="utf-8")
+        buffer = io.StringIO()
+        with self.assertRaises(ValueError), contextlib.redirect_stdout(buffer):  # long next action: refused
+            cli.readiness(self.root, campaign_id="synthetic-campaign", stale_days=90)
+        self.assertEqual(buffer.getvalue(), "")
+        # A short scan: readiness counts exactly the doctor entries; doctor JSON and --checklist --json agree.
+        self.write_all(ago(400))
+        report = self.report()
+        with contextlib.redirect_stdout(buffer):
+            cli.readiness(self.root, campaign_id="synthetic-campaign", stale_days=90)
+        snapshot = json.loads(buffer.getvalue())
+        self.assertEqual(snapshot["counts"]["stale_inputs"], len(report["stale_inputs"]))
+        self.assertEqual(len(report["stale_inputs"]), 4 + 2)  # four new rows + absent map and meetings
+        self.assertNotIn("stale_inputs", snapshot)
+        command = [sys.executable, "-B", "-m", "campaign_tool", "doctor", "--directory", str(self.root),
+                   "--stale-days", "90"]
+        plain = json.loads(subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, timeout=60).stdout)
+        rows = json.loads(subprocess.run(command + ["--checklist", "--json"], cwd=REPO_ROOT, capture_output=True,
+                                         text=True, timeout=60).stdout)
+        new = {e["input"]: e["status"] for e in plain["stale_inputs"] if e["input"].startswith(self.NEW)}
+        self.assertEqual(new, {name: "stale" for name, _hint in self.expected_hints()})
+        from campaign_tool.doctor_checklist import _short
+        self.assertIn("Other: stale_inputs = " + _short(plain["stale_inputs"]), [row["label"] for row in rows])
+
+    def test_read_only_no_flag_no_optional_reads(self):
+        self.write_all(ago(400))
+
+        def listing():
+            return sorted((str(p.relative_to(p.anchor)), p.lstat().st_mtime_ns, p.lstat().st_mode,
+                           p.read_bytes() if p.is_file() else None) for p in [self.root, *self.root.rglob("*")])
+        before = listing()
+        with mock.patch.object(freshness, "_public_document", side_effect=AssertionError("read without the flag")):
+            plain = cli.doctor_report(self.root)
+        self.assertNotIn("stale_inputs", plain)
+        with mock.patch.object(socket, "socket", side_effect=AssertionError("no network")), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("no command is run")):
+            self.assertEqual(len(self.new_entries()), 4)
+        self.assertEqual(listing(), before)
+
+    def test_build_still_refuses_an_official_checked_366_days_ago(self):
+        from campaign_tool.content import ContentError, load_officials
+        document = {"schema_version": 1, "bodies": [{"agency_id": "ex-city", "officials": [
+            {"name": "Synthetic Member", "role": "Member", "source_url": "https://example.org/o", "checked_on": ago(365)}]}]}
+        self.assertIn("ex-city", load_officials(document, [{"agency_id": "ex-city"}], TODAY))
+        document["bodies"][0]["officials"][0]["checked_on"] = ago(366)
+        with self.assertRaisesRegex(ContentError, "older than 365 days"):
+            load_officials(document, [{"agency_id": "ex-city"}], TODAY)
+        self.write_officials([ago(366)])
+        self.assertEqual(self.new_entries(365)[self.OFFICIAL]["status"], "stale")
+        self.write_officials([ago(365)])
+        self.assertEqual(self.new_entries(365), {})
+
+
+NO_DATE, NO_COPY = object(), object()  # a row with no checked_on key; a source with no public_copy
 
 if __name__ == "__main__":
     unittest.main()
