@@ -88,9 +88,10 @@ def _read_regular(path, limit, absent_ok, on_bad):
 
 
 def _json(data, on_bad):
+    # A decoder RecursionError (deeply nested input within the byte caps) is the same refusal as malformed JSON.
     try:
         return json.loads(data.decode("utf-8"), object_pairs_hook=_pairs_hook)
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         raise on_bad from None
 
 
