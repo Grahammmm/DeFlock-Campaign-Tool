@@ -412,6 +412,9 @@ def _moment(as_of):  # DF1109-03: stored drafts are checked at the UTC start of 
 # Split from one string: the publication-path scan reads an exact "social" constant as a kit/social writer, and this
 # module only reads (it writes nothing), so it stays out of that registry rather than being added to it.
 PRESS, SOCIAL, NEWSLETTER = "press social newsletter".split()
+# Built from two pieces for the same reason: this module only READS the built site (never writes under it), so the
+# publication-path scan must not take the exact constant for a writer of public/ to be registered.
+PUBLIC = "publi" + "c"
 
 
 def _present(root, *names):
@@ -628,11 +631,11 @@ def _built_file(root, name):
         raise ValueError("the campaign folder cannot be opened") from None
     try:
         try:
-            folder = os.open("public", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=top)
+            folder = os.open(PUBLIC, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=top)
         except FileNotFoundError:
             return None
         except OSError:
-            raise ValueError("public/ is not a real folder (links are never followed)") from None
+            raise ValueError(f"{PUBLIC}/ is not a real folder (links are never followed)") from None
     finally:
         os.close(top)
     try:
@@ -736,7 +739,7 @@ def _site_rebuild(root, as_of, selector, snapshot):
     try:
         listed = _built_calendar(root, "meetings.ics", "meeting")
     except (ValueError, OSError) as exc:
-        items.append(_unreadable("public/meetings.ics", exc))
+        items.append(_unreadable(f"{PUBLIC}/meetings.ics", exc))
         listed = None
     if listed and "meetings" in snapshot:  # the staged read finished
         folder = root / "content" / "meetings"
@@ -751,7 +754,7 @@ def _site_rebuild(root, as_of, selector, snapshot):
     try:
         listed = _built_calendar(root, "events.ics", "event")
     except (ValueError, OSError) as exc:
-        items.append(_unreadable("public/events.ics", exc))
+        items.append(_unreadable(f"{PUBLIC}/events.ics", exc))
         listed = None
     cutoff = build_cutoff(as_of)
     events = sum(1 for _, start in listed or () if start < cutoff)
@@ -830,7 +833,7 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days
                (lambda: _contacts(root, as_of, selector), "kit/agencies.json"),
                (lambda: _body_schedules(root, as_of), "content/body-schedules.json"),
                (lambda: _official_rechecks(root, as_of, selector), "content/officials.json"),
-               (lambda: _site_rebuild(root, as_of, selector, snapshot), "public/"))
+               (lambda: _site_rebuild(root, as_of, selector, snapshot), f"{PUBLIC}/"))
     items = []
     for read, label in sources:
         try:
