@@ -434,7 +434,13 @@ class BoundaryTests(BriefCase):
         self.brief(replace=True)  # repairs it
         self.assertEqual(sorted(p.name for p in briefs.iterdir()), [HTML, TXT])
         shutil.rmtree(self.root / "kit")
-        with mock.patch("os.fsync", side_effect=OSError(5, "Input/output error")):
+        real_fsync = os.fsync
+
+        def file_fsync_fails(fd):
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(5, "Input/output error")
+            return real_fsync(fd)
+        with mock.patch("os.fsync", side_effect=file_fsync_fails):
             with self.assertRaisesRegex(BriefError, "could not be written"):
                 self.brief()
         self.assertEqual(list(briefs.iterdir()), [])  # the owned temporary is cleaned, nothing else is created
@@ -545,6 +551,132 @@ class OutputTests(BriefCase):
         self.assertEqual(rows, copy.deepcopy(self.rows()))  # same input and clock give the same rows
 
 
+class SetupPersistenceTests(BriefCase):
+    FIXED = ("Stopped: kit/briefs: output directory setup could not be flushed; crash durability is unconfirmed; "
+             "no brief files were written")
+
+    def layout(self, layout):
+        shutil.rmtree(self.root / "kit", ignore_errors=True)
+        if layout in ("kit-only", "both", "replace"):
+            (self.root / "kit").mkdir(mode=0o755)
+        if layout in ("both", "replace"):
+            (self.root / "kit" / "briefs").mkdir(mode=0o755)
+        briefs = self.root / "kit" / "briefs"
+        if layout == "replace":
+            for name in (HTML, TXT):
+                (briefs / name).write_bytes(b"OLD " + name.encode())
+        return briefs
+
+    def labelled_fsync(self, fail=None):
+        """Patch os.fsync; events hold raw (dev, ino, is_regular); fail is 'root' or 'kit' by identity."""
+        real = os.fsync
+        events = []
+        ids = {"root": self.root.stat(), "kit": None}
+
+        def fsync(fd):
+            info = os.fstat(fd)
+            key = (info.st_dev, info.st_ino)
+            events.append((key, stat.S_ISREG(info.st_mode)))
+            kit = ids["kit"] or ((self.root / "kit").stat() if (self.root / "kit").exists() else None)
+            for label, ident in (("root", ids["root"]), ("kit", kit)):
+                if label == fail and ident is not None and key == (ident.st_dev, ident.st_ino) and not events[-1][1]:
+                    raise OSError(5, SENTINEL + " " + str(self.root))
+            return real(fd)
+        return events, mock.patch.object(os, "fsync", side_effect=fsync)
+
+    def names(self, events):
+        root, kit, briefs = (self.root.stat(), (self.root / "kit").stat(), (self.root / "kit" / "briefs").stat())
+        table = {(root.st_dev, root.st_ino): "root", (kit.st_dev, kit.st_ino): "kit", (briefs.st_dev, briefs.st_ino): "briefs"}
+        return ["file" if regular else table[key] for key, regular in events]
+
+    def cli(self, replace=False):
+        with mock.patch.object(agency_brief, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = NOW
+            return run("agency-brief", "--directory", self.root, "--agency", POLICE, *(["--replace"] if replace else []))
+
+    def test_setup_parent_barriers_precede_first_twin_in_every_layout(self):
+        for layout in ("neither", "kit-only", "both", "replace"):
+            with self.subTest(layout=layout):
+                self.layout(layout)
+                events, patch = self.labelled_fsync()
+                with patch:
+                    result = self.brief(replace=layout == "replace")
+                self.assertEqual(self.names(events), ["root", "kit", "file", "briefs", "file", "briefs"])
+                self.assertEqual(result["written"], ["kit/briefs/" + HTML, "kit/briefs/" + TXT])
+                briefs = self.root / "kit" / "briefs"
+                self.assertEqual(sorted(p.name for p in briefs.iterdir()), [HTML, TXT])
+                for name in (HTML, TXT):
+                    self.assertEqual(stat.S_IMODE((briefs / name).stat().st_mode), 0o600)
+                if layout in ("neither", "kit-only"):
+                    self.assertEqual(stat.S_IMODE(briefs.stat().st_mode), 0o700)
+                if layout == "neither":
+                    self.assertEqual(stat.S_IMODE((self.root / "kit").stat().st_mode), 0o700)
+
+    def test_each_setup_barrier_failure_refuses_before_any_twin(self):
+        for layout in ("neither", "both", "replace"):
+            for fail in ("root", "kit"):
+                with self.subTest(layout=layout, fail=fail):
+                    briefs = self.layout(layout)
+                    before = tree(briefs) if briefs.exists() else {}
+                    sentinel = self.root / "kit" / "unrelated.txt"
+                    sentinel.parent.mkdir(exist_ok=True)
+                    sentinel.write_bytes(b"keep")
+                    events, patch = self.labelled_fsync(fail)
+                    with patch, mock.patch.object(agency_brief, "_write_file") as writer:
+                        code, out, err = self.cli(layout == "replace")
+                    self.assertEqual((code, out), (1, ""))
+                    self.assertEqual(err.strip(), self.FIXED)
+                    self.assertNotIn(SENTINEL, err)
+                    self.assertNotIn(str(self.root), err)
+                    writer.assert_not_called()
+                    self.assertFalse(any(regular for _, regular in events))
+                    self.assertEqual(tree(briefs) if briefs.exists() else {}, before)
+                    self.assertEqual(sentinel.read_bytes(), b"keep")
+                    self.assertFalse(list((self.root / "kit").rglob(".*.tmp")))
+
+    def test_retry_flushes_visible_directories_left_by_failed_setup(self):
+        for fail in ("root", "kit"):
+            with self.subTest(fail=fail):
+                self.layout("neither")
+                _, patch = self.labelled_fsync(fail)
+                with patch:
+                    code, _, err = self.cli()
+                self.assertEqual(code, 1, err)
+                self.assertTrue((self.root / "kit").is_dir())
+                events, patch = self.labelled_fsync()
+                with patch:
+                    code, out, err = self.cli()
+                self.assertEqual((code, err), (0, ""))
+                self.assertEqual(self.names(events), ["root", "kit", "file", "briefs", "file", "briefs"])
+                self.assertIn("Private brief written.", out)
+
+    def test_descriptors_are_closed_on_success_and_setup_failure(self):
+        def open_fds():
+            return len(os.listdir("/proc/self/fd"))
+        self.layout("neither")
+        start = open_fds()
+        self.brief()
+        self.assertEqual(open_fds(), start)
+        for fail in ("root", "kit"):
+            self.layout("neither")
+            _, patch = self.labelled_fsync(fail)
+            with patch, self.assertRaisesRegex(BriefError, "setup could not be flushed"):
+                self.brief()
+            self.assertEqual(open_fds(), start)
+
+    def test_validation_and_preflight_refuse_before_setup_fsync(self):
+        briefs = self.layout("both")
+        (briefs / HTML).write_bytes(b"OLD")
+        events, patch = self.labelled_fsync()
+        with patch:
+            with self.assertRaisesRegex(BriefError, "already exists"):
+                self.brief()
+            with self.assertRaisesRegex(BriefError, "not organizer-verified"):
+                self.brief(agency=SHERIFF)
+        self.assertEqual(events, [])
+        self.assertEqual(sorted(p.name for p in briefs.iterdir()), [HTML])
+
+
 class PublicationFailureTests(BriefCase):
     def prepare(self, replace=False):
         shutil.rmtree(self.root / "kit", ignore_errors=True)
@@ -587,10 +719,12 @@ class PublicationFailureTests(BriefCase):
         folder, expected = self.prepare(replace)
         real = os.fsync
         calls = 0
+        target = os.stat(folder)  # only the briefs directory descriptor counts, not the setup parents
 
         def fsync(fd):
             nonlocal calls
-            if stat.S_ISDIR(os.fstat(fd).st_mode):
+            info = os.fstat(fd)
+            if stat.S_ISDIR(info.st_mode) and (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino):
                 calls += 1
                 if calls == twin:
                     raise OSError(5, SENTINEL)

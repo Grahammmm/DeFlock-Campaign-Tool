@@ -399,6 +399,20 @@ def _subdir(parent, name):
     return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
 
 
+def _flush_setup(directory):
+    """Flush an admitted parent descriptor so a newly created child entry is persisted.
+
+    Setup persistence is separate from per-file persistence. Runs even when the child
+    already existed (a failed earlier attempt may have left it unconfirmed). Refuses
+    before either twin is attempted; directories created for setup may remain.
+    """
+    try:
+        os.fsync(directory)
+    except OSError:
+        raise BriefError("kit/briefs: output directory setup could not be flushed; crash durability is unconfirmed;"
+                         " no brief files were written") from None
+
+
 def _write_file(directory, name, data, replace, expected):
     """Write 0600 atomically per file; report known publication state via _WriteError.
 
@@ -493,8 +507,10 @@ def build_brief(root, agency_id, *, replace=False, now=None):
     try:
         kit_fd = _subdir(root_fd, "kit")
         try:
+            _flush_setup(root_fd)  # persist the kit/ entry before anything is written beneath it
             briefs_fd = _subdir(kit_fd, "briefs")
             try:
+                _flush_setup(kit_fd)  # persist the briefs/ entry before either twin is attempted
                 for name, data in zip(names, (page.encode("utf-8"), text.encode("utf-8"))):
                     _write_file(briefs_fd, name, data, replace, expected[name])
                     written.append(name)
