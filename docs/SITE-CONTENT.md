@@ -810,6 +810,45 @@ appears and every page is byte-identical. The body's agency page shows "What dec
 written with `white-space: pre-wrap`; a strict `style-src 'self'` policy may ignore that inline style, in which case the
 text is still complete and exact. Labels: `statements.*`.
 
+**Maintaining statements from the command line (DF1109-13).** `statement add|remove|list --directory D` edits
+`content/statements.json` so you do not hand-edit it. Nothing is fetched, built, published or sent: the next explicit
+`build` shows the result.
+
+```sh
+printf '%s' 'We will review the camera contract before renewal.' > quote.txt   # no final line break
+python3 -m campaign_tool statement add --directory D --agency-id ca-cedar-city-council --official "Ash Example" \
+  --said-on 2026-10-01 --quote-file quote.txt --context meeting \
+  --source-url https://cedar.example/minutes/2026-10-01 --checked-on 2026-10-10 [--recording-time 1:02:45] \
+  [--context-note "Said during the contract renewal item."]
+python3 -m campaign_tool statement list --directory D
+python3 -m campaign_tool statement remove --directory D --index 2
+```
+
+- `add` needs a real `content/` folder, a valid `site.json` and a current `content/officials.json` (the build's rules,
+  365-day limit included; the person must already be listed: add them with `officials add`, re-check them with
+  `officials recheck`; nothing is re-checked for you). `--agency-id` and `--official` must match that roster exactly.
+  `--context` is one of the five contexts above and has no default. It checks the whole existing file and then the
+  whole file with the new row using the build's own statement rules and shared privacy lint, refuses a row equal in
+  every stored field to one already stored (key order does not matter; a different optional field makes a different
+  row) and appends it last. The first `add` creates the file (mode 0644); nothing else does.
+- The quote is read from `--quote-file` byte for byte as UTF-8: nothing is trimmed, normalized or converted, so spaces
+  and accents stay exactly as in the file. Any line break, a final one included, is refused by the quote rule: save
+  the file without one (`printf '%s'` above). Links, FIFOs, folders, invalid UTF-8 and files over 4 KiB are refused.
+- `list` prints a JSON array, newest `said_on` first (equal days in stored order). Each row carries `index`: its
+  1-based position in stored order, which is what `remove --index` takes; it is shown only and never stored. Without
+  a file it prints `[]`. It writes nothing.
+- `remove --index N` deletes the row at stored position N (a plain number from 1; `0`, signs, decimals and
+  out-of-range positions are refused). Removing the last row leaves `[]`; the file is never deleted.
+- `add` prints `{"action":"added","index":N}` and `remove` `{"action":"removed","index":N}`. Any problem exits 2 with
+  one `Stopped:` line naming the file, row (`statements.json[N]`, counted from 0 as the build does), flag or field and a
+  fixed reason; a quote, note or address you supplied is never repeated. A file problem (unknown field, a JSON
+  object repeating a key, a future date, a privacy-lint match, more than 200 rows) blocks `add`, `remove` and `list`
+  alike until you fix it by hand; nothing is repaired or dropped for you, and existing rows keep their exact values
+  and order. Listing and removing check names against the roster without its 365-day limit; `add` and the build apply it.
+- Every write goes to a temporary file in `content/`, is flushed to disk and replaces the file in one rename, only if
+  the file is still the one that was read (or still absent); otherwise the old bytes and mode stay. Run one writer at
+  a time.
+
 ### Adding a source record
 
 ```
@@ -1176,10 +1215,40 @@ New labels: `nav.topics`, `heading.topics`, `title.topics`, `title.topics_descri
 An organizer lists an organization only after recording its permission privately:
 
 ```
+supporters list --directory DIR [--json]
 supporters add --directory DIR --name N --kind civil_liberties|community|faith|labor|neighborhood|business|other \
   [--url https://...] --organization --confirmed-on YYYY-MM-DD --how email|letter|meeting|form [--correspondence PREFIX]
 supporters remove --directory DIR --id ID
 ```
+
+**Private inventory (DF1109B-06).** `supporters list` prints the ids that `consent` and `remove` take. It is read-only:
+it creates, changes or repairs nothing (no `kit/`, ledger, lock or cache), fetches nothing and needs no `campaign.json`.
+Its output is private operational output, never a public export. One row per id, sorted by id, for every public row and
+every private record:
+
+```
+ID | KIND | "NAME" | joined DATE | consent present|missing | confirmed DATE|- | co-sign any|ID1,ID2|none | co-sign confirmed DATE|- | staged ID1,ID2|none
+ID | private record without public entry | confirmed DATE | co-sign any|ID1,ID2|none | co-sign confirmed DATE|- | staged ID1,ID2|none
+```
+
+(`a|b` here is a choice, not another column.) The name is JSON-quoted so a `|` or quote in it cannot pass for a column.
+`--json` prints only a JSON array of objects with exactly the keys `id`, `status` (`listed` or `private record without
+public entry`), `kind`, `name`, `joined_on` (null for a private record without a public entry), `consent_present`,
+`confirmed_on`, `cosign` (`"any"`, the sorted meeting ids, or null for no grant), `cosign_confirmed_on` and
+`staged_meetings`, in that order; an empty inventory is `[]` (text: `none recorded`). Dates are the only consent
+details shown: never the hash, `how`, correspondence digest, URL or the private record itself.
+
+`staged_meetings` are the sorted ids of every valid `content/meetings/*.json` (direct files only, at most 4 MiB each;
+the id field, or the file name without `.json`) whose structured `cosigners` list names the organization. They include
+past and cancelled meetings and grants since cleared or narrowed: a staged reference is history, not permission, and a
+listing is not co-sign approval. Run `content-check` before building or reusing a comment kit.
+
+A missing consent record and a private record with no public entry are listed (exit 0) although `build` and the
+`add`/`consent`/`remove` writers still refuse them. Anything malformed is not: an invalid or over-limit store or meeting
+file, a consent record that does not match its public row, a duplicate meeting id, a private store others can read, a
+symbolic link (campaign folder, ancestor, store or meeting) or a hardlinked or special file. Then nothing is printed on
+stdout, stderr holds exactly `Stopped: supporters list: cannot read valid supporter and staged meeting files`, and the
+exit code is 2. An id that is removed and later added again is a new listing that needs its own consent.
 
 `--organization` is required and is an explicit attestation, never inferred from the name or kind: only organizations
 are listed, never individuals. `add` writes the public row to `content/supporters.json` and the consent record to
@@ -1212,8 +1281,9 @@ without a file. Labels: `supporters.title`, `supporters.description`, `supporter
 **Co-sign grant (DF2207-14).** A private record may also carry `cosign` (`"any"` or 1 to 100 meeting ids) with
 `cosign_confirmed_on`, `cosign_how` and `cosign_correspondence`: all four or none. Set it with
 `supporters consent --directory DIR --id ID --cosign any|MEETING_ID ... --confirmed-on D --how HOW [--correspondence PREFIX]`
-or remove it with `--clear-cosign` (see [MEETINGS.md](MEETINGS.md)). It is read only by `meetings-stage --cosign`,
-`load_content` and `content-check`; it never reaches the public file or the site. A listing alone never allows co-signing.
+or remove it with `--clear-cosign` (see [MEETINGS.md](MEETINGS.md)). It is read by `meetings-stage --cosign`,
+`load_content` and `content-check`, and shown (scope and date only) by the private `supporters list`; it never reaches
+the public file or the site. A listing alone never allows co-signing.
 Staged meetings store `cosigners` (1 to 30 supporter ids), shown on the meeting page as `Co-signed by N organizations`
 (labels `meeting.cosigned_one` and `meeting.cosigned_many`, both with `{count}`; Spanish drafts in `examples/labels/es.json`).
 

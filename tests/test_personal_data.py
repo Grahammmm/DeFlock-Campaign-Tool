@@ -543,6 +543,7 @@ _MODULES = {
         agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
         finding_search_log kit_fee_reply kit_preserve kit_repeat search_log law law_packet launch_check git_exposure map_controller registry setup_cmd shell sources_cmd records.ask_parity""",
     "organizer-maintained public roster content/officials.json (built by the site), no catalog store": "officials_cmd",
+    "organizer-maintained public statements content/statements.json (built by the site), no catalog store": "statements",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -556,6 +557,7 @@ MODULE_FUNCTIONS = {
     'agency_actions': ('_install',),
     'officials_cmd': ('_install',),  # content/officials.json only: staged in content/, fsync, one rename; never a private store
     'elsewhere_cmd': ('_install',),  # content/elsewhere.json only: whole file loader + shared lint, staged in content/, one rename
+    'statements': ('_install',),  # content/statements.json only: staged in content/, fsync, one rename; never a private store
     'agency_brief': ('_write_file', 'build_brief',),
     'agency_cards': ('main',),
     'approval': ('verify',),

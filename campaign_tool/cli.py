@@ -1021,6 +1021,10 @@ def main():
     supporters_remove = supporters.add_parser("remove", help="Drop one organization's public entry and private record")
     supporters_remove.add_argument("--directory", required=True)
     supporters_remove.add_argument("--id", required=True)
+    supporters_list = supporters.add_parser("list", help="Print each organization's id, listing, consent dates, co-sign "
+                                            "grant and staged meetings; private, read-only")
+    supporters_list.add_argument("--directory", required=True)
+    supporters_list.add_argument("--json", action="store_true", dest="as_json", help="Print JSON only")
     press_check = press_commands.add_parser("check", help="Check private press drafts and letters against current findings and meetings; read-only")
     press_check.add_argument("--directory", required=True)
     press_check.add_argument("--json", action="store_true", dest="as_json", help="Print JSON only")
@@ -1706,6 +1710,32 @@ def main():
             verb_p.add_argument(flag, required=True, help=officials_flags[flag])
         if verb == "add":
             verb_p.add_argument("--profile-url", help="Optional https:// page of this official on the official site")
+    from .content_statements import CONTEXTS as statement_contexts
+    statement_cmds = commands.add_parser(
+        "statement", help="Maintain content/statements.json, organizer-verified public statements of listed officials "
+        "(nothing is fetched, built, published or sent)").add_subparsers(dest="statement_command", required=True)
+    st_add = statement_cmds.add_parser("add", allow_abbrev=False, help="Append one statement after checking the whole "
+                                       "file; refuses an exact duplicate. The first add creates the file")
+    for flag, text in (("--directory", "Campaign directory (required)"),
+                       ("--agency-id", "agency_id of the body in content/officials.json"),
+                       ("--official", "The official's name exactly as content/officials.json lists it"),
+                       ("--said-on", "YYYY-MM-DD the statement was made"),
+                       ("--quote-file", "UTF-8 file holding the quote exactly as the official source has it (1 to 400 "
+                                        "characters, one line, no final line break; nothing is trimmed)"),
+                       ("--source-url", "https:// address of the official minutes, video or release (recorded, never "
+                                        "fetched)"),
+                       ("--checked-on", "YYYY-MM-DD you checked that source (not in the future)")):
+        st_add.add_argument(flag, required=True, help=text)
+    st_add.add_argument("--context", required=True, choices=statement_contexts, help="Where it was said")
+    st_add.add_argument("--recording-time", help="Optional H:MM:SS into the recording")
+    st_add.add_argument("--context-note", help="Optional plain-text campaign context, at most 200 characters")
+    st_remove = statement_cmds.add_parser("remove", allow_abbrev=False, help="Remove one statement by the 1-based "
+                                          "index statement list prints (its position in stored order)")
+    st_remove.add_argument("--directory", required=True, help="Campaign directory (required)")
+    st_remove.add_argument("--index", required=True, help="1-based stored position, as statement list prints it")
+    statement_cmds.add_parser("list", allow_abbrev=False, help="Print the statements newest first as JSON, each with "
+                              "its stored index (read-only)").add_argument("--directory", required=True,
+                                                                           help="Campaign directory (required)")
     today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
@@ -1897,6 +1927,16 @@ def main():
             sys.exit(1)
         print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
         sys.exit(exit_code(report))
+    if args.command == "supporters" and args.supporters_command == "list":  # unresolved: the reader refuses links
+        from .supporters import format_supporters_list, list_supporters
+        try:
+            rows = list_supporters(Path(args.directory).expanduser())
+        except (OSError, ValueError, RecursionError):  # SupporterError and ContentError are ValueErrors
+            print("Stopped: supporters list: cannot read valid supporter and staged meeting files", file=sys.stderr)
+            sys.exit(2)
+        sys.stdout.write(json.dumps(rows, indent=2, ensure_ascii=False) + "\n" if args.as_json
+                         else format_supporters_list(rows))
+        return
     if args.command == "meetings-status":  # read-only; the folder is not resolved, so a symlinked root is refused
         from .meetings_status import run_cli as meetings_status
         sys.exit(meetings_status(args, Path(args.directory).expanduser()))
@@ -2218,6 +2258,14 @@ def main():
             try:
                 read_config(root)
                 print(officials_cli(root, args))
+            except (OSError, ValueError) as exc:  # one Stopped: line, never a traceback or a supplied value
+                fixes.emit(exc)
+                sys.exit(2)
+        elif args.command == "statement":
+            from .statements import run_cli as statement_cli
+            try:
+                read_config(root)
+                sys.stdout.write(statement_cli(root, args))
             except (OSError, ValueError) as exc:  # one Stopped: line, never a traceback or a supplied value
                 fixes.emit(exc)
                 sys.exit(2)
