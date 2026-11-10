@@ -9,9 +9,11 @@ import os
 import re
 import shutil
 import subprocess
+import sqlite3
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -200,6 +202,161 @@ class EvidenceTests(unittest.TestCase):
         self.assertTrue(result.stderr.startswith("Stopped: private/objects unreadable"))
         self.assertIsNone(HEX64.search(output))
         self.assertNotIn(str(self.objects), output)
+
+    def inventory(self):
+        private = self.root / "private"
+        return sorted(os.listdir(private)), self.ledger.read_bytes(), os.stat(self.ledger).st_mtime_ns
+
+    def set_wal(self):
+        db = sqlite3.connect(self.ledger)
+        self.assertEqual(db.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+        db.commit()
+        db.close()
+        for suffix in ("-wal", "-shm"):
+            self.assertFalse(os.path.lexists(str(self.ledger) + suffix))
+
+    def test_checkpointed_wal_report_creates_no_sidecars(self):
+        self.clean()
+        self.set_wal()
+        before = self.inventory()
+        self.assertEqual(self.ledger.read_bytes()[18:20], b"\x02\x02")
+        for check in (False, True):
+            report, _ = self.evidence(0, check=check)
+            self.assertEqual(report, {"findings": 2, "citations": 4, "problems": [], "ledger": "present"})
+        self.assertEqual(before, self.inventory())
+
+    def test_hash_reader_uses_memory_connection_and_closes_it(self):
+        from campaign_tool import evidence
+        self.clean()
+        real = sqlite3.connect
+        opened = []
+
+        class Spy:
+            def __init__(self, db):
+                self.db = db
+                self.closed = False
+                self.fail = False
+
+            def __getattr__(self, name):
+                return getattr(self.db, name)
+
+            def execute(self, sql, *args):
+                if self.fail and "sha256" in sql:
+                    raise sqlite3.OperationalError("boom")
+                return self.db.execute(sql, *args)
+
+            def close(self):
+                self.closed = True
+                self.db.close()
+
+        def connect(target, *args, **kwargs):
+            self.assertEqual(target, ":memory:")
+            spy = Spy(real(target, *args, **kwargs))
+            spy.fail = fail
+            opened.append(spy)
+            return spy
+
+        for fail in (False, True):
+            opened.clear()
+            with unittest.mock.patch("sqlite3.connect", connect):
+                if fail:
+                    with self.assertRaises(ValueError) as caught:
+                        evidence._ledger_hashes(self.ledger)
+                    self.assertEqual(str(caught.exception), "ledger unreadable: OperationalError")
+                else:
+                    self.assertEqual(len(evidence._ledger_hashes(self.ledger)), 3)
+            self.assertTrue(opened and all(spy.closed for spy in opened))
+
+    def test_every_sidecar_kind_refuses_without_mutation(self):
+        self.clean()
+        for suffix in ("-journal", "-wal", "-shm"):
+            for kind in ("empty", "data", "dangling"):
+                sidecar = Path(str(self.ledger) + suffix)
+                if kind == "dangling":
+                    sidecar.symlink_to(self.base / "nowhere")
+                else:
+                    sidecar.write_bytes(b"" if kind == "empty" else b"x" * 64)
+                before = (self.inventory(), sidecar.is_symlink(), os.readlink(sidecar) if sidecar.is_symlink()
+                          else sidecar.read_bytes())
+                for check in (False, True):
+                    result = self.cli("evidence", *(["--check"] if check else []), code=1)
+                    self.assertEqual(result.stdout, "")
+                    self.assertTrue(result.stderr.startswith("Stopped: ledger unreadable: private/ledger.sqlite has a"))
+                    self.assertIsNone(HEX64.search(result.stderr))
+                self.assertEqual(before, (self.inventory(), sidecar.is_symlink(), os.readlink(sidecar)
+                                          if sidecar.is_symlink() else sidecar.read_bytes()))
+                sidecar.unlink()
+
+    def test_committed_wal_only_hash_never_becomes_stale_success(self):
+        self.clean()
+        self.set_wal()
+        self.register(*RECORDS[:4])
+        self.finding("charlie", RECORDS[3])
+        (self.objects / sha(RECORDS[3])).write_bytes(RECORDS[3])
+        writer = sqlite3.connect(self.ledger)
+        self.addCleanup(writer.close)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        columns = [row[1] for row in writer.execute("PRAGMA table_info(objects)")]
+        row = dict.fromkeys(columns, 0)
+        row.update(sha256=sha(RECORDS[3]), size=len(RECORDS[3]))
+        writer.execute("INSERT INTO objects (%s) VALUES (%s)" % (",".join(columns), ",".join("?" * len(columns))),
+                       [row[name] for name in columns])
+        writer.commit()
+        self.assertTrue(os.path.exists(str(self.ledger) + "-wal"))
+        names = sorted(os.listdir(self.root / "private"))
+        result = self.cli("evidence", "--check", code=1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("journal or WAL", result.stderr)
+        self.assertEqual(names, sorted(os.listdir(self.root / "private")))
+
+    def test_sidecar_arriving_during_snapshot_refuses(self):
+        from campaign_tool import evidence
+        self.clean()
+        sidecar = str(self.ledger) + "-wal"
+        real_dup = os.dup
+
+        def dup(fd):
+            Path(sidecar).write_bytes(b"")
+            return real_dup(fd)
+
+        with unittest.mock.patch("campaign_tool.ledger_list.os.dup", dup):
+            with self.assertRaises(ValueError) as caught:
+                evidence._ledger_hashes(self.ledger)
+        self.assertIn("journal or WAL", str(caught.exception))
+        self.assertTrue(os.path.exists(sidecar))
+
+    def test_downstream_consumers_use_snapshot_and_refuse_sidecars(self):
+        from campaign_tool import findings
+        from campaign_tool.content import load_content
+        self.clean()
+        self.set_wal()
+        model = load_content(self.root)
+        before = self.inventory()
+        self.assertEqual(findings.cited_problems(self.root, model["findings"][0]), [])
+        self.assertEqual(before, self.inventory())
+        Path(str(self.ledger) + "-wal").write_bytes(b"")
+        with self.assertRaises(ValueError) as caught:
+            findings.cited_problems(self.root, model["findings"][0])
+        self.assertTrue(str(caught.exception).startswith("ledger unreadable: "))
+
+    def test_refusal_redacts_private_paths_and_bad_schema(self):
+        self.clean()
+        good = self.ledger.read_bytes()
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE other (x)")
+        self.ledger.write_bytes(db.serialize())
+        db.close()
+        moved = self.base / "elsewhere.sqlite"
+        for setup, prefix in ((lambda: None, "Stopped: ledger unreadable: "),
+                              (lambda: (self.ledger.unlink(), moved.write_bytes(good), self.ledger.symlink_to(moved)),
+                               "Stopped: private/, private/objects and private/ledger.sqlite must not be symlinks")):
+            setup()
+            result = self.cli("evidence", "--check", code=1)
+            self.assertEqual(result.stdout, "")
+            self.assertTrue(result.stderr.startswith(prefix), result.stderr)
+            self.assertNotIn(str(self.base), result.stderr)
+            self.assertNotIn("elsewhere", result.stderr)
+            self.assertIsNone(HEX64.search(result.stderr))
 
 
 if __name__ == "__main__":

@@ -6,7 +6,9 @@ The file is for the organizer's own calendar: 0600, never overwritten, refused i
 content/. Events carry ids, dates, agency or body names and the official source link only; never recipient emails,
 request text, download links, record hashes, notes or reviewer names.
 """
+import contextlib
 import os
+import secrets
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -156,7 +158,16 @@ def _target(root, out):
 
 
 def calendar(root, out, as_of=None, *, now=None, law_base=None, today=None):
-    """Write the private calendar to ``out`` (new file, 0600); return ``{"written", "events"}``."""
+    """Write the private calendar to ``out`` (new file, 0600); return ``{"written", "events"}``.
+
+    The bytes are rendered first, written, flushed and fsynced into a private ``.kit-calendar.<random>.tmp`` beside
+    the target, then published by an exclusive hard link, so the requested name never holds a partial calendar and a
+    target that appeared meanwhile is refused untouched. A failure before the link leaves no output and the staging
+    name is removed; the retry succeeds. A process that dies while staging leaves only its private ``.tmp`` (never
+    swept; the retry uses a new random name). A process that dies after the link leaves a complete calendar, possibly
+    still beside its staging name; the complete file is never overwritten or rolled back. A staging-name removal that
+    fails after publication is raised, not hidden.
+    """
     from .cli import read_config  # local import: cli imports this module lazily
     root = Path(root)
     read_config(root)
@@ -167,9 +178,29 @@ def calendar(root, out, as_of=None, *, now=None, law_base=None, today=None):
     requests, package_status = _request_events(root, law_base)
     events = requests + _meeting_events(root, day)
     data = render(events, now or datetime.now(timezone.utc)).encode("utf-8")
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "wb") as handle:
-        os.fchmod(handle.fileno(), 0o600)
-        handle.write(data)
+    # Stage the complete bytes under a private random name beside the target, then publish by an exclusive hard link.
+    stage = os.path.join(target.parent, ".kit-calendar." + secrets.token_hex(8) + ".tmp")
+    fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            handle = os.fdopen(fd, "wb")
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(stage, target)  # the commit point: creates the name only if absent, never replaces
+        except FileExistsError:
+            raise ValueError(f"{target} exists; nothing was overwritten") from None
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(stage)  # only this call's staging name; the target is never touched
+        raise
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(stage)  # after the commit: a real failure here is raised, the complete target stays
     report = {"written": str(target), "events": len(events)}
     return {**report, "note": NO_LAW} if package_status == "missing" else report
