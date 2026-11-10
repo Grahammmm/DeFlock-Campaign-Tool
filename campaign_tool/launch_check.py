@@ -1,19 +1,42 @@
-"""Read-only offline launch checklist; no deployment or approval inference."""
+"""Read-only offline launch checklist; no deployment or approval inference.
+
+The temporary rehearsal build is staged from a campaign's validated inputs. Local rules are projected from the model
+that ``load_content`` already admitted (see ``_local_rules_bytes``), so a finding citing an organizer-transcribed local
+rule rehearses like the real build, without re-reading or copying the campaign's ``law/`` folder.
+"""
 import json
 from pathlib import Path
 import re
 import shutil
 import tempfile
 
+from . import law
 from .content import load_content
 from .evidence import evidence_report
+from .finding_law import jurisdiction
 from .kit import stale_contacts
+from .law import LOCAL_RULES_FILE
 from .site import build_site
 from .site_check import check_links
 
 INIT = "Run content init (DF2237-06) or create content/"
 NOTE = ("Offline readiness only. This is not a launch approval; deployment "
         "(docs/CLOUDFLARE.md) and human review remain.")
+
+
+def _local_rules_bytes(rules, jurisdiction, limit=None):
+    """Compact UTF-8 ``law/local-rules.json`` text projecting the validated ``rules``; refuses past the reader's cap.
+
+    ``rules`` is the accepted ``model["local_rules"]`` snapshot (every validated version and field), re-serialized as a
+    semantic projection and never re-read or copied from the campaign's ``law/`` folder, so a sibling file or link there
+    cannot reach the rehearsal tree. Original file bytes and whitespace are deliberately not preserved.
+    """
+    limit = law.LOCAL_RULES_MAX_BYTES if limit is None else limit
+    document = dict(schema_version=1, jurisdiction=jurisdiction, rules=rules)
+    data = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(data) > limit:
+        raise ValueError(f"{law.LOCAL_RULES_FILE}: rehearsal copy larger than {limit} bytes")
+    return data
 
 
 def launch_checks(root, contact_max_age_days=365, today=None):
@@ -61,9 +84,18 @@ def launch_checks(root, contact_max_age_days=365, today=None):
     else:
         scratch = None
         try:
+            if error is not None:
+                # The original admission step refused the campaign (including a malformed, linked or oversized
+                # law/local-rules.json); never let a scratch tree without that input report a successful build.
+                raise ValueError(error)
             scratch = Path(tempfile.mkdtemp(prefix="campaign-launch-"))
             shutil.copy2(root / "campaign.json", scratch / "campaign.json")
             shutil.copytree(root / "content", scratch / "content", symlinks=True)
+            rules = model["local_rules"] if model else []
+            if rules:  # none (absent or empty overlay): law/ stays absent, the same empty model
+                data = _local_rules_bytes(rules, jurisdiction(scratch))
+                (scratch / "law").mkdir()
+                (scratch / LOCAL_RULES_FILE).write_bytes(data)
             for name in ("agencies.json", "governing-bodies.json"):
                 source = root / "kit" / name
                 if source.exists():
