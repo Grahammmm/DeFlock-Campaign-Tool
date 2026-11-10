@@ -25,7 +25,7 @@ class ModelInputError(ValueError):
 
 def _fail():
     # Never include a locator, source text or rejected model value in errors.
-    raise ModelInputError("model input or locator references failed validation")
+    raise ModelInputError("model input or locator references failed validation") from None
 
 
 def _key(locator):
@@ -33,7 +33,15 @@ def _key(locator):
         _fail()
     try:
         return json.dumps(locator, sort_keys=True, allow_nan=False)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
+        _fail()
+
+
+def _snapshot(locator):
+    """Detached copy of an original locator; recursion exhaustion is a refusal."""
+    try:
+        return deepcopy(locator)
+    except RecursionError:
         _fail()
 
 
@@ -97,7 +105,8 @@ class ModelSources:
             if not isinstance(text, str):
                 _fail()
             self._redactor.reserve(text)
-            self._units.append({"locator": deepcopy(locator), "text": text})
+            snapshot = _snapshot(locator)
+            self._units.append({"locator": snapshot, "text": text})
             self._by_locator.setdefault(key, []).append(index)
 
     def _text(self, value):
