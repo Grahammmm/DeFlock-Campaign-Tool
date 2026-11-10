@@ -161,12 +161,12 @@ def _requests(root, sink, directory):
 
 
 def _records(root, sink, directory):
-    path = root / "content" / "sources.json"
-    if not os.path.lexists(path):
-        return
-    try:
-        entries = load_sources(_read_json(path))
-    except (ValueError, OSError):
+    try:  # bounded, non-following read; any present value (even null) goes to the validator
+        document = _store(root, "content/sources.json")
+        if document is ABSENT:
+            return
+        entries = load_sources(document)
+    except _BAD:
         sink.problem("Records", "content/sources.json unreadable")
         return
     by_day = {}
