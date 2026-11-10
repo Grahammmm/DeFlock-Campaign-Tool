@@ -127,7 +127,12 @@ def main(argv=None):
         raw = sys.stdin.buffer.read(MAX_BYTES + 1)
         if len(raw) > MAX_BYTES:
             raise ValueError("Agency-card input too large")
-        sys.stdout.write(json.dumps({"javascript": render(json.loads(raw))}))
+        try:
+            config = json.loads(raw)
+        except RecursionError:
+            # Only decoder exhaustion is an input-nesting refusal.
+            raise ValueError("JSON nesting is too deep") from None
+        sys.stdout.write(json.dumps({"javascript": render(config)}))
     except (ValueError, TypeError, OSError) as exc:
         print("Agency-card build stopped: " + str(exc), file=sys.stderr)
         return 1
