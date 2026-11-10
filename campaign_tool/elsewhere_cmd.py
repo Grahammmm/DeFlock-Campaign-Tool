@@ -28,6 +28,7 @@ from .privacy_patterns import refusal
 FILE = "elsewhere.json"
 LABEL = "content/" + FILE
 UNTOUCHED = "nothing was written"
+CHANGED_FOLDER = f"content/: changed while it was being edited; {UNTOUCHED}"
 INDEX_SHAPE = re.compile(r"[1-9][0-9]{0,8}", re.ASCII)
 INDEX_RULE = "--index: must be a whole number of 1 or more (stored order)"
 DONE = "Content only; nothing was fetched, built, sent or deployed."
@@ -44,11 +45,43 @@ class _Duplicate(ValueError):
 
 # --- reading (anchored at content/, links never followed) ------------------------------------------------------
 
-def _content_fd(root):
+def _folder_id(fd):
+    info = os.fstat(fd)
+    return (info.st_dev, info.st_ino)
+
+
+def _content_fd(root, expected=None):
+    """The content/ folder descriptor. With ``expected`` (the device/inode of the folder the decisions were read from),
+    a different real folder is refused before anything is read or written in it."""
     try:
-        return os.open(Path(root) / "content", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fd = os.open(Path(root) / "content", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError:
         raise ElsewhereError(f"content/ must be a real folder of this campaign (links are never followed); {UNTOUCHED}") from None
+    if expected is not None:
+        try:
+            same = _folder_id(fd) == expected
+        except OSError:
+            same = False
+        if not same:
+            os.close(fd)
+            raise ElsewhereError(CHANGED_FOLDER) from None
+    return fd
+
+
+def _verify_path(root, expected):
+    """Final check before a commit: the content/ pathname still opens (no links) as the folder that was read."""
+    try:
+        fd = os.open(Path(root) / "content", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        raise ElsewhereError(CHANGED_FOLDER) from None
+    try:
+        same = _folder_id(fd) == expected
+    except OSError:
+        same = False
+    finally:
+        os.close(fd)
+    if not same:
+        raise ElsewhereError(CHANGED_FOLDER)
 
 
 def _read(folder_fd, name, label, single_link=False):
@@ -114,15 +147,19 @@ def _validate(document, today):
 
 
 def _state(root, today):
-    """-> (validated rows or None when the file is absent, loaded (bytes, identity, mode) or None)."""
+    """-> (validated rows or None when the file is absent, loaded (bytes, identity, mode) or None, content/ folder
+    (device, inode) of the very descriptor the file was read through)."""
     folder = _content_fd(root)
     try:
         loaded = _read(folder, FILE, LABEL, single_link=True)
+        folder_id = _folder_id(folder)
+    except OSError:
+        raise ElsewhereError(f"content/: cannot be inspected; {UNTOUCHED}") from None
     finally:
         os.close(folder)
     if loaded is None:
-        return None, None
-    return _validate(_parse(loaded[0], LABEL), today), loaded
+        return None, None, folder_id
+    return _validate(_parse(loaded[0], LABEL), today), loaded, folder_id
 
 
 def _category(exc):
@@ -131,10 +168,11 @@ def _category(exc):
     return re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", "<value withheld>", text)
 
 
-def _citing(root, removed, today):
+def _citing(root, removed, today, *, folder_id):
     """Names of staged ``content/meetings/*.json`` (lexical) whose snapshots share the removed place, body and date.
-    Each file is validated as a meeting (snapshots included) without resolving references; a broken one is refused."""
-    folder = _content_fd(root)
+    Each file is validated as a meeting (snapshots included) without resolving references; a broken one is refused.
+    The scan starts in the content/ folder the decisions were read from, never a replacement."""
+    folder = _content_fd(root, folder_id)
     try:
         try:
             meetings_fd = os.open("meetings", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=folder)
@@ -185,10 +223,11 @@ def _unchanged(folder, loaded):
         raise FileExistsError
 
 
-def _install(root, data, loaded):
+def _install(root, data, loaded, *, folder_id):
     """Stage ``data`` beside the file, fsync, then publish it with one rename (a no-replace link for the first file).
-    The target must still be the very file read (or still absent); every ordinary failure keeps the old bytes."""
-    folder = _content_fd(root)
+    The content/ folder must still be the one read and the target still the very file read (or still absent); every
+    ordinary failure keeps the old bytes. Staging and cleanup stay relative to the verified folder descriptor."""
+    folder = _content_fd(root, folder_id)
     temp = f".elsewhere-{os.getpid()}-{os.urandom(4).hex()}.tmp"
     staged = committed = False
     try:
@@ -199,6 +238,7 @@ def _install(root, data, loaded):
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        _verify_path(root, folder_id)
         _unchanged(folder, loaded)
         if loaded is None:
             os.link(temp, FILE, src_dir_fd=folder, dst_dir_fd=folder, follow_symlinks=False)  # never replaces
@@ -223,10 +263,11 @@ def _install(root, data, loaded):
         os.close(folder)
 
 
-def _remove_file(root, loaded):
+def _remove_file(root, loaded, *, folder_id):
     """Unlink the very file read: the commit point of removing the last entry (an empty array is never written)."""
-    folder = _content_fd(root)
+    folder = _content_fd(root, folder_id)
     try:
+        _verify_path(root, folder_id)
         _unchanged(folder, loaded)
         os.unlink(FILE, dir_fd=folder)
     except FileExistsError:
@@ -251,12 +292,12 @@ def add_entry(root, *, place, state, body, decided_on, kind, as_stated, source_u
     """Append one organizer-verified decision. -> {"index" (1-based stored position), "notes" (advisory, stderr)}."""
     from .legal_claims import elsewhere_notes
     today = today or date.today()
-    rows, loaded = _state(root, today)
+    rows, loaded, folder_id = _state(root, today)
     rows = rows or []
     new = {"place": place, "state": state, "body": body, "decided_on": decided_on, "kind": kind, "as_stated": as_stated,
            "source_url": source_url, "checked_on": checked_on, **({"news_url": news_url} if news_url is not None else {})}
     prospective = _validate(rows + [new], today)
-    _install(root, _dump(prospective), loaded)
+    _install(root, _dump(prospective), loaded, folder_id=folder_id)
     at = f"{FILE}[{len(rows)}]."
     notes = [note for note in elsewhere_notes(prospective) if at in note or "guard-error" in note]
     return {"index": len(prospective), "notes": notes}
@@ -267,23 +308,23 @@ def remove_entry(root, index, *, today=None):
     if type(index) is not int or index < 1:
         raise ElsewhereError(INDEX_RULE)
     today = today or date.today()
-    rows, loaded = _state(root, today)
+    rows, loaded, folder_id = _state(root, today)
     if loaded is None:
         raise ElsewhereError(f"{LABEL}: does not exist; there is nothing to remove")
     if index > len(rows):
         raise ElsewhereError(f"--index: choose 1 to {len(rows)} (stored order)")
-    citing = _citing(root, rows[index - 1], today)
+    citing = _citing(root, rows[index - 1], today, folder_id=folder_id)
     rest = rows[:index - 1] + rows[index:]
     if rest:
-        _install(root, _dump(_validate(rest, today)), loaded)
+        _install(root, _dump(_validate(rest, today)), loaded, folder_id=folder_id)
     else:
-        _remove_file(root, loaded)
+        _remove_file(root, loaded, folder_id=folder_id)
     return {"index": index, "citing": citing, "last": not rest}
 
 
 def list_entries(root, *, today=None):
     """[{"index", "place", "body", "decided_on", "kind", "checked_on"}] in stored order; None without a file."""
-    rows, _ = _state(root, today or date.today())
+    rows, _, _ = _state(root, today or date.today())
     if rows is None:
         return None
     return [{"index": n, **{key: row[key] for key in ("place", "body", "decided_on", "kind", "checked_on")}}

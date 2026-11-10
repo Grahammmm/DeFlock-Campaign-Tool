@@ -2,8 +2,11 @@
 
 Offline and synthetic only: temp copies of examples/fictional-campaign, .test/.invalid sources; nothing is fetched or sent.
 """
+import contextlib
+import io
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -14,7 +17,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from campaign_tool import elsewhere_cmd
+from campaign_tool import cli, elsewhere_cmd
 from campaign_tool.content_check import content_problems
 from campaign_tool.content_elsewhere import read_elsewhere
 from campaign_tool.elsewhere_cmd import ElsewhereError, add_entry, list_entries, parse_index, remove_entry
@@ -329,6 +332,236 @@ class RemoveTests(Base):
             list_entries(self.root, today=TODAY)
             remove_entry(self.root, 4, today=TODAY)
         self.assertFalse((self.root / "public").exists())
+
+
+CHANGED = "content/: changed while it was being edited; nothing was written"
+TEMP_NAME = re.compile(r"\.elsewhere-\d+-[0-9a-f]{8}\.tmp")
+ROWS = [entry(1), entry(2), entry(1, kind="declined", source_url="https://records.example.test/d")]
+CASES = {  # name -> (rows stored before, operation, seams that this operation reaches)
+    "add-first": (None, lambda root: add_entry(root, **entry(9), today=TODAY), ("entry", "fsync", "verify")),
+    "add-existing": (ROWS, lambda root: add_entry(root, **entry(9), today=TODAY), ("entry", "fsync", "verify")),
+    "remove-mid": (ROWS, lambda root: remove_entry(root, 1, today=TODAY), ("entry", "scan", "fsync", "verify")),
+    "remove-last": ([entry(1)], lambda root: remove_entry(root, 1, today=TODAY), ("entry", "scan", "verify")),
+}
+
+
+def identity(path):
+    info = path.stat()
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_nlink
+
+
+class FolderIdentityTests(Base):
+    """RF2345-3: the content/ folder read is the folder written; a substituted real folder is refused, not written to."""
+
+    def setUp(self):
+        super().setUp()
+        self.aside = self.root / "validated-content"
+        self.outside = self.root.parent / "outside-sentinel"
+
+    def fresh(self, rows):
+        shutil.rmtree(self.root)
+        shutil.rmtree(self.outside, ignore_errors=True)
+        shutil.copytree(EXAMPLE, self.root, ignore=shutil.ignore_patterns("public"))
+        self.path.unlink(missing_ok=True)
+        if rows is not None:
+            self.put(rows)
+            self.path.chmod(0o600)
+
+    def snap(self, folder):
+        found = {}
+        for p in sorted(folder.rglob("*")):
+            if TEMP_NAME.fullmatch(p.name) and p.parent == folder:
+                continue
+            kind = None if p.is_dir() else p.read_bytes()
+            found[str(p.relative_to(folder))] = (kind, p.lstat().st_mode, p.stat().st_mtime_ns)
+        return found
+
+    def swap(self, kind, sentinel=False):
+        target = self.path.exists()
+        before = identity(self.path) if target else None
+        if kind == "sibling":  # unrelated arrival in the admitted folder: directory size/mtime change, inode does not
+            (self.content / "unrelated.txt").write_text("x", encoding="utf-8")
+            return
+        self.content.rename(self.aside)
+        if kind == "folder":
+            self.content.mkdir()
+            (self.content / "marker.txt").write_text("replacement", encoding="utf-8")
+            (self.content / ".elsewhere-0-decoy000.tmp").write_text("not ours", encoding="utf-8")
+            if sentinel:
+                (self.content / "meetings").mkdir()
+                (self.content / "meetings" / "probe.json").write_text("{", encoding="utf-8")
+            if target:  # the very same regular file, intact, one link: file identity alone cannot see this swap
+                os.rename(self.aside / "elsewhere.json", self.content / "elsewhere.json")
+                self.assertEqual(identity(self.content / "elsewhere.json"), before)
+        elif kind == "link":
+            self.outside.mkdir()
+            (self.outside / "sentinel.json").write_text("[]", encoding="utf-8")
+            self.content.symlink_to(self.outside, target_is_directory=True)
+        self.frozen = self.view(kind)
+
+    def view(self, kind):
+        return (self.snap(self.aside), self.snap(self.content) if kind == "folder" else None,
+                self.snap(self.outside) if kind == "link" else None)
+
+    def seam(self, name, kind, sentinel=False):
+        fired, stack = [], contextlib.ExitStack()
+
+        def once(real):
+            def wrapper(*args, **kwargs):
+                if not fired:
+                    fired.append(name)
+                    self.swap(kind, sentinel)
+                return real(*args, **kwargs)
+            return wrapper
+        real_fsync = os.fsync
+
+        def after_fsync(fd):
+            real_fsync(fd)
+            if not fired:
+                fired.append(name)
+                self.swap(kind, sentinel)
+        if name == "entry":
+            for fn in ("_install", "_remove_file"):
+                stack.enter_context(mock.patch.object(elsewhere_cmd, fn, once(getattr(elsewhere_cmd, fn))))
+        elif name == "scan":
+            stack.enter_context(mock.patch.object(elsewhere_cmd, "_citing", once(elsewhere_cmd._citing)))
+        elif name == "verify":
+            stack.enter_context(mock.patch.object(elsewhere_cmd, "_verify_path", once(elsewhere_cmd._verify_path)))
+        else:
+            stack.enter_context(mock.patch.object(elsewhere_cmd.os, "fsync", after_fsync))
+        return fired, stack
+
+    def assert_stopped_untouched(self, call, fired, kind):
+        with self.assertRaises(ElsewhereError) as caught:
+            call()
+        self.assertEqual(fired and str(caught.exception), CHANGED)
+        self.assertEqual(self.view(kind), self.frozen)
+        for folder in (self.aside, self.content, self.outside):
+            if folder.is_dir():
+                self.assertFalse([p for p in folder.iterdir() if TEMP_NAME.fullmatch(p.name)], folder)
+
+    def test_first_add_refuses_real_parent_substitution_before_staging(self):
+        self.fresh(None)
+        fired, stack = self.seam("entry", "folder")
+        with stack:
+            self.assert_stopped_untouched(lambda: add_entry(self.root, **entry(9), today=TODAY), fired, "folder")
+        self.assertFalse((self.aside / "elsewhere.json").exists() or (self.content / "elsewhere.json").exists())
+        self.assertEqual(sorted(p.name for p in self.content.iterdir()), [".elsewhere-0-decoy000.tmp", "marker.txt"])
+        self.assertFalse([p for p in self.aside.iterdir() if p.name.startswith(".elsewhere-")])
+
+    def test_every_mutation_refuses_a_substituted_folder_at_every_boundary(self):
+        for case, (rows, call, seams) in CASES.items():
+            for seam in seams:
+                with self.subTest(case=case, seam=seam):
+                    self.fresh(rows)
+                    fired, stack = self.seam(seam, "folder", sentinel=seam == "scan")
+                    with stack:
+                        self.assert_stopped_untouched(lambda: call(self.root), fired, "folder")
+                    if rows is not None:  # the intact moved target is neither replaced nor unlinked in the new folder
+                        self.assertEqual(json.loads((self.content / "elsewhere.json").read_text(encoding="utf-8")), rows)
+                        self.assertEqual((self.content / "elsewhere.json").stat().st_mode & 0o777, 0o600)
+                    self.assertEqual((self.content / "marker.txt").read_text(encoding="utf-8"), "replacement")
+                    self.assertEqual((self.content / ".elsewhere-0-decoy000.tmp").read_text(encoding="utf-8"), "not ours")
+
+    def test_citation_scan_refuses_substituted_content_before_reading_replacement_meetings(self):
+        self.fresh(ROWS)
+        original = self.snap(self.content / "meetings")
+        fired, stack = self.seam("scan", "folder", sentinel=True)
+        with stack:
+            self.assert_stopped_untouched(lambda: remove_entry(self.root, 1, today=TODAY), fired, "folder")  # not "not valid UTF-8 JSON"
+        self.assertEqual(self.snap(self.aside / "meetings"), original)
+
+    def test_final_check_refuses_missing_or_linked_content_path(self):
+        for case, (rows, call, _) in CASES.items():
+            for kind in ("missing", "link"):
+                with self.subTest(case=case, kind=kind):
+                    self.fresh(rows)
+                    fired, stack = self.seam("verify", kind)
+                    with stack:
+                        self.assert_stopped_untouched(lambda: call(self.root), fired, kind)
+                    self.assertEqual((self.aside / "elsewhere.json").exists(), rows is not None)
+                    self.assertEqual(self.content.is_symlink(), kind == "link")
+
+    def test_parent_check_uses_inode_not_mutable_directory_metadata(self):
+        for case, (rows, call, seams) in CASES.items():
+            for seam in seams:
+                with self.subTest(case=case, seam=seam):
+                    self.fresh(rows)
+                    fired, stack = self.seam(seam, "sibling")
+                    with stack:
+                        done = call(self.root)
+                    self.assertTrue(fired)
+                    self.assertEqual((self.content / "unrelated.txt").read_text(encoding="utf-8"), "x")
+                    if case.startswith("add"):
+                        self.assertEqual(done["index"], len(ROWS) + 1 if rows else 1)
+                        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600 if rows else 0o644)
+                        self.assertEqual(len(json.loads(self.path.read_text(encoding="utf-8"))), len(rows or []) + 1)
+                    elif case == "remove-mid":
+                        self.assertEqual((done["citing"], done["last"]), ([], False))
+                        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), ROWS[1:])
+                    else:
+                        self.assertEqual((done["citing"], done["last"]), ([], True))
+                        self.assertFalse(self.path.exists())
+
+    def test_cli_folder_refusal_is_private_and_has_no_partial_success(self):
+        old = os.umask(0)
+        self.addCleanup(os.umask, old)
+        note = entry(9, as_stated="The city violated SB 34 by sharing plate data.")
+        for case, argv, seam in (("add-first", ("add", *flags(note)), "entry"), ("add-existing", ("add", *flags(note)), "fsync"),
+                                 ("remove-mid", ("remove", "--index", "1"), "scan"),
+                                 ("remove-last", ("remove", "--index", "1"), "verify")):
+            with self.subTest(case=case):
+                self.fresh(CASES[case][0])
+                fired, stack = self.seam(seam, "folder", sentinel=seam == "scan")
+                out, err = io.StringIO(), io.StringIO()
+                with stack, mock.patch.object(sys, "argv", ["campaign_tool", "content", "elsewhere", argv[0],
+                                                           "--directory", str(self.root), *argv[1:]]), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    with self.assertRaises(SystemExit) as exit_info:
+                        cli.main()
+                self.assertTrue(fired)
+                self.assertEqual((exit_info.exception.code, out.getvalue(), err.getvalue()),
+                                 (1, "", f"Stopped: {CHANGED}\n"))
+                self.assertFalse([name for name in (str(self.root), "Traceback", "violated", "Springfield") if name in err.getvalue()])
+
+    def test_folder_verification_closes_every_owned_descriptor(self):
+        def open_fds():
+            return {int(n) for n in os.listdir("/proc/self/fd")}
+        probe = os.open(os.devnull, os.O_RDONLY)
+        self.addCleanup(os.close, probe)
+        probe_mode = os.fstat(probe).st_mode
+        scenarios = (("add-first", None), ("remove-last", None), ("add-existing", "entry"), ("remove-mid", "scan"),
+                     ("add-existing", "verify-missing"), ("remove-last", "verify"), ("add-existing", "stage-fails"))
+        for case, mode in scenarios:
+            with self.subTest(case=case, mode=mode):
+                rows, call, _ = CASES[case]
+                self.fresh(rows)
+                fired, stack = ([], contextlib.ExitStack())
+                if mode in ("entry", "scan", "verify"):
+                    fired, stack = self.seam(mode, "folder", sentinel=mode == "scan")
+                elif mode == "verify-missing":
+                    fired, stack = self.seam("verify", "missing")
+                elif mode == "stage-fails":
+                    stack.enter_context(mock.patch.object(elsewhere_cmd.os, "fsync", side_effect=OSError(5, "x")))
+                before = open_fds()
+                with stack:
+                    try:
+                        call(self.root)
+                    except ElsewhereError as exc:
+                        self.assertTrue(mode, "a plain success must not refuse")
+                        self.assertEqual(str(exc), "content/elsewhere.json: write failed; the previous file was kept"
+                                         if mode == "stage-fails" else CHANGED)
+                    else:
+                        self.assertIsNone(mode)
+                self.assertEqual(open_fds() - before, set())
+                self.assertEqual(os.fstat(probe).st_mode, probe_mode)  # an unrelated descriptor stays open
+
+    def test_committed_write_is_not_reported_as_folder_change(self):
+        self.fresh(ROWS)
+        with mock.patch.object(elsewhere_cmd.os, "fsync", side_effect=[None, OSError(5, "x")]):
+            with self.assertRaisesRegex(ElsewhereError, "written, but the folder could not be flushed to disk"):
+                add_entry(self.root, **entry(9), today=TODAY)
+        self.assertEqual(len(json.loads(self.path.read_text(encoding="utf-8"))), 4)
 
 
 if __name__ == "__main__":

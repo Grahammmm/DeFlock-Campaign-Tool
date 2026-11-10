@@ -68,6 +68,11 @@ columns, one row per line, then the notice. The nine kinds are `requester`
 - A symlinked campaign folder, `kit/` or `private/` is refused, as is a folder that
   cannot be listed completely (`personal-data inventory incomplete; review private
   folders locally`). No partial report is printed.
+- The same refusal applies, in both the register and `--find`, to a tree with more
+  than 10,000 entries in total or with directories nested more than 64 levels below
+  `kit/` or `private/` (those two folders are level 0). A tree over a limit gets no
+  partial report and is left untouched; it needs a private local review. Do not
+  delete or move anything just to make a report look complete.
 
 ### Finding one person's name or contact (`--find`)
 

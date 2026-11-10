@@ -7,6 +7,7 @@ import calendar
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -301,7 +302,8 @@ class TodayTests(Base):
         self.assertEqual(items[0]["kind"], "stale_body_schedule")  # immediately before expected_regular_meeting
         self.assertEqual(items[0]["what"], f"Regular meeting schedule for {BODY} is stale (checked 2025-01-01); re-check {URL}")
         self.assertEqual(items[0]["due"], "2025-01-01")
-        self.assertEqual(items[0]["command"], f"Re-check {URL} and update content/body-schedules.json")
+        self.assertEqual(items[0]["command"], f"body-schedule recheck --directory {shlex.quote(str(self.root))} "
+                         f"--body 'Synthetic Council' --checked-on {TODAY.isoformat()}")
         for item in items:
             self.assertNotIn("overdue", item["what"].lower())
             self.assertNotIn("legally", item["what"].lower())

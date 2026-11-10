@@ -552,11 +552,12 @@ def _contracts(root, as_of, selector, days):
     return items
 
 
-def _body_schedules(root, as_of):
+def _body_schedules(root, as_of, selector=None):
     """DF0022-10: for each organizer-verified regular body schedule, the next two expected dates with no staged meeting
     of that body ("watch for the agenda"; never a scheduled meeting, never a posting deadline), plus a stale warning.
     A broken schedule file raises (one ``unreadable`` item from ``todo``); a broken meeting file is already its own
     item in ``_meetings`` and simply suppresses nothing here."""
+    selector = selector if selector is not None else f"--directory {shlex.quote(str(root))}"
     schedules = read_body_schedules(root, today=as_of)
     if not schedules:
         return []
@@ -572,7 +573,8 @@ def _body_schedules(root, as_of):
         if body_schedules.stale(schedule, as_of):
             items.append(_item("stale_body_schedule", f"Regular meeting schedule for {body} is stale (checked "
                                f"{schedule['checked_on']}); re-check {source}",
-                               f"Re-check {source} and update content/body-schedules.json", schedule["checked_on"], body))
+                               f"body-schedule recheck {selector} --body {shlex.quote(body)} --checked-on {as_of.isoformat()}",
+                               schedule["checked_on"], body))
         for day in body_schedules.next_expected_dates(schedule, staged, as_of):
             items.append(_item("expected_regular_meeting", f"Expected {body} meeting {day.isoformat()}: watch for the agenda",
                                f"Check {source} for the agenda; stage only a verified meeting", day.isoformat(),
@@ -831,7 +833,7 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days
                (lambda: _review_waiting(root, as_of, selector, review_days), "private/review-assignments/"),
                (lambda: _stale_kits(root, selector), "content/"),
                (lambda: _contacts(root, as_of, selector), "kit/agencies.json"),
-               (lambda: _body_schedules(root, as_of), "content/body-schedules.json"),
+               (lambda: _body_schedules(root, as_of, selector), "content/body-schedules.json"),
                (lambda: _official_rechecks(root, as_of, selector), "content/officials.json"),
                (lambda: _site_rebuild(root, as_of, selector, snapshot), f"{PUBLIC}/"))
     items = []
