@@ -551,5 +551,112 @@ class LargeCommandTests(Case):
                          {'advisory': True, 'finding_id': 'syn-plain-1', 'warnings': []})
 
 
+class CountedText(str):
+    """Test-only str that keeps its type through slicing and addition and totals the characters those return."""
+    work = 0
+
+    def __getitem__(self, key):
+        part = CountedText(super().__getitem__(key))
+        if isinstance(key, slice):
+            type(self).work += len(part)
+        return part
+
+    def __add__(self, other):
+        joined = CountedText(str(self) + str(other))
+        type(self).work += len(joined)
+        return joined
+
+    def __radd__(self, other):
+        joined = CountedText(str(other) + str(self))
+        type(self).work += len(joined)
+        return joined
+
+
+# Frozen from original main (per-quote slice-and-concatenate masking); never generated at test runtime.
+MASK_CASES = [
+    ('A “b\r\n\tc\u00a0d\u2028e” "f😀g\u0301h" x', (), 'A   \r\n\t \xa0 \u2028           x'),
+    ('"" “” "a""b" “c”“d” end', (), '                    end'),
+    ('plain text no quotes', (), 'plain text no quotes'),
+    ('one " unmatched and “ another', (), 'one " unmatched and “ another'),
+    ('say "it’s “nested” ok" then “a "b" c” done', (), 'say                    then           done'),
+    ('"a" “b” "c" “d” tail', (), '                tail'),
+    ('See "Synthetic ALPR" Policy of Sheriff and Synthetic ALPR Policy. "Whole Title" Whole Title',
+     ('Synthetic ALPR Policy', 'Whole Title', 'ALPR Policy', 'Title'),
+     'See                  Policy of Sheriff and                      .                          '),
+    ('aaa bbb aaa bbb aaa', ('aaa bbb', 'bbb aaa', 'aaa'), '                   '),
+]
+MASK_WORDS = [  # (word number, start, end, skipped) frozen from original main
+    ('A “b\r\n\tc\u00a0d\u2028e” "f😀g\u0301h" x',
+     [(1, 0, 1, False), (2, 3, 4, True), (3, 7, 8, True), (4, 9, 10, True), (5, 11, 12, True),
+      (6, 15, 16, True), (7, 17, 18, True), (8, 19, 20, True), (9, 22, 23, False)]),
+    ('say "it’s “nested” ok" then “a "b" c” done',
+     [(1, 0, 3, False), (2, 5, 9, True), (3, 11, 17, True), (4, 19, 21, True), (5, 23, 27, False),
+      (6, 29, 30, True), (7, 32, 33, True), (8, 35, 36, True), (9, 38, 42, False)]),
+    ('one " unmatched and “ another',
+     [(1, 0, 3, False), (2, 6, 15, False), (3, 16, 19, False), (4, 22, 29, False)]),
+]
+
+
+class QuoteMaskTests(unittest.TestCase):
+    def test_quote_mask_reconstruction_work_is_linear(self):
+        for repeats in (256, 512, 1024):
+            with self.subTest(repeats=repeats):
+                source = 'word "ABC def" ' * repeats
+                CountedText.work = 0
+                masked = plain_language._skipped_text(CountedText(source), ())
+                self.assertEqual(masked, 'word           ' * repeats)
+                self.assertEqual(len(masked), len(source))
+                self.assertLessEqual(CountedText.work, 8 * len(source))
+                self.assertEqual(plain_language._skipped_text(source, ()), 'word           ' * repeats)
+
+    def test_quote_mask_preserves_all_whitespace_and_codepoint_offsets(self):
+        text, titles, expected = MASK_CASES[0]
+        masked = plain_language._skipped_text(text, titles)
+        self.assertEqual(masked, expected)
+        self.assertEqual(len(masked), len(text))
+        # every whitespace character (CR, LF, tab, NBSP, U+2028) stays at its original offset; only A and x remain
+        self.assertTrue(all(masked[i] == c for i, c in enumerate(text) if c.isspace()))
+        self.assertEqual([(i, c) for i, c in enumerate(masked) if not c.isspace()], [(0, 'A'), (len(text) - 1, 'x')])
+        text, titles, expected = MASK_CASES[1]
+        self.assertEqual(plain_language._skipped_text(text, titles), expected)
+
+    def test_mixed_and_unmatched_quotes_keep_old_match_selection(self):
+        for text, titles, expected in MASK_CASES[2:6]:
+            with self.subTest(text=text):
+                self.assertEqual(plain_language._skipped_text(text, titles), expected)
+        for text, words in MASK_WORDS:
+            with self.subTest(words=text):
+                tokens = plain_language._tokens('body_md', text, ())
+                self.assertEqual([(t['word'], t['start'], t['end'], t['skipped']) for t in tokens], words)
+
+    def test_source_title_phase_still_runs_after_quote_masking(self):
+        for text, titles, expected in MASK_CASES[6:]:
+            with self.subTest(text=text):
+                self.assertEqual(plain_language._skipped_text(text, titles), expected)
+        tokens = plain_language._tokens('body_md', MASK_CASES[7][0], MASK_CASES[7][1])
+        self.assertEqual([(t['word'], t['start'], t['end'], t['skipped']) for t in tokens],
+                         [(1, 0, 3, True), (2, 4, 7, True), (3, 8, 11, True), (4, 12, 15, True), (5, 16, 19, True)])
+
+
+class DenseQuoteCommandTests(Case):
+    def test_dense_quote_finding_cli_report_is_complete_and_read_only(self):
+        body = 'word "ABC def" ' * 56000
+        draft = self.draft(id='syn-quote-scale', title='Synthetic', summary='Short.', body_md=body)
+        self.assertLess(draft.stat().st_size, findings.MAX_DRAFT_BYTES)
+        result = self.cli(draft, '--json', returncode=3)
+        self.assertEqual(result.stderr, '')
+        self.assertEqual(result.stdout.count('\n'), 1)
+        base = {'field': 'body_md', 'paragraph': 1, 'sentence': 1, 'word': 1, 'start': 0, 'end': 839989,
+                'word_count': 56000, 'abbreviation': None}
+        report = json.loads(result.stdout)
+        self.assertEqual(report, {'advisory': True, 'finding_id': 'syn-quote-scale', 'warnings': [
+            {'rule': 'long_sentence', **base, 'limit': 30}, {'rule': 'long_paragraph', **base, 'limit': 150}]})
+        self.assertTrue(all(list(row) == KEYS for row in report['warnings']))
+        clean = self.draft('quoted-only.json', id='syn-quoted-only', title='', summary='',
+                           body_md='"' + 'alpha ' * 4000 + 'ABC"')
+        self.assertEqual(json.loads(self.cli(clean, '--json', returncode=0).stdout),
+                         {'advisory': True, 'finding_id': 'syn-quoted-only', 'warnings': []})
+
+
 if __name__ == "__main__":
     unittest.main()
