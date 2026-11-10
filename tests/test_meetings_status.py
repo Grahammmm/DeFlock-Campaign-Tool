@@ -3,6 +3,8 @@
 Synthetic data only (tempfile campaign folders and the fictional example finding); nothing is fetched, sent or written.
 Run from the repository root: python3 -B -m unittest tests.test_meetings_status -v
 """
+import contextlib
+import io
 import json
 import os
 import shlex
@@ -609,6 +611,249 @@ class MeetingsStatusTests(unittest.TestCase):
             rows = self.rows()
         self.assertEqual(rows["c-stale"]["comment_kit"], "unknown")
         self.assertEqual(rows["b-today"]["next_step"], "repair_input")
+
+    @contextlib.contextmanager
+    def receipt_io(self, phase=None):
+        """Observe real receipt reads/closures; inject changes only after real metadata."""
+        path = self.root / "kit" / "comments-sent.json"
+        real_lstat, real_fstat = os.lstat, os.fstat
+        real_open, real_close, real_fdopen = os.open, os.close, os.fdopen
+        real_bytes, real_loads = Path.read_bytes, json.loads
+        state = {"reads": [], "unbounded": [], "opened": [], "closed": [], "grown": False}
+        active = set()
+        observations = 0
+
+        def grow():
+            with path.open("ab") as handle:
+                handle.write(b" " * (4 * meetings_status.MAX_JSON_BYTES + 1))
+            state["grown"] = True
+
+        def lstat(name, *args, **kwargs):
+            nonlocal observations
+            info = real_lstat(name, *args, **kwargs)
+            if os.fspath(name) == str(path):
+                observations += 1
+                if phase == "preflight" and observations == 2:
+                    grow()
+            return info
+
+        def opened(name, flags, *args, **kwargs):
+            if os.fspath(name) == str(path) and phase in ("link", "vanish"):
+                path.unlink()
+                if phase == "link":
+                    path.symlink_to(self.root / "foreign.json")
+            fd = real_open(name, flags, *args, **kwargs)
+            if os.fspath(name) == str(path):
+                self.assertTrue(flags & os.O_NOFOLLOW)
+                self.assertTrue(flags & os.O_NONBLOCK)
+                active.add(fd)
+                state["opened"].append(fd)
+            return fd
+
+        def fstat(fd):
+            info = real_fstat(fd)
+            if fd in active and phase == "descriptor" and not state["grown"]:
+                grow()
+            return info
+
+        def fdopen(fd, *args, **kwargs):
+            handle = real_fdopen(fd, *args, **kwargs)
+            if fd not in active:
+                return handle
+            wrapped = mock.MagicMock(wraps=handle)
+            wrapped.__enter__.return_value = wrapped
+            wrapped.__exit__.side_effect = handle.__exit__
+
+            def read(size=-1):
+                if phase == "read_error":
+                    raise OSError("SECRET-KIT-PROSE")
+                data = handle.read(size)
+                state["reads"].append((size, len(data)))
+                return data
+
+            wrapped.read.side_effect = read
+            return wrapped
+
+        def closed(fd):
+            if fd in active:
+                state["closed"].append(fd)
+                active.remove(fd)
+            return real_close(fd)
+
+        def read_bytes(name):
+            data = real_bytes(name)
+            if name == path:
+                state["unbounded"].append(len(data))
+            return data
+
+        def loads(data, *args, **kwargs):
+            self.assertLessEqual(len(data), meetings_status.MAX_JSON_BYTES,
+                                 "overflow reached JSON parser")
+            return real_loads(data, *args, **kwargs)
+
+        with mock.patch.object(os, "lstat", side_effect=lstat), \
+                mock.patch.object(os, "open", side_effect=opened), \
+                mock.patch.object(os, "fstat", side_effect=fstat), \
+                mock.patch.object(os, "fdopen", side_effect=fdopen), \
+                mock.patch.object(os, "close", side_effect=closed), \
+                mock.patch.object(Path, "read_bytes", autospec=True, side_effect=read_bytes), \
+                mock.patch.object(json, "loads", side_effect=loads):
+            yield state
+        self.assertEqual(state["opened"], state["closed"])
+        self.assertEqual(state["unbounded"], [])
+        self.assertLessEqual(len(state["reads"]), 1)
+        for requested, returned in state["reads"]:
+            self.assertEqual(requested, meetings_status.MAX_JSON_BYTES + 1)
+            self.assertLessEqual(returned, requested)
+
+    def assert_receipt_refused(self, report):
+        rows = self.rows(report)
+        self.assertEqual([r for r in report["rows"] if r["path"] == "kit/comments-sent.json"],
+                         [{"kind": "unreadable", "path": "kit/comments-sent.json", "error": "unreadable_input",
+                           "next_step": "repair_input", "command": None}])
+        self.assertEqual({rows[mid]["comment_sent"] for mid in STAGED}, {"unknown"})
+        self.assertEqual(rows["b-today"]["next_step"], "repair_input")
+        self.assertEqual(rows["c-stale"]["next_step"], "restage_kit")
+        self.assertIsNone(rows["d-cancelled"]["next_step"])
+        self.assertEqual(rows["f-past"]["next_step"], "record_outcome")
+        self.assertEqual(rows["g-done"]["speakers_plan"], "present")
+        self.assertEqual(rows["manual-board"]["kind"], "unstaged")
+
+    def test_comment_receipt_growth_after_real_preflight_never_reads_whole_file(self):
+        write(self.root / "kit" / "comments-sent.json", {"schema_version": 1, "comments": {}})
+        with self.receipt_io("preflight") as observed:
+            report = self.report()
+        self.assertTrue(observed["grown"])
+        self.assert_receipt_refused(report)
+
+    def test_comment_receipt_read_below_exact_and_above_cap(self):
+        path = self.root / "kit" / "comments-sent.json"
+        original = path.read_bytes()
+        cap = meetings_status.MAX_JSON_BYTES
+        for size in (cap - 1, cap, cap + 1, 4 * cap + 1):
+            with self.subTest(size=size):
+                path.write_bytes(original + b" " * (size - len(original)))
+                with self.receipt_io() as observed:
+                    report = self.report()
+                if size <= cap:
+                    self.assertEqual(observed["reads"], [(cap + 1, size)])
+                    rows = self.rows(report)
+                    self.assertEqual(rows["k-sent"]["comment_sent"], "recorded")
+                    self.assertEqual(rows["b-today"]["comment_sent"], "not_recorded")
+                else:
+                    self.assertEqual(observed["opened"], [])
+                    self.assert_receipt_refused(report)
+
+    def test_comment_receipt_growth_after_descriptor_stat_is_rejected_before_json(self):
+        with self.receipt_io("descriptor") as observed:
+            report = self.report()
+        self.assertTrue(observed["grown"])
+        cap = meetings_status.MAX_JSON_BYTES
+        self.assertEqual(observed["reads"], [(cap + 1, cap + 1)])
+        self.assert_receipt_refused(report)
+
+    def test_bounded_receipt_adapter_matches_shared_entry_validation(self):
+        from campaign_tool import meeting_comments
+        path = self.root / "kit" / "comments-sent.json"
+        entry = {"on": "2026-11-08", "channel": "email", "recorded_at": "not parsed today"}
+        valid = [{"schema_version": version, "comments": comments}
+                 for version in (1, True, 1.0)
+                 for comments in ({}, {"k-sent": entry})]
+        valid += [{"schema_version": 1, "comments": {"k-sent": dict(entry, channel=channel,
+                   letter_sha256="ab" * 32, letter_bytes=size)}}
+                  for channel in meeting_comments.CHANNELS for size in (0, 25)]
+        invalid = [None, [], {}, {"schema_version": 2, "comments": {}},
+                   {"schema_version": 1, "comments": []},
+                   {"schema_version": 1, "comments": {}, "extra": True}]
+        bad_entries = [None, {}, {k: v for k, v in entry.items() if k != "on"}]
+        bad_entries += [dict(entry, **change) for change in (
+            {"extra": "SECRET-KIT-PROSE"}, {"on": "2026-02-30"}, {"channel": "bad"}, {"recorded_at": 1},
+            {"letter_sha256": "ab" * 32}, {"letter_bytes": 0},
+            {"letter_sha256": "bad", "letter_bytes": 0},
+            {"letter_sha256": "ab" * 32, "letter_bytes": True},
+            {"letter_sha256": "ab" * 32, "letter_bytes": -1})]
+        invalid += [{"schema_version": 1, "comments": {"k-sent": entry, "SECRET-KIT-PROSE": bad}}
+                    for bad in bad_entries]
+        for document in valid + invalid:
+            with self.subTest(document=document):
+                write(path, json.dumps(document))
+                errors = []
+                try:
+                    expected = meeting_comments.read(self.root)
+                except meeting_comments.MeetingCommentError:
+                    expected = None
+                with self.receipt_io():
+                    actual = meetings_status._sent(self.root, True, errors)
+                self.assertEqual(actual, expected)
+                self.assertEqual(len(errors), int(expected is None))
+                if expected is None:
+                    self.assert_receipt_refused(self.report())
+        write(path, "")
+        self.assert_receipt_refused(self.report())
+        path.unlink()
+        with self.receipt_io() as observed:
+            rows = self.rows()
+        self.assertEqual(observed["opened"], [])
+        self.assertEqual({rows[mid]["comment_sent"] for mid in STAGED}, {"not_recorded"})
+        self.assertFalse(path.exists())
+
+    def test_receipt_error_is_one_private_row_in_real_cli_modes(self):
+        from campaign_tool.cli import main
+        path = self.root / "kit" / "comments-sent.json"
+        for phase in ("descriptor", "read_error"):
+            for flags in ([], ["--json"]):
+                with self.subTest(phase=phase, flags=flags):
+                    write(path, {"schema_version": 1, "comments": {}})
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with self.receipt_io(phase), contextlib.redirect_stdout(stdout), \
+                            contextlib.redirect_stderr(stderr), \
+                            mock.patch.object(sys, "argv", ["campaign_tool", "meetings-status", "--directory",
+                                                           str(self.root), "--as-of", AS_OF, *flags]):
+                        with self.assertRaises(SystemExit) as stopped:
+                            main()
+                    self.assertEqual(stopped.exception.code, 1)
+                    self.assertEqual(stderr.getvalue(), "")
+                    for secret in SECRETS:
+                        self.assertNotIn(secret, stdout.getvalue() + stderr.getvalue())
+                    if flags:
+                        self.assert_receipt_refused(json.loads(stdout.getvalue()))
+                    else:
+                        self.assertEqual(stdout.getvalue().count("unreadable | kit/comments-sent.json |"), 1)
+                        self.assertIn("sent=unknown", stdout.getvalue())
+                        self.assertNotIn("sent=not_recorded", stdout.getvalue())
+                        self.assertIn("Body g-done", stdout.getvalue())
+                        self.assertIn("Manual board", stdout.getvalue())
+
+    def test_receipt_terminal_link_special_file_and_read_error_are_safe(self):
+        path = self.root / "kit" / "comments-sent.json"
+        write(self.root / "foreign.json", "SECRET-KIT-PROSE")
+        for phase in ("link", "vanish", "read_error"):
+            with self.subTest(phase=phase):
+                path.unlink(missing_ok=True)
+                write(path, {"schema_version": 1, "comments": {}})
+                with self.receipt_io(phase):
+                    report = self.report()
+                self.assert_receipt_refused(report)
+        path.unlink()
+        path.mkdir()
+        with self.receipt_io() as observed:
+            self.assert_receipt_refused(self.report())
+        self.assertEqual(observed["opened"], [])
+
+    def test_valid_receipts_keep_reports_bytes_and_campaign_unchanged(self):
+        from campaign_tool import meeting_comments
+        # Freeze the old adapter's accepted output, without keeping a second production loader.
+        with mock.patch.object(meetings_status, "_sent", side_effect=lambda root, ok, errors: meeting_comments.read(root)):
+            expected = self.report()
+        before = snapshot(self.root)
+        mtimes = {p: p.lstat().st_mtime_ns for p in self.root.rglob("*")}
+        for _ in range(2):
+            with self.receipt_io():
+                actual = self.report()
+            self.assertEqual(json.dumps(actual), json.dumps(expected))
+            self.assertEqual(render_text(actual), render_text(expected))
+        self.assertEqual(snapshot(self.root), before)
+        self.assertEqual({p: p.lstat().st_mtime_ns for p in self.root.rglob("*")}, mtimes)
 
     def test_inventory_docs_and_command_examples(self):
         handover = (REPO_ROOT / "docs" / "HANDOVER.md").read_text(encoding="utf-8")
