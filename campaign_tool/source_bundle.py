@@ -101,16 +101,45 @@ def bundle_bytes(rows, payloads, *, agencies_by_id=None, max_bytes=None):
 
 
 def read_copy(source, expected_size):
-    """Bytes of one regular, non-symlink asset copy, bounded to its stat size + 1 (a changed file raises)."""
+    """Bytes of one regular, non-symlink asset copy, bounded to its stat size + 1 (a changed file raises).
+
+    The one ``lstat`` is retained; the file is opened ``O_NOFOLLOW | O_NONBLOCK`` (fail closed when unavailable) and the
+    DESCRIPTOR must be a regular file with that inode and ``expected_size`` before any byte is read, and again afterwards.
+    Every failure is the fixed ``CHANGED`` refusal without OS text."""
+    nofollow, nonblock = getattr(os, "O_NOFOLLOW", 0), getattr(os, "O_NONBLOCK", 0)
+    if not nofollow or not nonblock:
+        raise ContentError(CHANGED)
+    fd = None
     try:
-        if os.path.islink(source) or not stat.S_ISREG(os.lstat(source).st_mode):
+        before = os.lstat(source)
+        if not stat.S_ISREG(before.st_mode) or before.st_size != expected_size:
             raise ContentError(CHANGED)
-        with open(source, "rb") as handle:
-            data = handle.read(expected_size + 1)
+        fd = os.open(source, os.O_RDONLY | nofollow | nonblock)
+        identity = (before.st_dev, before.st_ino)
+
+        def admitted():
+            info = os.fstat(fd)
+            return stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == identity and info.st_size == expected_size
+        if not admitted():
+            raise ContentError(CHANGED)
+        chunks, remaining = [], expected_size + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) != expected_size or not admitted():
+            raise ContentError(CHANGED)
     except OSError:
         raise ContentError(CHANGED) from None
-    if len(data) != expected_size:
-        raise ContentError(CHANGED)
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     return data
 
 
