@@ -130,7 +130,10 @@ def _fsync(path):  # the file's bytes (and, for a folder, its entries) are on di
 
 
 def undo_step(root, agency_id, *, request="main", reason, today=None):
-    """Remove the last recorded step of a hand-sent request and return what was removed (kind, date, count)."""
+    """Remove the last recorded step of a hand-sent request and return what was removed (kind, date, count).
+
+    Both prospective outputs (kit/sent-undone.json and the complete kit/sent.json) are measured against their
+    readers' byte caps before the audit receipt or any other write; either overflow refuses with nothing changed."""
     root, request = Path(root), kit_track._request(request)
     reason = clean_reason(reason)
     kit_dir = root / "kit"
@@ -165,10 +168,17 @@ def undo_step(root, agency_id, *, request="main", reason, today=None):
         raise ValueError("kit/sent-undone.json cannot be written as UTF-8; nothing was changed") from None
     if too_big:
         raise ValueError("kit/sent-undone.json would exceed 16 MiB; nothing was changed")
+    # Active store: the complete prospective kit/sent.json must fit its own reader's cap (independent of the archive).
+    active = {"schema_version": 1, "requests": dict(sorted({**requests, key: after}.items()))}
+    try:
+        active_too_big = serialized_size(active) > kit_track.MAX_BYTES
+    except UnicodeEncodeError:
+        raise ValueError("kit/sent.json cannot be written as UTF-8; nothing was changed") from None
+    if active_too_big:
+        raise ValueError("kit/sent.json would exceed 1 MiB; nothing was changed")
     kit._write_json(archive_path, candidate)  # audit first (new inode, 0600)
     _fsync(archive_path)
     _fsync(kit_dir)
-    requests[key] = after
-    kit._write_json(kit_dir / "sent.json", {"schema_version": 1, "requests": dict(sorted(requests.items()))})
+    kit._write_json(kit_dir / "sent.json", active)
     return {"agency_id": agency_id, "request": request, "label": label, "kind": removed["kind"], "on": removed["on"],
             "undone_steps": len(undo_ids)}

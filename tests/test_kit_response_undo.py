@@ -517,6 +517,149 @@ class KitResponseUndoTests(unittest.TestCase):
         self.assertEqual((self.snapshot(), self.modes()), (before, modes))
         self.assertEqual(kit_undo.read_archive(self.root / "kit")[1], receipts)  # still readable by its own reader
 
+    # active sent-store byte budget ---------------------------------------------------------------------------
+    def compact_store(self, extra=0, steps=None, **fields):
+        """Rewrite sent.json compactly with ``extra`` imported synthetic requests next to the live one."""
+        document = self.load()
+        document["requests"] = {self.agency: document["requests"][self.agency]}
+        live = document["requests"][self.agency]
+        live["steps"] = steps or [step("2026-03-05", "acknowledged"), step("2026-03-06", "extension")]
+        live.update(fields)
+        imported = {k: live[k] for k in ("sent_on", "channel", "recorded_at")}
+        for i in range(extra):
+            document["requests"][f"ca-synthetic-{i}"] = {**imported, "imported": True,
+                                                         "steps": [step("2026-03-05", "acknowledged")]}
+        self.sent.write_text(json.dumps(document, separators=(",", ":")), encoding="utf-8")
+        kit_track.read_sent(self.root)  # the store is readable before the undo
+
+    def active_refused(self, cap=None):
+        before, modes = self.snapshot(), self.modes()
+        with mock.patch.object(kit, "_write_json", side_effect=AssertionError("written")), \
+                mock.patch.object(kit_undo, "_fsync", side_effect=AssertionError("synced")):
+            if cap is None:
+                result = self.undo()
+            else:
+                with mock.patch.object(kit_track, "MAX_BYTES", cap):
+                    result = self.undo()
+        self.refused(result, "kit/sent.json would exceed 1 MiB", "nothing was changed")
+        self.assertEqual((self.snapshot(), self.modes()), (before, modes))
+
+    def test_compact_active_store_expansion_refuses_at_production_cap(self):
+        self.assertEqual(kit_track.MAX_BYTES, 1 << 20)
+        self.compact_store(extra=4000)
+        self.assertLessEqual(self.sent.stat().st_size, kit_track.MAX_BYTES)
+        self.assertFalse(self.archive.exists())
+        before = self.snapshot()
+        code, out, err = self.undo()  # the real CLI: no success line, fixed private reason
+        self.assertEqual((code, out), (1, ""))
+        self.assertTrue(err.startswith("Stopped: kit/sent.json would exceed 1 MiB; nothing was changed"), err)
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn("ca-synthetic", err)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.archive.exists())
+        with self.assertRaises(ValueError) as caught:
+            kit_undo.undo_step(self.root, self.agency, reason=REASON)
+        self.assertEqual(str(caught.exception), "kit/sent.json would exceed 1 MiB; nothing was changed")
+        self.assertEqual(len(kit_track.read_sent(self.root)), 4001)  # still readable
+        self.compact_store(extra=50)  # a smaller store of the same shape still undoes and stays readable
+        self.assertEqual(self.undo()[0], 0)
+        self.assertEqual(len(kit_track.read_sent(self.root)), 51)
+
+    def test_active_candidate_exact_cap_and_one_over(self):
+        self.compact_store(extra=3)
+        files = {self.sent: self.sent.read_bytes(), self.archive: None}
+        self.assertEqual(self.undo()[0], 0)
+        written = self.sent.read_bytes()
+        document = json.loads(written)
+        expected = (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        self.assertEqual(written, expected)  # the preflighted document is what is written, final newline included
+        size = len(written)
+        self.assertGreater(size, len(files[self.sent]))
+        self.restore(files)
+        self.active_refused(size - 1)  # cap - 1 relative to the candidate: one byte too small
+        self.restore(files)
+        with mock.patch.object(kit_track, "MAX_BYTES", size):
+            self.assertEqual(self.undo()[0], 0)  # exactly the cap is accepted
+        self.assertEqual(self.sent.stat().st_size, size)
+        self.assertEqual(len(kit_track.read_sent(self.root)), 4)
+        self.restore(files)
+        with mock.patch.object(kit_track, "MAX_BYTES", size + 1):
+            self.assertEqual(self.undo()[0], 0)
+
+    def test_active_budget_counts_utf8_and_complete_request_mapping(self):
+        note = "é" * 40
+        self.compact_store(extra=2, steps=[step("2026-03-05", "acknowledged"), step("2026-03-06", "extension")],
+                           note_ext=note)
+        document = json.loads(self.sent.read_text(encoding="utf-8"))
+        others = {k: v for k, v in document["requests"].items() if k != self.agency}
+        files = {self.sent: self.sent.read_bytes(), self.archive: None}
+        self.assertEqual(self.undo()[0], 0)
+        size = self.sent.stat().st_size
+        self.assertGreater(size, len(self.sent.read_text(encoding="utf-8")))  # bytes, not characters
+        after = self.load()["requests"]
+        self.assertEqual({k: v for k, v in after.items() if k != self.agency}, others)  # untouched entries kept whole
+        self.restore(files)
+        self.active_refused(size - 1)
+
+    def test_active_size_refusal_preserves_existing_archive(self):
+        self.compact_store(extra=3)
+        self.assertEqual(self.undo(reason="earlier")[0], 0)
+        self.compact_store(extra=3, steps=[step("2026-03-05", "acknowledged"), step("2026-03-06", "extension")],
+                           undo_ids=[self.receipts()[0]["undo_id"]])
+        os.utime(self.archive, (1_000_000, 1_000_000))
+        inode, mtime = self.archive.stat().st_ino, self.archive.stat().st_mtime_ns
+        self.active_refused(self.sent.stat().st_size + 10)
+        self.assertEqual((self.archive.stat().st_ino, self.archive.stat().st_mtime_ns), (inode, mtime))
+        self.assertEqual(len(self.receipts()), 1)
+        self.assertEqual(len(self.entry()["steps"]), 2)
+        self.assertEqual(self.entry()["undo_ids"], [self.receipts()[0]["undo_id"]])
+        self.assertEqual([p.name for p in (self.root / "kit").glob("*.tmp")], [])
+
+    def test_active_utf8_preflight_failure_is_before_archive_write(self):
+        self.compact_store(extra=1)
+        document = self.load()
+        document["requests"]["ca-synthetic-0"]["note_ext"] = "\ud800"  # reader-admitted, not encodable as UTF-8
+        self.sent.write_text(json.dumps(document), encoding="ascii")
+        before = self.snapshot()
+        with mock.patch.object(kit, "_write_json", side_effect=AssertionError("written")):
+            self.refused(self.undo(), "kit/sent.json cannot be written as UTF-8", "nothing was changed")
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.archive.exists())
+
+    def test_dual_budget_and_io_retry_contracts_are_independent(self):
+        self.compact_store(extra=3)
+        files = {self.sent: self.sent.read_bytes(), self.archive: None}
+        self.assertEqual(self.undo()[0], 0)
+        active_size, archive_size = self.sent.stat().st_size, self.archive.stat().st_size
+        self.restore(files)
+        # active overflows while the archive has room: refused unchanged
+        self.active_refused(active_size - 1)
+        # archive overflows while the active store has room: refused unchanged
+        before = self.snapshot()
+        with mock.patch.object(kit_undo, "ARCHIVE_MAX_BYTES", archive_size - 1), \
+                mock.patch.object(kit, "_write_json", side_effect=AssertionError("written")):
+            self.refused(self.undo(), "would exceed 16 MiB")
+        self.assertEqual(self.snapshot(), before)
+        # a genuine active-write failure keeps its attempt; a later budget refusal adds none
+        real = kit._write_json
+
+        def fail_active(path, document):
+            if Path(path).name == "sent.json":
+                raise OSError(errno.EIO, "injected active")
+            return real(path, document)
+        with mock.patch.object(kit, "_write_json", side_effect=fail_active):
+            self.refused(self.undo(), "injected active")
+        self.assertEqual(len(self.receipts()), 1)
+        self.assertNotIn("undo_ids", self.entry())
+        attempt = self.snapshot()
+        self.active_refused(active_size - 1)
+        self.assertEqual(self.snapshot(), attempt)
+        self.assertEqual(len(self.receipts()), 1)
+        self.assertEqual(self.undo()[0], 0)  # ordinary retry: fresh identity, prior receipt retained
+        self.assertEqual(len(self.receipts()), 2)
+        self.assertEqual(len(self.entry()["undo_ids"]), 1)
+        self.assertEqual(stat.S_IMODE(self.sent.stat().st_mode), 0o600)
+
     def test_bounded_descriptor_reader(self):
         self.two_steps()
         self.assertEqual(self.undo()[0], 0)
