@@ -34,7 +34,9 @@ PATTERNS = [
     ("EMAIL", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
     ("SSN", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
     ("DOB", re.compile(r"(?i)\b(?:DOB|D\.O\.B\.|date of birth|born)\s*[:\-]?\s*(\d{1,4}[/-]\d{1,2}[/-]\d{1,4})")),
-    ("PHONE", re.compile(r"(?<![\w.-])(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?![\w-])|(?<![\w.-])\d{10}(?![\w.-])")),
+    # Formatted numbers, the compact parenthesized form (a balanced area code directly followed by the
+    # exchange: (805)555-0100, +1(805)555-0100; noncapturing groups only), and bare ten-digit runs.
+    ("PHONE", re.compile(r"(?<![\w.-])(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?![\w-])|(?<![\w.-])(?:\+?1[\s.-]?)?\(\d{3}\)\d{3}[\s.-]\d{4}(?![\w-])|(?<![\w.-])\d{10}(?![\w.-])")),
     ("ADDRESS", re.compile(r"\b\d{1,6}\s+(?:[A-Z][A-Za-z']+\s+){1,4}" + STREET_SUFFIX + r"\b\.?(?:,?\s+(?:Apt|Suite|Ste|Unit|#)\s*\w+)?")),
     ("NAME", re.compile(r"\b" + TITLES + r"\s+([A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+)?)")),
     ("NAME", re.compile(r"\b" + NAME_LABELS + r"\s*[:,]\s*([A-Z][a-z'\-]+(?:\s+(?:[A-Z]\.|[A-Z][a-z'\-]+)){1,3})")),
