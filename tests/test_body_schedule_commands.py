@@ -559,7 +559,15 @@ class CommandTests(Base):
     def test_list_equal_recheck_and_refusals_do_not_reach_writer(self):
         self.add()
         before = snapshot(self.root)
-        with mock.patch.object(cmd.os, 'open', side_effect=AssertionError('writer reached')), \
+        real_open = os.open
+
+        def read_only_open(path, flags, *args, **kwargs):
+            # The bounded loader also uses os.open; only its read is permitted.
+            self.assertEqual(Path(path), self.path, 'writer reached')
+            self.assertEqual(flags, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, 'writer reached')
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(cmd.os, 'open', side_effect=read_only_open), \
                 mock.patch.object(cmd.os, 'fsync', side_effect=AssertionError('writer reached')):
             cmd.recheck_schedule(self.root, body=BODY, checked_on=row()['checked_on'], today=DAY)
             cmd.list_schedules(self.root, today=DAY) if hasattr(cmd, 'list_schedules') else None
