@@ -26,7 +26,10 @@ LEDGER_SIZE_ERROR = "private/ledger.sqlite exceeds the 64 MiB snapshot limit"
 
 
 def _since(value):
-    """Return the lower bound compared against UTC isoformat received_at strings."""
+    """Return the lower bound compared against UTC isoformat received_at strings.
+
+    An offset timestamp whose UTC instant falls outside years 0001-9999 cannot be normalized and is refused with the
+    same SINCE_ERROR as any other unusable value (never clamped, wrapped or ignored)."""
     if DATE.fullmatch(value):
         try:
             return date.fromisoformat(value).isoformat()
@@ -38,7 +41,10 @@ def _since(value):
         moment = None
     if moment is None or moment.tzinfo is None:
         raise ValueError(SINCE_ERROR)
-    return moment.astimezone(timezone.utc).isoformat()
+    try:
+        return moment.astimezone(timezone.utc).isoformat()
+    except (OverflowError, ValueError):
+        raise ValueError(SINCE_ERROR) from None
 
 
 def _registered(root):

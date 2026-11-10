@@ -298,6 +298,126 @@ class StatusListTests(unittest.TestCase):
             report = ledger_list.list_receipts(self.root)
         self.assertEqual((report["count"], report["more"], len(report["receipts"])), (2, 1, 2))
 
+    # --- RF0325-4: --since values whose UTC instant is outside years 0001-9999 are a controlled refusal ---
+    UNDERFLOW = ("0001-01-01T00:00:00+00:01", "0001-01-01T00:00:00.999999+00:01", "0001-01-01T00:00:00+23:59",
+                 "0001-01-01T00:00:00.000000+00:00:01")
+    OVERFLOW = ("9999-12-31T23:59:59-00:01", "9999-12-31T23:59:59.999999-00:01", "9999-12-31T23:59:59-23:59")
+    ACCEPTED = {
+        "0001-01-01T00:00:00+00:00": "0001-01-01T00:00:00+00:00",
+        "0001-01-01T00:00:00Z": "0001-01-01T00:00:00+00:00",
+        "0001-01-01T00:00:00.000001+00:00": "0001-01-01T00:00:00.000001+00:00",
+        "0001-01-01T00:01:00+00:01": "0001-01-01T00:00:00+00:00",
+        "0001-01-01T00:00:00-00:01": "0001-01-01T00:01:00+00:00",
+        "0001-01-01T23:59:59-23:59": "0001-01-02T23:58:59+00:00",
+        "9999-12-31T23:59:59+00:00": "9999-12-31T23:59:59+00:00",
+        "9999-12-31T23:59:59.999999Z": "9999-12-31T23:59:59.999999+00:00",
+        "9999-12-31T23:58:59-00:01": "9999-12-31T23:59:59+00:00",
+        "9999-12-31T23:59:59+00:01": "9999-12-31T23:58:59+00:00",
+        "9999-12-31T23:59:59+23:59": "9999-12-31T00:00:59+00:00",
+        "2026-12-31T20:00:00-08:00": "2027-01-01T04:00:00+00:00",
+        "0001-01-01": "0001-01-01",
+        "9999-12-31": "9999-12-31",
+    }
+
+    def test_since_utc_underflow_and_overflow_are_fixed_value_errors(self):
+        for value in self.UNDERFLOW + self.OVERFLOW:
+            with self.subTest(value=value):
+                for call in (lambda: ledger_list._since(value), lambda: ledger_list.list_receipts(self.root, since=value)):
+                    with self.assertRaises(ValueError) as caught:
+                        call()
+                    self.assertEqual(str(caught.exception), ledger_list.SINCE_ERROR)
+                    self.assertIsNone(caught.exception.__cause__)
+                    self.assertTrue(caught.exception.__suppress_context__)
+
+    def test_since_representable_utc_endpoints_and_date_only_remain_accepted(self):
+        for value, expected in self.ACCEPTED.items():
+            with self.subTest(value=value):
+                self.assertEqual(ledger_list._since(value), expected)
+                self.assertEqual(ledger_list.list_receipts(self.root, since=value), {"receipts": [], "count": 0})
+
+    def assertOverflowStopped(self, value, *extra):
+        result = cli("status", "--directory", str(self.root), "--list", "--since", value, *extra)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr.strip(), "Stopped: " + ledger_list.SINCE_ERROR)
+        for text in ("Traceback", "OverflowError", "out of range", value):
+            self.assertNotIn(text, result.stderr)
+
+    def snapshot_tree(self):
+        tree = {}
+        for path in sorted(self.root.rglob("*")):
+            info = path.lstat()
+            tree[str(path.relative_to(self.root))] = (info.st_mode, info.st_mtime_ns,
+                                                      path.read_bytes() if path.is_file() else None)
+        return tree
+
+    def test_since_endpoint_cli_refusal_is_controlled_with_and_without_ledger_and_never_mutates(self):
+        for populated in (False, True):
+            if populated:
+                self.populate()
+            before = self.snapshot_tree()
+            for value in ("0001-01-01T00:00:00+00:01", "9999-12-31T23:59:59-00:01"):
+                with self.subTest(populated=populated, value=value):
+                    self.assertOverflowStopped(value)
+                    self.assertOverflowStopped(value, "--source-id", "source-one", "--not-in-sources")
+            self.assertEqual(self.snapshot_tree(), before)
+            for suffix in ("-wal", "-journal", "-shm"):
+                self.assertFalse(os.path.lexists(str(self.ledger) + suffix), suffix)
+        # the adjacent representable endpoints stay successful through the real CLI
+        before = self.snapshot_tree()
+        self.assertEqual(self.listing("--since", "0001-01-01T00:01:00+00:01")["count"], 3)
+        self.assertEqual(self.listing("--since", "9999-12-31T23:58:59-00:01")["count"], 0)
+        self.assertEqual(self.snapshot_tree(), before)
+
+    def test_since_refusal_precedes_source_library_and_snapshot_reads(self):
+        for variant in ("absent", "malformed", "sidecar"):
+            with self.subTest(variant=variant):
+                if variant != "absent":
+                    self.ledger.parent.mkdir(exist_ok=True)
+                    self.ledger.write_bytes(b"not a synthetic sqlite database")
+                if variant == "sidecar":
+                    Path(str(self.ledger) + "-wal").write_bytes(b"")
+                with mock.patch.object(ledger_list, "_registered") as registered, \
+                        mock.patch.object(ledger_list, "_snapshot") as snapshot:
+                    with self.assertRaises(ValueError) as caught:
+                        ledger_list.list_receipts(self.root, "source-one", "9999-12-31T23:59:59-00:01", True)
+                self.assertEqual(str(caught.exception), ledger_list.SINCE_ERROR)
+                registered.assert_not_called()
+                snapshot.assert_not_called()
+        # a bad sources.json is only reached after a valid since
+        self.sources.write_text("{", encoding="utf-8")
+        self.assertOverflowStopped("0001-01-01T00:00:00+00:01", "--not-in-sources")
+        self.assertStopped("--list", "--since", "0001-01-01T00:00:00+00:00", "--not-in-sources",
+                           message="sources.json: not valid UTF-8 JSON")
+
+    def test_since_mixed_mode_and_source_id_precedence_is_unchanged(self):
+        value = "0001-01-01T00:00:00+00:01"
+        self.assertStopped("--since", value, message="--source-id/--since/--not-in-sources need --list")
+        for flag in ("--check", "--fix-modes"):
+            self.assertStopped("--list", flag, "--since", value, message="--list is read-only; run --check separately")
+        self.assertStopped("--list", "--source-id", "", "--since", value, message="--source-id: use 1-200 characters")
+        self.assertStopped("--list", "--source-id", "x" * 201, "--since", value,
+                           message="--source-id: use 1-200 characters")
+
+    def test_since_offsets_filter_inclusively_without_wall_clock_dependency(self):
+        self.populate()
+        fixed = ["2026-12-31T23:59:59.999999+00:00", "2027-01-01T00:00:00+00:00", "2027-01-01T00:00:00.000001+00:00"]
+        with sqlite3.connect(self.ledger) as db:
+            for name, stamp in zip(("a.txt", "b.txt", "a-again.txt"), fixed):
+                db.execute("UPDATE receipts SET received_at = ? WHERE original_name = ?", (stamp, name))
+        db.close()
+        names = lambda *extra: [r["original_name"] for r in self.listing(*extra)["receipts"]]
+        for spelling in ("2027-01-01T00:00:00+00:00", "2027-01-01T00:00:00Z", "2026-12-31T16:00:00-08:00",
+                         "2027-01-01T09:00:00+09:00"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(names("--since", spelling), ["b.txt", "a-again.txt"])
+        self.assertEqual(names("--since", "2027-01-01T00:00:00.000001+00:00"), ["a-again.txt"])
+        self.assertEqual(names("--since", "2027-01-01T00:00:00.000002+00:00"), [])
+        self.assertEqual(names("--since", "2026-12-31T23:59:59.999999Z"), ["a.txt", "b.txt", "a-again.txt"])
+        self.assertEqual(names("--since", "2027-01-01T00:00:00Z", "--source-id", "source-one"), ["b.txt"])
+        self.assertEqual(names("--since", "0001-01-01T00:01:00+00:01"), ["a.txt", "b.txt", "a-again.txt"])
+        self.assertEqual(self.listing("--since", "9999-12-31T23:58:59-00:01"), {"receipts": [], "count": 0})
+
 
 if __name__ == "__main__":
     unittest.main()
