@@ -543,6 +543,14 @@ class TimelineTests(unittest.TestCase):
         self.assertIn('<a href="https://cedar.example/minutes?a=1&amp;b=2" rel="noopener noreferrer">official record</a>', page)
         self.assertNotIn("&amp;amp;", page)
 
+    def test_coverage_prefix_is_frozen_even_when_news_title_is_overridden(self):
+        from campaign_tool.labels import DEFAULTS
+        model = self.model()
+        model["coverage"] = [clip()]
+        model["labels"] = dict(DEFAULTS, **{"news.title": "Zq custom news title"})  # a labels.json override
+        events = [ev for ev in timeline_events(model, TODAY) if ev["kind"] == "coverage"]
+        self.assertEqual([(ev["text"], ev["href"]) for ev in events], [("In the news: Cedar Gazette", "/news.html")])
+
     def test_malformed_optional_content_refuses_before_write(self):
         self.build()
         before = self.tree()

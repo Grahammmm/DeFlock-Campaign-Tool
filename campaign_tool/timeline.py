@@ -82,8 +82,8 @@ def timeline_events(model, today, agency_pages=None):
         add(row["said_on"], "statement", f'{row["official"]}, {agency["name"]}: public statement', href,
             source_url=row["source_url"])
     for entry in model.get("coverage") or ():  # DF1109-07: press is not an official record, so no source link
-        # the linked page's own title label ("In the news"), so a labels.json override reaches this line too
-        add(entry["published_on"], "coverage", f'{labels["news.title"]}: {entry["outlet"]}', "/news.html")
+        # frozen exact text (spec design 4); a labels.json override of news.title does not change it (DF1109-16 owns the sweep)
+        add(entry["published_on"], "coverage", f'In the news: {entry["outlet"]}', "/news.html")
     events.sort(key=lambda event: (KINDS.index(event["kind"]), event["href"], event["text"]))
     events.sort(key=lambda event: event["date"], reverse=True)
     return events
