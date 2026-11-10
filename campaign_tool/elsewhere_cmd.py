@@ -105,7 +105,7 @@ def _validate(document, today):
     try:
         rows = load_elsewhere(document, today=today)
     except ContentError as exc:  # the loader's unknown-key list would repeat stored text: name the category only
-        raise ElsewhereError(re.sub(r"unknown field\(s\) .*", "unknown field(s)", str(exc)) + f"; {UNTOUCHED}") from None
+        raise ElsewhereError(_category(exc) + f"; {UNTOUCHED}") from None
     for n, row in enumerate(rows):
         for key, value in row.items():
             if found := refusal(f"{FILE}[{n}].{key}", value):
@@ -123,6 +123,12 @@ def _state(root, today):
     if loaded is None:
         return None, None
     return _validate(_parse(loaded[0], LABEL), today), loaded
+
+
+def _category(exc):
+    """A loader message with stored text removed: the unknown-key list and every quoted value (repr) are dropped."""
+    text = re.sub(r"unknown field\(s\) .*", "unknown field(s)", str(exc))
+    return re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", "<value withheld>", text)
 
 
 def _citing(root, removed, today):
@@ -150,7 +156,7 @@ def _citing(root, removed, today):
             try:
                 meeting = load_meeting(_parse(loaded[0], label), "meetings/" + name, today=today)
             except ContentError as exc:
-                raise ElsewhereError(f"{exc}; {UNTOUCHED}") from None
+                raise ElsewhereError(f"{_category(exc)}; {UNTOUCHED}") from None
             if any(tuple(snap[key] for key in TRIPLE) == wanted for snap in meeting.get("cited_elsewhere", ())):
                 names.append("meetings/" + name)
         return names

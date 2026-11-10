@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 TODAY = date(2026, 11, 1)
 MID = "legistar-examplecity-3001"
-SECRET = "ZQ-PRIVATE-7c1"
+STORED_PROBE = "ZQ-PRIVATE-7c1"
 
 
 def entry(n, **extra):
@@ -69,7 +69,7 @@ class Base(unittest.TestCase):
         with self.assertRaisesRegex(ElsewhereError, pattern) as caught:
             call()
         self.assertEqual(self.tree(), before)
-        self.assertNotIn(SECRET, str(caught.exception))
+        self.assertNotIn(STORED_PROBE, str(caught.exception))
 
 
 class CommandTests(Base):
@@ -125,7 +125,7 @@ class CommandTests(Base):
     def test_whole_store_refused_without_repair(self):
         bad = [b"[]", b"null", b"{}", b'"x"', b"\xff\xfe", b"[{", b"[" * 5000 + b"]" * 5000,
                json.dumps([entry(1), entry(1, source_url="https://other.example.test/x", state="WA")]).encode(),
-               json.dumps([entry(1), dict(entry(2), **{SECRET: "x"})]).encode(),
+               json.dumps([entry(1), dict(entry(2), **{STORED_PROBE: "x"})]).encode(),
                json.dumps([entry(1), dict(entry(2), place=" ")]).encode(),
                b'[{"place": "a", "place": "b"}]']
         for data in bad:
@@ -229,6 +229,18 @@ class RemoveTests(Base):
         self.assert_refused(lambda: remove_entry(self.root, 1, today=TODAY), "content/meetings: must be a real folder")
         (self.content / "meetings").unlink()
         self.assertEqual(remove_entry(self.root, 1, today=TODAY)["citing"], [])
+
+    def test_meeting_scan_refusals_repeat_no_stored_text(self):
+        meetings = self.content / "meetings"
+        base = json.loads((meetings / "2026-10-cedar-council.json").read_text(encoding="utf-8"))
+        for label, change in (("snapshot key", lambda d: d.update(cited_elsewhere=[dict(self.rows[0], **{STORED_PROBE: "x"})])),
+                              ("quoted value", lambda d: d.update(starts_at=STORED_PROBE))):
+            with self.subTest(label):
+                document = dict(base, id="probe")
+                change(document)
+                (meetings / "probe.json").write_text(json.dumps(document), encoding="utf-8")
+                self.assert_refused(lambda: remove_entry(self.root, 1, today=TODAY), r"^meetings/probe\.json\b[^']*; ")
+                (meetings / "probe.json").unlink()
 
     def test_index_syntax_and_argparse_refusals(self):
         for token in ("0", "-1", "+1", " 1", "1 ", "1.0", "1e2", "١", "01", "9" * 10, ""):
