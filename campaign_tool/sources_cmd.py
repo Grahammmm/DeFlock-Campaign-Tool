@@ -383,7 +383,12 @@ COPY_MAX = 200 * 1024 * 1024
 
 
 def _hash_copy(file):
-    """sha256 of a regular local file (no symlink, <= COPY_MAX), read in 1 MiB chunks; never copied or stored."""
+    """sha256 of a regular local file (no symlink, <= COPY_MAX), read in <= 1 MiB chunks; never copied or stored.
+
+    The limit is enforced on the bytes actually read, not only on the size seen at open: a file that grows past
+    COPY_MAX after that check is refused before any digest is returned (at most COPY_MAX + 1 bytes are consumed and
+    only COPY_MAX are hashed).
+    """
     try:
         fd = os.open(file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # a FIFO never blocks the run
     except FileNotFoundError:
@@ -391,14 +396,25 @@ def _hash_copy(file):
     except OSError as exc:
         reason = "is a symlink; give the downloaded file itself" if Path(file).is_symlink() else f"cannot be read ({exc})"
         raise ValueError(f"--file: {file} {reason}") from None
-    info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_size > COPY_MAX:
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > COPY_MAX:
+            raise ValueError(f"--file: {file} is not a regular file" if not stat.S_ISREG(info.st_mode)
+                             else f"--file: larger than {COPY_MAX // (1024 * 1024)} MiB; nothing hashed")
+        handle = os.fdopen(fd, "rb", buffering=0)  # unbuffered: no read-ahead beyond the bytes counted below
+    except BaseException:
         os.close(fd)
-        raise ValueError(f"--file: {file} is not a regular file" if not stat.S_ISREG(info.st_mode)
-                         else f"--file: larger than {COPY_MAX // (1024 * 1024)} MiB; nothing hashed")
-    with os.fdopen(fd, "rb") as handle:
+        raise
+    with handle:
         digest = hashlib.sha256()
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        total = 0
+        while True:
+            chunk = handle.read(min(1024 * 1024, COPY_MAX - total + 1))  # at most one byte past the limit
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > COPY_MAX:
+                raise ValueError(f"--file: larger than {COPY_MAX // (1024 * 1024)} MiB; verification not recorded")
             digest.update(chunk)
     return digest.hexdigest()
 
