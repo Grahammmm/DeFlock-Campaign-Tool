@@ -57,6 +57,16 @@ def _agency(root, agency_id):
     return entry
 
 
+def _discard(directory, temporary, owned):
+    """Best-effort removal of the staging file this call created: only that same regular file (device and inode)."""
+    try:
+        info = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
+        if stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == owned:
+            os.unlink(temporary, dir_fd=directory)
+    except OSError:
+        pass  # vanished, substituted or not removable: never mask the primary failure
+
+
 def _write(out, name, data):
     """Write ``out/name`` 0600 via a temp file and os.replace inside ``out``, opened without following a symlink."""
     try:
@@ -64,21 +74,30 @@ def _write(out, name, data):
     except OSError:
         raise ValueError("kit/outgoing must be a directory (not a symlink)") from None
     temporary = f".{name}.{os.getpid()}.tmp"
+    owned = None  # (st_dev, st_ino) of the staging file once this call created and identified it
     try:
         os.fchmod(directory, 0o700)
         if name in os.listdir(directory) and not stat.S_ISREG(os.stat(name, dir_fd=directory,
                                                                          follow_symlinks=False).st_mode):
             raise ValueError(f"kit/outgoing/{name} must be a regular file (not a symlink)")
         handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
-        with os.fdopen(handle, "wb") as stream:
+        try:
+            info = os.fstat(handle)  # if identity cannot be taken, the stage is left rather than guessed at
+            owned = (info.st_dev, info.st_ino)
+            stream = os.fdopen(handle, "wb")
+        except BaseException:
+            os.close(handle)
+            raise
+        with stream:
             os.fchmod(handle, 0o600)
             stream.write(data)
             stream.flush()
             os.fsync(handle)
         os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+        owned = None
     except BaseException:
-        if temporary in os.listdir(directory):
-            os.unlink(temporary, dir_fd=directory)
+        if owned is not None:
+            _discard(directory, temporary, owned)  # only a stage this call created; never a colliding entry
         raise
     finally:
         os.close(directory)
