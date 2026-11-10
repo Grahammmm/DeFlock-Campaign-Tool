@@ -19,7 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from . import labels
-from .content import ContentError, MAX_JSON_BYTES, load_content, utc_moment
+from .content import AGENCY_ID, ContentError, MAX_JSON_BYTES, load_content, utc_moment
 from .law import LOCAL_RULE_LABEL
 from .legal_claims import legal_notes
 from .privacy_patterns import refusal
@@ -489,6 +489,9 @@ def build_brief(root, agency_id, *, replace=False, now=None):
     if now.tzinfo is None:
         raise BriefError("the clock must be timezone-aware")
     day = now.astimezone(timezone.utc).date()
+    # Admit syntax before content work or any diagnostic that names the selector.
+    if not isinstance(agency_id, str) or not AGENCY_ID.fullmatch(agency_id):
+        raise BriefError("--agency must be a valid agency ID")
     _check_inputs(root)
     model = load_content(root, today=day)
     agency = next((a for a in model["agencies"] if a["agency_id"] == agency_id), None)
