@@ -276,6 +276,19 @@ test('an agency link that is missing or unsafe falls back to its agencies.html c
   }
 });
 
+test('an optional row whose fields cannot be converted is skipped alone; findings, sources and valid rows stay searchable',async()=>{
+  const hostile={toString:null,valueOf:null};
+  const s=rich({hash:'#q=cedar',
+    agencies:[{agency_id:'ca-cedar-police',name:hostile,kind:'police'},{agency_id:'x',name:'cedar kind',kind:hostile},...AGENCIES],
+    meetings:[{id:'m1',body:hostile,starts_at:'2026-01-01'},{id:'mx',body:'cedar date',starts_at:hostile},...MEETINGS]});
+  await s.flush();
+  assert.equal(s.nodes['search-form'].hidden,false);assert.equal(s.nodes['search-fallback'].hidden,true);
+  assert.equal(s.message(),'');
+  assert.deepEqual(s.results().map(r=>[r.tag,r.title]),[
+    ['Finding','ALPR contract renewal approved'],['Source','Vendor contract with Flock'],['Source','ALPR contract amendment'],
+    ['Agency','Cedar Police Department (fictional)'],['Meeting','Cedar City Council \u2014 Item 7: technology renewals']]);
+});
+
 test('an optional file that fails only empties its kind; a required file failing still shows the fallback',async()=>{
   const failures={status:()=>Promise.resolve({ok:false,json:()=>Promise.resolve({})}),rejects:()=>Promise.reject(new Error('offline')),
     notJson:()=>Promise.resolve({ok:true,json:()=>Promise.reject(new SyntaxError('bad'))}),

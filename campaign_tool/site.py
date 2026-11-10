@@ -221,12 +221,14 @@ SEARCH_EXTRA_LABELS = dict(SEARCH_LABELS, **{key: JS_DEFAULTS[key] for key in
 SEARCH_EXTRA_JS = r"""
 var extra={};try{extra=JSON.parse(form.getAttribute("data-search-extra")||"{}")||{};}catch(err){extra={};}
 function pick(map,id){return map&&typeof map==="object"&&typeof id==="string"&&Object.prototype.hasOwnProperty.call(map,id)?map[id]:null;}"""
-SEARCH_EXTRA_BUILD = r"""for(i=0;i<agencyRows.length;i++){s=agencyRows[i];if(!s||typeof s!=="object")continue;x=pick(extra.agencies,s.agency_id);
+SEARCH_EXTRA_BUILD = r"""for(i=0;i<agencyRows.length;i++){s=agencyRows[i];if(!s||typeof s!=="object")continue;
+try{x=pick(extra.agencies,s.agency_id);
 if(!Array.isArray(x))x=["",""];
-out.push({kind:"agency",title:String(s.name||""),url:safe(s.url)||safe(x[0])||"/agencies.html",text:fold([s.name,s.kind,x[1]].join(" "))});}
-for(i=0;i<meetingRows.length;i++){s=meetingRows[i];if(!s||typeof s!=="object")continue;item=pick(extra.meetings,s.id);
+out.push({kind:"agency",title:String(s.name||""),url:safe(s.url)||safe(x[0])||"/agencies.html",text:fold([s.name,s.kind,x[1]].join(" "))});}catch(err){}}
+for(i=0;i<meetingRows.length;i++){s=meetingRows[i];if(!s||typeof s!=="object")continue;
+try{item=pick(extra.meetings,s.id);
 item=typeof item==="string"?item:"";
-out.push({kind:"meeting",title:String(s.body||"")+(item?" \u2014 "+item:""),url:safe(s.url),text:fold([s.body,item,s.starts_at].join(" "))});}
+out.push({kind:"meeting",title:String(s.body||"")+(item?" \u2014 "+item:""),url:safe(s.url),text:fold([s.body,item,s.starts_at].join(" "))});}catch(err){}}
 return out;}"""
 
 

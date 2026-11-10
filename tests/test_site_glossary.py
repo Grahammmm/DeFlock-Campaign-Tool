@@ -74,7 +74,7 @@ BASELINE = {
     "robots.txt": "f520ce90da728c1ea72afb9c9f22a0976b5e2c16ac6aa7256e1218479b4f2b80",  # pragma: allowlist secret -- public rendered-file SHA-256
     # DF1109-09: the fixture has an agency page and a staged meeting, so search also finds agencies and meetings.
     "search.html": "1b636cf313ac7c45c33720f41f52a3e33fa8e036c175f988497d82feb7ea8149",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "search.js": "421478872d45a1c4da517800819222e550549d9df944f7739bc902cd12d261a7",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "search.js": "653f9af520755fbd804e0631bf9035dbf15505aed2bf11fd49a67c0438c85ae4",  # pragma: allowlist secret -- public rendered-file SHA-256
     "site-data.js": "992aa92b3f544c4deaba28d2661f8b9ed995939a7da592540f269f0fb0a23e7e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "sitemap.xml": "c6f4a4c4f99195fd57e81b386af2989c5ffd2dd44c2b7eda13abfac09a0ff77f",  # pragma: allowlist secret -- public rendered-file SHA-256
     "sources.html": "8e4d0a4d68ac30dc7e3bec07fe6140d7e780942a37f0ffe858f0618a886adca3",  # pragma: allowlist secret -- public rendered-file SHA-256
