@@ -10,6 +10,8 @@ python3 -m campaign_tool campaigns add humboldt --directory ~/campaigns/humboldt
 python3 -m campaign_tool campaigns list
 python3 -m campaign_tool status --campaign slo          # the same as: status --directory ~/campaigns/slo
 python3 -m campaign_tool campaigns status
+python3 -m campaign_tool campaigns today               # one private to-do list across every campaign
+python3 -m campaign_tool campaigns today --as-of 2026-03-15 --json
 python3 -m campaign_tool campaigns remove humboldt      # unregisters; the directory is not touched
 ```
 
@@ -50,6 +52,43 @@ that has not been published. The view shows the gate and acts on none. A campaig
 `NOT CURRENT: <ErrorType>` and the others still print; the command exits 3 then. No record text, name, address, email,
 phone or plate appears. Review receipts stay bound to the campaign that issued them, so an approval recorded in one
 campaign never releases anything in another.
+
+## `campaigns today`
+
+`today` for every registered campaign at once, for the organizer covering several counties. Unlike `campaigns status`
+(counts only), this list holds **private work details**: agency and meeting names, finding ids, draft file paths and
+comment instructions. Keep it off screens and pages you share.
+
+```
+campaign | NAME | N. [KIND] WHAT — COMMAND | private; review-required
+campaign | NAME | Nothing due on YYYY-MM-DD. | private; review-required
+campaign | NAME | NOT CURRENT: <ErrorType> | private; review-required
+```
+
+- Campaigns are listed by name in the register's case-sensitive order (`Alpha` before `alpha`). Inside one campaign
+  the items are exactly that campaign's `today --directory D` list in its own ranking, numbered from 1; there is no
+  urgency sort across campaigns and no renumbering.
+- Each campaign is read alone, confined exactly as for `campaigns status`, and already before its `campaign.json` is
+  read; the confinement is released after every campaign, whatever happened.
+- Every command that names the campaign uses `--campaign NAME` instead of `--directory PATH`. Path operands stay paths
+  (a finding draft file, `--into`), and human instructions (submit a written comment, check an official source, fix a
+  file) are unchanged. Nothing listed is run, fixed, sent or published. The newsletter module
+  (`python3 -m campaign_tool.newsletter`) takes only `--directory`, so its hint keeps `--directory PATH` and runs as printed.
+- A campaign that cannot be read (missing directory or `campaign.json`, a refused path, a source that `today` would
+  list as `unreadable`) prints one `NOT CURRENT: <ErrorType>` line instead of any of its items, never the error text;
+  the other campaigns still print, and the command exits 3. Run `today --campaign NAME` to see what is wrong. A source
+  `today` reports as unreadable shows as `NOT CURRENT: ValueError`, whatever the original error was.
+- `--json` prints one flat array. Each item is the campaign's own `today` item (`rank`, `kind`, `what`, `due`,
+  `command` and any recorded-receipt fields) plus `campaign`; a campaign that cannot be read is
+  `{"campaign": NAME, "rank": null, "kind": "not_current", "what": "NOT CURRENT: <ErrorType>", "due": null,
+  "command": null}`. A campaign with nothing due adds no JSON item.
+- No register, or an empty one: `campaign | (none registered) | private; review-required` (JSON `[]`), exit 0; no
+  register or folder is created. A bad `--as-of` stops with exit 1 before anything is read. `--as-of` plans one day
+  from the files as they are now; it is not a historical view. Without it, today's date is taken once for every
+  campaign.
+- Exit codes: 0 every campaign read, 3 at least one `NOT CURRENT`, 1 a bad date or an unreadable register.
+- Read-only: no lock, cache, index or ledger, and the register and every campaign keep their bytes, paths and modes.
+  `today --directory D` and `today --campaign NAME` for one campaign are unchanged.
 
 ## Open question: the hosted workspace
 

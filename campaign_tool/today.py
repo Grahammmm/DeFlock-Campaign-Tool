@@ -64,7 +64,7 @@ def _unreadable(label, exc):
     return _item("unreadable", f"fix {label}: {str(exc)[:ERROR_CHARS]}", f"open {label} and fix it", key=label)
 
 
-def _meetings(root, as_of, directory):
+def _meetings(root, as_of, selector):
     folder, items = root / "content" / "meetings", []
     try:
         submitted = meeting_comments.read(root)  # a comment already sent by hand is not due again (DF1207-09)
@@ -87,11 +87,11 @@ def _meetings(root, as_of, directory):
     unreliable = _continuation_unreadable(loaded, items)  # pass 2: relationships between the files read
     for label, meeting, written, due, day in loaded:  # pass 3: the reminders of each readable meeting
         ident = meeting["id"]
-        if (pending := _minutes_item(meeting, ident, as_of, directory)) is not None:
+        if (pending := _minutes_item(meeting, ident, as_of, selector)) is not None:
             items.append(pending)
-        if label not in unreliable and (later := _continued_item(meeting, staged, as_of, directory)) is not None:
+        if label not in unreliable and (later := _continued_item(meeting, staged, as_of, selector)) is not None:
             items.append(later)
-        if (report := _direction_item(meeting, staged, as_of, directory)) is not None:
+        if (report := _direction_item(meeting, staged, as_of, selector)) is not None:
             items.append(report)
         if meeting["status"] != "scheduled" or day is None or not as_of <= day <= as_of + timedelta(WINDOW_DAYS):
             continue
@@ -120,7 +120,7 @@ def _continuation_unreadable(loaded, items):
     return set(flagged)
 
 
-def _continued_item(meeting, meetings, as_of, directory):
+def _continued_item(meeting, meetings, as_of, selector):
     """DF0022-07: a continued item whose stated date has passed with no meeting of that body staged on it. A follow-up
     cue only: a later meeting on that date is not evidence the item was heard or resolved. An explicit ``continued_to``
     never yields one (it is checked as a reference instead)."""
@@ -131,10 +131,10 @@ def _continued_item(meeting, meetings, as_of, directory):
     return _item("continued_pending", f"Continued item for {meeting['body']} ({meeting['id']}): stated date {stated} has "
                  "passed with no matching meeting staged; check the official agenda",
                  f"open {shlex.quote(outcome['source_url'])} and stage the verified follow-up meeting with "
-                 f"meetings-stage --directory {directory} --id MEETING_ID", stated, meeting["id"])
+                 f"meetings-stage {selector} --id MEETING_ID", stated, meeting["id"])
 
 
-def _direction_item(meeting, meetings, as_of, directory):
+def _direction_item(meeting, meetings, as_of, selector):
     """DF0022-08: a staff direction whose source-stated return-by date is within DIRECTION_DAYS days (or already past)
     and that no later outcome of the same body follows. A workflow cue only: a later outcome is not proof the direction
     was met, and a missing one is not a claim that staff failed to report."""
@@ -148,18 +148,18 @@ def _direction_item(meeting, meetings, as_of, directory):
     return _item("direction_pending", f"Staff direction for {meeting['body']} ({meeting['id']}), return-by "
                  f"{outcome['return_by']}: check the official record for a report back",
                  f"open {shlex.quote(outcome['direction_source'])} and check for a report back; record a verified later "
-                 f"outcome with meetings-outcome --directory {directory} --id MEETING_ID --result RESULT "
+                 f"outcome with meetings-outcome {selector} --id MEETING_ID --result RESULT "
                  "--on YYYY-MM-DD --source OFFICIAL_URL --verified-by NAME", outcome["return_by"], meeting["id"])
 
 
-def _minutes_item(meeting, ident, as_of, directory):
+def _minutes_item(meeting, ident, as_of, selector):
     """DF2207-05: a recorded outcome older than MINUTES_DAYS days with no approved minutes linked (never an allegation)."""
     outcome = meeting["outcome"]
     if not outcome or "minutes_url" in outcome or (as_of - date.fromisoformat(outcome["on"])).days <= MINUTES_DAYS:
         return None
     return _item("minutes_pending", f"Outcome of {meeting['body']} ({ident}) recorded for {outcome['on']} has no approved "
                  "minutes linked: check whether the body's official minutes are approved",
-                 f"meetings-outcome --directory {directory} --id {shlex.quote(ident)} "
+                 f"meetings-outcome {selector} --id {shlex.quote(ident)} "
                  "--minutes-url OFFICIAL_MINUTES_URL --minutes-approved-on YYYY-MM-DD", outcome["on"], ident)
 
 
@@ -178,8 +178,8 @@ def _request_item(kind, row, what, command, due, key):
     return {**_item(kind, what, command, due, key), **extra}
 
 
-def _reply_command(writer, directory, row):  # a private draft writer for this one request; guidance only, never run
-    return (f"{writer} --directory {directory} --agency {shlex.quote(row['agency_id'])}"
+def _reply_command(writer, selector, row):  # a private draft writer for this one request; guidance only, never run
+    return (f"{writer} {selector} --agency {shlex.quote(row['agency_id'])}"
             + ("" if row["request"] == "main" else f" --request {shlex.quote(row['request'])}"))
 
 
@@ -187,7 +187,7 @@ def _request_key(row):  # agency and request, as the provisional-date items are 
     return row["agency_id"] + ("" if row["request"] == "main" else "#" + row["request"])
 
 
-def _unpaid_fees(root, directory, law_base, owner):
+def _unpaid_fees(root, selector, law_base, owner):
     """DF1109-01: one ``request_fee_unpaid`` item per open (not closed or withdrawn) request whose latest fee estimate
     (by date, then recorded order) has no ``fee_paid``/``fee_waived`` step after it: kit-status's own amount and the
     estimate's own date. A zero-dollar estimate still counts. Nothing beyond kit/sent.json is read when no request is
@@ -207,11 +207,11 @@ def _unpaid_fees(root, directory, law_base, owner):
         on = listed[last]["on"]
         items.append(_request_item("request_fee_unpaid", row, f"{_request_name(row)}: unpaid fee estimate "
                                    f"{row['fee_estimate']} recorded {on}; review and reply",
-                                   "kit " + _reply_command("fee-reply", directory, row), on, _request_key(row)))
+                                   "kit " + _reply_command("fee-reply", selector, row), on, _request_key(row)))
     return items
 
 
-def _requests(root, as_of, directory, law_base, owner=None):
+def _requests(root, as_of, selector, law_base, owner=None):
     """Request work for the organizer, from kit_track's own readers (read-only; commands are guidance only).
 
     Besides the provisional determination items, DF1109-01 lists work waiting on the organizer: an open agency
@@ -224,19 +224,19 @@ def _requests(root, as_of, directory, law_base, owner=None):
         kit_assign.read_assignments(root)
     except ValueError as exc:  # one item naming the bad file; no unfiltered fallback, other sources still listed
         return [_unreadable(kit_assign.FILE, exc)]
-    command = f"kit-status --directory {directory}" + (f" --owner {shlex.quote(owner)}" if owner is not None else "")
+    command = f"kit-status {selector}" + (f" --owner {shlex.quote(owner)}" if owner is not None else "")
     report = kit_track.due(root, as_of.isoformat(), law_base=law_base, owner=owner)
     for row in report["stated_passed"]:
         items.append(_request_item("request_stated_date_passed", row, f"{_request_name(row)}: stated date passed "
                                    f"{row['stated']} — the agency's own date; provisional, not a legal deadline; "
-                                   "follow up", _reply_command("kit-followup", directory, row), row["stated"],
+                                   "follow up", _reply_command("kit-followup", selector, row), row["stated"],
                                    _request_key(row)))
-    items += _unpaid_fees(root, directory, law_base, owner)
+    items += _unpaid_fees(root, selector, law_base, owner)
     for row in report["open"]:
         name = _request_name(row)
         if row["state"] == "waiting_on_you":
             items.append(_request_item("request_waiting_on_you", row, f"{name}: the agency asked for clarification on "
-                                       f"{row['since']}; reply", _reply_command("kit-clarify-reply", directory, row),
+                                       f"{row['since']}; reply", _reply_command("kit-clarify-reply", selector, row),
                                        row["since"], _request_key(row)))
             continue
         if row["state"] == "past_due":
@@ -267,7 +267,7 @@ def _requests(root, as_of, directory, law_base, owner=None):
     return items
 
 
-def _reply_item(row, as_of, directory):
+def _reply_item(row, as_of, selector):
     """DF1109-02: one ``finding_reply_due`` for a private draft whose agency_response is pending with reply_by at most
     FINDING_REPLY_DAYS days away or already past (listed until a reply is recorded); None otherwise. A recorded window,
     never a legal deadline: preparing a request is not proof anyone asked, so no asked date or lateness is claimed. The
@@ -283,18 +283,18 @@ def _reply_item(row, as_of, directory):
     by, ident = response["reply_by"], draft["id"]
     what = (f"reply window for {ident} ends {by}" if by >= as_of.isoformat() else
             f"reply window for {ident} ended {by}: record the reply or no_response")
-    return _item("finding_reply_due", what, f"finding reply {shlex.quote(row['draft_path'])} --directory {directory} "
+    return _item("finding_reply_due", what, f"finding reply {shlex.quote(row['draft_path'])} {selector} "
                  "--status STATUS --on YYYY-MM-DD --asked-on YYYY-MM-DD", by, f"{ident} {row['draft_path']}")
 
 
-def _findings(root, as_of, directory):
+def _findings(root, as_of, selector):
     """Draft work from status_rows' private draft rows: ready/blocked, and (DF1109-02) pending reply windows. A draft
     status_rows already reports unreadable is named once; one whose response cannot be checked is its own item."""
     items = []
     for row in findings.status_rows(root, draft_paths=True):
         if "draft_path" in row and row["state"] != "withdrawn":
             try:
-                if (reply := _reply_item(row, as_of, directory)) is not None:
+                if (reply := _reply_item(row, as_of, selector)) is not None:
                     items.append(reply)
             except (ValueError, OSError):  # the reason can quote the file: withheld, the other drafts still listed
                 items.append(_unreadable(row["draft_path"], f"agency_response {WITHHELD}"))
@@ -303,14 +303,14 @@ def _findings(root, as_of, directory):
         elif row["state"] in ("ready", "blocked"):  # only drafts reach these states; name the file actually read
             draft, key = shlex.quote(row["draft_path"]), f"{row['id']} {row['draft_path']}"
             items.append(_item("finding_ready", f"Finding {row['id']} is reviewed and ready to publish",
-                               f"finding publish {draft} --directory {directory} --approved-by NAME", key=key)
+                               f"finding publish {draft} {selector} --approved-by NAME", key=key)
                          if row["state"] == "ready" else
                          _item("finding_blocked", f"Finding {row['id']} is blocked: {', '.join(row['blockers'])}",
-                               f"finding review-status {draft} --directory {directory}", key=key))
+                               f"finding review-status {draft} {selector}", key=key))
     return items
 
 
-def _correction_requests(root, as_of, directory):
+def _correction_requests(root, as_of, selector):
     """DF1109-02: one ``correction_request_open`` per correction request open more than 14 days (correction_requests'
     own open_overdue rule, as doctor uses it), with its integer days_open. No log: nothing, and nothing is created.
     Each id is rechecked in list_requests, so a decision recorded between the two reads lists no stale work. Never the
@@ -323,7 +323,7 @@ def _correction_requests(root, as_of, directory):
         return [_unreadable(CORRECTION_LOG, f"the correction request log {WITHHELD}")]
     return [{**_item("correction_request_open", f"Correction request {row['id']} for finding {_show(row['finding_id'])} "
                      f"has been open {row['days_open']} days; record a decision",
-                     f"correction-request decide DECISION --directory {directory} --id {row['id']} --on YYYY-MM-DD "
+                     f"correction-request decide DECISION {selector} --id {row['id']} --on YYYY-MM-DD "
                      "--note NOTE", row["received_on"], f"{row['id']:012d}"), "days_open": row["days_open"]}
             for row in rows if row["id"] in overdue and row["state"] == "open" and row["days_open"] > 14]
 
@@ -347,17 +347,17 @@ def _present(root, *names):
     return any(os.path.lexists(kit_dir / name) for name in names)
 
 
-def _press(root, as_of, directory):
+def _press(root, as_of, selector):
     """DF1109-03: press check's own problem count (stale, not-checked or unsafe rows) as one item; no folder, nothing."""
     if not _present(root, PRESS, f"{PRESS}.suggested"):
         return []
     from .press_check import check_press
     n = check_press(root, now=_moment(as_of))["problems"]
     return [_item("outreach_stale", f"press: {n} draft check problem(s); inspect before use",
-                  f"press check --directory {directory}", key=PRESS)] if n else []
+                  f"press check {selector}", key=PRESS)] if n else []
 
 
-def _social(root, as_of, directory):
+def _social(root, as_of, selector):
     """DF1109-03: stale or outdated social drafts from social --check, kit/social/ and each folder block counted once.
     A missing draft or an edit-only problem is not counted; a folder or draft the check could not read is one
     ``unreadable`` item next to any count, never a fresh match. No social folder: nothing, content is not read."""
@@ -372,19 +372,20 @@ def _social(root, as_of, directory):
         if block.get("folder_problems") or any(row["state"] == "not_regular" for row in block["drafts"]):
             hazards.append(rel)
     items = [_item("outreach_stale", f"social: {stale} stale or outdated draft(s); inspect before use",
-                   f"social --directory {directory} --check", key=SOCIAL)] if stale else []
+                   f"social {selector} --check", key=SOCIAL)] if stale else []
     if hazards:
         items.append(_unreadable(f"kit/{SOCIAL}/", f"social --check could not check {', '.join(hazards)}"))
     return items
 
 
-def _newsletter(root, as_of, directory):
+def _newsletter(root, as_of, selector):
     """DF1109-03: newsletter --check's difference count; a draft without provenance is an info item, not a match."""
     if not _present(root, f"{NEWSLETTER}-draft.json"):
         return []
     from .newsletter.check import check_draft
     report = check_draft(root, now=_moment(as_of))
-    command = f"python3 -m campaign_tool.newsletter --directory {directory}"
+    # the newsletter module takes only --directory (no --campaign flag, by design), so its hint always names the path
+    command = f"python3 -m campaign_tool.newsletter --directory {shlex.quote(str(root))}"
     if report["status"] == "not_checked":
         return [_item("outreach_not_checked", "newsletter draft not checked; rebuild with --from-content",
                       command + " --from-content", key=NEWSLETTER)]
@@ -393,7 +394,7 @@ def _newsletter(root, as_of, directory):
                   command + " --check", key=NEWSLETTER)] if report["status"] == "different" else []
 
 
-def _review_waiting(root, as_of, directory, days):
+def _review_waiting(root, as_of, selector, days):
     """Assigned review roles with no current-content receipt after ``days`` days (assignments never count as review)."""
     items = []
     for row in findings.status_rows(root, draft_paths=True):
@@ -411,33 +412,33 @@ def _review_waiting(root, as_of, directory, days):
             if states[role]["state"] == "assigned" and (as_of - date.fromisoformat(entry["on"])).days >= days:
                 items.append(_item("review_waiting", f"Review ({role}) of {row['id']} assigned to "
                                    f"{entry['reviewer']} since {entry['on']}",
-                                   f"finding review-status {shlex.quote(row['draft_path'])} --directory {directory}",
+                                   f"finding review-status {shlex.quote(row['draft_path'])} {selector}",
                                    entry["on"], f"{row['id']} {role}"))
     return items
 
 
-def _stale_kits(root, directory):
+def _stale_kits(root, selector):
     by_meeting = {}
     for entry in meeting_stage.stale_kits(root):
         by_meeting.setdefault(entry["meeting"], []).append(f"{entry['finding']} (corrected {entry['latest_correction']})")
     return [_item("stale_comment_kit", f"Comment kit for meeting {meeting} cites {', '.join(cited)} without the "
-                  "latest correction", f"meetings-stage --directory {directory} --id {shlex.quote(meeting)} --replace",
+                  "latest correction", f"meetings-stage {selector} --id {shlex.quote(meeting)} --replace",
                   key=meeting) for meeting, cited in sorted(by_meeting.items())]
 
 
-def _contacts(root, as_of, directory):
+def _contacts(root, as_of, selector):
     stale = kit.stale_contacts(root, CONTACT_MAX_AGE_DAYS, as_of)
     if stale is None:
         raise ValueError("kit/agencies.json is not readable JSON")
     return [_item("stale_contact", f"Re-check the records contact for {entry['agency_id']} on its official site ("
                   + (f"last checked {entry['checked_on']}, {entry['age_days']} days ago)" if entry["checked_on"]
                      else "no valid checked_on date)"),
-                  f"kit-verify-agency --directory {directory} --agency-id {shlex.quote(entry['agency_id'])} "
+                  f"kit-verify-agency {selector} --agency-id {shlex.quote(entry['agency_id'])} "
                   "--source-url OFFICIAL_URL --checked-on YYYY-MM-DD --records-email ADDRESS",
                   entry["checked_on"], entry["agency_id"]) for entry in stale]
 
 
-def _contracts(root, as_of, directory, days):
+def _contracts(root, as_of, selector, days):
     path = root / "content" / "agencies.json"
     if not path.exists() and not path.is_symlink():  # no agency list: nothing to watch
         return []
@@ -455,7 +456,7 @@ def _contracts(root, as_of, directory, days):
             continue
         note = f" Note: {term['renewal_note']}" if term["renewal_note"] else ""
         items.append(_item("contract_ending", f"{head} {step}. Source: {term['source_url']} (checked "
-                           f"{term['checked_on']}){note}", f"meetings --directory {directory} --client "
+                           f"{term['checked_on']}){note}", f"meetings {selector} --client "
                            "LEGISTAR_CLIENT --online", term["end"], agency["agency_id"]))
     return items
 
@@ -494,11 +495,11 @@ def _show(text):
                    else f"\\u{ord(c):04x}" if ord(c) < 0x10000 else f"\\U{ord(c):08x}" for c in str(text))
 
 
-def _backups(folder, as_of, directory, days):
+def _backups(folder, as_of, selector, days):
     """DF0237-10: one ``backup_due`` item unless a verified archive no older than ``days`` exists in ``folder``."""
     from . import backup
     shown, quoted = _show(folder), shlex.quote(str(folder))
-    command = f"backup --directory {directory} --into {quoted}"
+    command = f"backup {selector} --into {quoted}"
     inspect = f"backup-list --dir {quoted}"
     unreadable = lambda label, reason: _item("unreadable", f"fix {label}: {reason}", inspect, key=label)
     try:
@@ -524,27 +525,35 @@ def _backups(folder, as_of, directory, days):
 
 
 def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days=REVIEW_DAYS, owner=None,
-         backups=None, backup_days=BACKUP_DAYS):
+         backups=None, backup_days=BACKUP_DAYS, campaign_name=None):
     """Ranked to-do items ``{rank, kind, what, due, command}``; reads only, never raises for a broken input.
 
-    ``owner`` keeps only that teammate's request work; meetings, findings, contracts and contacts stay listed."""
+    ``owner`` keeps only that teammate's request work; meetings, findings, contracts and contacts stay listed.
+    ``campaign_name`` (``campaigns today`` only, DF1109-15) puts ``--campaign NAME`` at every campaign selector
+    instead of ``--directory PATH``; path operands (draft files, ``--into``) and human instructions are unchanged."""
     root = Path(root)
-    directory = shlex.quote(str(root))
+    if campaign_name is None:
+        selector = f"--directory {shlex.quote(str(root))}"
+    else:
+        from .registry import NAME
+        if not isinstance(campaign_name, str) or not NAME.fullmatch(campaign_name):
+            raise ValueError("campaign_name is not a valid campaign name")
+        selector = f"--campaign {shlex.quote(campaign_name)}"
     owner = None if owner is None else kit_assign.owner_label(owner, "--owner")
     if backups is not None and (type(backup_days) is not int or not 1 <= backup_days <= 90):
         from .backup import BackupError
         raise BackupError("backup_days must be an integer 1-90")
-    sources = ((lambda: _meetings(root, as_of, directory), "content/meetings/"),
-               (lambda: _requests(root, as_of, directory, law_base, owner), "kit/sent.json"),
-               (lambda: _findings(root, as_of, directory), "private/drafts/"),
-               (lambda: _correction_requests(root, as_of, directory), CORRECTION_LOG),
-               (lambda: _press(root, as_of, directory), "kit/press/"),  # DF1109-03: one source per outreach tool
-               (lambda: _social(root, as_of, directory), f"kit/{SOCIAL}/"),
-               (lambda: _newsletter(root, as_of, directory), "kit/newsletter-draft.json"),
-               (lambda: _contracts(root, as_of, directory, contract_days), "content/agencies.json"),
-               (lambda: _review_waiting(root, as_of, directory, review_days), "private/review-assignments/"),
-               (lambda: _stale_kits(root, directory), "content/"),
-               (lambda: _contacts(root, as_of, directory), "kit/agencies.json"),
+    sources = ((lambda: _meetings(root, as_of, selector), "content/meetings/"),
+               (lambda: _requests(root, as_of, selector, law_base, owner), "kit/sent.json"),
+               (lambda: _findings(root, as_of, selector), "private/drafts/"),
+               (lambda: _correction_requests(root, as_of, selector), CORRECTION_LOG),
+               (lambda: _press(root, as_of, selector), "kit/press/"),  # DF1109-03: one source per outreach tool
+               (lambda: _social(root, as_of, selector), f"kit/{SOCIAL}/"),
+               (lambda: _newsletter(root, as_of, selector), "kit/newsletter-draft.json"),
+               (lambda: _contracts(root, as_of, selector, contract_days), "content/agencies.json"),
+               (lambda: _review_waiting(root, as_of, selector, review_days), "private/review-assignments/"),
+               (lambda: _stale_kits(root, selector), "content/"),
+               (lambda: _contacts(root, as_of, selector), "kit/agencies.json"),
                (lambda: _body_schedules(root, as_of), "content/body-schedules.json"))
     items = []
     for read, label in sources:
@@ -553,7 +562,7 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days
         except (ValueError, OSError) as exc:  # one failing source never hides another's items
             items.append(_unreadable(label, exc))
     if backups is not None:
-        items.extend(_backups(backups, as_of, directory, backup_days))
+        items.extend(_backups(backups, as_of, selector, backup_days))
     items.sort(key=lambda item: (KINDS.index(item["kind"]), item["due"] or "", item["_key"]))
     return [{"rank": rank, **{k: v for k, v in item.items() if k != "_key"}} for rank, item in enumerate(items, 1)]
 
