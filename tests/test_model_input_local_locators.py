@@ -16,8 +16,12 @@ SENTINEL = "synthetic-private-sentinel"
 
 
 def deep_locator():
+    # Python 3.11's C JSON encoder spends the interpreter recursion budget on
+    # every container (two per level here), so the fixture must stay under
+    # limit/2 to be built at all, while deepcopy (four Python frames per
+    # level) must still exceed the limit: 0.35 satisfies both.
     node = {"leaf": SENTINEL}
-    for _ in range(int(sys.getrecursionlimit() * 0.6)):
+    for _ in range(int(sys.getrecursionlimit() * 0.35)):
         node = {"k": [node]}
     return json.loads(json.dumps(node))
 
