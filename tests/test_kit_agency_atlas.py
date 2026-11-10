@@ -395,6 +395,100 @@ class CompareTests(AtlasTestCase):
         self.assertEqual(json.loads((self.root / "kit" / "agencies.json").read_text()), self.entries)
 
 
+class CityTextTests(AtlasTestCase):
+    def test_text_city_for_each_listed_csv_row(self):
+        path = self.atlas([
+            row("North Fictional Police Department", vendor="V1", city=" Northville "),
+            row("North Fictional Police Department", vendor="V2", city="Southville"),
+            row("Fictional County Sheriff's Office", city="County Seat")])
+        text = kit_atlas.render_atlas(self.compare(path))
+        expected = [
+            "    CSV line 2: North Fictional Police Department; vendor: V1; city:  Northville ",
+            "    CSV line 3: North Fictional Police Department; vendor: V2; city: Southville"]
+        for line in expected:
+            self.assertIn(line, text.splitlines())
+        self.assertLess(text.index(expected[0]), text.index(expected[1]))
+        self.assertIn("- North Fictional Police Department [ca-fict-north-police]: not selected", text)
+        self.assertIn("- Fictional County Sheriff's Office [ca-fict-county-sheriff]: selected", text)
+
+    def test_text_city_for_unmatched_and_ambiguous_rows(self):
+        text = kit_atlas.render_atlas(self.compare(self.atlas([
+            row("Unknown Agency", vendor="V", city="Unknownville"),
+            row("Twin Police", city="Twinville")])))
+        self.assertIn("- CSV line 2: Unknown Agency; vendor: V; reason: no_seed_match; city: Unknownville",
+                      text.splitlines())
+        self.assertIn("- CSV line 3: Twin Police; vendor: vendor not supplied; reason: ambiguous_seed_name; city: Twinville",
+                      text.splitlines())
+        self.assertIn("    candidates: ca-fict-twin-police-a, ca-fict-twin-police-b", text.splitlines())
+        for claim in ("recommended", "operates", "uses ALPR"):
+            self.assertNotIn(claim, text)
+
+    def test_empty_city_has_honest_text_fallback_only(self):
+        for vendor in (None, "", " ", "V"):
+            with self.subTest(vendor=vendor):
+                rows = [row("North Fictional Police Department", city=""), row("Unknown", city="   ")]
+                for cells in rows:
+                    if vendor is None:
+                        cells.pop()
+                    else:
+                        cells[-1] = vendor
+                report = self.compare(self.atlas(rows, header=HEADER[:5] if vendor is None else HEADER))
+                original = copy.deepcopy(report)
+                text = kit_atlas.render_atlas(report)
+                displayed_vendor = vendor or "vendor not supplied"
+                self.assertIn(f"    CSV line 2: North Fictional Police Department; vendor: {displayed_vendor}; city: city not supplied",
+                              text.splitlines())
+                self.assertIn(f"- CSV line 3: Unknown; vendor: {displayed_vendor}; reason: no_seed_match; city: city not supplied",
+                              text.splitlines())
+                self.assertEqual(report["listed_seed"]["rows"][0]["atlas"][0]["city"], "")
+                self.assertEqual(report["unmatched_atlas"]["rows"][0]["city"], "   ")
+                self.assertEqual(report, original)
+                self.assertNotIn("city:", text.split("Selected agencies not listed in Atlas", 1)[1])
+
+    def test_city_is_literal_context_not_a_match_key(self):
+        rows = [row("North Fictional Police Department"), row("Twin Police"), row("Unknown"),
+                row("East Fictional Police", county="Otherland"),
+                row("East Fictional Police", state="NV"), row("East Fictional Police", tech="Body-Worn Cameras")]
+        baseline = self.compare(self.atlas(rows))
+        for city in ("  Cañón d'Oro, Côte  ", '<b>**city**</b>[x](https://example.invalid)', '=HYPERLINK("x")'):
+            with self.subTest(city=city):
+                changed = copy.deepcopy(rows)
+                for cells in changed:
+                    cells[1] = city
+                report = self.compare(self.atlas(changed))
+                original = copy.deepcopy(report)
+                text = kit_atlas.render_atlas(report)
+                self.assertEqual(text.count("; city: " + city), 3)
+                self.assertEqual(report, original)
+                for listed in report["listed_seed"]["rows"]:
+                    for atlas in listed["atlas"]:
+                        atlas["city"] = "Somewhere"
+                for atlas in report["unmatched_atlas"]["rows"]:
+                    atlas["city"] = "Somewhere"
+                self.assertEqual(report, baseline)
+
+    def test_legacy_report_surfaces_unchanged_except_city_suffix(self):
+        # A baseline renderer from main pins every surface except the new suffix.
+        report = self.compare(self.atlas([row("North Fictional Police Department", city="CITY"),
+                                         row("Twin Police", city="CITY")]))
+        expected = ["Atlas cross-check for Fictional County, CA"]
+        for key, heading in kit_atlas.SECTIONS:
+            expected += ["", heading, NOTICE]
+            if key == "listed_seed":
+                expected += ["- North Fictional Police Department [ca-fict-north-police]: not selected",
+                             "    CSV line 2: North Fictional Police Department; vendor: vendor not supplied; city: CITY"]
+            elif key == "unmatched_atlas":
+                expected += ["- CSV line 3: Twin Police; vendor: vendor not supplied; reason: ambiguous_seed_name; city: CITY",
+                             "    candidates: ca-fict-twin-police-a, ca-fict-twin-police-b"]
+            else:
+                expected += [f"- {entry['name']} [{entry['agency_id']}]" for entry in report[key]["rows"]]
+        self.assertEqual(kit_atlas.render_atlas(report), "\n".join(expected + ["", kit_atlas.TRAILER]))
+        empty = kit_atlas.render_atlas(self.compare(self.atlas([])))
+        self.assertEqual(empty.count("(none)"), 2)
+        self.assertNotIn("city:", empty)
+        self.assertNotIn(SENTINEL, kit_atlas.render_atlas(report))
+
+
 def cli(*arguments, cwd=REPO_ROOT):
     return subprocess.run([sys.executable, "-B", "-m", "campaign_tool", *map(str, arguments)],
                           cwd=cwd, capture_output=True, text=True, timeout=60)
@@ -413,6 +507,44 @@ class CliTests(AtlasTestCase):
         self.write_campaign(county="San Luis Obispo")
         self.csv = self.atlas([row(self.sheriff["name"].replace("Office", "Department"), "Flock Safety",
                                    county="San Luis Obispo County"), row("Nowhere PD", county="San Luis Obispo")])
+
+    def test_city_controls_refuse_entire_file_before_output(self):
+        for control in ("\x1b", "\u202e", "\u2028", "\u2029"):
+            for county in ("San Luis Obispo", "Otherland"):
+                with self.subTest(control=repr(control), county=county):
+                    path = self.atlas([row(self.sheriff["name"], county="San Luis Obispo", city="Good"),
+                                       row("Unknown", county=county, city=SENTINEL + control)])
+                    before = snapshot(self.tmp)
+                    with forbidden(), self.assertRaisesRegex(AtlasError, "line 3: City contains a control or format character"):
+                        kit_atlas.compare_atlas(self.root, path)
+                    for extra in ([], ["--json"]):
+                        result = cli("kit-agency", "atlas", "--csv", path, "--directory", self.root, *extra)
+                        self.assertEqual((result.returncode, result.stdout), (1, ""))
+                        self.assertIn("line 3: City contains a control or format character", result.stderr)
+                        self.assertNotIn("Traceback", result.stderr)
+                        self.assertNotIn(SENTINEL, result.stderr)
+                    self.assertEqual(snapshot(self.tmp), before)
+
+    def test_cli_city_text_json_parity_and_read_only_repeat(self):
+        self.csv = self.atlas([row(self.sheriff["name"], "V", county="San Luis Obispo", city=" Cañón, East "),
+                               row("Unknown", county="San Luis Obispo", city="Unmatched City")])
+        before = snapshot(self.tmp)
+        with forbidden():
+            report = kit_atlas.compare_atlas(self.root, self.csv)
+            text = kit_atlas.render_atlas(report)
+        for _ in range(2):
+            result = cli("kit-agency", "atlas", "--csv", self.csv, "--directory", self.root)
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assertEqual(result.stdout, text + "\n")
+            self.assertIn(f"    CSV line 2: {self.sheriff['name']}; vendor: V; city:  Cañón, East ", result.stdout.splitlines())
+            self.assertIn("- CSV line 3: Unknown; vendor: vendor not supplied; reason: no_seed_match; city: Unmatched City",
+                          result.stdout.splitlines())
+            as_json = cli("kit-agency", "atlas", "--csv", self.csv, "--directory", self.root, "--json")
+            self.assertEqual((as_json.returncode, as_json.stderr), (0, ""))
+            self.assertEqual(as_json.stdout, json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+        self.assertEqual(text.count(NOTICE), 3)
+        self.assertTrue(text.endswith(kit_atlas.TRAILER))
+        self.assertEqual(snapshot(self.tmp), before)
 
     def test_read_only_success_errors_and_cli_flags(self):
         before, source = snapshot(self.root), snapshot(self.csv)

@@ -192,6 +192,10 @@ def _vendor(row):
     return row["vendor"] or "vendor not supplied"
 
 
+def _city(row):
+    return row["city"] if row["city"].strip() else "city not supplied"
+
+
 def render_atlas(report):
     """Plain text only: every value is printed literally; nothing is interpreted."""
     lines = [f"Atlas cross-check for {report['county']} County, {report['state']}"]
@@ -203,9 +207,9 @@ def render_atlas(report):
         for row in section["rows"]:
             if key == "listed_seed":
                 lines.append(f"- {row['name']} [{row['agency_id']}]: {'selected' if row['selected'] else 'not selected'}")
-                lines += [f"    CSV line {a['line']}: {a['agency']}; vendor: {_vendor(a)}" for a in row["atlas"]]
+                lines += [f"    CSV line {a['line']}: {a['agency']}; vendor: {_vendor(a)}; city: {_city(a)}" for a in row["atlas"]]
             elif key == "unmatched_atlas":
-                lines.append(f"- CSV line {row['line']}: {row['agency']}; vendor: {_vendor(row)}; reason: {row['reason']}")
+                lines.append(f"- CSV line {row['line']}: {row['agency']}; vendor: {_vendor(row)}; reason: {row['reason']}; city: {_city(row)}")
                 if row["candidate_agency_ids"]:
                     lines.append("    candidates: " + ", ".join(row["candidate_agency_ids"]))
             else:
