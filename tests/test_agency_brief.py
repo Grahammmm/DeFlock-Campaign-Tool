@@ -423,11 +423,11 @@ class BoundaryTests(BriefCase):
         def second_fails(directory, name, data, replace, expected):
             calls.append(name)
             if len(calls) == 2:
-                raise OSError(5, "Input/output error")
+                raise agency_brief._WriteError(name, False, False, "target publication", False)
             return real(directory, name, data, replace, expected)
         with mock.patch.object(agency_brief, "_write_file", side_effect=second_fails):
-            with self.assertRaisesRegex(BriefError, r"%s could not be written \(Input/output error\); kit/briefs/%s was already "
-                                        r"written, so the pair is incomplete: run the same command again with --replace"
+            with self.assertRaisesRegex(BriefError, r"%s could not be written.*kit/briefs/%s was already "
+                                        r"written, so the pair is incomplete.*same command again with --replace"
                                         % (TXT.replace(".", r"\."), HTML.replace(".", r"\."))):
                 self.brief()
         self.assertEqual(sorted(p.name for p in briefs.iterdir()), [HTML])  # the partial pair stays; no temporary is left
@@ -543,6 +543,208 @@ class OutputTests(BriefCase):
     def test_rows_are_deep_copy_safe(self):
         rows = self.rows()
         self.assertEqual(rows, copy.deepcopy(self.rows()))  # same input and clock give the same rows
+
+
+class PublicationFailureTests(BriefCase):
+    def prepare(self, replace=False):
+        shutil.rmtree(self.root / "kit", ignore_errors=True)
+        self.brief()
+        folder = self.root / "kit" / "briefs"
+        expected = {name: (folder / name).read_bytes() for name in (HTML, TXT)}
+        for name in expected:
+            (folder / name).unlink()
+        if replace:
+            for name in expected:
+                (folder / name).write_bytes(b"OLD " + name.encode())
+        return folder, expected
+
+    def cli(self, replace=False):
+        # Exercise the real CLI boundary with the fixture's fixed, aware clock.
+        with mock.patch.object(agency_brief, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = NOW
+            return run("agency-brief", "--directory", self.root, "--agency", POLICE,
+                       *(["--replace"] if replace else []))
+
+    def failed(self, replace=False):
+        code, out, err = self.cli(replace)
+        self.assertEqual(code, 1, err)
+        self.assertEqual(out, "")
+        self.assertIn("Stopped:", err)
+        self.assertNotIn(SENTINEL, err)
+        return err
+
+    def repaired(self, folder, expected):
+        code, out, err = self.cli(True)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Private brief written.", out)
+        self.assertEqual(tree(folder), expected)
+        for name in expected:
+            self.assertEqual(stat.S_IMODE((folder / name).stat().st_mode), 0o600)
+        result = self.brief(replace=True)
+        self.assertEqual(result, {"written": ["kit/briefs/" + HTML, "kit/briefs/" + TXT], "flags": []})
+
+    def directory_failure(self, twin, replace=False):
+        folder, expected = self.prepare(replace)
+        real = os.fsync
+        calls = 0
+
+        def fsync(fd):
+            nonlocal calls
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                calls += 1
+                if calls == twin:
+                    raise OSError(5, SENTINEL)
+            return real(fd)
+
+        with mock.patch.object(os, "fsync", side_effect=fsync):
+            err = self.failed(replace)
+        self.assertEqual(calls, twin)  # never continue to the other twin after failure
+        self.assertIn("kit/briefs/" + HTML, err)
+        self.assertIn("durability could not be confirmed", err)
+        self.assertIn("--replace", err)
+        self.assertEqual((folder / HTML).read_bytes(), expected[HTML])
+        if twin == 1:
+            self.assertIn("pair is incomplete", err)
+            if replace:
+                self.assertEqual((folder / TXT).read_bytes(), b"OLD " + TXT.encode())
+            else:
+                self.assertFalse((folder / TXT).exists())
+        else:
+            self.assertEqual((folder / TXT).read_bytes(), expected[TXT])
+            self.assertIn("both files were written", err)
+            self.assertIn("kit/briefs/" + TXT, err)
+            self.assertNotIn("incomplete", err)
+            self.assertNotIn("could not be written", err)
+        self.assertFalse(list(folder.glob(".*.tmp")))
+        self.repaired(folder, expected)
+
+    def test_first_create_directory_flush_failure_reports_published_html(self):
+        self.directory_failure(1)
+
+    def test_first_replace_directory_flush_failure_reports_mixed_pair(self):
+        self.directory_failure(1, True)
+
+    def test_second_directory_flush_failure_reports_both_written_not_incomplete(self):
+        for replace in (False, True):
+            with self.subTest(replace=replace):
+                self.directory_failure(2, replace)
+
+    def test_prepublication_failures_keep_target_state(self):
+        for replace in (False, True):
+            for twin in (1, 2):
+                for phase in ("fchmod", "fsync", "publish", "open", "write", "fdopen"):
+                    with self.subTest(replace=replace, twin=twin, phase=phase):
+                        folder, expected = self.prepare(replace)
+                        operation = (("replace" if replace else "link") if phase == "publish"
+                                     else "fdopen" if phase == "write" else phase)
+                        real = getattr(os, operation)
+                        calls = 0
+
+                        @contextlib.contextmanager
+                        def failed_write(*args, **kwargs):
+                            nonlocal calls
+                            with real(*args, **kwargs) as stream:
+                                if args[1] != "wb":
+                                    yield stream
+                                    return
+                                calls += 1
+                                wrapped = mock.Mock(wraps=stream)
+                                if calls == twin:
+                                    wrapped.write.side_effect = OSError(5, SENTINEL)
+                                yield wrapped
+
+                        def fail(*args, **kwargs):
+                            nonlocal calls
+                            selected = (phase != "fsync" or stat.S_ISREG(os.fstat(args[0]).st_mode))
+                            selected = selected and (phase != "open" or str(args[0]).endswith(".tmp"))
+                            selected = selected and (phase != "fdopen" or args[1] == "wb")
+                            if selected:
+                                calls += 1
+                                if calls == twin:
+                                    raise OSError(5, SENTINEL)
+                            return real(*args, **kwargs)
+
+                        with mock.patch.object(os, operation, side_effect=failed_write if phase == "write" else fail):
+                            err = self.failed(replace)
+                        name = (HTML, TXT)[twin - 1]
+                        self.assertIn("kit/briefs/" + name + " could not be written", err)
+                        self.assertEqual("pair is incomplete" in err, twin == 2)
+                        if replace:
+                            self.assertEqual((folder / name).read_bytes(), b"OLD " + name.encode())
+                        else:
+                            self.assertFalse((folder / name).exists())
+                        if twin == 2:
+                            self.assertEqual((folder / HTML).read_bytes(), expected[HTML])
+                        self.assertFalse(list(folder.glob(".*.tmp")))
+                        self.repaired(folder, expected)
+
+    def test_create_temp_unlink_failure_after_link_is_postpublication(self):
+        for persistent in (False, True):
+            with self.subTest(persistent=persistent):
+                folder, expected = self.prepare()
+                caller = folder / "caller.txt"
+                caller.write_bytes(b"caller-owned")
+                real = os.unlink
+                calls = 0
+
+                def unlink(name, **kwargs):
+                    nonlocal calls
+                    if str(name).endswith(".tmp"):
+                        calls += 1
+                        if persistent or calls == 1:
+                            raise OSError(5, SENTINEL)
+                    return real(name, **kwargs)
+
+                with mock.patch.object(os, "unlink", side_effect=unlink):
+                    err = self.failed()
+                self.assertIn("temporary cleanup failed", err)
+                self.assertIn("pair is incomplete", err)
+                self.assertIn("--replace", err)
+                self.assertNotIn("could not be written", err)
+                self.assertEqual((folder / HTML).read_bytes(), expected[HTML])
+                self.assertFalse((folder / TXT).exists())
+                self.assertEqual(caller.read_bytes(), b"caller-owned")
+                self.assertEqual(bool(list(folder.glob(".*.tmp"))), persistent)
+                caller.unlink()
+                # Persistent cleanup retains the owned link; explicit retry still refuses
+                # its now-multilink target until the organizer resolves the named residue.
+                if persistent:
+                    with self.assertRaisesRegex(BriefError, "single-link"):
+                        self.brief(replace=True)
+                    for temporary in folder.glob(".*.tmp"):
+                        temporary.unlink()
+                self.repaired(folder, expected)
+
+    def test_second_target_safety_refusal_retains_partial_warning(self):
+        for kind in ("arrived", "symlink", "identity"):
+            with self.subTest(kind=kind):
+                folder, expected = self.prepare(kind == "identity")
+                real = agency_brief._write_file
+                outside = self.tmp / "outside"
+                outside.write_bytes(b"caller-owned")
+
+                def arrives(directory, name, data, replace, identity):
+                    if name == TXT:
+                        if kind == "symlink":
+                            (folder / name).symlink_to(outside)
+                        elif kind == "identity":
+                            replacement = folder / "new"
+                            replacement.write_bytes(b"arrived")
+                            os.replace(replacement, folder / name)
+                        else:
+                            (folder / name).write_bytes(b"arrived")
+                    return real(directory, name, data, replace, identity)
+
+                with mock.patch.object(agency_brief, "_write_file", side_effect=arrives):
+                    err = self.failed(kind == "identity")
+                self.assertEqual(err.count("pair is incomplete"), 1)
+                self.assertIn("appeared or changed", err)
+                self.assertIn("--replace", err)
+                self.assertEqual((folder / HTML).read_bytes(), expected[HTML])
+                self.assertEqual(outside.read_bytes(), b"caller-owned")
+                self.assertEqual((folder / TXT).read_bytes(), b"caller-owned" if kind == "symlink" else b"arrived")
+                (folder / TXT).unlink()
+                self.repaired(folder, expected)
 
 
 if __name__ == "__main__":
