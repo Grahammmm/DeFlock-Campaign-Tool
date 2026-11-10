@@ -718,6 +718,200 @@ class PreserveTests(unittest.TestCase):
                     (folder / "old.md").unlink()
                     folder.rmdir()
 
+    @contextlib.contextmanager
+    def output_io(self, request="main", *, open_error=None, fdopen_error=None, wrap=None, close_error=None):
+        """Forward the real output open/close/fdopen for one leaf; record raw output descriptors only."""
+        target = self.root / "kit" / "preservation" / f"{A}--{request}.md"
+        real_open, real_close, real_fdopen = os.open, os.close, os.fdopen
+        events = {"fds": [], "raw_closed": [], "fdopen": []}
+
+        def opening(name, flags, *args, **kwargs):
+            if Path(name) != target:
+                return real_open(name, flags, *args, **kwargs)
+            if open_error:
+                raise open_error
+            fd = real_open(name, flags, *args, **kwargs)
+            events["fds"].append(fd)
+            return fd
+
+        def closing(fd):
+            if fd not in events["fds"]:
+                return real_close(fd)
+            events["raw_closed"].append(fd)
+            real_close(fd)
+            if close_error:
+                raise close_error
+
+        def fdopening(fd, *args, **kwargs):
+            events["fdopen"].append(fd)
+            if fdopen_error:
+                raise fdopen_error  # before any stream exists: nothing owns the descriptor yet
+            stream = real_fdopen(fd, *args, **kwargs)
+            return wrap(stream) if wrap else stream
+
+        with mock.patch("os.open", side_effect=opening), mock.patch("os.close", side_effect=closing), \
+                mock.patch("os.fdopen", side_effect=fdopening), \
+                mock.patch("socket.socket", side_effect=AssertionError("network used")):
+            yield events
+
+    def assert_closed(self, fd):
+        with self.assertRaises(OSError) as caught:
+            os.fstat(fd)
+        self.assertEqual(caught.exception.errno, 9)
+
+    def sentinel(self):
+        fd = os.open(os.devnull, os.O_RDONLY)
+        self.addCleanup(lambda: os.path.exists("/proc/self/fd/%d" % fd) and os.close(fd))
+        return fd
+
+    def test_output_fdopen_failure_closes_real_descriptor(self):
+        sentinel = self.sentinel()
+        error = PermissionError(13, "denied")
+        with self.output_io(fdopen_error=error) as events:
+            with self.assertRaises(PermissionError) as caught:
+                self.make()
+        self.assertIs(caught.exception, error)
+        self.assertEqual(len(events["fds"]), 1)
+        self.assertEqual(events["raw_closed"], events["fds"])
+        self.assert_closed(events["fds"][0])
+        self.assertFalse((self.root / "kit" / "preservation" / f"{A}--main.md").exists())
+        os.fstat(sentinel)
+
+    def test_repeated_output_handoff_failures_do_not_accumulate_resources(self):
+        self.send(A, "named", "2026-03-02")
+        sentinel = self.sentinel()
+        folder = self.root / "kit" / "preservation"
+        for request in ("main", "named"):
+            baseline = self.make(A, request)
+            expected = (self.root / baseline["written"]).read_bytes()
+            (self.root / baseline["written"]).unlink()
+            for existing in (False, True):
+                if not existing:
+                    folder.rmdir()
+                with self.subTest(request=request, existing=existing):
+                    before = snapshot(self.root)
+                    for _ in range(3):
+                        with self.output_io(request, fdopen_error=PermissionError(13, "denied")) as events:
+                            with self.assertRaises(PermissionError):
+                                self.make(A, request)
+                        self.assertEqual(len(events["fds"]), 1)
+                        self.assert_closed(events["fds"][0])
+                        self.assertFalse((folder / f"{A}--{request}.md").exists())
+                        self.assertEqual(snapshot(self.root), before)
+                    os.fstat(sentinel)
+                    result = self.make(A, request)  # fault cleared: the same letter as before
+                    self.assertEqual(result, baseline)
+                    path = self.root / result["written"]
+                    self.assertEqual(path.read_bytes(), expected)
+                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                    self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
+                    path.unlink()
+
+    def test_output_open_failure_never_closes_unowned_descriptor(self):
+        sentinel = self.sentinel()
+        before = snapshot(self.root)
+        error = OSError(28, "synthetic open failure")
+        with self.output_io(open_error=error) as events:
+            with self.assertRaises(OSError) as caught:
+                self.make()
+        self.assertIs(caught.exception, error)
+        self.assertEqual((events["fds"], events["fdopen"], events["raw_closed"]), ([], [], []))
+        self.assertEqual(snapshot(self.root), before)
+        os.fstat(sentinel)
+        self.assertEqual(self.make()["written"], f"kit/preservation/{A}--main.md")  # retry works
+
+    def test_output_stream_transfer_closes_once_on_success_and_io_failure(self):
+        outer = self
+
+        class Forwarding:
+            def __init__(self, real, fail):
+                self.real, self.fail = real, fail
+
+            def write(self, text):
+                if self.fail == "write":
+                    self.real.write(text[:10])
+                    raise OSError(5, "synthetic write failure")
+                result = self.real.write(text)
+                if self.fail == "flush":
+                    self.real.flush()
+                    raise OSError(5, "synthetic flush failure")
+                return result
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.real.close()  # the stream owns and closes the real descriptor
+                if self.fail == "close":
+                    raise OSError(5, "synthetic close failure")
+
+        sentinel = self.sentinel()
+        path = self.root / "kit" / "preservation" / f"{A}--main.md"
+        baseline = self.make()
+        expected = path.read_bytes()
+        path.unlink()
+        for fail in (None, "write", "flush", "close"):
+            with self.subTest(fail=fail):
+                with self.output_io(wrap=lambda real: Forwarding(real, fail)) as events:
+                    if fail:
+                        with self.assertRaisesRegex(OSError, f"synthetic {fail} failure"):
+                            self.make()
+                        self.assertFalse(path.exists())
+                    else:
+                        self.assertEqual(self.make(), baseline)
+                        self.assertEqual(path.read_bytes(), expected)
+                        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                        path.unlink()
+                self.assertEqual(len(events["fds"]), 1)
+                self.assertEqual((events["fdopen"], events["raw_closed"]), (events["fds"], []))
+                outer.assert_closed(events["fds"][0])
+                os.fstat(sentinel)
+        self.assertEqual(self.make(), baseline)  # retry after the failures
+
+    def test_output_handoff_cleanup_retains_primary_failure(self):
+        path = self.root / "kit" / "preservation" / f"{A}--main.md"
+        for error in (OSError(13, "denied"), ValueError("synthetic"), MemoryError(), KeyboardInterrupt()):
+            with self.subTest(error=type(error).__name__):
+                with self.output_io(fdopen_error=error) as events:
+                    with self.assertRaises(type(error)) as caught:
+                        self.make()
+                self.assertIs(caught.exception, error)
+                self.assertEqual(events["raw_closed"], events["fds"])
+                self.assert_closed(events["fds"][0])
+                self.assertFalse(path.exists())
+        primary = PermissionError(13, "denied")
+        with self.output_io(fdopen_error=primary, close_error=OSError(5, "synthetic close failure")) as events:
+            with self.assertRaises(PermissionError) as caught:
+                self.make()
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(len(events["raw_closed"]), 1)  # one attempt, never retried
+        self.assert_closed(events["fds"][0])
+        self.assertFalse(path.exists())
+
+    def test_output_handoff_cli_failure_is_controlled_and_retryable(self):
+        self.send(A, "named", "2026-03-02")
+        sentinel = self.sentinel()
+        for request in ("main", "named"):
+            with self.subTest(request=request):
+                before = snapshot(self.root)
+                with self.output_io(request, fdopen_error=PermissionError(13, "synthetic denied")) as events:
+                    code, out, err = run("kit-preserve", "--directory", self.root, "--agency", A,
+                                         "--request", request)
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn("Stopped:", err)
+                self.assertIn("Fix:", err)
+                self.assertNotIn("Traceback", err)
+                self.assertEqual(len(events["fds"]), 1)
+                self.assert_closed(events["fds"][0])
+                self.assertEqual(snapshot(self.root), before)
+                os.fstat(sentinel)
+                with mock.patch("socket.socket", side_effect=AssertionError("network used")):
+                    code, out, err = run("kit-preserve", "--directory", self.root, "--agency", A,
+                                         "--request", request)
+                self.assertEqual(code, 0)
+                self.assertIn("Draft only. Nothing was sent.", out)
+                (self.root / "kit" / "preservation" / f"{A}--{request}.md").unlink()
+
 
 if __name__ == "__main__":
     unittest.main()
