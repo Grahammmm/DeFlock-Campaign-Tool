@@ -1,11 +1,13 @@
 """kit-calendar writes a private RFC 5545 calendar of request dates and comment deadlines. Offline, synthetic."""
 import contextlib
+import errno
 import io
 import json
 import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -560,6 +562,251 @@ class KitCalendarTests(unittest.TestCase):
         self.assert_refused(self.tmp / "bad.ics", "malformed steps")
         self.assert_refused(out, "exists")
 
+    # --- complete-write publication: a failed or interrupted write leaves no final .ics and never blocks the retry ---
+
+    def export_dir(self):
+        folder = self.tmp / "exports"
+        folder.mkdir()
+        (folder / ".kit-calendar.sentinel.tmp").write_bytes(b"unrelated sentinel")
+        return folder
+
+    def seed(self):
+        self.send(self.a, "2026-03-02")
+        self.stage(meeting("council-1"))
+
+    def publish(self, out):
+        return kit_calendar.calendar(self.root, out, "2026-11-01", now=NOW)
+
+    def tree(self):
+        return {str(p): (p.read_bytes() if p.is_file() and not p.is_symlink() else None)
+                for p in sorted(self.tmp.rglob("*"))}
+
+    def assert_tree(self, before, msg=None):
+        after = self.tree()
+        extra = sorted(set(after) - set(before))
+        self.assertTrue(after == before, f"{msg}: tree changed; new paths {extra}")
+
+    def assert_complete(self, out):
+        self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o600)
+        self.assertTrue(self.events(out.read_bytes()))
+
+    def test_partial_write_failure_leaves_no_final_and_retry_succeeds(self):
+        self.seed()
+        folder = self.export_dir()
+        out, before = folder / "dates.ics", self.tree()
+        seen = []
+        with mock.patch.object(os, "fdopen", faulty_fdopen("write", seen)):
+            with self.assertRaisesRegex(OSError, "synthetic write failure"):
+                self.publish(out)
+        self.assert_tree(before)  # the flushed 23-byte prefix is gone with its staging name
+        self.assertFalse(os.path.lexists(out))
+        self.publish(out)
+        self.assert_complete(out)
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), [".kit-calendar.sentinel.tmp", "dates.ics"])
+
+    def test_stage_failures_close_descriptors_and_remove_only_own_temp(self):
+        self.seed()
+        folder = self.export_dir()
+        out, before = folder / "dates.ics", self.tree()
+        for step in ("wrap", "chmod", "write", "flush", "fsync", "close"):
+            seen = []
+            patches = [mock.patch.object(os, "fdopen", faulty_fdopen(step, seen))]
+            if step in ("chmod", "fsync"):
+                target = "fchmod" if step == "chmod" else "fsync"
+                patches.append(mock.patch.object(os, target, side_effect=OSError(f"synthetic {step} failure")))
+            with self.subTest(step=step), contextlib.ExitStack() as stack:
+                for patch in patches:
+                    stack.enter_context(patch)
+                with self.assertRaisesRegex(OSError, f"synthetic {step} failure"):
+                    self.publish(out)
+            self.assert_tree(before, step)
+            self.assertTrue(seen, step)
+            for descriptor in seen:
+                with self.assertRaises(OSError, msg=f"{step}: descriptor {descriptor} leaked"):
+                    os.fstat(descriptor)
+
+    def test_publication_failure_preserves_destination_and_allows_retry(self):
+        self.seed()
+        folder = self.export_dir()
+        out, before = folder / "dates.ics", self.tree()
+        with mock.patch.object(os, "link", side_effect=OSError(errno.EIO, "synthetic link failure")):
+            with self.assertRaisesRegex(OSError, "synthetic link failure"):
+                self.publish(out)
+        self.assert_tree(before)
+        self.publish(out)
+        self.assert_complete(out)
+
+    def test_target_arriving_at_publication_is_never_overwritten(self):
+        self.seed()
+        folder = self.export_dir()
+        real_link = os.link
+        for kind in ("file", "symlink", "dangling"):
+            out = folder / f"{kind}.ics"
+            (folder / "elsewhere.txt").write_bytes(b"other")
+
+            def link(source, destination, *, out=out, kind=kind):
+                if kind == "file":
+                    out.write_bytes(b"sentinel")
+                else:
+                    out.symlink_to(folder / ("elsewhere.txt" if kind == "symlink" else "missing.txt"))
+                return real_link(source, destination)
+            before = sorted(p.name for p in folder.iterdir())
+            with self.subTest(kind=kind), mock.patch.object(os, "link", side_effect=link):
+                with self.assertRaisesRegex(ValueError, "exists; nothing was overwritten"):
+                    self.publish(out)
+            self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(before + [out.name]))
+            if kind == "file":
+                self.assertEqual(out.read_bytes(), b"sentinel")
+            else:
+                self.assertTrue(out.is_symlink())
+                self.assertEqual((folder / "elsewhere.txt").read_bytes(), b"other")
+                self.assertFalse((folder / "missing.txt").exists())
+
+    def child(self, phase, out):
+        script = self.tmp / "child.py"
+        script.write_text(CHILD, encoding="utf-8")
+        return subprocess.run([sys.executable, "-B", str(script), str(REPO_ROOT), str(self.root), str(out), phase],
+                              capture_output=True, text=True, timeout=120)
+
+    def test_process_exit_during_staging_keeps_final_absent_and_retryable(self):
+        self.seed()
+        folder = self.export_dir()
+        out = folder / "dates.ics"
+        result = self.child("staging", out)
+        self.assertEqual(result.returncode, 77, result.stderr)
+        self.assertFalse(os.path.lexists(out))
+        leftovers = [p for p in folder.iterdir() if p.name != ".kit-calendar.sentinel.tmp"]
+        self.assertEqual(len(leftovers), 1)
+        self.assertRegex(leftovers[0].name, r"^\.kit-calendar\..+\.tmp$")
+        self.assertEqual(stat.S_IMODE(leftovers[0].stat().st_mode), 0o600)
+        self.assertEqual(leftovers[0].read_bytes(), b"BEGIN:VCALENDAR\r\nVERSIO")
+        self.publish(out)
+        self.assert_complete(out)
+        self.assertEqual(leftovers[0].read_bytes(), b"BEGIN:VCALENDAR\r\nVERSIO")  # never swept
+
+    def test_process_exit_after_publication_keeps_complete_private_calendar(self):
+        self.seed()
+        folder = self.export_dir()
+        out = folder / "dates.ics"
+        result = self.child("published", out)
+        self.assertEqual(result.returncode, 78, result.stderr)
+        self.assert_complete(out)
+        data = out.read_bytes()
+        self.assertTrue(data.startswith(b"BEGIN:VCALENDAR\r\n") and data.endswith(b"END:VCALENDAR\r\n"))
+        self.assertEqual(data, kit_calendar.render(kit_calendar._request_events(self.root, None)[0]
+                                                   + kit_calendar._meeting_events(self.root, kit_track._day("2026-11-01")),
+                                                   NOW).encode("utf-8"))
+        with self.assertRaisesRegex(ValueError, "exists; nothing was overwritten"):
+            self.publish(out)
+        self.assertEqual(out.read_bytes(), data)
+
+    def test_post_commit_cleanup_failure_never_deletes_complete_target(self):
+        self.seed()
+        folder = self.export_dir()
+        out = folder / "dates.ics"
+        with mock.patch.object(os, "unlink", side_effect=OSError(errno.EIO, "synthetic cleanup failure")):
+            with self.assertRaisesRegex(OSError, "synthetic cleanup failure"):
+                self.publish(out)
+        self.assert_complete(out)
+        names = [p for p in folder.iterdir() if p.name not in (".kit-calendar.sentinel.tmp", "dates.ics")]
+        self.assertEqual(len(names), 1)
+        self.assertEqual(names[0].stat().st_ino, out.stat().st_ino)  # same complete inode, still intact
+        with self.assertRaisesRegex(ValueError, "exists; nothing was overwritten"):
+            self.publish(out)
+
+    def test_success_preserves_legacy_bytes_and_output_contract(self):
+        folder = self.export_dir()
+        empty = folder / "empty.ics"
+        report = self.publish(empty)
+        self.assertEqual(empty.read_bytes(), kit_calendar.render([], NOW).encode("utf-8"))
+        self.assertEqual(report, {"written": str(empty), "events": 0})
+        self.seed()
+        out = folder / "full.ics"
+        report = self.publish(out)
+        self.assertEqual(report["events"], len(self.events(out.read_bytes())))
+        self.assertEqual(sorted(p.name for p in folder.iterdir()),
+                         [".kit-calendar.sentinel.tmp", "empty.ics", "full.ics"])
+        self.assertEqual((folder / ".kit-calendar.sentinel.tmp").read_bytes(), b"unrelated sentinel")
+        self.assert_complete(out)
+
+
+class FaultHandle:
+    """A real binary file handle that fails at one named step; ``write`` first flushes a literal 23-byte prefix."""
+
+    def __init__(self, handle, step):
+        self.handle, self.step = handle, step
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def fileno(self):
+        return self.handle.fileno()
+
+    def write(self, data):
+        if self.step == "write":
+            self.handle.write(data[:23])
+            self.handle.flush()
+            raise OSError("synthetic write failure")
+        return self.handle.write(data)
+
+    def flush(self):
+        if self.step == "flush":
+            raise OSError("synthetic flush failure")
+        return self.handle.flush()
+
+    def close(self):
+        self.handle.close()
+        if self.step == "close":
+            raise OSError("synthetic close failure")
+
+
+def faulty_fdopen(step, seen):
+    real = os.fdopen
+
+    def fdopen(descriptor, *args, **kwargs):
+        seen.append(descriptor)
+        if step == "wrap":
+            raise OSError("synthetic wrap failure")
+        return FaultHandle(real(descriptor, *args, **kwargs), step)
+    return fdopen
+
+
+CHILD = '''
+import os, sys
+from datetime import datetime, timezone
+sys.path.insert(0, sys.argv[1])
+from campaign_tool import kit_calendar
+root, out, phase = sys.argv[2:5]
+real_fdopen = os.fdopen
+
+
+class Cut:
+    def __init__(self, handle):
+        self.handle = handle
+    def __enter__(self):
+        return self
+    def __exit__(self, *exc):
+        self.handle.close()
+    def fileno(self):
+        return self.handle.fileno()
+    def write(self, data):
+        self.handle.write(data[:23])
+        self.handle.flush()
+        os._exit(77)
+
+
+if phase == "staging":
+    os.fdopen = lambda descriptor, *a, **k: Cut(real_fdopen(descriptor, *a, **k))
+else:
+    def unlink(path, *a, **k):
+        os._exit(78)
+    os.unlink = unlink
+kit_calendar.calendar(root, out, "2026-11-01", now=datetime(2026, 11, 1, 12, tzinfo=timezone.utc))
+os._exit(1)
+'''
 
 NEW_KINDS = ("download-expiry-", "next-installment-", "stated-extension-")
 STATED_ESCAPED = "agency-stated\\; provisional\\, not a legal deadline"
