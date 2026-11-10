@@ -223,6 +223,8 @@ def build(root, meeting_id, max_findings=5, today=None, *, replace=False, allow_
     findings = []
     for path in sorted((content / 'findings').glob('*.json')):
         document = _read_json(path)
+        if not isinstance(document, dict):
+            raise ValueError(f"findings/{path.name}: expected an object")
         if document.get('state') != 'published':
             continue
         # Titles are displayed as escaped text, never interpreted as markup.

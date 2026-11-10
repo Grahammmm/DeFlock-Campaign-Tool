@@ -174,7 +174,10 @@ def import_sharing(root, agency_id, csv_path, checked_on, source_url, replace=Fa
     try:
         content_stat = os.fstat(content_fd)
         target_fd, target_stat, original = _read_target(content_fd)
-        document = _parse_target(original)
+        try:  # RF1005-8: only the decoder's own recursion failure is a refusal; nothing has been staged yet
+            document = _parse_target(original)
+        except RecursionError:
+            raise SharingImportError("content/agencies.json: JSON nesting is too deep; nothing was written") from None
         entries = [a for a in document if isinstance(a, dict) and a.get("agency_id") == agency_id] if isinstance(document, list) else []
         if len(entries) != 1:
             raise SharingImportError(f"agency {agency_id}: not found in content/agencies.json")
