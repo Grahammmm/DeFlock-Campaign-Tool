@@ -4,7 +4,9 @@ For every published finding in ``content/findings/`` and every record it cites
 by SHA-256, report whether the hash is in the public library
 ``content/sources.json`` and whether its original was ingested: a row in the
 ``objects`` table of ``private/ledger.sqlite`` and a regular, non-symlink file
-``private/objects/<sha256>``. The ledger is opened read-only. Receipts (source
+``private/objects/<sha256>``. The ledger is read from an in-memory copy of its bytes
+(``ledger_list._snapshot``): SQLite never opens the file, so no journal/WAL/shm sidecar is created, and a
+sidecar beside it is refused. Receipts (source
 ids, original names) are never read, objects are never hashed (``status
 --check`` does that) and the report names only the first 12 hex of a hash.
 
@@ -22,14 +24,17 @@ PREFIX = 12
 
 
 def _ledger_hashes(path):
+    from .ledger_list import _snapshot  # local: ledger_list imports PREFIX from this module
     try:
-        db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
-        try:
-            return {row[0] for row in db.execute("SELECT sha256 FROM objects")}
-        finally:
-            db.close()
+        db = _snapshot(path)
+    except ValueError as exc:
+        raise ValueError("ledger unreadable: " + str(exc)) from None
+    try:
+        return {row[0] for row in db.execute("SELECT sha256 FROM objects")}
     except sqlite3.Error as exc:
         raise ValueError("ledger unreadable: " + type(exc).__name__) from None
+    finally:
+        db.close()
 
 
 def _object_present(objects, sha):

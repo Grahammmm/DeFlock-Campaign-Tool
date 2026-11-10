@@ -23,6 +23,13 @@ makes the same decisions without writing.
   directory start), so no span reaches into another record. Two central entries pointing at one local header are
   both refused. Archives with a prefix (self-extracting) work because offsets are the ones `zipfile` resolved.
 
+## Archives the runtime cannot open
+If the central directory itself cannot be opened (for example an entry demands an extraction version the
+running `zipfile` does not support), the whole archive is refused with `Stopped: not a zip archive` before the
+ledger is opened or the container is written, in preview and apply alike; no earlier entry is partially stored.
+This differs from a parseable archive, which is always retained: there a member with an unsupported
+compression method or other unreadable content is skipped alone with the `unreadable` code.
+
 ## Limits
 These are **structural** checks: they show the archive does not contradict itself, not that the contents are
 genuine or what they mean. Output caps, ratio limit and nested-archive handling are unchanged.
