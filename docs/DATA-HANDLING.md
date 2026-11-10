@@ -68,3 +68,53 @@ columns, one row per line, then the notice. The nine kinds are `requester`
 - A symlinked campaign folder, `kit/` or `private/` is refused, as is a folder that
   cannot be listed completely (`personal-data inventory incomplete; review private
   folders locally`). No partial report is printed.
+
+### Finding one person's name or contact (`--find`)
+
+`python3 -m campaign_tool personal-data --directory D --find TEXT [--json]` is for a
+person who asks what the campaign holds about them, or a volunteer who leaves. It
+searches only these fields, and prints where a match is, never what it is:
+
+| Kind | Searched field (`field`) | `record_position` |
+|---|---|---|
+| `requester` | each line of the `requester` contact block (`requester`) | `1.LINE` |
+| `reviewer_roster` | each reviewer's `name` (`name`) | the reviewer's place in the list |
+| `review_assignments` | each assignment's `reviewer` (`reviewer`) | the assignment's place in the file |
+| `volunteer_assignments` | each request owner (`assignee`) | the owner's place in the file |
+| `speaker_plans` | each speaker `label` (`label`) | the speaker's place in the list |
+
+`comments_sent`, `correction_requests`, `contact_log` and `supporters_consent` have
+no name or contact field and are listed as `no_identity_fields`: a contact's `role`
+is a job title, and summaries, notes, `how` text, ids, hashes and dates are never
+searched. Names written in free text there, in originals, drafts or the ledger need a
+private human review.
+
+- Matching is a literal, case-insensitive substring inside one field (or one contact
+  line): Unicode case folding and canonical composition, so `Straße` matches
+  `STRASSE` and a composed or decomposed `é` match each other, but accents, spaces and
+  punctuation count (`555-0100` does not match `5550100`). There is no regex and no
+  match across lines or fields.
+- TEXT is trimmed and must have at least 3 characters and no control or formatting
+  characters; otherwise the command stops with exit 2 before opening anything. TEXT
+  is never printed, stored or written anywhere by the tool, but your shell history
+  and process list can still hold it: run it only on your own machine, never in a
+  shared chat, issue or recorded session, and clear the history entry if needed.
+- `--json` prints `{"schema_version": 1, "mode": "find", "files": [...],
+  "matches": [...], "notice": "..."}`. A match has exactly `kind`, `path`,
+  `file_position`, `record_position` and `field`; a file row has exactly `kind`,
+  `path`, `file_position`, `status` and `searched_fields`. The text output prints the
+  match table, a blank line, the file table, then the notice.
+- `path` is the catalog path (with a literal `*.json` for review assignments and
+  speaker plans), never a real file name, which can itself name someone.
+  `file_position` is that file's place among the kind's files sorted by name, the
+  same order the register above prints them in; it is only valid until a file is
+  added, renamed or removed. Every never-opened file is one `unknown` row,
+  `kit/<unknown>` or `private/<unknown>`, with status `not_searched`.
+- `status` is `searched`, `no_identity_fields`, `absent`, `unreadable` or
+  `not_searched`. An unreadable store (malformed, oversized, a link, not a regular
+  file) gives no matches at all, even from records before the problem, and the
+  command exits 1 after printing the rest. The register's refusals apply unchanged
+  and print nothing. Otherwise it exits 0, with or without matches.
+- No match is not evidence that the campaign holds nothing about a person: free
+  text, unknown files, backups and copies elsewhere are outside this search. Keep the
+  output private; it is read-only and deletes nothing.

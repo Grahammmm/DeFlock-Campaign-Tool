@@ -4,11 +4,16 @@
 the path, purpose, record count and the oldest and newest recorded date. Any other file under ``kit/`` or ``private/``
 is listed as an unknown kind and is never opened. Record values are never read into the output and nothing is changed:
 no file is created, moved, deleted, chmod-ed or touched. Deleting anything is the organizer's decision.
+
+``personal_data_find(root, text)`` (DF1109B-15) searches only the fixed name/contact fields in ``FIND_FIELDS`` for a
+case-insensitive literal match and reports where (kind, catalog path, file and record position, field), never a value,
+the search text or a real file name.
 """
 import json
 import os
 import re
 import stat
+import unicodedata
 from datetime import date
 
 NOTICE = "Deletion is the organizer's decision. Nothing was changed."
@@ -53,13 +58,17 @@ def _day(value):
     return value
 
 
+def _parse(data):
+    try:
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_refuse)
+    except (ValueError, RecursionError):
+        raise _Bad from None
+
+
 def _document(data, keys, container, optional=()):
     """The parsed store when it is {schema_version: 1, ...} with at least ``keys``; ``container`` is the type of
     the value under the second key (None when there is none)."""
-    try:
-        document = json.loads(data.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_refuse)
-    except (ValueError, RecursionError):
-        raise _Bad from None
+    document = _parse(data)
     if (not isinstance(document, dict) or not set(keys) <= set(document) <= set(keys) | set(optional)
             or type(document["schema_version"]) is not int or document["schema_version"] != 1):
         raise _Bad
@@ -236,9 +245,9 @@ def _classify(parts):
 
 # --- reading --------------------------------------------------------------------------------------------------
 
-def _read_known(dir_fd, name, st, entry):
-    """(count, dates) of one recognized file, read relative to its directory descriptor; _Bad on any problem."""
-    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > entry[4]:
+def _read_bytes(dir_fd, name, st, cap):
+    """The bytes of one recognized file, read relative to its directory descriptor; _Bad on any problem."""
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > cap:
         raise _Bad
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
@@ -246,7 +255,7 @@ def _read_known(dir_fd, name, st, entry):
         raise _Bad from None
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > entry[4]:
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > cap:
             raise _Bad
         chunks, size = [], 0
         while True:
@@ -257,12 +266,17 @@ def _read_known(dir_fd, name, st, entry):
             if not chunk:
                 break
             size += len(chunk)
-            if size > entry[4]:
+            if size > cap:
                 raise _Bad
             chunks.append(chunk)
     finally:
         os.close(fd)
-    return entry[3](b"".join(chunks))
+    return b"".join(chunks)
+
+
+def _read_known(dir_fd, name, st, entry):
+    """(count, dates) of one recognized file; _Bad on any problem."""
+    return entry[3](_read_bytes(dir_fd, name, st, entry[4]))
 
 
 def _row(kind, path, purpose, status, count=None, days=()):
@@ -292,10 +306,10 @@ def _walk(dir_fd, parts, state):
             try:
                 if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
                     raise _Bad
-                count, days = _read_known(dir_fd, item.name, st, entry)
-                state["rows"].append(_row(entry[0], path, entry[2], "present", count, days))
+                result = state["read"](dir_fd, item.name, st, entry)
             except _Bad:
-                state["rows"].append(_row(entry[0], path, entry[2], "unreadable"))
+                result = None
+            state["known"].append((entry, path, result))
         elif stat.S_ISDIR(st.st_mode):
             try:
                 child = os.open(item.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
@@ -306,7 +320,7 @@ def _walk(dir_fd, parts, state):
             finally:
                 os.close(child)
         else:  # a file, a symlink (never followed), a FIFO or another special entry: listed, never opened
-            state["rows"].append(_row("unknown", path, UNKNOWN_PURPOSE, "unknown_kind"))
+            state["unknown"].append(key)
 
 
 def _real_root(root):
@@ -324,10 +338,11 @@ def _real_root(root):
         raise PersonalDataError(MISSING_DIR) from None
 
 
-def personal_data_register(root):
-    """The register for the campaign folder ``root`` as a JSON-compatible dict; never reads or prints a record value."""
+def _scan(root, read):
+    """Walk kit/ and private/ once: ``known`` is [(catalog entry, path, read(...) or None when unreadable)],
+    ``unknown`` the never-opened entries as name tuples. Whole-folder problems raise PersonalDataError."""
     root_fd = _real_root(root)
-    state = {"rows": [], "matched": set(), "seen": 0}
+    state = {"known": [], "unknown": [], "matched": set(), "seen": 0, "read": read}
     try:
         for name in ("kit", "private"):
             try:
@@ -348,12 +363,132 @@ def personal_data_register(root):
                 os.close(child)
     finally:
         os.close(root_fd)
-    rows = state["rows"]
+    return state
+
+
+def personal_data_register(root):
+    """The register for the campaign folder ``root`` as a JSON-compatible dict; never reads or prints a record value."""
+    state = _scan(root, _read_known)
+    rows = [_row(entry[0], path, entry[2], "unreadable") if result is None
+            else _row(entry[0], path, entry[2], "present", *result) for entry, path, result in state["known"]]
+    rows += [_row("unknown", "/".join(key), UNKNOWN_PURPOSE, "unknown_kind") for key in state["unknown"]]
     for kind, path, purpose, _adapter, _cap in CATALOG:
         if kind not in state["matched"]:
             rows.append(_row(kind, path, purpose, "absent", 0))
     rows.sort(key=lambda row: (row["kind"], row["path"]))
     return {"schema_version": 1, "files": rows, "notice": NOTICE}
+
+
+# --- find (DF1109B-15) ----------------------------------------------------------------------------------------
+
+# The only searched leaves, by kind: a fixed logical field label each; () means the store has no name/contact field.
+FIND_FIELDS = {
+    "requester": ("requester",),  # each line of the organizer's contact block, line by line
+    "reviewer_roster": ("name",),
+    "review_assignments": ("reviewer",),
+    "comments_sent": (),
+    "correction_requests": (),  # summary and note are free prose
+    "contact_log": (),  # role is a job title by design, note is prose
+    "volunteer_assignments": ("assignee",),
+    "supporters_consent": (),  # organizations, hashes and free-text 'how'
+    "speaker_plans": ("label",),
+}
+FIND_MIN = 3
+SHORT_QUERY = "personal-data --find needs at least 3 characters"
+BAD_QUERY = "personal-data --find text cannot contain control or formatting characters"
+FIND_SCOPE = ("Private: keep this output local. Only the listed name and contact fields were searched; free-text "
+              "notes, originals, drafts, the ledger, unknown files, backups and anything outside this folder were "
+              "not. No match is not proof that nothing is held about a person.")
+FIND_MATCH_COLUMNS = ("kind", "path", "file_position", "record_position", "field")
+FIND_FILE_COLUMNS = ("kind", "path", "file_position", "status", "searched_fields")
+
+
+class FindQueryError(ValueError):
+    """The --find text is refused before the folder is opened; the message never repeats it."""
+
+
+def _fold(text):
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", text).casefold())
+
+
+def find_query(text):
+    """The folded search text: outer whitespace trimmed, NFC, at least 3 code points before folding, no control,
+    format (bidi) or surrogate character. FindQueryError otherwise; the text is never put in the message."""
+    text = text.strip() if isinstance(text, str) else ""
+    if any(unicodedata.category(char) in ("Cc", "Cf", "Cs") for char in text):
+        raise FindQueryError(BAD_QUERY)
+    text = unicodedata.normalize("NFC", text)
+    if len(text) < FIND_MIN:
+        raise FindQueryError(SHORT_QUERY)
+    return _fold(text)
+
+
+def _leaves(kind, document):
+    """(record position, field, value) for each searchable string of a store that already passed its adapter."""
+    if kind == "requester":
+        for line_no, line in enumerate(document.get("requester", ()), 1):
+            yield (1, line_no), "requester", line
+    elif kind == "reviewer_roster":
+        for index, entry in enumerate(document["reviewers"], 1):
+            yield (index,), "name", entry["name"]
+    elif kind == "review_assignments":
+        for index, entry in enumerate(document["assignments"].values(), 1):
+            yield (index,), "reviewer", entry["reviewer"]
+    elif kind == "volunteer_assignments":
+        for index, label in enumerate(document["assignments"].values(), 1):
+            yield (index,), "assignee", label
+    elif kind == "speaker_plans":
+        for index, item in enumerate(document["assignments"], 1):
+            yield (index,), "label", item["label"]
+
+
+def _find_reader(folded):
+    def read(dir_fd, name, st, entry):
+        data = _read_bytes(dir_fd, name, st, entry[4])
+        entry[3](data)  # the whole store validates first, or nothing from it is kept
+        if not FIND_FIELDS[entry[0]]:
+            return []
+        try:
+            return sorted({(position, field) for position, field, value in _leaves(entry[0], _parse(data))
+                           if folded in _fold(value)})
+        except (KeyError, TypeError, AttributeError, ValueError, RecursionError):
+            raise _Bad from None
+    return read
+
+
+def personal_data_find(root, text):
+    """Where ``text`` occurs in the FIND_FIELDS of the nine stores under ``root``: kind, catalog path, file and record
+    position and field only. The text is checked before the folder is opened and is never part of the report."""
+    folded = find_query(text)
+    state = _scan(root, _find_reader(folded))
+    by_kind = {}
+    for entry, path, result in state["known"]:
+        by_kind.setdefault(entry[0], []).append((path, result))
+    files, matches = [], []
+    for kind, template, _purpose, _adapter, _cap in CATALOG:
+        found = sorted(by_kind.get(kind, ()), key=lambda item: item[0])
+        if not found:
+            files.append(_file(kind, template, None, "absent"))
+        for file_position, (_path, result) in enumerate(found, 1):
+            if result is None:
+                files.append(_file(kind, template, file_position, "unreadable"))
+            elif not FIND_FIELDS[kind]:
+                files.append(_file(kind, template, file_position, "no_identity_fields"))
+            else:
+                files.append(_file(kind, template, file_position, "searched", list(FIND_FIELDS[kind])))
+                matches += [{"kind": kind, "path": template, "file_position": file_position,
+                             "record_position": list(position), "field": field} for position, field in result]
+    for top in ("kit", "private"):  # never-opened entries are counted, not named: a file name can identify someone
+        count = sum(1 for key in state["unknown"] if key[0] == top)
+        files += [_file("unknown", top + "/<unknown>", index, "not_searched") for index in range(1, count + 1)]
+    files.sort(key=lambda row: (row["kind"], row["path"], row["file_position"] is not None, row["file_position"] or 0))
+    matches.sort(key=lambda row: (row["kind"], row["file_position"], row["record_position"], row["field"]))
+    return {"schema_version": 1, "mode": "find", "files": files, "matches": matches, "notice": FIND_SCOPE + " " + NOTICE}
+
+
+def _file(kind, path, file_position, status, searched_fields=()):
+    return {"kind": kind, "path": path, "file_position": file_position, "status": status,
+            "searched_fields": list(searched_fields)}
 
 
 # --- text -----------------------------------------------------------------------------------------------------
@@ -375,6 +510,22 @@ def render_text(report):
     lines = ["\t".join(COLUMNS)]
     for row in report["files"]:
         lines.append("\t".join(_safe(str(row[key])) if row[key] is not None else "-" for key in COLUMNS))
+    lines.append(report["notice"])
+    return "\n".join(lines)
+
+
+def _find_cell(key, value):
+    if isinstance(value, list):
+        return (".".join(map(str, value)) if key == "record_position" else ",".join(value)) or "-"
+    return "-" if value is None else _safe(str(value))
+
+
+def render_find_text(report):
+    """The match table, a blank line, the coverage table, then the notice once; the same rows as the JSON."""
+    lines = ["\t".join(FIND_MATCH_COLUMNS)]
+    lines += ["\t".join(_find_cell(key, row[key]) for key in FIND_MATCH_COLUMNS) for row in report["matches"]]
+    lines += ["", "\t".join(FIND_FILE_COLUMNS)]
+    lines += ["\t".join(_find_cell(key, row[key]) for key in FIND_FILE_COLUMNS) for row in report["files"]]
     lines.append(report["notice"])
     return "\n".join(lines)
 
