@@ -26,6 +26,11 @@ SYNTHETIC_NOTE, SYNTHETIC_ADDRESS = "Synthetic private note: call back Tuesday",
 REVIEWER, REASON, CORRECTION = "Synthetic Reviewer Pat", "Synthetic withdrawal reason", "Synthetic correction note"
 HASH_A, HASH_B, HASH_C = (c * 64 for c in "abc")
 PAYLOAD = "synthetic-payload-must-not-be-read"
+STORES = {"actions": "content/agency-actions.json", "statements": "content/statements.json",
+          "coverage": "content/coverage.json", "events": "content/events.json", "comments": "kit/comments-sent.json",
+          "corrections": "private/correction-requests.json"}
+CANARY = {key: f"canary {key} text" for key in ("as_stated", "quote", "context_note", "headline", "description", "venue",
+                                                 "accessibility", "summary", "decision", "update")}
 
 
 def run(*arguments):
@@ -613,6 +618,316 @@ class RecentTests(unittest.TestCase):
         self.assertIn("kit/sent.json unreadable", out)
         self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o600)
         self.assertIn("private/reviews/fnd\\_x.json unreadable", target.read_text(encoding="utf-8"))
+
+    # --- DF1109-05: the dated stores added after `recent` shipped ---------------------------------------------------
+
+    def old_campaign(self):
+        """The four-area campaign of test 1 (a pre-DF1109-05 layout)."""
+        self.sent(("ca-one", "2026-11-02", []))
+        self.put("content/sources.json", [{"sha256": HASH_A, "title": "T", "agency_id": "ca-one",
+                                           "received_at": "2026-11-02T08:00:00Z", "public_url": None, "fragment": "f"}])
+        self.finding("content/findings", "fnd_pub", published_at="2026-11-03T09:00:00Z", corrections=[])
+        self.put("content/meetings/council.json", {"id": "council", "body": "Synthetic Council",
+                                                  "starts_at": "2026-11-03T18:00:00-08:00"})
+
+    def outreach(self):
+        """Every new family once, with private canaries in every field that must never be shown."""
+        self.put("content/agencies.json", [{"agency_id": "ca-one", "name": "Synthetic City Police"},
+                                           {"agency_id": "ca-council", "name": "Synthetic City Council"}])
+        self.put(STORES["actions"], {"schema_version": 1, "actions": [
+            {"agency_id": "ca-one", "on": "2026-11-02", "kind": "policy_adopted", "as_stated": CANARY["as_stated"],
+             "source_url": "https://agency.synthetic.example/canary-action-url", "checked_on": "2026-11-03"},
+            {"agency_id": "ca-unlisted", "on": "2026-11-03", "kind": "contract_signed", "as_stated": "x",
+             "source_url": "https://agency.synthetic.example/b", "checked_on": "2026-11-03"}]})
+        self.put(STORES["statements"], [{
+            "agency_id": "ca-council", "official": "Jordan Example", "said_on": "2026-11-03", "quote": CANARY["quote"],
+            "context": "meeting", "source_url": "https://agency.synthetic.example/canary-statement-url",
+            "checked_on": "2026-11-03", "context_note": CANARY["context_note"], "recording_time": "1:02:45"}])
+        self.put(STORES["coverage"], {"schema_version": 1, "entries": [
+            {"outlet": "Synthetic Tribune", "headline": CANARY["headline"], "published_on": "2026-11-02",
+             "url": "https://news.synthetic.example/canary-coverage-url"}]})
+        self.put(STORES["events"], [
+            {"id": "teach-in", "title": "Synthetic teach-in", "starts_at": "2026-11-03T19:00:00-08:00",
+             "ends_at": "2026-11-03T21:00:00-08:00", "description_md": CANARY["description"],
+             "venue": CANARY["venue"], "accessibility_note": CANARY["accessibility"]},
+            {"id": "future", "title": "Synthetic future rally", "starts_at": "2026-12-01T10:00:00Z",
+             "ends_at": "2026-12-01T11:00:00Z", "description_md": "Later.", "online": True}])
+        self.put(STORES["comments"], {"schema_version": 1, "comments": {"council-1102": {
+            "on": "2026-11-02", "channel": "email", "recorded_at": "2026-11-01T23:59:58Z",
+            "letter_sha256": HASH_B, "letter_bytes": 1234}}})
+        self.put(STORES["corrections"], {"schema_version": 1, "requests": [
+            {"id": 1, "finding_id": "fnd_pub", "received_on": "2026-11-02", "summary": CANARY["summary"],
+             "state": "open"},
+            {"id": 2, "finding_id": "fnd_pub", "received_on": "2026-11-02", "summary": CANARY["summary"],
+             "state": "declined", "decided_on": "2026-11-04", "note": CANARY["decision"]},
+            {"id": 3, "finding_id": "fnd_pub", "received_on": "2026-11-02", "summary": REVIEWER, "state": "open"}]})
+        self.finding("content/findings", "fnd_pub", published_at="2026-11-01T09:00:00Z", corrections=[],
+                     updates=[{"date": "2026-11-03", "note": CANARY["update"]},
+                              {"date": "2026-11-03", "note": CANARY["update"]}])
+
+    def outreach_lines(self):
+        quote = f"correction-request list --directory {self.dir}"
+        return [
+            ("Requests", "2026-11-03  Agency action: Contract signed — ca-unlisted  → open content/agency-actions.json"),
+            ("Requests", "2026-11-02  Agency action: Policy adopted — Synthetic City Police  → open "
+                         "content/agency-actions.json"),
+            ("Findings", f"2026-11-04  Correction request decided (declined)  → {quote}"),
+            ("Findings", f"2026-11-03  Finding updated: Title of fnd_pub  → finding status --directory {self.dir}"),
+            ("Findings", f"2026-11-03  Finding updated: Title of fnd_pub  → finding status --directory {self.dir}"),
+            ("Findings", f"2026-11-02  Correction request received (open)  → {quote}"),
+            ("Findings", f"2026-11-02  Correction request received (open)  → {quote}"),
+            ("Findings", f"2026-11-02  Correction request received (open)  → {quote}"),
+            ("Findings", f"2026-11-01  Finding published: Title of fnd_pub  → finding status --directory {self.dir}"),
+            ("Meetings", "2026-11-02  Comment submitted by hand: council-1102  → open kit/comments-sent.json"),
+            (recent.OUTREACH, "2026-11-03  Campaign event: Synthetic teach-in  → open content/events.json"),
+            (recent.OUTREACH, "2026-11-03  Official statement: Jordan Example — Synthetic City Council  → open "
+                              "content/statements.json"),
+            (recent.OUTREACH, "2026-11-02  Press coverage: Synthetic Tribune  → open content/coverage.json")]
+
+    def test_new_families_use_only_stored_days_and_safe_fields(self):
+        self.outreach()
+        code, out, err = self.report("2026-11-01")
+        self.assertEqual((code, err), (0, ""), out)
+        expected = ["Recent changes, 2026-11-01 to 2026-11-04 (private; nothing was sent or published)"]
+        for area in recent.AREAS + (recent.OUTREACH,):
+            mine = [line for where, line in self.outreach_lines() if where == area]
+            expected += ["", area] + (mine or ["nothing recorded"])
+        self.assertEqual(out, "\n".join(expected) + "\n")
+        self.assertEqual(recent.AREAS, ("Requests", "Records", "Findings", "Meetings"))
+        code, as_json, err = self.report("2026-11-01", as_json=True)
+        events = json.loads(as_json)
+        self.assertEqual((code, err), (0, ""))
+        self.assertTrue(all(list(e) == ["on", "area", "what", "command"] for e in events))
+        order = sorted(self.outreach_lines(), key=lambda pair: pair[1][12:])  # by what, then newest day first
+        order.sort(key=lambda pair: pair[1][:10], reverse=True)
+        self.assertEqual([(e["area"], f"{e['on']}  {e['what']}  → {e['command']}") for e in events], order)
+        self.assertNotIn("Synthetic future rally", as_json)  # a future start is never an "announced" event
+
+    def test_optional_files_absent_or_empty_are_byte_identical(self):
+        self.old_campaign()
+        # Bytes printed by main before DF1109-05 for this campaign (text, JSON and --md).
+        text = "\n".join([
+            "Recent changes, 2026-11-02 to 2026-11-03 (private; nothing was sent or published)", "",
+            "Requests", f"2026-11-02  Request sent to Synthetic ca-one Police  → kit-status --directory {self.dir}", "",
+            "Records", f"2026-11-02  1 record added to the library: {HASH_A[:12]}  → sources list --directory {self.dir}",
+            "", "Findings", f"2026-11-03  Finding published: Title of fnd_pub  → finding status --directory {self.dir}",
+            "", "Meetings",
+            "2026-11-03  Meeting on 2026-11-03: Synthetic Council (council)  → open content/meetings/council.json",
+            ""])
+        as_json = "\n".join([
+            "[", "  {", '    "on": "2026-11-03",', '    "area": "Findings",',
+            '    "what": "Finding published: Title of fnd_pub",',
+            f'    "command": "finding status --directory {self.dir}"', "  },", "  {", '    "on": "2026-11-03",',
+            '    "area": "Meetings",', '    "what": "Meeting on 2026-11-03: Synthetic Council (council)",',
+            '    "command": "open content/meetings/council.json"', "  },", "  {", '    "on": "2026-11-02",',
+            '    "area": "Records",', f'    "what": "1 record added to the library: {HASH_A[:12]}",',
+            f'    "command": "sources list --directory {self.dir}"', "  },", "  {", '    "on": "2026-11-02",',
+            '    "area": "Requests",', '    "what": "Request sent to Synthetic ca-one Police",',
+            f'    "command": "kit-status --directory {self.dir}"', "  }", "]", ""])
+        markdown = "\n".join([
+            "# Recent changes, 2026-11-02 to 2026-11-03", "",
+            "Private report for the organizing team. Nothing was sent or published.", "", "## Requests", "",
+            f"- 2026-11-02 — Request sent to Synthetic ca-one Police → `kit-status --directory {self.dir}`", "",
+            "## Records", "",
+            f"- 2026-11-02 — 1 record added to the library: {HASH_A[:12]} → `sources list --directory {self.dir}`", "",
+            "## Findings", "",
+            f"- 2026-11-03 — Finding published: Title of fnd\\_pub → `finding status --directory {self.dir}`", "",
+            "## Meetings", "",
+            "- 2026-11-03 — Meeting on 2026-11-03: Synthetic Council \\(council\\) → `open content/meetings/council.json`",
+            ""])
+        empty = {"actions": {"schema_version": 1, "actions": []}, "statements": [],
+                 "coverage": {"schema_version": 1, "entries": []}, "events": [],
+                 "comments": {"schema_version": 1, "comments": {}},
+                 "corrections": {"schema_version": 1, "requests": []}}
+        for stage in ("absent", "empty"):
+            with self.subTest(stage=stage):
+                if stage == "empty":
+                    for name, document in empty.items():
+                        self.put(STORES[name], document)
+                    self.finding("content/findings", "fnd_pub", published_at="2026-11-03T09:00:00Z", corrections=[],
+                                 updates=[])
+                    self.put("content/agencies.json", "{not json")  # never read when nothing needs a name
+                self.assertEqual(self.report("2026-11-02", "2026-11-03"), (0, text, ""))
+                self.assertEqual(self.report("2026-11-02", "2026-11-03", as_json=True), (0, as_json, ""))
+                target = self.tmp / f"{stage}.md"
+                self.assertEqual(self.report("2026-11-02", "2026-11-03", md=str(target)), (0, text, f"Wrote {target}\n"))
+                self.assertEqual(target.read_bytes(), markdown.encode("utf-8"))
+                self.assertNotIn("Outreach", target.read_text(encoding="utf-8"))
+
+    def test_recent_new_dates_include_both_bounds(self):
+        leap = date(2028, 3, 1)
+        self.put(STORES["coverage"], {"schema_version": 1, "entries": [
+            {"outlet": f"Outlet {day}", "headline": "h", "url": f"https://news.synthetic.example/{day}",
+             "published_on": day} for day in ("2028-02-28", "2028-02-29", "2028-03-01")]})
+        self.put(STORES["events"], [  # 23:30 at -08:00 is the next UTC day; the written day is kept
+            {"id": "late", "title": "Late teach-in", "starts_at": "2028-02-29T23:30:00-08:00",
+             "ends_at": "2028-02-29T23:45:00-08:00", "description_md": "d", "online": True},
+            {"id": "early", "title": "Early teach-in", "starts_at": "2028-03-01T00:30:00+14:00",
+             "ends_at": "2028-03-01T01:00:00+14:00", "description_md": "d", "online": True}])
+        self.put(STORES["corrections"], {"schema_version": 1, "requests": [
+            {"id": 1, "finding_id": "fnd_a", "received_on": "2028-02-28", "summary": "s", "state": "accepted",
+             "decided_on": "2028-02-29", "note": "n"}]})
+        now = date(2028, 2, 29)
+        stamp = (now - date(1970, 1, 1)).days * 86400 + 43200
+        for name in ("coverage", "events", "corrections"):  # a file time inside the window is never a date
+            os.utime(self.root / STORES[name], (stamp, stamp))
+        events = recent.collect(self.root, "2028-02-29", "2028-02-29", leap)[0]
+        self.assertEqual([(e["on"], e["what"]) for e in events], [
+            ("2028-02-29", "Campaign event: Late teach-in"), ("2028-02-29", "Correction request decided (accepted)"),
+            ("2028-02-29", "Press coverage: Outlet 2028-02-29")])
+        events = recent.collect(self.root, "2028-02-28", "2028-03-01", leap)[0]
+        self.assertEqual([e["on"] for e in events], ["2028-03-01"] * 2 + ["2028-02-29"] * 3 + ["2028-02-28"] * 2)
+        self.assertEqual(recent.collect(self.root, "2028-03-01", None, leap)[0][0]["what"],
+                         "Campaign event: Early teach-in")  # +14:00 keeps its written day, not 2028-02-29 UTC
+
+    def test_update_history_keeps_withdrawal_precedence(self):
+        self.finding("private/withdrawn", "fnd_gone", published_at="2026-10-01T09:00:00Z", corrections=[],
+                     updates=[{"date": "2026-11-02", "note": CANARY["update"]}],
+                     withdrawn={"at": "2026-11-03T12:00:00Z", "reason": REASON})
+        self.finding("content/findings", "fnd_gone", published_at="2026-10-01T09:00:00Z", corrections=[],
+                     updates=[{"date": "2026-11-01", "note": "leftover"}])  # interrupted withdrawal leftover
+        self.finding("content/findings", "fnd_old", published_at="2026-09-01T09:00:00Z", corrections=[],
+                     updates=[{"date": "2026-11-01", "note": "later"}])
+        self.finding("private/drafts", "fnd_draft", updates=[{"date": "2026-11-02", "note": "draft only"}])
+        code, out, err = self.report("2026-11-01", as_json=True)
+        self.assertEqual(code, 0, err)
+        self.assertEqual([(e["on"], e["what"]) for e in json.loads(out)], [
+            ("2026-11-03", "Finding withdrawn: Title of fnd_gone"), ("2026-11-02", "Finding updated: Title of fnd_gone"),
+            ("2026-11-01", "Finding updated: Title of fnd_old")])
+        self.assertNotIn(CANARY["update"], out + err)
+
+    def test_one_bad_new_store_does_not_hide_other_events(self):
+        self.outreach()
+        bad = {"bad utf-8": b'{"schema_version": 1, \xff}', "bad json": b"{not json",
+               "wrong shape": b'{"schema_version": 2}', "json null": b"null", "invalid date": None}
+        dated = {"actions": ("2026-11-02", "2026-11-31"), "statements": ("2026-11-03", "2026-02-30"),
+                 "coverage": ("2026-11-02", "2026-13-02"), "events": ("2026-11-03T19", "2026-11-31T19"),
+                 "comments": ("2026-11-02", "2026-11-00"), "corrections": ("2026-11-04", "2026-11-99"),
+                 "updates": ("2026-11-03", "2026-11-32")}
+        stores = dict(STORES, updates="content/findings/fnd_pub.json")
+        area = {"actions": "Requests", "corrections": "Findings", "updates": "Findings", "comments": "Meetings"}
+        for name, label in stores.items():
+            path = self.root / label
+            original = path.read_bytes()
+            for case, data in bad.items():
+                with self.subTest(store=name, case=case):
+                    if data is None:
+                        old, new = dated[name]
+                        data = original.replace(old.encode(), new.encode(), 1)
+                        self.assertNotEqual(data, original)
+                    if name == "updates" and case == "wrong shape":
+                        data = original.replace(b'"updates": [', b'"updates": {"x": [').replace(b"}]}", b"}]}}")
+                    path.write_bytes(data)
+                    target = self.tmp / f"{name}-{case}.md"
+                    code, out, err = self.report("2026-11-01", md=str(target))
+                    self.assertEqual(code, 3)
+                    where = area.get(name, recent.OUTREACH)
+                    section = out.split("\n\n" + where + "\n")[1].split("\n\n")[0]
+                    self.assertIn(f"{label} unreadable", section)
+                    kept = [line for owner, line in self.outreach_lines()
+                            if not line.endswith(("open " + label, "→ open " + label))
+                            and not (name == "corrections" and "Correction request" in line)
+                            and not (name == "updates" and "updated" in line)
+                            and not (name == "updates" and case in ("bad utf-8", "bad json", "json null") and "published" in line)]
+                    for line in kept:
+                        self.assertIn(line, out)
+                    self.assertIn(f"{label.replace('_', chr(92) + '_')} unreadable", target.read_text(encoding="utf-8"))
+                    code, as_json, err = self.report("2026-11-01", as_json=True)
+                    self.assertEqual((code, err.splitlines()), (3, [f"{label} unreadable"]))
+                    self.assertEqual(len(json.loads(as_json)), len(kept))
+                    path.write_bytes(original)
+        self.put("content/agencies.json", "{not json")
+        code, out, _ = self.report("2026-11-01")
+        self.assertEqual(code, 3)
+        self.assertEqual(out.count("content/agencies.json unreadable"), 1)  # a bad dependency is named once
+        self.assertIn("Agency action: Policy adopted — ca-one  →", out)  # its validated id, never a guessed name
+        self.assertIn("Official statement: Jordan Example — ca-council  →", out)
+        self.put("content/agencies.json", "null")  # a present but null dependency is as unreadable as a malformed one
+        code, out, _ = self.report("2026-11-01")
+        self.assertEqual(code, 3)
+        self.assertEqual(out.count("content/agencies.json unreadable"), 1)
+
+    def test_new_inputs_never_follow_links_or_read_special_files(self):
+        self.outreach()
+        outside = self.tmp / "outside.json"
+        for name, label in STORES.items():
+            path = self.root / label
+            original = path.read_bytes()
+            outside.write_bytes(original)
+            internal = path.with_name("copy-" + path.name)
+            internal.write_bytes(original)
+            for case in ("external link", "internal link", "dangling link", "directory", "fifo", "oversized"):
+                with self.subTest(store=name, case=case):
+                    path.unlink()
+                    if case.endswith("link"):
+                        path.symlink_to({"external link": outside, "internal link": internal,
+                                         "dangling link": self.tmp / "gone.json"}[case])
+                    elif case == "directory":
+                        path.mkdir()
+                    elif case == "fifo":
+                        os.mkfifo(path)
+                    else:
+                        path.write_bytes(b" " * (2 * 1024 * 1024 + 1))
+                    with mock.patch("builtins.open", side_effect=AssertionError("unsafe open")) \
+                            if case.endswith("link") or case == "fifo" else contextlib.nullcontext():
+                        code, out, err = self.report("2026-11-01")
+                    self.assertEqual((code, err), (3, ""))
+                    self.assertIn(f"{label} unreadable", out)
+                    self.assertNotIn(str(outside), out)
+                    if case == "directory":
+                        path.rmdir()
+                    else:
+                        path.unlink()
+                    path.write_bytes(original)
+            internal.unlink()
+        moved = self.tmp / "moved-content"  # the existing folder preflight still stops before any collector or --md
+        (self.root / "content").rename(moved)
+        (self.root / "content").symlink_to(moved, target_is_directory=True)
+        target = self.tmp / "never.md"
+        with contextlib.ExitStack() as stack:
+            for name in ("_actions", "_correction_requests", "_comments", "_statements", "_coverage", "_campaign_events"):
+                stack.enter_context(mock.patch.object(recent, name, side_effect=AssertionError(name)))
+            code, out, err = run("recent", "--directory", self.root, "--since", "2026-11-01", "--md", target)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("content/ must be a real directory", err)
+        self.assertFalse(os.path.lexists(target))
+
+    def test_projection_omits_private_canaries_everywhere(self):
+        self.outreach()
+        target = self.tmp / "canary.md"
+        outputs = [*self.report("2026-11-01", md=str(target))[1:], *self.report("2026-11-01", as_json=True)[1:],
+                   target.read_text(encoding="utf-8")]
+        self.put(STORES["comments"], {"schema_version": 1, "comments": {"canary-exception <x>": {
+            "on": "2026-11-02", "channel": "email", "recorded_at": "x"}}})
+        self.put(STORES["statements"], [{"agency_id": "ca-council", "official": CANARY["summary"]}])
+        outputs += [*self.report("2026-11-01")[1:], *self.report("2026-11-01", as_json=True)[1:]]
+        hidden = list(CANARY.values()) + [REVIEWER, HASH_B, "canary-exception", "canary-action-url", "canary-statement-url",
+                                          "canary-coverage-url", "2026-11-01T23:59:58Z", "1234", "1:02:45", "email"]
+        for text in hidden:
+            for output in outputs:
+                self.assertNotIn(text, output)
+        self.assertIn("Official statement: Jordan Example — Synthetic City Council", outputs[0])
+        self.assertIn("kit/comments-sent.json unreadable", outputs[-4])
+        self.assertIn("content/statements.json unreadable", outputs[-1])
+
+    def test_new_collectors_are_read_only(self):
+        before = tree(self.root)
+        self.assertEqual(self.report("2026-11-01")[0], 0)
+        self.assertEqual(tree(self.root), before)  # nothing created for missing stores
+        self.outreach()
+        os.chmod(self.root / STORES["corrections"], 0o600)
+        before = tree(self.root)
+        modes = {path: stat.S_IMODE(os.lstat(path).st_mode) for path in self.root.rglob("*")}
+        target = self.tmp / "only.md"
+        self.assertEqual(self.report("2026-11-01", md=str(target))[0], 0)
+        self.assertEqual(self.report("2026-11-01", as_json=True)[0], 0)
+        self.assertEqual(tree(self.root), before)
+        self.assertEqual({path: stat.S_IMODE(os.lstat(path).st_mode) for path in self.root.rglob("*")}, modes)
+        written = target.read_bytes()
+        with self.assertRaises(recent.UsageError):
+            self.report("2026-11-01", md=str(target))
+        self.assertEqual(target.read_bytes(), written)
+        self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o600)
 
     def put_in(self, root, relative, document):
         path = root / relative

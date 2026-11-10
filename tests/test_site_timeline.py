@@ -1,5 +1,7 @@
 """Synthetic offline acceptance of the public-only campaign timeline."""
 import copy
+import hashlib
+import itertools
 import json
 import random
 import re
@@ -365,6 +367,259 @@ class TimelineTests(unittest.TestCase):
             for key in ("agencies", "sources", "findings", "meetings"):
                 rng.shuffle(shuffled[key])
             self.assertEqual(self.site(shuffled).timeline_html()["html"], expected)
+
+    # --- DF1109-07: finding updates, recorded public statements and press coverage ---------------------
+
+    def extras(self, updates=(), statements=(), coverage=()):
+        """Write the three optional public inputs; an empty argument leaves its file/key absent."""
+        if updates:
+            finding = json.loads(self.finding_path.read_text())
+            self.write("content/findings/cedar-policy-posted.json", dict(finding, updates=list(updates)))
+        if statements:
+            person = {"name": "Rowan Example", "role": "Council member", "source_url": "https://cedar.example/council",
+                      "checked_on": "2026-02-01"}
+            self.write("content/officials.json", {"schema_version": 1,
+                                                  "bodies": [{"agency_id": COUNCIL, "officials": [person]}]})
+            self.write("content/statements.json", list(statements))
+        if coverage:
+            self.write("content/coverage.json", {"schema_version": 1, "entries": list(coverage)})
+
+    def populate(self):
+        self.extras(updates=[{"date": "2026-02-02", "note": "Synthetic note A"},
+                             {"date": "2026-02-02", "note": "Synthetic note B"}],
+                    statements=[statement()], coverage=[clip()])
+
+    def tree(self):
+        public = self.root / "public"
+        return {p.relative_to(public).as_posix(): p.read_bytes() for p in public.rglob("*") if p.is_file()}
+
+    def test_new_kinds_exact_dates_text_and_links(self):
+        self.populate()
+        self.build()
+        events = self.of_kind(self.site().timeline, *NEW_KINDS)
+        self.assertEqual(events, [
+            {"date": "2026-02-02", "kind": "finding_update", "text": "Update to First finding",
+             "href": "/findings/cedar-policy-posted.html#updates"},
+            {"date": "2026-02-02", "kind": "finding_update", "text": "Update to First finding",
+             "href": "/findings/cedar-policy-posted.html#updates"},
+            {"date": "2026-02-02", "kind": "statement", "text": "Rowan Example, Cedar City Council (fictional): public statement",
+             "href": "/agencies/cedar-city-council.html", "source_url": "https://cedar.example/minutes?a=1&b=2"},
+            {"date": "2026-02-01", "kind": "coverage", "text": "In the news: Cedar Gazette", "href": "/news.html"}])
+        for event in events:  # every target page and anchor exists in the same build
+            path, _, fragment = event["href"].partition("#")
+            target = (self.root / "public" / path.lstrip("/")).read_text()
+            if fragment:
+                self.assertIn(fragment, [a.get("id") for _, a in Tags(target).tags])
+        self.assertIn("We will review the contract.", (self.root / "public/agencies/cedar-city-council.html").read_text())
+        self.assertIn("Cameras debated", (self.root / "public/news.html").read_text())
+        page = self.page()
+        self.assertEqual(page.count("official record"), 1)  # the statement only; press is never labelled official
+        self.assertNotIn("news.example", page)
+        for private in ("Synthetic note", "We will review", "Cameras debated", "2026-02-09", "Council member"):
+            self.assertNotIn(private, page)  # note, quote, headline, checked_on and roster role stay on their pages
+
+    def test_new_kinds_append_after_existing_same_day_order(self):
+        self.ask(1, [{"topic": "T", "asked_on": "2026-02-02", "state": "answered", "updated_on": "2026-02-02"}])
+        self.outcome("past", on="2026-02-02")
+        add_action(self.root, "ca-cedar-police", on="2026-02-02", kind="policy_posted", as_stated="Posted",
+                   source_url="https://records.example.org/p", checked_on="2026-02-03", today=TODAY)
+        self.populate()
+        model = self.model()
+        model["sources"][0]["received_at"] = "2026-02-02"
+        first(model["findings"], "slug", "cedar-policy-posted")["corrections"][0]["date"] = "2026-02-02"
+        first(model["meetings"], "id", "past")["starts_at"] = "2026-02-02T09:00:00-08:00"
+        model["coverage"][0]["published_on"] = "2026-02-02"
+        events = timeline_events(model, TODAY)
+        same_day = [e["kind"] for e in events if e["date"] == "2026-02-02"]
+        self.assertEqual(same_day, ["records_received", "finding_published", "correction", "meeting", "records_requested",
+                                    "request_update", "decision", "agency_action", "finding_update", "finding_update",
+                                    "statement", "coverage"])
+        old = copy.deepcopy(model)
+        del old["statements"], old["coverage"]
+        for finding in old["findings"]:
+            finding.pop("updates", None)
+        self.assertEqual([e for e in events if e["kind"] not in NEW_KINDS], timeline_events(old, TODAY))
+        expected = self.site(model).timeline_html()["html"]
+        rng = random.Random(11)
+        for _ in range(3):
+            shuffled = copy.deepcopy(model)
+            for key in ("agencies", "sources", "findings", "meetings", "statements", "coverage"):
+                rng.shuffle(shuffled[key])
+            for finding in shuffled["findings"]:
+                rng.shuffle(finding.get("updates", []))
+            self.assertEqual(self.site(shuffled).timeline_html()["html"], expected)
+
+    def test_multiple_same_day_updates_are_not_collapsed(self):
+        self.extras(updates=[{"date": "2026-02-05", "note": "Same day one"}, {"date": "2026-02-05", "note": "Same day one"},
+                             {"date": "2026-02-07", "note": "Later"}])
+        self.build()
+        updates = self.of_kind(self.site().timeline, "finding_update")
+        self.assertEqual([e["date"] for e in updates], ["2026-02-07", "2026-02-05", "2026-02-05"])
+        self.assertEqual(len(self.of_kind(self.site().timeline, "correction")), 2)  # updates never become corrections
+        self.assertEqual(self.page().count("Update to First finding</a>"), 3)
+        self.assertNotIn("Same day one", self.page())
+        self.assertNotIn("Later", self.page())
+
+    def test_statement_only_agency_has_real_page(self):
+        self.extras(statements=[statement()])
+        self.build()
+        model = self.model()
+        self.assertNotIn(COUNCIL, {s["agency_id"] for s in model["sources"]})  # qualifies by its statement alone
+        with_pages = self.of_kind(self.site().timeline, "statement")
+        without_pages = self.of_kind(timeline_events(model, TODAY), "statement")
+        self.assertEqual(with_pages, without_pages)
+        self.assertEqual(with_pages[0]["href"], "/agencies/cedar-city-council.html")
+        self.assertTrue((self.root / "public/agencies/cedar-city-council.html").is_file())
+        self.assertIn('href="/agencies/cedar-city-council.html"', self.page())
+
+    def test_conditional_lead_presence_matrix(self):
+        base = self.model()
+        update = {"date": "2026-02-05", "note": "n"}
+        row = dict(statement(), agency_id="ca-cedar-police")
+        for flags in itertools.product((False, True), repeat=4):
+            with self.subTest(flags=flags):
+                model = copy.deepcopy(base)
+                if flags[0]:
+                    model["findings"][0]["updates"] = [update]
+                if flags[1]:
+                    model["statements"] = [row]
+                if flags[2]:
+                    model["coverage"] = [dict(clip(), findings=[], kind="news")]
+                if flags[3]:
+                    first(model["agencies"], "agency_id", "ca-cedar-police")["actions"] = [
+                        {"on": "2026-01-30", "kind": "policy_posted", "as_stated": "x", "source_url": "https://records.example.org/p"}]
+                names = [name for flag, name in zip(flags, ("finding updates", "public statements", "press coverage")) if flag]
+                tail = {0: "", 1: " Also shown: {}.", 2: " Also shown: {} and {}.", 3: " Also shown: {}, {} and {}."}[len(names)]
+                note = " Agency actions are transcribed from their cited official sources." if flags[3] else ""
+                html = self.site(model).timeline_html()["html"]
+                self.assertIn(f"<p>{LEAD}{note}{tail.format(*names)}</p>", html)
+                self.assertEqual(html.count("Also shown"), 1 if names else 0)
+        for empty in ({"updates": []}, {"statements": []}, {"coverage": []}, {"coverage": None}):
+            with self.subTest(empty=empty):
+                model = copy.deepcopy(base)
+                if "updates" in empty:
+                    model["findings"][0]["updates"] = []
+                else:
+                    model.update(empty)
+                site = self.site(base)  # an empty coverage list keeps its existing footer link; the timeline body is unchanged
+                self.assertEqual(timeline_events(model, TODAY), timeline_events(base, TODAY))
+                self.assertEqual(render_timeline(site, timeline_events(model, TODAY, site.agency_pages())),
+                                 render_timeline(site, site.timeline))
+
+    def test_calendar_day_offsets_month_year_boundary(self):
+        model = self.model()
+        finding = model["findings"][0]
+        finding["published_at"] = "2025-12-31T23:30:00-08:00"  # 2026-01-01 in UTC; the written day stays
+        finding["corrections"] = []
+        finding["updates"] = [{"date": "2026-01-01", "note": "n"}, {"date": "2025-12-31", "note": "m"}]
+        model["statements"] = [dict(statement(), agency_id="ca-cedar-police", said_on="2025-12-31")]
+        model["coverage"] = [dict(clip(), published_on="2026-01-01", findings=[], kind="news")]
+        model["meetings"][0]["starts_at"] = "2026-01-01T00:30:00+14:00"  # 2025-12-31 in UTC; the written day stays
+        events = timeline_events(model, TODAY)
+        pairs = [(e["date"], e["kind"]) for e in events if e["date"] < "2026-01-02"]
+        self.assertEqual(pairs, [("2026-01-01", "meeting"), ("2026-01-01", "finding_update"), ("2026-01-01", "coverage"),
+                                 ("2025-12-31", "finding_published"), ("2025-12-31", "finding_update"),
+                                 ("2025-12-31", "statement")])
+        html = self.site(model).timeline_html()["html"]
+        self.assertLess(html.index("January 2026"), html.index("December 2025"))
+        self.assertNotIn(TODAY.isoformat(), [e["date"] for e in events])
+
+    def test_escaped_titles_official_body_outlet_and_source_query(self):
+        payload = 'G APPROVED & " onclick="javascript:alert(1)'
+        model = self.model()
+        model["findings"][0]["title"] = payload
+        model["findings"][0]["updates"] = [{"date": "2026-02-05", "note": "n"}]
+        first(model["agencies"], "agency_id", "ca-cedar-police")["name"] = payload
+        model["statements"] = [dict(statement(), agency_id="ca-cedar-police", official=payload)]
+        model["coverage"] = [dict(clip(), outlet=payload + "<script>", findings=[], kind="news")]
+        page = self.site(model).timeline_html()["html"]
+        parsed = Tags(page)
+        for text in ("Update to " + payload, f"{payload}, {payload}: public statement", f"In the news: {payload}<script>"):
+            self.assertTrue(any(text in chunk for chunk in parsed.text), text)
+        for tag, attrs in parsed.tags:
+            self.assertNotIn(tag, ("script", "img", "iframe"))
+            self.assertFalse(any(key.startswith("on") for key in attrs))
+            self.assertFalse(any(str(value).startswith("javascript:") for value in attrs.values()))
+        self.assertIn('<a href="https://cedar.example/minutes?a=1&amp;b=2" rel="noopener noreferrer">official record</a>', page)
+        self.assertNotIn("&amp;amp;", page)
+
+    def test_coverage_prefix_is_frozen_even_when_news_title_is_overridden(self):
+        from campaign_tool.labels import DEFAULTS
+        model = self.model()
+        model["coverage"] = [clip()]
+        model["labels"] = dict(DEFAULTS, **{"news.title": "Zq custom news title"})  # a labels.json override
+        events = [ev for ev in timeline_events(model, TODAY) if ev["kind"] == "coverage"]
+        self.assertEqual([(ev["text"], ev["href"]) for ev in events], [("In the news: Cedar Gazette", "/news.html")])
+
+    def test_malformed_optional_content_refuses_before_write(self):
+        self.build()
+        before = self.tree()
+        original = json.loads(self.finding_path.read_text())
+        cases = (("update date", lambda: self.extras(updates=[{"date": "2026-02-30", "note": "n"}])),
+                 ("statement said_on", lambda: self.extras(statements=[statement(said_on="2026-13-01")])),
+                 ("coverage published_on", lambda: self.extras(coverage=[clip(published_on="2026-02-1")])),
+                 ("coverage future", lambda: self.extras(coverage=[clip(published_on="2026-02-16")])))
+        for name, write in cases:
+            with self.subTest(name=name):
+                write()
+                with self.assertRaises(ContentError):
+                    self.build()
+                self.assertEqual(before, self.tree())
+                self.write("content/findings/cedar-policy-posted.json", original)
+                for path in ("content/statements.json", "content/coverage.json", "content/officials.json"):
+                    (self.root / path).unlink(missing_ok=True)
+
+    def test_absent_new_kinds_old_bytes_and_other_pages_unchanged(self):
+        self.ask(1, [{"topic": "T", "asked_on": "2026-02-02", "state": "answered", "updated_on": "2026-02-03"}])
+        self.outcome("past")
+        add_action(self.root, "ca-cedar-police", on="2026-01-30", kind="policy_posted", as_stated="Posted",
+                   source_url="https://records.example.org/p", checked_on="2026-02-01", today=TODAY)
+        self.build()
+        self.assertEqual(digest({"timeline.html": self.tree()["timeline.html"]}), MAIN_TIMELINE_DIGEST)
+        old = self.tree()
+        finding = json.loads(self.finding_path.read_text())
+        self.write("content/findings/cedar-policy-posted.json", dict(finding, updates=[]))
+        self.write("content/statements.json", [])
+        self.build()
+        new = self.tree()
+        self.assertEqual(new["timeline.html"], old["timeline.html"])  # present but empty inputs add no timeline bytes
+        self.populate()
+        self.build()
+        populated = self.tree()
+        self.assertEqual(digest({k: v for k, v in populated.items() if k != "timeline.html"}), MAIN_POPULATED_OTHER_DIGEST)
+        self.assertNotEqual(populated["timeline.html"], new["timeline.html"])
+        sentinel = "SYNTHETIC-PRIVATE-SENTINEL-DO-NOT-PUBLISH"
+        self.write("private/notes.json", {"secret": sentinel})
+        self.build()
+        self.assertFalse(any(sentinel.encode() in body for body in self.tree().values()))
+
+
+# DF1109-07 pins: sha256 over sorted (path, bytes) of builds made with the pre-change timeline.py (main 45551bd9).
+MAIN_TIMELINE_DIGEST = "efa29cd2bb4b6da62d6e72a69410785a5dc93ddd8bc6700954e5f6295bf55abc"  # pragma: allowlist secret -- public rendered-file SHA-256
+MAIN_POPULATED_OTHER_DIGEST = "b3cdffb99a1017196865098d3049b5cf1d957458a30d77fff5ad6a9a87b98c18"  # pragma: allowlist secret -- public rendered-file SHA-256
+COUNCIL = "ca-cedar-city-council"
+NEW_KINDS = ("finding_update", "statement", "coverage")
+
+
+def digest(files):
+    sha = hashlib.sha256()
+    for path in sorted(files):
+        sha.update(path.encode() + b"\0" + hashlib.sha256(files[path]).digest())
+    return sha.hexdigest()
+
+
+def first(rows, key, value):
+    return next(row for row in rows if row[key] == value)
+
+
+def statement(**changes):
+    return {"agency_id": COUNCIL, "official": "Rowan Example", "said_on": "2026-02-02", "quote": "We will review the contract.",
+            "context": "meeting", "source_url": "https://cedar.example/minutes?a=1&b=2", "checked_on": "2026-02-09", **changes}
+
+
+def clip(**changes):
+    return {"outlet": "Cedar Gazette", "headline": "Cameras debated", "url": "https://news.example/cameras",
+            "published_on": "2026-02-01", **changes}
 
 
 if __name__ == "__main__":
