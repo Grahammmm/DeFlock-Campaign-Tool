@@ -242,9 +242,9 @@ def legacy_cases():
 
 
 LEGACY_SHA256 = {
-    "lf": "6df5444413e0e3b4f8b2f1f3529d0be14ab399f214a2bb3ee529d140a3b314f4",
-    "crlf": "c77472fe5c0b78b1056644c3b01b0c6929f63c2c15b3f335289c31e075210173",
-    "plain": "6a2ee9532ee8b725d102c0091f2dc9e6c98901a269766772bc11128b6f88756f",
-    "existing_line": "1f8853ae8b431f699d680b9e04890883e6b5d221edde6d43289527c47865d9b6",
-    "empty": "8588241dd42c89c88e8576f3bc6740b4ac0689ea0f1a69d559c9021bf7e356ba",
+    "lf": "6df5444413e0e3b4f8b2f1f3529d0be14ab399f214a2bb3ee529d140a3b314f4",  # pragma: allowlist secret
+    "crlf": "c77472fe5c0b78b1056644c3b01b0c6929f63c2c15b3f335289c31e075210173",  # pragma: allowlist secret
+    "plain": "6a2ee9532ee8b725d102c0091f2dc9e6c98901a269766772bc11128b6f88756f",  # pragma: allowlist secret
+    "existing_line": "1f8853ae8b431f699d680b9e04890883e6b5d221edde6d43289527c47865d9b6",  # pragma: allowlist secret
+    "empty": "8588241dd42c89c88e8576f3bc6740b4ac0689ea0f1a69d559c9021bf7e356ba",  # pragma: allowlist secret
 }
