@@ -212,10 +212,10 @@ class ReplyTests(base.CorrectionRequestTests):
         (self.replies / "1.md").unlink()
         real = os.open
 
-        def racing(path, flags, *rest):
+        def racing(path, flags, *rest, **kw):
             if str(path).endswith("1.md"):
-                real(path, os.O_WRONLY | os.O_CREAT, 0o600)
-            return real(path, flags, *rest)
+                real(path, os.O_WRONLY | os.O_CREAT, 0o600, **kw)
+            return real(path, flags, *rest, **kw)
 
         with mock.patch.object(os, "open", racing):
             self.refuses("already exists")
@@ -334,6 +334,262 @@ class ReplyTests(base.CorrectionRequestTests):
         (self.replies / "1.md").unlink()
         self.file.write_text(self.file.read_text().replace('"id": 1', '"id": NaN', 1), encoding="utf-8")
         self.refuses("no draft was written")
+
+    # --- RF0845-6: a failed draft write removes only this call's own still-owned file -----------------------------
+
+    PLAIN = "kit/corrections/replies/1.md could not be written safely; nothing was sent"
+    RESIDUAL = ("kit/corrections/replies/1.md could not be written safely; "
+                "partial draft cleanup could not be completed; nothing was sent")
+
+    def fail_after_write(self, hook=None, exc=None):
+        """Patch fsync (after real creation, write and flush) to run hook, then fail like a full disk."""
+        def fsync(fd):
+            if hook:
+                hook()
+            raise exc or OSError(28, "No space left on device")
+        return mock.patch.object(os, "fsync", fsync)
+
+    def fd_count(self):
+        return len(os.listdir("/proc/self/fd"))
+
+    def failed(self, message, patcher):
+        """reply() under patcher raises exactly message, leaks no descriptor and leaves the log untouched."""
+        log, fds = self.file.read_bytes(), self.fd_count()
+        with patcher:
+            with self.assertRaises(ValueError) as caught:
+                self.reply()
+        self.assertEqual(str(caught.exception), message)
+        self.assertEqual(self.fd_count(), fds)
+        self.assertEqual(self.file.read_bytes(), log)
+
+    def foreign(self, name="foreign.md", data=b"foreign bytes\n", mode=0o640):
+        path = self.base / name
+        path.write_bytes(data)
+        os.chmod(path, mode)
+        return path
+
+    def test_failed_reply_keeps_post_create_foreign_regular_file(self):
+        self.add()
+        sentinel = self.foreign()
+        ident = sentinel.stat()
+        self.failed(self.RESIDUAL, self.fail_after_write(lambda: os.replace(sentinel, self.replies / "1.md")))
+        kept = (self.replies / "1.md").stat()
+        self.assertEqual((kept.st_dev, kept.st_ino, stat.S_IMODE(kept.st_mode)), (ident.st_dev, ident.st_ino, 0o640))
+        self.assertEqual(self.text(), "foreign bytes\n")
+        self.assertEqual(sorted(p.name for p in self.replies.iterdir()), ["1.md"])
+        self.assertTrue(self.refuses("edit it by hand"))  # a retry never overwrites the replacement
+        self.assertEqual(self.text(), "foreign bytes\n")
+
+    def test_failed_reply_keeps_replacement_symlink_and_referent(self):
+        self.add()
+        referent = self.foreign("referent.md")
+        for target in (referent, self.base / "dangling.md"):
+            def swap(target=target):
+                os.unlink(self.replies / "1.md")
+                os.symlink(target, self.replies / "1.md")
+            self.failed(self.RESIDUAL, self.fail_after_write(swap))
+            self.assertTrue((self.replies / "1.md").is_symlink())
+            self.assertEqual(os.readlink(self.replies / "1.md"), str(target))
+            self.assertEqual(referent.read_bytes(), b"foreign bytes\n")
+            self.assertEqual(stat.S_IMODE(referent.stat().st_mode), 0o640)
+            (self.replies / "1.md").unlink()
+        self.assertFalse((self.base / "dangling.md").exists())
+
+    def test_failed_reply_cleanup_stays_in_opened_directory_after_parent_swap(self):
+        self.add()
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "1.md").write_bytes(b"outside draft\n")
+        (outside / "sibling.md").write_bytes(b"sibling\n")
+        os.chmod(outside / "1.md", 0o640)
+        before = {p.name: (p.read_bytes(), p.stat().st_ino, stat.S_IMODE(p.stat().st_mode)) for p in outside.iterdir()}
+        moved = self.replies.parent / "moved"
+
+        def as_link():
+            os.rename(self.replies, moved)
+            os.symlink(outside, self.replies)
+
+        def as_directory():
+            os.rename(self.replies, moved)
+            self.replies.mkdir()
+            (self.replies / "1.md").write_bytes(b"replacement dir draft\n")
+
+        for swap in (as_link, as_directory):
+            self.failed(self.PLAIN, self.fail_after_write(swap))
+            self.assertFalse(os.path.lexists(moved / "1.md"))  # this call's own partial, in the held directory
+            self.assertEqual({p.name: (p.read_bytes(), p.stat().st_ino, stat.S_IMODE(p.stat().st_mode))
+                              for p in outside.iterdir()}, before)
+            if swap is as_link:
+                self.assertEqual(os.readlink(self.replies), str(outside))
+                self.replies.unlink()
+            else:
+                self.assertEqual((self.replies / "1.md").read_bytes(), b"replacement dir draft\n")
+                (self.replies / "1.md").unlink()
+                self.replies.rmdir()
+            moved.rmdir()
+
+    def test_failed_reply_preserves_foreign_nonregular_target(self):
+        self.add()
+
+        def as_directory():
+            os.unlink(self.replies / "1.md")
+            os.mkdir(self.replies / "1.md")
+            (self.replies / "1.md" / "inner.txt").write_bytes(b"inner")
+
+        def as_fifo():
+            os.unlink(self.replies / "1.md")
+            os.mkfifo(self.replies / "1.md")
+
+        self.failed(self.RESIDUAL, self.fail_after_write(as_directory))
+        self.assertEqual((self.replies / "1.md" / "inner.txt").read_bytes(), b"inner")
+        (self.replies / "1.md" / "inner.txt").unlink()
+        (self.replies / "1.md").rmdir()
+        self.failed(self.RESIDUAL, self.fail_after_write(as_fifo))
+        self.assertTrue(stat.S_ISFIFO(os.lstat(self.replies / "1.md").st_mode))
+        os.unlink(self.replies / "1.md")
+        # control: the entry simply vanished; ordinary failure, nothing recreated
+        self.failed(self.PLAIN, self.fail_after_write(lambda: os.unlink(self.replies / "1.md")))
+        self.assertEqual(list(self.replies.iterdir()), [])
+
+    def test_failed_reply_unlink_or_identity_capture_reports_incomplete_cleanup(self):
+        self.add()
+        real_open, real_fstat, real_stat, real_unlink = os.open, os.fstat, os.stat, os.unlink
+        created = []
+
+        def spy_open(path, flags, *rest, **kw):
+            fd = real_open(path, flags, *rest, **kw)
+            if str(path) == "1.md":
+                created.append(fd)
+            return fd
+
+        def no_fstat(fd, *a, **k):
+            if fd in created:
+                raise OSError(5, "I/O error with /secret/place")
+            return real_fstat(fd, *a, **k)
+
+        def no_stat(path, *a, **k):
+            if str(path) == "1.md":
+                raise PermissionError(13, "denied /secret/place")
+            return real_stat(path, *a, **k)
+
+        def no_unlink(path, *a, **k):
+            if str(path) == "1.md":
+                raise OSError(5, "I/O error /secret/place")
+            return real_unlink(path, *a, **k)
+
+        for name, fake in (("fstat", no_fstat), ("stat", no_stat), ("unlink", no_unlink)):
+            with self.subTest(name):
+                created.clear()
+                with mock.patch.multiple(os, open=spy_open, **{name: fake}):
+                    self.failed(self.RESIDUAL, self.fail_after_write())
+                self.assertTrue((self.replies / "1.md").is_file())  # uncertain output is left alone
+                self.assertNotIn("secret", self.RESIDUAL)
+                self.refuses("edit it by hand")  # normal admission still refuses the leftover
+                (self.replies / "1.md").unlink()
+
+    def test_reply_fdopen_fchmod_write_flush_fsync_close_failures_release_descriptors(self):
+        self.add()
+        keep = self.replies.parent / "keep.md"
+        self.replies.mkdir(parents=True)
+        keep.write_bytes(b"unrelated\n")
+        (self.replies / "other.md").write_bytes(b"other\n")
+        real_fdopen = os.fdopen
+
+        class Flaky:
+            def __init__(self, stream, fail):
+                self.stream, self.fail = stream, fail
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.stream.close()
+                if self.fail == "close":
+                    raise OSError(5, "close failed")
+
+            def fileno(self):
+                return self.stream.fileno()
+
+            def write(self, text):
+                if self.fail == "write":
+                    raise OSError(28, "write failed")
+                return self.stream.write(text)
+
+            def flush(self):
+                if self.fail == "flush":
+                    raise OSError(28, "flush failed")
+                self.stream.flush()
+
+        def flaky(fail):
+            return mock.patch.object(os, "fdopen", lambda fd, mode="r", *a, **k: Flaky(real_fdopen(fd, mode, *a, **k), fail)
+                                     if "w" in mode else real_fdopen(fd, mode, *a, **k))
+
+        def refused(fd, mode="r", *a, **k):
+            if "w" in mode:
+                raise OSError(24, "fdopen failed")
+            return real_fdopen(fd, mode, *a, **k)
+
+        cases = {"fdopen": mock.patch.object(os, "fdopen", refused),
+                 "fchmod": mock.patch.object(os, "fchmod", side_effect=OSError(1, "no")),
+                 "write": flaky("write"), "flush": flaky("flush"), "close": flaky("close"),
+                 "fsync": self.fail_after_write()}
+        for name, patcher in cases.items():
+            with self.subTest(name):
+                self.failed(self.PLAIN, patcher)
+                self.assertFalse(os.path.lexists(self.replies / "1.md"))
+                self.assertEqual(sorted(p.name for p in self.replies.iterdir()), ["other.md"])
+                self.assertEqual(keep.read_bytes(), b"unrelated\n")
+        self.assertEqual(self.reply(), {"written": "kit/corrections/replies/1.md", "id": 1, "state": "open"})  # real retry
+        self.assertEqual(stat.S_IMODE((self.replies / "1.md").stat().st_mode), 0o600)
+
+    def test_reply_parent_admission_and_competing_creator_remain_safe(self):
+        self.add()
+        self.addCleanup(os.umask, os.umask(0))
+        outside = self.base / "outside"
+        outside.mkdir()
+        real_mkdir = os.mkdir
+        # a link arriving while the directory is being made is refused, never followed
+        def link_arrives(path, *a, **k):
+            if str(path) == "corrections":
+                os.symlink(outside, self.root / "kit" / "corrections")
+            return real_mkdir(path, *a, **k)
+
+        with mock.patch.object(os, "mkdir", link_arrives):
+            with self.assertRaises(ValueError) as caught:
+                self.reply()
+        self.assertEqual(str(caught.exception), self.PLAIN)
+        self.assertEqual(list(outside.iterdir()), [])
+        (self.root / "kit" / "corrections").unlink()
+        # a real directory arriving is admitted as is, with its own mode kept
+        def directory_arrives(path, *a, **k):
+            if str(path) == "corrections":
+                real_mkdir(self.root / "kit" / "corrections", 0o755)
+            return real_mkdir(path, *a, **k)
+
+        with mock.patch.object(os, "mkdir", directory_arrives):
+            self.assertEqual(self.reply()["written"], "kit/corrections/replies/1.md")
+        self.assertEqual(stat.S_IMODE((self.root / "kit" / "corrections").stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(self.replies.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((self.root / "kit").stat().st_mode), 0o700)
+
+    def test_residual_cleanup_error_exits_3_without_traceback_or_body(self):
+        self.add(summary=UNIQUE)
+        sentinel = self.foreign()
+        argv = ["campaign_tool", "correction-request", "reply", "--directory", str(self.root), "--id", "1"]
+        from campaign_tool import cli
+        import contextlib
+        import io
+        err, out = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stderr(err), contextlib.redirect_stdout(out), \
+                self.fail_after_write(lambda: os.replace(sentinel, self.replies / "1.md")), \
+                mock.patch("socket.socket", side_effect=AssertionError("network")):
+            with self.assertRaises(SystemExit) as caught:
+                cli.main()
+        self.assertEqual(caught.exception.code, 3)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn(self.RESIDUAL, err.getvalue())
+        for private in (str(self.root), UNIQUE, "No space left", "Traceback"):
+            self.assertNotIn(private, err.getvalue())
 
 
 for _name in [n for n in dir(base.CorrectionRequestTests) if n.startswith("test_")]:
