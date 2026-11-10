@@ -697,9 +697,9 @@ class AgencyIdentityTests(Base):
 # Captured from the unique synthetic fixture before the duplicate-admission repair:
 # complete report JSON (sorted keys), CLI text, and private CSV bytes, respectively.
 BASELINE_HASHES = [
-    "ed0e1c274d70db1c45a5628a39a53f3438366ca41e8f61e54e2fada0edb9ba4f",
-    "afa41c6acb80e7e6de4bf04507283f51b57ce42e6af0e2afb0022f8ea77d1b10",
-    "06cd3efbdeb21d064cf8f101df5bba97466485e53340cc89371970be861bead2",
+    "ed0e1c274d70db1c45a5628a39a53f3438366ca41e8f61e54e2fada0edb9ba4f",  # pragma: allowlist secret -- SHA-256 of synthetic report output, not a credential
+    "afa41c6acb80e7e6de4bf04507283f51b57ce42e6af0e2afb0022f8ea77d1b10",  # pragma: allowlist secret -- SHA-256 of synthetic CLI text, not a credential
+    "06cd3efbdeb21d064cf8f101df5bba97466485e53340cc89371970be861bead2",  # pragma: allowlist secret -- SHA-256 of synthetic CSV bytes, not a credential
 ]
 
 
