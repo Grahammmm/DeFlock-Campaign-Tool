@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -582,6 +583,173 @@ class OfficialsCommandTests(unittest.TestCase):
         removed = run("remove", "--agency", COUNCIL, "--name", "Ash Example")
         self.assertEqual(removed.returncode, 0, removed.stderr)
         self.assertEqual(self.stored(), {"schema_version": 1, "bodies": []})
+
+    # --- RF0145-4: removal scans every meetings/*.json the build reads, dot-prefixed names included ------------------
+
+    HIDDEN = ".retained-meeting.json"
+
+    def hidden_vote(self, voter="Ash Example", today=TODAY, hide=True):
+        """Roster Ash+Birch (council), Ash+Birch (police), a real recorded vote for ``voter``; the meeting file is
+        renamed to a dot-prefixed name (its explicit id stays inside, so the build still loads it)."""
+        recent = (today - timedelta(days=3)).isoformat()
+        for name in dict.fromkeys((voter, "Birch Example")):
+            self.add(name, today=today, checked_on=recent)
+            self.add(name, agency=POLICE, today=today, checked_on=recent)
+        votes = self.tmp / "votes.csv"
+        votes.write_text(f"name,vote\n{voter},yes\n", encoding="utf-8")
+        record_outcome(self.root, MID, "approved", "2026-10-14", "https://example.invalid/minutes", "Synthetic Organizer",
+                       today=today, votes_file=votes)
+        meetings = self.content / "meetings"
+        if hide:
+            os.rename(meetings / "2026-10-cedar-council.json", meetings / self.HIDDEN)
+        return meetings / (self.HIDDEN if hide else "2026-10-cedar-council.json")
+
+    def meeting_state(self):
+        """Names in meetings/ with bytes (regular files) or the file type, so a refusal can prove nothing moved."""
+        state = {}
+        for entry in sorted((self.content / "meetings").iterdir(), key=lambda p: p.name):
+            info = os.lstat(entry)
+            state[entry.name] = (entry.read_bytes(), stat.S_IMODE(info.st_mode), info.st_mtime_ns) \
+                if stat.S_ISREG(info.st_mode) else stat.S_IFMT(info.st_mode)
+        return state
+
+    def remove(self, name, agency=COUNCIL, today=TODAY):
+        return oc.remove_official(self.root, agency_id=agency, name=name, today=today)
+
+    def test_hidden_meeting_vote_blocks_removal_and_preserves_loadability(self):
+        control = self.hidden_vote(hide=False)
+        self.refused(lambda: self.remove("Ash Example"), "content/meetings/2026-10-cedar-council.json")
+        os.rename(control, control.with_name(self.HIDDEN))
+        self.assertEqual([m["id"] for m in load_content(self.root, today=TODAY)["meetings"]], [MID])  # the build reads it
+        roster, meetings = self.snap(), self.meeting_state()
+        with mock.patch.object(oc, "_install", side_effect=AssertionError("must not install")):
+            message = self.refused(lambda: self.remove("Ash Example"), "content/meetings/" + self.HIDDEN)
+        self.assertIn("nothing was written", message)
+        self.assertEqual((self.snap(), self.meeting_state()), (roster, meetings))
+        self.assertEqual([m["id"] for m in load_content(self.root, today=TODAY)["meetings"]], [MID])  # still loadable
+        self.assertEqual(self.names(), [(COUNCIL, "Ash Example"), (COUNCIL, "Birch Example"), (POLICE, "Ash Example"),
+                                        (POLICE, "Birch Example")])
+
+    def test_real_cli_hidden_vote_refuses_without_success_or_write(self):
+        today = date.today()
+        self.hidden_vote(voter=PAYLOAD, today=today)
+        roster, meetings = self.snap(), self.meeting_state()
+        done = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "officials", "remove", "--agency", COUNCIL,
+                               "--name", PAYLOAD, "--directory", str(self.root)], cwd=REPO_ROOT, capture_output=True,
+                              text=True, timeout=60)
+        self.assertEqual((done.returncode, done.stdout), (2, ""))
+        self.assertEqual(done.stderr.count("\n"), 1)
+        self.assertTrue(done.stderr.startswith("Stopped: --name: still named by a recorded vote in content/meetings/"
+                                               + self.HIDDEN), done.stderr)
+        for text in (PAYLOAD, str(self.tmp), "Traceback", oc.DONE, "DONE"):
+            self.assertNotIn(text, done.stderr + done.stdout)
+        self.assertEqual((self.snap(), self.meeting_state(), self.temps()), (roster, meetings, []))
+
+    def test_hidden_json_candidates_fail_closed_before_install(self):
+        self.hidden_vote(hide=False)
+        meetings = self.content / "meetings"
+        valid = (meetings / "2026-10-cedar-council.json").read_bytes()
+        outside = self.tmp / "outside.json"
+        outside.write_bytes(valid)
+        cases = (("malformed", lambda p: p.write_bytes(b"{not json"), "not valid UTF-8 JSON"),
+                 ("invalid utf8", lambda p: p.write_bytes(b"\xff\xfe{}"), "not valid UTF-8 JSON"),
+                 ("duplicate key", lambda p: p.write_bytes(b'{"id": "a", "id": "b"}'), "repeats a key"),
+                 ("invalid shape", lambda p: p.write_bytes(b'{"id": "other-meeting"}'), ".json"),
+                 ("oversized", lambda p: p.write_bytes(b" " * (oc.MAX_JSON_BYTES + 1)), "file too large"),
+                 ("valid link", lambda p: p.symlink_to(outside), "is a symbolic link"),
+                 ("dangling link", lambda p: p.symlink_to(self.tmp / "missing.json"), "is a symbolic link"),
+                 ("directory", lambda p: p.mkdir(), "must be a regular file"),
+                 ("fifo", lambda p: os.mkfifo(p), "must be a regular file"))
+
+        def timed_out(*_):
+            raise AssertionError("a hidden candidate blocked the scan")
+        for label, make, needle in cases:
+            with self.subTest(label):
+                path = meetings / ".bad-candidate.json"
+                make(path)
+                roster, state = self.snap(), self.meeting_state()
+                previous = signal.signal(signal.SIGALRM, timed_out)
+                signal.alarm(20)
+                try:
+                    with mock.patch.object(oc, "_install", side_effect=AssertionError("must not install")):
+                        message = self.refused(lambda: self.remove("Birch Example"), needle)
+                finally:
+                    signal.alarm(0)
+                    signal.signal(signal.SIGALRM, previous)
+                self.assertIn("meetings/.bad-candidate.json", message)
+                self.assertEqual((self.snap(), self.meeting_state()), (roster, state))
+                self.assertEqual(outside.read_bytes(), valid)
+                path.rmdir() if label == "directory" else path.unlink()
+        self.assertEqual(self.remove("Birch Example"), {"agency_id": COUNCIL, "body_dropped": False})  # control
+
+    def test_scan_membership_matches_build_glob_without_following_links(self):
+        self.hidden_vote(hide=False)
+        meetings = self.content / "meetings"
+        valid = json.loads((meetings / "2026-10-cedar-council.json").read_text(encoding="utf-8"))
+        for number, name in enumerate(("visible.json", ".hidden.json", "..double.json", ".json", "a.b.json"), 1):
+            (meetings / name).write_text(json.dumps({**valid, "id": f"cedar-extra-{number}"}), encoding="utf-8")
+        for name in (".meeting.json.tmp", "UPPER.JSON", "notes.txt", ".draft.json~"):
+            (meetings / name).write_text("{ not a meeting", encoding="utf-8")
+        (meetings / "nested").mkdir()
+        (meetings / "nested" / "inner.json").write_text("{ not a meeting", encoding="utf-8")
+        expected = sorted(p.name for p in meetings.glob("*.json"))
+        for name in (".hidden.json", "..double.json", ".json", "visible.json"):
+            self.assertIn(name, expected)
+        for name in (".meeting.json.tmp", "UPPER.JSON", "notes.txt", "nested", "inner.json"):
+            self.assertNotIn(name, expected)
+        self.assertEqual(len(load_content(self.root, today=TODAY)["meetings"]), len(expected))
+        with mock.patch.object(oc, "_read", wraps=oc._read) as spy:
+            scanned = oc._meetings(self.root, TODAY)
+        self.assertEqual([call.args[1] for call in spy.call_args_list], expected)
+        self.assertEqual([stem + ".json" for stem, _ in scanned], expected)
+
+    def test_hidden_vote_same_body_identity_and_unrelated_removal(self):
+        voter = "Ash Example"
+        self.hidden_vote(voter=voter)
+        self.add("ash example", today=TODAY, checked_on="2026-10-01")  # exact, case-sensitive name matching
+        before = self.meeting_state()
+        self.refused(lambda: self.remove(voter), "content/meetings/" + self.HIDDEN)
+        self.assertEqual(self.remove(voter, agency=POLICE), {"agency_id": POLICE, "body_dropped": False})
+        self.assertEqual(self.remove("ash example"), {"agency_id": COUNCIL, "body_dropped": False})
+        self.assertEqual(self.remove("Birch Example"), {"agency_id": COUNCIL, "body_dropped": False})
+        self.assertEqual(self.names(), [(COUNCIL, voter), (POLICE, "Birch Example")])
+        self.assertEqual(self.meeting_state(), before)  # hidden meeting bytes intact
+        self.assertEqual([m["id"] for m in load_content(self.root, today=TODAY)["meetings"]], [MID])
+
+    def test_hidden_candidate_disappears_after_enumeration_refuses(self):
+        hidden = self.hidden_vote()
+        roster = self.snap()
+        real = oc._read
+
+        def vanish(folder_fd, name, label):
+            if name == self.HIDDEN:
+                hidden.unlink()
+            return real(folder_fd, name, label)
+        with mock.patch.object(oc, "_read", side_effect=vanish), \
+                mock.patch.object(oc, "_install", side_effect=AssertionError("must not install")):
+            self.refused(lambda: self.remove("Birch Example"), "content/meetings/" + self.HIDDEN
+                         + ": changed while it was being read")
+        self.assertEqual(self.snap(), roster)
+
+    def test_non_json_editor_artifacts_and_missing_meetings_remain_compatible(self):
+        self.hidden_vote(hide=False)
+        meetings = self.content / "meetings"
+        for name in (".meeting.json.tmp", ".meeting.json.swp", "notes.txt", "UPPER.JSON"):
+            (meetings / name).write_bytes(b"\xff{ not json")
+        with mock.patch.object(oc, "_meetings", side_effect=AssertionError("no meeting scan")):
+            self.add("Cedar Example", today=TODAY, checked_on="2026-10-01")
+            oc.recheck_official(self.root, agency_id=COUNCIL, name="Ash Example", checked_on="2026-10-18", today=TODAY)
+            oc.list_officials(self.root, today=TODAY)
+        self.assertEqual(self.remove("Cedar Example"), {"agency_id": COUNCIL, "body_dropped": False})
+        self.assertEqual(self.remove("Ash Example", agency=POLICE), {"agency_id": POLICE, "body_dropped": False})
+        for path in meetings.iterdir():
+            path.unlink()
+        self.assertEqual(oc._meetings(self.root, TODAY), [])  # empty folder
+        self.assertEqual(self.remove("Ash Example"), {"agency_id": COUNCIL, "body_dropped": False})
+        meetings.rmdir()
+        self.assertEqual(oc._meetings(self.root, TODAY), [])  # absent folder
+        self.assertEqual(self.remove("Birch Example"), {"agency_id": COUNCIL, "body_dropped": True})
+        self.assertEqual(stat.S_IMODE(os.lstat(self.file).st_mode), 0o600)
 
 
 if __name__ == "__main__":

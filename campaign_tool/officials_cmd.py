@@ -346,7 +346,7 @@ def _meetings(root, today):
     try:
         meetings = []
         for name in sorted(os.listdir(meetings_fd)):
-            if name.startswith(".") or not name.endswith(".json"):
+            if not name.endswith(".json"):  # the build's Path.glob("*.json") reads dot-prefixed names too (RF0145-4)
                 continue
             label = f"content/meetings/{name}"
             loaded = _read(meetings_fd, name, label)
