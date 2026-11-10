@@ -651,6 +651,78 @@ class KitResponseUndoTests(unittest.TestCase):
         self.assertTrue((doc.parent / "AGENCY-TIMELINE.md").is_file())
         self.assertIn("would exceed 16 MiB; nothing was changed", text)
 
+    # duplicate JSON member names ---------------------------------------------------------------------------
+    def undo_with_prior_receipt(self):
+        self.two_steps()
+        self.assertEqual(self.undo(reason="first")[0], 0)
+        return self.receipts()[0]
+
+    def assert_duplicate_refused(self, raw, *, marker=None):
+        self.archive.write_text(raw, encoding="utf-8")
+        before, modes, inode = self.snapshot(), self.modes(), self.archive.stat().st_ino
+        mtime = self.archive.stat().st_mtime_ns
+        with mock.patch.object(kit, "_write_json", side_effect=AssertionError("written")), \
+                mock.patch("os.fsync", side_effect=AssertionError("synced")):
+            with self.assertRaises(ValueError) as caught:
+                kit_undo.read_archive(self.root / "kit")
+            self.assertEqual(str(caught.exception), "kit/sent-undone.json unreadable: duplicate JSON keys")
+            code, out, err = self.undo()
+        self.assertEqual((code, out), (1, ""), err)
+        self.assertTrue(err.startswith("Stopped: kit/sent-undone.json unreadable: duplicate JSON keys"), err)
+        self.assertNotIn("Traceback", err)
+        if marker:
+            self.assertNotIn(marker, err + str(caught.exception))
+        self.assertEqual((self.snapshot(), self.modes()), (before, modes))
+        self.assertEqual((self.archive.stat().st_ino, self.archive.stat().st_mtime_ns), (inode, mtime))
+
+    def test_duplicate_undos_cannot_discard_prior_receipt(self):
+        prior = self.undo_with_prior_receipt()
+        text = self.archive.read_text(encoding="utf-8")
+        self.assertTrue(text.rstrip().endswith("}"))
+        raw = text.rstrip()[:-1] + ', "undos": []}\n'
+        self.assert_duplicate_refused(raw)
+        self.assertEqual(json.loads(self.archive.read_text(encoding="utf-8").replace(', "undos": []', ""))["undos"], [prior])
+
+    def test_duplicate_keys_refused_at_every_depth_and_when_equal(self):
+        prior = self.undo_with_prior_receipt()
+        good = json.dumps({"schema_version": 1, "undos": [prior]})
+        receipt = json.dumps(prior)
+        cases = {
+            "equal undos": '{"schema_version": 1, "undos": [], "undos": []}',
+            "schema_version twice": '{"schema_version": 1, "schema_version": 1, "undos": []}',
+            "undo_id twice": receipt.join(['{"schema_version": 1, "undos": [', ']}']).replace(
+                '{"undo_id"', '{"undo_id": "x", "undo_id"', 1),
+            "reason twice": receipt[:-1].join(['{"schema_version": 1, "undos": [', ', "reason": "a", "reason": "b"}]}']),
+            "extension object": receipt[:-1].join(['{"schema_version": 1, "undos": [', ', "ext": {"k": 1, "k": 2}}]}']),
+            "escaped alias": good[:-1] + ', "und\\u006fs": []}',
+            "nested escaped alias": receipt[:-1].join(['{"schema_version": 1, "undos": [', ', "e": {"a": 1, "\\u0061": 2}}]}']),
+            "later receipt malformed": receipt.join(['{"schema_version": 1, "undos": [', ', {"x": 1, "x": 1}]}']),
+        }
+        for label, raw in cases.items():
+            with self.subTest(label):
+                self.assert_duplicate_refused(raw + "\n")
+
+    def test_duplicate_diagnostic_does_not_echo_private_material(self):
+        self.undo_with_prior_receipt()
+        marker = "SYNTHETIC-PRIVATE-MARKER"
+        self.assert_duplicate_refused('{"schema_version": 1, "undos": [{"%s\\n": "%s", "%s\\n": 1}]}' % (marker, marker, marker),
+                                      marker=marker)
+
+    def test_same_key_in_separate_objects_and_arrays_stays_valid(self):
+        self.two_steps()
+        self.assertEqual(self.undo(reason="first")[0], 0)
+        document = json.loads(self.archive.read_text(encoding="utf-8"))
+        document["undos"][0]["ext"] = {"a": {"k": 1}, "b": {"k": 1}, "list": ["x", "x"], "\u00e9": 1, "e": 2}
+        self.archive.write_text(json.dumps(document), encoding="utf-8")
+        self.put([step("2026-03-05", "acknowledged"), step("2026-03-06", "extension")],
+                 undo_ids=[document["undos"][0]["undo_id"]])
+        self.assertEqual(self.undo(reason="second")[0], 0)
+        receipts = self.receipts()
+        self.assertEqual(len(receipts), 2)
+        self.assertEqual(receipts[0], document["undos"][0])
+
+
+
 
 if __name__ == "__main__":
     unittest.main()
