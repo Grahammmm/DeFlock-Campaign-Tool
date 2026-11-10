@@ -27,6 +27,11 @@ def note(day, kind):
     return f"counted from receipt {day} ({kind})"
 
 
+def vevents(text):  # the calendar's VEVENT blocks, exactly as written (folded)
+    return ["BEGIN:VEVENT\r\n" + part.split("END:VEVENT\r\n")[0] + "END:VEVENT\r\n"
+            for part in text.split("BEGIN:VEVENT\r\n")[1:]]
+
+
 class Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -88,7 +93,24 @@ class ReceiptFreeTests(Base):
         now = legacy.collect(self.root, self.agencies)
         self.assertEqual(set(now), set(self.fixture))
         for key in self.fixture:
-            self.assertTrue(now[key] == self.fixture[key], f"{key} differs from the pre-change output")
+            if key not in ("calendar", "calendar_no_law"):  # DF1109-04 adds agency-stated events: checked below
+                self.assertTrue(now[key] == self.fixture[key], f"{key} differs from the pre-change output")
+        names = {e["agency_id"]: e["name"] for e in json.loads((self.root / "kit" / "agencies.json").read_bytes())}
+        caveat = "(agency-stated\\; provisional\\, not a legal deadline)"
+        added = [(f"download-expiry-{self.b}#roll-step0", "20260330", "download link expiry", self.b, "roll"),
+                 (f"next-installment-{self.b}#roll", "20260320", "next installment date", self.b, "roll"),
+                 (f"download-expiry-{self.c}#dl-step0", "20260322", "download link expiry", self.c, "dl")]
+        added = sorted(f"BEGIN:VEVENT\r\nUID:{uid}@campaign.invalid\r\nDTSTAMP:20260325T120000Z\r\n"
+                       f"DTSTART;VALUE=DATE:{day}\r\nSUMMARY:Records request: {what} — {names[agency]} ({request}) "
+                       f"{caveat}\r\nEND:VEVENT\r\n" for uid, day, what, agency, request in added)
+        for key, total in (("calendar", 7), ("calendar_no_law", 4)):
+            old, current = vevents(self.fixture[key]), vevents(now[key])
+            self.assertEqual(len(old) + 3, total)
+            self.assertEqual(len(current), total, key)
+            self.assertEqual([block for block in current if block in old], old, f"{key}: old events byte-identical")
+            self.assertEqual(sorted(b.replace("\r\n ", "") for b in current if b not in old), added, key)
+            frame = self.fixture[key].split("BEGIN:VEVENT\r\n")[0]
+            self.assertEqual(now[key], frame + "".join(current) + "END:VCALENDAR\r\n")
 
     def test_the_fixture_has_no_receipt_wording_or_keys(self):
         text = json.dumps(self.fixture)
