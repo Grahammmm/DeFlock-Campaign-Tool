@@ -62,6 +62,15 @@ an encoding one: `--eml` stops before anything is written with exactly
 message as `{"number": N, "code": "malformed"}` while the other messages, their attachments and the original
 mailbox import as above. No part of the deep message is stored on its own; keep it with `ingest --file` (below).
 
+The saved file's own name must be valid UTF-8 text, because it prefixes every receipt name the ledger stores. A
+`--eml` file whose name contains bytes that are not valid UTF-8 (a raw byte such as `FF` on Linux) is refused, in a
+real run and in `--dry-run` alike, before the message is read for MIME, looked up or stored: the output is exactly
+`Stopped: Message filename cannot be represented as UTF-8; nothing was imported` and exit status 1, and no object,
+receipt or link is created. Only the file's own name is checked; Unicode names (accents, CJK, emoji) and a
+directory path containing undecodable bytes are accepted unchanged. To import such a message, rename the file to a
+valid UTF-8 name and run the command again; this prevents new unsupported-name imports and does not clean up
+anything stored earlier.
+
 The message never repeats header values, body data, filenames or decoder text, so it is safe to paste into a ticket.
 
 ## Recovery

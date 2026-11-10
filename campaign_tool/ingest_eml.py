@@ -50,6 +50,17 @@ def _read_message(path):
     return data
 
 
+def _require_receipt_name(name):
+    """The message basename prefixes every receipt name the ledger stores, so it must be strict UTF-8 text.
+    A raw POSIX byte name (surrogate-escaped) cannot be persisted; refusing here, before any object is
+    installed, leaves no orphan and makes preview and apply agree. Only the basename is checked: undecodable
+    ancestor directories stay supported."""
+    try:
+        name.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        raise ValueError("Message filename cannot be represented as UTF-8; nothing was imported") from None
+
+
 def _parse(data, name):
     """Parsed message, refused before any write when its structure is unusable or it has over 200 parts."""
     message = BytesParser(policy=policy.default).parsebytes(data)
@@ -189,6 +200,7 @@ def ingest_eml(args, root):
     """Store the message, then each attachment; print the listing (dry run: write nothing)."""
     data = _read_message(args.eml)
     name = os.path.basename(os.path.abspath(args.eml))
+    _require_receipt_name(name)  # RF0825-5: same refusal for preview and apply, before extract, lookup or any store
     found, count = _extract(data, name)
     dry = getattr(args, "dry_run", False)
     if dry:
