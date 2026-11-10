@@ -1,23 +1,23 @@
 """Read-only check of every private social-draft folder (DF1622-04). Nothing is written or posted.
 
 ``check_folders`` covers the fixed roster of folders ``social.check_social`` does not read itself: finding drafts
-per platform (``kit/social/<p>``), and meeting, outcome and thread drafts (``kit/social/<kind>`` and
+per platform (``kit/social/<p>``), and meeting, outcome, thread and event drafts (``kit/social/<kind>`` and
 ``<kind>/<p>``), each with its ``.suggested`` sibling (and the legacy ``kit/social.suggested``). Absent folders are
 skipped; a link or non-folder in the roster is named as a folder problem and never entered. States are the legacy
 codes (ok, missing, outdated, edited, not_regular); each folder uses its own length rule. A draft whose source is gone
-or changed is listed as stale with reasons, never as an ordinary problem. Meeting and outcome provenance comes from the
+or changed is listed as stale with reasons, never as an ordinary problem. Meeting, outcome and event provenance comes from the
 private ``.check.json`` that ``social._write_drafts`` writes; without a usable one the original starts_at / window is
 unknown and is never guessed.
 """
 import os
 import re
 import stat
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from . import social as S
 from . import social_threads as T
 
-ROSTER_KINDS = ("meetings", "outcomes", "threads")
+ROSTER_KINDS = ("meetings", "outcomes", "threads", "events")
 _COUNTER = re.compile(r"^\(\d+/\d+\) ")
 
 
@@ -75,6 +75,18 @@ class _Context:
         self.published = {f["slug"]: f for f in findings}
         self._meetings = self._threads = None
         self._thread_cache = {}
+        self._events = None
+        self.event_now = now or datetime.now(timezone.utc)
+        if self.event_now.tzinfo is None:
+            self.event_now = self.event_now.replace(tzinfo=timezone.utc)
+
+    def events(self):
+        if self._events is None:
+            try:
+                self._events = {e["id"]: e for e in S.read_events(self.root) or []}
+            except (ValueError, OSError):
+                self._events = False
+        return None if self._events is False else self._events
 
     def meetings(self):
         """``(meetings by id, now)`` or ``None`` when the staged meetings cannot be read."""
@@ -164,6 +176,36 @@ def _stale_outcome(ctx, stem, meta):
     return reasons
 
 
+def _eligible_events(ctx, window):
+    return {i: e for i, e in ctx.events().items()
+            if ctx.event_now <= S.parse_moment(e["starts_at"]) <= ctx.event_now + timedelta(days=window)}
+
+
+def _stale_event(ctx, stem, meta):
+    event = ctx.events().get(stem)
+    if event is None:
+        return ["event removed"]
+    starts = S.parse_moment(event["starts_at"])
+    reasons = ["event is past"] if starts < ctx.event_now else []
+    if meta and meta["starts_at"] != event["starts_at"]:
+        reasons.append(f"rescheduled (was {meta['starts_at']}, now {event['starts_at']})")
+    window = meta["within_days"] if meta else 14
+    if starts > ctx.event_now + timedelta(days=window):
+        reasons.append(f"event left its {window}-day window" if meta else
+                       "event is outside the default 14-day window and its original window is unknown; rebuild with social --events")
+    return reasons
+
+
+def _event_problems(event, data, ctx, platform):
+    body = _body(data)
+    problems = ["over_cap"] if _length(body, platform) > _limit(platform) else []
+    if f"{ctx.base_url.rstrip('/')}/events.html#event-{event['id']}" not in body:
+        problems.append("no_link")
+    if S._event_when(event["starts_at"]) not in body or (event.get("venue") or "Online") not in body:
+        problems.append("outdated")
+    return problems
+
+
 def _finding_problems(finding, data, ctx, platform):
     problems = [c for c in S._edit_problems(finding, data, ctx.base_url) if c != "over_cap"]
     if _length(_body(data), platform) > _limit(platform):
@@ -236,13 +278,13 @@ def _folder(root, parts, kind, platform, suggested, ctx):
         return out
     stems = {n[:-3] for n in names if n.endswith(".md") and len(n) > 3}
     record, rstate = ({}, "absent") if suggested else S._read_state(path / ".written.json", "record")
-    meta, mstate = S._read_state(path / ".check.json", "meta") if kind in ("meetings", "outcomes") else ({}, "absent")
+    meta, mstate = S._read_state(path / ".check.json", "meta") if kind in ("meetings", "outcomes", "events") else ({}, "absent")
     for state, name in ((rstate, ".written.json"), (mstate, ".check.json")):
         if state == "bad":
             notes.append(f"{name} is not a usable regular file; its contents are ignored")
     if not suggested and kind == "threads" and not stems and not record:
         return None
-    if not suggested and kind in ("meetings", "outcomes") and platform is None and not stems and not os.path.lexists(path / ".written.json"):
+    if not suggested and kind in ("meetings", "outcomes", "events") and platform is None and not stems and not os.path.lexists(path / ".written.json"):
         return None  # only platform sub-folders live here
     if suggested and not stems:
         return None
@@ -252,13 +294,22 @@ def _folder(root, parts, kind, platform, suggested, ctx):
         out["folder_problems"], out["problems"] = notes, len(notes)
         return out
 
-    window = max((e["within_days"] for e in meta.values() if e.get("kind") == kind), default=14)
+    if kind == "events" and ctx.events() is None:
+        notes.append("staged events cannot be read; event checks skipped")
+        out["folder_problems"], out["problems"] = notes, len(notes)
+        return out
+
+    window = max((e["within_days"] for stem, e in meta.items() if e.get("kind") == kind
+                  and (kind != "events" or _bound(e, kind, stem, suggested, record,
+                                                 _read(path / (stem + ".md")) if suggested else None))), default=14)
     required = set()
     if not suggested:
         if kind == "findings":
             required = set(ctx.published)
         elif kind == "meetings":
             required = set(_eligible_meetings(ctx, window))
+        elif kind == "events":
+            required = set(_eligible_events(ctx, window))
         elif kind == "outcomes":
             required = set(_eligible_outcomes(ctx, window))
         else:
@@ -281,6 +332,14 @@ def _folder(root, parts, kind, platform, suggested, ctx):
             else:
                 rendered = ctx.thread(subject, platform)
                 fresh = T._draft(subject["id"], rendered[0]).encode("utf-8") if rendered else None
+        elif kind == "events":
+            subject = ctx.events().get(stem)
+            reasons = _stale_event(ctx, stem, entry_meta)
+            if subject is not None and not reasons:
+                try:
+                    fresh = S._event_draft(subject, ctx.base_url, platform).encode("utf-8")
+                except ValueError:
+                    fresh = None
         else:
             subject = ctx.meetings()[0].get(stem)
             reasons = (_stale_meeting if kind == "meetings" else _stale_outcome)(ctx, stem, entry_meta)
@@ -310,13 +369,15 @@ def _folder(root, parts, kind, platform, suggested, ctx):
                 problems = _finding_problems(subject, data, ctx, platform)
             elif kind == "meetings":
                 problems = _meeting_problems(subject, data, ctx, platform)
+            elif kind == "events":
+                problems = _event_problems(subject, data, ctx, platform)
             elif kind == "outcomes":
                 problems = _outcome_problems(subject, data, ctx, platform)
             else:
                 problems = _thread_problems(subject, data, ctx, platform, ctx.thread(subject, platform))
         entry = {"slug": stem, "state": state, "problems": problems}
-        if kind in ("meetings", "outcomes") and entry_meta is None and state not in ("ok", "missing", "not_regular"):
-            entry["note"] = f"original {'starts_at' if kind == 'meetings' else 'window'} cannot be checked; rebuild with {command}"
+        if kind in ("meetings", "outcomes", "events") and entry_meta is None and state not in ("ok", "missing", "not_regular"):
+            entry["note"] = f"original {'starts_at/window' if kind == 'events' else 'starts_at' if kind == 'meetings' else 'window'} cannot be checked; rebuild with {command}"
         out["drafts"].append(entry)
     out["stale"].sort()
     if notes:

@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from campaign_tool.social import build_meeting_social, build_outcome_social, build_social, check_social
@@ -349,6 +349,219 @@ class Cli(FolderCheckCase):
         build_social(self.root)
         text = self.cli("--check", "--text").stdout
         self.assertEqual(text, "Checked 1 published finding(s).\nkit/social:\n  cedar-policy-posted: ok\n0 problem(s).\nRead-only. Nothing was posted.\n")
+
+
+class Events(FolderCheckCase):
+    def put(self, *events):
+        (self.root / "content/events.json").write_text(json.dumps(events), encoding="utf-8")
+
+    def built(self, **kwargs):
+        from campaign_tool.social import build_event_social
+        from tests.test_social_events import event
+        self.put(event("one"))
+        build_social(self.root)
+        build_event_social(self.root, now=NOW, **kwargs)
+
+    def test_changed_venue_and_removed_source_are_not_clean(self):
+        from tests.test_social_events import event
+        self.built()
+        self.assertEqual(self.states("events"), {"one": ("ok", [])})
+        self.put(event("one", venue="Cedar Hall"))
+        self.assertEqual(self.states("events"), {"one": ("outdated", ["outdated"])})
+        self.put()
+        block = self.folder("events")
+        self.assertEqual((block["drafts"], block["stale"], block["problems"]), ([], ["one"], 1))
+        self.assertEqual(self.cli("--check").returncode, 3)
+
+    def test_all_layouts_suggestions_and_required_ids(self):
+        from campaign_tool.social import build_event_social, PLATFORMS
+        from tests.test_social_events import event
+        self.built()
+        build_event_social(self.root, list(PLATFORMS), now=NOW)
+        layouts = ["events"] + ["events/" + p for p in PLATFORMS]
+        for rel in layouts:
+            draft = self.social / rel / "one.md"
+            draft.write_text(draft.read_text() + " organizer edit", encoding="utf-8")
+        build_event_social(self.root, now=NOW)
+        build_event_social(self.root, list(PLATFORMS), now=NOW)
+        layouts += ["events.suggested"] + ["events/" + p + ".suggested" for p in PLATFORMS]
+        self.assertEqual(list(self.check()["folders"]), ["kit/social/" + p for p in
+                         ["events", "events.suggested", "events/x", "events/x.suggested",
+                          "events/bluesky", "events/bluesky.suggested", "events/mastodon", "events/mastodon.suggested"]])
+        for rel in layouts:
+            self.assertEqual(self.folder(rel)["problems"], 0, rel)
+        self.put(event("one"), event("two"))
+        for rel in layouts:
+            self.assertEqual("two" in self.states(rel), not rel.endswith(".suggested"), rel)
+        self.put(event("one", venue="New Hall"))
+        for rel in layouts:
+            self.assertGreater(self.folder(rel)["problems"], 0, rel)
+
+    def test_same_minute_and_offset_rescheduling_precedes_byte_comparison(self):
+        from tests.test_social_events import event
+        self.built()
+        for stamp in ("2026-11-12T18:00:30-08:00", "2026-11-12T18:00:00-08:00"):
+            self.put(event("one", stamp))
+            block = self.folder("events")
+            self.assertEqual(block["stale"], ["one"] if "30" in stamp else [])
+        self.put(event("one", "2026-11-13T02:00:00Z"))
+        self.assertIn("rescheduled", self.folder("events")["stale_reasons"]["one"][0])
+
+    def test_removed_optional_and_started_are_stale_once(self):
+        from tests.test_social_events import event
+        self.built()
+        start = datetime(2026, 11, 13, 2, tzinfo=timezone.utc)
+        self.assertEqual(self.folder("events", start)["stale"], [])
+        block = self.folder("events", start + timedelta(seconds=1))
+        self.assertEqual((block["drafts"], block["stale"], block["problems"]), ([], ["one"], 1))
+        self.assertIn("past", block["stale_reasons"]["one"][0])
+        (self.root / "content/events.json").unlink()
+        self.assertEqual(self.folder("events")["stale"], ["one"])
+
+    def test_windows_own_boundaries_maximum_and_naive_now(self):
+        from campaign_tool.social import build_event_social
+        from tests.test_social_events import event
+        for window in (1, 14, 60):
+            edge = NOW + timedelta(days=window)
+            self.put(event("edge", edge.isoformat(), ends_at=(edge + timedelta(hours=1)).isoformat()))
+            build_event_social(self.root, within_days=window, now=NOW)
+            self.assertEqual(self.states("events", NOW.replace(tzinfo=None))["edge"], ("ok", []))
+            block = self.folder("events", NOW - timedelta(seconds=1))
+            self.assertIn("window", block["stale_reasons"]["edge"][-1])
+        # Keep a 1-day entry alongside a 60-day entry: max is for required IDs only.
+        self.put(event("short", (NOW + timedelta(days=1)).isoformat()))
+        build_event_social(self.root, within_days=1, now=NOW)
+        self.put(event("short", (NOW + timedelta(days=1)).isoformat()), event("wide", (NOW + timedelta(days=50)).isoformat()))
+        (self.social / "events/short.md").write_text("kept edit", encoding="utf-8")
+        build_event_social(self.root, within_days=60, now=NOW)
+        block = self.folder("events", NOW - timedelta(seconds=1))
+        self.assertIn("1-day", block["stale_reasons"]["short"][-1])
+        self.assertIn("wide", {e["slug"] for e in block["drafts"]})
+
+    def test_edited_facts_caps_and_nonregular_drafts(self):
+        from campaign_tool.social import build_event_social, _event_when
+        self.built(platforms=["x", "bluesky", "mastodon"])
+        for platform in ("x", "bluesky", "mastodon"):
+            rel = "events/" + platform
+            draft = self.social / rel / "one.md"
+            text = draft.read_text()
+            draft.write_text(text.replace("Records teach-in", "Organizer wording"), encoding="utf-8")
+            self.assertEqual(self.states(rel)["one"], ("edited", []))
+            for old, code in (("Cedar Library room 1", "outdated"),
+                              (_event_when("2026-11-12T18:00:00-08:00"), "outdated"),
+                              ("https://cedar-records.example.invalid/events.html#event-one", "no_link")):
+                draft.write_text(text.replace(old, "removed"), encoding="utf-8")
+                self.assertIn(code, self.states(rel)["one"][1])
+            draft.write_text(text + "字" * 501, encoding="utf-8")
+            self.assertIn("over_cap", self.states(rel)["one"][1])
+            draft.unlink()
+            self.assertEqual(self.states(rel)["one"], ("missing", ["missing"]))
+            for kind in ("link", "fifo", "directory"):
+                if kind == "link":
+                    draft.symlink_to(self.finding_path)
+                elif kind == "fifo":
+                    os.mkfifo(draft)
+                else:
+                    draft.mkdir()
+                self.assertEqual(self.states(rel)["one"], ("not_regular", ["not_regular"]))
+                draft.rmdir() if kind == "directory" else draft.unlink()
+
+    def test_bad_or_unbound_metadata_never_invents_history(self):
+        from campaign_tool.social import build_event_social
+        from tests.test_social_events import event
+        self.built()
+        sidecar = self.social / "events/.check.json"
+        original = json.loads(sidecar.read_text())
+        variants = [None, {"schema_version": 2}, {"schema_version": 1, "drafts": []}]
+        for changes in ({"starts_at": "bad"}, {"starts_at": []}, {"within_days": True},
+                        {"within_days": 61}, {"kind": "meetings"}, {"sha256": "wrong"}):
+            doc = json.loads(json.dumps(original))
+            doc["drafts"]["one"].update(changes)
+            variants.append(doc)
+        for doc in variants:
+            if sidecar.exists():
+                sidecar.unlink()
+            if doc is not None:
+                sidecar.write_text(json.dumps(doc), encoding="utf-8")
+            self.put(event("one", "2026-11-12T18:00:30-08:00"))
+            self.assertEqual(self.folder("events")["stale"], [])
+            self.put(event("one", "2026-11-12T19:00:00-08:00"))
+            row = self.folder("events")["drafts"][0]
+            self.assertIn("rebuild", row["note"])
+            self.put(event("one", "2026-12-01T18:00:00-08:00"))
+            reason = self.folder("events")["stale_reasons"]["one"]
+            self.assertEqual(len(reason), 1)
+            self.assertIn("original window is unknown", reason[0])
+        sidecar.write_text("{bad", encoding="utf-8")
+        self.assertTrue(self.folder("events")["folder_problems"])
+
+    def test_source_refusal_direct_folder_failure_and_no_raw_error(self):
+        from campaign_tool.social import _published
+        from campaign_tool.social_check import check_folders
+        self.built()
+        findings, base = _published(self.root)
+        path = self.root / "content/events.json"
+        for kind in ("malformed", "duplicate", "oversize", "fifo", "link", "directory"):
+            path.unlink()
+            if kind == "fifo":
+                os.mkfifo(path)
+            elif kind == "link":
+                path.symlink_to(self.finding_path)
+            elif kind == "directory":
+                path.mkdir()
+            else:
+                from tests.test_social_events import event
+                path.write_text("{ secret raw prose" if kind == "malformed" else
+                                json.dumps([event("dup"), event("dup")]) if kind == "duplicate" else
+                                " " * (5 * 1024 * 1024), encoding="utf-8")
+            with self.assertRaises((ValueError, OSError)):
+                self.check()
+            block = check_folders(self.root, findings, base, NOW)["kit/social/events"]
+            self.assertEqual((block["drafts"], block["stale"], block["problems"]), ([], [], 1))
+            self.assertEqual(block["folder_problems"], ["staged events cannot be read; event checks skipped"])
+            if path.is_dir() and not path.is_symlink():
+                path.rmdir()
+                path.touch()
+
+    def test_unsafe_parent_not_entered(self):
+        self.social.mkdir(parents=True)
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "x").mkdir()
+        (outside / "x/one.md").write_text("canary", encoding="utf-8")
+        for kind in ("link", "file"):
+            path = self.social / "events"
+            path.symlink_to(outside) if kind == "link" else path.write_text("not a folder")
+            folders = self.check()["folders"]
+            self.assertEqual(list(folders), ["kit/social/events"])
+            self.assertEqual(folders["kit/social/events"]["problems"], 1)
+            path.unlink()
+        self.assertEqual((outside / "x/one.md").read_text(), "canary")
+
+    def test_api_cli_json_text_are_read_only_with_correct_exits(self):
+        from campaign_tool.social import build_event_social
+        from tests.test_social_events import event
+        soon = (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0).isoformat()
+        self.put(event("one", soon, ends_at=(datetime.now(timezone.utc) + timedelta(days=2)).replace(microsecond=0).isoformat()))
+        build_social(self.root)
+        build_event_social(self.root)
+        for change, expected in ((False, 0), (True, 3), (None, 3)):
+            if change is True:
+                self.put(event("one", soon, venue="Changed Hall", ends_at=(datetime.now(timezone.utc) + timedelta(days=2)).replace(microsecond=0).isoformat()))
+            elif change is None:
+                self.put()
+            before = self.tree()
+            report = self.check(datetime.now(timezone.utc))
+            for args in (("--check",), ("--check", "--text")):
+                result = self.cli(*args)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                if len(args) == 1:
+                    self.assertEqual(json.loads(result.stdout), report)
+                else:
+                    self.assertIn("kit/social/events:", result.stdout)
+                    self.assertIn(f"{report['problems']} problem(s).", result.stdout)
+            self.assertFalse(report["posted"])
+            self.assertEqual(self.tree(), before)
 
 
 if __name__ == "__main__":
