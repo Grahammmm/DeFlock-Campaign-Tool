@@ -247,7 +247,15 @@ def _read(root, parts, private):
         fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         raise SupporterError("/".join(parts) + ": cannot be read") from None
-    with os.fdopen(fd, "rb") as handle:
+    try:
+        stream = os.fdopen(fd, "rb")
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    with stream as handle:  # Only the stream owns the descriptor after handoff.
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise SupporterError("/".join(parts) + ": must be a regular file with a single link")
@@ -756,7 +764,15 @@ def _staged(root, today):
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise SupporterError("meetings: must be a regular file with a single link")
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as handle:
+        try:
+            stream = os.fdopen(fd, "rb")
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        with stream as handle:  # Only the stream owns the descriptor after handoff.
             info = os.fstat(handle.fileno())
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise SupporterError("meetings: must be a regular file with a single link")
