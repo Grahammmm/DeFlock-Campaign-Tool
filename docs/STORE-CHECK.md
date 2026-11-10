@@ -45,5 +45,15 @@ It covers substitution of the object file itself (the last path component) and a
 that file that the check can observe while it runs. It is not an atomic snapshot of the
 store, a defence against replacing a parent directory (`private/` and `private/objects/`
 must be trusted and stay in place), proof against a deliberately malicious writer, a read
-timeout on a stalled disk, hardening of the ledger, or a repair of races in
+timeout on a stalled disk, full hardening of the ledger, or a repair of races in
 `status --fix-modes`.
+
+## Byte counts in the ledger
+
+Each ledger row's byte count must be a nonnegative integer (zero is a valid empty object). A
+row with a valid hash and any other count (text, binary, a fractional or negative number, a
+boolean, an empty value) is reported as `invalid_ledger_row` with only its hash. The bad
+value is never shown, converted or repaired, and that object file is not looked at. The
+other rows are still checked, and the object is not additionally reported as `no_ledger_row`.
+This validates one field only; it is not a check of the ledger schema, receipts or database.
+
