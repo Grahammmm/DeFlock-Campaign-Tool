@@ -57,6 +57,11 @@ def _line(value, limit):
             and all(unicodedata.category(char) not in ("Cc", "Cf") and char not in "\u2028\u2029" for char in value))
 
 
+def _has_surrogate(value):
+    """True for a string holding any lone/explicit surrogate code point U+D800-U+DFFF (never a real supplementary scalar)."""
+    return isinstance(value, str) and any("\ud800" <= char <= "\udfff" for char in value)
+
+
 def _key_label(key):
     return key if isinstance(key, str) and KEY_NAME.fullmatch(key) else f"{len(str(key))} chars"
 
@@ -114,6 +119,10 @@ def load_events(document, problems=None):
         check("description_md", lambda v: (isinstance(v, str) and 1 <= len(v) <= MAX_DESCRIPTION and bool(v.strip())
                                           and plain_text(v) and "![" not in v),
               f"must be non-blank text of at most {MAX_DESCRIPTION} characters without <, >, images or control characters")
+        for key in ("title", "venue", "description_md", "accessibility_note"):  # shape-valid text must be encodable as UTF-8
+            if key in event and key not in bad and _has_surrogate(event[key]):
+                refuse(f"{base}.{key}", "must contain valid Unicode scalar values")
+                bad.add(key)
         check("online", lambda v: v is True or v is False, "must be true or false")
         if "url" in event:
             try:
