@@ -4,7 +4,6 @@ Pure functions: nothing here reads or writes a file. ``Site.cameras_csv`` serial
 and the shared formula guard. Every value is text; the property values are the stored ones, never normalised or inferred.
 """
 import json
-import math
 
 from . import camera_counts
 from .content import OSM_NODE_URL, ContentError
@@ -22,8 +21,8 @@ def _scalar(value):
 def _coordinates(feature, index):
     geometry = feature.get("geometry") if isinstance(feature, dict) else None
     coords = geometry.get("coordinates") if isinstance(geometry, dict) else None
-    if not (isinstance(coords, list) and len(coords) >= 2 and all(
-            isinstance(n, (int, float)) and not isinstance(n, bool) and math.isfinite(n) for n in coords[:2])):
+    # camera_counts._number is overflow-safe: an oversized decoded JSON integer is refused here, not raised as OverflowError
+    if not (isinstance(coords, list) and len(coords) >= 2 and all(camera_counts._number(n) for n in coords[:2])):
         raise ContentError(f"map/cameras.geojson.features[{index}].geometry.coordinates: finite coordinates required for CSV")
     return coords[0], coords[1]
 
