@@ -188,6 +188,13 @@ The *changed window* is the set of days whose answer may differ: the union of th
 when the citation, duty or exceptions changed, the symmetric difference of the two intervals when only the dates
 changed, the new interval for an added rule and the old one for a removed rule (`effective_to: null` is no end).
 
+Event dates run from 0001-01-01 to 9999-12-31, the last date the tool can represent, and an `effective_to` of
+`9999-12-31` includes that day. So changing `effective_to` between `null` and `9999-12-31` (with nothing else
+changed) alters no supported event date: the rule is still listed as changed, with the field named and the window
+`none (no representable event dates)` (an empty `window` list in `--json`), and it affects no dated finding. A draft
+citing it with no event date is still listed as before. The report stays read-only and states no legal conclusion;
+whether the amendment matters stays with the human reviewers.
+
 A published finding (including a corrected one) or an open draft is **affected** when it cites a changed, added or
 removed rule, through `rule_ids` or `sources[].rule_id`, and its `event_date` falls in that rule's window.
 Withdrawn findings are skipped. A draft whose `event_date` is still an `[EDIT ME` marker (or missing) is listed

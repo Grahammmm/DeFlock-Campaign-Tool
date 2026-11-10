@@ -169,8 +169,10 @@ def _exposure(resolved):
     code, out = _git(git, top, ["ls-files", "--cached", "-z", "--", *[":(literal)" + prefix + n for n in PROTECTED]])
     if code != 0:
         raise _Unchecked()
+    # The index is authoritative: an entry exactly at the root (a file, even one since deleted or replaced by a
+    # directory) is as committable as one below it.
     tracked = {name for name in PROTECTED for path in out.decode("utf-8").split("\0")
-               if path.startswith(prefix + name + "/")}
+               if path == prefix + name or path.startswith(prefix + name + "/")}
     return [n for n in PROTECTED if n in exposed | tracked], tracked
 
 

@@ -1130,7 +1130,7 @@ not mean the outlet endorses the campaign.** Typing the headline exactly as publ
 
 ### Decisions elsewhere (`content/elsewhere.json`, optional)
 
-Decisions other governments have made, kept apart from this campaign's own agencies and findings. The file is a JSON array of 1 to 100 objects (a present empty array is refused, it is not an off switch); `content init` does not create it and the tool never fills it. Every key below is required except `news_url`:
+Decisions other governments have made, kept apart from this campaign's own agencies and findings. The file is a JSON array of 1 to 100 objects (a present empty array is refused, it is not an off switch); `content init` does not create it and the tool never fills it on its own: you type each verified decision with `content elsewhere add` (below) or edit the file by hand. Every key below is required except `news_url`:
 
 ```json
 [{"place": "Springfield", "state": "OR", "body": "Springfield City Council", "decided_on": "2026-03-10",
@@ -1150,13 +1150,33 @@ Decisions other governments have made, kept apart from this campaign's own agenc
 - `elsewhere.html` joins the footer (last paragraph) and, with `base_url`, `sitemap.xml`. `elsewhere` is a reserved page and finding slug and `elsewhere.html` a reserved top-level name with or without the file. Delete the file and rebuild and the page, link and sitemap entry disappear; every other file is byte-identical to a build that never had it.
 - Labels: `elsewhere.title`, `elsewhere.description`, `elsewhere.note`, `elsewhere.verified`, `elsewhere.decided` and `elsewhere.checked` (`{date}`), `elsewhere.source`, `elsewhere.news`, `elsewhere.kind.<kind>` and `footer.elsewhere`; `examples/labels/es.json` carries a machine-made draft. Source text and place or body names are not translated.
 
+#### Maintaining the file: `content elsewhere add|remove|list`
+
+These commands edit only `content/elsewhere.json`. Nothing is fetched, built, sent or deployed; the page changes at your next `build`. Each change validates the **whole** prospective file with the same loader the build uses (the duplicate rule included) and the shared email, phone and plate lint on every field, URLs included, then writes it once (a temporary file beside it, one rename). A refusal prints one `Stopped:` line naming the flag or `elsewhere.json[N].field` and a category, never your text, exits 1 and leaves the old file byte for byte. A broken stored file (an old row, a duplicate, invalid JSON, a link) is refused by all three verbs; fix it by hand, then retry.
+
+```sh
+D=../my-campaign   # synthetic example values; type what the official record says
+python3 -m campaign_tool content elsewhere add --directory $D --place "Springfield" --state OR \
+  --body "Springfield City Council" --decided-on 2026-03-10 --kind paused \
+  --as-stated "The council voted to pause the contract." \
+  --source-url https://records.example.test/minutes/2026-03-10 --checked-on 2026-09-15 \
+  [--news-url https://news.example.test/story]
+python3 -m campaign_tool content elsewhere list --directory $D
+python3 -m campaign_tool content elsewhere remove --directory $D --index 1
+```
+
+- `add` appends one entry and prints `Elsewhere entry added: index N.`; the first add creates the file. `--kind` is one of the kinds above. A flagged `as_stated` prints the same `review-required: elsewhere.json[N].as_stated: ...` note on stderr and is still written.
+- `list` prints `index | place | body | decided_on | kind | checked_on`, one row per entry in **stored order**. That index is the `N` of `meetings-stage --elsewhere N`; the page's grouped order is different and never used for it. Without the file it prints `No decisions elsewhere recorded.` and creates nothing.
+- `remove --index N` drops the entry at stored position N (ASCII digits, 1 or more; past the end is refused with the valid range). Before anything changes it reads every staged `content/meetings/*.json` (a broken one is refused) and prints one `Warning: meetings/ID.json cites the same place, body and date; ...` line per meeting citing an entry with the same place, body and `decided_on` (any kind), or `No staged meetings cite the same place, body and date.` Staged kits are never rewritten: a meeting that cites the removed entry keeps its snapshot, and `build` and `content-check` refuse it until you restage it with `meetings-stage --replace`. Later positions shift down by one, so run `list` again before choosing `--elsewhere`. Removing the last entry deletes the file (it never writes `[]`), and the next build drops the page.
+- One organizer edits at a time: if the file changes while a command runs, the command stops with `changed while it was being edited; nothing was written`.
+
 #### Starter: `examples/elsewhere.json` (historical research, organizer re-checks and copies by hand)
 
 `examples/elsewhere.json` holds ten decisions other local governments made about ALPR or Flock cameras, each taken from the deciding body's own published record (an adopted resolution, a council action agenda, or the city or town's own news release or program page). It is a historical research starter read on 2026-11-04, not a list of current policy, not complete, not a count or ranking, and not legal advice. The tool does not verify the URLs, and `content init`, `init`, `content-check` and `build` never copy or scan it. Nothing publishes it.
 
 Before using an entry: reopen its official record, confirm the place, body, date, outcome and what equipment it concerns, check whether the decision still stands, and set `checked_on` to the day you read it. Copying an entry is not approval; the page still carries the legal-claim review notes described above.
 
-To copy it without overwriting your own work, use a disposable campaign first (never replace an edited `content/elsewhere.json`):
+To copy it without overwriting your own work, use a disposable campaign first (never replace an edited `content/elsewhere.json`). The preferred route is to re-read each entry's record and type it with `content elsewhere add` (above); copying the whole file by hand remains possible:
 
 ```sh
 cp -n examples/elsewhere.json ../my-campaign/content/elsewhere.json   # -n refuses to overwrite an existing file
@@ -1719,6 +1739,19 @@ Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descri
 `intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
 `signup.*`, `glossary.*`, `schedule.*`, `js.*` (scripts, below), `handout.*` (the private meeting-pack handout, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
 keeps its English default.
+Timeline, methods, packet, newsletters, cameras page and legal basis (DF1109-16): `nav.timeline`, `title.timeline*`,
+`timeline.*` (heading, lead, the agency-actions note and "Also shown: {kinds}." without their leading space, which
+the page adds; the three kind names with `timeline.join_two`/`timeline.join_three`; the empty state, the
+"official record" link, `timeline.unknown_agency` and one `timeline.event_<kind>` template per event, whose
+placeholders take the event's name, title, topic, body, outlet or official exactly as stored), `month.01` to
+`month.12` with `timeline.month_year` ("{month} {year}"; the timeline's month headings use these, never the
+computer's locale), `methods.*` (page text and `methods.classification_<code>`/`methods.confidence_<code>`, the label
+definitions), `packet.*`, `newsletters.*`, `cameras.page_*`, `legal.*`, `finding.share`, `outcome.official_record`
+and `footer.cameras`/`footer.newsletters`/`footer.methods`. The packet reuses `finding.agency`, `finding.sources`,
+`finding.limitations`, `finding.none_stated`, `finding.corrections`, `finding.published` and `finding.updated`.
+Still English whatever the labels say: request-state sentences, meeting outcome names, comment deadlines, policy
+and contract checks, local rules, sharing tables and the record-number explainer. Each of these keys allows exactly
+the placeholders its default shows.
 A complete Spanish draft of every key is in [`examples/labels/es.json`](../examples/labels/es.json) ([README](../examples/labels/README.md)).
 Machine-made draft. A fluent Spanish reader must check every line before a campaign uses it; nothing here is reviewed.
 Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds

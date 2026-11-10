@@ -12,12 +12,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from campaign_tool import law  # noqa: E402
+from campaign_tool import law, law_impact  # noqa: E402
 
+MAX_DAY = date.max.isoformat()
 BASE = json.loads((REPO_ROOT / "tests" / "fixtures" / "law_impact" / "base-package.json").read_text(encoding="utf-8"))
 
 
@@ -306,6 +308,168 @@ class LawImpactTests(unittest.TestCase):
         self.assertEqual([r["kind"] for r in data["rules"]], ["changed", "added", "removed"])
         self.assertEqual(data["rules"][0]["window"], [{"from": "2016-01-01", "to": None}])
         self.assertEqual(data["affected"][0]["next"][0], f"campaign_tool finding diff fnd_a --directory {self.root} --from DRAFT")
+
+    # RF1635-1: an inclusive end of 9999-12-31 ends at the last representable day, like no end at all.
+    def test_maximum_end_and_open_have_empty_representable_difference(self):
+        self.finding("fnd_boundary", MAX_DAY)
+        for old_end, new_end in ((None, MAX_DAY), (MAX_DAY, None)):
+            with self.subTest(old=old_end, new=new_end):
+                rule_of(self.old, "ca-alpha")["effective_to"] = old_end
+                rule_of(self.new, "ca-alpha")["effective_to"] = new_end
+                self.assertEqual(law_impact.diff_rules(self.old, self.new),
+                                 [dict(rule_id="ca-alpha", kind="changed", fields=["effective_to"], window=[])])
+                _, out, err = self.run_impact(expect=0)
+                self.assertEqual(err, "")
+                self.assertIn("changed ca-alpha: effective_to; window none (no representable event dates)\n", out)
+                self.assertNotIn("no rule changed", out)
+                self.assertIn("findings affected: 0", out)
+                self.assertNotIn("10000", out)
+                _, raw, err = self.run_impact("--json", expect=0)
+                self.assertEqual(err, "")
+                data = json.loads(raw)
+                self.assertEqual(data["rules"], [dict(rule_id="ca-alpha", kind="changed", fields=["effective_to"],
+                                                      window=[])])
+                self.assertEqual(data["counts"], {"changed": 1, "added": 0, "removed": 0, "affected": 0,
+                                                  "undated": 0, "unreadable": 0})
+                self.assertEqual(data["affected"], [])
+
+    def test_last_representable_day_is_not_clamped_away_or_invented(self):
+        self.finding("fnd_last", MAX_DAY)
+        self.finding("fnd_earlier", "9999-12-30")
+        cases = (((None, "9999-12-30"), "9999-12-31..open", None),
+                 ((MAX_DAY, "9999-12-30"), "9999-12-31..9999-12-31", MAX_DAY))
+        for (wide, narrow), text, to in cases:
+            for old_end, new_end in ((wide, narrow), (narrow, wide)):
+                with self.subTest(old=old_end, new=new_end):
+                    rule_of(self.old, "ca-alpha")["effective_to"] = old_end
+                    rule_of(self.new, "ca-alpha")["effective_to"] = new_end
+                    _, out, err = self.run_impact(expect=3)
+                    self.assertEqual(err, "")
+                    self.assertIn(f"changed ca-alpha: effective_to; window {text}\n", out)
+                    self.assertIn("fnd_last published 9999-12-31 cites ca-alpha (changed)", out)
+                    self.assertNotIn("fnd_earlier", out)
+                    data = json.loads(self.run_impact("--json", expect=3)[1])
+                    self.assertEqual(data["rules"][0]["window"], [{"from": MAX_DAY, "to": to}])
+                    self.assertEqual([a["id"] for a in data["affected"]], ["fnd_last"])
+
+    def test_maximum_date_content_union_added_and_removed_rules(self):
+        rule_of(self.new, "ca-alpha")["duty"] = "Synthetic duty, amended."
+        rule_of(self.new, "ca-alpha")["effective_to"] = MAX_DAY
+        last = copy.deepcopy(rule_of(self.new, "ca-beta"))
+        last.update(rule_id="ca-delta", effective_from=MAX_DAY, effective_to=MAX_DAY)
+        self.new["rules"].append(last)
+        gone = copy.deepcopy(rule_of(self.old, "ca-beta"))
+        gone.update(rule_id="ca-epsilon", effective_from=MAX_DAY, effective_to=None)
+        self.old["rules"].append(gone)
+        self.finding("fnd_a", MAX_DAY, ["ca-alpha"])
+        self.finding("fnd_d", MAX_DAY, ["ca-delta"])
+        self.finding("fnd_e", MAX_DAY, ["ca-epsilon"])
+        self.finding("fnd_early", "9999-12-30", ["ca-delta", "ca-epsilon"])
+        _, out, err = self.run_impact(expect=3)
+        self.assertEqual(err, "")
+        self.assertIn("changed ca-alpha: duty, effective_to; window 2016-01-01..open\n"
+                      "added ca-delta; window 9999-12-31..9999-12-31\n"
+                      "removed ca-epsilon; window 9999-12-31..open\n", out)
+        data = json.loads(self.run_impact("--json", expect=3)[1])
+        self.assertEqual([r["window"] for r in data["rules"]], [[{"from": "2016-01-01", "to": None}],
+                                                                [{"from": MAX_DAY, "to": MAX_DAY}],
+                                                                [{"from": MAX_DAY, "to": None}]])
+        self.assertEqual([(a["id"], a["kinds"]) for a in data["affected"]],
+                         [("fnd_a", {"ca-alpha": "changed"}), ("fnd_d", {"ca-delta": "added"}),
+                          ("fnd_e", {"ca-epsilon": "removed"})])
+
+    def test_window_membership_matches_independent_calendar_oracle(self):
+        spans = [("0001-01-01", "0001-01-01"), ("0001-01-01", None), ("0001-01-02", "2016-01-01"),
+                 ("2024-02-29", "2024-02-29"), ("2024-02-28", "2024-03-01"), ("2020-01-01", "2023-12-31"),
+                 ("2023-06-01", "2025-01-01"), ("2016-01-01", None), ("2016-01-01", "9999-12-30"),
+                 ("2016-01-01", MAX_DAY), ("9999-12-30", None), (MAX_DAY, MAX_DAY), (MAX_DAY, None)]
+        last = date.max.toordinal()
+        edges = {date.fromisoformat(e).toordinal() for span in spans for e in span if e} | {1, last}
+        days = {date.fromordinal(n) for edge in edges for n in (edge - 1, edge, edge + 1) if 1 <= n <= last}
+
+        def rule(start, end, duty="Synthetic duty"):
+            return dict(rule_id="ca-x", citation="Synthetic", duty=duty, exceptions=[], effective_from=start,
+                        effective_to=end)
+
+        def member(span, day):
+            return date.fromisoformat(span[0]) <= day and (span[1] is None or day <= date.fromisoformat(span[1]))
+
+        def check(window, expected):
+            self.assertEqual(window, sorted(window))
+            for lo, hi in window:
+                self.assertTrue(1 <= lo <= date.max.toordinal() and lo < hi, (lo, hi))
+            for previous, following in zip(window, window[1:]):
+                self.assertLess(previous[1], following[0])
+            got = {day for day in days if any(lo <= day.toordinal() < hi for lo, hi in window)}
+            self.assertEqual(got, {day for day in days if expected(day)})
+
+        def rows(old, new):
+            return law_impact.diff_rules({"rules": old}, {"rules": new})
+
+        for old in spans:
+            check(rows([], [rule(*old)])[0]["window"], lambda day: member(old, day))
+            check(rows([rule(*old)], [])[0]["window"], lambda day: member(old, day))
+            for new in spans:
+                with self.subTest(old=old, new=new):
+                    dated = rows([rule(*old)], [rule(*new)])
+                    check(dated[0]["window"] if dated else [], lambda day: member(old, day) != member(new, day))
+                    content = rows([rule(*old)], [rule(*new, duty="Synthetic duty, amended.")])
+                    check(content[0]["window"], lambda day: member(old, day) or member(new, day))
+
+    def test_empty_window_keeps_undated_and_other_rule_reporting(self):
+        rule_of(self.new, "ca-alpha")["effective_to"] = MAX_DAY
+        rule_of(self.new, "ca-beta")["duty"] = "Synthetic duty, amended."
+        self.finding("fnd_u", "[EDIT ME: event date]", ["ca-alpha"], where="private/drafts")
+        self.finding("fnd_a", MAX_DAY, ["ca-alpha"])
+        self.finding("fnd_b", "2024-05-01", ["ca-beta"])
+        _, out, err = self.run_impact(expect=3)
+        self.assertEqual(err, "")
+        self.assertIn("changed ca-alpha: effective_to; window none (no representable event dates)\n"
+                      "changed ca-beta: duty; window 2016-01-01..open\n"
+                      "findings affected: 1\n"
+                      "fnd_b published 2024-05-01 cites ca-beta (changed)\n", out)
+        self.assertIn("drafts with no event date: 1\nfnd_u draft [EDIT ME: event date] cites ca-alpha", out)
+        data = json.loads(self.run_impact("--json", expect=3)[1])
+        self.assertEqual(data["counts"], {"changed": 2, "added": 0, "removed": 0, "affected": 1, "undated": 1,
+                                          "unreadable": 0})
+        self.assertEqual([(r["rule_id"], r["window"]) for r in data["rules"]],
+                         [("ca-alpha", []), ("ca-beta", [{"from": "2016-01-01", "to": None}])])
+        self.assertEqual([u["id"] for u in data["undated"]], ["fnd_u"])
+        rule_of(self.new, "ca-beta")["duty"] = rule_of(self.old, "ca-beta")["duty"]
+        self.run_impact(expect=0)  # the undated draft alone still does not fail
+
+    def test_boundary_reports_preserve_bytes_and_legacy_outputs(self):
+        rule_of(self.new, "ca-alpha")["effective_to"] = MAX_DAY
+        self.finding("fnd_a", MAX_DAY)
+        self.finding("fnd_d", MAX_DAY, where="private/drafts")
+        old, new = self.write("old.json", self.old), self.write("new.json", self.new)
+        before, packages = snapshot(self.root), snapshot(self.tmp)
+        modes = {p: p.stat().st_mode for p in (old, new, *self.root.rglob("*"))}
+        self.run_impact(expect=0, write=False)
+        self.run_impact("--json", expect=0, write=False)
+        self.assertEqual(snapshot(self.root), before)
+        self.assertEqual(snapshot(self.tmp), packages)
+        self.assertEqual({p: p.stat().st_mode for p in (old, new, *self.root.rglob("*"))}, modes)
+        self.assertEqual(json.loads(new.read_text(encoding="utf-8"))["status"], "draft")
+        # An ordinary amendment prints exactly what it printed before the repair.
+        rule_of(self.new, "ca-alpha").update(effective_to=None, duty="Synthetic duty, amended.")
+        self.finding("fnd_a")
+        (self.root / "private" / "drafts" / "fnd_d.json").unlink()
+        _, out, _ = self.run_impact(expect=3)
+        d = self.root
+        self.assertEqual(out, (
+            f"law impact us-ca: old {self.tmp}/old.json (draft), new {self.tmp}/new.json (draft)\n"
+            "changed ca-alpha: duty; window 2016-01-01..open\n"
+            "findings affected: 1\n"
+            "fnd_a published 2024-05-01 cites ca-alpha (changed)\n"
+            f"  next: campaign_tool finding diff fnd_a --directory {d} --from DRAFT\n"
+            f"  then if a correction is needed: campaign_tool finding correct fnd_a --directory {d} "
+            "--date YYYY-MM-DD --note TEXT --approved-by NAME [--from DRAFT]\n"
+            "drafts with no event date: 0\n" + law_impact.NOTE + "\n"))
+        rule_of(self.new, "ca-alpha")["effective_to"] = "9999-12-32"  # still not a date: input error
+        _, out, err = self.run_impact(expect=2)
+        self.assertEqual(out, "")
+        self.assertIn(str(self.tmp / "new.json"), err)
 
     def test_module_entry_point_exit_code(self):
         rule_of(self.new, "ca-alpha")["duty"] = "Synthetic duty, amended."

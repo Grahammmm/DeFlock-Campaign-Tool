@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import fixes, registry
 from .agency_actions import ACTION_KINDS
+from .content_elsewhere import KINDS as ELSEWHERE_KINDS
 from .supporters import HOWS as SUPPORTER_HOWS, KINDS as SUPPORTER_KINDS
 
 MAX_BYTES = 50 * 1024 * 1024
@@ -1418,6 +1419,14 @@ def main():
                                      "phone or address: counts and dates only, never values (read-only)")
     personal_p.add_argument("--directory", required=True)
     personal_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
+    personal_p.add_argument("--find", metavar="TEXT", help="Where TEXT (3+ characters, any case) appears in the stores' "
+                            "name and contact fields: kind, path, position and field only, never a value")
+    if sys.argv[1:2] == ["personal-data"] and any(arg.startswith("--f") for arg in sys.argv[2:]):
+        def _find_misuse(_message):  # argparse would repeat the offending argument, which may be the --find text
+            print(personal_p.format_usage().rstrip(), file=sys.stderr)
+            print("personal-data: error: invalid arguments (not repeated here)", file=sys.stderr)
+            sys.exit(2)
+        parser.error = personal_p.error = _find_misuse
     withheld_p = commands.add_parser("kit-withheld", help="Every recorded withheld basis, grouped by the Gov. Code "
                                      "section number in the agency's own words (read-only)")
     withheld_p.add_argument("--directory", required=True)
@@ -1517,6 +1526,28 @@ def main():
     action_list.add_argument("--directory", required=True, help="Campaign directory (required)")
     action_list.add_argument("--agency", default=None, help="Only this agency's actions (indices are not renumbered)")
     action_list.add_argument("--json", dest="as_json", action="store_true", help="A JSON array instead of text lines")
+    elsewhere_cmds = content_cmds.add_parser(  # DF1109B-07
+        "elsewhere", help="Maintain content/elsewhere.json, decisions by other governments you read off their official "
+        "record (nothing is fetched, built, sent or deployed)").add_subparsers(dest="elsewhere_command", required=True)
+    elsewhere_add = elsewhere_cmds.add_parser("add", allow_abbrev=False, help="Append one decision; the whole file is "
+                                              "validated first and the first add creates it")
+    for flag, text in (("--directory", "Campaign directory (required)"), ("--place", "Place as the official source names it"),
+                       ("--state", "Two-letter uppercase state code, for example CA"),
+                       ("--body", "Deciding body as the official source names it"),
+                       ("--decided-on", "YYYY-MM-DD of the decision"),
+                       ("--as-stated", "1-200 plain-text characters as the official source states the decision"),
+                       ("--source-url", "https:// address of the deciding body's own record (recorded, never fetched)"),
+                       ("--checked-on", "YYYY-MM-DD you re-read that record (not before --decided-on, not in the future)")):
+        elsewhere_add.add_argument(flag, required=True, help=text)
+    elsewhere_add.add_argument("--kind", required=True, choices=ELSEWHERE_KINDS, help="What the body decided")
+    elsewhere_add.add_argument("--news-url", default=None, help="Optional https:// news coverage (never replaces --source-url)")
+    elsewhere_remove = elsewhere_cmds.add_parser("remove", allow_abbrev=False, help="Remove the entry at a 1-based stored "
+                                                 "position and name the staged meetings citing the same place, body and date")
+    elsewhere_remove.add_argument("--directory", required=True, help="Campaign directory (required)")
+    elsewhere_remove.add_argument("--index", required=True, help="1-based stored position from content elsewhere list, not the page order")
+    elsewhere_list = elsewhere_cmds.add_parser("list", allow_abbrev=False, help="Print each entry with the N meetings-stage "
+                                               "--elsewhere takes (stored order; read-only)")
+    elsewhere_list.add_argument("--directory", required=True, help="Campaign directory (required)")
     sharing_p = content_cmds.add_parser("agency-sharing", help="Record the agencies the vendor transparency portal names as receiving data, "
                                         "as the organizer transcribed them (CSV header name,state,kind; 1-2000 rows, all or none; never fetched)")
     sharing_p.add_argument("--directory", required=True)
@@ -1797,12 +1828,17 @@ def main():
                                     ).add_subparsers(dest="campaigns_command", required=True)
     for verb, text in (("add", "Register NAME at --directory"), ("remove", "Unregister NAME; deletes nothing"),
                        ("list", "The registered names and directories"),
-                       ("status", "One private line per campaign: counts and waiting gates; publishes nothing")):
+                       ("status", "One private line per campaign: counts and waiting gates; publishes nothing"),
+                       ("today", "One private to-do list across every campaign, each item with its --campaign "
+                                 "command; read-only")):
         verb_p = campaigns.add_parser(verb, help=text)
         if verb in ("add", "remove"):
             verb_p.add_argument("name")
         if verb == "add":
             verb_p.add_argument("--directory", required=True)
+        if verb == "today":  # DF1109-15
+            verb_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
+            verb_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
     args = parser.parse_args()
     if args.command == "campaigns":
         sys.exit(registry.run(args))
@@ -1921,13 +1957,23 @@ def main():
         from .law_packet import main as law_packet_main
         sys.exit(law_packet_main(args))
     if args.command == "personal-data":  # the folder is not resolved: the register refuses a symlinked root itself
-        from .personal_data import PersonalDataError, exit_code, personal_data_register, render_text
+        from .personal_data import (FindQueryError, PersonalDataError, exit_code, personal_data_find,
+                                    personal_data_register, render_find_text, render_text)
         try:
-            report = personal_data_register(Path(args.directory).expanduser())
+            if args.find is None:
+                report = personal_data_register(Path(args.directory).expanduser())
+            else:  # the text is checked before the folder is opened and is never printed
+                report = personal_data_find(Path(args.directory).expanduser(), args.find)
+        except FindQueryError as exc:
+            print("Stopped: " + str(exc), file=sys.stderr)
+            sys.exit(2)
         except PersonalDataError as exc:
             print("Stopped: " + str(exc), file=sys.stderr)
             sys.exit(1)
-        print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
+        if args.as_json:
+            print(json.dumps(report, ensure_ascii=True))
+        else:
+            print(render_text(report) if args.find is None else render_find_text(report))
         sys.exit(exit_code(report))
     if args.command == "supporters" and args.supporters_command == "list":  # unresolved: the reader refuses links
         from .supporters import format_supporters_list, list_supporters
@@ -2333,6 +2379,13 @@ def main():
                 done = agency_actions.remove_action(root, args.agency, agency_actions.parse_index(args.index))
                 print(f"Agency action removed: {done['agency_id']}, index {done['index']}.")
             print("Content only; nothing was built, sent or deployed.")
+        elif args.command == "content" and args.content_command == "elsewhere":  # DF1109B-07
+            from .elsewhere_cmd import run_cli as elsewhere_cli
+            read_config(root)
+            text, notes = elsewhere_cli(root, args)
+            for note in notes:  # alert-only legal-claim notes: stderr, never the supplied text, exit unchanged
+                print(note, file=sys.stderr)
+            print(text)
         elif args.command == "content" and args.content_command == "link-check":
             from .content_links import run_cli as link_check_cli
             report, code = link_check_cli(root, args.online)
