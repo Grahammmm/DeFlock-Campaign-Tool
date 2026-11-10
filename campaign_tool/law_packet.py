@@ -6,6 +6,7 @@ changes the package, never sets status, reviewed_by, reviewed_at or a review lab
 import io
 import json
 import os
+import stat
 import sys
 from datetime import date
 from pathlib import Path
@@ -132,13 +133,28 @@ def _open_parent(path):
     return fd
 
 
+def _owned(out_fd, member, fd):
+    """True only when ``member`` in the folder still names the regular file ``fd`` opened; else leave it."""
+    mine = os.fstat(fd)
+    there = os.stat(member, dir_fd=out_fd, follow_symlinks=False)
+    return (stat.S_ISREG(mine.st_mode) and stat.S_ISREG(there.st_mode)
+            and (mine.st_dev, mine.st_ino) == (there.st_dev, there.st_ino))
+
+
 def _roll_back(parent_fd, name, out_fd, created):
-    """Remove only what this invocation created, through the retained descriptors; never a replacement entry."""
+    """Remove what this invocation created, through the retained descriptors.
+
+    ``created`` holds (basename, still-open descriptor) for each member this invocation opened exclusively.
+    A member is unlinked only if its entry still is that same file; a replacement (file, link, directory,
+    hard link to another file), a missing entry or one that cannot be inspected is left untouched, which can
+    leave the output folder behind. Best effort: never masks the original error.
+    """
     if out_fd is None:
         return  # the new folder could not be verified as ours: leave it
-    for member in created:
+    for member, fd in created:
         try:
-            os.unlink(member, dir_fd=out_fd)
+            if _owned(out_fd, member, fd):
+                os.unlink(member, dir_fd=out_fd)
         except OSError:
             pass
     try:
@@ -168,13 +184,15 @@ def build(jurisdiction, out, as_of=None, base=None):
         out_fd = os.open(path.name, _DIR_FLAGS, dir_fd=parent_fd)
         for name in NAMES:
             fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=out_fd)
-            created.append(name)
-            with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            created.append((name, fd))  # owned from here: the descriptor is closed in the final cleanup
+            with os.fdopen(fd, "w", encoding="utf-8", newline="", closefd=False) as stream:
                 stream.write(files[name])
     except BaseException:
         _roll_back(parent_fd, path.name, out_fd, created)
         raise
     finally:
+        for _, fd in created:  # kept open until now so an inode in use for ownership checks is never recycled
+            os.close(fd)
         if out_fd is not None:
             os.close(out_fd)
         os.close(parent_fd)

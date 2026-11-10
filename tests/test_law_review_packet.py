@@ -396,6 +396,291 @@ class ReviewPacketTests(unittest.TestCase):
                                                           ("d", "needs_attorney_review"))]
         self.assertEqual([r["rule_id"] for r in law_packet.ordered_rules({"rules": rules})], ["d", "b", "a", "c"])
 
+    # --- rollback ownership of created members (RF0035-5) -------------------------------------------------
+
+    def failing_build(self, out, fail_at, before=None):
+        """Run build() with a synthetic open failure at ``fail_at``; ``before(out)`` runs just before it.
+
+        Returns (error, fds) where ``fds`` is every descriptor os.open handed out during the build.
+        """
+        real_open = os.open
+        fds = []
+
+        def failing_open(name, *rest, **kwargs):
+            if name == fail_at:
+                if before:
+                    before(out)
+                raise OSError(28, "Synthetic no space left on device")
+            fd = real_open(name, *rest, **kwargs)
+            fds.append(fd)
+            return fd
+
+        with mock.patch.object(law_packet.os, "open", failing_open):
+            with self.assertRaises(OSError) as caught:
+                law_packet.build("us-ca", out, AS_OF)
+        return caught.exception, fds
+
+    def assert_closed(self, fds):
+        for fd in fds:
+            with self.assertRaises(OSError, msg=f"fd {fd} still open"):
+                os.fstat(fd)
+
+    def park_and_replace(self, name, content=b"replacement bytes"):
+        """Return a ``before`` hook that renames the created member aside and writes a different file at its name."""
+        record = {}
+
+        def hook(out):
+            parked = self.tmp / ("parked-" + name)
+            original = out / name
+            record["original"] = original.stat()
+            os.rename(original, parked)
+            original.write_bytes(content)
+            os.chmod(original, 0o640)
+            record.update(parked=parked, replacement=original.stat(), path=original)
+
+        hook.record = record
+        return hook
+
+    def test_rollback_preserves_replaced_regular_member(self):
+        for replaced in ("PACKET.md", "RULES.md", "WORKSHEET.csv"):
+            with self.subTest(replaced=replaced):
+                out = self.tmp / ("packet-" + replaced)
+                hook = self.park_and_replace(replaced)
+                error, fds = self.failing_build(out, "RETURN.md", hook)
+                record = hook.record
+                self.assertEqual(error.errno, 28)
+                self.assertNotEqual((record["original"].st_dev, record["original"].st_ino),
+                                    (record["replacement"].st_dev, record["replacement"].st_ino))
+                now = record["path"].stat()
+                self.assertEqual((now.st_ino, now.st_mtime_ns, stat.S_IMODE(now.st_mode)),
+                                 (record["replacement"].st_ino, record["replacement"].st_mtime_ns, 0o640))
+                self.assertEqual(record["path"].read_bytes(), b"replacement bytes")
+                self.assertEqual(record["parked"].stat().st_ino, record["original"].st_ino)
+                self.assertTrue(record["parked"].read_bytes())
+                self.assertEqual([p.name for p in out.iterdir()], [replaced])
+                self.assert_closed(fds)
+
+    def test_rollback_preserves_replacement_link_directory_and_hardlink(self):
+        sentinel = self.tmp / "sentinel.txt"
+        sentinel.write_bytes(b"outside sentinel")
+
+        def link(path):
+            os.symlink(sentinel, path)
+
+        def empty_dir(path):
+            os.mkdir(path)
+
+        def full_dir(path):
+            os.mkdir(path)
+            (path / "inner.txt").write_bytes(b"inner")
+
+        def hardlink(path):
+            os.link(sentinel, path)
+
+        for label, make in (("symlink", link), ("empty-dir", empty_dir), ("full-dir", full_dir),
+                            ("hardlink", hardlink)):
+            with self.subTest(replacement=label):
+                out = self.tmp / ("packet-" + label)
+
+                def swap(directory, make=make):
+                    os.rename(directory / "RULES.md", self.tmp / ("parked-" + directory.name))
+                    make(directory / "RULES.md")
+
+                error, fds = self.failing_build(out, "RETURN.md", swap)
+                self.assertEqual(error.errno, 28)
+                self.assertEqual([p.name for p in out.iterdir()], ["RULES.md"])
+                entry = out / "RULES.md"
+                self.assertEqual(entry.is_symlink(), label == "symlink")
+                self.assertEqual(entry.is_dir() and not entry.is_symlink(), label.endswith("dir"))
+                if label == "full-dir":
+                    self.assertEqual((entry / "inner.txt").read_bytes(), b"inner")
+                self.assertEqual(sentinel.read_bytes(), b"outside sentinel")
+                self.assertTrue((self.tmp / ("parked-" + out.name)).is_file())
+                self.assert_closed(fds)
+
+    def test_rollback_cleans_other_owned_members_and_preserves_missing_entries(self):
+        out = self.tmp / "packet-mixed"
+
+        def mutate(directory):
+            os.rename(directory / "PACKET.md", self.tmp / "parked-PACKET.md")
+            (directory / "PACKET.md").write_bytes(b"replacement")
+            os.unlink(directory / "RULES.md")
+            (directory / "unrelated.txt").write_bytes(b"keep")
+
+        error, fds = self.failing_build(out, "RETURN.md", mutate)
+        self.assertEqual(error.errno, 28)
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["PACKET.md", "unrelated.txt"])
+        self.assertEqual((out / "unrelated.txt").read_bytes(), b"keep")
+        self.assertTrue((self.tmp / "parked-PACKET.md").is_file())
+        self.assert_closed(fds)
+        # ordinary failure with no replacement still removes the folder, and the same path can be retried
+        ordinary = self.tmp / "packet-ordinary"
+        self.failing_build(ordinary, "RETURN.md")
+        self.assertFalse(os.path.lexists(ordinary))
+        law_packet.build("us-ca", ordinary, AS_OF)
+        self.assertEqual({p.name for p in ordinary.iterdir()}, FILES)
+
+    def test_retained_member_descriptors_survive_stream_close_until_cleanup(self):
+        real_open, real_unlink = os.open, os.unlink
+        members, seen, fds = {}, {}, []
+        sentinel_fd = real_open(__file__, os.O_RDONLY)
+        self.addCleanup(os.close, sentinel_fd)
+
+        def recording_open(name, *rest, **kwargs):
+            if name == "RETURN.md":
+                for member, fd in members.items():  # earlier streams are closed; descriptors must still be open
+                    now = os.fstat(fd)
+                    seen[member] = (now.st_dev, now.st_ino) == (os.stat(self.tmp / "retained" / member).st_dev,
+                                                                os.stat(self.tmp / "retained" / member).st_ino)
+                raise OSError(28, "Synthetic no space left on device")
+            fd = real_open(name, *rest, **kwargs)
+            fds.append(fd)
+            if name in law_packet.NAMES:
+                members[name] = fd
+            return fd
+
+        checked_at_unlink = []
+
+        def checking_unlink(name, *rest, **kwargs):
+            if name in members:
+                checked_at_unlink.append((name, os.fstat(members[name]).st_ino))
+            return real_unlink(name, *rest, **kwargs)
+
+        with mock.patch.object(law_packet.os, "open", recording_open), \
+                mock.patch.object(law_packet.os, "unlink", checking_unlink):
+            with self.assertRaises(OSError):
+                law_packet.build("us-ca", self.tmp / "retained", AS_OF)
+        self.assertEqual(seen, {"PACKET.md": True, "RULES.md": True, "WORKSHEET.csv": True})
+        self.assertEqual([name for name, _ in checked_at_unlink], ["PACKET.md", "RULES.md", "WORKSHEET.csv"])
+        self.assert_closed(fds)
+        os.fstat(sentinel_fd)  # an unrelated descriptor is untouched
+        # success: every descriptor opened is closed exactly once (a second close would hit an unrelated fd)
+        closed, real_close = [], os.close
+
+        def counting_close(fd):
+            closed.append(fd)
+            real_close(fd)
+
+        fds.clear()
+
+        def success_open(name, *rest, **kwargs):
+            fd = real_open(name, *rest, **kwargs)
+            fds.append(fd)
+            return fd
+
+        with mock.patch.object(law_packet.os, "open", success_open), mock.patch.object(law_packet.os, "close",
+                                                                                      counting_close):
+            law_packet.build("us-ca", self.tmp / "retained-ok", AS_OF)
+        self.assertEqual(sorted(closed), sorted(fds))  # one close per open, nothing else closed
+        os.fstat(sentinel_fd)
+
+    def test_identity_inspection_and_unlink_failure_do_not_mask_original_error(self):
+        real_fstat, real_stat, real_unlink, real_open = os.fstat, os.stat, os.unlink, os.open
+
+        for kind in ("fstat", "stat", "unlink"):
+            with self.subTest(kind=kind):
+                out = self.tmp / ("packet-" + kind)
+                fds, rules_fd = [], []
+
+                def opening(name, *rest, **kwargs):
+                    if name == "RETURN.md":
+                        raise OSError(28, "Synthetic no space left on device")
+                    fd = real_open(name, *rest, **kwargs)
+                    fds.append(fd)
+                    if name == "RULES.md":
+                        rules_fd.append(fd)
+                    return fd
+
+                def fstat(fd, *rest, **kwargs):
+                    if kind == "fstat" and rules_fd and fd == rules_fd[0]:
+                        raise OSError(5, "Synthetic fstat failure")
+                    return real_fstat(fd, *rest, **kwargs)
+
+                def stat_(name, *rest, **kwargs):
+                    if kind == "stat" and name == "RULES.md":
+                        raise OSError(5, "Synthetic stat failure")
+                    return real_stat(name, *rest, **kwargs)
+
+                def unlink(name, *rest, **kwargs):
+                    if kind == "unlink" and name == "RULES.md":
+                        raise OSError(13, "Synthetic unlink failure")
+                    return real_unlink(name, *rest, **kwargs)
+
+                with mock.patch.multiple(law_packet.os, open=opening, fstat=fstat, stat=stat_, unlink=unlink):
+                    with self.assertRaises(OSError) as caught:
+                        law_packet.build("us-ca", out, AS_OF)
+                self.assertEqual(caught.exception.errno, 28)  # the original failure, not the cleanup one
+                self.assertEqual([p.name for p in out.iterdir()], ["RULES.md"])  # uncertain entry kept, others removed
+                self.assert_closed(fds)
+
+    def test_descriptor_closed_when_stream_wrapper_or_write_fails(self):
+        real_open, real_fdopen = os.open, os.fdopen
+
+        class FailingStream:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                self.stream.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self.stream.__exit__(*exc)
+
+            def write(self, text):
+                raise OSError(5, "Synthetic write failure")
+
+        for kind in ("wrapper", "write"):
+            with self.subTest(kind=kind):
+                out = self.tmp / ("packet-" + kind)
+                fds, by_name = [], {}
+
+                def tracked_open(name, *rest, **kwargs):
+                    fd = real_open(name, *rest, **kwargs)
+                    fds.append(fd)
+                    by_name[name] = fd
+                    return fd
+
+                def fdopen(fd, *rest, **kwargs):
+                    if fd == by_name.get("RULES.md"):  # the second member
+                        if kind == "wrapper":
+                            raise OSError(5, "Synthetic wrapper failure")
+                        return FailingStream(real_fdopen(fd, *rest, **kwargs))
+                    return real_fdopen(fd, *rest, **kwargs)
+
+                with mock.patch.object(law_packet.os, "open", tracked_open), \
+                        mock.patch.object(law_packet.os, "fdopen", fdopen):
+                    with self.assertRaises(OSError) as caught:
+                        law_packet.build("us-ca", out, AS_OF)
+                self.assertEqual(caught.exception.errno, 5)
+                self.assertFalse(os.path.lexists(out))
+                self.assert_closed(fds)
+
+    def test_cli_replacement_refusal_preserves_data_and_original_exit(self):
+        out = self.tmp / "packet-cli"
+        hook = self.park_and_replace("PACKET.md")
+        real_open = os.open
+
+        def failing_open(name, *rest, **kwargs):
+            if name == "RULES.md":
+                hook(out)
+                raise OSError(28, "Synthetic no space left on device")
+            return real_open(name, *rest, **kwargs)
+
+        with mock.patch.object(law_packet.os, "open", failing_open):
+            code, stdout, stderr = self.run_main(out)
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(stderr, "Stopped: [Errno 28] Synthetic no space left on device\n")
+        self.assertEqual((out / "PACKET.md").read_bytes(), b"replacement bytes")
+        # a retry on the same path refuses rather than overwriting; a fresh path succeeds
+        code, stdout, stderr = self.run_main(out)
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(stderr, "Stopped: --out already exists, not overwriting\n")
+        self.assertEqual((out / "PACKET.md").read_bytes(), b"replacement bytes")
+        code, stdout, stderr = self.run_main(self.tmp / "packet-fresh")
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertEqual(json.loads(stdout)["status"], "review_required")
+
 
 if __name__ == "__main__":
     unittest.main()
