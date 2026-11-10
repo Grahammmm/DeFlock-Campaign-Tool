@@ -93,9 +93,11 @@ Next: task 7.
 
 ```sh
 python3 -m campaign_tool today --directory NEW_EMPTY_DIR
+python3 -m campaign_tool meetings-status --directory NEW_EMPTY_DIR
+python3 -m campaign_tool meetings-status --directory NEW_EMPTY_DIR --json
 ```
 
-`today` is a triage view, not a full meeting inventory: also open the staged files under `NEW_EMPTY_DIR/content/meetings/` yourself. For each meeting read the source, the UTC offset, any cancellation and any comment already recorded as submitted. No command guesses a deadline or submits a comment. See [participation (organizer-verified)](MEETINGS.md#participation-organizer-verified) and [recording a comment you submitted](MEETINGS.md#recording-a-comment-you-submitted).
+`today` is a triage view; `meetings-status` is the full private meeting inventory: one line per staged file under `NEW_EMPTY_DIR/content/meetings/` (upcoming first, then past), its status, whether participation was verified, whether its comment kit is current or stale, whether a comment you submitted is recorded, whether a speaker plan, outcome, minutes and votes are recorded, and the command for the first missing step; then the scan and hand-entered meetings not yet staged. It exits 1 and prints an `unreadable` line for any file it cannot read; nothing is hidden. Print it only on a private screen. It is not proof that a comment was submitted or that anything was published, and it never names who verified or what was written. Before acting on a line, read that meeting's source, its UTC offset and any cancellation yourself. No command guesses a deadline or submits a comment. See [the meeting inventory](MEETINGS-GUIDE.md#meeting-inventory-meetings-status), [participation (organizer-verified)](MEETINGS.md#participation-organizer-verified) and [recording a comment you submitted](MEETINGS.md#recording-a-comment-you-submitted).
 
 Next: task 8.
 
