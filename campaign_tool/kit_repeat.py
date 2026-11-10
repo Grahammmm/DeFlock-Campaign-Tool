@@ -194,7 +194,10 @@ def repeat_request(root, agency_id, request, new_request, *, through=None, date_
     body = _follow_on_text(text, start, end).encode("utf-8")
     meta = {"follows": request, "date_from": start.isoformat(), "date_to": end.isoformat(),
             "source_sha256": source_hash, "draft_sha256": hashlib.sha256(body).hexdigest()}
-    store = {"schema_version": 1, "requests": dict(sorted({**repeats, new_key: meta}.items()))}
+    store = _store_bytes({"schema_version": 1, "requests": dict(sorted({**repeats, new_key: meta}.items()))})
+    if len(store) > kit_track.MAX_BYTES:  # checked before any output, so read_repeats can always read what we write
+        raise ValueError("kit/repeat-drafts.json would be larger than 1 MiB; no follow-on draft was written; "
+                         "existing requests were kept")
     store_path = kit_dir / "repeat-drafts.json"
     try:
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -211,12 +214,18 @@ def repeat_request(root, agency_id, request, new_request, *, through=None, date_
             "date_from": meta["date_from"], "date_to": meta["date_to"], "draft_sha256": meta["draft_sha256"]}
 
 
-def _replace_store(path, document):
+def _store_bytes(document):
+    """The exact bytes kit/repeat-drafts.json is written as (measured against the reader's 1 MiB limit)."""
+    return (json.dumps(document, indent=2) + "\n").encode("utf-8")
+
+
+def _replace_store(path, payload):
+    """Atomically install ``payload``, the already size-checked bytes from _store_bytes, as a 0600 file."""
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix=".repeat-drafts.", suffix=".tmp")
     try:
         os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(document, indent=2) + "\n")
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
         os.replace(temp, path)
     except BaseException:
         os.unlink(temp)

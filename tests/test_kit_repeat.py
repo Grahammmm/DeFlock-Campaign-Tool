@@ -1,5 +1,6 @@
 """kit-repeat: a follow-on request starts the day after the earlier request's recorded coverage. Offline, synthetic."""
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -336,6 +337,144 @@ class KitRepeatTests(unittest.TestCase):
         code, _, err = self.send("main", "2026-10-15", agency=self.other)
         self.assertEqual(code, 1)
         self.assertIn("placeholder", err)
+
+    # --- store capacity (RF1635-2): the writer never produces bytes read_repeats refuses -------------------------
+    LIMIT = 1 << 20  # the reader's real limit, not patched
+    FULL = "would be larger than 1 MiB; no follow-on draft was written; existing requests were kept"
+
+    @staticmethod
+    def pretty(requests):  # the store format on main, written out independently of kit_repeat
+        return (json.dumps({"schema_version": 1, "requests": dict(sorted(requests.items()))}, indent=2) + "\n").encode()
+
+    def filler(self, prospective, new, keep=None):
+        """Schema-valid stored entries that, with ``keep`` and the follow-on ``new``, serialize to ``prospective`` bytes.
+
+        Dates and hashes are fixed-width, so a stand-in for the new entry has its exact size; names are lengthened
+        (up to the 40-character request limit) to land on the exact byte."""
+        self.assertEqual(kit_track.MAX_BYTES, self.LIMIT)
+        sha = self.sent_entry()["draft_sha256"]
+        meta = {"follows": "main", "date_from": "2026-10-01", "date_to": "2026-11-01",
+                "source_sha256": sha, "draft_sha256": sha}
+        fixed = {**(keep or {}), f"{self.agency}#{new}": meta}
+        base = len(self.pretty(fixed))
+        step = len(self.pretty({**fixed, f"{self.agency}#f00000": meta})) - base
+        count, extra = divmod(prospective - base, step)
+        names = []
+        for i in range(count):
+            pad = min(34, extra)
+            extra -= pad
+            names.append(f"f{i:05d}" + "x" * pad)
+        self.assertEqual(extra, 0)
+        entries = {f"{self.agency}#{name}": dict(meta) for name in names}
+        self.assertEqual(len(self.pretty({**fixed, **entries})), prospective)
+        return entries
+
+    def stamps(self):
+        return {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in self.kit.rglob("*") if p.is_file()}
+
+    def test_repeat_store_growth_refused_before_draft_creation(self):
+        self.sent_main()
+        entries = self.filler(self.LIMIT + 100, "capacity")  # a near-full store that one more entry takes past 1 MiB
+        self.store.write_bytes(self.pretty(entries))
+        self.store.chmod(0o600)
+        self.assertLess(self.store.stat().st_size, self.LIMIT)
+        before = self.stamps()
+        self.refused(lambda: self.repeat("capacity"), "kit/repeat-drafts.json " + self.FULL)
+        self.assertEqual(self.stamps(), before)  # bytes and mtimes of the store, sent.json and every draft
+        self.assertFalse(os.path.lexists(self.draft("capacity")))
+        self.assertEqual(list(self.kit.glob(".repeat-drafts.*")), [])
+        self.assertEqual(kit_repeat.read_repeats(self.root), entries)  # still readable, no history dropped
+
+    def test_compact_store_expansion_is_checked_after_serialization(self):
+        self.sent_main()
+        entries = self.filler(self.LIMIT + 2000, "grow")
+        compact = json.dumps({"schema_version": 1, "requests": entries}, separators=(",", ":")).encode()
+        self.assertLess(len(compact), self.LIMIT)  # the old file fits ...
+        self.assertGreater(len(self.pretty(entries)), self.LIMIT)  # ... but its rewrite in the writer's format would not
+        self.store.write_bytes(compact)
+        self.refused(lambda: self.repeat("grow"), self.FULL)
+        self.assertEqual(self.store.read_bytes(), compact)  # existing formatting kept, not rewritten
+        self.assertEqual(kit_repeat.read_repeats(self.root), entries)
+
+    def test_repeat_store_exact_byte_limit_round_trips(self):
+        self.sent_main()
+        sha = self.sent_entry()["draft_sha256"]
+        for size, new in ((self.LIMIT - 1, "edge1"), (self.LIMIT, "edge2")):
+            entries = self.filler(size, new)
+            self.store.write_bytes(self.pretty(entries))
+            out = self.repeat(new)
+            meta = {"follows": "main", "date_from": "2026-10-01", "date_to": "2026-11-01",
+                    "source_sha256": sha, "draft_sha256": out["draft_sha256"]}
+            expected = {**entries, f"{self.agency}#{new}": meta}
+            self.assertEqual(self.store.read_bytes(), self.pretty(expected), size)  # the final newline included
+            self.assertEqual(self.store.stat().st_size, size)
+            self.assertEqual(hashlib.sha256(self.draft(new).read_bytes()).hexdigest(), out["draft_sha256"])
+            for path in (self.store, self.draft(new)):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(kit_repeat.read_repeats(self.root), dict(sorted(expected.items())))
+        entries = self.filler(self.LIMIT + 1, "edge3")
+        self.store.write_bytes(self.pretty(entries))
+        self.refused(lambda: self.repeat("edge3"), self.FULL)
+        self.assertFalse(os.path.lexists(self.draft("edge3")))
+
+    def test_capacity_cli_refusal_keeps_existing_chain_usable(self):
+        self.sent_main()
+        self.repeat("bound")  # a valid follow-on made while the store was small
+        bound = kit_repeat.read_repeats(self.root)
+        self.store.write_bytes(self.pretty({**bound, **self.filler(self.LIMIT + 1, "capacity", keep=bound)}))
+        before = self.stamps()
+        with mock.patch("socket.socket", side_effect=AssertionError("network used")):
+            code, out, err = run("kit-repeat", "--directory", self.root, "--agency", self.agency, "--request", "main",
+                                 "--as", "capacity", "--through", "2026-11-01")
+        self.assertEqual(code, 1)
+        self.assertIn("kit/repeat-drafts.json would be larger than 1 MiB", err)
+        self.assertNotIn("Unsent draft written", out)
+        self.assertFalse(os.path.lexists(self.draft("capacity")))
+        self.assertEqual(self.stamps(), before)
+        code, _, err = run("kit-coverage", "--directory", self.root)
+        self.assertEqual(code, 0, err)
+        code, _, err = self.send("bound", "2026-11-01")  # the earlier draft can still be recorded
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.sent_entry("bound")["follows"], "main")
+
+    def test_small_repeat_serialization_and_send_stay_unchanged(self):
+        self.sent_main()
+        source = self.draft().read_text(encoding="utf-8")
+        self.assertEqual(source.count("2026-01-01 through 2026-09-30"), 2)  # the range line and the Subject
+        sha = self.sent_entry()["draft_sha256"]
+        stored = {}
+        for new in ("small", "small2"):
+            out = self.repeat(new)
+            body = source.replace("2026-01-01 through 2026-09-30", "2026-10-01 through 2026-11-01").encode()
+            self.assertEqual(self.draft(new).read_bytes(), body)
+            stored[f"{self.agency}#{new}"] = {"follows": "main", "date_from": "2026-10-01", "date_to": "2026-11-01",
+                                               "source_sha256": sha, "draft_sha256": hashlib.sha256(body).hexdigest()}
+            self.assertEqual(out["draft_sha256"], hashlib.sha256(body).hexdigest())
+            self.assertEqual(self.store.read_bytes(), self.pretty(stored))
+            self.assertEqual(stat.S_IMODE(self.store.stat().st_mode), 0o600)
+        self.assertEqual(self.send("small", "2026-11-01")[0], 0)
+        self.assertEqual(self.sent_entry("small")["follows"], "main")
+        _, csv_out, _ = run("kit-coverage", "--directory", self.root, "--csv")
+        self.assertEqual(len([r for r in csv_out.splitlines() if r.startswith(self.agency + ",") and ",small," in r]), 1)
+
+    def test_capacity_validation_precedes_output_io(self):
+        self.sent_main()
+        self.store.write_bytes(self.pretty(self.filler(self.LIMIT + 1, "spied")))
+        target = self.draft("spied")
+        with mock.patch.object(kit_repeat.os, "open", wraps=os.open) as opened, \
+                mock.patch.object(kit_repeat.tempfile, "mkstemp", wraps=tempfile.mkstemp) as made, \
+                mock.patch.object(kit_repeat.os, "replace", wraps=os.replace) as replaced:
+            self.refused(lambda: self.repeat("spied"), self.FULL)
+        self.assertEqual([c for c in opened.call_args_list if str(c.args[0]) == str(target)], [])
+        made.assert_not_called()
+        replaced.assert_not_called()
+        # under the limit a failed replace still rolls back: no draft, the store and its folder untouched
+        self.store.write_bytes(self.pretty(self.filler(self.LIMIT, "spied")))
+        before = self.snapshot()
+        with mock.patch("campaign_tool.kit_repeat.os.replace", side_effect=OSError("disk")):
+            with self.assertRaises(OSError):
+                self.repeat("spied")
+        self.assertEqual(self.snapshot(), before)
 
 
 if __name__ == "__main__":
