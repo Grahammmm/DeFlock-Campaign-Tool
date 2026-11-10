@@ -16,7 +16,9 @@ before one atomic write in ``content/``; a refusal leaves the old bytes, and not
 
 Nothing is fetched: a source address is the organizer's record of where they checked. Refusals name the file, row,
 flag or field and a fixed reason, never a supplied quote, note or address. One organizer writes at a time; the target
-is re-checked just before the rename, with no further concurrent-writer promise.
+is re-checked just before the rename, with no further concurrent-writer promise. Add and remove are bound to the one
+content/ folder their roster and store were read from (device and inode): a different real folder at that pathname is
+refused before staging and again before publishing.
 """
 import json
 import os
