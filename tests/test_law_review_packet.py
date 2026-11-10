@@ -196,10 +196,10 @@ class ReviewPacketTests(unittest.TestCase):
         out = self.tmp / "nospace"
         real_open = os.open
 
-        def failing_open(target, *rest):
+        def failing_open(target, *rest, **kwargs):
             if Path(target).name == "RULES.md":
                 raise OSError(28, "Synthetic no space left on device")
-            return real_open(target, *rest)
+            return real_open(target, *rest, **kwargs)
 
         args = argparse.Namespace(jurisdiction="us-ca", out=str(out), as_of=AS_OF, base=None)
         with mock.patch.object(law_packet.os, "open", failing_open), \
@@ -212,6 +212,162 @@ class ReviewPacketTests(unittest.TestCase):
         _, result = self.packet("nospace")
         self.assertEqual({p.name for p in out.iterdir()}, FILES)
         self.assertEqual(result["out"], str(out))
+
+    def run_main(self, out):
+        args = argparse.Namespace(jurisdiction="us-ca", out=str(out), as_of=AS_OF, base=None)
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout, \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            code = law_packet.main(args)
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def swap_to_link(self, directory, target):
+        """Move a real directory aside and leave a symlink to ``target`` at its pathname."""
+        parked = Path(str(directory) + ".parked")
+        os.rename(directory, parked)
+        os.symlink(target, directory, target_is_directory=True)
+        return parked
+
+    def test_parent_symlink_swap_after_admission_refuses(self):
+        parent, target = self.tmp / "parent", self.tmp / "target"
+        parent.mkdir()
+        target.mkdir()
+        real_load = law.load_package
+
+        def swapping_load(*args):
+            self.swap_to_link(parent, target)
+            return real_load(*args)
+
+        with mock.patch.object(law, "load_package", swapping_load):
+            code, stdout, stderr = self.run_main(parent / "packet")
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(len(stderr.splitlines()), 1)
+        self.assertTrue(stderr.startswith("Stopped:"), stderr)
+        self.assertEqual(os.listdir(target), [])
+        self.assertEqual(os.listdir(self.tmp / "parent.parked"), [])
+
+    def test_intermediate_ancestor_symlink_swap_refuses(self):
+        ancestor, target = self.tmp / "ancestor", self.tmp / "target"
+        (ancestor / "inner").mkdir(parents=True)
+        (target / "inner").mkdir(parents=True)
+        real_load = law.load_package
+
+        def swapping_load(*args):
+            self.swap_to_link(ancestor, target)
+            return real_load(*args)
+
+        with mock.patch.object(law, "load_package", swapping_load):
+            code, stdout, stderr = self.run_main(ancestor / "inner" / "packet")
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertTrue(stderr.startswith("Stopped:"), stderr)
+        self.assertEqual(os.listdir(target / "inner"), [])
+        self.assertEqual(os.listdir(self.tmp / "ancestor.parked" / "inner"), [])
+
+    def test_directory_retarget_after_anchor_never_redirects_members(self):
+        parent, target = self.tmp / "parent", self.tmp / "target"
+        parent.mkdir()
+        target.mkdir()
+        real_open_parent = law_packet._open_parent
+
+        def retargeting(path):
+            fd = real_open_parent(path)
+            self.swap_to_link(parent, target)
+            return fd
+
+        with mock.patch.object(law_packet, "_open_parent", retargeting):
+            law_packet.build("us-ca", parent / "packet", AS_OF)
+        self.assertEqual(os.listdir(target), [])
+        self.assertEqual({p.name for p in (self.tmp / "parent.parked" / "packet").iterdir()}, FILES)
+
+    def test_output_symlink_arrival_before_directory_open_refuses(self):
+        parent, target = self.tmp / "parent", self.tmp / "target"
+        parent.mkdir()
+        target.mkdir()
+        out = parent / "packet"
+        real_mkdir = os.mkdir
+
+        def mkdir_then_swap(name, mode, **kwargs):
+            real_mkdir(name, mode, **kwargs)
+            os.rename(out, parent / "moved")
+            os.symlink(target, out, target_is_directory=True)
+
+        with mock.patch.object(law_packet.os, "mkdir", mkdir_then_swap):
+            code, stdout, stderr = self.run_main(out)
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertTrue(stderr.startswith("Stopped:"), stderr)
+        self.assertEqual(os.listdir(target), [])
+        self.assertTrue(out.is_symlink())
+
+    def test_failure_rollback_uses_original_directory_descriptor(self):
+        parent, target = self.tmp / "parent", self.tmp / "target"
+        parent.mkdir()
+        target.mkdir()
+        (target / "PACKET.md").write_text("sentinel", encoding="utf-8")
+        out = parent / "packet"
+        real_open = os.open
+
+        def failing_open(name, *rest, **kwargs):
+            if name == "RULES.md":
+                os.rename(out, parent / "moved")
+                os.symlink(target, out, target_is_directory=True)
+                raise OSError(28, "Synthetic no space left on device")
+            return real_open(name, *rest, **kwargs)
+
+        with mock.patch.object(law_packet.os, "open", failing_open):
+            code, _, stderr = self.run_main(out)
+        self.assertEqual(code, 2)
+        self.assertEqual((target / "PACKET.md").read_text(encoding="utf-8"), "sentinel")
+        self.assertTrue(out.is_symlink())
+        self.assertEqual(os.listdir(parent / "moved"), [])
+
+    def test_destination_arrival_and_unknown_member_preserved(self):
+        out = self.tmp / "packet"
+        real_load = law.load_package
+
+        def arriving_load(*args):
+            out.mkdir()
+            (out / "mine.txt").write_text("keep", encoding="utf-8")
+            return real_load(*args)
+
+        with mock.patch.object(law, "load_package", arriving_load):
+            code, stdout, stderr = self.run_main(out)
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(os.listdir(out), ["mine.txt"])
+        out2 = self.tmp / "packet2"
+        real_open = os.open
+
+        def failing_open(name, *rest, **kwargs):
+            if name == "RULES.md":
+                (out2 / "unknown.txt").write_text("keep", encoding="utf-8")
+                raise OSError(28, "Synthetic no space left on device")
+            return real_open(name, *rest, **kwargs)
+
+        with mock.patch.object(law_packet.os, "open", failing_open):
+            self.assertEqual(self.run_main(out2)[0], 2)
+        self.assertEqual(os.listdir(out2), ["unknown.txt"])
+
+    def test_descriptor_lifetime_and_ordinary_packet_compatibility(self):
+        def open_fds():
+            return len(os.listdir("/proc/self/fd"))
+
+        before = open_fds()
+        law_packet.build("us-ca", self.tmp / "ok", AS_OF)
+        self.assertEqual(open_fds(), before)
+        real_open = os.open
+
+        def failing_at(which):
+            def failing_open(name, *rest, **kwargs):
+                if name == which:
+                    raise OSError(28, "Synthetic no space left on device")
+                return real_open(name, *rest, **kwargs)
+            return failing_open
+
+        for which, out in (("packet-a", self.tmp / "packet-a"), ("RULES.md", self.tmp / "packet-b")):
+            with self.subTest(which=which), mock.patch.object(law_packet.os, "open", failing_at(which)):
+                with self.assertRaises(OSError):
+                    law_packet.build("us-ca", out, AS_OF)
+            self.assertEqual(open_fds(), before)
+        self.assertEqual({p.name for p in (self.tmp / "ok").iterdir()}, FILES)
+        self.assertFalse(os.path.lexists(self.tmp / "packet-b"))
 
     def test_generated_text_asserts_no_breach_and_advises_no_legal_action(self):
         out, _ = self.packet()

@@ -117,15 +117,35 @@ def _checked_out(out):
     return path
 
 
-def _roll_back(path, created):
-    """Remove only what this invocation created; anything else found in the folder keeps it in place."""
-    for name in created:
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _open_parent(path):
+    """Open ``path`` one component at a time from the root, refusing a symlink at any level; returns its fd."""
+    fd = os.open("/", _DIR_FLAGS)
+    for part in path.parts[1:]:
         try:
-            os.unlink(path / name)
+            nxt = os.open(part, _DIR_FLAGS, dir_fd=fd)
+        finally:
+            os.close(fd)
+        fd = nxt
+    return fd
+
+
+def _roll_back(parent_fd, name, out_fd, created):
+    """Remove only what this invocation created, through the retained descriptors; never a replacement entry."""
+    if out_fd is None:
+        return  # the new folder could not be verified as ours: leave it
+    for member in created:
+        try:
+            os.unlink(member, dir_fd=out_fd)
         except OSError:
             pass
     try:
-        os.rmdir(path)
+        here = os.fstat(out_fd)
+        there = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (here.st_dev, here.st_ino) == (there.st_dev, there.st_ino):
+            os.rmdir(name, dir_fd=parent_fd)
     except OSError:
         pass
 
@@ -140,17 +160,24 @@ def build(jurisdiction, out, as_of=None, base=None):
     counts = law.summary(package)["review_counts"]
     texts = (*render(package, counts), sheet.getvalue())
     files = dict(zip(("PACKET.md", "RULES.md", "RETURN.md", "WORKSHEET.csv"), texts))
-    path.mkdir(mode=0o700)
+    parent_fd = _open_parent(path.parent)
+    out_fd = None
     created = []
     try:
+        os.mkdir(path.name, 0o700, dir_fd=parent_fd)
+        out_fd = os.open(path.name, _DIR_FLAGS, dir_fd=parent_fd)
         for name in NAMES:
-            fd = os.open(path / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=out_fd)
             created.append(name)
             with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
                 stream.write(files[name])
     except BaseException:
-        _roll_back(path, created)
+        _roll_back(parent_fd, path.name, out_fd, created)
         raise
+    finally:
+        if out_fd is not None:
+            os.close(out_fd)
+        os.close(parent_fd)
     return {"status": "review_required", "jurisdiction": jurisdiction, "package_status": package["status"],
             "as_of": as_of.isoformat(), "out": str(path), "files": list(NAMES), "review_counts": counts,
             "note": "A packet for a human reviewer, not a review; the package is unchanged."}
