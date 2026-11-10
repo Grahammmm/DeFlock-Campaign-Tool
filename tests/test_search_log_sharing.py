@@ -4,6 +4,7 @@ import io
 import json
 import os
 import socket
+import stat
 import sys
 import tempfile
 import unittest
@@ -229,6 +230,176 @@ class AgainstSharingTests(unittest.TestCase):
         self.assertEqual(plain[0], 0)
         self.assertNotIn("sharing", json.loads(plain[1]))
         self.assertNotIn(WARNING, self.run_cli("--csv", csv_path)[1])
+
+    def foreign_content(self):
+        foreign = self.base / "foreign-content"
+        foreign.mkdir()
+        entry = {"agency_id": AID, "name": OWN, "kind": "police", "profile": {"sharing": sharing(
+            [{"name": "Foreign Recipient Sentinel", "state": "CA", "kind": "local"}])}}
+        (foreign / "agencies.json").write_text(json.dumps([entry]), encoding="utf-8")
+        return foreign
+
+    def swap_content(self):
+        foreign = self.foreign_content()
+        self.root.joinpath("content").rename(self.root / "content-original")
+        self.root.joinpath("content").symlink_to(foreign)
+
+    def intercept_open(self, trigger, action):
+        real, seen = os.open, []
+
+        def spy(path, flags, *args, **kwargs):
+            seen.append(path)
+            if path == trigger and kwargs.get("dir_fd") is not None and not getattr(spy, "done", False):
+                spy.done = True
+                action()
+            return real(path, flags, *args, **kwargs)
+        return mock.patch.object(search_log.os, "open", spy), seen
+
+    def test_parent_symlink_substitution_before_admission_refuses_without_foreign_read(self):
+        patch, seen = self.intercept_open("content", self.swap_content)
+        csv_path = self.csv()
+        with patch:
+            code, out, err = self.run_cli("--csv", csv_path, "--against-sharing", "--json")
+        self.assertEqual((code, out), (1, ""))
+        self.assertTrue(err.startswith("Stopped: --against-sharing needs a recorded sharing list"), err)
+        self.assertNotIn("Foreign Recipient Sentinel", err)
+        self.assertNotIn("foreign-content", err)
+        self.assertEqual(seen.count("agencies.json"), 0)  # the foreign leaf was never opened
+
+    def test_admitted_content_descriptor_survives_parent_path_substitution(self):
+        patch, seen = self.intercept_open("agencies.json", self.swap_content)
+        original = (self.root / "content" / "agencies.json").read_bytes()
+        csv_path = self.csv()
+        with patch:
+            code, out, err = self.run_cli("--csv", csv_path, "--against-sharing", "--json")
+        self.assertEqual((code, err), (0, ""))
+        self.assertNotIn("Foreign Recipient Sentinel", out)
+        self.assertIn("Beta SO", out)
+        self.assertEqual((self.root / "content-original" / "agencies.json").read_bytes(), original)
+
+    def test_leaf_symlink_arriving_before_open_refuses_without_following(self):
+        leaf = self.root / "content" / "agencies.json"
+
+        def swap(target):
+            def action():
+                leaf.unlink()
+                leaf.symlink_to(target)
+            return action
+        foreign = self.foreign_content() / "agencies.json"
+        for target in (foreign, self.base / "dangling.json"):
+            self.write_content(sharing())
+            patch, _ = self.intercept_open("agencies.json", swap(target))
+            csv_path = self.csv()
+            with patch:
+                code, out, err = self.run_cli("--csv", csv_path, "--against-sharing")
+            self.assertEqual((code, out), (1, ""))
+            self.assertIn("needs a recorded sharing list", err)
+            self.assertNotIn("Foreign Recipient Sentinel", err)
+            leaf.unlink()
+
+    def test_non_regular_or_linked_content_refuses_without_hanging(self):
+        content_dir, leaf = self.root / "content", self.root / "content" / "agencies.json"
+        leaf.unlink()
+        os.mkfifo(leaf)
+        self.refused("needs a recorded sharing list")
+        leaf.unlink()
+        leaf.mkdir()
+        self.refused("needs a recorded sharing list")
+        leaf.rmdir()
+        self.write_content(sharing())
+        content_dir.rename(self.root / "content-real")
+        content_dir.symlink_to(self.root / "content-real")
+        self.refused("needs a recorded sharing list")
+        content_dir.unlink()
+        content_dir.symlink_to(self.base / "missing-dir")
+        self.refused("needs a recorded sharing list")
+        content_dir.unlink()
+        content_dir.write_text("not a directory", encoding="utf-8")
+        self.refused("needs a recorded sharing list")
+
+    def test_sharing_file_read_is_bounded_before_decode(self):
+        from campaign_tool import content
+        cap = content.MAX_JSON_BYTES
+        text = json.dumps([{"agency_id": AID, "name": OWN, "kind": "police", "profile": {"sharing": sharing()}}])
+        leaf = self.root / "content" / "agencies.json"
+        leaf.write_text(text + " " * (cap - len(text)), encoding="utf-8")
+        self.assertEqual(leaf.stat().st_size, cap)
+        self.assertEqual(self.report()["sharing"]["checked_on"], "2026-02-01")
+        leaf.write_text(text + " " * (cap + 1 - len(text)), encoding="utf-8")
+        self.refused("content/agencies.json is not valid")
+        with leaf.open("wb") as handle:  # sparse: oversize by fstat alone
+            handle.truncate(cap * 4)
+        sizes, real = [], os.read
+        with mock.patch.object(search_log.os, "read", lambda fd, n: (sizes.append(n), real(fd, n))[1]):
+            self.refused("content/agencies.json is not valid")
+        self.assertEqual(sizes, [])
+        # grown after fstat: the read itself is capped at cap + 1 and refused
+        leaf.write_text(text, encoding="utf-8")
+        real_fstat = os.fstat
+
+        def grow(fd):
+            info = real_fstat(fd)
+            if stat.S_ISREG(info.st_mode):
+                leaf.write_text(text + " " * (cap + 10), encoding="utf-8")
+            return info
+        sizes.clear()
+        with mock.patch.object(search_log.os, "fstat", grow), \
+                mock.patch.object(search_log.os, "read", lambda fd, n: (sizes.append(n), real(fd, n))[1]):
+            code, out, err = self.run_cli("--csv", self.csv(), "--against-sharing")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("content/agencies.json is not valid", err)
+        self.assertTrue(sizes and sum(sizes) <= cap + 1 and max(sizes) <= search_log.CHUNK, sizes)
+
+    def test_descriptor_cleanup_and_private_read_failures(self):
+        real_open, real_close = os.open, os.close
+        for fail_at in ("content", "agencies.json"):
+            opened, closed = [], []
+
+            def spy_open(path, flags, *a, **k):
+                if path == fail_at:
+                    raise PermissionError("denied")
+                fd = real_open(path, flags, *a, **k)
+                opened.append(fd)
+                return fd
+
+            def spy_close(fd):
+                closed.append(fd)
+                real_close(fd)
+            with mock.patch.object(search_log.os, "open", spy_open), mock.patch.object(search_log.os, "close", spy_close):
+                self.refused("needs a recorded sharing list")
+            self.assertEqual(sorted(opened), sorted(closed))
+        for name in ("fstat", "read"):
+            opened, closed = [], []
+
+            def spy_open2(path, flags, *a, **k):
+                fd = real_open(path, flags, *a, **k)
+                opened.append(fd)
+                return fd
+
+            def spy_close2(fd):
+                closed.append(fd)
+                real_close(fd)
+
+            def fail(*a, **k):
+                raise OSError("injected")
+            with mock.patch.object(search_log.os, "open", spy_open2), mock.patch.object(search_log.os, "close", spy_close2), \
+                    mock.patch.object(search_log.os, name, fail):
+                self.refused("--against-sharing")
+            self.assertEqual(len(opened), 3)
+            self.assertEqual(sorted(opened), sorted(closed))
+        for raw in (b"\xff\xfe not utf8", b"[" * 100000, b"{bad"):
+            (self.root / "content" / "agencies.json").write_bytes(raw)
+            for extra in ((), ("--json",)):
+                err = self.refused("content/agencies.json is not valid", extra=extra)
+                self.assertNotIn("bad", err.replace("is not valid", ""))
+
+    def test_flag_off_never_opens_content_even_when_linked(self):
+        csv_path = self.csv()
+        plain = self.run_cli("--csv", csv_path, "--json")
+        (self.root / "content").rename(self.root / "content-real")
+        (self.root / "content").symlink_to(self.root / "content-real")
+        with mock.patch.object(search_log, "_read_sharing_file", side_effect=AssertionError("opened")):
+            self.assertEqual(self.run_cli("--csv", csv_path, "--json"), plain)
 
     def test_no_mutation_no_network(self):
         csv_path = self.csv()

@@ -4,7 +4,9 @@
 recorded ``checked_on`` of the nine profile check families with its age, oldest first. ``recheck_profile`` sets exactly
 one existing ``checked_on`` after the organizer re-read that source: never a future date or one before the stored date,
 and only when the whole prospective file still passes ``load_agencies``; the write goes through the same admitted
-directory descriptors and identity checks as ``content agency-sharing`` and replaces the file atomically. Nothing is
+directory descriptors and identity checks as ``content agency-sharing``, replaces the file atomically and then flushes
+the admitted content/ directory; if only that flush fails the new file stays installed and the error says its durability
+is unconfirmed. Nothing is
 fetched, built or published, and no other field is created, moved or changed.
 
 ``--index`` is the 1-based position in the stored list; ``doctor --stale-days`` names the same entry zero-based in
@@ -37,6 +39,9 @@ FIELDS = SINGLE_FIELDS + LIST_FIELDS
 DEPENDENT = {"alpr_policy": "policy_check", "contract": "contract_check"}  # document -> the reading that may not be older
 INDEX = re.compile(r"[1-9][0-9]{0,5}")
 NOTICE = "Recorded only. Nothing was fetched, built or published."
+# Raised after os.replace succeeded: the new file is installed, only its directory entry's durability is unconfirmed.
+UNCONFIRMED = ("content/agencies.json: the new profile data was written, but content/ could not be flushed to disk; "
+               "crash durability is unconfirmed. Inspect the file before retrying.")
 
 
 class ContentProfileError(ContentError):
@@ -173,7 +178,11 @@ def _before_install():
 
 
 def _install(root_fd, content_fd, content_stat, target_fd, target_stat, original, text, verb="recheck"):
-    """Write ``text`` to a fresh 0600 temporary file in content/ and replace agencies.json only if nothing changed."""
+    """Write ``text`` to a fresh 0600 temporary file in content/ and replace agencies.json only if nothing changed.
+
+    Before the replacement any failure leaves agencies.json as it was. After it the new file is installed and is never
+    rolled back: content/ is then flushed through the already-admitted descriptor, and a failure of that flush alone is
+    reported as ``UNCONFIRMED`` (written, durability unconfirmed), never as "nothing was written"."""
     temp_fd = temp = None
     try:
         name = f".{TARGET}.{secrets.token_hex(8)}.tmp"
@@ -189,7 +198,11 @@ def _install(root_fd, content_fd, content_stat, target_fd, target_stat, original
         if (why := _install_problem(root_fd, content_fd, content_stat, target_fd, target_stat, original)) is not None:
             raise ContentProfileError(why.replace("the import", f"the {verb}") + "; nothing was written")
         os.replace(temp, TARGET, src_dir_fd=content_fd, dst_dir_fd=content_fd)
-        temp = None
+        temp = None  # installed: the finally below must never mistake the committed target for a temporary file
+        try:
+            os.fsync(content_fd)  # the rename lives in the directory; persist it before anything reports success
+        except OSError:
+            raise ContentProfileError(UNCONFIRMED) from None  # no OS text, path or input value
     finally:
         if temp_fd is not None:
             os.close(temp_fd)
@@ -207,7 +220,8 @@ def _refuse_hard_link(info):
 
 def _transaction(root, change, verb):
     """Read content/agencies.json through the admitted descriptors, let ``change(document)`` edit the parsed copy and
-    return ``(result, changed)``, then install the whole rewritten file once, or refuse with nothing written."""
+    return ``(result, changed)``, then install the whole rewritten file once, or refuse with nothing written. The one
+    exception is a failure to flush content/ after the replacement: the new file is then installed (``UNCONFIRMED``)."""
     root_fd, content_fd = _open_content(root)
     target_fd = None
     try:
@@ -431,6 +445,8 @@ def _entry_transaction(root, change):
         raise ContentProfileError("content/agencies.json: entry change could not be installed; nothing was written") from None
     except ContentError as exc:
         message = str(exc)
+        if message == UNCONFIRMED:  # installed, not refused: never relabel it "nothing was written"
+            raise
         if "nothing was written" not in message:
             message += "; nothing was written"
         raise ContentProfileError(message) from None

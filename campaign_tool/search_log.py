@@ -362,18 +362,51 @@ def normalize_org_name(name):
     return key.strip()
 
 
+def _read_sharing_file(root):
+    """Bytes of root/content/agencies.json read through descriptors opened one from the next; OSError if not admitted.
+
+    The content directory and the leaf are opened relative to the admitted parent with O_NOFOLLOW, so a path swapped
+    afterwards cannot redirect the read. At most MAX_JSON_BYTES + 1 bytes are read from the opened regular file."""
+    limit = content.MAX_JSON_BYTES
+    held = []
+    try:
+        for name, flags in ((None, os.O_RDONLY | os.O_DIRECTORY),
+                            ("content", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW),
+                            ("agencies.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)):
+            if name is None:
+                held.append(os.open(root, flags))
+            else:
+                held.append(os.open(name, flags, dir_fd=held[-1]))
+        info = os.fstat(held[-1])
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError("not admitted")
+        if info.st_size > limit:
+            return b"\0" * (limit + 1)  # too large; refused as invalid by the caller without reading
+        chunks, total = [], 0
+        while total <= limit:
+            chunk = os.read(held[-1], min(CHUNK, limit + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        return b"".join(chunks)
+    finally:
+        for fd in held:
+            os.close(fd)
+
+
 def _recorded_sharing(root, agency_id):
     """The validated recorded sharing list of agency_id from content/agencies.json; fixed-text ValueError otherwise."""
     field = f"content/agencies.json:{agency_id}.profile.sharing"
     refusal = ValueError(f"--against-sharing needs a recorded sharing list at {field} (record one with content agency-sharing)")
-    folder, path = root / "content", root / "content" / "agencies.json"
     try:
-        if stat.S_ISLNK(os.lstat(folder).st_mode) or not stat.S_ISREG(os.lstat(path).st_mode):
-            raise refusal
+        data = _read_sharing_file(root)
     except OSError:
         raise refusal from None
     try:
-        agencies = content.load_agencies(content._read_json(path), "content/agencies.json")
+        if len(data) > content.MAX_JSON_BYTES:
+            raise ValueError("too large")
+        agencies = content.load_agencies(json.loads(data.decode("utf-8")), "content/agencies.json")
     except (ValueError, OSError, RecursionError):
         raise ValueError("--against-sharing: content/agencies.json is not valid; content-check names the field") from None
     found = [a for a in agencies if a["agency_id"] == agency_id and a.get("sharing")]
