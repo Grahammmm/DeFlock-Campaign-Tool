@@ -1,4 +1,5 @@
 """Synthetic offline flyer acceptance and refusal paths (copy of examples/fictional-campaign)."""
+import contextlib
 import hashlib
 import html
 import json
@@ -12,6 +13,7 @@ import tempfile
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
 
 from campaign_tool.flyer import build
 from campaign_tool.qr import svg
@@ -468,6 +470,238 @@ class FlyerTests(unittest.TestCase):
         first, second = result.stdout.splitlines()
         self.assertEqual(json.loads(first)['written'], ['kit/flyer/flyer.html', 'kit/flyer/flyer.txt'])
         self.assertEqual(second, 'Private file; nothing was printed, sent or published.')
+
+    # RF2045-1: logo staging never follows or touches a pre-existing .logo.tmp entry
+    def branded(self, data=None):
+        self.finding(1)
+        assets = self.content / 'public-assets'
+        assets.mkdir(exist_ok=True)
+        (assets / 'mark.png').write_bytes(data or png(120, 40))
+        self.site({'brand': {'logo': 'mark.png', 'logo_alt': 'Mark'}})
+        self.folder.mkdir(parents=True, exist_ok=True)
+
+    def sentinel(self):
+        path = self.root.parent / 'unrelated-sentinel.bin'
+        path.write_bytes(b'unrelated synthetic bytes')
+        os.chmod(path, 0o644)
+        return path
+
+    @staticmethod
+    def meta(path):
+        info = os.lstat(path)
+        return (info.st_ino, info.st_mode, info.st_mtime_ns, info.st_nlink, info.st_size)
+
+    def assert_private_regular_logo(self, expected):
+        logo = self.folder / 'logo.png'
+        info = os.lstat(logo)
+        self.assertTrue(stat.S_ISREG(info.st_mode))
+        self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+        self.assertEqual(logo.read_bytes(), expected)
+        return info
+
+    def test_campaign_logo_ignores_legacy_symlink_temp(self):
+        self.branded()
+        sentinel = self.sentinel()
+        legacy = self.folder / '.logo.tmp'
+        legacy.symlink_to(sentinel)
+        before = (sentinel.read_bytes(), self.meta(sentinel), os.readlink(legacy))
+        for replace in (False, True):
+            build(self.root, replace=replace)
+            self.assertEqual(before, (sentinel.read_bytes(), self.meta(sentinel), os.readlink(legacy)))
+            info = self.assert_private_regular_logo(png(120, 40))
+            self.assertNotEqual(info.st_ino, os.stat(sentinel).st_ino)
+            self.assertEqual(info.st_nlink, 1)
+
+    def test_campaign_logo_ignores_legacy_hardlink_temp(self):
+        self.branded()
+        sentinel = self.sentinel()
+        legacy = self.folder / '.logo.tmp'
+        os.link(sentinel, legacy)
+        before = (sentinel.read_bytes(), self.meta(sentinel), self.meta(legacy))
+        self.assertEqual(before[1][3], 2)
+        for replace in (False, True):
+            build(self.root, replace=replace)
+            self.assertEqual(before, (sentinel.read_bytes(), self.meta(sentinel), self.meta(legacy)))
+            info = self.assert_private_regular_logo(png(120, 40))
+            self.assertNotEqual(info.st_ino, os.stat(sentinel).st_ino)
+
+    def test_campaign_logo_preserves_other_legacy_temp_entries(self):
+        sentinel = self.sentinel()
+        kinds = {
+            'file': lambda p: p.write_bytes(b'ordinary legacy file'),
+            'dangling': lambda p: p.symlink_to(self.root.parent / 'absent-target'),
+            'directory': lambda p: p.mkdir(),
+        }
+        for kind, make in kinds.items():
+            for branded in (True, False):
+                with self.subTest(kind=kind, branded=branded):
+                    shutil.rmtree(self.folder, ignore_errors=True)
+                    self.branded()
+                    if not branded:
+                        self.site({'brand': {}})
+                    legacy = self.folder / '.logo.tmp'
+                    make(legacy)
+                    before = self.meta(legacy)
+                    build(self.root)
+                    self.assertEqual(before, self.meta(legacy))
+                    if kind == 'file':
+                        self.assertEqual(legacy.read_bytes(), b'ordinary legacy file')
+                    if kind == 'directory':
+                        self.assertEqual(list(legacy.iterdir()), [])
+                    self.assertEqual((self.folder / 'logo.png').exists(), branded)
+                    if branded:
+                        self.assert_private_regular_logo(png(120, 40))
+                    self.assertEqual([p.name for p in self.folder.glob('.logo.*.tmp')], [])
+        self.assertEqual(sentinel.read_bytes(), b'unrelated synthetic bytes')
+
+    def test_campaign_logo_stage_is_private_and_unique(self):
+        self.branded()
+        legacy = self.folder / '.logo.tmp'
+        legacy.write_bytes(b'legacy')
+        seen = []
+        real_mkstemp, real_replace = tempfile.mkstemp, os.replace
+
+        def mkstemp(*args, **kwargs):
+            descriptor, name = real_mkstemp(*args, **kwargs)
+            seen.append(Path(name))
+            return descriptor, name
+
+        def replace(source, target, *args, **kwargs):
+            if Path(target).name == 'logo.png':
+                info = os.lstat(source)
+                seen.append((Path(source), stat.S_ISREG(info.st_mode), stat.S_IMODE(info.st_mode), info.st_nlink,
+                             Path(source).read_bytes()))
+            return real_replace(source, target, *args, **kwargs)
+
+        old_umask = os.umask(0o000)
+        try:
+            with mock.patch('tempfile.mkstemp', mkstemp), mock.patch('os.replace', replace):
+                build(self.root)
+        finally:
+            os.umask(old_umask)
+        staged = [item for item in seen if isinstance(item, Path) and item.name.startswith('.logo.')]
+        self.assertEqual(len(staged), 1)
+        checked = [item for item in seen if isinstance(item, tuple)]
+        self.assertEqual(len(checked), 1)
+        self.assertEqual(checked[0][0], staged[-1])
+        self.assertEqual(checked[0][1:], (True, 0o600, 1, png(120, 40)))
+        self.assertEqual(staged[-1].parent, self.folder)
+        self.assertNotEqual(staged[-1].name, '.logo.tmp')
+        self.assertTrue(staged[-1].name.startswith('.logo.') and staged[-1].name.endswith('.tmp'))
+        self.assertFalse(staged[-1].exists())
+        self.assertEqual(legacy.read_bytes(), b'legacy')
+        self.assert_private_regular_logo(png(120, 40))
+        self.assertEqual(sorted(p.name for p in self.folder.iterdir()), ['.logo.tmp', 'flyer.html', 'flyer.txt', 'logo.png'])
+
+    def test_campaign_logo_stage_failures_preserve_previous_logo(self):
+        self.branded()
+        build(self.root)
+        old_logo = png(120, 40)
+        new_logo = png(60, 20)
+        (self.content / 'public-assets/mark.png').write_bytes(new_logo)
+        unrelated = self.folder / '.other.tmp'
+        unrelated.write_bytes(b'not ours')
+        real_mkstemp, real_fdopen, real_read = tempfile.mkstemp, os.fdopen, Path.read_bytes
+        fds = []
+
+        class Proxy:
+            def __init__(self, handle, mode):
+                self.handle, self.mode = handle, mode
+
+            def fileno(self):
+                return self.handle.fileno()
+
+            def write(self, data):
+                if self.mode == 'write':
+                    self.handle.write(data[:8])
+                    self.handle.flush()  # a real partial write reaches the staging file
+                    raise OSError('injected write failure')
+                return self.handle.write(data)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.handle.close()
+                if self.mode == 'close':
+                    raise OSError('injected close failure')
+                return False
+
+        def mkstemp(*args, **kwargs):
+            descriptor, name = real_mkstemp(*args, **kwargs)
+            fds.append(descriptor)
+            return descriptor, name
+
+        def reading(path):
+            if path.name == 'mark.png' and list(self.folder.glob('.logo.*.tmp')):  # only the copy into staging fails
+                raise OSError('injected read failure')
+            return real_read(path)
+
+        def fdopen_failing(*args, **kwargs):
+            raise OSError('injected fdopen failure')
+
+        def replace_failing(source, target, *args, **kwargs):
+            if Path(target).name == 'logo.png':
+                raise OSError('injected replace failure')
+            return os.rename(source, target)
+
+        cases = {
+            'read': [mock.patch.object(Path, 'read_bytes', reading)],
+            'fdopen': [mock.patch('os.fdopen', fdopen_failing)],
+            'write': [mock.patch('os.fdopen', lambda *a, **k: Proxy(real_fdopen(*a, **k), 'write'))],
+            'close': [mock.patch('os.fdopen', lambda *a, **k: Proxy(real_fdopen(*a, **k), 'close'))],
+            'replace': [mock.patch('os.replace', replace_failing)],
+        }
+        for label, patches in cases.items():
+            with self.subTest(label):
+                del fds[:]
+                with mock.patch('tempfile.mkstemp', mkstemp), contextlib.ExitStack() as stack:
+                    for item in patches:
+                        stack.enter_context(item)
+                    with self.assertRaises(OSError) as caught:
+                        build(self.root, replace=True)
+                self.assertIn(f'injected {label} failure', str(caught.exception))
+                self.assertEqual(len(fds), 1)
+                with self.assertRaises(OSError):
+                    os.fstat(fds[0])  # the raw descriptor was closed
+                self.assertEqual((self.folder / 'logo.png').read_bytes(), old_logo)
+                self.assertEqual([p.name for p in self.folder.glob('.logo.*.tmp')], [])
+                self.assertEqual(unrelated.read_bytes(), b'not ours')
+        build(self.root, replace=True)  # retry after the failures succeeds
+        self.assert_private_regular_logo(new_logo)
+        self.assertEqual([p.name for p in self.folder.glob('.logo.*.tmp')], [])
+        self.assertEqual(unrelated.read_bytes(), b'not ours')
+
+    def test_campaign_logo_cli_link_isolation_and_legacy_output_bytes(self):
+        self.branded()
+        sentinel = self.sentinel()
+        before = (sentinel.read_bytes(), self.meta(sentinel))
+        (self.folder / '.logo.tmp').symlink_to(sentinel)
+        first = self.cli()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        report, notice = first.stdout.splitlines()
+        self.assertEqual(json.loads(report)['written'], ['kit/flyer/flyer.html', 'kit/flyer/flyer.txt', 'kit/flyer/logo.png'])
+        self.assertEqual(notice, 'Private file; nothing was printed, sent or published.')
+        self.assertEqual(before, (sentinel.read_bytes(), self.meta(sentinel)))
+        trapped = (self.html(), self.text(), self.assert_private_regular_logo(png(120, 40)).st_size)
+        again = self.cli('--replace')
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(before, (sentinel.read_bytes(), self.meta(sentinel)))
+        self.assertEqual(trapped, (self.html(), self.text(), (self.folder / 'logo.png').stat().st_size))
+        shutil.rmtree(self.root / 'kit')  # the same build with no trap yields identical bytes
+        clean = self.cli()
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+        self.assertEqual(first.stdout, clean.stdout)
+        self.assertEqual(trapped[:2], (self.html(), self.text()))
+        self.assert_private_regular_logo(png(120, 40))
+        self.assertEqual(sorted(p.name for p in self.folder.iterdir()), ['flyer.html', 'flyer.txt', 'logo.png'])
+        # the existing refusals are unchanged: a symlinked final logo is refused and the sentinel stays intact
+        os.unlink(self.folder / 'logo.png')
+        (self.folder / 'logo.png').symlink_to(sentinel)
+        refused = self.cli('--replace')
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn('symlink', refused.stderr)
+        self.assertEqual(before, (sentinel.read_bytes(), self.meta(sentinel)))
 
 
 if __name__ == '__main__':

@@ -113,9 +113,23 @@ def build(root, max_findings=3, *, replace=False):
         if replace and old.name != logo_name and old.is_file() and not old.is_symlink():
             old.unlink()
     if logo:
-        temporary = folder / '.logo.tmp'
-        temporary.write_bytes(logo.read_bytes())
-        os.replace(temporary, folder / logo_name)
+        # Stage in a fresh exclusive 0600 file (never a predictable name, so a pre-existing .logo.tmp symlink, hardlink
+        # or file is neither followed nor touched); publish only the complete logo, and remove only this call's staging.
+        descriptor, name = tempfile.mkstemp(prefix='.logo.', suffix='.tmp', dir=folder)
+        staging = Path(name)
+        try:
+            try:
+                handle = os.fdopen(descriptor, 'wb')
+            except BaseException:
+                os.close(descriptor)
+                raise
+            with handle:
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(logo.read_bytes())
+            os.replace(staging, folder / logo_name)
+        except BaseException:
+            staging.unlink(missing_ok=True)
+            raise
     _write_text(folder / 'flyer.html', page)
     _write_text(folder / 'flyer.txt', text)
     for name in names:
