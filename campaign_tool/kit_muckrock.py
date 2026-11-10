@@ -24,8 +24,12 @@ def _load(path):  # a regular, small, UTF-8 JSON object; refused before kit/sent
         raise ValueError(f"{path}: not a regular file (symlinks are refused)")
     if path.stat().st_size > MAX_BYTES:
         raise ValueError(f"{path}: larger than 1 MiB")
+    with open(path, "rb") as handle:  # bounded: the file may have grown since the size check above
+        raw = handle.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        raise ValueError(f"{path}: larger than 1 MiB")
     try:
-        document = json.loads(path.read_bytes().decode("utf-8"))
+        document = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise ValueError(f"{path}: not UTF-8 JSON") from None
     if not isinstance(document, dict):
