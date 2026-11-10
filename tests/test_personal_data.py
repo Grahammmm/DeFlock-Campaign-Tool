@@ -999,8 +999,8 @@ MODULE_FUNCTIONS = {
         'readiness', 'weight_budget'
     ),
     'content_init': ('_rename_noreplace', '_write', 'add_starter', 'faq_document', 'init_content', 'init_from', 'starter_text',),
-    'content_profile': ('_install', 'write_contract', 'write_policy'),  # content/agencies.json only: one checked_on, or
-    # one whole alpr_policy/contract document (with its stale reading removed on request); temp in content/, fsync,
+    'content_profile': ('_install', 'write_contract', 'write_contract_check', 'write_policy', 'write_policy_check'),  # content/agencies.json only: one checked_on, or
+    # one whole alpr_policy/contract document (with its stale reading removed on request) or one policy_check/contract_check reading; temp in content/, fsync,
     # identity check, one rename
     'content_sharing': ('import_sharing',),
     'coverage': ('_write', 'add_coverage', 'remove_coverage',),

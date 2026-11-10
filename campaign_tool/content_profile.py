@@ -19,11 +19,15 @@ import json
 import os
 import re
 import secrets
+import unicodedata
 from datetime import date
 
-from .content import ARCHIVE_KEYS, MAX_JSON_BYTES, ContentError, _calendar_day, load_agencies
+from . import law
+from .agency_cards import text as plain_text
+from .content import (ARCHIVE_KEYS, CHECKLIST_JURISDICTION, MAX_JSON_BYTES, ContentError, _calendar_day, load_agencies,
+                      load_contract_checklist)
 from .content_sharing import TARGET, _install_problem, _open_content, _parse_target, _read_target
-from .privacy_patterns import refusal
+from .privacy_patterns import categories, refusal
 
 SINGLE_FIELDS = ("alpr_policy", "policy_check", "contract", "contract_check", "pre_implementation_meeting", "sharing")
 LIST_FIELDS = ("funding", "transparency", "reports")
@@ -355,3 +359,134 @@ def format_document(result):
         lines.append(f"Dropped profile.{result['reading']} (checked_on {result['dropped']}); record a new reading with "
                      f"content agency-profile {result['verb']}.")
     return "\n".join(lines + [WRITE_NOTICE]) + "\n"
+
+
+# DF1109B-18: the organizer's reading of a stored document against the checklist (policy_check / contract_check).
+READING_NOTICE = "This is the organizer's reading, not a legal review."
+STATUSES = ("addressed", "not_found", "unclear")
+PAGE = re.compile(r"[1-9][0-9]{0,3}")  # ASCII digits only, 1..9999, canonical
+NOTE_LIMIT, ID_SHOWN, IDS_SHOWN = 200, 40, 20
+
+
+def _checklist_ids(field):
+    """The checklist element ids, in checklist order, read from the build's own resources."""
+    try:
+        if field == "alpr_policy":
+            return [element["id"] for element in law.load_checklist(CHECKLIST_JURISDICTION)["elements"]]
+        return [element["id"] for element in load_contract_checklist()["elements"]]
+    except (ValueError, ContentError) as exc:
+        raise ContentProfileError(f"the {'policy' if field == 'alpr_policy' else 'contract'} checklist could not be "
+                                  f"loaded ({exc}); nothing was written") from None
+
+
+def _shown(ids):
+    """Ids for a diagnostic: bounded, escaped, and never a private-looking value."""
+    shown = [("(withheld)" if categories(i) else ascii(i[:ID_SHOWN])) for i in list(ids)[:IDS_SHOWN]]
+    return ", ".join(shown) + (f" (+{len(ids) - IDS_SHOWN} more)" if len(ids) > IDS_SHOWN else "") if ids else "(none)"
+
+
+def _note_problem(text):
+    if (not text.strip() or len(text) > NOTE_LIMIT or not plain_text(text)
+            or any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in text)):
+        return f"plain text of 1 to {NOTE_LIMIT} characters (no angle brackets or control characters)"
+    return None
+
+
+def parse_reading_elements(field, element_args, note_args=()):
+    """Raw ``{id: {status, page?, note?}}`` in checklist order from repeated ``ID=STATUS[:PAGE]`` and ``ID=TEXT`` tokens.
+
+    Every id of the checklist must be given exactly once; one refusal names all missing, unknown and duplicate ids and
+    each field problem. Neither a note nor a whole submitted token is echoed."""
+    ids, problems, found, notes = _checklist_ids(field), [], {}, {}
+    contract = field == "contract"
+    duplicates, unknown = set(), set()
+    for number, token in enumerate(element_args, 1):
+        key, equals, value = token.partition("=")
+        status, colon, page = value.partition(":")
+        if not equals or not key or not status or ":" in page:
+            problems.append(f"--element #{number}: expected ID=STATUS or ID=STATUS:PAGE")
+            continue
+        if key not in ids:
+            unknown.add(key)
+            continue
+        if key in found:
+            duplicates.add(key)
+            continue
+        entry = {}
+        if status not in STATUSES:
+            problems.append(f"--element {key}: status must be one of {list(STATUSES)}")
+        else:
+            entry["status"] = status
+        if colon:
+            if not PAGE.fullmatch(page):
+                problems.append(f"--element {key}: page must be a whole number from 1 to 9999 without leading zeros")
+            elif status != "addressed" and not contract:
+                problems.append(f"--element {key}: page is only allowed when status is addressed")
+            else:
+                entry["page"] = int(page)
+        found[key] = entry
+    missing = [i for i in ids if i not in found]
+    if missing or unknown or duplicates:
+        problems.insert(0, f"--element: Missing element ids: {_shown(missing)}; unknown element ids: {_shown(sorted(unknown))}; "
+                           f"duplicate element ids: {_shown(sorted(duplicates))}")
+    for number, token in enumerate(note_args, 1):
+        key, equals, text = token.partition("=")
+        if not equals or not key:
+            problems.append(f"--note #{number}: expected ID=TEXT")
+        elif key not in found:
+            problems.append(f"--note #{number}: names no element given with --element")
+        elif key in notes:
+            problems.append(f"--note {key}: given more than once")
+        elif why := _note_problem(text):
+            problems.append(f"--note {key}: {why}")
+        elif place := refusal(f"--note {key}", text):
+            problems.append(place)
+        else:
+            notes[key] = text
+    if problems:
+        raise ContentProfileError("; ".join(problems) + "; nothing was written")
+    return {key: {**found[key], **({"note": notes[key]} if key in notes else {})} for key in ids}
+
+
+def _write_reading(root, agency_id, field, checked_on, elements, replace, today):
+    """Record ``profile.<reading>`` for the stored document; -> ``{agency_id, field, reading, checked_on, count}``."""
+    today = today or date.today()
+    url_key, reading, reading_url, verb = DOCUMENTS[field]
+    command = "policy" if field == "alpr_policy" else "contract"
+    given = _calendar_day(checked_on, "--checked-on")
+    if given > today:
+        raise ContentProfileError("--checked-on: must not be after today; nothing was written")
+
+    def change(document):
+        position = _agency(document, agency_id)
+        profile = document[position].get("profile")
+        stored = profile.get(field) if isinstance(profile, dict) else None
+        if not isinstance(stored, dict) or not isinstance(stored.get(url_key), str):
+            raise ContentProfileError(f"profile.{reading}: record profile.{field} with content agency-profile {command} "
+                                      "first; nothing was written")
+        if _calendar_day(stored.get("checked_on"), f"profile.{field}.checked_on") > given:
+            raise ContentProfileError(f"--checked-on: must not be before profile.{field}.checked_on "
+                                      f"{stored['checked_on']}; nothing was written")
+        if profile.get(reading) is not None and not replace:
+            raise ContentProfileError(f"profile.{reading}: {agency_id} already has one; pass --replace to record the "
+                                      "whole reading again (omitted pages and notes are removed); nothing was written")
+        profile[reading] = {"checked_on": checked_on, reading_url: stored[url_key], "elements": elements}
+        _admit_document(document, position, reading, today)
+        return {"agency_id": agency_id, "field": reading, "checked_on": checked_on, "count": len(elements),
+                "_document": document}, True
+    return _transaction(root, change, "write")
+
+
+def write_policy_check(root, agency_id, *, checked_on, elements, replace=False, today=None):
+    """``profile.policy_check`` from ``parse_reading_elements("alpr_policy", ...)``; ``policy_url`` is the stored one."""
+    return _write_reading(root, agency_id, "alpr_policy", checked_on, elements, replace, today)
+
+
+def write_contract_check(root, agency_id, *, checked_on, elements, replace=False, today=None):
+    """``profile.contract_check`` from ``parse_reading_elements("contract", ...)``; ``contract_url`` is the stored one."""
+    return _write_reading(root, agency_id, "contract", checked_on, elements, replace, today)
+
+
+def format_reading(result):
+    return (f"Recorded profile.{result['field']} for {result['agency_id']} (checked_on {result['checked_on']}; "
+            f"{result['count']} elements).\n{READING_NOTICE}\n{WRITE_NOTICE}\n")

@@ -107,18 +107,14 @@ Field: `profile.policy_check` = `{"checked_on", "policy_url", "elements"}`. Read
 checklist of seven elements and give each one a `status` of `addressed` (optionally with the `page`), `not_found` or
 `unclear`. `policy_url` must equal `alpr_policy.url`; every one of the seven ids is present and no other; `page` only with
 `addressed`; `checked_on` is not before `alpr_policy.checked_on`. `not_found` describes your reading of the document, not
-a violation and not a claim that no policy exists. Merge into `profile`:
+a violation and not a claim that no policy exists. Record it with a command: give each of the seven ids once as
+`--element ID=STATUS` or `--element ID=STATUS:PAGE` (a page is a whole number from 1 to 9999). The command copies
+`policy_url` from the stored policy, so you never type it; an id you leave out, repeat or misspell is named in the refusal
+and nothing is written. An agency that already has a reading needs `--replace`, which records the whole reading again.
+The output says this is your reading, not a legal review.
 
-```json
-{"policy_check": {"checked_on": "2026-10-22", "policy_url": "https://example.invalid/example-profile/alpr-policy.pdf",
-  "elements": {
-    "authorized_purposes": {"status": "addressed", "page": 1},
-    "authorized_users_training": {"status": "addressed", "page": 2},
-    "security_monitoring": {"status": "unclear"},
-    "sharing_restrictions": {"status": "addressed", "page": 2},
-    "custodian_title": {"status": "not_found"},
-    "accuracy_correction": {"status": "not_found"},
-    "retention_destruction": {"status": "addressed", "page": 3}}}}
+```sh
+python3 -m campaign_tool content agency-profile policy-check --directory $CAMPAIGN --agency ca-example-profile-pd --checked-on 2026-10-22 --element authorized_purposes=addressed:1 --element authorized_users_training=addressed:2 --element security_monitoring=unclear --element sharing_restrictions=addressed:2 --element custodian_title=not_found --element accuracy_correction=not_found --element retention_destruction=addressed:3
 ```
 
 Reference: [SITE-CONTENT.md, agencies, cards and the picker](SITE-CONTENT.md#agencies-cards-and-the-picker) (the
@@ -146,20 +142,14 @@ Reference: [AGENCY-CARDS.md, agency contract term](AGENCY-CARDS.md#agency-contra
 Field: `profile.contract_check` = `{"checked_on", "contract_url", "elements"}`. Give each of the eight checklist ids a
 `status` (`addressed`, `not_found`, `unclear`), with an optional `page` (any status) and a short plain-text `note`.
 `contract_url` must equal `contract.source_url` exactly, and `checked_on` may not be before `contract.checked_on`. This
-page rule is looser than the policy check's. "Not found" describes your reading of the linked document only. Merge into
-`profile`:
+page rule is looser than the policy check's. "Not found" describes your reading of the linked document only. Record it
+with a command: give each of the eight ids once as `--element ID=STATUS[:PAGE]`, and add `--note ID=TEXT` (up to 200
+plain characters, one per element you gave) where a short note helps. The command copies `contract_url` from the stored
+contract, so you never type it. As with task 3, a missing, repeated or unknown id is named and nothing is written, and an
+existing reading needs `--replace`. The output says this is your reading, not a legal review.
 
-```json
-{"contract_check": {"checked_on": "2026-10-24", "contract_url": "https://example.invalid/example-profile/agreement.pdf",
-  "elements": {
-    "term_renewal": {"status": "addressed", "page": 1},
-    "price_changes": {"status": "addressed", "page": 4, "note": "Annual price schedule on this page."},
-    "data_ownership": {"status": "unclear", "page": 6},
-    "retention": {"status": "not_found"},
-    "sharing_network": {"status": "addressed", "page": 7},
-    "vendor_data_use": {"status": "unclear"},
-    "audit_search_logs": {"status": "not_found"},
-    "termination_data_exit": {"status": "addressed", "page": 9}}}}
+```sh
+python3 -m campaign_tool content agency-profile contract-check --directory $CAMPAIGN --agency ca-example-profile-pd --checked-on 2026-10-24 --element term_renewal=addressed:1 --element price_changes=addressed:4 --element data_ownership=unclear:6 --element retention=not_found --element sharing_network=addressed:7 --element vendor_data_use=unclear --element audit_search_logs=not_found --element termination_data_exit=addressed:9 --note "price_changes=Annual price schedule on this page."
 ```
 
 Reference: [SITE-CONTENT.md, agencies, cards and the picker](SITE-CONTENT.md#agencies-cards-and-the-picker) (the
@@ -181,15 +171,15 @@ Your reading from task 3 (task 5) describes one document. It is never moved to a
   changing only the policy's `--source-url` (the page where you found it) keeps the reading.
 - `--drop-check` without `--replace` is refused; with no reading recorded it changes nothing more.
 
-The replacement sequence for a new policy and a new agreement (next-unit handoff: `policy-check` and `contract-check`
-are not commands yet, so until they are, record the fresh reading by merging a new task 3 or task 5 block whose
-`policy_url` / `contract_url` is the new document):
+The replacement sequence for a new policy and a new agreement. Each step is a command; the file passes the build's loader
+after every one, and nothing is edited by hand between them. The new reading is recorded without `--replace` because the
+drop removed the old one, and its date is not before the new document's:
 
 ```text
 python3 -m campaign_tool content agency-profile policy --directory $CAMPAIGN --agency ca-example-profile-pd --replace --drop-check --url https://example.invalid/example-profile/alpr-policy-2027.pdf --source-url https://example.invalid/example-profile/policies --checked-on 2026-10-30
-(next unit) python3 -m campaign_tool content agency-profile policy-check ... --checked-on 2026-10-30 or later
+python3 -m campaign_tool content agency-profile policy-check --directory $CAMPAIGN --agency ca-example-profile-pd --checked-on 2026-10-30 --element authorized_purposes=addressed:1 --element authorized_users_training=addressed:2 --element security_monitoring=unclear --element sharing_restrictions=addressed:2 --element custodian_title=not_found --element accuracy_correction=not_found --element retention_destruction=addressed:3
 python3 -m campaign_tool content agency-profile contract --directory $CAMPAIGN --agency ca-example-profile-pd --replace --drop-check --vendor "Synthetic vendor" --start 2028-01-01 --end 2030-12-31 --source-url https://example.invalid/example-profile/agreement-2028.pdf --checked-on 2026-10-30
-(next unit) python3 -m campaign_tool content agency-profile contract-check ... --checked-on 2026-10-30 or later
+python3 -m campaign_tool content agency-profile contract-check --directory $CAMPAIGN --agency ca-example-profile-pd --checked-on 2026-10-30 --element term_renewal=addressed:1 --element price_changes=addressed:4 --element data_ownership=unclear:6 --element retention=not_found --element sharing_network=addressed:7 --element vendor_data_use=unclear --element audit_search_logs=not_found --element termination_data_exit=addressed:9
 ```
 
 Reference: [SITE-CONTENT.md, recording a policy or contract document](SITE-CONTENT.md#recording-a-policy-or-contract-document).

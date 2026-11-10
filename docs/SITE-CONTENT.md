@@ -395,6 +395,22 @@ the build's loader, the new document's text the shared privacy lint, and every a
 refusal names the place and the rule or category (never the text) and writes nothing. Success replaces the file
 atomically as `recheck` does and ends `Recorded only. Nothing was fetched, built, published or sent.`
 
+### Recording the organizer's reading of a stored document
+
+`python3 -m campaign_tool content agency-profile policy-check --directory D --agency ID --checked-on YYYY-MM-DD --element
+ID=STATUS[:PAGE] ... [--replace]` writes `profile.policy_check`, and `contract-check` (the same flags plus optional
+`--note ID=TEXT`, repeatable, contract only) writes `profile.contract_check`. Every checklist id (seven for the policy,
+eight for the contract) is given exactly once; `STATUS` is `addressed`, `not_found` or `unclear`; `PAGE` is a whole number
+from 1 to 9999 without leading zeros (policy: only with `addressed`; contract: with any status). A note is split at the
+first `=`, is 1 to 200 plain characters, needs a given element and is limited to one per element. One refusal names all
+missing, unknown and duplicate ids plus each field problem, never a note or a whole token. There is no URL flag: the
+reading's `policy_url` / `contract_url` is copied from the currently stored `alpr_policy.url` / `contract.source_url`, and
+the command refuses when no such document is recorded (record it first with `policy` or `contract`; a changed document
+goes through `--replace --drop-check`, then a new reading). `--checked-on` is a real date, not after today and not before
+the document's own date. An existing reading needs `--replace`, which is a full replacement: omitted pages and notes are
+removed. The whole prospective file passes the build's loader and privacy gate before one atomic write. Output ends `This
+is the organizer's reading, not a legal review.` and `Recorded only. Nothing was fetched, built, published or sent.`
+
 ### Archived copies of agency sources (optional)
 
 Five organizer-verified link objects may carry a manually checked archive copy: `profile.alpr_policy`,
