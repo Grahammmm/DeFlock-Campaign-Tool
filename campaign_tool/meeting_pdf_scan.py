@@ -3,6 +3,7 @@ import contextlib
 import hashlib
 import http.client
 import os
+import re
 import selectors
 import subprocess
 import time
@@ -84,6 +85,24 @@ def _convert(data, *, seconds=CONVERT_SECONDS, limit=MAX_TEXT_BYTES):
             proc.wait()
 
 
+def _declared_length(response):
+    """None when absent; else the declared byte count (capped at MAX_BYTES + 1).
+
+    Raises ValueError for anything but one plain ASCII decimal value; never echoes it."""
+    raw = response.getheader("Content-Length")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("Content-Length")
+    digits = raw.strip(" \t")
+    if not re.fullmatch(r"[0-9]+", digits, re.ASCII):
+        raise ValueError("Content-Length")
+    digits = digits.lstrip("0")
+    if len(digits) > len(str(MAX_BYTES)):
+        return MAX_BYTES + 1
+    return min(int(digits or "0"), MAX_BYTES + 1)
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -108,9 +127,14 @@ def scan(url, opener=None, *, platform_host_rule):
         with (opener or urllib.request.build_opener(NoRedirect())).open(request, timeout=20) as response:
             if response.getcode() != 200 or response.geturl() != url:
                 return result
+            declared = _declared_length(response)
+            if declared is not None and declared > MAX_BYTES:
+                return dict(result, pdf_scan="too_large")
             data = response.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES:
             return dict(result, pdf_scan="too_large")
+        if declared is not None and declared != len(data):
+            return dict(result, pdf_scan="failed")
         if not data.startswith(b"%PDF-"):
             return dict(result, pdf_scan="not_pdf")
         result["pdf_sha256"] = hashlib.sha256(data).hexdigest()
