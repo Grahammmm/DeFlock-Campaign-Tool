@@ -103,9 +103,25 @@ def _verify_draft(root, agency_id, request, entry, label):  # the recorded draft
                          "and record it as sent before drafting a preservation request")
     path = Path(root) / "kit" / "requests" / f"{stem}.md"
     _regular(path, f"kit/requests/{stem}.md")
-    if path.stat().st_size > MAX_DRAFT:
-        raise ValueError(f"kit/requests/{stem}.md is larger than 1 MiB")
-    data = path.read_bytes()
+    label_path = f"kit/requests/{stem}.md"
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"{label_path} must be a regular file, not a symlink")
+        if info.st_size > MAX_DRAFT:
+            raise ValueError(f"{label_path} is larger than 1 MiB")
+        data = bytearray()
+        # A sentinel byte detects growth after fstat without an unbounded read.
+        while len(data) <= MAX_DRAFT:
+            chunk = os.read(fd, MAX_DRAFT + 1 - len(data))
+            if not chunk:
+                break
+            data.extend(chunk)
+        if len(data) > MAX_DRAFT:
+            raise ValueError(f"{label_path} is larger than 1 MiB")
+    finally:
+        os.close(fd)
     try:
         data.decode("utf-8")
     except UnicodeDecodeError:
