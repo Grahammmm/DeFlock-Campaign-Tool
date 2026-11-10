@@ -139,6 +139,19 @@ class ProjectionTests(Base):
         late = manifest_from_content(self.root, CFG, "2026-10-31T00:00:00+00:00", now=NOW)
         self.assertFalse({"updates", "actions"} & set(late), "everything outside the window adds no key")
 
+    def test_from_content_reports_a_long_official_action_url(self):
+        long_url = "https://a.co/" + "p" * 480
+        self.populate()
+        path = self.root / "content" / "agency-actions.json"
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["actions"][0]["source_url"] = long_url
+        doc["actions"][1]["source_url"] = "https://example.invalid?id=1"
+        self.write(path, doc)
+        draft = content_draft(self.root)
+        self.assertIn(f"[Official source]({long_url})", draft["text"])
+        self.assertIn("[Official source](https://example.invalid/?id=1)", draft["text"])
+        self.assertIn(f'<a href="{long_url}" rel="noopener noreferrer">Official source</a>', draft["html"])
+
     def test_old_new_corrected_findings_each_keep_all_updates(self):
         self.populate()
         rows = manifest_from_content(self.root, CFG, SINCE, now=NOW)["updates"]
@@ -283,6 +296,28 @@ class ValidationTests(unittest.TestCase):
         for key, rows, message in cases:
             with self.subTest(message=message):
                 self.assertIn(message, self.refused(key, rows))
+
+    def test_every_content_valid_official_url_is_reported_and_linked(self):
+        """DF1109-06 return 1: the draft accepts what content/agency_actions accept (500 characters; ``?``/``#`` right after the host)."""
+        long_url = "https://a.co/" + "p" * 480  # path 481, URL 493
+        edge = "https://a.co/" + "q" * 487  # exactly agency_actions.MAX_URL
+        self.assertEqual((len(long_url), len(edge)), (493, 500))
+        for url, linked in ((long_url, long_url), (edge, edge),
+                            ("https://example.invalid?id=1", "https://example.invalid/?id=1"),
+                            ("https://example.invalid#top", "https://example.invalid/#top"),
+                            ("https://example.invalid:8443?a=b", "https://example.invalid:8443/?a=b"),
+                            ("https://example.invalid/", "https://example.invalid/"),
+                            ("https://example.invalid", "https://example.invalid")):
+            with self.subTest(url=url[:60]):
+                draft = build_draft({"schema_version": 1, "campaign": {"name": "Synthetic"}, "since": SINCE,
+                                     "actions": [{**self.ACTION, "source_url": url}]}, NOW)
+                self.assertIn(f"[Official source]({linked})", draft["text"])
+                self.assertIn(f'<a href="{linked}" rel="noopener noreferrer">Official source</a>', draft["html"])
+
+    def test_url_one_character_over_the_content_limit_is_refused(self):
+        too_long = "https://a.co/" + "q" * 488
+        self.assertEqual(len(too_long), 501)
+        self.assertIn("actions[0].source_url", self.refused("actions", [{**self.ACTION, "source_url": too_long}]))
 
     def test_refused_manifest_leaves_the_existing_draft(self):
         with tempfile.TemporaryDirectory(prefix="synthetic-df1109-06-") as base:
