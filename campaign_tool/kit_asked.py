@@ -7,7 +7,9 @@ refused; a malformed history stops the run (exit 3) with no change line and no w
 write. Only ``topic``, ``asked_on``, ``state`` and ``updated_on`` are derived, and the private request name is kept as
 ``asked.request`` so the next run finds the same item. Notes, bases, references and record hashes of a request never reach
 content. A request closed without production is left for the organizer to choose; one the campaign withdrew itself is
-proposed as ``withdrawn``. A changed candidate whose exact writer bytes (indent=2, UTF-8, final newline) exceed the
+proposed as ``withdrawn``. Every recorded scope of a request that would yield an item must resolve to a title in the
+configured law package (an unknown scope or an unavailable package stops the run, exit 3, with one fixed message and no
+change; only a request with no recorded scopes gets the generic topic). A changed candidate whose exact writer bytes (indent=2, UTF-8, final newline) exceed the
 reader's ``content.MAX_JSON_BYTES`` is refused in ``propose`` (exit 3) before any write. Nothing is fetched or sent.
 """
 import copy
@@ -23,6 +25,7 @@ from .content import MAX_JSON_BYTES, ContentError, _read_json, load_agencies
 TOPIC_MAX = 120
 NO_SCOPES = "Records request"
 ORGANIZER = "organizer to choose"
+UNRESOLVED = "kit-asked: cannot resolve all recorded scope titles from the law package; nothing proposed"
 
 
 def latest_step(steps):
@@ -78,9 +81,13 @@ def _titles(root, law_base=None):
 
 
 def _proposal(entry, titles):
+    state = state_of(entry)
     asked = entry.get("scopes")
-    found = [titles[i] for i in asked if i in titles] if isinstance(asked, list) else []
-    proposal = {"topic": topic_text(found), "asked_on": entry["sent_on"], "state": state_of(entry)}
+    if state is not None and isinstance(asked, list) and not all(i in titles for i in asked):
+        # Checked over the whole recorded list, before the display limit can hide a missing title.
+        raise ContentError(UNRESOLVED)
+    found = [titles[i] for i in asked] if state is not None and isinstance(asked, list) else []
+    proposal = {"topic": topic_text(found), "asked_on": entry["sent_on"], "state": state}
     step = latest_step([s for s in entry["steps"] if isinstance(s, dict)])
     return {**proposal, **({"updated_on": step[1]} if step else {})}
 
