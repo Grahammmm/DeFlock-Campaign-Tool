@@ -25,8 +25,12 @@ never echoes link text or targets and never changes ``render``.
 ``python3 -m campaign_tool.markdown_lite --lint FILE...`` prints
 ``FILE:LINE: CODE: detail`` lines and ``files=N findings=M`` (exit 0 clean,
 1 findings, 2 usage error or an unreadable, non-UTF-8, oversize or missing file).
+FILE operands must resolve and open as regular files; pipes, devices and directories are
+refused (``not a regular file``) without waiting for a writer, and later files are still linted.
 """
+import os
 import re
+import stat
 import sys
 from html import escape, unescape
 
@@ -269,6 +273,26 @@ def lint(source, images=None):
     return sorted(found)
 
 
+def _read_regular(path):
+    """Read at most MAX_BYTES + 1 bytes of a regular file; refuse pipes/devices without blocking."""
+    if not stat.S_ISREG(os.stat(path).st_mode):
+        raise ValueError("not a regular file")
+    # Pathname inspection is not the race boundary: open without waiting for a FIFO writer, then check the descriptor.
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")
+        handle = os.fdopen(fd, "rb")
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass  # never replace the primary error; do not retry an uncertain close
+        raise
+    with handle:  # the stream owns the descriptor from here
+        return handle.read(MAX_BYTES + 1)
+
+
 def main(argv=None):
     args = sys.argv[1:] if argv is None else list(argv)
     if len(args) < 2 or args[0] != "--lint" or any(arg.startswith("-") for arg in args[1:]):
@@ -278,8 +302,7 @@ def main(argv=None):
     failed = False
     for path in args[1:]:
         try:
-            with open(path, "rb") as handle:
-                data = handle.read(MAX_BYTES + 1)
+            data = _read_regular(path)
             if len(data) > MAX_BYTES:
                 raise ValueError("over MAX_BYTES")
             results = lint(data.decode("utf-8"))
