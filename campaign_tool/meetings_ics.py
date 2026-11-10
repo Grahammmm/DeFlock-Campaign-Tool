@@ -2,7 +2,8 @@
 
 Stdlib only. Only ``VEVENT`` blocks are read; ``VTIMEZONE`` blocks are ignored (zone ids resolve through ``zoneinfo``).
 A floating time, an unknown zone, a recurring event (``RRULE``, ``RDATE``, ``RECURRENCE-ID``), an over-long UID or an event
-without a usable start is skipped and counted. Attachment and agenda links are recorded and never fetched.
+without a usable start is skipped and counted. Attachment and agenda links are recorded and never fetched. A feed that is
+not one complete, balanced VCALENDAR is refused whole before any event is read (RF1835-4, docs/ICS-INPUT-SAFETY.md).
 """
 import hashlib
 import re
@@ -22,6 +23,9 @@ _UNESCAPE = re.compile(r"\\([nN,;\\])")
 _SEQUENCE = re.compile(r"[0-9]+")
 _DTSTAMP = re.compile(r"[0-9]{8}T[0-9]{6}Z")
 MAX_SEQUENCE = 2147483647
+MAX_COMPONENT_DEPTH = 64
+_COMPONENT = re.compile(r"[A-Za-z0-9-]+")
+_MALFORMED = "feed has malformed iCalendar component structure; nothing was written"
 
 
 def check_feed_url(url):
@@ -117,6 +121,41 @@ def parse_events(text):
         elif current is not None and not depth:
             current.setdefault(name, []).append((params, value))
     return events
+
+
+def _check_components(text):
+    """RF1835-4: refuse a feed that is not one complete VCALENDAR of balanced, well-named components.
+
+    Runs before any event is collected, so a truncated or misnested feed never becomes a partial meeting list. A VEVENT
+    must sit directly in the calendar; other components may nest (64 frames at most, the calendar included) and stay
+    ignored. Iterative, and the refusal is one fixed line that never carries feed text. ``parse_events`` stays permissive.
+    """
+    stack, closed = [], False
+    for line in unfold(text):
+        parsed = split_line(line)
+        if parsed is None:
+            continue
+        name, params, value = parsed
+        if closed or (not stack and name != "BEGIN"):
+            raise MeetingsError(_MALFORMED)
+        if name not in ("BEGIN", "END"):
+            continue
+        token = value.strip()
+        if params or not _COMPONENT.fullmatch(token):
+            raise MeetingsError(_MALFORMED)
+        token = token.upper()
+        if name == "BEGIN":
+            if ((token == "VCALENDAR") != (not stack) or (token == "VEVENT" and len(stack) != 1)
+                    or len(stack) >= MAX_COMPONENT_DEPTH):
+                raise MeetingsError(_MALFORMED)
+            stack.append(token)
+        elif token != stack[-1]:
+            raise MeetingsError(_MALFORMED)
+        else:
+            stack.pop()
+            closed = not stack
+    if not closed:
+        raise MeetingsError(_MALFORMED)
 
 
 def _first(event, name):
@@ -248,6 +287,7 @@ class IcsClient:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             raise MeetingsError(f"{self.label}: not UTF-8 text") from None
+        _check_components(text)
         self.skipped = dict.fromkeys(SKIP_KEYS, 0)
         meetings, seen = [], set()
         events = _revisions(parse_events(text))
