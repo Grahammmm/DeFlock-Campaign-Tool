@@ -62,7 +62,8 @@ def _label_ok(label):
 def read_assignments(root):
     """``{sent.json key: owner label}`` from kit/assignments.json; {} when absent. Never resets a bad file.
 
-    Orphans (a key with no recorded request) are kept as stored; callers ignore them."""
+    Reads at most MAX_BYTES + 1 bytes before decoding. Orphans (a key with no recorded request)
+    are kept as stored; callers ignore them."""
     path = _kit_dir(root) / "assignments.json"
 
     def bad(reason):
@@ -73,8 +74,12 @@ def read_assignments(root):
         raise bad("not a regular file")
     if path.stat().st_size > MAX_BYTES:
         raise bad("larger than 1 MiB")
+    with path.open("rb") as handle:
+        raw = handle.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        raise bad("larger than 1 MiB")
     try:
-        document = json.loads(path.read_bytes().decode("utf-8"), object_pairs_hook=_pairs)
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
     except (UnicodeDecodeError, ValueError):  # json.JSONDecodeError and the duplicate-key error are ValueErrors
         raise bad("not JSON, or a key is repeated") from None
     if not isinstance(document, dict) or set(document) != {"schema_version", "assignments"} \
