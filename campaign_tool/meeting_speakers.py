@@ -13,7 +13,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .content import FINDING_ID, SHA256, SLUG, load_comment_asks, load_meeting
+from .content import FINDING_ID, ContentError, SHA256, SLUG, load_comment_asks, load_meeting
 from .kit_assign import owner_label
 from .meetings import ASK_COUNT_WORDS
 from .meetings_manual import MANUAL, ManualMeetingError, _manual_document
@@ -117,7 +117,12 @@ def _staged(root, meeting_id, now):
     document = _json(data, bad)
     if not isinstance(document, dict) or document.get("id") != meeting_id:
         raise MeetingSpeakersError(f"content/meetings/{meeting_id}.json: id must match the file name")
-    loaded = load_meeting(document, f"meetings/{meeting_id}.json", today=now.date())
+    try:
+        loaded = load_meeting(document, f"meetings/{meeting_id}.json", today=now.date())
+    except ContentError:
+        # The validator's message quotes input-derived field names and values (an unknown key can hold pasted private
+        # text), so none of it is forwarded; only the already-validated id and a fixed template are shown.
+        raise MeetingSpeakersError(f"content/meetings/{meeting_id}.json is not valid staged meeting content") from None
     if loaded["status"] == "cancelled":
         raise MeetingSpeakersError(CANCELLED)
     _check_imported(root, meeting_id)
