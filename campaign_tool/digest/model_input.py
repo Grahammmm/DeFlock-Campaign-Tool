@@ -37,6 +37,33 @@ def _key(locator):
         _fail()
 
 
+def _closed_reference(reference):
+    """Shallow, nonmutating admission of a model-supplied opaque reference.
+
+    Only ``{scope: "document"}``, ``{unit: int}`` and ``{unit: int, line: int}``
+    are admitted. Key sets and scalar types are checked before anything is
+    serialized, copied or walked, so a rejected (possibly deeply nested) value
+    is never traversed. Returns a fresh canonical shallow dictionary.
+    """
+    if not isinstance(reference, dict):
+        _fail()
+    keys = set(reference)
+    if keys == {"scope"}:
+        scope = reference["scope"]
+        if type(scope) is not str or scope != DOCUMENT_LOCATOR["scope"]:
+            _fail()
+        return dict(DOCUMENT_LOCATOR)
+    if keys == {"unit"} or keys == {"unit", "line"}:
+        canonical = {}
+        for name in ("unit", "line"):
+            if name in reference:
+                if type(reference[name]) is not int:
+                    _fail()
+                canonical[name] = reference[name]
+        return canonical
+    _fail()
+
+
 def model_locator(locator, index):
     """Compatibility helper: every private locator becomes an opaque unit ID."""
     if type(index) is not int or index < 0:
@@ -216,13 +243,15 @@ class ModelSources:
         return result
 
     def _restore_locator(self, reference):
+        # Shape and scalar admission precede key serialization and any copy.
+        reference = _closed_reference(reference)
         key = _key(reference)
-        if reference == DOCUMENT_LOCATOR and key in self._issued:
+        if reference == DOCUMENT_LOCATOR:
+            if key not in self._issued:
+                _fail()
             return dict(DOCUMENT_LOCATOR)
-        if set(reference) not in ({"unit"}, {"unit", "line"}):
-            _fail()
-        index = reference.get("unit")
-        if type(index) is not int or not 0 <= index < len(self._units):
+        index = reference["unit"]
+        if not 0 <= index < len(self._units):
             _fail()
         if "line" in reference and not self._valid_line(index, reference["line"]):
             _fail()
@@ -233,22 +262,31 @@ class ModelSources:
             locator["line"] = reference["line"]
         return locator
 
-    def restore_output(self, output):
-        """Restore only issued opaque references; never trust returned metadata."""
-        result = deepcopy(output)
-        if not isinstance(result, dict):
-            _fail()
+    def _citations(self, output):
+        """Yield every dict that carries a citation locator in a model document."""
         for field in ("dates", "statements", "omissions", "counterevidence"):
-            for item in self._list(result.get(field)):
+            for item in self._list(output.get(field)):
                 if not isinstance(item, dict):
                     _fail()
                 if "locator" in item and item["locator"] is not None:
-                    item["locator"] = self._restore_locator(item["locator"])
-        for conclusion in self._list(result.get("conclusions")):
+                    yield item
+        for conclusion in self._list(output.get("conclusions")):
             if not isinstance(conclusion, dict):
                 _fail()
             for source in self._list(conclusion.get("sources")):
                 if not isinstance(source, dict):
                     _fail()
-                source["locator"] = self._restore_locator(source.get("locator"))
+                yield source
+
+    def restore_output(self, output):
+        """Restore only issued opaque references; never trust returned metadata."""
+        if not isinstance(output, dict):
+            _fail()
+        # Two passes are intentional: every citation is admitted shallowly
+        # before the whole (arbitrarily nested) document is recursively copied.
+        for holder in self._citations(output):
+            self._restore_locator(holder.get("locator"))
+        result = deepcopy(output)
+        for holder in self._citations(result):
+            holder["locator"] = self._restore_locator(holder.get("locator"))
         return result
