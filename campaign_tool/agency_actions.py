@@ -250,6 +250,29 @@ def by_agency(rows):
     return grouped
 
 
+class SelectorError(ActionError):
+    """``list --agency`` names no loaded agency; the supplied value is never repeated."""
+
+
+def list_actions(root, agency_id=None, *, today=None):
+    """DF1109B-05, read only: every stored action as a flat dict, agencies in order of first appearance in the file, each
+    agency's rows in stored order with ``index`` the 1-based position ``remove --index`` takes (counted before the
+    ``agency_id`` filter). The whole store is validated by the build's reader first; [] when there is no file."""
+    from .content import load_campaign_agencies  # local: content owns the agency loaders
+    from .labels import DEFAULTS
+    today = today or date.today()
+    agencies = load_campaign_agencies(root, today)
+    grouped = by_agency(read_actions(root, agencies, today=today))
+    if agency_id is not None and (not isinstance(agency_id, str) or not AGENCY_ID.fullmatch(agency_id)
+                                  or agency_id not in {agency["agency_id"] for agency in agencies}):
+        raise SelectorError("--agency: unknown agency")
+    return [{"agency_id": agency, "index": index, "on": row["on"], "kind": row["kind"],
+             "kind_label": DEFAULTS["agency.action_kind_" + row["kind"]], "as_stated": row["as_stated"],
+             "source_url": row["source_url"], "checked_on": row["checked_on"]}
+            for agency, rows in grouped.items() if agency_id in (None, agency)
+            for index, row in enumerate(rows, 1)]
+
+
 # --- writing --------------------------------------------------------------------------------------------------
 
 def _dump(rows):

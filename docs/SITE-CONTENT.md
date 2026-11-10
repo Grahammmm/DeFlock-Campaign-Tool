@@ -559,8 +559,21 @@ most 50 actions, and the same agency + `on` + `kind` + `source_url` twice is ref
 ```
 python3 -m campaign_tool content agency-action add --directory DIR --agency ID --on 2026-09-01 --kind policy_posted \
     --as-stated "Use policy posted on the department website" --source-url https://example.org/policy --checked-on 2026-10-01
+python3 -m campaign_tool content agency-action list --directory DIR --agency ID
 python3 -m campaign_tool content agency-action remove --directory DIR --agency ID --index 2
 ```
+
+`list` reads the file through the build's own reader and writes nothing (no file, folder, lock or public output) and fetches
+nothing. It prints one line per action, `AGENCY_ID | INDEX | ON | KIND LABEL | AS_STATED | SOURCE_URL | checked CHECKED_ON`,
+agencies in the order they first appear in the file and each agency's actions in **file** order; `INDEX` is exactly the
+`--index` that `remove` takes. `--agency ID` shows one agency without renumbering; `--json` prints the same rows as a JSON
+array of `agency_id`, `index`, `on`, `kind`, `kind_label`, `as_stated`, `source_url` and `checked_on`. No file, an empty file
+or an agency with no actions prints `none recorded` (`[]` with `--json`). A file the build would refuse, even in another
+agency's row, or broken agency inputs print the one line
+`Stopped: content/agency-actions.json: cannot list; fix the file and its agency references.` and exit 2; an `--agency` that is
+not one of the campaign's agencies prints `Stopped: --agency: unknown agency` and exit 2. Indices shift after a removal, so
+list again immediately before each `remove`. A listed action is what an organizer transcribed, not an independent check of
+the source.
 
 Both commands need `--directory` and an existing `content/`; `add` needs every flag and has no replace or update form, and
 neither creates `content/` or touches any other file. They print `Agency action added: ID, index N.` or
@@ -956,12 +969,21 @@ not mean the outlet endorses the campaign.** Typing the headline exactly as publ
 {"schema_version": 1, "entries": [{"outlet": "Example News", "headline": "Published headline",
   "url": "https://news.example.test/story", "published_on": "2026-11-01", "findings": ["F1"], "kind": "news"}]}
 ```
-- Record and remove entries with the CLI; both need an existing `content/` with a valid `site.json`, never scaffold,
+- Record and remove entries with the CLI; `add` and `remove` need an existing `content/` with a valid `site.json`, never scaffold,
   build, publish or use the network, and print `Nothing was built, published or sent.`:
   `python3 -m campaign_tool content coverage add --directory D --outlet N --headline H --url U --published-on YYYY-MM-DD
   [--finding ID ...] [--kind news|opinion|broadcast|other]` (`--finding` once per id) and
+  `python3 -m campaign_tool content coverage list --directory D [--json]` before
   `python3 -m campaign_tool content coverage remove --directory D --url U`. Success prints
   `{"action": "added"|"removed", "url": U}`; a refusal exits 2 and changes nothing. You can also edit the file by hand.
+- `coverage list` writes nothing, fetches nothing and needs no `site.json`. It prints one line per entry in **file** order
+  (not the page's newest-first order), `PUBLISHED_ON | OUTLET | HEADLINE | URL`, where `URL` is the exact stored URL that
+  `remove --url` takes; copy it whole, query and fragment included. `--json` prints a JSON array of `published_on`,
+  `outlet`, `headline`, `url`, `kind` and `findings` (defaults filled in). No file or an empty list prints `none recorded`
+  (`[]` with `--json`). A file the build would refuse, or an entry citing a finding that is not published in
+  `content/findings/`, prints `Stopped: content/coverage.json: cannot list; fix the file and its published finding
+  references.` and exit 2 (while `coverage remove --url U` can still remove an entry whose finding was withdrawn, see
+  Repair below). A listed story is still not verification of it.
 - Envelope: exactly `schema_version` (the integer 1) and `entries` (a list of at most 1000). Each entry needs `outlet`,
   `headline`, `url` and `published_on` and may have `findings` (default `[]`) and `kind` (default `news`); unknown keys,
   `null`, booleans and wrong types are refused, not coerced. A file written by the CLI always shows the defaults.
