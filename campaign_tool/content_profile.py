@@ -73,7 +73,10 @@ def _read_document(root):
         except FileNotFoundError:
             return None
         target_fd, _, data = _read_target(content_fd)
-        return _parse_target(data)
+        try:
+            return _parse_target(data)
+        except RecursionError:
+            raise ContentProfileError("content/agencies.json: JSON nesting is too deep") from None
     finally:
         for fd in (target_fd, content_fd, root_fd):
             if fd is not None:
@@ -238,6 +241,8 @@ def _transaction(root, change, verb):
             _refuse_hard_link(target_stat)  # the opened file, in case a link appeared after the check above
         try:
             document = _parse_target(original)
+        except RecursionError:
+            raise ContentProfileError("content/agencies.json: JSON nesting is too deep; nothing was written") from None
         except ContentError:
             if verb != "entry change":
                 raise
