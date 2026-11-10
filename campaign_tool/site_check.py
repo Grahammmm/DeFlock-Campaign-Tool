@@ -298,6 +298,8 @@ def read_weights(path):
         if not stat.S_ISREG(info.st_mode) or info.st_size > WEIGHTS_MAX_BYTES:
             raise ValueError(f"{label}: must be a regular file of at most {WEIGHTS_MAX_BYTES} bytes")
         raw = handle.read(WEIGHTS_MAX_BYTES + 1)
+        if len(raw) > WEIGHTS_MAX_BYTES:  # the file grew after the descriptor size check: refuse, never use a prefix
+            raise ValueError(f"{label}: must be a regular file of at most {WEIGHTS_MAX_BYTES} bytes")
     try:
         data = json.loads(raw.decode("utf-8"))
     except ValueError:  # includes UnicodeDecodeError
