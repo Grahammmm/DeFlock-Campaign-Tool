@@ -1,8 +1,10 @@
 """Private iCalendar (RFC 5545) of open hand-sent requests' dates and staged meetings' written-comment deadlines.
 
+Request dates: the provisional determination date, the agency's stated production date, each still-pending download
+link expiry, the next stated installment of a rolling production and an unanswered stated extension date.
 The file is for the organizer's own calendar: 0600, never overwritten, refused inside the campaign's public/ or
 content/. Events carry ids, dates, agency or body names and the official source link only; never recipient emails,
-request text, record hashes, notes or reviewer names.
+request text, download links, record hashes, notes or reviewer names.
 """
 import os
 from datetime import date, datetime, timezone
@@ -13,7 +15,8 @@ from . import kit_track
 PRODID = "-//DeFlock Campaign Tool//kit calendar//EN"
 DOMAIN = "campaign.invalid"
 NO_LAW = ("No law package: provisional determination dates cannot be computed; "
-          "only agencies' stated production dates are included.")
+          "only agency-stated dates are included.")
+STATED = "agency-stated; provisional, not a legal deadline"
 
 
 def escape_text(value):
@@ -53,8 +56,9 @@ def _uid(kind, row):
 
 def _request_events(root, law_base):
     report = kit_track.status(root, law_base=law_base)
-    steps = {kit_track._split(key): [s for s in entry["steps"] if isinstance(s, dict)]
-             for key, entry in kit_track.read_sent(root).items()}
+    stored = {kit_track._split(key): [(i, s) for i, s in enumerate(entry["steps"]) if isinstance(s, dict)]
+              for key, entry in kit_track.read_sent(root).items()}
+    steps = {key: [s for _, s in pairs] for key, pairs in stored.items()}
     events = []
     for row in report["requests"]:
         if row["closed"] or "withdrawn_on" in row:
@@ -67,7 +71,33 @@ def _request_events(root, law_base):
         if row["stated_production_date"]:
             events.append({"uid": _uid("stated-production", row), "day": row["stated_production_date"],
                            "summary": "Records request: agency's stated production date — " + _label(row) + counted})
+        for index, step in _pending_downloads(stored.get((row["agency_id"], row["request"]), [])):
+            events.append(_stated(_uid("download-expiry", row).replace("@", f"-step{index}@", 1),
+                                  step["download_expires_on"], "download link expiry", row))
+        if row["producing"] and row["next_installment"]:
+            events.append(_stated(_uid("next-installment", row), row["next_installment"], "next installment date", row))
+        if row.get("extension_expected_on") and not answered:
+            events.append(_stated(_uid("stated-extension", row), row["extension_expected_on"], "stated extension date",
+                                  row))
     return events, report["law_package_status"]
+
+
+def _stated(uid, day, what, row):  # an agency-stated reminder: the date and label only, never a link, note or hash
+    return {"uid": uid, "day": day, "summary": f"Records request: {what} — {_label(row)} ({STATED})"}
+
+
+def _pending_downloads(steps):
+    """[(stored step index, step)] still pending, as kit_track._downloads: a later produced step that links records
+    clears the latest earlier pending one. The index is the step's place in the stored history, so it never moves."""
+    pending = []
+    for index, step in steps:
+        if step.get("kind") != "produced":
+            continue
+        if kit_track._step_records(step) and pending:
+            pending.pop()
+        if kit_track._download_pending(step):
+            pending.append((index, step))
+    return pending
 
 
 def _meeting_events(root, as_of):

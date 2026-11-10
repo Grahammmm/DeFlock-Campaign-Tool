@@ -343,10 +343,21 @@ latest step (`... older than its request's latest step (<kind> on <date>); run k
 ## Private calendar (kit-calendar)
 
 `kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import
-into your own calendar: an all-day event for each open request's provisional determination date (answered requests
-keep only the agency's stated production date) and a timed event for each staged, not cancelled meeting's verified
-written-comment deadline on or after `--as-of`. It holds ids, dates, agency or body names and the official source
-link only. It is refused inside the campaign's `public/` or `content/` and never overwrites: re-run into a new file.
+into your own calendar: all-day events for each open request's dates and a timed event for each staged, not cancelled
+meeting's verified written-comment deadline on or after `--as-of`. The request dates are the provisional determination
+date (until a determination, production or denial is recorded), the agency's stated production date, each download
+link expiry still pending (a produced step with no linked record that a later linked production has not cleared), the
+next installment date of a rolling production (the latest date stated on or after the latest partial production;
+none once production is final or denied) and the agency's stated extension date (until a determination, production
+or denial is recorded). The last three are labelled `agency-stated; provisional, not a legal deadline`; they are the
+agency's own dates, never computed, and are kept even when already past. Closed and withdrawn requests add no event.
+With no law package only the agency-stated dates are written. It holds ids, dates, agency or body names and the
+official source link only: never a download link, note, extension reason or record hash. It is refused inside the
+campaign's `public/` or `content/` and never overwrites: re-run into a new file.
+
+Each download expiry's UID names the step's place in the request's stored history, so recording later steps keeps it
+stable; undoing or hand-editing the history may change which events a new export holds. The export reflects the
+current history only and never removes events already imported (see below).
 
 Request event UIDs keep agency and request identifiers separate. Named requests now use # before the request name.
 Earlier imported named-request events use old UIDs; remove those events or import into a fresh private calendar
