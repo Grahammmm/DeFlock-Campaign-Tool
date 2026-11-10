@@ -228,7 +228,7 @@ class DoctorLaunchTests(unittest.TestCase):
 
     def payloads(self):
         """Caught OS errors whose filename, filename2, strerror and nested lists all carry private sentinels."""
-        src, dst = '/synthetic/private/SYNTHETIC-SRC-NAME', '/synthetic/private/SYNTHETIC-DST-NAME'
+        src, dst = '/synthetic/private/SYNTHETIC-SRC-NAME', '/synthetic/private/SYNTHETIC-DST-NAME'  # pragma: allowlist secret
         return [PermissionError(13, 'SYNTHETIC-STRERROR', src, None, dst),
                 FileNotFoundError(2, 'SYNTHETIC-STRERROR', src),
                 OSError('SYNTHETIC-STRERROR ' + src),
