@@ -799,7 +799,7 @@ class RecentTests(unittest.TestCase):
     def test_one_bad_new_store_does_not_hide_other_events(self):
         self.outreach()
         bad = {"bad utf-8": b'{"schema_version": 1, \xff}', "bad json": b"{not json",
-               "wrong shape": b'{"schema_version": 2}', "invalid date": None}
+               "wrong shape": b'{"schema_version": 2}', "json null": b"null", "invalid date": None}
         dated = {"actions": ("2026-11-02", "2026-11-31"), "statements": ("2026-11-03", "2026-02-30"),
                  "coverage": ("2026-11-02", "2026-13-02"), "events": ("2026-11-03T19", "2026-11-31T19"),
                  "comments": ("2026-11-02", "2026-11-00"), "corrections": ("2026-11-04", "2026-11-99"),
@@ -828,7 +828,7 @@ class RecentTests(unittest.TestCase):
                             if not line.endswith(("open " + label, "→ open " + label))
                             and not (name == "corrections" and "Correction request" in line)
                             and not (name == "updates" and "updated" in line)
-                            and not (name == "updates" and case in ("bad utf-8", "bad json") and "published" in line)]
+                            and not (name == "updates" and case in ("bad utf-8", "bad json", "json null") and "published" in line)]
                     for line in kept:
                         self.assertIn(line, out)
                     self.assertIn(f"{label.replace('_', chr(92) + '_')} unreadable", target.read_text(encoding="utf-8"))
@@ -842,6 +842,10 @@ class RecentTests(unittest.TestCase):
         self.assertEqual(out.count("content/agencies.json unreadable"), 1)  # a bad dependency is named once
         self.assertIn("Agency action: Policy adopted — ca-one  →", out)  # its validated id, never a guessed name
         self.assertIn("Official statement: Jordan Example — ca-council  →", out)
+        self.put("content/agencies.json", "null")  # a present but null dependency is as unreadable as a malformed one
+        code, out, _ = self.report("2026-11-01")
+        self.assertEqual(code, 3)
+        self.assertEqual(out.count("content/agencies.json unreadable"), 1)
 
     def test_new_inputs_never_follow_links_or_read_special_files(self):
         self.outreach()

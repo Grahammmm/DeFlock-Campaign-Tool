@@ -101,8 +101,11 @@ class _Sink:
             self.problem(area, f"{label} unreadable")
 
 
+ABSENT = object()  # no file; a present file holding JSON ``null`` parses to None and is validated like any document
+
+
 def _store(root, relative, limit=MAX_JSON_BYTES):
-    """The parsed JSON of an optional campaign file, or None when it is absent.
+    """The parsed JSON of an optional campaign file (``null`` included), or ``ABSENT`` when there is no file.
 
     The leaf is inspected without following it: a link (even dangling), folder, FIFO or other special file, a file
     over ``limit``, bad UTF-8 or bad JSON raises without opening a link target or blocking. Its folders are already
@@ -111,7 +114,7 @@ def _store(root, relative, limit=MAX_JSON_BYTES):
     try:
         info = os.lstat(path)
     except (FileNotFoundError, NotADirectoryError):
-        return None
+        return ABSENT
     if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
         raise ValueError(relative)
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
@@ -310,7 +313,7 @@ def _public_names(root, sink, area, today, cache):
         cache["names"] = {}
         try:
             document = _store(root, "content/agencies.json")
-            if document is not None:
+            if document is not ABSENT:
                 cache["names"] = {agency["agency_id"]: _clean(agency["name"])
                                   for agency in load_agencies(document, "content/agencies.json", today)}
         except _BAD:
@@ -351,7 +354,7 @@ def _coverage(root, sink, today):
     label = "content/coverage.json"
     try:
         document = _store(root, label)
-        entries = [] if document is None else coverage_entries(document, today=today)
+        entries = [] if document is ABSENT else coverage_entries(document, today=today)
     except _BAD:
         sink.unreadable(OUTREACH, label)
         return
@@ -365,7 +368,7 @@ def _campaign_events(root, sink):
     label = "content/events.json"
     try:
         document = _store(root, label)
-        events = [] if document is None else content_events.load_events(document)
+        events = [] if document is ABSENT else content_events.load_events(document)
     except _BAD:
         sink.unreadable(OUTREACH, label)
         return
@@ -379,7 +382,7 @@ def _comments(root, sink):
     label = meeting_comments.LABEL
     try:
         document = _store(root, label)
-        if document is None:
+        if document is ABSENT:
             return
         if (not isinstance(document, dict) or set(document) != {"schema_version", "comments"}
                 or document["schema_version"] != 1 or not isinstance(document["comments"], dict)):
@@ -400,7 +403,7 @@ def _correction_requests(root, sink, directory):
     label = "private/" + correction_requests.NAME
     try:
         document = _store(root, label)
-        requests = [] if document is None else correction_requests._validate_document(document)["requests"]
+        requests = [] if document is ABSENT else correction_requests._validate_document(document)["requests"]
     except _BAD:
         sink.unreadable("Findings", label)
         return
