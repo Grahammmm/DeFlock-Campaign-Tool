@@ -166,6 +166,11 @@ snapshot (`retention_days` with its checked date and source); with none it carri
 `0700`, the file `0600`; an existing file, a symlink or a non-private folder is refused and nothing is overwritten.
 It sends nothing and changes no status, coverage or export.
 
+Before anything is drafted the whole recorded history of that one request is replayed: a malformed step, a step dated
+before the sent day, out of order or in the future, an invalid transition, or a sent date outside 2000-01-01 to today
+stops drafting and nothing is written. Correct the recorded history rather than deleting steps to bypass the refusal;
+there is no automatic correction and no legal inference.
+
 ## Fee estimate reply draft (kit fee-reply)
 
 `kit fee-reply --directory D --agency ID [--request NAME] [--narrow T] [--replace]` writes a private, never-sent

@@ -381,6 +381,98 @@ class PreserveTests(unittest.TestCase):
         self.assertEqual(snapshot(self.root), before)
         self.assertFalse((self.root / "kit" / "preservation").exists())
 
+    def history(self, steps, agency=A):
+        self.sent[agency]["steps"] = steps
+        self.save_sent()
+
+    def test_invalid_target_history_refused_before_output(self):
+        ack = {"on": "2026-03-10", "kind": "acknowledged"}
+        bad = {
+            "none step": [None], "string step": ["acknowledged"],
+            "unknown kind": [{"on": "2026-03-10", "kind": "mystery"}],
+            "missing on": [{"kind": "acknowledged"}],
+            "invalid on": [{"on": "2026-13-40", "kind": "acknowledged"}],
+            "extra key": [{**ack, "bogus": 1}],
+            "illegal partial": [{**ack, "partial": True}],
+            "negative fee": [{"on": "2026-03-10", "kind": "fee_estimate", "amount_cents": -5}],
+            "bool fee": [{"on": "2026-03-10", "kind": "fee_estimate", "amount_cents": True}],
+            "missing fee": [{"on": "2026-03-10", "kind": "fee_estimate"}],
+            "before sent": [{"on": "2026-03-01", "kind": "acknowledged"}],
+            "decreasing": [{"on": "2026-03-10", "kind": "acknowledged"}, {"on": "2026-03-09", "kind": "extension"}],
+            "future step": [{"on": "2026-11-02", "kind": "acknowledged"}],
+            "duplicate ack": [ack, {**ack, "on": "2026-03-11"}],
+            "clarified without request": [{"on": "2026-03-10", "kind": "clarified"}],
+            "valid prefix then bad": [ack, {"on": "2026-03-11", "kind": "mystery"}],
+        }
+        for name, steps in bad.items():
+            self.history(steps)
+            before = snapshot(self.root)
+            with mock.patch.object(kit_preserve, "_verify_draft") as verify, \
+                    mock.patch.object(kit_preserve, "_retention") as retention, \
+                    mock.patch.object(kit_preserve, "legal_notes") as notes:
+                with self.assertRaises(ValueError, msg=name):
+                    self.make()
+            for hook in (verify, retention, notes):
+                hook.assert_not_called()
+            self.assertEqual(snapshot(self.root), before, name)
+            self.assertFalse((self.root / "kit" / "preservation").exists(), name)
+
+    def test_sent_date_bounds_include_empty_histories(self):
+        for bad in ("2026-11-02", "1999-12-31"):
+            self.sent[A]["sent_on"] = bad
+            self.save_sent()
+            self.refuses("sent date for", A)
+        for good in ("2000-01-01", "2026-11-01"):
+            self.sent[A]["sent_on"] = good
+            self.save_sent()
+            self.assertIn(good, self.letter(self.make()))
+            self.unlink()
+        self.sent[A]["sent_on"] = "2026-11-01"
+        self.history([{"on": "2026-11-01", "kind": "acknowledged"}])
+        self.assertTrue(self.make()["written"])
+
+    def test_explicit_today_reaches_replay(self):
+        self.history([{"on": "2026-11-02", "kind": "acknowledged"}])
+        self.refuses("future", A)
+        result = kit_preserve.preserve_request(self.root, A, today=date(2026, 11, 2))
+        self.assertTrue(result["written"])
+
+    def test_sibling_history_isolation(self):
+        self.send(A, "second-ask", "2026-04-01")
+        self.sent[kit_track._key(A, "second-ask")]["steps"] = [None]
+        self.save_sent()
+        before = (self.root / "kit" / "sent.json").read_bytes()
+        self.assertTrue(self.make()["written"])  # malformed sibling does not block a valid target
+        self.assertEqual((self.root / "kit" / "sent.json").read_bytes(), before)
+        self.refuses("malformed steps", A, "second-ask")  # nor does a valid main mask a bad named target
+        self.history([None])
+        self.send(A, "third", "2026-05-01")
+        self.refuses("malformed steps", A)
+
+    def test_invalid_history_cli_and_existing_private_tree(self):
+        first = self.make()
+        folder = self.root / "kit" / "preservation"
+        (folder / "sentinel.txt").write_text("keep", encoding="utf-8")
+        mode = stat.S_IMODE(folder.stat().st_mode)
+        self.history([{"on": "2026-03-01", "kind": "acknowledged"}])
+        before = snapshot(self.root)
+        members = sorted(os.listdir(folder))
+        code, out, err = run("kit-preserve", "--directory", self.root, "--agency", A, "--request", "main")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertIn("before the request was sent", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(snapshot(self.root), before)
+        self.assertEqual(sorted(os.listdir(folder)), members)
+        self.assertEqual(stat.S_IMODE(folder.stat().st_mode), mode)
+        self.assertTrue((self.root / first["written"]).exists())
+
+    def test_valid_histories_still_draft(self):
+        ref = self.letter(self.make())
+        self.unlink()
+        self.history([{"on": "2026-03-02", "kind": "acknowledged"}, {"on": "2026-03-02", "kind": "extension"}])
+        self.assertEqual(self.letter(self.make()), ref)  # valid history leaves the letter bytes unchanged
+
 
 if __name__ == "__main__":
     unittest.main()
