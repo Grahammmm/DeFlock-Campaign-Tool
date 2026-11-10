@@ -379,6 +379,208 @@ class KitCalendarTests(unittest.TestCase):
         self.assertEqual(sent.read_bytes(), before)
         self.assert_refused(out, "exists")
 
+    # --- agency-stated dates: pending download expiry, next installment, stated extension (DF1109-04) ---
+
+    def write_requests(self, requests):
+        """Synthetic kit/sent.json of {(agency, request): steps}, each sent 2026-03-02; the validators accept it."""
+        path = self.write_sent(list(requests))
+        document = json.loads(path.read_text(encoding="utf-8"))
+        for (agency, request), steps in requests.items():
+            document["requests"][kit_track._key(agency, request)]["steps"] = steps
+        path.write_text(json.dumps(document), encoding="utf-8")
+        for key, entry in kit_track.read_sent(self.root).items():
+            kit_track.validate_steps(entry, key)
+        return path
+
+    def stated(self, steps, request=("ca-example", "main"), name="s.ics", law_base=None):
+        """The new-kind events {uid: (day, summary)} of a one-request campaign, after the real export."""
+        self.write_requests({request: steps})
+        out = self.tmp / name
+        kit_calendar.calendar(self.root, out, "2026-11-01", now=NOW, law_base=law_base)
+        events = self.events(out.read_bytes())
+        self.assertEqual(len({e["UID"] for e in events}), len(events), "no duplicate UID")
+        return {e["UID"]: (e["DTSTART;VALUE=DATE"], e["SUMMARY"]) for e in events
+                if e["UID"].startswith(NEW_KINDS)}
+
+    def test_pending_download_events_follow_completion_stack(self):
+        steps = [{"kind": "acknowledged", "on": "2026-03-03"},
+                 {"kind": "produced", "on": "2026-03-06", "partial": True, "download_expires_on": "2026-03-25"},
+                 {"kind": "produced", "on": "2026-03-06", "partial": True, "download_expires_on": "2026-03-25"}]
+        uid = "download-expiry-ca-example-step{}@campaign.invalid".format
+        summary = "Records request: download link expiry — ca-example (" + STATED_ESCAPED + ")"
+        self.assertEqual(self.stated(steps, name="1.ics"),
+                         {uid(1): ("20260325", summary), uid(2): ("20260325", summary)})  # same day, two events
+        steps.append({"kind": "produced", "on": "2026-03-09", "partial": True, "records": [HASH]})  # clears step 2
+        self.assertEqual(self.stated(steps, name="2.ics"), {uid(1): ("20260325", summary)})
+        steps.append({"kind": "fee_estimate", "on": "2026-03-10", "amount_cents": 500})  # renumbers nothing
+        self.assertEqual(self.stated(steps, name="3.ics"), {uid(1): ("20260325", summary)})
+        expiring = {"kind": "produced", "on": "2026-03-12", "partial": True, "download_expires_on": "2026-03-30"}
+        self.assertEqual(sorted(self.stated([*steps, {**expiring, "records": [OTHER]}], name="4.ics")), [],
+                         "a linked step clears step 1 and never yields its own expiry")
+        self.assertEqual(sorted(self.stated([*steps, expiring], name="5.ics")), [uid(1), uid(5)])
+        status = kit_track.status(self.root)["requests"][0]["downloads_pending"]
+        self.assertEqual([d["expires_on"] for d in status], ["2026-03-25", "2026-03-30"])  # same as kit-status
+
+    def test_next_installment_uses_latest_partial_and_restated_date(self):
+        uid = "next-installment-ca-example@campaign.invalid"
+        summary = "Records request: next installment date — ca-example (" + STATED_ESCAPED + ")"
+        steps = [{"kind": "produced", "on": "2026-03-05", "partial": True, "expected_on": "2026-04-01"}]
+        self.assertEqual(self.stated(steps, name="1.ics"), {uid: ("20260401", summary)})  # a past date is kept
+        steps.append({"kind": "produced", "on": "2026-03-10", "partial": True})
+        self.assertEqual(self.stated(steps, name="2.ics"), {}, "a newer partial without a date ends the old one")
+        steps.append({"kind": "produced", "on": "2026-03-12", "partial": True, "expected_on": "2026-11-15",
+                      "download_expires_on": "2026-11-15"})
+        self.assertEqual(self.stated(steps, name="3.ics"), {
+            uid: ("20261115", summary),
+            "download-expiry-ca-example-step2@campaign.invalid": (
+                "20261115", "Records request: download link expiry — ca-example (" + STATED_ESCAPED + ")")})
+        final = self.stated([*steps, {"kind": "produced", "on": "2026-03-20", "records": [HASH]}], name="4.ics")
+        self.assertEqual(final, {}, "a final linked production ends the installment and clears the download")
+        denied = self.stated([*steps, {"kind": "denied", "on": "2026-03-20"}], name="5.ics")
+        self.assertEqual(sorted(denied), ["download-expiry-ca-example-step2@campaign.invalid"])
+
+    def test_extension_stated_date_only_before_answer(self):
+        uid = "stated-extension-ca-example@campaign.invalid"
+        summary = "Records request: stated extension date — ca-example (" + STATED_ESCAPED + ")"
+        notice = {"kind": "extension", "on": "2026-03-10", "extension_expected_on": "2026-04-20"}
+        self.assertEqual(self.stated([notice], name="1.ics"), {uid: ("20260420", summary)})
+        steps = [{"kind": "acknowledged", "on": "2026-03-09"},
+                 {**notice, "extension_reason": "synthetic backlog reason"},
+                 {"kind": "clarification_requested", "on": "2026-03-12"},
+                 {"kind": "fee_estimate", "on": "2026-03-13", "amount_cents": 500}]
+        self.assertEqual(self.stated(steps, name="2.ics"), {uid: ("20260420", summary)})
+        self.assertNotIn("backlog", (self.tmp / "2.ics").read_text(encoding="utf-8"))
+        nolaw = self.stated(steps, name="3.ics", law_base=self.tmp / "no-law-packages")
+        self.assertEqual(nolaw, {uid: ("20260420", summary)}, "the stated date, never law arithmetic")
+        for answer in ({"kind": "determination", "on": "2026-03-20"}, {"kind": "denied", "on": "2026-03-20"},
+                       {"kind": "produced", "on": "2026-03-20", "partial": True}):
+            self.assertEqual(self.stated([*steps, answer], name=answer["kind"] + ".ics"), {}, answer)
+        reason_only = {"kind": "extension", "on": "2026-03-10", "extension_reason": "synthetic backlog reason"}
+        self.assertEqual(self.stated([reason_only], name="4.ics"), {})
+
+    def test_closed_and_withdrawn_suppress_every_new_kind(self):
+        rolling = [{"kind": "produced", "on": "2026-03-05", "partial": True, "expected_on": "2026-04-01",
+                    "download_expires_on": "2026-04-02"}]
+        extended = [{"kind": "extension", "on": "2026-03-05", "extension_expected_on": "2026-04-03"}]
+        requests = {("ca-example", "main"): rolling, ("ca-example", "r-2"): extended,
+                    ("ca-other", "main"): rolling, ("ca-other", "r-2"): extended}
+        self.stage(meeting("council-1"))
+        self.write_requests(requests)
+        _, report, events = self.export("open.ics")
+        self.assertEqual(sum(e["UID"].startswith(NEW_KINDS) for e in events), 6)  # the control: all four would add
+        ending = {"ca-example": {"kind": "closed", "on": "2026-03-09"},
+                  "ca-other": {"kind": "withdrawn", "on": "2026-03-09", "note": "synthetic withdrawal reason"}}
+        self.write_requests({key: [*steps, ending[key[0]]] for key, steps in requests.items()})
+        _, report, events = self.export("ended.ics")
+        self.assertEqual([e["UID"] for e in events], ["meeting-comment-council-1@campaign.invalid"])
+        self.assertEqual(report["events"], 1)
+
+    def test_new_uids_are_repeatable_and_noncolliding(self):
+        rolling = [{"kind": "produced", "on": "2026-03-05", "partial": True, "expected_on": "2026-04-01",
+                    "download_expires_on": "2026-04-01"}]
+        self.write_requests({("ca-example-records", "main"): rolling, ("ca-example", "records"): rolling,
+                             ("ca-example", "records-1"): rolling})
+        _, report, events = self.export("one.ics")
+        self.assertEqual(report["events"], 6)
+        self.assertEqual([e["UID"] for e in events], [
+            "download-expiry-ca-example#records-1-step0@campaign.invalid",
+            "download-expiry-ca-example#records-step0@campaign.invalid",
+            "download-expiry-ca-example-records-step0@campaign.invalid",
+            "next-installment-ca-example#records-1@campaign.invalid",
+            "next-installment-ca-example#records@campaign.invalid",
+            "next-installment-ca-example-records@campaign.invalid"])
+        self.assertEqual(len({e["UID"] for e in events}), 6)
+        kit_calendar.calendar(self.root, self.tmp / "two.ics", "2026-11-01", now=NOW)
+        self.assertEqual((self.tmp / "one.ics").read_bytes(), (self.tmp / "two.ics").read_bytes())
+
+    def test_new_dates_without_law_and_no_private_fields(self):
+        path = self.root / "kit" / "agencies.json"
+        agencies = json.loads(path.read_text(encoding="utf-8"))
+        agencies.append({"agency_id": "ca-example", "name": "Departamento de Policía de Año Nuevo, Ñandú 🦜"})
+        path.write_text(json.dumps(agencies), encoding="utf-8")
+        self.write_requests({
+            ("ca-example", "main"): [{"kind": "produced", "on": "2026-03-05", "partial": True, "records": [HASH],
+                                      "expected_on": "2026-04-01"}],
+            ("ca-example", "dl"): [{"kind": "produced", "on": "2026-03-05", "download_expires_on": "2026-04-02",
+                                    "note": "synthetic private note words"}],
+            ("ca-example", "ext"): [{"kind": "extension", "on": "2026-03-05", "extension_expected_on": "2026-04-03",
+                                     "extension_reason": "synthetic reason words"}]})
+        report = kit_calendar.calendar(self.root, self.tmp / "nolaw.ics", "2026-11-01", now=NOW,
+                                       law_base=self.tmp / "no-law-packages")
+        self.assertEqual(report["note"], "No law package: provisional determination dates cannot be computed; "
+                                         "only agency-stated dates are included.")
+        data = (self.tmp / "nolaw.ics").read_bytes()
+        self.assertTrue(all(len(line) <= 75 for line in data.split(b"\r\n")))
+        events = self.events(data)
+        label = "Departamento de Policía de Año Nuevo\\, Ñandú 🦜"
+        self.assertEqual([(e["UID"], e["DTSTART;VALUE=DATE"], e["SUMMARY"]) for e in events], [
+            ("next-installment-ca-example@campaign.invalid", "20260401",
+             f"Records request: next installment date — {label} ({STATED_ESCAPED})"),
+            ("download-expiry-ca-example#dl-step0@campaign.invalid", "20260402",
+             f"Records request: download link expiry — {label} (dl) ({STATED_ESCAPED})"),
+            ("stated-extension-ca-example#ext@campaign.invalid", "20260403",
+             f"Records request: stated extension date — {label} (ext) ({STATED_ESCAPED})")])
+        self.assertEqual(report["events"], 3)
+        text = data.decode("utf-8").replace("\r\n ", "")
+        for secret in (HASH, HASH[:12], "synthetic private note", "synthetic reason", "records@example.org", "URL:"):
+            self.assertNotIn(secret, text)
+
+    def test_no_new_dates_preserve_prechange_bytes(self):
+        self.write_requests({
+            ("ca-example", "main"): [{"kind": "acknowledged", "on": "2026-03-03"}],
+            ("ca-example", "b-2"): [{"kind": "determination", "on": "2026-03-03", "expected_on": "2026-11-10"}],
+            ("ca-other", "main"): [{"kind": "produced", "on": "2026-03-04", "records": [HASH],
+                                    "download_expires_on": "2026-03-20"}],
+            ("ca-third", "main"): [{"kind": "extension", "on": "2026-03-04", "extension_reason": "synthetic reason"}]})
+        self.stage(meeting("council-1"))
+        kit_calendar.calendar(self.root, self.tmp / "golden.ics", "2026-11-01", now=NOW)
+        self.assertEqual((self.tmp / "golden.ics").read_bytes(), PRECHANGE)
+
+    def test_bad_input_writes_nothing_and_export_writes_only_the_target(self):
+        def snapshot():
+            return {str(p): (p.read_bytes() if p.is_file() else None, stat.S_IMODE(p.lstat().st_mode))
+                    for p in sorted(self.tmp.rglob("*"))}
+        rolling = [{"kind": "produced", "on": "2026-03-05", "partial": True, "expected_on": "2026-04-01",
+                    "download_expires_on": "2026-04-02"}]
+        sent = self.write_requests({("ca-example", "main"): rolling})
+        before = snapshot()
+        out, _ = self.calendar("ok.ics")
+        after = snapshot()
+        self.assertEqual(stat.S_IMODE(after.pop(str(out))[1]), 0o600)
+        self.assertEqual(after, before)
+        for bad in ({"download_expires_on": "2026-03-01"}, {"download_expires_on": "2026-02-30"},
+                    {"expected_on": "soon"}, {"partial": "yes"}):
+            document = json.loads(sent.read_text(encoding="utf-8"))
+            document["requests"]["ca-example"]["steps"] = [{**rolling[0], **bad}]
+            sent.write_text(json.dumps(document), encoding="utf-8")
+            self.assert_refused(self.tmp / "bad.ics", "malformed steps")
+        extension = {"kind": "acknowledged", "on": "2026-03-05", "extension_expected_on": "2026-04-03"}
+        document["requests"]["ca-example"]["steps"] = [extension]
+        sent.write_text(json.dumps(document), encoding="utf-8")
+        self.assert_refused(self.tmp / "bad.ics", "malformed steps")
+        self.assert_refused(out, "exists")
+
+
+NEW_KINDS = ("download-expiry-", "next-installment-", "stated-extension-")
+STATED_ESCAPED = "agency-stated\\; provisional\\, not a legal deadline"
+OTHER = "dcba" * 16
+PRECHANGE = (  # main's export of test_no_new_dates_preserve_prechange_bytes before DF1109-04, captured unchanged
+    b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//DeFlock Campaign Tool//kit calendar//EN\r\nCALSCALE:GREGORIAN\r\n"
+    b"BEGIN:VEVENT\r\nUID:determination-ca-example@campaign.invalid\r\nDTSTAMP:20261101T120000Z\r\n"
+    b"DTSTART;VALUE=DATE:20260312\r\n"
+    b"SUMMARY:Records request: provisional determination date \xe2\x80\x94 ca-example\r\nEND:VEVENT\r\n"
+    b"BEGIN:VEVENT\r\nUID:determination-ca-third@campaign.invalid\r\nDTSTAMP:20261101T120000Z\r\n"
+    b"DTSTART;VALUE=DATE:20260326\r\n"
+    b"SUMMARY:Records request: provisional determination date \xe2\x80\x94 ca-third\r\nEND:VEVENT\r\n"
+    b"BEGIN:VEVENT\r\nUID:stated-production-ca-example#b-2@campaign.invalid\r\nDTSTAMP:20261101T120000Z\r\n"
+    b"DTSTART;VALUE=DATE:20261110\r\n"
+    b"SUMMARY:Records request: agency's stated production date \xe2\x80\x94 ca-example (b-\r\n 2)\r\nEND:VEVENT\r\n"
+    b"BEGIN:VEVENT\r\nUID:meeting-comment-council-1@campaign.invalid\r\nDTSTAMP:20261101T120000Z\r\n"
+    b"DTSTART:20261111T010000Z\r\nDURATION:PT0M\r\n"
+    b"SUMMARY:Written comment deadline \xe2\x80\x94 Example City Council\r\n"
+    b"URL:https://example.invalid/agenda/council-1\r\nEND:VEVENT\r\n"
+    b"END:VCALENDAR\r\n")
+
 
 if __name__ == "__main__":
     unittest.main()
