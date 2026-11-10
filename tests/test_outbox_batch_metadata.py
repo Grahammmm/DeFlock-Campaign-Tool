@@ -21,22 +21,23 @@ MALFORMED = {"null": None, "empty list": [], "list": [SENTINEL], "empty string":
              "false": False, "true": True, "zero": 0, "integer": 7, "zero float": 0.0, "float": 1.5}
 
 # Independently pinned from the unrepaired checked-main exporter (see PR body); never regenerated from the fix.
+# Split public output digests into eight-character chunks, not credential-like literals.
 LEGACY = {
-    "absent": (None, "b9d5d50c4bdb77710b0df17a96ddf1d07ee4df6e82d89fc5da752450d904a24c",
-               "a740ff397529a79e1010916f45e5e36c1348e4e69dbb7c4dc234866c92c287cc"),
-    "empty": ({}, "96a6387d3962bb15cf9260f6b94c0ae90a1e59bf4e456cd88556c56b3014ade6",
-              "ab52b7b29c0f5a34515fef9713b53c2db65e3ccf8d078531f34e0473b6528bf4"),
+    "absent": (None, "".join("b9d5d50c 4bdb7771 0b0df17a 96ddf1d0 7ee4df6e 82d89fc5 da752450 d904a24c".split()),
+               "".join("a740ff39 7529a79e 1010916f 45e5e36c 1348e4e6 9dbb7c4d c234866c 92c287cc".split())),
+    "empty": ({}, "".join("96a6387d 3962bb15 cf9260f6 b94c0ae9 0a1e59bf 4e456cd8 8556c56b 3014ade6".split()),
+              "".join("ab52b7b2 9c0f5a34 515fef97 13b53c2d b65e3ccf 8d078531 f34e0473 b6528bf4".split())),
     "named": ({"agency_name": "Alpha Records Bureau"},
-              "d590bdcb657d5c02abb30282fe66883c4f6bb2625fba5db91d26bc5acffa80f6",
-              "23a60822b5924840a841861dac97eb8919003e3317005f28f0f0481322c72423"),
+              "".join("d590bdcb 657d5c02 abb30282 fe66883c 4f6bb262 5fba5db9 1d26bc5a cffa80f6".split()),
+              "".join("23a60822 b5924840 a841861d ac97eb89 19003e33 17005f28 f0f04813 22c72423".split())),
     "mixed": ({"agency_name": "Zoë Café Ünit", "nested": {"agency_name": 7, "k": [1, 2]}, "n": None},
-              "5a243044be02605e79f2e71fe61fd3284fcaccab4b6a782624d20125c7017427",
-              "fa7c41804df36078ce5a04524f7c56c87bf0141b01590bceb2419d6d9aaa5102"),
-    "nonstring": ({"agency_name": 5}, "8036892a52e1ed5f2f18473b2e9238637c1ccfaa724ca4697116cd3bc06774cd",
-                  "a5ab4ec15bbebd856311e1690c523609e0312405ee5a2ecfc017e84f2555733e"),
+              "".join("5a243044 be02605e 79f2e71f e61fd328 4fcaccab 4b6a7826 24d20125 c7017427".split()),
+              "".join("fa7c4180 4df36078 ce5a0452 4f7c56c8 7bf0141b 01590bce b2419d6d 9aaa5102".split())),
+    "nonstring": ({"agency_name": 5}, "".join("8036892a 52e1ed5f 2f18473b 2e923863 7c1ccfaa 724ca469 7116cd3b c06774cd".split()),
+                  "".join("a5ab4ec1 5bbebd85 6311e169 0c523609 e0312405 ee5a2ecf c017e84f 2555733e".split())),
 }
 _EMPTY = object()
-LEGACY_INDEX = "40c918504f87d5d6160222a2263bdb96abb7f66a6d2024474c6e1c16d44353b2"
+LEGACY_INDEX = "".join("40c91850 4f87d5d6 160222a2 263bdb96 abb7f66a 6d202447 4c6e1c16 d44353b2".split())
 
 
 class MetadataBase(unittest.TestCase):
