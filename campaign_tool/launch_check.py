@@ -20,6 +20,13 @@ from .site import build_site
 from .site_check import check_links
 
 INIT = "Run content init (DF2237-06) or create content/"
+# A caught OSError (including shutil.Error from staging) carries filenames, absolute source/destination paths and OS
+# text. Its arguments are never inspected or rendered: each stage reports one fixed message instead, so local paths
+# cannot reach the checklist JSON. ValueError/ContentError messages stay as validators wrote them.
+LOAD_FS = "Content files could not be read (filesystem error)"
+EVIDENCE_FS = "Evidence inputs could not be read (filesystem error)"
+BUILD_FS = "Temporary build could not be checked (filesystem error)"
+CONTACTS_FS = "kit/agencies.json could not be read (filesystem error)"
 NOTE = ("Offline readiness only. This is not a launch approval; deployment "
         "(docs/CLOUDFLARE.md) and human review remain.")
 
@@ -53,7 +60,9 @@ def launch_checks(root, contact_max_age_days=365, today=None):
     model, error = None, None
     try:
         model = load_content(root, today=today)
-    except (ValueError, OSError) as exc:
+    except OSError:
+        error = LOAD_FS
+    except ValueError as exc:
         error = str(exc)
     site = model["site"] if model else {}
     for name, action in (("base_url", "Set site.json base_url to the public https address"),
@@ -76,7 +85,9 @@ def launch_checks(root, contact_max_age_days=365, today=None):
         problems = evidence_report(root)["problems"]
         add("evidence", "fail" if problems else "ok", len(problems),
             "Register and ingest the cited evidence" if problems else None)
-    except (ValueError, OSError) as exc:
+    except OSError:
+        add("evidence", "fail", EVIDENCE_FS, "Fix evidence inputs and run evidence check")
+    except ValueError as exc:
         add("evidence", "fail", exc, "Fix evidence inputs and run evidence check")
     if absent:
         for name in ("build_check", "links"):
@@ -110,7 +121,8 @@ def launch_checks(root, contact_max_age_days=365, today=None):
                 "Fix broken internal links and run build --check" if broken else None)
         except (ValueError, OSError) as exc:
             if not any(row["check"] == "build_check" for row in rows):
-                add("build_check", "fail", exc, "Fix content errors and run build --check")
+                add("build_check", "fail", BUILD_FS if isinstance(exc, OSError) else exc,
+                    "Fix content errors and run build --check")
             add("links", "fail", "Temporary build could not be checked", "Fix the temporary build and recheck links")
         finally:
             if scratch is not None:
@@ -126,7 +138,9 @@ def launch_checks(root, contact_max_age_days=365, today=None):
         add("verified_contacts", "todo" if stale or not verified else "ok",
             f"{len(stale)} stale; verified selected contact {'present' if verified else 'absent'}",
             "Re-check selected agency contacts on official sites (kit-verify-agency)" if stale or not verified else None)
-    except (ValueError, OSError) as exc:
+    except OSError:
+        add("verified_contacts", "fail", CONTACTS_FS, "Fix kit/agencies.json and verify selected contacts")
+    except ValueError as exc:
         add("verified_contacts", "fail", exc, "Fix kit/agencies.json and verify selected contacts")
     law = law_package_report(read_config(root))
     status = law["law_package_status"]

@@ -218,6 +218,196 @@ class DoctorLaunchTests(unittest.TestCase):
                 self.assertEqual(self.checks()['law_package']['state'], state)
 
 
+    # --- RF0645-4: caught filesystem diagnostics stay private -------------------------------------------------
+    LOAD_FS = 'Content files could not be read (filesystem error)'
+    EVIDENCE_FS = 'Evidence inputs could not be read (filesystem error)'
+    BUILD_FS = 'Temporary build could not be checked (filesystem error)'
+    CONTACT_FS = 'kit/agencies.json could not be read (filesystem error)'
+    LINKS_DETAIL = 'Temporary build could not be checked'
+    SENTINELS = ('SYNTHETIC-SRC-NAME', 'SYNTHETIC-DST-NAME', 'SYNTHETIC-STRERROR', 'SYNTHETIC-NESTED')
+
+    def payloads(self):
+        """Caught OS errors whose filename, filename2, strerror and nested lists all carry private sentinels."""
+        src, dst = '/synthetic/private/SYNTHETIC-SRC-NAME', '/synthetic/private/SYNTHETIC-DST-NAME'  # pragma: allowlist secret
+        return [PermissionError(13, 'SYNTHETIC-STRERROR', src, None, dst),
+                FileNotFoundError(2, 'SYNTHETIC-STRERROR', src),
+                OSError('SYNTHETIC-STRERROR ' + src),
+                shutil.Error([(src, dst, 'SYNTHETIC-NESTED ' + src)])]
+
+    def assert_private(self, value, *extra):
+        text = json.dumps(value)
+        for secret in self.SENTINELS + (str(self.base), 'PermissionError', 'FileNotFoundError', 'shutil', 'Errno',
+                                       tempfile.gettempdir(), 'campaign-launch-') + extra:
+            self.assertNotIn(secret, text)
+
+    def fifo_campaign(self):
+        fifo = self.root / 'content/SYNTHETIC-SRC-NAME'
+        os.mkfifo(fifo)  # an unrecognized special file the content loader ignores but copytree refuses
+        self.assertTrue(stat.S_ISFIFO(os.lstat(fifo).st_mode))
+        return fifo
+
+    def track_scratch(self):
+        created, original = [], tempfile.mkdtemp
+
+        def scratch(*args, **kwargs):
+            path = original(*args, **kwargs)
+            created.append(Path(path))
+            return path
+
+        return created, patch('campaign_tool.launch_check.tempfile.mkdtemp', side_effect=scratch)
+
+    def test_real_fifo_copy_failure_withholds_private_paths(self):
+        fifo = self.fifo_campaign()
+        self.assertIsNotNone(load_content(self.root, today=TODAY))  # the real loader admits the campaign
+        before = state(self.root)
+        created, tracking = self.track_scratch()
+        with tracking:
+            report = launch_checks(self.root, today=TODAY)
+        rows = {r['check']: r for r in report['checks']}
+        self.assertEqual([r['check'] for r in report['checks']], ORDER)
+        self.assertEqual((report['total'], report['passed']), (9, sum(r['state'] == 'ok' for r in report['checks'])))
+        self.assertEqual((rows['build_check']['state'], rows['build_check']['detail'],
+                          rows['build_check']['next_action']),
+                         ('fail', self.BUILD_FS, 'Fix content errors and run build --check'))
+        self.assertEqual((rows['links']['state'], rows['links']['detail']), ('fail', self.LINKS_DETAIL))
+        self.assertEqual([r['check'] for r in report['checks']].count('build_check'), 1)
+        self.assert_private(report)
+        self.assertTrue(stat.S_ISFIFO(os.lstat(fifo).st_mode))
+        self.assertEqual(state(self.root), before)
+        self.assertEqual(len(created), 1)
+        self.assertTrue(all(not p.exists() for p in created))
+
+    def test_cli_launch_filesystem_failure_is_safe_json(self):
+        self.fifo_campaign()
+        before = state(self.root)
+        result = subprocess.run([sys.executable, '-B', '-m', 'campaign_tool', 'doctor', '--launch',
+                                 '--directory', str(self.root)], cwd=REPO, capture_output=True, text=True, timeout=60)
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        document = json.loads(result.stdout)
+        launch = document['launch']
+        self.assertEqual([r['check'] for r in launch['checks']], ORDER)
+        self.assertEqual(launch['total'], 9)
+        rows = {r['check']: r for r in launch['checks']}
+        self.assertEqual((rows['build_check']['state'], rows['build_check']['detail']), ('fail', self.BUILD_FS))
+        self.assertEqual(launch['passed'], sum(r['state'] == 'ok' for r in launch['checks']))
+        for key in ('production_ready', 'public_deployment_checked', 'safe_to_send_automatically'):
+            self.assertIs(document[key], False)
+        self.assert_private(launch)
+        self.assertEqual(state(self.root), before)
+
+    def test_initial_load_oserror_is_sanitized_before_error_fanout(self):
+        for exc in self.payloads():
+            with self.subTest(exc=type(exc).__name__):
+                created, tracking = self.track_scratch()
+                with patch('campaign_tool.launch_check.load_content', side_effect=exc), tracking:
+                    report = launch_checks(self.root, today=TODAY)
+                rows = {r['check']: r for r in report['checks']}
+                self.assertEqual([r['check'] for r in report['checks']], ORDER)
+                for name in ('base_url', 'contact_email', 'signup', 'published_findings', 'build_check'):
+                    self.assertEqual((rows[name]['state'], rows[name]['detail']), ('fail', self.LOAD_FS), name)
+                self.assertEqual(rows['base_url']['next_action'], 'Fix content validation errors')
+                self.assertEqual(rows['build_check']['next_action'], 'Fix content errors and run build --check')
+                self.assertEqual((rows['links']['state'], rows['links']['detail']), ('fail', self.LINKS_DETAIL))
+                self.assertEqual(created, [])  # no scratch staging after the original admission failed
+                self.assert_private(report)
+                shutil.rmtree(self.root / 'content')  # absent content keeps its existing todo precedence
+                with patch('campaign_tool.launch_check.load_content', side_effect=exc):
+                    absent = {r['check']: r for r in launch_checks(self.root, today=TODAY)['checks']}
+                for name in ('base_url', 'signup', 'published_findings', 'build_check', 'links'):
+                    self.assertEqual((absent[name]['state'], absent[name]['detail']), ('todo', 'Content absent'))
+                self.setUp()
+
+    def test_evidence_and_contacts_oserrors_have_stage_specific_safe_details(self):
+        for exc in self.payloads():
+            with self.subTest(exc=type(exc).__name__):
+                with patch('campaign_tool.launch_check.evidence_report', side_effect=exc):
+                    rows = self.checks()
+                self.assertEqual((rows['evidence']['state'], rows['evidence']['detail'],
+                                  rows['evidence']['next_action']),
+                                 ('fail', self.EVIDENCE_FS, 'Fix evidence inputs and run evidence check'))
+                self.assert_private(rows)
+                with patch('campaign_tool.launch_check.stale_contacts', side_effect=exc):
+                    rows = self.checks()
+                self.assertEqual((rows['verified_contacts']['state'], rows['verified_contacts']['detail'],
+                                  rows['verified_contacts']['next_action']),
+                                 ('fail', self.CONTACT_FS, 'Fix kit/agencies.json and verify selected contacts'))
+                self.assert_private(rows)
+        # The JSON-read seam after stale_contacts returns normally: a real read error on a directory.
+        path = self.root / 'kit/agencies.json'
+        path.unlink()
+        path.mkdir()
+        with patch('campaign_tool.launch_check.stale_contacts', return_value=[]):
+            rows = self.checks()
+        self.assertEqual((rows['verified_contacts']['state'], rows['verified_contacts']['detail']),
+                         ('fail', self.CONTACT_FS))
+        self.assert_private(rows)
+        self.assertEqual(rows['evidence']['state'], 'ok')
+
+    def test_rehearsal_oserror_matrix_withholds_all_payloads(self):
+        seams = {'copy': 'campaign_tool.launch_check.shutil.copytree', 'build': 'campaign_tool.launch_check.build_site',
+                 'scan': 'campaign_tool.cli.check_public_tree'}
+        for exc in self.payloads():
+            for seam, target in seams.items():
+                with self.subTest(exc=type(exc).__name__, seam=seam):
+                    created, tracking = self.track_scratch()
+                    with patch(target, side_effect=exc), tracking:
+                        report = launch_checks(self.root, today=TODAY)
+                    rows = {r['check']: r for r in report['checks']}
+                    self.assertEqual([r['check'] for r in report['checks']], ORDER)
+                    self.assertEqual((rows['build_check']['state'], rows['build_check']['detail'],
+                                      rows['build_check']['next_action']),
+                                     ('fail', self.BUILD_FS, 'Fix content errors and run build --check'))
+                    self.assertEqual((rows['links']['state'], rows['links']['detail']), ('fail', self.LINKS_DETAIL))
+                    self.assert_private(report)
+                    self.assertGreaterEqual(len(created), 1)  # the rehearsal's scratch, plus any the seam makes itself
+                    self.assertTrue(all(not p.exists() for p in created))
+            with self.subTest(exc=type(exc).__name__, seam='link scan'):  # build completed: one build row, kept
+                with patch('campaign_tool.launch_check.check_links', side_effect=exc):
+                    report = launch_checks(self.root, today=TODAY)
+                rows = {r['check']: r for r in report['checks']}
+                self.assertEqual([r['check'] for r in report['checks']], ORDER)
+                self.assertEqual((rows['build_check']['state'], rows['build_check']['detail']), ('ok', '0'))
+                self.assertEqual((rows['links']['state'], rows['links']['detail']), ('fail', self.LINKS_DETAIL))
+                self.assert_private(report)
+            with self.subTest(exc=type(exc).__name__, seam='allocation'):
+                with patch('campaign_tool.launch_check.tempfile.mkdtemp', side_effect=exc), \
+                        patch('campaign_tool.launch_check.shutil.rmtree') as remove:
+                    report = launch_checks(self.root, today=TODAY)
+                rows = {r['check']: r for r in report['checks']}
+                self.assertEqual((rows['build_check']['state'], rows['build_check']['detail']), ('fail', self.BUILD_FS))
+                self.assertEqual((rows['links']['state'], rows['links']['detail']), ('fail', self.LINKS_DETAIL))
+                remove.assert_not_called()  # nothing was allocated, so no unowned path is cleaned up
+                self.assert_private(report)
+
+    def test_valueerror_messages_and_hash_shortening_remain_useful(self):
+        self.site['bad_key'] = True
+        self.write('content/site.json', self.site)
+        detail = self.checks()['build_check']['detail']
+        self.assertIn('site.json', detail)
+        self.assertIn('bad_key', detail)
+        digest = hashlib.sha256(b'synthetic-hash').hexdigest()
+        with patch('campaign_tool.launch_check.load_content', side_effect=ValueError(f'unknown source {digest}')):
+            rows = {r['check']: r for r in launch_checks(self.root, today=TODAY)['checks']}
+        self.assertEqual(rows['base_url']['detail'], f'unknown source {digest[:12]}')
+        self.assertEqual(rows['build_check']['detail'], f'unknown source {digest[:12]}')
+        with patch('campaign_tool.launch_check.evidence_report', side_effect=ValueError(f'bad {digest}')):
+            self.assertEqual(self.checks()['evidence']['detail'], f'bad {digest[:12]}')
+        with patch('campaign_tool.launch_check.stale_contacts', return_value=None):
+            self.assertEqual(self.checks()['verified_contacts']['detail'], 'kit/agencies.json is unreadable')
+
+    def test_success_and_filesystem_refusal_leave_campaign_and_public_tree_unchanged(self):
+        (self.root / 'public').mkdir()
+        (self.root / 'public/sentinel.bin').write_bytes(b'synthetic\x00\xff')
+        before = state(self.root)
+        rows = self.checks()
+        self.assertEqual((rows['build_check']['detail'], rows['links']['detail'], rows['evidence']['detail']),
+                         ('0', '0', '0'))
+        self.assertEqual(state(self.root), before)
+        with patch('campaign_tool.launch_check.shutil.copytree', side_effect=self.payloads()[3]):
+            self.checks()
+        self.assertEqual(state(self.root), before)
+
+
 def state(root):
     """Every path under ``root`` with its mode and bytes (link target for a symlink); links are never followed."""
     seen = {}
