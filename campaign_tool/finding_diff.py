@@ -5,6 +5,7 @@ import difflib
 import json
 from collections import Counter
 
+from .content import SHA256
 from .findings import _real_dir, load_draft
 
 FIELDS = ("title", "summary", "body_md", "sources", "classification", "confidence", "limitations", "counterevidence",
@@ -29,7 +30,9 @@ def load(path):
     if not isinstance(sources, list) or not all(isinstance(s, dict) and isinstance(s.get("sha256"), str)
                                                 for s in sources):
         raise ValueError(f"{path}: every entry of 'sources' must be an object with a 'sha256' string")
-    for index, source in enumerate(sources):  # raw page: same contract as content.load_finding (never coerced)
+    for index, source in enumerate(sources):
+        if not SHA256.fullmatch(source["sha256"]):
+            raise ValueError(f"{path}: sources[{index}].sha256: must be 64 lowercase hex characters")
         if "page" in source and not (type(source["page"]) is int and 1 <= source["page"] <= MAX_PAGE):
             raise ValueError(f"{path}: sources[{index}].page: must be a whole number from 1 to {MAX_PAGE}")
     return document
