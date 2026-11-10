@@ -1,10 +1,15 @@
 """`recent`: private campaign-wide "what changed" report for a period (read-only).
 
-Lists requests sent and agency steps recorded, records added to the library, findings reviewed, published, corrected or
-withdrawn, and meetings held and their recorded outcomes, each with its stored date and the command that shows more.
+Lists requests sent, agency steps and agency actions recorded, records added to the library, findings reviewed,
+published, updated, corrected or withdrawn, correction requests received and decided, meetings held, their recorded
+outcomes and comments submitted by hand, and (DF1109-05, in an ``Outreach`` area printed only when it has something)
+official statements, press coverage and campaign events, each with its stored date and the command that shows more.
 Only dates that are stored in a campaign file are used (never file times); an event without one is counted, not listed.
-Shows agency names, finding titles and 12-character record prefixes only: never request text, addresses, notes,
-reviewer names or full hashes. The only write is an explicit new ``--md`` file. Nothing is sent or published.
+Shows agency names, finding titles, official names, outlets, event titles, meeting ids and 12-character record
+prefixes only: never request text, addresses, notes, quotes, summaries, requesters, reviewer names or full hashes.
+Each optional store is read on its own, without following links, opening special files or reading past its size
+limit; one that cannot be read or validated is named ``<file> unreadable`` (exit 3) and hides nothing else.
+The only write is an explicit new ``--md`` file. Nothing is sent or published.
 A linked or non-directory input folder (``INPUT_DIRECTORIES``) is refused before anything is collected or written;
 a missing folder stays an empty input.
 """
@@ -16,10 +21,13 @@ import stat
 from datetime import date, timedelta
 from pathlib import Path
 
-from . import findings, kit, kit_track
-from .content import _read_json, load_meeting, load_sources
+from . import (agency_actions, content_events, content_statements, correction_requests, finding_updates, findings, kit,
+               kit_track, labels, meeting_comments)
+from .content import MAX_JSON_BYTES, _read_json, coverage_entries, load_agencies, load_meeting, load_sources
 
 AREAS = ("Requests", "Records", "Findings", "Meetings")
+OUTREACH = "Outreach"  # listed after AREAS only when it has an event or a problem, so older reports keep their bytes
+_BAD = (ValueError, TypeError, KeyError, AttributeError, OSError, RecursionError)  # never echoed: only the file is named
 MAX_DAYS, PREFIX_CHARS, PREFIXES_SHOWN, TEXT_CHARS = 366, 12, 8, 120
 INPUT_DIRECTORIES = ("kit", "content", "private", "content/findings", "content/meetings", "private/drafts",
                      "private/withdrawn", "private/reviews")
@@ -86,6 +94,37 @@ class _Sink:
 
     def problem(self, area, text):
         self.problems.append((area, text))
+
+    def unreadable(self, area, label):
+        """Name an unreadable store once (a new collector never repeats a line already given for the same file)."""
+        if (area, f"{label} unreadable") not in self.problems:
+            self.problem(area, f"{label} unreadable")
+
+
+ABSENT = object()  # no file; a present file holding JSON ``null`` parses to None and is validated like any document
+
+
+def _store(root, relative, limit=MAX_JSON_BYTES):
+    """The parsed JSON of an optional campaign file (``null`` included), or ``ABSENT`` when there is no file.
+
+    The leaf is inspected without following it: a link (even dangling), folder, FIFO or other special file, a file
+    over ``limit``, bad UTF-8 or bad JSON raises without opening a link target or blocking. Its folders are already
+    checked by ``_validate_input_directories``."""
+    path = Path(root, relative)
+    try:
+        info = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return ABSENT
+    if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+        raise ValueError(relative)
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ValueError(relative)
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(relative)
+    return json.loads(data.decode("utf-8"))
 
 
 def _names(root, sink):
@@ -159,7 +198,7 @@ def _documents(root, sub, what, limit=findings.MAX_DRAFT_BYTES):
     return found
 
 
-def _findings(root, sink, directory):
+def _findings(root, sink, directory, today):
     command = f"finding status --directory {directory}"
     try:
         rows = findings.status_rows(root, draft_paths=True)
@@ -198,6 +237,7 @@ def _findings(root, sink, directory):
                         sink.undated += 1
                     else:
                         sink.add("Findings", day, f"Finding corrected: {title}", command)
+                _updates(sink, document, f"{sub}/{path.name}", title, command, today)
             if sub == "private/withdrawn":
                 withdrawn = document.get("withdrawn")
                 day = _day_of(withdrawn.get("at")) if isinstance(withdrawn, dict) else None
@@ -250,6 +290,131 @@ def _meetings(root, sink, today):
                 sink.add("Meetings", day, f"Outcome recorded for {body} ({ident}): {outcome['result']}", command)
 
 
+# --- DF1109-05: the dated stores added after `recent` shipped. Each is read on its own and validated by its canonical
+# checker; only the stored day and the fields named in docs/RECENT.md are projected.
+
+def _updates(sink, document, label, title, command, today):
+    """``Finding updated: <title>`` per stored update day (repeats kept); never the note."""
+    if "updates" not in document:
+        return
+    try:
+        updates = finding_updates.load_updates(document["updates"], document.get("published_at"), today=today,
+                                               label="updates")
+    except _BAD:
+        sink.unreadable("Findings", label)
+        return
+    for update in updates:
+        sink.add("Findings", date.fromisoformat(update["date"]), f"Finding updated: {title}", command)
+
+
+def _public_names(root, sink, area, today, cache):
+    """{agency_id: name} from content/agencies.json, read once and only when needed; {} (ids shown) when absent or bad."""
+    if "names" not in cache:
+        cache["names"] = {}
+        try:
+            document = _store(root, "content/agencies.json")
+            if document is not ABSENT:
+                cache["names"] = {agency["agency_id"]: _clean(agency["name"])
+                                  for agency in load_agencies(document, "content/agencies.json", today)}
+        except _BAD:
+            sink.unreadable(area, "content/agencies.json")
+    return cache["names"]
+
+
+def _actions(root, sink, today, cache):
+    """``Agency action: <kind label> — <agency>`` on ``on``; never as_stated, source_url or checked_on."""
+    try:
+        rows = agency_actions.read_actions(root, None, today=today) or []
+    except _BAD:
+        sink.unreadable("Requests", agency_actions.LABEL)
+        return
+    for row in rows:
+        names = _public_names(root, sink, "Requests", today, cache)
+        kind = labels.DEFAULTS[f"agency.action_kind_{row['kind']}"]
+        sink.add("Requests", date.fromisoformat(row["on"]), f"Agency action: {kind} — "
+                 + (names.get(row["agency_id"]) or row["agency_id"]), "open " + shlex.quote(agency_actions.LABEL))
+
+
+def _statements(root, sink, today, cache):
+    """``Official statement: <official> — <body>`` on ``said_on``; never the quote, context note, time or source."""
+    label = "content/" + content_statements.FILE
+    try:
+        rows = content_statements.read_statements(root, None, today) or []
+    except _BAD:
+        sink.unreadable(OUTREACH, label)
+        return
+    for row in rows:
+        names = _public_names(root, sink, OUTREACH, today, cache)
+        sink.add(OUTREACH, date.fromisoformat(row["said_on"]), f"Official statement: {_clean(row['official'])} — "
+                 + (names.get(row["agency_id"]) or row["agency_id"]), "open " + shlex.quote(label))
+
+
+def _coverage(root, sink, today):
+    """``Press coverage: <outlet>`` on ``published_on``; never the headline, URL or linked findings."""
+    label = "content/coverage.json"
+    try:
+        document = _store(root, label)
+        entries = [] if document is ABSENT else coverage_entries(document, today=today)
+    except _BAD:
+        sink.unreadable(OUTREACH, label)
+        return
+    for entry in entries:
+        sink.add(OUTREACH, date.fromisoformat(entry["published_on"]), f"Press coverage: {_clean(entry['outlet'])}",
+                 "open " + shlex.quote(label))
+
+
+def _campaign_events(root, sink):
+    """``Campaign event: <title>`` on the written day of ``starts_at`` (no stored announcement date exists)."""
+    label = "content/events.json"
+    try:
+        document = _store(root, label)
+        events = [] if document is ABSENT else content_events.load_events(document)
+    except _BAD:
+        sink.unreadable(OUTREACH, label)
+        return
+    for event in events:
+        sink.add(OUTREACH, _day_of(event["starts_at"]), f"Campaign event: {_clean(event['title'])}",
+                 "open " + shlex.quote(label))
+
+
+def _comments(root, sink):
+    """``Comment submitted by hand: <meeting id>`` on ``on``; never the channel, letter hash or bytes, or recorded_at."""
+    label = meeting_comments.LABEL
+    try:
+        document = _store(root, label)
+        if document is ABSENT:
+            return
+        if (not isinstance(document, dict) or set(document) != {"schema_version", "comments"}
+                or document["schema_version"] != 1 or not isinstance(document["comments"], dict)):
+            raise ValueError(label)
+        entries = [(key, meeting_comments._entry(value, key)) for key, value in document["comments"].items()]
+        if not all(meeting_comments.MEETING_ID.fullmatch(key) for key, _ in entries):
+            raise ValueError(label)
+    except _BAD:
+        sink.unreadable("Meetings", label)
+        return
+    for key, entry in entries:
+        sink.add("Meetings", date.fromisoformat(entry["on"]), f"Comment submitted by hand: {key}",
+                 "open " + shlex.quote(label))
+
+
+def _correction_requests(root, sink, directory):
+    """Received (initial state ``open``) and decided days only; never the id, finding, summary, note or requester."""
+    label = "private/" + correction_requests.NAME
+    try:
+        document = _store(root, label)
+        requests = [] if document is ABSENT else correction_requests._validate_document(document)["requests"]
+    except _BAD:
+        sink.unreadable("Findings", label)
+        return
+    command = f"correction-request list --directory {directory}"
+    for request in requests:
+        sink.add("Findings", date.fromisoformat(request["received_on"]), "Correction request received (open)", command)
+        if request["state"] in correction_requests.STATES[1:]:
+            sink.add("Findings", date.fromisoformat(request["decided_on"]),
+                     f"Correction request decided ({request['state']})", command)
+
+
 def _validate_input_directories(root):
     """Refuse a linked or non-directory input folder before any event is collected (ValueError, exit 1).
 
@@ -277,9 +442,12 @@ def collect(root, since, until, today=None):
     first, last = window(since, until, today)
     _validate_input_directories(root)
     sink = _Sink(first, last)
-    directory = shlex.quote(str(root))
-    for read in (lambda: _requests(root, sink, directory), lambda: _records(root, sink, directory),
-                 lambda: _findings(root, sink, directory), lambda: _meetings(root, sink, today)):
+    directory, cache = shlex.quote(str(root)), {}
+    for read in (lambda: _requests(root, sink, directory), lambda: _actions(root, sink, today, cache),
+                 lambda: _records(root, sink, directory), lambda: _findings(root, sink, directory, today),
+                 lambda: _correction_requests(root, sink, directory), lambda: _meetings(root, sink, today),
+                 lambda: _comments(root, sink), lambda: _statements(root, sink, today, cache),
+                 lambda: _coverage(root, sink, today), lambda: _campaign_events(root, sink)):
         read()
     sink.events.sort(key=lambda event: event["what"])
     sink.events.sort(key=lambda event: event["on"], reverse=True)
@@ -300,7 +468,8 @@ def render(events, problems, undated, first, last, markdown=False):
     head = f"Recent changes, {first} to {last}"
     note = "Private report for the organizing team. Nothing was sent or published."
     lines = [f"# {head}", "", note] if markdown else [head + " (private; nothing was sent or published)"]
-    for area in AREAS:
+    outreach = any(event["area"] == OUTREACH for event in events) or any(where == OUTREACH for where, _ in problems)
+    for area in AREAS + ((OUTREACH,) if outreach else ()):
         lines += ["", f"## {area}" if markdown else area, ""] if markdown else ["", area]
         mine = [event for event in events if event["area"] == area]
         notes = [text for where, text in problems if where == area]
