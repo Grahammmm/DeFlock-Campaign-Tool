@@ -112,6 +112,8 @@ def scan(url, opener=None, *, platform_host_rule):
     """One bounded GET through an injectable urllib-style opener; retain no text."""
     result = {"pdf_scan": "refused", "pdf_sha256": None, "pages": 0,
               "pages_matched": [], "matched_terms": []}
+    if not isinstance(url, str):  # malformed feed value: never parsed, coerced or echoed
+        return result
     try:
         parts = urllib.parse.urlsplit(url)
         if (parts.scheme != "https" or not parts.hostname or parts.port is not None
@@ -187,6 +189,14 @@ class AgendaScans:
 
     def meeting(self, client, body, url):
         key = (client.source, client.client, body)
+        if not isinstance(url, str):
+            # A non-string feed value is refused before it is hashed into the cache key. It is never
+            # cached (no equality semantics for arbitrary JSON), so each occurrence spends one of the
+            # body's 20 attempts; past the cap nothing more is counted, as for string URLs.
+            if self.bodies[key] < 20:
+                self.bodies[key] += 1
+                self.counts["refused"] += 1
+            return {}
         cache_key = (key, url)
         if cache_key not in self.cache:
             if self.bodies[key] >= 20:
