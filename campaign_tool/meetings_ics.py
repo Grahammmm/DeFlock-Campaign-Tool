@@ -278,6 +278,11 @@ class IcsClient:
         self.report_extra = lambda found: {"skipped": dict(self.skipped)}
 
     def relevant(self, since=None, zone=None):
+        """Single-feed instant order, then legacy lexical ties (stable for identical starts).
+
+        Date-only rows retain their midnight anchor, not a verified start hour.
+        This does not govern the separate multi-source aggregate sort.
+        """
         zone = zone or ZoneInfo(DEFAULT_ZONE)
         since = since or date.today()
         data = self.opener(self.feed_url)
@@ -340,5 +345,5 @@ class IcsClient:
                 "attachments": attached,
                 "attachments_dropped": dropped,
             })
-        meetings.sort(key=lambda m: m["starts_at"])
+        meetings.sort(key=lambda m: (datetime.fromisoformat(m["starts_at"]), m["starts_at"]))
         return meetings
