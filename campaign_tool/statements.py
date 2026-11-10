@@ -28,10 +28,11 @@ from typing import NoReturn
 
 from .content import ContentError, load_officials
 from .content_statements import FILE, MAX_BYTES, ROW_KEYS, check_statements, newest_first
-from .officials_cmd import _content_fd, _identity, _parse, _read, _state
+from .officials_cmd import _content_fd, _folder_identity, _identity, _parse, _read, _state
 
 LABEL = "content/" + FILE
 UNTOUCHED = "nothing was written"
+FOLDER_CHANGED = "content/: changed while it was being edited; " + UNTOUCHED
 MAX_QUOTE_FILE = 4096  # 400 characters of at most 4 UTF-8 bytes each, with room to spare
 FLAGS = {key: "--" + key.replace("_", "-") for key in ROW_KEYS} | {"quote": "--quote-file"}
 POSITION = re.compile(r"[1-9][0-9]*", re.ASCII)
@@ -57,30 +58,46 @@ def _first(problems, rename=None) -> NoReturn:
 
 # --- reading -----------------------------------------------------------------------------------------------------
 
-def _roster(root, today, *, fresh):
-    """The validated ``{agency_id: [person, ...]}`` roster the build would use; refused when there is none."""
+def _roster(root, today, *, fresh, with_folder=False, expected_folder=None):
+    """The validated ``{agency_id: [person, ...]}`` roster the build would use; refused when there is none.
+
+    ``with_folder`` returns ``(roster, folder identity)``: the (device, inode) of the very content/ folder the site,
+    agencies and roster were read from. ``expected_folder`` refuses a roster read from any other folder."""
     try:
-        agencies, document, loaded = _state(root, today)
+        agencies, document, loaded, folder = _state(root, today, with_folder_identity=True)
+        if expected_folder is not None and folder != expected_folder:
+            raise StatementError(FOLDER_CHANGED)
         if loaded is None:
             _refuse("content/officials.json: does not exist; list the official with officials add first")
-        return load_officials(document, agencies, today, require_fresh=fresh)
+        roster = load_officials(document, agencies, today, require_fresh=fresh)
+        return (roster, folder) if with_folder else roster
     except StatementError:
         raise
     except ContentError as exc:
         raise StatementError(f"{exc}; {UNTOUCHED}") from None
 
 
-def _store(root):
-    """-> (parsed document, (identity, mode, bytes)) or (None, None) when there is no store file. Never creates it."""
+def _store(root, *, with_folder=False, expected_folder=None):
+    """-> (parsed document, (identity, mode, bytes)) or (None, None) when there is no store file. Never creates it.
+
+    ``with_folder`` appends the (device, inode) of the content/ folder descriptor the store was read from, also when
+    there is no store file. ``expected_folder`` refuses, before reading, a folder other than the one validated."""
     try:
         folder = _content_fd(root)
         try:
+            identity = _folder_identity(folder)
+            if expected_folder is not None and identity != expected_folder:
+                raise StatementError(FOLDER_CHANGED)
             found = _read(folder, FILE, LABEL)
         finally:
             os.close(folder)
         if found is None:
-            return None, None
-        return _parse(found[0], LABEL), (_identity(found[1]), stat.S_IMODE(found[1].st_mode), found[0])
+            result = (None, None)
+        else:
+            result = (_parse(found[0], LABEL), (_identity(found[1]), stat.S_IMODE(found[1].st_mode), found[0]))
+        return (*result, identity) if with_folder else result
+    except StatementError:
+        raise
     except ContentError as exc:
         raise StatementError(f"{exc}; {UNTOUCHED}") from None
 
@@ -130,14 +147,41 @@ def _dump(document):
     return data
 
 
-def _install(root, data, loaded):
+def _folder_changed(root, expected_folder):
+    """Refuse unless root/content is still, as a real folder, the one whose files were read (never follows a link)."""
+    try:
+        check = os.open(Path(root) / "content", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        raise StatementError(FOLDER_CHANGED) from None
+    try:
+        same = _folder_identity(check) == expected_folder
+    except OSError:
+        same = False
+    finally:
+        os.close(check)
+    if not same:
+        raise StatementError(FOLDER_CHANGED)
+
+
+def _install(root, data, loaded, *, expected_folder):
     """Stage ``data`` beside the store, fsync, then publish it with one rename (or a no-replace link for the first
-    file). The target must still be the very file read, with the same bytes, or still absent; every ordinary failure
-    keeps the old bytes and mode and removes the staged copy."""
-    folder = _content_fd(root)
+    file). The folder must still be the very content/ folder whose roster and store were validated (device and inode
+    only, checked before staging and again before publishing), and the target must still be the very file read, with
+    the same bytes, or still absent; every ordinary failure keeps the old bytes and mode and removes the staged copy.
+    Not a promise against a namespace change after the final check."""
+    try:
+        folder = _content_fd(root)
+    except ContentError:
+        raise StatementError(FOLDER_CHANGED) from None
     temp = f".statements-{os.getpid()}-{os.urandom(4).hex()}.tmp"
     staged = committed = False
     try:
+        try:
+            moved = _folder_identity(folder) != expected_folder
+        except OSError:
+            moved = True
+        if moved:
+            raise StatementError(FOLDER_CHANGED)
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
         staged = True
         with os.fdopen(fd, "wb") as handle:
@@ -145,6 +189,7 @@ def _install(root, data, loaded):
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        _folder_changed(root, expected_folder)
         try:
             current = _read(folder, FILE, LABEL)
         except ContentError:
@@ -182,8 +227,8 @@ def add_statement(root, *, agency_id, official, said_on, quote_file, context, so
                   recording_time=None, context_note=None, today=None):
     """Append one organizer-verified statement. -> {"action": "added", "index": its 1-based stored position}."""
     today = today or date.today()
-    roster = _roster(root, today, fresh=True)
-    document, loaded = _store(root)
+    roster, folder = _roster(root, today, fresh=True, with_folder=True)
+    document, loaded = _store(root, expected_folder=folder)
     if loaded is None:
         document = []
     else:
@@ -200,7 +245,7 @@ def add_statement(root, *, agency_id, official, said_on, quote_file, context, so
             _refuse(f"{LABEL}: the same statement is already stored at index {position}")
     document = document + [row]
     _validated(document, roster, today)
-    _install(root, _dump(document), loaded)
+    _install(root, _dump(document), loaded, expected_folder=folder)
     return {"action": "added", "index": len(document)}
 
 
@@ -218,16 +263,19 @@ def remove_statement(root, *, index, today=None):
     """Drop the row at a 1-based stored position. -> {"action": "removed", "index": that position}."""
     today = today or date.today()
     position = _position(index)
-    document, loaded = _store(root)
+    document, loaded, folder = _store(root, with_folder=True)
     if loaded is None:
         _refuse(f"{LABEL}: does not exist; there is nothing to remove")
-    roster = _roster(root, today, fresh=False) if isinstance(document, list) and document else None
+    if isinstance(document, list) and document:
+        roster = _roster(root, today, fresh=False, expected_folder=folder)
+    else:
+        roster = None
     _validated(document, roster, today)
     if position > len(document):
         _refuse(f"--index: out of range; {LABEL} has {len(document)} statement(s)")
     document = document[:position - 1] + document[position:]
     _validated(document, roster, today)
-    _install(root, _dump(document), loaded)
+    _install(root, _dump(document), loaded, expected_folder=folder)
     return {"action": "removed", "index": position}
 
 
