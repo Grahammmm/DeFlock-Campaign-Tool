@@ -468,27 +468,27 @@ PORTAL_NOTICE = "The portal is the vendor's report, not verified transfers."
 def parse_snapshot_number(field, text):
     """One typed count: ASCII digits only (leading zeros allowed), as an int; a refusal names the flag, never the value."""
     if field not in TRANSPARENCY_FIELDS:
-        raise ContentProfileError("profile.transparency: unknown number")
+        raise ContentProfileError("profile.transparency: unknown number; nothing was written")
     flag = "--" + field.replace("_", "-")
     if not isinstance(text, str) or not DIGITS.fullmatch(text):
-        raise ContentProfileError(f"{flag}: must be a whole number of ASCII digits, 0 or more")
+        raise ContentProfileError(f"{flag}: must be a whole number of ASCII digits, 0 or more; nothing was written")
     try:
         return int(text)
     except ValueError:  # beyond the interpreter's integer-string limit
-        raise ContentProfileError(f"{flag}: number is too large") from None
+        raise ContentProfileError(f"{flag}: number is too large; nothing was written") from None
 
 
 def _snapshot_numbers(numbers):
     if not isinstance(numbers, dict) or any(key not in TRANSPARENCY_FIELDS for key in numbers):
-        raise ContentProfileError("profile.transparency: only the five transparency numbers can be supplied")
+        raise ContentProfileError("profile.transparency: only the five transparency numbers can be supplied; nothing was written")
     for key, number in numbers.items():
         flag = "--" + key.replace("_", "-")
         if type(number) is not int or number < 0:
-            raise ContentProfileError(f"{flag}: must be a whole number, 0 or more")
+            raise ContentProfileError(f"{flag}: must be a whole number, 0 or more; nothing was written")
         if number.bit_length() > 13000:
-            raise ContentProfileError(f"{flag}: number is too large")
+            raise ContentProfileError(f"{flag}: number is too large; nothing was written")
         if key == "retention_days" and number > MAX_RETENTION_DAYS:
-            raise ContentProfileError(f"--retention-days: at most {MAX_RETENTION_DAYS}")
+            raise ContentProfileError(f"--retention-days: at most {MAX_RETENTION_DAYS}; nothing was written")
     return {key: numbers[key] for key in TRANSPARENCY_FIELDS if key in numbers}
 
 
