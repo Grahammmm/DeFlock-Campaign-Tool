@@ -25,7 +25,7 @@ AS_OF, ITEM_KEYS, FIXTURES = base.AS_OF, base.ITEM_KEYS, REPO_ROOT / "tests" / "
 NEW = ("finding_reply_due", "correction_request_open")
 LOG = "private/correction-requests.json"
 LOG_REASON = f"fix {LOG}: the correction request log could not be read (reason withheld: it can quote the file)"
-SECRET = "SENTINEL-PRIVATE-7f3"
+SENTINEL = "SENTINEL-PRIVATE-7f3"
 CEDAR = "fnd_0000000000000001"  # the published example finding build_tree copies in
 
 
@@ -40,9 +40,9 @@ def answered(status):
 
 
 def request(ident, received, state="open", finding=CEDAR):
-    entry = {"id": ident, "finding_id": finding, "received_on": received, "summary": SECRET + " summary",
+    entry = {"id": ident, "finding_id": finding, "received_on": received, "summary": SENTINEL + " summary",
              "state": state}
-    return entry if state == "open" else {**entry, "decided_on": "2026-03-14", "note": SECRET + " note"}
+    return entry if state == "open" else {**entry, "decided_on": "2026-03-14", "note": SENTINEL + " note"}
 
 
 def write_log(root, requests):
@@ -140,9 +140,9 @@ class ReplyWorkTests(unittest.TestCase):
         folder = self.root / "private" / "drafts"
         bad = [reply_draft(self.root, f"td-bad{n}", response) for n, response in enumerate((
             "pending", pending("2026-02-30"), {**pending("2026-03-16"), "status": "maybe"},
-            pending("2026-02-27"), {**pending("2026-03-16"), SECRET: "x"},
+            pending("2026-02-27"), {**pending("2026-03-16"), SENTINEL: "x"},
             {**pending("2026-03-16"), "asked_on": "2026-03-02"}))]
-        (folder / "td-badjson.json").write_text("{nope " + SECRET, encoding="utf-8")
+        (folder / "td-badjson.json").write_text("{nope " + SENTINEL, encoding="utf-8")
         (self.tmp / "outside.json").write_text(json.dumps(draft(id="td-link", agency_response=pending("2026-03-16"))),
                                                encoding="utf-8")
         (folder / "td-link.json").symlink_to(self.tmp / "outside.json")
@@ -152,7 +152,7 @@ class ReplyWorkTests(unittest.TestCase):
         self.assertEqual(sorted(i["what"].split(": ")[0][4:] for i in broken), sorted(map(str, bad)), broken)
         self.assertIn(f"fix {bad[0]}: agency_response could not be read (reason withheld: it can quote the file)",
                       [i["what"] for i in broken])  # a response only today checks: named by the path actually read
-        self.assertNotIn(SECRET, json.dumps(items))
+        self.assertNotIn(SENTINEL, json.dumps(items))
         self.assertEqual([i["kind"] for i in items], ["comment_deadline", "request_past_due", *NEW, "finding_ready",
                                                       "finding_blocked", "stale_comment_kit", "stale_contact"]
                          + ["unreadable"] * len(bad))
@@ -196,7 +196,7 @@ class ReplyWorkTests(unittest.TestCase):
         self.assertEqual((code, err, json.loads(out)), (0, "", items))
         text = self.ok("today", "--directory", self.root, "--as-of", "2026-03-15")
         for shown in (out, text):
-            self.assertNotIn(SECRET, shown)
+            self.assertNotIn(SENTINEL, shown)
             self.assertNotIn("accept", shown.lower())
         write_log(self.root, [request(2, "2026-02-01", "declined"), request(10, "2026-02-01")])
         with mock.patch.object(correction_requests, "open_overdue", return_value=[2, 10]):  # 2 decided in between
@@ -208,11 +208,11 @@ class ReplyWorkTests(unittest.TestCase):
         log = self.root / LOG
         healthy = ["comment_deadline", "request_past_due", NEW[0], "finding_ready", "finding_blocked",
                    "stale_comment_kit", "stale_contact"]
-        breaks = {"json": lambda: log.write_text("{nope " + SECRET, encoding="utf-8"),
+        breaks = {"json": lambda: log.write_text("{nope " + SENTINEL, encoding="utf-8"),
                   "document": lambda: log.write_text("[]", encoding="utf-8"),
                   "duplicate": lambda: write_log(self.root, [request(1, "2026-02-01"), request(1, "2026-02-02")]),
                   "date": lambda: write_log(self.root, [request(1, "2026-02-30")]),
-                  "unknown key": lambda: write_log(self.root, [{**request(1, "2026-02-01"), SECRET: 1}]),
+                  "unknown key": lambda: write_log(self.root, [{**request(1, "2026-02-01"), SENTINEL: 1}]),
                   "symlink": lambda: (write_log(self.root, [request(1, "2026-02-01")]),
                                       log.rename(self.tmp / "log.json"), log.symlink_to(self.tmp / "log.json"))}
         for name, broken in breaks.items():
@@ -221,10 +221,10 @@ class ReplyWorkTests(unittest.TestCase):
                 items = today.todo(self.root, AS_OF)
                 self.assertEqual([i["kind"] for i in items], healthy + ["unreadable"])
                 self.assertEqual((items[-1]["what"], items[-1]["command"]), (LOG_REASON, f"open {LOG} and fix it"))
-                self.assertNotIn(SECRET, json.dumps(items))
+                self.assertNotIn(SENTINEL, json.dumps(items))
                 log.unlink()
         write_log(self.root, [request(1, "2026-02-01")])
-        with mock.patch.object(correction_requests, "list_requests", side_effect=OSError(SECRET)):
+        with mock.patch.object(correction_requests, "list_requests", side_effect=OSError(SENTINEL)):
             self.assertEqual([i["what"] for i in today.todo(self.root, AS_OF) if i["kind"] == "unreadable"],
                              [LOG_REASON])
         kinds = [i["kind"] for i in today.todo(self.root, AS_OF, owner="Pat Organizer")]
