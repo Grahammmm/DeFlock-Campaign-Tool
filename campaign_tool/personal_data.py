@@ -94,11 +94,18 @@ def _roster(data):
     for entry in document["reviewers"]:
         if (not isinstance(entry, dict) or not {"name", "roles", "added_on"} <= set(entry)
                 or not set(entry) <= {"name", "roles", "added_on", "ssh_public_key", "interest_agencies",
-                                      "interest_note"}
-                or not isinstance(entry["name"], str) or not isinstance(entry["roles"], list)):
+                                      "interest_note", "retired_on"}
+                or not isinstance(entry["name"], str) or not isinstance(entry["roles"], list)
+                or not isinstance(entry.get("retired_on", {}), dict)
+                or not all(role in entry["roles"] for role in entry.get("retired_on", {}))):
             raise _Bad
-        days.append(_day(entry["added_on"]))
-    return len(days), days
+        added = _day(entry["added_on"])
+        days.append(added)
+        for day in entry.get("retired_on", {}).values():  # DF1109B-14: dates only, none before added_on (as the loader)
+            if _day(day) < added:
+                raise _Bad
+            days.append(day)
+    return len(document["reviewers"]), days
 
 
 def _review_assignments(data):

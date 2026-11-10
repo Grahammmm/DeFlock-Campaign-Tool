@@ -425,6 +425,25 @@ roles into `private/reviewers.json`, keeping `added_on`; `finding reviewers list
 roster, `finding review` refuses an unlisted name or unassigned role and `review-status` lists
 `unrostered_receipts`; without one nothing changes. Names stay self-asserted: roles, not identity.
 
+### Retired roles (private)
+
+`finding reviewers retire --directory D --name N [--role R] --on YYYY-MM-DD` records, in `private/reviewers.json`,
+`retired_on: {"R": "YYYY-MM-DD"}` for one held role or (without `--role`) every held role. `--on` may not be after
+today (UTC) or before `added_on`; repeating the same day changes nothing and a different day for an already retired
+role is refused. Nothing is deleted: the entry, its roles, key, declared interests, assignments and receipts stay,
+so earlier receipts remain rostered. From the start of that UTC day `finding assign` (even `--replace` or a repeat),
+`finding review` and `review-payload` refuse that person in that role, rechecked under the roster lock just before
+the write. At every gate (status, ready, publish, `correct --from`) an approval in a retired role counts toward the
+role and two-reviewer counts only when its `reviewed_at` is a timezone-aware time strictly before 00:00:00Z of that
+day; a missing, naive or malformed time does not count. This is a private workflow date rule, not proof of when a
+receipt was made (signatures do not cover `reviewed_at`). Challenges still block whenever recorded, and declared
+interests still exclude as above. `review-status` shows an open assignment to a retired role as
+`needs_reassignment` with `retired_on` (needs reassignment; move it with `finding assign ... --replace`), and
+`today` names it under `review_waiting`. `finding reviewers list` prints `retired_on`. `finding reviewers add --name N
+--role R` reinstates only the named roles (the response lists `reinstated`); the roster keeps only each role's current
+cutoff, not a history, so clearing it restores ordinary eligibility for receipts of any date. A roster without
+`retired_on` reads and behaves as before.
+
 ### Declared interests (private)
 
 `finding reviewers add --directory D --name N --role R --interest-agency ID [--interest-agency ID ...]
@@ -492,7 +511,8 @@ reviewers. `finding assign DRAFT --directory D --role R --reviewer NAME --on D [
 `private/review-assignments/`, who was asked to review which role since which date (refused for the draft's author, and
 with a roster for an unlisted name or a role they do not hold); nothing is sent, an assignment is never a review and no
 blocker, receipt count or publication check reads it. `finding review-status` shows each role as assigned since D,
-receipt_recorded or unassigned, and `today --review-days N` (default 7) lists assignments with no receipt after N days.
+receipt_recorded, needs_reassignment (the assignee's role is retired) or unassigned, and `today --review-days N`
+(default 7) lists assignments with no receipt after N days.
 `finding diff ID --directory D --from DRAFT` (or `OLD NEW`) prints a read-only field-level
 diff of the public fields (including `agency_id` and `also_agency_ids`; a reorder of the extra agencies prints the old and
 the new ordered list) before a correction; exit 3 when they differ. The runner that executes

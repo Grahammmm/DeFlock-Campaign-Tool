@@ -26,7 +26,8 @@ except ImportError:  # Windows
 from . import content, finding_updates, publication_gate
 from .content import FINDING_KEYS
 from .evidence import PREFIX, _ledger_hashes, _object_present
-from .review import CLASSIFICATIONS, EDIT_MARKER, ROLES, _who, content_hash, declared_interest_agencies, review_blockers
+from .review import (CLASSIFICATIONS, EDIT_MARKER, ROLES, _who, content_hash, counted_before_retirement,
+                     declared_interest_agencies, review_blockers, role_active_on)
 from .sources_cmd import PREFIX as HEX_PREFIX, _known_agencies, _library
 
 PUBLICATION_FIELDS = ("state", "published_at", "updated_at", "corrections", "updates")  # DF0022-06: updates stay outside the reviewed hash
@@ -215,7 +216,7 @@ def _bound_blockers(root, draft, receipts):
     return review_blockers(reviewed_view(draft), receipts, campaign_id(root) or "", _load_roster(root))
 
 
-def _checked(root, draft, role, decision, reviewer, rationale):
+def _checked(root, draft, role, decision, reviewer, rationale, day):
     if role not in ROLES:
         raise ValueError(f"--role must be one of {sorted(ROLES)}")
     if decision not in DECISIONS:
@@ -224,24 +225,40 @@ def _checked(root, draft, role, decision, reviewer, rationale):
     rationale = _text("rationale", rationale, 2000)
     if _who(reviewer) == _who(draft.get("author")):
         raise ValueError("the author cannot review their own finding")
-    entry = _roster_entry(root, role, reviewer)
+    entry = _roster_entry(root, role, reviewer, day)
     for agency in declared_interest_agencies(draft, entry):  # DF0022-05: before any id, signature or receipt write
         raise ValueError(f"{reviewer} has declared interest in agency {agency}; receipt refused")
     return reviewer, rationale, entry
 
 
-def _roster_entry(root, role, reviewer):
-    """The reviewer's roster entry (None with no roster); with a roster, refuse an unlisted name or a missing role."""
+def _utc_day(now=None):
+    return (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
+
+
+def _roster_entry(root, role, reviewer, day):
+    """The reviewer's roster entry (None with no roster); with a roster, refuse an unlisted name, a missing role or
+    (DF1109B-14) a role retired on or before ``day``, the UTC day of the new assignment or review."""
     roster = _load_roster(root)
     entry = roster and _rostered(roster, reviewer)
     if roster is not None and (entry is None or role not in entry["roles"]):
         raise ValueError(f"{reviewer} is not " + ("on the reviewer roster" if entry is None
                                                   else f"assigned the {role} role"))
+    if entry and not role_active_on(entry, role, day):
+        raise ValueError(f"{reviewer}'s {role} role was retired on {entry['retired_on'][role]}; refused (reinstate "
+                         "it with finding reviewers add, or ask an active reviewer)")
     return entry
 
 
-def review_payload(root, draft, role, decision, reviewer, rationale):
-    reviewer, rationale, _ = _checked(root, draft, role, decision, reviewer, rationale)  # read-only
+@contextlib.contextmanager
+def _roster_then(root, folder):
+    """The lock order every rostered writer keeps: private roster lock (only when a roster exists), then ``folder``'s."""
+    with _locked(root / "private") if os.path.lexists(_roster_path(root)) else contextlib.nullcontext():
+        with _locked(folder):
+            yield
+
+
+def review_payload(root, draft, role, decision, reviewer, rationale, now=None):
+    reviewer, rationale, _ = _checked(root, draft, role, decision, reviewer, rationale, _utc_day(now))  # read-only
     bound = campaign_id(root)
     if bound is None:  # nothing to bind a signature to; review-payload never writes
         raise ValueError(f"{root / 'private' / 'campaign-id.json'}: this campaign has no receipt-binding id yet; "
@@ -250,7 +267,8 @@ def review_payload(root, draft, role, decision, reviewer, rationale):
 
 
 def add_receipt(root, draft, role, decision, reviewer, rationale, now=None, signature=None):
-    reviewer, rationale, entry = _checked(root, draft, role, decision, reviewer, rationale)
+    day = _utc_day(now)
+    reviewer, rationale, entry = _checked(root, draft, role, decision, reviewer, rationale, day)
     digest, signed, bound = reviewed_hash(draft), {}, None
     if signature is not None:  # verified before any directory or file is written
         if not entry or "ssh_public_key" not in entry:
@@ -269,7 +287,8 @@ def add_receipt(root, draft, role, decision, reviewer, rationale, now=None, sign
     for folder in (root / "private", path.parent):
         folder.mkdir(mode=0o700, exist_ok=True)
         os.chmod(folder, 0o700)
-    with _locked(path.parent):
+    with _roster_then(root, path.parent):
+        _roster_entry(root, role, reviewer, day)  # the roster as it stands at the write (a retirement may have won)
         receipts = _load_receipts(path)
         if any(isinstance(r, dict) and r.get("content_sha256") == digest and r.get("role") == role
                and r.get("decision") == decision and _who(r.get("reviewer")) == _who(reviewer)
@@ -424,7 +443,8 @@ def assign(root, draft, role, reviewer, on, today=None, replace=False, now=None)
     reviewer = _text("reviewer", reviewer, 120)
     if _who(reviewer) == _who(draft.get("author")):
         raise ValueError("the author cannot review their own finding")
-    _roster_entry(root, role, reviewer)
+    day = _utc_day(now)
+    _roster_entry(root, role, reviewer, day)
     if _day(on, "--on") > (today or date.today()):
         raise ValueError("--on must not be after today")
     path = _assignments_path(root, draft)  # refuses a symlinked private/ or private/review-assignments before any write
@@ -432,7 +452,8 @@ def assign(root, draft, role, reviewer, on, today=None, replace=False, now=None)
     for folder in (root / "private", path.parent):
         folder.mkdir(mode=0o700, exist_ok=True)
         os.chmod(folder, 0o700)
-    with _locked(path.parent):
+    with _roster_then(root, path.parent):
+        _roster_entry(root, role, reviewer, day)  # the roster as it stands at the write (a retirement may have won)
         assignments = load_assignments(root, draft)
         held = assignments.get(role)
         if held is not None and _who(held["reviewer"]) == _who(reviewer):
@@ -446,21 +467,36 @@ def assign(root, draft, role, reviewer, on, today=None, replace=False, now=None)
     return dict(entry, id=draft["id"], role=role, unchanged=False, written=str(path))
 
 
-def assignment_states(root, draft):
+def assignment_states(root, draft, as_of=None):
     """Read-only ``{role: {state, reviewer?, since?}}`` for all three roles: receipt_recorded when a current-content
     receipt for that role exists (any reviewer) bound to this campaign's id, else assigned (since the assignment
     date), else unassigned. A receipt bound to another campaign, unbound, or read before this campaign has an id
     completes nothing (no id is created here). An assignment is not a review: this feeds no blocker, receipt count
-    or publication check."""
+    or publication check. DF1109B-14: a receipt for a role its reviewer has retired completes it only when recorded
+    before that day; an open assignment whose reviewer's role is retired on ``as_of`` (default: today, UTC) is
+    needs_reassignment, with retired_on (the assignment itself is kept)."""
     digest = reviewed_hash(draft)
     local = campaign_id(root)
+    roster = _load_roster(root)
+    day = as_of or _utc_day()
     receipts = _load_receipts(_receipts_path(root, draft))
     assigned = load_assignments(root, draft)
     done = {r["role"] for r in receipts if local and isinstance(r, dict) and r.get("content_sha256") == digest
-            and r.get("campaign_id") == local and isinstance(r.get("role"), str) and r["role"] in ROLES}
-    return {role: {"state": "receipt_recorded"} if role in done
-            else {"state": "assigned", "reviewer": assigned[role]["reviewer"], "since": assigned[role]["on"]}
-            if role in assigned else {"state": "unassigned"} for role in sorted(ROLES)}
+            and r.get("campaign_id") == local and isinstance(r.get("role"), str) and r["role"] in ROLES
+            and (roster is None or counted_before_retirement(_rostered(roster, r.get("reviewer")), r["role"],
+                                                             r.get("reviewed_at")))}
+
+    def state(role):
+        if role in done:
+            return {"state": "receipt_recorded"}
+        if role not in assigned:
+            return {"state": "unassigned"}
+        held = {"reviewer": assigned[role]["reviewer"], "since": assigned[role]["on"]}
+        entry = roster and _rostered(roster, held["reviewer"])
+        if entry and role in entry["roles"] and not role_active_on(entry, role, day):
+            return {"state": "needs_reassignment", **held, "retired_on": entry["retired_on"][role]}
+        return {"state": "assigned", **held}
+    return {role: state(role) for role in sorted(ROLES)}
 
 
 def bind_receipts(root, confirm=False, now=None):
@@ -556,7 +592,10 @@ def _load_roster(root):
     path = _roster_path(root)
     if not os.path.lexists(path):
         return None
-    roster = _read_json(path, MAX_ROSTER_BYTES, "reviewer roster")
+    return _valid_roster(path, _read_json(path, MAX_ROSTER_BYTES, "reviewer roster"))
+
+
+def _valid_roster(path, roster):
     _object(path, roster, ROSTER_KEYS)
     if type(roster["schema_version"]) is not int or roster["schema_version"] != 1:
         raise ValueError(f"{path}: key 'schema_version' must be 1")
@@ -565,7 +604,8 @@ def _load_roster(root):
     seen, principals = set(), set()
     for index, entry in enumerate(roster["reviewers"]):
         where = f"{path}: reviewers[{index}]"
-        _object(where, entry, REVIEWER_KEYS, frozenset(("ssh_public_key", "interest_agencies", "interest_note")))
+        _object(where, entry, REVIEWER_KEYS,
+                frozenset(("ssh_public_key", "interest_agencies", "interest_note", "retired_on")))
         who, roles, added = _who(entry["name"]), entry["roles"], entry["added_on"]
         if who is None or who in seen:
             raise ValueError(f"{where}.name is empty or duplicates an earlier reviewer")
@@ -585,6 +625,13 @@ def _load_roster(root):
             date.fromisoformat(added if isinstance(added, str) and _DATE.fullmatch(added) else "")
         except ValueError:
             raise ValueError(f"{where}.added_on must be a YYYY-MM-DD date") from None
+        retired = entry.get("retired_on", {})  # DF1109B-14: {role: YYYY-MM-DD}, each a held role, not before added_on
+        if not isinstance(retired, dict) or not all(
+                role in roles and isinstance(day, str) and _DAY.fullmatch(day) and day >= added
+                for role, day in retired.items()):
+            raise ValueError(f"{where}.retired_on must map held roles to YYYY-MM-DD dates not before added_on")
+        for day in retired.values():
+            _day(day, f"{where}.retired_on")
     return roster
 
 
@@ -651,6 +698,13 @@ def add_reviewer(root, name, roles, today=None, ssh_key=None, *, interest_agenci
             entry = {"name": name, "roles": [], "added_on": str(today or date.today())}
             roster["reviewers"].append(entry)
         entry["roles"] = sorted(set(entry["roles"]) | set(roles))
+        reinstated = sorted(set(roles) & set(entry.get("retired_on", {})))  # DF1109B-14: only the named roles
+        if reinstated:
+            remaining = {k: v for k, v in entry["retired_on"].items() if k not in reinstated}
+            if remaining:
+                entry["retired_on"] = remaining
+            else:
+                del entry["retired_on"]  # the legacy shape again
         for field, value in _interest_change(entry, interest_agencies, interest_note, clear_interests, known).items():
             if value is None:
                 entry.pop(field, None)
@@ -666,7 +720,55 @@ def add_reviewer(root, name, roles, today=None, ssh_key=None, *, interest_agenci
             f'{principal(e["name"])} namespaces="{SIGN_NAMESPACE}" {e["ssh_public_key"]}\n'
             for e in roster["reviewers"] if "ssh_public_key" in e))
         _ensure_campaign_id(root)  # after the roster write, so a refusal writes nothing; review-payload needs it
-    return dict(_without_note(entry), written=str(path))
+    return dict(_without_note(entry), **({"reinstated": reinstated} if reinstated else {}), written=str(path))
+
+
+def _retire(roster, name, role, on):
+    """Record ``on`` as the cutoff of ``role`` (None: every held role) in ``roster`` (in place); returns the entry,
+    the target roles and whether anything changed. Refuses before any change: nothing is removed."""
+    entry = _rostered(roster, name)
+    if entry is None:
+        raise ValueError(f"{name} is not on the reviewer roster; nothing retired")
+    if role is not None and role not in entry["roles"]:
+        raise ValueError(f"{name} does not hold the {role} role; nothing retired")
+    if on < entry["added_on"]:
+        raise ValueError(f"--on must not be before {name}'s added_on {entry['added_on']}")
+    targets = [role] if role is not None else sorted(entry["roles"])
+    stored = dict(entry.get("retired_on", {}))
+    for target in targets:  # every target checked before any is changed
+        if stored.get(target, on) != on:
+            raise ValueError(f"{name}'s {target} role is already retired on {stored[target]}; nothing changed "
+                             "(reinstate it with finding reviewers add first to record another day)")
+    changed = any(target not in stored for target in targets)
+    entry["retired_on"] = {**stored, **{target: on for target in targets}}
+    return entry, targets, changed
+
+
+def retire_reviewer(root, name, on, role=None, now=None):
+    """DF1109B-14: retire one role (or all held roles) of a rostered reviewer from ``on`` (inclusive, UTC day).
+    The entry, its roles, key, declarations, assignments and every receipt stay; only new assignment and review
+    in that role are refused, and approvals recorded before ``on`` still count. Private; sends nothing."""
+    name = _text("name", name, 120)
+    if role is not None and role not in ROLES:
+        raise ValueError(f"--role must be one of {sorted(ROLES)}")
+    if _day(on, "--on") > _utc_day(now):
+        raise ValueError("--on must not be after today (UTC)")
+    path = _roster_path(root)
+    if _load_roster(root) is None:
+        raise ValueError(f"{path}: there is no reviewer roster; nothing retired")
+    _retire(_load_roster(root), name, role, on)  # refuse before taking the lock
+    with _locked(path.parent):
+        roster = _load_roster(root)
+        if roster is None:
+            raise ValueError(f"{path}: there is no reviewer roster; nothing retired")
+        entry, targets, changed = _retire(roster, name, role, on)
+        if changed:
+            _valid_roster(path, roster)
+            text = json.dumps(roster, indent=2, ensure_ascii=False) + "\n"
+            if len(text.encode("utf-8")) > MAX_ROSTER_BYTES:
+                raise ValueError(f"{path}: the roster would be larger than {MAX_ROSTER_BYTES} bytes; nothing retired")
+            _write_private(path, None, ".reviewers-", text)
+    return dict(_without_note(entry), retired=targets, unchanged=not changed, written=str(path))
 
 
 def _without_note(entry):

@@ -10,6 +10,7 @@ import hashlib
 import html
 import json
 from pathlib import Path
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -471,6 +472,72 @@ class StatementCommandCLITests(unittest.TestCase):
         context = self.add("--context", "tweet")
         self.assertEqual(context.returncode, 2)
         self.assertIn("invalid choice", context.stderr)
+
+
+class EventCLITests(unittest.TestCase):
+    """DF1109-14: the actual `event add|remove|list` parser, dispatch and exit codes."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="synthetic-event-cli-")
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.root = self.base / "campaign"
+        shutil.copytree(REPO_ROOT / "examples" / "fictional-campaign" / "content", self.root / "content")
+        self.description = self.base / "about.md"
+        self.description.write_text("Synthetic teach-in.\n", encoding="utf-8")
+
+    def event(self, *arguments, returncode=0):
+        result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "event", *arguments],
+                                cwd=REPO_ROOT, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, returncode, f"stdout={result.stdout!r}; stderr={result.stderr!r}")
+        self.assertNotIn("Traceback", result.stderr)
+        return result
+
+    def add_args(self, *extra):
+        return ("add", "--directory", self.root, "--id", "teach-in", "--title", "Teach-in", "--starts", "2026-11-09T18:00",
+                "--ends", "2026-11-09T20:00", "--tz", "America/Los_Angeles", "--description-file", self.description, *extra)
+
+    def test_help_options_and_exclusivity(self):
+        listing = self.event("--help").stdout
+        for name in ("add", "remove", "list"):
+            self.assertIn(name, listing)
+        add_help = self.event("add", "--help").stdout
+        for flag in ("--directory", "--id", "--title", "--starts", "--ends", "--tz", "--venue", "--online",
+                     "--description-file", "--url", "--accessibility-note"):
+            self.assertIn(flag, add_help)
+        self.assertIn("--as-of", self.event("list", "--help").stdout)
+        self.assertIn("one of the arguments --venue --online is required", self.event(*self.add_args(), returncode=2).stderr)
+        self.assertIn("not allowed with argument", self.event(*self.add_args("--venue", "Hall", "--online"), returncode=2).stderr)
+        self.assertIn("--tz", self.event("add", "--directory", str(self.root), "--id", "x", "--title", "T", "--starts",
+                                         "2026-11-09T18:00", "--ends", "2026-11-09T19:00", "--online", "--description-file",
+                                         str(self.description), returncode=2).stderr)
+        self.event("remove", "--directory", str(self.root), returncode=2)
+        self.event(returncode=2)
+        self.assertFalse((self.root / "content" / "events.json").exists())
+
+    def test_dispatch_and_exit_codes(self):
+        added = self.event(*map(str, self.add_args("--venue", "Cedar Library")))
+        self.assertEqual((added.stdout, added.stderr), ('{"action": "added", "id": "teach-in"}\n', ""))
+        listed = json.loads(self.event("list", "--directory", str(self.root), "--as-of", "2026-11-09").stdout)
+        self.assertEqual(listed["as_of"], "2026-11-09")
+        self.assertEqual([(row["id"], row["starts_at"]) for row in listed["upcoming"]],
+                         [("teach-in", "2026-11-09T18:00:00-08:00")])
+        self.assertEqual(listed["past"], [])
+        self.assertEqual(json.loads(self.event("list", "--directory", str(self.root), "--as-of", "2026-11-11").stdout)["past"][0]["id"],
+                         "teach-in")
+        before = (self.root / "content" / "events.json").read_bytes()
+        gap = self.event("add", "--directory", str(self.root), "--id", "gap", "--title", "T", "--starts", "2026-03-08T02:30",
+                         "--ends", "2026-03-08T04:00", "--tz", "America/Los_Angeles", "--online", "--description-file",
+                         str(self.description), returncode=2)
+        self.assertEqual(gap.stdout, "")
+        self.assertIn("Stopped: --starts: nonexistent local time in --tz", gap.stderr)
+        self.assertIn("as-of", self.event("list", "--directory", str(self.root), "--as-of", "20261109", returncode=2).stderr)
+        self.assertIn("no event with this id", self.event("remove", "--directory", str(self.root), "--id", "ghost",
+                                                          returncode=2).stderr)
+        self.assertEqual((self.root / "content" / "events.json").read_bytes(), before)
+        removed = self.event("remove", "--directory", str(self.root), "--id", "teach-in")
+        self.assertEqual(removed.stdout, '{"action": "removed", "id": "teach-in"}\n')
+        self.assertEqual((self.root / "content" / "events.json").read_bytes(), b"[]\n")
 
 
 if __name__ == "__main__":

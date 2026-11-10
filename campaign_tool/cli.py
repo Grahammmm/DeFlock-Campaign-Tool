@@ -1621,6 +1621,30 @@ def main():
                                              "takes (reads only; writes and fetches nothing)")
     coverage_list.add_argument("--directory", required=True)
     coverage_list.add_argument("--json", dest="as_json", action="store_true", help="A JSON array instead of text lines")
+    event_cmds = commands.add_parser("event", help="Edit the campaign's own events in content/events.json from local "
+                                     "times (offline; nothing is fetched, built or published)"
+                                     ).add_subparsers(dest="event_command", required=True)
+    event_add = event_cmds.add_parser("add", help="Append one event; local times are converted with --tz, and a time "
+                                      "skipped or repeated by a daylight-saving change is refused")
+    event_add.add_argument("--directory", required=True)
+    event_add.add_argument("--id", required=True, help="Lowercase id, unique in the file")
+    event_add.add_argument("--title", required=True, help="1-120 plain characters")
+    event_add.add_argument("--starts", required=True, metavar="LOCAL", help="Local start YYYY-MM-DDTHH:MM[:SS], no offset")
+    event_add.add_argument("--ends", required=True, metavar="LOCAL", help="Local end YYYY-MM-DDTHH:MM[:SS], not before start")
+    event_add.add_argument("--tz", required=True, metavar="ZONE", help="IANA time zone of both times, e.g. America/Los_Angeles")
+    event_where = event_add.add_mutually_exclusive_group(required=True)
+    event_where.add_argument("--venue", help="Venue as published, 1-160 plain characters")
+    event_where.add_argument("--online", action="store_true", help="An online event (no venue)")
+    event_add.add_argument("--description-file", required=True, metavar="F", help="UTF-8 Markdown file, stored exactly")
+    event_add.add_argument("--url", help="https details link (never fetched)")
+    event_add.add_argument("--accessibility-note", metavar="N", help="1-400 plain characters")
+    event_remove = event_cmds.add_parser("remove", help="Drop the one event with exactly this id")
+    event_remove.add_argument("--directory", required=True)
+    event_remove.add_argument("--id", required=True)
+    event_list = event_cmds.add_parser("list", help="Print upcoming then past events as JSON, split as the site build "
+                                       "splits them (writes nothing)")
+    event_list.add_argument("--directory", required=True)
+    event_list.add_argument("--as-of", metavar="YYYY-MM-DD", help="Build day for the split (default today)")
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
     review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
@@ -1705,6 +1729,12 @@ def main():
     roster_add.add_argument("--interest-note", metavar="T", help="Private note (1-200 characters); never printed or published")
     roster_add.add_argument("--clear-interests", action="store_true", help="Remove the declared agencies and note")
     roster_cmds.add_parser("list", help="Print the roster (read-only)")
+    roster_retire = roster_cmds.add_parser("retire", help="Retire one role (or every role) of a reviewer from a day; "
+                                           "keeps the entry and every receipt (add --role reinstates)")
+    roster_retire.add_argument("--name", required=True)
+    roster_retire.add_argument("--role", help="factual, legal or privacy; omit to retire every role they hold")
+    roster_retire.add_argument("--on", required=True, metavar="YYYY-MM-DD",
+                               help="First day (UTC) the role takes no new assignment or review; not after today")
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
     new_p = finding_cmds.add_parser("new", help="Write a private/drafts/fnd_<id>.json skeleton with [EDIT ME: ...] markers")
@@ -2204,12 +2234,14 @@ def main():
             from . import findings
             read_config(root)
             add = args.reviewers_command == "add"
+            retire = args.reviewers_command == "retire"
             print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key,
                                                    interest_agencies=args.interest_agency,
                                                    interest_note=args.interest_note,
                                                    clear_interests=args.clear_interests) if add
+                             else findings.retire_reviewer(root, args.name, args.on, args.role) if retire
                              else findings.list_reviewers(root), indent=2, ensure_ascii=False))
-            if add:
+            if add or retire:
                 print("Private roster updated; nothing was published.")
         elif args.command == "finding" and args.finding_command == "preview":
             try:
@@ -2439,6 +2471,18 @@ def main():
                                       published_on=args.published_on, finding_ids=args.finding, kind=args.kind)
             print(json.dumps(result))
             print("Nothing was built, published or sent.")
+        elif args.command == "event":
+            from . import events
+            if args.event_command == "list":
+                as_of = events.parse_day(args.as_of) if args.as_of is not None else None
+                print(events.format_events(events.list_events(root, as_of)))
+            elif args.event_command == "remove":
+                print(json.dumps(events.remove_event(root, event_id=args.id)))
+            else:
+                print(json.dumps(events.add_event(
+                    root, event_id=args.id, title=args.title, starts=args.starts, ends=args.ends, tz=args.tz,
+                    venue=args.venue, online=args.online, description_file=Path(args.description_file).expanduser(),
+                    url=args.url, accessibility_note=args.accessibility_note)))
         elif args.command == "content" and args.content_command == "add-starter":
             from .content_init import PUBLISHED_WARNING, add_starter, starter_status
             if args.list_starters:

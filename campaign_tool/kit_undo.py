@@ -81,8 +81,24 @@ def serialized_size(document):
     return len((json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
 
 
+class _DuplicateKey(Exception):
+    pass
+
+
+def _unique_members(pairs):  # object_pairs_hook: a repeated decoded member name at any depth is ambiguous
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateKey
+        result[key] = value
+    return result
+
+
 def read_archive(kit_dir):
-    """(path, receipts) of kit/sent-undone.json; no file means no receipts. A bad file is never reset."""
+    """(path, receipts) of kit/sent-undone.json; no file means no receipts. A bad file is never reset.
+
+    Any repeated object member name anywhere in the file (escaped spellings included) is refused as
+    ambiguous, so a last-key-wins read can never drop earlier receipts; nothing is written on refusal."""
     path = Path(kit_dir) / ARCHIVE
 
     def bad(reason):
@@ -91,7 +107,9 @@ def read_archive(kit_dir):
     if data is None:
         return path, []
     try:
-        document = json.loads(data.decode("utf-8"))
+        document = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_members)
+    except _DuplicateKey:
+        raise bad("duplicate JSON keys") from None
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise bad("not JSON") from None
     if (not isinstance(document, dict) or document.get("schema_version") != 1
