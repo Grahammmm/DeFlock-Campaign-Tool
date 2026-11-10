@@ -41,6 +41,18 @@ class BriefError(ContentError):
     """The brief cannot be written; the message names the agency or a safe locator, never a private value."""
 
 
+class _WriteError(BriefError):
+    """Controlled I/O failure with known publication, durability and cleanup state."""
+
+    def __init__(self, name, published, durable, phase, cleanup_failed):
+        self.name = name
+        self.published = published
+        self.durable = durable
+        self.phase = phase
+        self.cleanup_failed = cleanup_failed
+        super().__init__(f"kit/briefs/{name}: {phase} failed")
+
+
 # --- rows ------------------------------------------------------------------------------------------------------
 
 def _row(section, where, text, sources, when=""):
@@ -388,11 +400,24 @@ def _subdir(parent, name):
 
 
 def _write_file(directory, name, data, replace, expected):
-    """Write ``name`` 0600 through a same-directory exclusive temporary; recheck the target at commit."""
+    """Write 0600 atomically per file; report known publication state via _WriteError.
+
+    Cleanup owns only the exclusive temporary, never a published target. A failed
+    directory flush cannot undo publication or establish directory durability.
+    """
     temporary = f".{name}.{os.getpid()}.tmp"
-    handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+    owned = published = durable = False
+    phase = "temporary creation"
     try:
-        with os.fdopen(handle, "wb") as stream:
+        handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        owned = True
+        phase = "file data write/flush"
+        try:
+            stream = os.fdopen(handle, "wb")
+        except BaseException:
+            os.close(handle)
+            raise
+        with stream as stream:
             os.fchmod(handle, 0o600)
             stream.write(data)
             stream.flush()
@@ -407,23 +432,44 @@ def _write_file(directory, name, data, replace, expected):
             if (not replace or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
                     or (info.st_dev, info.st_ino) != expected):
                 raise BriefError(f"kit/briefs/{name} appeared or changed while the brief was prepared; it was left alone")
+            phase = "target publication"
             os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+            published = True
+            owned = False
         else:
+            phase = "target publication"
             os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)  # exclusive: fails if a file arrived
+            published = True
+            phase = "temporary cleanup"
             os.unlink(temporary, dir_fd=directory)
+            owned = False
+        phase = "directory flush"
         os.fsync(directory)
-    except BaseException:
-        try:
-            os.unlink(temporary, dir_fd=directory)
-        except FileNotFoundError:
-            pass
+        durable = True
+    except BaseException as exc:
+        cleanup_failed = False
+        if owned:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                cleanup_failed = True
+        if isinstance(exc, OSError):
+            raise _WriteError(name, published, durable, phase, cleanup_failed) from None
+        if isinstance(exc, BriefError) and cleanup_failed:
+            raise BriefError(f"{exc}; temporary cleanup failed for kit/briefs/{temporary}") from None
         raise
 
 
 # --- entry points ----------------------------------------------------------------------------------------------
 
 def build_brief(root, agency_id, *, replace=False, now=None):
-    """Write the brief pair for ``agency_id``; -> {"written": [html, txt], "flags": [review-required notes]}."""
+    """Write the pair; return written paths/flags only on success.
+
+    Structured per-file failures distinguish visible publication from confirmed
+    directory durability; the pair is not a transaction and is never rolled back.
+    """
     root = Path(root)
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
@@ -450,24 +496,35 @@ def build_brief(root, agency_id, *, replace=False, now=None):
             briefs_fd = _subdir(kit_fd, "briefs")
             try:
                 for name, data in zip(names, (page.encode("utf-8"), text.encode("utf-8"))):
-                    try:
-                        _write_file(briefs_fd, name, data, replace, expected[name])
-                    except BriefError:
-                        raise
-                    except OSError as exc:
-                        window = (f"; kit/briefs/{written[0]} was already written, so the pair is incomplete: run the same "
-                                  "command again with --replace" if written else "")
-                        raise BriefError(f"kit/briefs/{name} could not be written ({exc.strerror or 'I/O error'}){window}") from None
+                    _write_file(briefs_fd, name, data, replace, expected[name])
                     written.append(name)
             finally:
                 os.close(briefs_fd)
         finally:
             os.close(kit_fd)
-    except BriefError as exc:
-        if written and "incomplete" not in str(exc):
-            raise BriefError(f"{exc}; kit/briefs/{written[0]} was already written, so the pair is incomplete: run the same "
-                             "command again with --replace") from None
-        raise
+    except (BriefError, OSError) as exc:
+        if isinstance(exc, _WriteError):
+            if exc.published:
+                written.append(exc.name)
+                message = f"kit/briefs/{exc.name} was written; {exc.phase} failed"
+                if not exc.durable:
+                    message += "; durability could not be confirmed"
+            else:
+                message = f"kit/briefs/{exc.name} could not be written ({exc.phase} failed)"
+            if exc.cleanup_failed:
+                message += f"; temporary cleanup failed for kit/briefs/.{exc.name}.{os.getpid()}.tmp; check retained temporary"
+        elif isinstance(exc, BriefError):
+            message = str(exc)
+        else:
+            message = "kit/briefs could not be written (I/O error)"
+        if len(written) == 2:
+            message += "; both files were written: " + ", ".join(f"kit/briefs/{item}" for item in written)
+        elif written:
+            message += (f"; kit/briefs/{written[0]} was already written, so the pair is incomplete"
+                        " (or mixed with an older twin)")
+        if written:
+            message += ": check the files and run the same command again with --replace"
+        raise BriefError(message) from None
     finally:
         os.close(root_fd)
     return {"written": [f"kit/briefs/{name}" for name in written], "flags": flags}
