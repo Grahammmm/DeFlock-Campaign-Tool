@@ -51,8 +51,9 @@ class _Ring:
     """Edges bucketed into horizontal bands, so a point tests only the edges that span its y."""
     def __init__(self, ring):
         edges, ys = _edges(ring), [p[1] for p in ring]
-        span = max(ys) - min(ys)  # finite inputs can still overflow; one band then
-        self.low, self.count = min(ys), max(1, int(len(edges) ** 0.5)) if math.isfinite(span) else 1
+        self.low, self.high = min(ys), max(ys)
+        span = self.high - self.low  # finite inputs can still overflow; one band then
+        self.count = max(1, int(len(edges) ** 0.5)) if math.isfinite(span) else 1
         self.step = span / self.count or 1.0
         self.bands = [[] for _ in range(self.count)]
         for edge in edges:
@@ -62,6 +63,11 @@ class _Ring:
     def _band(self, y):
         if self.count == 1:
             return 0
+        # Select endpoint bands before division: a tiny span can overflow a distant query's quotient.
+        if y <= self.low:
+            return 0
+        if y >= self.high:
+            return self.count - 1
         return min(self.count - 1, max(0, int((y - self.low) / self.step)))
 
     def contains(self, x, y):
