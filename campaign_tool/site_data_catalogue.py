@@ -191,7 +191,7 @@ def _duplicate_keys(pairs):
 
 
 def _read_regular(public, relative, limit=MAX_BYTES):
-    """Bytes of ``public/<relative>``; ``None`` when absent, a reason string when it is a symlink, escapes or is not a file."""
+    """Bytes of ``public/<relative>``; ``None`` when absent, a reason string when it is a symlink, escapes or is not a file or exceeds ``limit`` bytes (enforced on the bytes actually read, at most limit + 1 requested)."""
     current = public
     for index, part in enumerate(relative.split("/")):
         current = current / part
@@ -210,9 +210,14 @@ def _read_regular(public, relative, limit=MAX_BYTES):
     if os.lstat(current).st_size > limit:
         return "is too large to check"
     try:
-        return current.read_bytes()
+        # Bound the read itself: the file may have grown since the size check above.
+        with open(current, "rb") as handle:
+            data = handle.read(limit + 1)
     except OSError:
         return "cannot be read"
+    if len(data) > limit:
+        return "is too large to check"
+    return data
 
 
 def _safe_path(path):
