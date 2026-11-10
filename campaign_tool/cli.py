@@ -1598,6 +1598,21 @@ def main():
         writer.add_argument("--replace", action="store_true", help="Record the whole document again over an existing one")
         writer.add_argument("--drop-check", action="store_true", help="With --replace: remove the existing reading "
                             f"({'policy_check' if verb == 'policy' else 'contract_check'}) in the same write")
+    for verb, about, kind in (("policy-check", "profile.policy_check: your reading of the stored policy against the seven-element checklist", "policy"),
+                              ("contract-check", "profile.contract_check: your reading of the stored agreement against the eight-element checklist", "contract")):
+        reader = profile_cmds.add_parser(verb, help=f"Record {about} (the URL is copied from the stored document; nothing is fetched; "
+                                         "this is the organizer's reading, not a legal review)")
+        reader.add_argument("--directory", required=True)
+        reader.add_argument("--agency", required=True, help="agency_id in content/agencies.json")
+        reader.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD",
+                            help="Day you read the document: not after today, not before the stored document's own date")
+        reader.add_argument("--element", action="append", default=[], metavar="ID=STATUS[:PAGE]",
+                            help="Repeat once per checklist element; STATUS is addressed, not_found or unclear; PAGE is 1-9999 "
+                            + ("and only with addressed" if kind == "policy" else "and allowed with any status"))
+        if kind == "contract":
+            reader.add_argument("--note", action="append", default=[], metavar="ID=TEXT",
+                                help="Optional short plain-text note (up to 200 characters) on an element you gave")
+        reader.add_argument("--replace", action="store_true", help="Record the whole reading again over an existing one")
     links_p = content_cmds.add_parser("link-check", help="List every external https URL the public content cites; with --online "
                                       "also request each once (GET, first 64 KiB, no cookies, 15 s, 5 redirects). Writes nothing")
     links_p.add_argument("--directory", required=True)
@@ -2427,6 +2442,13 @@ def main():
                     checked_on=args.checked_on, renewal_note=args.renewal_note, cost_usd=args.cost_usd,
                     period=args.period, as_stated_in=args.as_stated_in, replace=args.replace,
                     drop_check=args.drop_check)))
+            elif args.agency_profile_command in ("policy-check", "contract-check"):
+                policy = args.agency_profile_command == "policy-check"
+                field = "alpr_policy" if policy else "contract"
+                elements = content_profile.parse_reading_elements(field, args.element, () if policy else args.note)
+                write = content_profile.write_policy_check if policy else content_profile.write_contract_check
+                sys.stdout.write(content_profile.format_reading(write(
+                    root, args.agency, checked_on=args.checked_on, elements=elements, replace=args.replace)))
             else:
                 sys.stdout.write(content_profile.format_recheck(content_profile.recheck_profile(
                     root, args.agency, args.field, args.checked_on, index=args.index)))
