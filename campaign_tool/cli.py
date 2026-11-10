@@ -1575,6 +1575,28 @@ def main():
                                  "position that list prints (doctor names the same entry zero-based in brackets)")
     profile_recheck.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD",
                                  help="Day you re-read the source: not after today, not before the stored date")
+    from .content import FUNDING_KINDS, REPORT_KINDS
+    for group, kinds in (("funding", FUNDING_KINDS), ("report", REPORT_KINDS)):
+        entry_cmds = profile_cmds.add_parser(group, help="Append or remove one stored profile entry").add_subparsers(
+            dest="profile_entry_command", required=True)
+        for action in ("add", "remove"):
+            leaf = entry_cmds.add_parser(action)
+            leaf.add_argument("--directory", required=True)
+            leaf.add_argument("--agency", required=True)
+            if action == "remove":
+                leaf.add_argument("--index", required=True, help="1-based stored position printed by agency-profile list")
+                continue
+            leaf.add_argument("--kind", required=True, choices=kinds)
+            for flag in (("name", "as-stated-in") if group == "funding" else ("title", "period-start", "period-end")):
+                leaf.add_argument(f"--{flag}", required=True)
+            leaf.add_argument("--source-url", required=True)
+            leaf.add_argument("--checked-on", required=True)
+            if group == "funding":
+                leaf.add_argument("--amount-usd")
+                leaf.add_argument("--period", choices=("annual", "total", "one_time"))
+                leaf.add_argument("--fiscal-year")
+            else:
+                leaf.add_argument("--published-on")
     for verb, about in (("policy", "profile.alpr_policy: the posted ALPR policy document and the page you found it on"),
                         ("contract", "profile.contract: the signed agreement's vendor, term and optional stated cost")):
         writer = profile_cmds.add_parser(verb, help=f"Record {about} (the whole document; nothing is fetched)")
@@ -2464,6 +2486,19 @@ def main():
             if args.agency_profile_command == "list":
                 sys.stdout.write(content_profile.format_profile_checks(
                     content_profile.list_profile_checks(root, args.agency), as_json=args.as_json))
+            elif args.agency_profile_command in ("funding", "report"):
+                funding = args.agency_profile_command == "funding"
+                field = "funding" if funding else "reports"
+                added = args.profile_entry_command == "add"
+                if added:
+                    keys = (("name", "as_stated_in", "amount_usd", "period", "fiscal_year") if funding else
+                            ("title", "period_start", "period_end", "published_on"))
+                    entry = {key: getattr(args, key) for key in ("kind", "source_url", "checked_on", *keys)
+                             if getattr(args, key) is not None}
+                    result = content_profile.add_profile_entry(root, args.agency, field, entry)
+                else:
+                    result = content_profile.remove_profile_entry(root, args.agency, field, args.index)
+                sys.stdout.write(content_profile.format_profile_entry(result, added))
             elif args.agency_profile_command == "policy":
                 sys.stdout.write(content_profile.format_document(content_profile.write_policy(
                     root, args.agency, url=args.url, source_url=args.source_url, checked_on=args.checked_on,

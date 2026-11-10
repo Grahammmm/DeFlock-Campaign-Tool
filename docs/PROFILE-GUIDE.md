@@ -189,13 +189,21 @@ Reference: [SITE-CONTENT.md, recording a policy or contract document](SITE-CONTE
 Field: `profile.funding`, a list of 1 to 10 entries. Each entry names its own document: `kind` (`grant`, `general_fund`,
 `asset_forfeiture`, `donation`, `other`), `name` (the program or donor exactly as the document writes it; check that it
 is not a person), `as_stated_in`, `source_url` and `checked_on`, with optional `amount_usd` plus `period` (together) and
-`fiscal_year`. Entries are never added up, ranked or compared. Merge into `profile`:
+`fiscal_year`. Entries are never added up, ranked or compared. Record one entry at a time by command:
 
-```json
-{"funding": [{"kind": "grant", "name": "Synthetic Safety Program", "as_stated_in": "Synthetic grant award letter",
-              "source_url": "https://example.invalid/example-profile/award", "checked_on": "2026-10-25",
-              "amount_usd": "50000", "period": "total", "fiscal_year": "2026"}]}
+```sh
+python3 -m campaign_tool content agency-profile funding add --directory $CAMPAIGN --agency ca-example-profile-pd --kind grant --name "Synthetic Safety Program" --as-stated-in "Synthetic grant award letter" --source-url https://example.invalid/example-profile/award --checked-on 2026-10-25 --amount-usd 50000 --period total --fiscal-year 2026
+python3 -m campaign_tool content agency-profile list --directory $CAMPAIGN --agency ca-example-profile-pd
+python3 -m campaign_tool content agency-profile funding remove --directory $CAMPAIGN --agency ca-example-profile-pd --index 1
+python3 -m campaign_tool content agency-profile funding add --directory $CAMPAIGN --agency ca-example-profile-pd --kind grant --name "Synthetic Safety Program" --as-stated-in "Synthetic grant award letter" --source-url https://example.invalid/example-profile/award --checked-on 2026-10-25 --amount-usd 50000 --period total --fiscal-year 2026
 ```
+
+Repeat `add` to append another entry; an exact duplicate `source_url` within this agency's same list is refused. Amounts stay exact decimal strings, including trailing zeros; they are never added up, ranked or compared.
+The `list` index is the 1-based stored position within that field, not its display rank. List again before
+removing because positions shift. Removing the final entry omits the field, not an empty list. The practice
+sequence removes and re-adds the same entry so it remains recorded. Nothing is fetched.
+
+Every funding add reminds you: check that the name is not a person. Privacy lint is not clearance.
 
 Reference: [SITE-CONTENT.md, how an agency is paid for](SITE-CONTENT.md#how-an-agency-is-paid-for-as-stated-profilefunding).
 
@@ -242,13 +250,19 @@ paragraphs, which also describe `sharing.html`).
 Field: `profile.reports`, a list of 1 to 20 entries. Read each report on the agency's own site and give its `title` as
 published, `kind` (`annual_report`, `audit_summary`, `usage_statistics`, `surveillance_report`, `other`), `period_start`
 before `period_end`, `source_url` and `checked_on`, plus `published_on` only if the report states it. "None on record"
-means you have recorded none, not that none is required or missing. Merge into `profile`:
+means you have recorded none, not that none is required or missing. Record one entry at a time by command:
 
-```json
-{"reports": [{"title": "2025 Annual ALPR Report", "kind": "annual_report", "period_start": "2025-01-01",
-              "period_end": "2025-12-31", "source_url": "https://example.invalid/example-profile/reports/2025",
-              "checked_on": "2026-10-28", "published_on": "2026-02-01"}]}
+```sh
+python3 -m campaign_tool content agency-profile report add --directory $CAMPAIGN --agency ca-example-profile-pd --title "2025 Annual ALPR Report" --kind annual_report --period-start 2025-01-01 --period-end 2025-12-31 --source-url https://example.invalid/example-profile/reports/2025 --checked-on 2026-10-28 --published-on 2026-02-01
+python3 -m campaign_tool content agency-profile list --directory $CAMPAIGN --agency ca-example-profile-pd
+python3 -m campaign_tool content agency-profile report remove --directory $CAMPAIGN --agency ca-example-profile-pd --index 1
+python3 -m campaign_tool content agency-profile report add --directory $CAMPAIGN --agency ca-example-profile-pd --title "2025 Annual ALPR Report" --kind annual_report --period-start 2025-01-01 --period-end 2025-12-31 --source-url https://example.invalid/example-profile/reports/2025 --checked-on 2026-10-28 --published-on 2026-02-01
 ```
+
+Repeat `add` to append another entry; an exact duplicate `source_url` within this agency's same list is refused.
+The `list` index is the 1-based stored position within that field, not its display rank. List again before
+removing because positions shift. Removing the final entry omits the field, not an empty list. The practice
+sequence removes and re-adds the same entry so it remains recorded. Nothing is fetched.
 
 Reference: [SITE-CONTENT.md, reports the agency has published](SITE-CONTENT.md#reports-the-agency-has-published-about-its-alpr-use-profilereports).
 

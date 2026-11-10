@@ -19,6 +19,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import unicodedata
 from datetime import date
 
@@ -198,6 +199,11 @@ def _install(root_fd, content_fd, content_stat, target_fd, target_stat, original
                 pass
 
 
+def _refuse_hard_link(info):
+    if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+        raise ContentProfileError("content/agencies.json: must not have hard links")
+
+
 def _transaction(root, change, verb):
     """Read content/agencies.json through the admitted descriptors, let ``change(document)`` edit the parsed copy and
     return ``(result, changed)``, then install the whole rewritten file once, or refuse with nothing written."""
@@ -205,8 +211,23 @@ def _transaction(root, change, verb):
     target_fd = None
     try:
         content_stat = os.fstat(content_fd)
+        if verb == "entry change":  # refuse a hard-linked file before any read; content_sharing.py stays unchanged
+            try:
+                named = os.stat(TARGET, dir_fd=content_fd, follow_symlinks=False)
+            except OSError:
+                named = None  # _read_target reports a missing or unreadable file
+            if named is not None:
+                _refuse_hard_link(named)
         target_fd, target_stat, original = _read_target(content_fd)
-        result, changed = change(_parse_target(original))
+        if verb == "entry change":
+            _refuse_hard_link(target_stat)  # the opened file, in case a link appeared after the check above
+        try:
+            document = _parse_target(original)
+        except ContentError:
+            if verb != "entry change":
+                raise
+            raise ContentProfileError("content/agencies.json: not valid UTF-8 JSON") from None
+        result, changed = change(document)
         if not changed:
             return result
         text = (json.dumps(result.pop("_document"), indent=2, ensure_ascii=False) + "\n").encode("utf-8")
@@ -359,6 +380,76 @@ def format_document(result):
         lines.append(f"Dropped profile.{result['reading']} (checked_on {result['dropped']}); record a new reading with "
                      f"content agency-profile {result['verb']}.")
     return "\n".join(lines + [WRITE_NOTICE]) + "\n"
+
+
+def _entry_change(root, agency_id, field, entry, index, today):
+    """Append or remove one raw entry through the inherited whole-document transaction."""
+    if field not in ("funding", "reports"):
+        raise ContentProfileError("--field: choose funding or reports")
+    today = today or date.today()
+
+    def change(document):
+        load_agencies(document, "content/agencies.json", today)  # never repair an invalid original
+        position = _agency(document, agency_id)
+        agency = document[position]
+        profile = agency.setdefault("profile", {})
+        if not isinstance(profile, dict):
+            raise ContentProfileError("profile: must be an object")
+        stored = profile.get(field, [])
+        if entry is not None:
+            if isinstance(entry, dict) and any(item["source_url"] == entry.get("source_url") for item in stored):
+                raise ContentProfileError(f"profile.{field}: source_url already recorded")
+            stored = stored + [entry]
+            profile[field] = stored
+            number = len(stored)
+        else:
+            if not stored:
+                raise ContentProfileError(f"profile.{field}: no entries recorded")
+            if not (isinstance(index, str) and INDEX.fullmatch(index)) or int(index) > len(stored):
+                raise ContentProfileError(f"--index: must name a stored position from 1 to {len(stored)}")
+            number = int(index)
+            del stored[number - 1]
+            if not stored:
+                del profile[field]
+        load_agencies(document, "content/agencies.json", today)
+        if entry is not None:
+            for key in (("name", "as_stated_in") if field == "funding" else ("title",)):
+                if note := refusal(f"profile.{field}[{number - 1}].{key}", entry[key]):
+                    raise ContentProfileError(note)
+            _admit_document(document, position, field, today)
+        return {"agency_id": agency_id, "field": field, "index": number,
+                "remaining": len(stored), "_document": document}, True
+    try:
+        return _transaction(root, change, "entry change")
+    except OSError:
+        raise ContentProfileError("content/agencies.json: entry change could not be installed; nothing was written") from None
+    except ContentError as exc:
+        message = str(exc)
+        if "nothing was written" not in message:
+            message += "; nothing was written"
+        raise ContentProfileError(message) from None
+
+
+def add_profile_entry(root, agency_id, field, entry, *, today=None):
+    """Append one transcribed funding/report entry; no normalization or amount arithmetic."""
+    if entry is None:
+        raise ContentProfileError(f"profile.{field}: expected an object")
+    return _entry_change(root, agency_id, field, entry, None, today)
+
+
+def remove_profile_entry(root, agency_id, field, index, *, today=None):
+    """Remove exactly the 1-based stored position; omit the field when the final entry goes."""
+    return _entry_change(root, agency_id, field, None, index, today)
+
+
+def format_profile_entry(result, added):
+    label = "Funding" if result["field"] == "funding" else "Report"
+    detail = "." if added else f"; {result['remaining']} remaining."
+    text = (f"{label} {'added' if added else 'removed'}: {result['agency_id']}, index {result['index']}{detail}\n"
+            "Content only; nothing was built, sent or deployed.\n")
+    if added and result["field"] == "funding":
+        text += "Reminder: check that the name is not a person.\n"
+    return text
 
 
 # DF1109B-18: the organizer's reading of a stored document against the checklist (policy_check / contract_check).
