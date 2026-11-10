@@ -62,7 +62,8 @@ def _label_ok(label):
 def read_assignments(root):
     """``{sent.json key: owner label}`` from kit/assignments.json; {} when absent. Never resets a bad file.
 
-    Reads at most MAX_BYTES + 1 bytes before decoding. Orphans (a key with no recorded request)
+    Reads at most MAX_BYTES + 1 bytes before decoding. A document the JSON decoder refuses for excessive nesting
+    (RecursionError) is reported as the fixed "JSON nesting is too deep" unreadable store. Orphans (a key with no recorded request)
     are kept as stored; callers ignore them."""
     path = _kit_dir(root) / "assignments.json"
 
@@ -82,6 +83,8 @@ def read_assignments(root):
         document = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
     except (UnicodeDecodeError, ValueError):  # json.JSONDecodeError and the duplicate-key error are ValueErrors
         raise bad("not JSON, or a key is repeated") from None
+    except RecursionError:  # the decoder's own refusal of excessive nesting: fixed and value-free
+        raise bad("JSON nesting is too deep") from None
     if not isinstance(document, dict) or set(document) != {"schema_version", "assignments"} \
             or type(document["schema_version"]) is not int or document["schema_version"] != 1 \
             or not isinstance(document["assignments"], dict):
