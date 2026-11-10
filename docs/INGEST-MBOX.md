@@ -41,6 +41,14 @@ and the 50 MiB per-message limit counts only the derived message. The 200 MiB ma
 More than 500 messages, or a file that does not start with `From `, is refused whole before anything is written.
 Skipped messages (`empty`, `too_large`, `malformed`) are listed by number; the import still succeeds.
 
+A mailbox whose file name (the last path part only) cannot be written as UTF-8, such as a raw byte `FF` that the
+file system allows, is refused whole by `--dry-run` and the real import alike, with
+`Mailbox filename cannot be represented as UTF-8; nothing was imported`, before the mailbox or any message is
+preserved. The name prefixes every receipt, so no message-level skip applies. Accented, combining, CJK and emoji
+names stay as they are, and undecodable folder names above the file do not matter. Nothing is renamed or repaired
+for you: rename the file to a plain UTF-8 name yourself and run the import again. An earlier version could leave
+an unreferenced object behind for such a name; that object is not removed or adopted.
+
 ## Limits
 
 - mboxo: a body line that begins `From ` and was not escaped by the exporter starts a new message. `>From ` lines
