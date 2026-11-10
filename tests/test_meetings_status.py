@@ -144,6 +144,15 @@ class MeetingsStatusTests(unittest.TestCase):
     def rows(self, report=None):
         return {row.get("id", row["path"]): row for row in (report or self.report())["rows"]}
 
+    def refuse_unbounded_content(self):
+        real_read = Path.read_bytes
+
+        def read(path):
+            self.assertFalse(path.is_relative_to(self.root / "content"), f"unbounded content read: {path}")
+            return real_read(path)
+
+        return mock.patch.object(Path, "read_bytes", autospec=True, side_effect=read)
+
     def test_every_staged_row_and_local_calendar_order(self):
         report = self.report()
         self.assertEqual([row.get("id", row["path"]) for row in report["rows"]], EXPECTED_ORDER + ["kit/meetings.json[4]"])
@@ -395,6 +404,211 @@ class MeetingsStatusTests(unittest.TestCase):
         source = (REPO_ROOT / "campaign_tool" / "meetings_status.py").read_text(encoding="utf-8")
         for writer in ("write_text", "write_bytes", "mkdir", "chmod", "_write_json", "O_CREAT", "unlink", "rename"):
             self.assertNotIn(writer, source)
+
+    def test_oversized_content_is_not_reopened_for_staleness(self):
+        cap = meetings_status.MAX_JSON_BYTES
+        for folder in ("meetings", "findings"):
+            for size in (cap + 1, 4 * cap + 1):
+                with self.subTest(folder=folder, size=size):
+                    path = self.root / "content" / folder / "oversized.json"
+                    path.write_bytes(b" " * size)
+                    opened = []
+                    real_open = os.open
+
+                    def track_open(name, *args, **kwargs):
+                        opened.append(os.fspath(name))
+                        return real_open(name, *args, **kwargs)
+
+                    with self.refuse_unbounded_content(), \
+                            mock.patch.object(meetings_status.os, "open", side_effect=track_open):
+                        report = self.report()
+                    self.assertNotIn(str(path), opened)
+                    rows = self.rows(report)
+                    self.assertEqual(rows[f"content/{folder}/oversized.json"]["kind"], "unreadable")
+                    self.assertEqual(rows["b-today"]["comment_kit"], "unknown" if folder == "findings" else "current")
+                    self.assertEqual(rows["c-stale"]["comment_kit"], "stale")
+                    self.assertEqual(rows["j-nokit"]["comment_kit"], "missing")
+                    for flags in ((), ("--json",)):
+                        result = cli("meetings-status", "--directory", str(self.root), "--as-of", AS_OF, *flags)
+                        self.assertEqual(result.returncode, 1, result.stderr)
+                        self.assertIn("content/" + folder + "/oversized.json", result.stdout)
+                    path.unlink()
+
+    def test_each_accepted_content_file_is_read_once_at_exact_cap(self):
+        cap = meetings_status.MAX_JSON_BYTES
+        for path in (self.root / "content").glob("*/*.json"):
+            data = path.read_bytes()
+            path.write_bytes(data + b" " * (cap - len(data)))
+        expected = {str(p) for p in (self.root / "content").glob("*/*.json")}
+        identities = {os.stat(p).st_ino: p for p in expected}
+        reads = []
+        real_fdopen = os.fdopen
+
+        def track_fdopen(fd, *args, **kwargs):
+            handle = real_fdopen(fd, *args, **kwargs)
+            wrapped = mock.MagicMock(wraps=handle)
+            wrapped.__enter__.return_value = wrapped
+            wrapped.__exit__.side_effect = handle.__exit__
+
+            def read(size=-1):
+                path = identities.get(os.fstat(fd).st_ino)
+                if path in expected:
+                    reads.append((path, size))
+                return handle.read(size)
+
+            wrapped.read.side_effect = read
+            return wrapped
+
+        before = snapshot(self.root)
+        with self.refuse_unbounded_content(), \
+                mock.patch.object(meetings_status.os, "fdopen", side_effect=track_fdopen):
+            report = self.report()
+        self.assertEqual(sorted(reads), sorted((p, cap + 1) for p in expected))
+        self.assertEqual(self.rows(report)["b-today"]["comment_kit"], "current")
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_file_growing_after_stat_is_refused_by_bounded_descriptor_read(self):
+        cap = meetings_status.MAX_JSON_BYTES
+        for folder, name in (("meetings", "b-today.json"), ("findings", FINDING.name)):
+            with self.subTest(folder=folder):
+                path = self.root / "content" / folder / name
+                original = path.read_bytes()
+                real_open = os.open
+                sizes = []
+                real_fdopen = os.fdopen
+
+                def grow(name, *args, **kwargs):
+                    if os.fspath(name) == str(path):
+                        path.write_bytes(original + b" " * cap)
+                    return real_open(name, *args, **kwargs)
+
+                def track(fd, *args, **kwargs):
+                    handle = real_fdopen(fd, *args, **kwargs)
+                    wrapped = mock.MagicMock(wraps=handle)
+                    wrapped.__enter__.return_value = wrapped
+                    wrapped.__exit__.side_effect = handle.__exit__
+
+                    def read(size=-1):
+                        if os.fstat(fd).st_ino == path.stat().st_ino:
+                            sizes.append(size)
+                        return handle.read(size)
+
+                    wrapped.read.side_effect = read
+                    return wrapped
+
+                with mock.patch.object(meetings_status.os, "open", side_effect=grow), \
+                        mock.patch.object(meetings_status.os, "fdopen", side_effect=track), \
+                        self.refuse_unbounded_content():
+                    rows = self.rows()
+                self.assertEqual(rows[f"content/{folder}/{name}"]["kind"], "unreadable")
+                self.assertTrue(sizes)
+                self.assertTrue(all(size == cap + 1 for size in sizes))
+                path.write_bytes(original)
+
+    def test_staleness_uses_validated_snapshot_after_file_replacement(self):
+        for folder, name, loader in (("meetings", "b-today.json", "load_meeting"),
+                                     ("findings", FINDING.name, "load_finding")):
+            with self.subTest(folder=folder):
+                path = self.root / "content" / folder / name
+                original = path.read_bytes()
+                replacement = json.loads(original)
+                if folder == "meetings":
+                    replacement["comment_kit_md"] = STALE_KIT
+                else:
+                    replacement["corrections"].append({"date": "2026-02-04", "note": "Synthetic later correction"})
+                real_load = getattr(meetings_status, loader)
+
+                def replace_after_load(raw, label, **kwargs):
+                    loaded = real_load(raw, label, **kwargs)
+                    if label == f"{folder}/{name}":
+                        write(path, replacement)
+                    return loaded
+
+                with mock.patch.object(meetings_status, loader, side_effect=replace_after_load):
+                    self.assertEqual(self.rows()["b-today"]["comment_kit"], "current")
+                self.assertEqual(self.rows()["b-today"]["comment_kit"], "stale")
+                path.write_bytes(original)
+
+    def test_latest_duplicate_slug_literal_markers_and_filename_identity(self):
+        findings = self.root / "content" / "findings"
+        doc = json.loads(FINDING.read_bytes())
+        doc["corrections"].append({"date": "2026-02-05", "note": "Synthetic latest correction"})
+        write(findings / "a-latest.json", doc)
+        # The original sorts later: it must not overwrite the newer correction.
+        rows = self.rows()
+        self.assertEqual(rows["b-today"]["comment_kit"], "stale")
+        doc["slug"] = "other-finding"
+        write(findings / "other.json", doc)
+        kits = {
+            "latest": LINK + " (corrected 2026-02-05;",
+            "date-elsewhere": LINK + "\nCorrected 2026-02-05;",
+            "wrong-marker": LINK + " (corrected 2026-02-05)",
+            "multiple": LINK + " (corrected 2026-02-05; /findings/other-finding.html",
+            "no-id": STALE_KIT,
+        }
+        for mid, kit in kits.items():
+            value = meeting(mid, "2026-11-20T18:00:00-08:00", kit=kit, participation=participation(False))
+            if mid == "no-id":
+                del value["id"]
+            write(self.root / "content" / "meetings" / f"{mid}.json", value)
+        rows = self.rows()
+        self.assertEqual(rows["latest"]["comment_kit"], "current")
+        for mid in set(kits) - {"latest"}:
+            self.assertEqual(rows[mid]["comment_kit"], "stale", mid)
+            self.assertEqual(rows[mid]["next_step"], "restage_kit", mid)
+        write(findings / "broken.json", "{SECRET-KIT-PROSE")
+        rows = self.rows()
+        self.assertEqual(rows["latest"]["comment_kit"], "unknown")
+        self.assertEqual(rows["latest"]["next_step"], "repair_input")
+        self.assertIsNone(rows["latest"]["command"])
+        self.assertEqual(rows["multiple"]["comment_kit"], "stale")
+        self.assertNotIn("SECRET-KIT-PROSE", json.dumps(self.report()))
+
+    def test_unsafe_finding_gate_and_permission_errors_stay_private(self):
+        path = self.root / "content" / "findings" / "unsafe.json"
+        for kind in ("fifo", "directory", "symlink", "unreadable"):
+            with self.subTest(kind=kind):
+                if kind == "fifo":
+                    os.mkfifo(path)
+                elif kind == "directory":
+                    path.mkdir()
+                elif kind == "symlink":
+                    path.symlink_to(FINDING)
+                else:
+                    write(path, json.loads(FINDING.read_bytes()))
+                real_open = os.open
+
+                def refuse(name, *args, **kwargs):
+                    if os.fspath(name) == str(path):
+                        self.fail("refused special file was opened") if kind != "unreadable" else None
+                        raise PermissionError("SECRET-KIT-PROSE")
+                    return real_open(name, *args, **kwargs)
+
+                with mock.patch.object(meetings_status.os, "open", side_effect=refuse), self.refuse_unbounded_content():
+                    report = self.report()
+                rows = self.rows(report)
+                self.assertEqual(rows["content/findings/unsafe.json"]["kind"], "unreadable")
+                self.assertEqual(rows["b-today"]["comment_kit"], "unknown")
+                self.assertEqual(rows["c-stale"]["comment_kit"],
+                                 "unknown" if kind in ("fifo", "directory") else "stale")
+                self.assertEqual(rows["j-nokit"]["comment_kit"], "missing")
+                self.assertNotIn("SECRET-KIT-PROSE", json.dumps(report) + render_text(report))
+                path.rmdir() if kind == "directory" else path.unlink()
+        real_listdir = os.listdir
+        calls = 0
+
+        def fail_second_listing(folder):
+            nonlocal calls
+            if os.fspath(folder) == str(path.parent):
+                calls += 1
+                if calls == 2:
+                    raise PermissionError("SECRET-KIT-PROSE")
+            return real_listdir(folder)
+
+        with mock.patch.object(meetings_status.os, "listdir", side_effect=fail_second_listing):
+            rows = self.rows()
+        self.assertEqual(rows["c-stale"]["comment_kit"], "unknown")
+        self.assertEqual(rows["b-today"]["next_step"], "repair_input")
 
     def test_inventory_docs_and_command_examples(self):
         handover = (REPO_ROOT / "docs" / "HANDOVER.md").read_text(encoding="utf-8")
