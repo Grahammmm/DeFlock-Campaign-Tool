@@ -80,7 +80,7 @@ class HandoverGuideTests(unittest.TestCase):
 
     def test_incoming_checks_target_the_restored_directory(self):
         # every incoming-machine command (tasks 5-10) names NEW_EMPTY_DIR, never the outgoing D
-        incoming = {"campaigns", "kit-status", "kit-due", "today", "finding", "personal-data", "doctor"}
+        incoming = {"campaigns", "kit-status", "kit-due", "today", "meetings-status", "finding", "personal-data", "doctor"}
         text = read(GUIDE)
         for kind, body, number in fences(text):
             for line in command_lines(body):
@@ -128,7 +128,8 @@ class HandoverGuideTests(unittest.TestCase):
             namespace, path = parse_only(module, tokens)
             seen.add(path)
         for needed in (("backup",), ("verify",), ("backup-drill",), ("restore",), ("campaigns", "list"),
-                       ("campaigns", "add"), ("kit-status",), ("kit-due",), ("today",), ("finding", "status"),
+                       ("campaigns", "add"), ("kit-status",), ("kit-due",), ("today",), ("meetings-status",),
+                       ("finding", "status"),
                        ("finding", "review-status"), ("finding", "reviewers", "list"), ("personal-data",),
                        ("doctor",)):
             self.assertIn(needed, seen)
