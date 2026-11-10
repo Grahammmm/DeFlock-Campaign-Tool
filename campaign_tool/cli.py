@@ -864,6 +864,23 @@ def _campaign_option(parser):
         group.add_argument("--campaign", metavar="NAME", action=registry.CampaignAction, help="A registered campaign, not --directory")
 
 
+def _content_list(load, as_json, line, refusal):
+    """DF1109B-05: print a read-only list whole (text lines, ``none recorded`` when empty, or a JSON array) or, with no
+    stdout, one fixed stderr line and exit 2. ContentError is a ValueError; nothing raised here names a supplied value."""
+    from .agency_actions import SelectorError
+    try:
+        rows = load()
+        text = (json.dumps(rows, indent=2, ensure_ascii=False) + "\n" if as_json
+                else "".join(line(row) + "\n" for row in rows) or "none recorded\n")
+    except SelectorError as exc:
+        print(f"Stopped: {exc}", file=sys.stderr)
+        sys.exit(2)
+    except (ValueError, OSError, RecursionError):
+        print(refusal, file=sys.stderr)
+        sys.exit(2)
+    print(text, end="")
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1499,6 +1516,11 @@ def main():
     action_remove.add_argument("--directory", required=True, help="Campaign directory (required)")
     action_remove.add_argument("--agency", required=True)
     action_remove.add_argument("--index", required=True, help="1-based position among that agency's actions in the file, not the page order")
+    action_list = action_cmds.add_parser("list", help="Print the stored actions, per agency in file order, with the 1-based "
+                                         "index remove --index takes (reads only; writes and fetches nothing)")
+    action_list.add_argument("--directory", required=True, help="Campaign directory (required)")
+    action_list.add_argument("--agency", default=None, help="Only this agency's actions (indices are not renumbered)")
+    action_list.add_argument("--json", dest="as_json", action="store_true", help="A JSON array instead of text lines")
     sharing_p = content_cmds.add_parser("agency-sharing", help="Record the agencies the vendor transparency portal names as receiving data, "
                                         "as the organizer transcribed them (CSV header name,state,kind; 1-2000 rows, all or none; never fetched)")
     sharing_p.add_argument("--directory", required=True)
@@ -1526,6 +1548,10 @@ def main():
     coverage_remove = coverage_cmds.add_parser("remove", help="Drop the one entry with exactly this URL")
     coverage_remove.add_argument("--directory", required=True)
     coverage_remove.add_argument("--url", required=True)
+    coverage_list = coverage_cmds.add_parser("list", help="Print the entries in file order with the exact URL remove --url "
+                                             "takes (reads only; writes and fetches nothing)")
+    coverage_list.add_argument("--directory", required=True)
+    coverage_list.add_argument("--json", dest="as_json", action="store_true", help="A JSON array instead of text lines")
     finding_cmds = commands.add_parser("finding", help="Offline finding review receipts (private/reviews/)"
                                        ).add_subparsers(dest="finding_command", required=True)
     review_p = finding_cmds.add_parser("review", help="Record one review receipt for a draft (self-asserted unless --signature)")
@@ -2227,6 +2253,17 @@ def main():
         elif args.command == "content" and args.content_command == "strip-metadata":
             from .image_meta import strip_file
             print(json.dumps(strip_file(args.file, args.out), indent=2))
+        elif args.command == "content" and args.content_command == "agency-action" and args.agency_action_command == "list":
+            from .agency_actions import list_actions
+            _content_list(lambda: list_actions(root, args.agency), args.as_json,
+                          lambda r: f"{r['agency_id']} | {r['index']} | {r['on']} | {r['kind_label']} | {r['as_stated']} | "
+                                    f"{r['source_url']} | checked {r['checked_on']}",
+                          "Stopped: content/agency-actions.json: cannot list; fix the file and its agency references.")
+        elif args.command == "content" and args.content_command == "coverage" and args.coverage_command == "list":
+            from .coverage import list_coverage
+            _content_list(lambda: list_coverage(root), args.as_json,
+                          lambda r: f"{r['published_on']} | {r['outlet']} | {r['headline']} | {r['url']}",
+                          "Stopped: content/coverage.json: cannot list; fix the file and its published finding references.")
         elif args.command == "content" and args.content_command == "agency-action":
             from . import agency_actions
             if args.agency_action_command == "add":
