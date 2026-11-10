@@ -810,6 +810,45 @@ appears and every page is byte-identical. The body's agency page shows "What dec
 written with `white-space: pre-wrap`; a strict `style-src 'self'` policy may ignore that inline style, in which case the
 text is still complete and exact. Labels: `statements.*`.
 
+**Maintaining statements from the command line (DF1109-13).** `statement add|remove|list --directory D` edits
+`content/statements.json` so you do not hand-edit it. Nothing is fetched, built, published or sent: the next explicit
+`build` shows the result.
+
+```sh
+printf '%s' 'We will review the camera contract before renewal.' > quote.txt   # no final line break
+python3 -m campaign_tool statement add --directory D --agency-id ca-cedar-city-council --official "Ash Example" \
+  --said-on 2026-10-01 --quote-file quote.txt --context meeting \
+  --source-url https://cedar.example/minutes/2026-10-01 --checked-on 2026-10-10 [--recording-time 1:02:45] \
+  [--context-note "Said during the contract renewal item."]
+python3 -m campaign_tool statement list --directory D
+python3 -m campaign_tool statement remove --directory D --index 2
+```
+
+- `add` needs a real `content/` folder, a valid `site.json` and a current `content/officials.json` (the build's rules,
+  365-day limit included; the person must already be listed: add them with `officials add`, re-check them with
+  `officials recheck`; nothing is re-checked for you). `--agency-id` and `--official` must match that roster exactly.
+  `--context` is one of the five contexts above and has no default. It checks the whole existing file and then the
+  whole file with the new row using the build's own statement rules and shared privacy lint, refuses a row equal in
+  every stored field to one already stored (key order does not matter; a different optional field makes a different
+  row) and appends it last. The first `add` creates the file (mode 0644); nothing else does.
+- The quote is read from `--quote-file` byte for byte as UTF-8: nothing is trimmed, normalized or converted, so spaces
+  and accents stay exactly as in the file. Any line break, a final one included, is refused by the quote rule: save
+  the file without one (`printf '%s'` above). Links, FIFOs, folders, invalid UTF-8 and files over 4 KiB are refused.
+- `list` prints a JSON array, newest `said_on` first (equal days in stored order). Each row carries `index`: its
+  1-based position in stored order, which is what `remove --index` takes; it is shown only and never stored. Without
+  a file it prints `[]`. It writes nothing.
+- `remove --index N` deletes the row at stored position N (a plain number from 1; `0`, signs, decimals and
+  out-of-range positions are refused). Removing the last row leaves `[]`; the file is never deleted.
+- `add` prints `{"action":"added","index":N}` and `remove` `{"action":"removed","index":N}`. Any problem exits 2 with
+  one `Stopped:` line naming the file, row (`statements.json[N]`, counted from 0 as the build does), flag or field and a
+  fixed reason; a quote, note or address you supplied is never repeated. A file problem (unknown field, a JSON
+  object repeating a key, a future date, a privacy-lint match, more than 200 rows) blocks `add`, `remove` and `list`
+  alike until you fix it by hand; nothing is repaired or dropped for you, and existing rows keep their exact values
+  and order. Listing and removing check names against the roster without its 365-day limit; `add` and the build apply it.
+- Every write goes to a temporary file in `content/`, is flushed to disk and replaces the file in one rename, only if
+  the file is still the one that was read (or still absent); otherwise the old bytes and mode stay. Run one writer at
+  a time.
+
 ### Adding a source record
 
 ```

@@ -416,5 +416,62 @@ class StarterReviewTests(unittest.TestCase):
                 self.assertEqual(review.review_blockers(finding, [*approvals, stale]), [])
 
 
+class StatementCommandCLITests(unittest.TestCase):
+    """DF1109-13: the real parser and dispatch of statement add|remove|list (exit codes, exact stdout, no echo)."""
+
+    def setUp(self):
+        import shutil
+        from datetime import date, timedelta
+        temporary = tempfile.TemporaryDirectory(prefix="synthetic-statement-cli-")
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.root = self.base / "campaign"
+        shutil.copytree(REPO_ROOT / "examples" / "fictional-campaign", self.root, ignore=shutil.ignore_patterns("public"))
+        self.recent = (date.today() - timedelta(days=3)).isoformat()
+        (self.root / "content" / "officials.json").write_text(json.dumps({"schema_version": 1, "bodies": [
+            {"agency_id": "ca-cedar-city-council", "officials": [{"name": "Ash Example", "role": "Mayor",
+             "source_url": "https://cedar.example/council", "checked_on": self.recent}]}]}), encoding="utf-8")
+        self.quote = self.base / "quote.txt"
+        self.quote.write_bytes("We will review it, Unmistakable Payload.".encode("utf-8"))
+
+    def run_statement(self, *args):
+        return subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "statement", *args, "--directory",
+                               str(self.root)], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+
+    def add(self, *extra):
+        return self.run_statement("add", "--agency-id", "ca-cedar-city-council", "--official", "Ash Example",
+                                  "--said-on", self.recent, "--quote-file", str(self.quote), "--context", "meeting",
+                                  "--source-url", "https://cedar.example/minutes", "--checked-on", self.recent, *extra)
+
+    def test_statement_verbs_exit_codes_and_output(self):
+        store = self.root / "content" / "statements.json"
+        listed = self.run_statement("list")
+        self.assertEqual((listed.returncode, listed.stdout, listed.stderr), (0, "[]\n", ""))
+        self.assertFalse(store.exists())
+        added = self.add()
+        self.assertEqual((added.returncode, added.stdout), (0, '{"action":"added","index":1}\n'), added.stderr)
+        again = self.add()
+        self.assertEqual(again.returncode, 2)
+        self.assertIn("Stopped: content/statements.json: the same statement is already stored at index 1", again.stderr)
+        self.assertNotIn("Unmistakable Payload", again.stdout + again.stderr)
+        self.quote.write_bytes(b"Unmistakable Payload\n")
+        newline = self.add()
+        self.assertEqual(newline.returncode, 2)
+        self.assertIn("--quote-file: must be plain text without control characters", newline.stderr)
+        self.assertNotIn("Unmistakable Payload", newline.stdout + newline.stderr)
+        rows = json.loads(self.run_statement("list").stdout)
+        self.assertEqual([(r["index"], r["quote"]) for r in rows], [(1, "We will review it, Unmistakable Payload.")])
+        for bad in ("0", "2"):
+            self.assertEqual(self.run_statement("remove", "--index", bad).returncode, 2)
+        removed = self.run_statement("remove", "--index", "1")
+        self.assertEqual((removed.returncode, removed.stdout), (0, '{"action":"removed","index":1}\n'))
+        self.assertEqual(store.read_bytes(), b"[]\n")
+        for args in (("add", "--context", "meeting"), ("remove",), ("edit",)):
+            self.assertEqual(self.run_statement(*args).returncode, 2)
+        context = self.add("--context", "tweet")
+        self.assertEqual(context.returncode, 2)
+        self.assertIn("invalid choice", context.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

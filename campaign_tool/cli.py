@@ -1687,6 +1687,32 @@ def main():
             verb_p.add_argument(flag, required=True, help=officials_flags[flag])
         if verb == "add":
             verb_p.add_argument("--profile-url", help="Optional https:// page of this official on the official site")
+    from .content_statements import CONTEXTS as statement_contexts
+    statement_cmds = commands.add_parser(
+        "statement", help="Maintain content/statements.json, organizer-verified public statements of listed officials "
+        "(nothing is fetched, built, published or sent)").add_subparsers(dest="statement_command", required=True)
+    st_add = statement_cmds.add_parser("add", allow_abbrev=False, help="Append one statement after checking the whole "
+                                       "file; refuses an exact duplicate. The first add creates the file")
+    for flag, text in (("--directory", "Campaign directory (required)"),
+                       ("--agency-id", "agency_id of the body in content/officials.json"),
+                       ("--official", "The official's name exactly as content/officials.json lists it"),
+                       ("--said-on", "YYYY-MM-DD the statement was made"),
+                       ("--quote-file", "UTF-8 file holding the quote exactly as the official source has it (1 to 400 "
+                                        "characters, one line, no final line break; nothing is trimmed)"),
+                       ("--source-url", "https:// address of the official minutes, video or release (recorded, never "
+                                        "fetched)"),
+                       ("--checked-on", "YYYY-MM-DD you checked that source (not in the future)")):
+        st_add.add_argument(flag, required=True, help=text)
+    st_add.add_argument("--context", required=True, choices=statement_contexts, help="Where it was said")
+    st_add.add_argument("--recording-time", help="Optional H:MM:SS into the recording")
+    st_add.add_argument("--context-note", help="Optional plain-text campaign context, at most 200 characters")
+    st_remove = statement_cmds.add_parser("remove", allow_abbrev=False, help="Remove one statement by the 1-based "
+                                          "index statement list prints (its position in stored order)")
+    st_remove.add_argument("--directory", required=True, help="Campaign directory (required)")
+    st_remove.add_argument("--index", required=True, help="1-based stored position, as statement list prints it")
+    statement_cmds.add_parser("list", allow_abbrev=False, help="Print the statements newest first as JSON, each with "
+                              "its stored index (read-only)").add_argument("--directory", required=True,
+                                                                           help="Campaign directory (required)")
     today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
@@ -2209,6 +2235,14 @@ def main():
             try:
                 read_config(root)
                 print(officials_cli(root, args))
+            except (OSError, ValueError) as exc:  # one Stopped: line, never a traceback or a supplied value
+                fixes.emit(exc)
+                sys.exit(2)
+        elif args.command == "statement":
+            from .statements import run_cli as statement_cli
+            try:
+                read_config(root)
+                sys.stdout.write(statement_cli(root, args))
             except (OSError, ValueError) as exc:  # one Stopped: line, never a traceback or a supplied value
                 fixes.emit(exc)
                 sys.exit(2)
