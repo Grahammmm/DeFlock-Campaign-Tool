@@ -8,7 +8,7 @@ Conventions the guide keeps and these tests read: the guide is replayed in docum
 where they stand ($CAMPAIGN and $CSV are filled in here); the one ```json block with an "agency_id" is appended to
 content/agencies.json where it stands; every other ```json block is an object whose keys are merged into that agency's
 profile where it stands; the ```text block with a ``name,state,kind`` header is the sharing CSV, and the ```text block of
-task 5 is the replacement sequence, whose ``(next unit)`` lines are not commands yet.
+task 5 is the replacement sequence of four commands (DF1109B-18: tasks 3 and 5 record their readings by command).
 """
 import contextlib
 import copy
@@ -146,7 +146,7 @@ class GuideTests(unittest.TestCase):
                 argv = shlex.split(line)
                 if argv[:3] != ["python3", "-m", "campaign_tool"]:
                     raise AssertionError(f"not a campaign_tool command: {line}")
-                writer = argv[3:5] == ["content", "agency-profile"] and argv[5] in ("policy", "contract")
+                writer = argv[3:5] == ["content", "agency-profile"] and argv[5] in ("policy", "contract", "policy-check", "contract-check")
                 if writers_only and not writer:
                     continue
                 arguments = [re.sub(r"\$([A-Z]+)", lambda m: mapping[m.group(1)], token) for token in argv[3:]]
@@ -250,16 +250,18 @@ class GuideTests(unittest.TestCase):
         self.assertIn(f"--agency {AGENCY} --index 1", body)
         self.assertEqual(len(json.loads(read(self.root / "content" / "agency-actions.json"))["actions"]), 1)
 
-    def test_documented_replacement_sequence_drops_each_reading_and_never_rebinds_it(self):
-        """DF1109B-17: task 5's replacement sequence, run after the practice walk; the old readings go, the loader and
-        content-check accept the file after every command, and no hand edit is needed between them."""
+    def test_documented_replacement_sequence_drops_each_reading_and_records_the_new_one(self):
+        """DF1109B-17/18: task 5's replacement sequence, run after the practice walk; each old reading goes, the new
+        reading is recorded by command without --replace, the loader and content-check accept the file after every
+        command, and no hand edit is needed between them."""
         body = sections(self.guide)["5. Read the contract against the checklist"]
         block = next(block for kind, block in fences(body) if kind == "text")
         lines = block.splitlines()
-        self.assertEqual([line.startswith("(next unit)") for line in lines], [False, True, False, True])
+        self.assertEqual([line.split()[5] for line in lines], ["policy", "policy-check", "contract", "contract-check"])
+        self.assertNotIn("--replace", lines[1] + lines[3])
         self.walk(self.guide)
         outputs = []
-        for line in lines[0::2]:
+        for line in lines:
             argv = [token.replace("$CAMPAIGN", str(self.root)) for token in shlex.split(line)[3:]]
             code, out, err = run(*argv)
             self.assertEqual((code, err), (0, ""), line)
@@ -269,12 +271,37 @@ class GuideTests(unittest.TestCase):
                       "agency-profile policy-check.", outputs[0])
         self.assertIn("Removed profile.alpr_policy archived_url and archived_on", outputs[0])  # task 11's copy
         self.assertIn("Dropped profile.contract_check (checked_on 2026-10-24); record a new reading with content "
-                      "agency-profile contract-check.", outputs[1])
+                      "agency-profile contract-check.", outputs[2])
+        self.assertIn(f"Recorded profile.policy_check for {AGENCY} (checked_on 2026-10-30; 7 elements).\n"
+                      "This is the organizer's reading, not a legal review.\n", outputs[1])
+        self.assertIn(f"Recorded profile.contract_check for {AGENCY} (checked_on 2026-10-30; 8 elements).", outputs[3])
         stored = next(a for a in json.loads(read(self.agencies)) if a["agency_id"] == AGENCY)["profile"]
         self.assertEqual(stored["alpr_policy"]["url"], "https://example.invalid/example-profile/alpr-policy-2027.pdf")
         self.assertEqual(stored["contract"]["source_url"], "https://example.invalid/example-profile/agreement-2028.pdf")
         self.assertNotIn("cost", stored["contract"])  # a full replacement, not a patch
-        self.assertFalse({"policy_check", "contract_check"} & set(stored))
+        self.assertEqual((stored["policy_check"]["policy_url"], stored["policy_check"]["checked_on"]),
+                         (stored["alpr_policy"]["url"], "2026-10-30"))  # the new reading names the new document
+        self.assertEqual((stored["contract_check"]["contract_url"], stored["contract_check"]["checked_on"]),
+                         (stored["contract"]["source_url"], "2026-10-30"))
+        self.assertEqual(len(stored["policy_check"]["elements"]), 7)
+        self.assertEqual(len(stored["contract_check"]["elements"]), 8)
+
+    def test_documented_readings_are_recorded_by_command_and_a_missing_element_is_refused(self):
+        """DF1109B-18: tasks 3 and 5 are commands (no hand-merged JSON); the stored readings are what the commands typed."""
+        parts = sections(self.guide)
+        for number in ("3. Check what the posted policy covers", "5. Read the contract against the checklist"):
+            self.assertFalse([kind for kind, _ in fences(parts[number]) if kind == "json"], number)
+        self.walk(self.guide)
+        stored = next(a for a in json.loads(read(self.agencies)) if a["agency_id"] == AGENCY)["profile"]
+        self.assertEqual(stored["policy_check"]["elements"]["retention_destruction"], {"status": "addressed", "page": 3})
+        self.assertEqual(stored["contract_check"]["elements"]["price_changes"],
+                         {"status": "addressed", "page": 4, "note": "Annual price schedule on this page."})
+        before = read(self.agencies)
+        code, out, err = run("content", "agency-profile", "policy-check", "--directory", self.root, "--agency", AGENCY,
+                             "--checked-on", "2026-10-22", "--replace", "--element", "authorized_purposes=addressed:1")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("Missing element ids: 'authorized_users_training'", err)
+        self.assertEqual(read(self.agencies), before)
 
     def test_unknown_flag_and_broken_anchor_fail(self):
         results = self.walk(self.guide.replace("--stale-days 90", "--stale-day 90", 1))

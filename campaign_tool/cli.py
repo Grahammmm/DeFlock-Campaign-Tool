@@ -2446,8 +2446,8 @@ def main():
                 policy = args.agency_profile_command == "policy-check"
                 field = "alpr_policy" if policy else "contract"
                 elements = content_profile.parse_reading_elements(field, args.element, () if policy else args.note)
-                write = content_profile.write_policy_check if policy else content_profile.write_contract_check
-                sys.stdout.write(content_profile.format_reading(write(
+                record = content_profile.write_policy_check if policy else content_profile.write_contract_check
+                sys.stdout.write(content_profile.format_reading(record(
                     root, args.agency, checked_on=args.checked_on, elements=elements, replace=args.replace)))
             else:
                 sys.stdout.write(content_profile.format_recheck(content_profile.recheck_profile(
