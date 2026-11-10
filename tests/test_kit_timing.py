@@ -333,10 +333,10 @@ class KitTimingTests(Base):
                 self.assertFalse(list(self.private.iterdir()))
 
     def test_cli_replay_refusal_creates_no_export_and_leaks_no_payload(self):
-        secret = "SECRET-SENTINEL-77"
-        self.sent((A, "main", entry(A, "2026-03-01", [step("2026-03-02", "acknowledged", note=secret),
-                                                      step("2026-03-04", "acknowledged", note=secret)],
-                                    reference=secret, contact=secret)))
+        sentinel = "PRIVATE-MARKER-77"
+        self.sent((A, "main", entry(A, "2026-03-01", [step("2026-03-02", "acknowledged", note=sentinel),
+                                                      step("2026-03-04", "acknowledged", note=sentinel)],
+                                    reference=sentinel, contact=sentinel)))
         before = tree(self.tmp)
         out_csv = self.private / "t.csv"
         with mock.patch.object(kit_timing, "write_csv", side_effect=AssertionError("write_csv used")) as write, \
@@ -347,7 +347,7 @@ class KitTimingTests(Base):
                     code, out, err = run("kit-timing", "--directory", self.root, *extra)
                     self.assertEqual((code, out), (1, ""))
                     self.assertEqual(err, "Stopped: " + MALFORMED + "\n")
-                    self.assertNotIn(secret, err)
+                    self.assertNotIn(sentinel, err)
         write.assert_not_called()
         self.assertFalse(out_csv.exists())
         self.assertEqual(tree(self.tmp), before)  # bytes, modes' mtimes and the file set are unchanged
