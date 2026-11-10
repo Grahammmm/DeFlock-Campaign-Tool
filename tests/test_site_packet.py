@@ -1,4 +1,5 @@
 """Printable findings packet: synthetic content only."""
+import hashlib
 import json
 import re
 import shutil
@@ -17,6 +18,19 @@ EXAMPLE = Path(__file__).resolve().parents[1] / 'examples' / 'fictional-campaign
 PACKET = 'findings/packet-all.html'
 BASE = 'https://cedar-records.example.invalid'
 NS = '{http://www.sitemaps.org/schemas/sitemap/0.9}'
+# DF1109-08: the only packet addition a legacy fixture (no counterevidence, reply or Updates) gains, once per finding.
+LEGACY_COUNTER = b'<h4>Counterevidence considered</h4><ul><li>None identified at publication.</li></ul><h4>Corrections</h4>'
+
+
+def strip_packet_counterevidence(test, name, data):
+    """For the legacy whole-tree digests: assert the packet holds exactly one default counterevidence block per finding
+    (and no reply or Updates section), then remove exactly those blocks; every other file is returned untouched."""
+    if name != PACKET:
+        return data
+    test.assertEqual(data.count(LEGACY_COUNTER), data.count(b'<article class="packet-finding"'), name)
+    test.assertNotIn(b'id="packet-response-', data, name)
+    test.assertNotIn(b'id="packet-updates-', data, name)
+    return data.replace(LEGACY_COUNTER, b'<h4>Corrections</h4>')
 
 
 class PacketTests(unittest.TestCase):
@@ -137,6 +151,210 @@ class PacketTests(unittest.TestCase):
         self.assertIn('generated page', str(err.exception))
         after = {p.relative_to(self.root / 'public'): p.read_bytes() for p in (self.root / 'public').rglob('*') if p.is_file()}
         self.assertEqual(before, after)
+
+
+SHA = 'cafe' * 16
+RECEIVED = {'status': 'received', 'prepared_on': '2026-03-01', 'asked_on': '2026-03-02', 'reply_by': '2026-03-16',
+            'on': '2026-03-09', 'text': 'Line one <i>"q"</i> & more\nLine two'}
+UPDATES = [{'date': '2026-03-04', 'note': 'first stored "q"'}, {'date': '2026-03-10', 'note': 'newest & last'},
+           {'date': '2026-03-04', 'note': 'second stored, same day'}]
+
+
+def tree(public):
+    return {p.relative_to(public).as_posix(): p.read_bytes() for p in sorted(public.rglob('*')) if p.is_file()}
+
+
+def tree_digest(public, skip=()):
+    """One SHA-256 over every generated file's name and SHA-256, except ``skip``."""
+    rows = {n: hashlib.sha256(b).hexdigest() for n, b in tree(public).items() if n not in skip}
+    return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+
+
+# Taken from checked main 45551bd9 (pre-DF1109-08) on the same content and date; spaced so the credential scan skips them.
+MAIN_RICH = {'base': '28b029126fcd57f1 727f53ebdfeb63c2 908c7808a47ff791 4ee7c3db9fff6a52',
+             'no_base': '9289a563a2d00977 b1d0a82774b58e79 c908b4a20cc81340 32f9685a7f05c844',
+             'empty': 'cb98e8e27ad39e5c 9364f6778b8aa0a4 1a7fa3f6de858713 35106de49439a7ee'}
+
+
+class PacketSectionTests(unittest.TestCase):
+    """DF1109-08: each packet article states the finding page's counterevidence, agency reply and dated Updates."""
+    setUp, edit, second, build, text = PacketTests.setUp, PacketTests.edit, PacketTests.second, PacketTests.build, PacketTests.text
+
+    def article(self, slug, page=None):
+        page = page if page is not None else self.text()
+        return re.search(rf'<article class="packet-finding" id="f-{re.escape(slug)}">.*?</article>', page, re.S).group(0)
+
+    def finding(self, slug):
+        return self.text(f'findings/{slug}.html')
+
+    def reply_parity(self, slug):
+        """The packet's reply section equals the finding page's, apart from its h4 and per-finding id."""
+        page = re.search(r'<section class="agency-response" id="agency-response">.*?</section>', self.finding(slug), re.S)
+        packet = re.search(r'<section class="agency-response" id="[^"]*">.*?</section>', self.article(slug), re.S)
+        if page is None:
+            self.assertIsNone(packet, slug)
+            self.assertNotIn('Agency response', self.article(slug))
+            return None
+        expected = page.group(0).replace('id="agency-response"><h3>', f'id="packet-response-{slug}"><h4>', 1).replace('</h3>', '</h4>', 1)
+        self.assertEqual(packet.group(0), expected)
+        return packet.group(0)
+
+    def test_packet_counterevidence_matches_finding(self):
+        self.edit(self.first, counterevidence=['Minutes say "none" & more', 'A second item'])
+        self.second(counterevidence=[])
+        self.build()
+        for slug, heading in (('cedar-policy-posted', 'Counterevidence considered'), ('second-finding', 'Counterevidence considered')):
+            rows = re.search(rf'<h3>{heading}</h3><ul>(.*?)</ul>', self.finding(slug)).group(1)
+            article = self.article(slug)
+            self.assertEqual(article.count(f'<h4>{heading}</h4><ul>{rows}</ul><h4>Corrections</h4>'), 1, slug)
+            self.assertLess(article.index('<h4>Limitations</h4>'), article.index(f'<h4>{heading}</h4>'))
+        self.assertIn('<li>Minutes say &quot;none&quot; &amp; more</li><li>A second item</li>',
+                      self.article('cedar-policy-posted'))
+        self.assertIn('<h4>Counterevidence considered</h4><ul><li>None identified at publication.</li></ul>',
+                      self.article('second-finding'))
+        model = load_content(self.root)
+        site = Site(self.root, read_config(self.root), model, today=date(2026, 10, 20))
+        for f in model['findings']:  # one helper renders both
+            rows = site.counterevidence_items_html(f)
+            self.assertIn(f'<h3>Counterevidence considered</h3><ul>{rows}</ul>', self.finding(f['slug']))
+            self.assertIn(f'<h4>Counterevidence considered</h4><ul>{rows}</ul>', self.article(f['slug']))
+        model['findings'][0]['counterevidence'] = ['<b>raw</b>']  # the loader refuses markup; the renderer escapes it anyway
+        self.assertIn('<li>&lt;b&gt;raw&lt;/b&gt;</li>', site.packet_html()['html'])
+        (self.root / 'content/labels.json').write_text(json.dumps({'schema_version': 1, 'labels': {
+            'finding.counterevidence': 'Contrary evidence', 'finding.none_identified': 'Nothing contrary found.'}}))
+        self.build()
+        self.assertIn('<h4>Contrary evidence</h4><ul><li>Nothing contrary found.</li></ul>', self.article('second-finding'))
+        self.assertIn('<h3>Contrary evidence</h3><ul><li>Nothing contrary found.</li></ul>', self.finding('second-finding'))
+
+    def test_packet_agency_response_status_matrix(self):
+        no_response = {'status': 'no_response', 'prepared_on': '2026-03-01', 'asked_on': '2026-03-02',
+                       'reply_by': '2026-03-16', 'on': '2026-03-16'}  # on == reply_by: the earliest allowed day
+        declined = {k: v for k, v in RECEIVED.items() if k != 'text'} | {'status': 'declined'}
+        cases = {'absent': None, 'pending': {'status': 'pending', 'prepared_on': '2026-03-01', 'reply_by': '2026-03-16'},
+                 'received': RECEIVED, 'declined': declined, 'declined_text': declined | {'text': 'No comment <at> this time.'},
+                 'no_response': no_response}
+        for name, reply in cases.items():
+            with self.subTest(name):
+                obj = json.loads(self.first.read_text())
+                obj.pop('agency_response', None)
+                if reply is not None:
+                    obj['agency_response'] = reply
+                self.first.write_text(json.dumps(obj))
+                self.build()
+                section = self.reply_parity('cedar-policy-posted')
+                if name in ('absent', 'pending'):
+                    self.assertNotIn('packet-response-', self.text())
+                    continue
+                self.assertNotIn('2026-03-01', section)  # prepared_on never shown
+                article = self.article('cedar-policy-posted')
+                self.assertLess(article.index('<h4>Counterevidence considered</h4>'), article.index(section))
+                self.assertLess(article.index(section), article.index('<h4>Corrections</h4>'))
+        self.assertIn('asked on 2026-03-02; no response by 2026-03-16', section)
+        self.build_with(agency_response=RECEIVED)
+        section = self.reply_parity('cedar-policy-posted')
+        self.assertIn('<p>The agency replied on 2026-03-09. We asked on 2026-03-02.</p>', section)
+        self.assertIn('<p class="reply-text">Line one &lt;i&gt;&quot;q&quot;&lt;/i&gt; &amp; more<br>Line two</p>', section)
+
+    def build_with(self, **kwargs):
+        self.edit(self.first, **kwargs)
+        self.build()
+
+    def test_packet_reply_record_links_and_short_hash(self):
+        self.build_with(agency_response=RECEIVED | {'record_sha256': SHA})
+        section = self.reply_parity('cedar-policy-posted')
+        self.assertIn('<code>cafecafecafe</code>', section)
+        self.assertNotIn(SHA, section)
+        self.assertNotIn(SHA, self.text())
+        model = load_content(self.root)
+        site = Site(self.root, read_config(self.root), model, today=date(2026, 10, 20))
+        f = model['findings'][0]
+        for pages in ({}, {SHA: '/records/synthetic.html'}):
+            with self.subTest(pages=pages), patch.object(Site, 'record_pages', return_value=pages):
+                page = site.agency_response_html(f)
+                packet = site.agency_response_html(f, heading_level=4, section_id='packet-response-cedar-policy-posted')
+                self.assertEqual(packet, page.replace('id="agency-response"><h3>', 'id="packet-response-cedar-policy-posted"><h4>', 1)
+                                 .replace('</h3>', '</h4>', 1))
+                self.assertEqual('href="/records/synthetic.html"' in packet, bool(pages))
+                self.assertIn('<code>cafecafecafe</code>', packet)
+                self.assertNotIn(SHA, packet)
+
+    def test_packet_updates_after_corrections_newest_first(self):
+        self.edit(self.first, corrections=[{'date': '2026-02-20', 'note': 'later correction'},
+                                           {'date': '2026-02-10', 'note': 'earlier correction'}])
+        self.build_with(updates=UPDATES)
+        self.second(updates=[])
+        self.build()
+        page = re.search(r'<h3 id="updates">.*?</ul>', self.finding('cedar-policy-posted')).group(0)
+        article = self.article('cedar-policy-posted')
+        expected = page.replace('<h3 id="updates">', '<h4 id="packet-updates-cedar-policy-posted">', 1).replace('</h3>', '</h4>', 1)
+        self.assertEqual(article.count(expected), 1)
+        self.assertEqual(re.findall(r'Update · <time datetime="([^"]+)">[^<]*</time>: ([^<]*)</li>', expected),
+                         [('2026-03-10', 'newest &amp; last'), ('2026-03-04', 'second stored, same day'),
+                          ('2026-03-04', 'first stored &quot;q&quot;')])
+        self.assertLess(article.index('earlier correction'), article.index('later correction'))
+        self.assertLess(article.index('later correction'), article.index(expected))
+        self.assertLess(article.index(expected), article.index('<p>Finding fnd_0000000000000001'))
+        self.assertNotIn('Updates', self.article('second-finding'))
+        (self.root / 'content/labels.json').write_text(json.dumps({'schema_version': 1, 'labels': {
+            'finding.updates': 'Later notes', 'finding.update': 'Note'}}))
+        self.build()
+        self.assertIn('<h4 id="packet-updates-cedar-policy-posted">Later notes</h4><ul><li>Note · ', self.text())
+
+    def test_packet_multiple_findings_unique_section_ids(self):
+        self.edit(self.first, updates=UPDATES[:1], agency_response=RECEIVED)
+        self.second(updates=UPDATES[1:], agency_response=RECEIVED)
+        self.build()
+        page = self.text()
+        ids = re.findall(r' id="([^"]+)"', page)
+        self.assertEqual(len(ids), len(set(ids)))
+        for slug in ('cedar-policy-posted', 'second-finding'):
+            self.assertIn(f'id="packet-response-{slug}"><h4>Agency response</h4>', self.article(slug))
+            self.assertIn(f'<h4 id="packet-updates-{slug}">Updates</h4>', self.article(slug))
+            self.assertEqual(page.count(f'<li><a href="#f-{slug}">'), 1)
+            self.assertTrue(self.article(slug).startswith(f'<article class="packet-finding" id="f-{slug}"><h3>'))
+        self.assertNotIn('id="updates"', page)
+        self.assertNotIn('id="agency-response"', page)
+        main = page.split('<main id="top">', 1)[1]
+        self.assertNotRegex(main, r'<h3[^>]*>(Updates|Agency response|Counterevidence considered)</h3>')
+
+    def rich(self):
+        self.edit(self.first, body_md='Body-only marker', counterevidence=['Contrary entry'], agency_response=RECEIVED,
+                  updates=UPDATES)
+
+    def test_packet_is_still_summary_only_and_other_files_unchanged(self):
+        self.rich()
+        self.build()
+        self.assertIn('Body-only marker', self.finding('cedar-policy-posted'))
+        self.assertNotIn('Body-only marker', self.text())
+        for marker in ('Contrary entry', 'The agency replied on 2026-03-09', 'newest &amp; last'):
+            self.assertIn(marker, self.article('cedar-policy-posted'))
+        public = self.root / 'public'
+        # Every file but the packet is byte-identical to checked main on the same content and date, with and without a base.
+        self.assertEqual(tree_digest(public, skip={PACKET}), MAIN_RICH['base'].replace(' ', ''))
+        self.edit(self.root / 'content/site.json', base_url=None)
+        self.build()
+        self.assertNotIn('Body-only marker', self.text())
+        self.assertEqual(tree_digest(public, skip={PACKET}), MAIN_RICH['no_base'].replace(' ', ''))
+        self.first.unlink()  # the empty packet (and so the whole tree) is byte-identical to main
+        self.build()
+        self.assertEqual(tree_digest(public), MAIN_RICH['empty'].replace(' ', ''))
+
+    def test_packet_refuses_bad_update_or_reply_without_overwrite(self):
+        self.rich()
+        self.build()
+        before = tree(self.root / 'public')
+        good = self.first.read_text()
+        bad = {'malformed JSON': good[:-5],
+               'future update': json.dumps(dict(json.loads(good), updates=[{'date': '2999-01-01', 'note': 'Private sentinel'}])),
+               'invalid update date': json.dumps(dict(json.loads(good), updates=[{'date': '2026-02-30', 'note': 'Private sentinel'}])),
+               'invalid reply shape': json.dumps(dict(json.loads(good), agency_response=dict(RECEIVED, status='maybe')))}
+        for name, text in bad.items():
+            with self.subTest(name):
+                self.first.write_text(text)
+                with self.assertRaises(ContentError) as caught:
+                    self.build()
+                self.assertNotIn('Private sentinel', str(caught.exception))
+                self.assertEqual(tree(self.root / 'public'), before)
 
 
 if __name__ == '__main__':

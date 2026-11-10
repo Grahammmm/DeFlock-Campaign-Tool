@@ -18,6 +18,7 @@ from campaign_tool.content import (ContentError, glossary_key, glossary_terms_us
 from campaign_tool.content_check import content_problems, problem_record
 from campaign_tool.site import build_site
 from campaign_tool.site_check import check_accessibility, check_links
+from tests.test_site_packet import strip_packet_counterevidence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
@@ -132,6 +133,7 @@ class GlossaryCase(unittest.TestCase):
                 self.assertEqual(text.count(anchor), 1, name)
                 self.assertEqual(text.count(alternate), 1 if name in ("corrections.html", FINDING_PAGE) else 0, name)
                 files[name] = text.replace(anchor, "").replace(alternate, "").encode()
+            files[name] = strip_packet_counterevidence(self, name, files[name])  # DF1109-08: the packet's default block only
         return files
 
     def digests(self, files=None):

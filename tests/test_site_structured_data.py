@@ -13,6 +13,7 @@ from campaign_tool.content import load_content
 from campaign_tool.site import Site, build_site, json_ld
 
 from tests.test_site_build import EXAMPLE, EXPECTED_CSP
+from tests.test_site_packet import strip_packet_counterevidence
 
 TODAY = date(2026, 10, 1)
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "site-structured-data" / "no-base-main.json"
@@ -204,7 +205,8 @@ class ByteTests(Case):
                     shutil.rmtree(self.public)
                 self.edit("site.json", (lambda d: d.pop("base_url", None)) if omit else (lambda d: d.update(base_url=None)))
                 files = self.build()
-                self.assertEqual({n: hashlib.sha256(b).hexdigest() for n, b in files.items()}, expected)
+                legacy = {n: strip_packet_counterevidence(self, n, b) for n, b in files.items()}  # DF1109-08: packet block only
+                self.assertEqual({n: hashlib.sha256(b).hexdigest() for n, b in legacy.items()}, expected)
                 for name, data in files.items():
                     self.assertNotIn(b"ld+json", data, name)
 
