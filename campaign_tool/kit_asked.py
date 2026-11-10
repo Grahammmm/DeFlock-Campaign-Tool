@@ -7,7 +7,8 @@ refused; a malformed history stops the run (exit 3) with no change line and no w
 write. Only ``topic``, ``asked_on``, ``state`` and ``updated_on`` are derived, and the private request name is kept as
 ``asked.request`` so the next run finds the same item. Notes, bases, references and record hashes of a request never reach
 content. A request closed without production is left for the organizer to choose; one the campaign withdrew itself is
-proposed as ``withdrawn``. Nothing is fetched or sent.
+proposed as ``withdrawn``. A changed candidate whose exact writer bytes (indent=2, UTF-8, final newline) exceed the
+reader's ``content.MAX_JSON_BYTES`` is refused in ``propose`` (exit 3) before any write. Nothing is fetched or sent.
 """
 import copy
 import json
@@ -17,7 +18,7 @@ from datetime import date
 from pathlib import Path
 
 from . import kit, kit_track, law
-from .content import ContentError, _read_json, load_agencies
+from .content import MAX_JSON_BYTES, ContentError, _read_json, load_agencies
 
 TOPIC_MAX = 120
 NO_SCOPES = "Records request"
@@ -150,6 +151,15 @@ def propose(root, today=None, law_base=None):
         load_agencies(new, "content/agencies.json", today)
     except ContentError as exc:
         error = str(exc)
+    if error is None and changed:
+        # The writer emits exactly this text; refuse output the reader (MAX_JSON_BYTES) would later refuse.
+        try:
+            size = len((json.dumps(new, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+        except UnicodeEncodeError:
+            error = "content/agencies.json: proposed output cannot be encoded as UTF-8"
+        else:
+            if size > MAX_JSON_BYTES:
+                error = f"content/agencies.json: proposed output would exceed {MAX_JSON_BYTES} bytes"
     return {"lines": lines, "document": new, "changed": changed, "error": error}
 
 
