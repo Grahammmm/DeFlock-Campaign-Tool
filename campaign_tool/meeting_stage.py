@@ -5,6 +5,7 @@ only, and the document is validated by ``content.load_meeting`` before it is wri
 """
 import json
 import os
+import stat
 from datetime import date, datetime
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from .meetings_manual import ManualMeetingError, read_meetings
 from .supporters import MAX_COSIGNERS, cosign_problems, resolve_cosigners
 
 MAX_KIT_BYTES = 4 * 1024 * 1024
+PARTICIPATION_LIMIT = 64 * 1024  # docs/MEETINGS.md: --participation FILE is a regular file of at most 64 KB
 MAX_CITED = 3  # comment_kit_md speaks at most three findings
 NOTE = "keyword lead from Legistar; verify the posted agenda before you build or publish"
 
@@ -33,6 +35,54 @@ def _read_kit(root):
         return read_meetings(root)
     except ManualMeetingError as exc:
         raise MeetingStageError(str(exc)) from None
+
+
+def _read_participation(path):
+    """RF1025-3: the decoded --participation JSON from one admitted regular-file descriptor of at most 64 KB.
+
+    The final component is checked without following links, opened nonfollowing and nonblocking, and the opened
+    descriptor must itself be a regular file of at most the limit and the very inode admitted; at most limit+1 bytes
+    are then read from that descriptor, never from the pathname again. This bounds file acquisition only (not parser
+    memory or time) and is no snapshot of in-place edits of the same inode. Where O_NOFOLLOW is missing, the
+    pre-/post-open nonfollowing type and identity checks are the weaker substitute. Every refusal is one fixed
+    message that names no path, payload or OS text.
+    """
+    refusal = MeetingStageError("--participation: not a regular UTF-8 JSON file up to 64 KB")
+    nonblock = getattr(os, "O_NONBLOCK", None)
+    if nonblock is None:  # a blocking open of a swapped-in special file could hang
+        raise refusal
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    try:
+        admitted = os.lstat(path)
+        if not stat.S_ISREG(admitted.st_mode):
+            raise refusal
+        fd = os.open(path, os.O_RDONLY | nofollow | nonblock | getattr(os, "O_CLOEXEC", 0))
+    except (OSError, ValueError):  # ValueError: an embedded NUL in the path
+        raise refusal from None
+    try:
+        opened = os.fstat(fd)
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_size > PARTICIPATION_LIMIT
+                or (opened.st_dev, opened.st_ino) != (admitted.st_dev, admitted.st_ino)):
+            raise refusal
+        if not nofollow:
+            after = os.lstat(path)
+            if not stat.S_ISREG(after.st_mode) or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino):
+                raise refusal
+        chunks, remaining = [], PARTICIPATION_LIMIT + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > PARTICIPATION_LIMIT:
+            raise refusal
+        return json.loads(data.decode("utf-8"))
+    except (OSError, ValueError):  # JSONDecodeError and UnicodeDecodeError are ValueErrors
+        raise refusal from None
+    finally:
+        os.close(fd)
 
 
 def _find(meetings, meeting_id):
@@ -107,13 +157,7 @@ def stage(root, meeting_id, agency_id=None, location=None, replace=False, partic
     cited = [{**f, "path": f"/findings/{f['slug']}.html"} for f in findings]
     entry = {**meeting, "body": _clean(meeting.get("body")), "agenda_item": _clean(meeting.get("agenda_item"))}
     if participation is not None:  # organizer-verified JSON; validated before anything is written
-        try:
-            if os.path.islink(participation) or os.path.getsize(participation) > 64 * 1024:
-                raise ValueError("symlink or larger than 64 KB")
-            with open(participation, "rb") as handle:
-                part = json.loads(handle.read().decode("utf-8"))
-        except (OSError, ValueError) as exc:
-            raise MeetingStageError(f"--participation: not a regular UTF-8 JSON file up to 64 KB ({exc})") from None
+        part = _read_participation(participation)
         for value in part.values() if isinstance(part, dict) else ():
             if isinstance(value, dict) and isinstance(value.get("how"), str):
                 value["how"] = _clean(value["how"])
