@@ -22,6 +22,7 @@ from campaign_tool.content_check import content_problems, problem_record, run_cl
 from campaign_tool.legal_claims import faq_notes, site_notes
 from campaign_tool.site import build_site
 from campaign_tool.site_check import check_accessibility, check_links
+from tests.test_site_packet import strip_packet_counterevidence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
@@ -596,7 +597,7 @@ class AbsenceTests(FaqCase):
             if name == "sitemap.xml":
                 self.assertEqual(data.count(data_url), 1)
                 data = data.replace(data_url, b"", 1)
-            legacy[name] = data
+            legacy[name] = strip_packet_counterevidence(self, name, data)  # DF1109-08: the packet's default block only
         self.assertEqual(self.digests(legacy), BASELINE)  # original pinned bytes, not refreshed from candidate
         self.assertNotIn("faq.html", files)
         self.assertNotIn("/faq.html", b"".join(files.values()).decode("utf-8", "ignore"))

@@ -15,6 +15,7 @@ from campaign_tool import publish_paths
 from campaign_tool.cli import check_public_tree
 from campaign_tool.content import ContentError
 from campaign_tool.site import build_site, ics_text
+from tests.test_site_packet import strip_packet_counterevidence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
@@ -78,7 +79,9 @@ class AgencyIcsTests(unittest.TestCase):
         if scenario is not None and SCENARIOS[scenario] is not None:
             self.stage(SCENARIOS[scenario])
         build_site(self.root, today=DAY)
-        return {p.relative_to(self.public).as_posix(): LD_JSON.sub(b"", p.read_bytes()) for p in sorted(self.public.rglob("*")) if p.is_file()}
+        # DF1109-08: the legacy pins predate the packet's counterevidence block; assert and strip exactly that block.
+        return {name: strip_packet_counterevidence(self, name, LD_JSON.sub(b"", p.read_bytes()))
+                for p in sorted(self.public.rglob("*")) if p.is_file() for name in [p.relative_to(self.public).as_posix()]}
 
     def digests(self, files):
         return {name: sha(data) for name, data in files.items()}

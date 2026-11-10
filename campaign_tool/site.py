@@ -1856,11 +1856,15 @@ class Site:
             corrections = f'<ul>{corrections}</ul>' if corrections else f'<p>{self.t("notice.no_corrections")}</p>'
             updated = f' · Updated {date_label(f["updated_at"])}' if f["updated_at"] else ''
             url = self.base + f'/findings/{f["slug"]}.html'
+            # DF1109-08: what the finding page states, through its own helpers; body_md stays out (DF1507-17).
+            counter = f'<h4>{self.t("finding.counterevidence")}</h4><ul>{self.counterevidence_items_html(f)}</ul>'
+            reply = self.agency_response_html(f, heading_level=4, section_id=f'packet-response-{f["slug"]}')
+            updates = self.updates_html(f, heading_level=4, section_id=f'packet-updates-{f["slug"]}')
             articles.append(f'<article class="packet-finding" id="f-{e(f["slug"])}"><h3>{e(f["title"])}</h3>'
                 f'<p>{self.pill(f["classification"])} · {self.confidence_link(f["confidence"])} · {time_tag(f["event_date"])} · '
                 f'Published {date_label(f["published_at"])}{updated}</p><p>{e(f["summary"])}</p>{agency_line}'
-                f'<h4>Sources</h4><ul>{"".join(sources)}</ul><h4>Limitations</h4><ul>{limits}</ul>'
-                f'<h4>Corrections</h4>{corrections}<p>Finding {e(f["id"])} · <a href="{e(url)}">{e(url)}</a></p></article>')
+                f'<h4>Sources</h4><ul>{"".join(sources)}</ul><h4>Limitations</h4><ul>{limits}</ul>{counter}{reply}'
+                f'<h4>Corrections</h4>{corrections}{updates}<p>Finding {e(f["id"])} · <a href="{e(url)}">{e(url)}</a></p></article>')
         main = (f'<section class="section" id="content"><h2>Findings packet</h2><p>As of {e(self.today.isoformat())} · '
                 f'{len(findings)} published findings · print or save as PDF</p>'
                 + (f'<ol>{contents}</ol>{"".join(articles)}' if findings else f'<p>{self.t("notice.no_findings")}</p>')
@@ -2082,15 +2086,22 @@ class Site:
         return (f'<blockquote class="source-quote"><p>{e(quote)}</p></blockquote>'
                 f'<p class="source-quote-note">{self.t("finding.quote_transcribed")}{shown}</p>')
 
-    def updates_html(self, finding):
+    def updates_html(self, finding, *, heading_level=3, section_id="updates"):
         """DF0022-06: ``Updates`` under the body, newest date first (ties: newest entry first), each note as escaped literal
-        text. Empty without updates; never a correction badge, correction row or corrected feed lead."""
+        text. Empty without updates; never a correction badge, correction row or corrected feed lead. DF1109-08: the
+        packet passes an h4 and a per-finding id; the defaults keep the finding page byte-identical."""
         items = finding_updates.newest_first(finding.get("updates", ()))
         if not items:
             return ""
         label = self.t("finding.update")
         rows = "".join(f'<li>{label} · <time datetime="{e(u["date"])}">{e(u["date"])}</time>: {e(u["note"])}</li>' for u in items)
-        return f'<h3 id="updates">{self.t("finding.updates")}</h3><ul>{rows}</ul>'
+        h = f"h{int(heading_level)}"
+        return f'<{h} id="{e(section_id)}">{self.t("finding.updates")}</{h}><ul>{rows}</ul>'
+
+    def counterevidence_items_html(self, finding):
+        """DF1109-08: the counterevidence rows shared by the finding page and the packet; the default line when empty."""
+        return ("".join(f'<li>{e(item)}</li>' for item in finding["counterevidence"])
+                or f'<li>{self.t("finding.none_identified")}</li>')
 
     def finding_structured(self, finding):
         """The schema.org Article for a published finding page; only facts the page already shows. None without a base."""
@@ -2125,7 +2136,7 @@ class Site:
         links = self.agency_links(finding)
         agency_line = f'<p>{self.t("finding.agency")} {links}</p>' if links else ""
         limits = ("".join(f'<li>{e(item)}</li>' for item in finding["limitations"]) or f'<li>{self.t("finding.none_stated")}</li>')
-        counter = ("".join(f'<li>{e(item)}</li>' for item in finding["counterevidence"]) or f'<li>{self.t("finding.none_identified")}</li>')
+        counter = self.counterevidence_items_html(finding)
         updated = f' · {self.t("finding.updated", date=date_label(finding["updated_at"]))}' if finding["updated_at"] else ""
         rows = []
         when = lambda f: f'<time datetime="{e(f["event_date"])}">{date_label(f["event_date"])}</time>'  # noqa: E731
@@ -2308,15 +2319,18 @@ class Site:
                 + section("past-events", "events.past", self.events_past, "events.none_past") + '</section>\n')
         return self.page("events", self.labels["events.title"], self.labels["events.lead"], "/events.html", main)
 
-    def agency_response_html(self, finding):
+    def agency_response_html(self, finding, *, heading_level=3, section_id="agency-response"):
         """The agency's reply (or silence) under "Agency response" as escaped plain text, never Markdown; "" when
-        the finding has no reply or only a prepared (pending) request. The record shows as its 12-character prefix."""
+        the finding has no reply or only a prepared (pending) request. The record shows as its 12-character prefix.
+        DF1109-08: the packet passes an h4 and a per-finding id; the defaults keep the finding page byte-identical."""
         reply = finding.get("agency_response")
         if not reply or reply["status"] == "pending":
             return ""
+        h = f"h{int(heading_level)}"
+        opening = f'<section class="agency-response" id="{e(section_id)}"><{h}>{self.t("finding.agency_response")}</{h}>'
         if reply["status"] == "no_response":
             line = self.t("finding.reply_no_response", asked_on=e(reply["asked_on"]), reply_by=e(reply["reply_by"]))
-            return f'<section class="agency-response" id="agency-response"><h3>{self.t("finding.agency_response")}</h3><p>{line}</p></section>'
+            return f'{opening}<p>{line}</p></section>'
         line = self.t(f'finding.reply_{reply["status"]}', on=e(reply["on"]), asked_on=e(reply["asked_on"]))
         text = f'<p class="reply-text">{e(reply["text"]).replace(chr(10), "<br>")}</p>' if "text" in reply else ""
         record = ""
@@ -2326,8 +2340,7 @@ class Site:
             if record_page:
                 number = f'<a href="{e(record_page)}">{number}</a>'
             record = f'<p class="record-no">{number}</p>'
-        return (f'<section class="agency-response" id="agency-response"><h3>{self.t("finding.agency_response")}</h3>'
-                f'<p>{line}</p>{text}{record}</section>')
+        return f'{opening}<p>{line}</p>{text}{record}</section>'
 
     def cite_html(self, finding):
         """The citation as page text; the copy button stays hidden until findings/cite.js unhides it. A draft preview
