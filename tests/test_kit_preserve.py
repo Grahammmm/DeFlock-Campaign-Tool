@@ -653,8 +653,8 @@ class PreserveTests(unittest.TestCase):
 
     def test_valid_letter_bytes_match_prechange_main_and_named(self):
         # Captured from origin/main's verifier using these same synthetic inputs.
-        expected = {"main": "2d44822b224ef4df624a8ae6f70904b198304b23f004a7b55dae12b1edc6cf6f",
-                    "named": "a720e6cc7c2b6572336787dbd542ad282fd997a52bf7354932eb11b85adae94e"}
+        expected = {"main": "2d44822b224ef4df624a8ae6f70904b198304b23f004a7b55dae12b1edc6cf6f",  # pragma: allowlist secret
+                    "named": "a720e6cc7c2b6572336787dbd542ad282fd997a52bf7354932eb11b85adae94e"}  # pragma: allowlist secret
         self.send(A, "named", "2026-03-02")
         for request, digest in expected.items():
             result = self.make(A, request)
