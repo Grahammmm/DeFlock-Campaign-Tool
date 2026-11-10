@@ -209,16 +209,23 @@ Reference: [SITE-CONTENT.md, how an agency is paid for](SITE-CONTENT.md#how-an-a
 
 ## 7. Snapshot the vendor transparency portal
 
-Field: `profile.transparency`, a list of at most 24 snapshots, newest first. The agency must be `verified: true` with a
-`flock_transparency_slug`, and each `source_url` is exactly `https://transparency.flocksafety.com/<slug>`. Copy the numbers
-as the portal showed them on `checked_on`; leave out one the portal did not show (absent is *not shown*, a typed `0` means
-the portal showed zero). Add a new snapshot at the top and keep older ones. The portal is the vendor's report; do not call
-its numbers verified transfers or confirmed ownership. Merge into `profile`:
+Field: `profile.transparency`, a list of at most 24 snapshots, newest first, written by a command, not by hand. The
+agency must be `verified: true` with a `flock_transparency_slug`; the command builds each `source_url` from that slug
+(`https://transparency.flocksafety.com/<slug>`) and takes no URL. Copy the numbers as the portal showed them on
+`--checked-on`. A flag you leave out is stored as nothing: absent means *not shown*; a typed `0` is stored as `0`, meaning
+the portal showed zero. The five number flags are `--cameras`, `--retention-days` (at most 3650),
+`--searches-last-30-days`, `--hotlist-alerts` and `--shared-with-agencies`, whole numbers only. The portal showed no
+hotlist or sharing number in this practice run, so those flags are left out:
 
-```json
-{"transparency": [{"checked_on": "2026-10-26", "source_url": "https://transparency.flocksafety.com/example-profile-pd",
-                   "cameras": 12, "retention_days": 30, "searches_last_30_days": 480}]}
+```sh
+python3 -m campaign_tool content agency-profile transparency add --directory $CAMPAIGN --agency ca-example-profile-pd --checked-on 2026-10-26 --cameras 12 --retention-days 30 --searches-last-30-days 480
 ```
+
+The new snapshot goes at the top and every older one stays. A `--checked-on` that is already recorded, or is not after the
+newest stored snapshot, is refused (a re-reading on a new day is a new snapshot; nothing is replaced or sorted). With 24
+snapshots stored the command refuses a 25th; add `--drop-oldest` to discard exactly the oldest one, and only then, in the same
+write. Nothing is fetched. The portal is the vendor's report; do not call its numbers verified transfers or confirmed
+ownership.
 
 Reference: [SITE-CONTENT.md, agencies, cards and the picker](SITE-CONTENT.md#agencies-cards-and-the-picker) (the
 `profile.transparency` display, and the card's glance table) and
