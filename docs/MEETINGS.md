@@ -20,6 +20,12 @@ Offline inputs, `--matters` and single-source ICS do not accept this flag; ICS
 sources in a multi-source run remain feed-only. PDF hits are keyword leads:
 verify on the official agenda before staging or publishing. Nothing is published.
 
+Converter limits: at most 8 MiB of converted UTF-8 text bytes is accepted, and
+one 30-second deadline covers sending the PDF, reading the text and waiting for
+`pdftotext` to exit. Over-budget output, a timeout, a broken pipe or a nonzero
+exit stops and reaps the converter and counts as `pdf_scan` failed; no partial
+text becomes a lead and nothing is stored.
+
 ## Legistar import (CLI)
 
 ```
