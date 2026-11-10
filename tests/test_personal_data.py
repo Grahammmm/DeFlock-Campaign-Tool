@@ -770,6 +770,25 @@ class FindTests(Base):
         with mock.patch.object(personal_data, "MAX_ENTRIES", 3):
             self.assertEqual(self.find("--json"), (1, "", incomplete))
 
+    def test_find_unknown_positions_follow_register_path_order_not_walk_order(self):
+        for rel in ("private/drafts.txt", "private/drafts/note.txt", "private/a-b/z.bin", "private/a/y.bin",
+                    "kit/m.bin", "kit/m/x.bin", "kit/m.bin2"):
+            put(self.root, rel, b"x")
+        register = [row["path"] for row in self.register()["files"] if row["kind"] == "unknown"]
+        walked = personal_data._scan(self.root, lambda *_args: None)["unknown"]
+        self.assertNotEqual(["/".join(key) for key in walked if key[0] == "private"],
+                            [path for path in register if path.startswith("private/")])  # the walk order differs
+        by_top = personal_data._unknown_order(personal_data._scan(self.root, lambda *_args: None))
+        for top in ("kit", "private"):  # the k-th not_searched row is the k-th unknown register row of that folder
+            self.assertEqual(["/".join(key) for key in by_top[top]], [p for p in register if p.startswith(top + "/")])
+        self.assertEqual(register[-2:], ["private/drafts.txt", "private/drafts/note.txt"])
+        code, report = self.report()
+        self.assertEqual(code, 0)
+        self.assertEqual([(f["path"], f["file_position"], f["status"]) for f in report["files"]
+                          if f["kind"] == "unknown"],
+                         [("kit/<unknown>", n, "not_searched") for n in (1, 2, 3)]
+                         + [("private/<unknown>", n, "not_searched") for n in (1, 2, 3, 4)])
+
     def test_find_no_network_no_mutation_and_no_flag_legacy_bytes(self):
         valid_stores(self.root, text="Synthetic Person")
         put(self.root, "kit/zz.bin", b"x")

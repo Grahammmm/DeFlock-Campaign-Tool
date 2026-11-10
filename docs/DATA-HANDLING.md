@@ -109,7 +109,10 @@ private human review.
   `file_position` is that file's place among the kind's files sorted by name, the
   same order the register above prints them in; it is only valid until a file is
   added, renamed or removed. Every never-opened file is one `unknown` row,
-  `kit/<unknown>` or `private/<unknown>`, with status `not_searched`.
+  `kit/<unknown>` or `private/<unknown>`, with status `not_searched`; its
+  `file_position` is its place among that folder's unknown rows in the register's
+  order (sorted by relative path, so `private/drafts.txt` precedes
+  `private/drafts/note.txt`).
 - `status` is `searched`, `no_identity_fields`, `absent`, `unreadable` or
   `not_searched`. An unreadable store (malformed, oversized, a link, not a regular
   file) gives no matches at all, even from records before the problem, and the

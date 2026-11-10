@@ -478,12 +478,20 @@ def personal_data_find(root, text):
                 files.append(_file(kind, template, file_position, "searched", list(FIND_FIELDS[kind])))
                 matches += [{"kind": kind, "path": template, "file_position": file_position,
                              "record_position": list(position), "field": field} for position, field in result]
-    for top in ("kit", "private"):  # never-opened entries are counted, not named: a file name can identify someone
-        count = sum(1 for key in state["unknown"] if key[0] == top)
-        files += [_file("unknown", top + "/<unknown>", index, "not_searched") for index in range(1, count + 1)]
+    for top, ordered in _unknown_order(state).items():  # never-opened entries are counted, not named: a name can identify someone
+        files += [_file("unknown", top + "/<unknown>", index, "not_searched") for index, _key in enumerate(ordered, 1)]
     files.sort(key=lambda row: (row["kind"], row["path"], row["file_position"] is not None, row["file_position"] or 0))
     matches.sort(key=lambda row: (row["kind"], row["file_position"], row["record_position"], row["field"]))
     return {"schema_version": 1, "mode": "find", "files": files, "matches": matches, "notice": FIND_SCOPE + " " + NOTICE}
+
+
+def _unknown_order(state):
+    """The never-opened entries per top folder in the register's order: sorted by the "/"-joined relative path (the
+    register's sort key), not by walk order, which differs ('private/drafts/note.txt' is walked before
+    'private/drafts.txt' but sorts after it since '.' < '/'). The k-th row of a top is the k-th unknown register row
+    under that folder."""
+    return {top: sorted((key for key in state["unknown"] if key[0] == top), key=lambda key: "/".join(key))
+            for top in ("kit", "private")}
 
 
 def _file(kind, path, file_position, status, searched_fields=()):
