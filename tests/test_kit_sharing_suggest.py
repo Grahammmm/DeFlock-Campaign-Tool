@@ -260,6 +260,134 @@ class SuggestTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             kit_sharing_suggest.render(report)
 
+    def test_ambiguous_candidate_names_obey_existing_control_policy(self):
+        from campaign_tool import kit_sharing_suggest
+        message = "a receiving agency name contains a control character"
+        for char in ("\x00", "\t", "\r", "\n", "\x1b", "\x7f", "\x85", "\u2028", "\u2029"):
+            with self.subTest(char=repr(char)):
+                report = kit_sharing_suggest.build_report(self.root, seed=SEED)
+                report["ambiguous"][0]["candidates"][1]["name"] = "Twin" + char + "Police"
+                before = copy.deepcopy(report)
+                with self.assertRaises(ValueError) as caught:
+                    kit_sharing_suggest.render(report)
+                self.assertEqual(str(caught.exception), message)
+                self.assertEqual(report, before)
+        report = kit_sharing_suggest.build_report(self.root, seed=SEED)
+        report["unmatched"][0]["names"] = ["Bad\tName"]  # the earlier name locations still refuse
+        with self.assertRaises(ValueError):
+            kit_sharing_suggest.render(report)
+
+    def test_every_ambiguous_candidate_and_row_is_checked(self):
+        from campaign_tool import kit_sharing_suggest
+        report = kit_sharing_suggest.build_report(self.root, seed=SEED)
+        row = report["ambiguous"][0]
+
+        def safe(i):
+            return {"agency_id": f"ca-extra-{i}", "name": f"Twin Police {i}"}
+        bad = {"agency_id": "ca-extra-bad", "name": "Twin\nPolice"}
+        safe_rows = {**report, "ambiguous": [row, {**row, "candidates": row["candidates"] + [safe(1), safe(2)]}]}
+        self.assertIn("ca-extra-2 (Twin Police 2)", kit_sharing_suggest.render(safe_rows))
+        late_candidate = {**report, "ambiguous": [{**row, "candidates": row["candidates"] + [safe(1), safe(2), bad]}]}
+        late_row = {**report, "ambiguous": [row, {**row, "candidates": [safe(1), bad]}]}
+        for label, bad_report in (("late candidate", late_candidate), ("late row", late_row)):
+            with self.subTest(label), self.assertRaises(ValueError):
+                kit_sharing_suggest.render(bad_report)
+
+    def seed_directory(self, second_name):
+        seed = copy.deepcopy(SEED)
+        seed["generated"] = "2026-01-01"
+        for county in seed["counties"]:
+            for agency in county["agencies"]:  # complete every schema-required agency field
+                agency.update(records_url=None, records_email=None, portal={"vendor": "unknown", "url": None},
+                              flock_transparency_slug=None, muckrock_agency_id=None, verified=False, sources=[])
+        twins = seed["counties"][0]["agencies"]
+        twins[2]["name"], twins[3]["name"] = "Twin Police", second_name
+        directory = self.base / "synthetic-seed"
+        directory.mkdir(exist_ok=True)
+        (directory / "us-ca.json").write_text(json.dumps(seed), encoding="utf-8")
+        return directory
+
+    def run_real_loader_cli(self, directory):
+        argv = ["campaign_tool", "kit-agency", "suggest", "--from-sharing", "--directory", str(self.root)]
+        out, err, code = io.StringIO(), io.StringIO(), 0
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(discovery, "SEED_DIR", directory), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                main()
+            except SystemExit as exc:
+                code = exc.code or 0
+            finally:
+                registry.release()
+        return code, out.getvalue(), err.getvalue()
+
+    def test_schema_valid_control_whitespace_seed_refuses_through_real_cli(self):
+        from campaign_tool import kit_sharing_suggest
+        message = "Stopped: a receiving agency name contains a control character\n"
+        directory = self.seed_directory("Twin Police")  # control: an ordinary distinct-id ambiguity still renders
+        code, out, err = self.run_real_loader_cli(directory)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("candidates: ca-twin-a (Twin Police); ca-twin-b (Twin Police)", out)
+        for char in ("\t", "\n", "\r", "\x85", "\u2028", "\u2029"):
+            with self.subTest(char=repr(char)):
+                directory = self.seed_directory("Twin" + char + "Police")
+                seed = discovery.load_seed("us-ca", base=directory)  # schema-valid through the real loader
+                report = kit_sharing_suggest.build_report(self.root, seed=seed)
+                self.assertEqual([c["agency_id"] for c in report["ambiguous"][0]["candidates"]], ["ca-twin-a", "ca-twin-b"])
+                before = tree(self.base)
+                code, out, err = self.run_real_loader_cli(directory)
+                self.assertEqual((code, out, err), (1, "", message))
+                self.assertEqual(before, tree(self.base))
+        # the existing unique-match refusal is unchanged
+        directory = self.seed_directory("Twin Police")
+        seed = json.loads((directory / "us-ca.json").read_text())
+        seed["counties"][0]["agencies"][0]["name"] = "Alpha\tPolice Department"
+        (directory / "us-ca.json").write_text(json.dumps(seed), encoding="utf-8")
+        self.assertEqual(self.run_real_loader_cli(directory), (1, "", message))
+
+    def test_candidate_refusal_is_atomic_read_only_and_private(self):
+        from campaign_tool import kit_sharing_suggest
+        directory = self.seed_directory("Twin\tPolice")
+        before = tree(self.base)
+
+        def fail(*_a, **_k):
+            raise AssertionError("forbidden call")
+        with contextlib.ExitStack() as stack:
+            for target in ("urllib.request.urlopen", "socket.socket.connect", "subprocess.run", "campaign_tool.kit._write_json",
+                           "campaign_tool.kit_agencies._save", "campaign_tool.kit.build_kit"):
+                stack.enter_context(mock.patch(target, side_effect=fail))
+            code, out, err = self.run_real_loader_cli(directory)
+            with self.assertRaises(ValueError):
+                kit_sharing_suggest.suggest_from_sharing(self.root, seed=discovery.load_seed("us-ca", base=directory))
+        self.assertEqual((code, out), (1, ""))
+        self.assertNotIn("Twin", err)
+        self.assertNotIn("ca-twin", err)
+        self.assertEqual(before, tree(self.base))
+        self.assertFalse((self.root / "private").exists())
+
+    def test_valid_ambiguous_unicode_and_spacing_output_is_unchanged(self):
+        seed = copy.deepcopy(SEED)
+        seed["counties"][0]["agencies"] += [seed_agency("ca-cafe-a", "Caf\u00e9\u00a0PD"), seed_agency("ca-cafe-b", "CAF\u00c9  PD.")]
+        code, out, err = self.run_cli("--from-sharing", "--directory", self.root, seed=seed)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(self.section(out, "Ambiguous names"), [
+            "  Caf\u00e9 PD - CA, local - listed by 1; candidates: ca-cafe-a (Caf\u00e9\u00a0PD); ca-cafe-b (CAF\u00c9  PD.)",
+            "  Twin Police - CA, local - listed by 1; candidates: ca-twin-a (Twin Police); ca-twin-b (twin  police.)"])
+        self.assertIn(NOTICE + ".", out)
+        self.assertEqual(out.rstrip("\n").split("\n")[-1], TRAILER)
+        self.assertEqual(out, self.run_cli("--from-sharing", "--directory", self.root, seed=seed)[1])
+
+    def test_unrendered_seed_names_do_not_expand_refusal_scope(self):
+        seed = copy.deepcopy(SEED)
+        seed["counties"][0]["agencies"].append(seed_agency("ca-unlisted", "Unlisted\tPolice"))
+        code, out, err = self.run_cli("--from-sharing", "--directory", self.root, seed=seed)
+        self.assertEqual((code, err), (0, ""))
+        self.assertNotIn("Unlisted", out)
+        self.senders = []
+        self.write_content()
+        code, out, err = self.run_cli("--from-sharing", "--directory", self.root, seed=seed)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("No recorded sharing lists.", out)
+
     def test_parser_rejects_other_modes_and_writes_nothing(self):
         before = tree(self.base)
         for extra in (["--id", "ca-alpha-pd"], ["--name", "X"], ["--csv", "x.csv"], ["--check"], ["--replace"],

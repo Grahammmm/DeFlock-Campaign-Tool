@@ -96,6 +96,10 @@ def _check_text(report):
         for name in item["names"] + [item.get("name", "")]:
             if kit_agencies._has_control(name):
                 raise ValueError("a receiving agency name contains a control character")
+    for item in report["ambiguous"]:
+        for candidate in item["candidates"]:
+            if kit_agencies._has_control(candidate["name"]):
+                raise ValueError("a receiving agency name contains a control character")
 
 
 def render(report):
