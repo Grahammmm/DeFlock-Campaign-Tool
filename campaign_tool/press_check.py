@@ -265,7 +265,10 @@ def _finding_reasons(ident, index, day):
         return [{'code': 'unpublished', 'finding_id': ident}], True
     if day is None:
         return [], False
-    later = sorted({c['date'] for c in state['published'][ident] if c['date'] > day})
+    # Compare calendar days, not strings: load_finding keeps the accepted spelling, which may be unpadded
+    # (2026-2-3), so lexical order and string uniqueness would give false stale rows and misordered dates.
+    later = sorted({d for d in (datetime.strptime(c['date'], '%Y-%m-%d').date() for c in state['published'][ident]) if d > day})
+    later = [d.isoformat() for d in later]
     return ([{'code': 'corrected', 'finding_id': ident, 'dates': later}], True) if later else ([], False)
 
 
@@ -308,8 +311,7 @@ def _check_file(fd, name, path, kind, is_letter, index, now):
     named = _NAME_DATE.match(name)
     if named:
         try:
-            date.fromisoformat(named.group(1))
-            day = named.group(1)
+            day = date.fromisoformat(named.group(1))
         except ValueError:
             pass
     if day is None:
