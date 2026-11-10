@@ -681,6 +681,208 @@ class ReviewPacketTests(unittest.TestCase):
         self.assertEqual((code, stderr), (0, ""))
         self.assertEqual(json.loads(stdout)["status"], "review_required")
 
+    # --- output directory identity admission (RF0845-2) -----------------------------------------------------
+
+    CHANGED = "--out directory changed before writing; nothing written"
+
+    def seam_build(self, out, at_output_open=None, after_output_open=None, fail_member=None):
+        """Run build() with hooks at the real output-directory open; returns (error, opened names, fds).
+
+        Everything else (stat, open, rename, write, rollback) is the real syscall.
+        """
+        real_open = os.open
+        opened, fds = [], []
+
+        def hooked_open(name, *rest, **kwargs):
+            if name == out.name and at_output_open:
+                at_output_open(out)
+            if name == fail_member:
+                raise OSError(28, "Synthetic no space left on device")
+            fd = real_open(name, *rest, **kwargs)
+            fds.append(fd)
+            if name == out.name or name in law_packet.NAMES:  # the parent walk is not a packet open
+                opened.append(name)
+            if name == out.name and after_output_open:
+                after_output_open(out, fd)
+            return fd
+
+        error = None
+        with mock.patch.object(law_packet.os, "open", hooked_open):
+            try:
+                law_packet.build("us-ca", out, AS_OF)
+            except (OSError, ValueError) as exc:
+                error = exc
+        return error, opened, fds
+
+    def substitute_directory(self, out):
+        """Park the directory build just made and put a different real 0700 directory at its name."""
+        parked, foreign = Path(str(out) + ".parked"), Path(str(out) + ".foreign")
+        foreign.mkdir(mode=0o700)
+        self.foreign_inode = foreign.stat().st_ino
+        os.rename(out, parked)
+        os.rename(foreign, out)
+        self.assertNotEqual(parked.stat().st_ino, out.stat().st_ino)
+
+    def assert_untouched(self, out):
+        self.assertEqual(os.listdir(out), [])
+        self.assertEqual(os.listdir(Path(str(out) + ".parked")), [])
+        self.assertEqual(out.stat().st_ino, self.foreign_inode)
+        self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o700)
+
+    def test_real_directory_substitution_before_output_open_refuses(self):
+        out = self.tmp / "packet"
+        error, opened, fds = self.seam_build(out, at_output_open=self.substitute_directory)
+        self.assertIsInstance(error, ValueError)
+        self.assertEqual(str(error), self.CHANGED)
+        self.assertEqual(opened, ["packet"])  # no member was opened
+        self.assert_untouched(out)
+        self.assert_closed(fds)
+
+    def test_unverified_replacement_never_becomes_rollback_owner(self):
+        out = self.tmp / "packet"
+        error, opened, fds = self.seam_build(out, at_output_open=self.substitute_directory, fail_member="RULES.md")
+        self.assertEqual(str(error), self.CHANGED)  # admission failed before the member trap was reachable
+        self.assertEqual(opened, ["packet"])
+        self.assertTrue(out.is_dir())
+        self.assert_untouched(out)
+        self.assert_closed(fds)
+
+    def test_output_identity_mismatch_cli_has_no_success(self):
+        out = self.tmp / "packet-cli"
+        real_open = os.open
+
+        def hooked_open(name, *rest, **kwargs):
+            if name == out.name:
+                self.substitute_directory(out)
+            return real_open(name, *rest, **kwargs)
+
+        with mock.patch.object(law_packet.os, "open", hooked_open):
+            code, stdout, stderr = self.run_main(out)
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertEqual(stderr, "Stopped: " + self.CHANGED + "\n")
+        self.assert_untouched(out)
+
+    def test_candidate_fstat_and_reobservation_failures_close_without_cleanup(self):
+        real_fstat, real_stat = os.fstat, os.stat
+        for case in ("first stat", "candidate fstat", "second stat", "entry missing", "entry replaced"):
+            out = self.tmp / case.replace(" ", "-")
+            stats, candidate = [], []
+
+            def counting_stat(path, *rest, **kwargs):
+                if path == out.name and kwargs.get("dir_fd") is not None:
+                    stats.append(path)
+                    if (case, len(stats)) in (("first stat", 1), ("second stat", 2)):
+                        raise OSError(5, "Synthetic inspection failure")
+                return real_stat(path, *rest, **kwargs)
+
+            def counting_fstat(fd):
+                if case == "candidate fstat" and fd in candidate:
+                    raise OSError(5, "Synthetic inspection failure")
+                return real_fstat(fd)
+
+            def after_open(path, fd):
+                candidate.append(fd)
+                if case in ("entry missing", "entry replaced"):
+                    os.rename(path, Path(str(path) + ".parked"))
+                if case == "entry replaced":
+                    path.mkdir(mode=0o700)
+
+            with self.subTest(case=case), \
+                    mock.patch.object(law_packet.os, "stat", counting_stat), \
+                    mock.patch.object(law_packet.os, "fstat", counting_fstat), \
+                    mock.patch.object(law_packet.os, "rmdir", side_effect=AssertionError("rmdir")), \
+                    mock.patch.object(law_packet.os, "unlink", side_effect=AssertionError("unlink")):
+                error, opened, fds = self.seam_build(out, after_output_open=after_open)
+            if case == "entry replaced":
+                self.assertEqual(str(error), self.CHANGED)
+            else:
+                self.assertIsInstance(error, OSError)
+                self.assertNotIsInstance(error, AssertionError)
+            self.assertNotIn("PACKET.md", opened)  # no member written
+            self.assert_closed(fds)
+            held = Path(str(out) + ".parked") if case in ("entry missing", "entry replaced") else out
+            self.assertEqual(os.listdir(held), [])
+            if case == "entry replaced":
+                self.assertEqual(os.listdir(out), [])
+
+    def test_output_symlink_file_and_missing_entry_refuse_before_members(self):
+        target = self.tmp / "target"
+        target.mkdir()
+
+        def to_symlink(out):
+            os.rename(out, Path(str(out) + ".parked"))
+            os.symlink(target, out, target_is_directory=True)
+
+        def to_file(out):
+            os.rename(out, Path(str(out) + ".parked"))
+            out.write_bytes(b"keep")
+
+        def to_missing(out):
+            os.rename(out, Path(str(out) + ".parked"))
+
+        for name, hook in (("symlink", to_symlink), ("file", to_file), ("missing", to_missing)):
+            out = self.tmp / name
+            with self.subTest(name=name):
+                error, opened, fds = self.seam_build(out, at_output_open=hook)
+                self.assertIsInstance(error, (OSError, ValueError))
+                self.assertEqual(opened, [])
+                self.assertEqual(os.listdir(Path(str(out) + ".parked")), [])
+                self.assertEqual(os.listdir(target), [])
+                self.assertEqual(out.is_symlink(), name == "symlink")
+                self.assertEqual(out.is_file(), name == "file")
+                self.assertEqual(os.path.lexists(out), name != "missing")
+                if name == "file":
+                    self.assertEqual(out.read_bytes(), b"keep")
+
+    def test_verified_anchor_remains_authority_after_late_retarget(self):
+        real_open = os.open
+
+        def swapping_open(fail):
+            def hooked_open(name, *rest, **kwargs):
+                if name == fail[0]:
+                    self.substitute_directory(fail[1])
+                    if fail[2]:
+                        raise OSError(28, "Synthetic no space left on device")
+                return real_open(name, *rest, **kwargs)
+            return hooked_open
+
+        out = self.tmp / "late"
+        with mock.patch.object(law_packet.os, "open", swapping_open(("PACKET.md", out, False))):
+            law_packet.build("us-ca", out, AS_OF)  # completion goes through the retained descriptor
+        self.assertEqual(os.listdir(out), [])  # foreign directory untouched
+        self.assertEqual({p.name for p in Path(str(out) + ".parked").iterdir()}, FILES)
+
+        out = self.tmp / "late-fail"
+        with mock.patch.object(law_packet.os, "open", swapping_open(("RULES.md", out, True))):
+            with self.assertRaises(OSError) as caught:
+                law_packet.build("us-ca", out, AS_OF)
+        self.assertEqual(caught.exception.errno, 28)
+        self.assertEqual(os.listdir(out), [])
+        self.assertEqual(out.stat().st_ino, self.foreign_inode)  # foreign entry never removed
+        self.assertEqual(os.listdir(Path(str(out) + ".parked")), [])  # owned member removed, folder kept
+
+    def test_descriptor_admission_lifetime_and_ordinary_compatibility(self):
+        def open_fds():
+            return len(os.listdir("/proc/self/fd"))
+
+        before = open_fds()
+        result = law_packet.build("us-ca", self.tmp / "ok", AS_OF)
+        self.assertEqual(open_fds(), before)
+        self.assertEqual(result["files"], list(law_packet.NAMES))
+        self.assertEqual(stat.S_IMODE((self.tmp / "ok").stat().st_mode), 0o700)
+        for path in (self.tmp / "ok").iterdir():
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        error, _, _ = self.seam_build(self.tmp / "mismatch", at_output_open=self.substitute_directory)
+        self.assertEqual(str(error), self.CHANGED)
+        self.assertEqual(open_fds(), before)
+        error, _, _ = self.seam_build(self.tmp / "member", fail_member="RULES.md")
+        self.assertIsInstance(error, OSError)
+        self.assertEqual(error.errno, 28)
+        self.assertFalse(os.path.lexists(self.tmp / "member"))
+        self.assertEqual(open_fds(), before)
+        _, retry = self.packet("member")
+        self.assertEqual(retry["out"], str(self.tmp / "member"))
+
 
 if __name__ == "__main__":
     unittest.main()
