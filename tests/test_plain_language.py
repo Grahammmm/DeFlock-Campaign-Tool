@@ -402,6 +402,20 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(advisory[1:], check.stdout.splitlines()[1:-1])
         self.assertIn("Private preview only; public/ was not changed and nothing was published.", result.stdout)
 
+    def test_preview_advisory_matches_title_aware_checker(self):
+        sources = [{"sha256": "cafe" * 16, "locator": "page:1", "title": "ABC"}]
+        result = self.preview(sources=sources, body_md="ABC " * 400 + "XYZ.")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        advisory = result.stdout.splitlines()[-2:]
+        self.assertEqual(advisory[0], "Plain language (advisory)")
+        check = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "finding", "check-plain", str(self.draft),
+                                "--directory", str(self.root)], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+        self.assertEqual(check.returncode, 3)
+        self.assertEqual(len(check.stdout.splitlines()[1:-1]), 1)
+        self.assertIn("unexplained_abbreviation XYZ", check.stdout)
+        self.assertEqual(advisory[1:], check.stdout.splitlines()[1:-1])
+        self.assertFalse((self.root / "public").exists())
+
     def test_preview_never_fails_because_of_the_advisory(self):
         (self.root / "content" / "glossary.json").write_text("{bad", encoding="utf-8")
         with mock.patch.object(plain_language, "_glossary", side_effect=ValueError("synthetic")):
@@ -571,6 +585,11 @@ class CountedText(str):
         type(self).work += len(joined)
         return joined
 
+    def replace(self, old, new, count=-1):
+        result = CountedText(super().replace(old, new, count))
+        type(self).work += len(result)
+        return result
+
 
 # Frozen from original main (per-quote slice-and-concatenate masking); never generated at test runtime.
 MASK_CASES = [
@@ -656,6 +675,124 @@ class DenseQuoteCommandTests(Case):
                            body_md='"' + 'alpha ' * 4000 + 'ABC"')
         self.assertEqual(json.loads(self.cli(clean, '--json', returncode=0).stdout),
                          {'advisory': True, 'finding_id': 'syn-quoted-only', 'warnings': []})
+
+
+class QuoteSubstitution:
+    """Test-only stand-in for ``_QUOTED``: runs the real substitution and returns its actual result as CountedText."""
+
+    def __init__(self, real):
+        self.real = real
+
+    def sub(self, replacement, text):
+        return CountedText(self.real.sub(replacement, text))
+
+
+class SourceTitleMaskTests(unittest.TestCase):
+    def counted_mask(self, source, titles):
+        blanks = []
+        real_blank = plain_language._blank
+
+        def counting_blank(text):
+            blanks.append(text)
+            return real_blank(text)
+
+        CountedText.work = 0
+        with mock.patch.object(plain_language, "_QUOTED", QuoteSubstitution(plain_language._QUOTED)), \
+                mock.patch.object(plain_language, "_blank", counting_blank):
+            masked = plain_language._skipped_text(source, titles)
+        return masked, CountedText.work, blanks
+
+    def test_source_title_reconstruction_work_is_linear_per_title(self):
+        for repeats in (256, 512, 1024):
+            with self.subTest(repeats=repeats):
+                source = "ABC " * repeats
+                masked, work, blanks = self.counted_mask(source, ("ABC",))
+                self.assertEqual(masked, " " * len(source))
+                self.assertLessEqual(work, 8 * len(source))
+                self.assertEqual(blanks, ["ABC"])  # the replacement is built once, not per occurrence
+                self.assertEqual(plain_language._skipped_text(source, ("ABC",)), " " * len(source))
+        # zero-match and all-whitespace titles are identity replacements with the same bounded work
+        source = "ABC " * 1024 + "\t\u00a0 " * 100
+        for title in ("ZZZ", " \t\u00a0"):
+            with self.subTest(title=title):
+                masked, work, blanks = self.counted_mask(source, (title,))
+                self.assertEqual(masked, source)
+                self.assertLessEqual(work, 8 * len(source))
+                self.assertLessEqual(len(blanks), 1)
+
+    def test_literal_title_replacement_preserves_order_and_overlaps(self):
+        mask = plain_language._skipped_text
+        self.assertEqual(mask("ababa", ("aba", "ba")), "     ")
+        self.assertEqual(mask("abc", ("ab", "bc")), "  c")
+        self.assertEqual(mask("abc", ("bc", "ab")), "a  ")
+        # longest first: the longer title is considered before the shorter title's mask exists
+        self.assertEqual(mask("abXYcd", ("XY", "ab  cd")), "ab  cd")
+        self.assertEqual(mask("aaaaa", ("aa",)), "    a")  # self-overlapping: left-to-right, nonoverlapping
+        self.assertEqual(mask("aaaaa", ("aa", "aa", "aaa")), "     ")
+        self.assertEqual(mask("x ABC abc y", ("ABC",)), "x     abc y")  # case-sensitive
+        self.assertEqual(mask("a\\1 $1 [x] (.*) a\\1", ("a\\1", "$1", "[x]", "(.*)")), " " * 19)
+        self.assertEqual(mask("a.b axb", (".",)), "a b axb")  # a title is a literal, not a pattern
+        self.assertEqual(mask("keep ABC", ()), "keep ABC")
+
+    def test_title_masks_preserve_unicode_whitespace_and_quote_precedence(self):
+        mask = plain_language._skipped_text
+        text = "x ABC\u00a0ABC\r\nABC\tABC\U0001F600 ABC\u0301 y"
+        expected = "x " + "   \u00a0   \r\n   \t   \U0001F600    \u0301 y"
+        masked = mask(text, ("ABC",))
+        self.assertEqual(masked, expected)
+        self.assertEqual(len(masked), len(text))
+        self.assertTrue(all(masked[i] == c for i, c in enumerate(text) if c.isspace()))
+        self.assertEqual(mask("a\u2028b\u00a0c", ("\u2028", "\u00a0")), "a\u2028b\u00a0c")
+        self.assertEqual(mask('"ABC" ABC XYZ.', ("ABC",)), " " * 10 + "XYZ.")
+        self.assertEqual(mask("\u201cA ABC\u201d ABC", ("ABC",)), " " * 11)
+        self.assertEqual(mask('ABC "ABC', ("ABC",)), '    "   ')  # an unmatched quote skips nothing
+        # a title that only exists across an earlier quote mask is not found (masks are visible to later titles)
+        self.assertEqual(mask('ab "cd" ef', ('b "c',)), "ab      ef")
+
+    def test_skipped_title_words_retain_original_positions(self):
+        text = "ABC ABC one two. ABC\n\nABC ABC\n\nXYZ end."
+        tokens = plain_language._tokens("body_md", text, ("ABC",))
+        self.assertEqual([(t["paragraph"], t["word"], t["start"], t["end"], t["skipped"], t["sentence"]) for t in tokens],
+                         [(1, 1, 0, 3, True, None), (1, 2, 4, 7, True, None), (1, 3, 8, 11, False, 1),
+                          (1, 4, 12, 15, False, 1), (1, 5, 17, 20, True, None), (2, 6, 22, 25, True, None),
+                          (2, 7, 26, 29, True, None), (3, 8, 31, 34, False, 2), (3, 9, 35, 38, False, 2)])
+        rows = check_plain(finding(title="", summary="", body_md=text, sources=[{"title": "ABC"}]))
+        self.assertEqual(rows, [{"rule": "unexplained_abbreviation", "field": "body_md", "paragraph": 3, "sentence": 2,
+                                 "word": 8, "start": 31, "end": 34, "word_count": None, "limit": None,
+                                 "abbreviation": "XYZ"}])
+        dense = finding(title="", summary="", body_md="ABC " * 500)
+        self.assertIn(("long_paragraph", "body_md"), rules(check_plain(dense)))
+        self.assertEqual(check_plain({**dense, "sources": [{"title": "ABC"}]}), [])
+
+    def test_no_title_and_malformed_source_compatibility(self):
+        body = 'He said "ABC def" and ' + sentence(31) + " ABC ok."
+        base = check_plain(finding(body_md=body))
+        self.assertEqual(rules(base), [("long_sentence", "body_md"), ("unexplained_abbreviation", "body_md")])
+        self.assertEqual(base, check_plain(finding(body_md=body, sources=[{"sha256": "a" * 64}, {"title": ""}, "x"])))
+
+
+class DenseSourceTitleCommandTests(Case):
+    def test_dense_source_title_finding_cli_is_complete_and_read_only(self):
+        body = "ABC " * 200000 + "XYZ."
+        draft = self.draft(id="syn-title-scale", title="", summary="", body_md=body, sources=[{"title": "ABC"}])
+        self.assertLess(draft.stat().st_size, findings.MAX_DRAFT_BYTES)
+        row = {"rule": "unexplained_abbreviation", "field": "body_md", "paragraph": 1, "sentence": 1, "word": 200001,
+               "start": 800000, "end": 800003, "word_count": None, "limit": None, "abbreviation": "XYZ"}
+        result = self.cli(draft, "--json", returncode=3)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout.count("\n"), 1)
+        report = json.loads(result.stdout)
+        self.assertEqual(report, {"advisory": True, "finding_id": "syn-title-scale", "warnings": [row]})
+        self.assertEqual(list(report["warnings"][0]), KEYS)
+        text = self.cli(draft, returncode=3)
+        self.assertEqual(text.stderr, "")
+        self.assertEqual(text.stdout.splitlines()[0], FIRST)
+        self.assertEqual(text.stdout.splitlines()[1:-1], [plain_language.row_text(row)])
+        self.assertTrue(text.stdout.splitlines()[-1].endswith(LAST))
+        clean = self.draft("skipped.json", id="syn-title-clean", title="", summary="", body_md="ABC " * 200000,
+                           sources=[{"title": "ABC"}])
+        self.assertEqual(json.loads(self.cli(clean, "--json", returncode=0).stdout),
+                         {"advisory": True, "finding_id": "syn-title-clean", "warnings": []})
 
 
 if __name__ == "__main__":

@@ -41,11 +41,11 @@ def _skipped_text(text, titles):
     """``text`` with every quoted span and source-title occurrence blanked to spaces (same length, same newlines)."""
     # One substitution assembles the result: only matched spans are blanked and no per-quote whole-field copy is made.
     kept = _QUOTED.sub(lambda match: _blank(match.group()), text)
+    # Longest title first; each title is one literal left-to-right nonoverlapping replace over the already-masked field
+    # with its blank built once, so a repeated title never rebuilds the whole field per occurrence.
     for title in sorted(titles, key=len, reverse=True):
-        start = kept.find(title)
-        while start != -1:
-            kept = kept[:start] + _blank(title) + kept[start + len(title):]
-            start = kept.find(title, start + len(title))
+        if title:
+            kept = kept.replace(title, _blank(title))
     return kept
 
 
