@@ -23,7 +23,7 @@ REFUSAL = "Stopped: supporters list: cannot read valid supporter and staged meet
 KEYS = ["id", "status", "kind", "name", "joined_on", "consent_present", "confirmed_on", "cosign",
         "cosign_confirmed_on", "staged_meetings"]
 EVIDENCE, OTHER = "e1" * 32, "f2" * 32
-SECRET_KIT = "PRIVATE-KIT-SENTINEL"
+SECRET_KIT = "PRIVATE-KIT-SENTINEL"  # pragma: allowlist secret
 
 
 def public_row(name, kind="community", joined="2026-09-01", url="https://alpha.example.invalid/about"):
