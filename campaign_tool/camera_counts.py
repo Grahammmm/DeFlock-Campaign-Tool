@@ -8,8 +8,13 @@ from .agency_cards import text as plain_text
 
 
 def _number(n):
-    """A finite int or float; NaN and +/-Infinity (which json.loads accepts) are rejected."""
-    return isinstance(n, (int, float)) and not isinstance(n, bool) and math.isfinite(n)
+    """A finite int or float usable by this geometry engine; reject non-representable integers."""
+    if not isinstance(n, (int, float)) or isinstance(n, bool):
+        return False
+    try:
+        return math.isfinite(n)
+    except OverflowError:
+        return False
 
 
 def valid_ring(ring):
