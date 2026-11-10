@@ -483,11 +483,148 @@ class IngestZipTests(unittest.TestCase):
         self.assertEqual([m["path"] for m in real["members"]], ["good.txt"])
         self.assertEqual(real["archive"]["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
 
+    def compressed(self, method, data):
+        return {8: deflate, 12: bz2.compress, 14: zip_lzma}[method](data)
+
+    def member_bytes(self, entry):
+        """(archive bytes, ZipInfo, payload start, header-checked result) for one synthetic member."""
+        from campaign_tool import ingest_zip
+        data = build_zip([entry])
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            info = archive.infolist()[0]
+            start = ingest_zip._payload_start(data, info, archive.start_dir)
+        return ingest_zip, data, info, start
+
+    def unused_entry(self, method, name, text, tail):
+        raw = self.compressed(method, text) + tail
+        return (name, text, {"method": method, "raw": raw, **({"flags": 0x802} if method == 14 else {})})
+
+    def tails(self, method):
+        return {"zero": b"\x00", "marker": b"UNCONSUMED-MARKER", "second": self.compressed(method, b"second stream\n")}
+
+    def test_compressed_member_rejects_every_unused_suffix(self):
+        text = b"synthetic record line\n" * 20
+        for method in (8, 12, 14):
+            clean_module, data, info, start = self.member_bytes(self.unused_entry(method, "m.txt", text, b""))
+            self.assertEqual(clean_module._member_bytes(data, info, start), (text, None))
+            for label, tail in self.tails(method).items():
+                with self.subTest(method=method, tail=label):
+                    module, data, info, start = self.member_bytes(self.unused_entry(method, "m.txt", text, tail))
+                    self.assertIsNotNone(start, "local header preflight must still accept the member")
+                    self.assertEqual(module._member_bytes(data, info, start), (None, "unreadable"))
+
+    def test_empty_compressed_stream_with_suffix_is_unreadable(self):
+        for method in (8, 12, 14):
+            module, data, info, start = self.member_bytes(self.unused_entry(method, "e.txt", b"", b""))
+            self.assertEqual(module._member_bytes(data, info, start), (b"", None))
+            for label, tail in self.tails(method).items():
+                with self.subTest(method=method, tail=label):
+                    module, data, info, start = self.member_bytes(self.unused_entry(method, "e.txt", b"", tail))
+                    self.assertEqual(module._member_bytes(data, info, start), (None, "unreadable"))
+
+    def mixed_unused_archive(self):
+        text = b"shared decoded prefix\n"
+        entries = [self.unused_entry(8, "bad8.txt", text, b"UNCONSUMED-MARKER"),
+                   self.unused_entry(12, "bad12.txt", b"bz2 body\n", b"\x00"),
+                   self.unused_entry(14, "bad14.txt", b"lzma body\n", self.compressed(14, b"more")),
+                   ("peer-shared.txt", text, {}),
+                   ("peer-bz.txt", b"healthy bz\n", {"method": 12, "raw": bz2.compress(b"healthy bz\n")}),
+                   ("peer-xz.txt", b"healthy xz\n", {"method": 14, "raw": zip_lzma(b"healthy xz\n"), "flags": 0x802})]
+        return text, self.archive(entries, name="mixed.zip")
+
+    def test_mixed_archive_unused_payload_has_no_derived_provenance(self):
+        text, path = self.mixed_unused_archive()
+        report = self.ingest(path)
+        bad = {"bad8.txt", "bad12.txt", "bad14.txt"}
+        self.assertEqual(self.skipped(report), {name: "unreadable" for name in bad})
+        self.assertEqual([m["path"] for m in report["members"]], ["peer-shared.txt", "peer-bz.txt", "peer-xz.txt"])
+        whole = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.assertEqual((self.root / "private" / "objects" / whole).read_bytes(), path.read_bytes())
+        names = [r[0] for r in self.rows("SELECT original_name FROM receipts")]
+        self.assertEqual(sorted(names), sorted(["mixed.zip"] + [f"mixed.zip/{n}" for n in
+                                                                ("peer-shared.txt", "peer-bz.txt", "peer-xz.txt")]))
+        self.assertEqual(self.rows("SELECT count(*) FROM contains"), [(3,)])
+        # the shared decoded bytes exist through the healthy peer only
+        self.assertEqual((self.root / "private" / "objects" / hashlib.sha256(text).hexdigest()).read_bytes(), text)
+
+    def test_unused_payload_preview_apply_replay_decisions_agree(self):
+        _text, path = self.mixed_unused_archive()
+        for populated in (False, True):
+            if populated:
+                self.ingest(self.archive([("other.txt", b"other", {})], name="other.zip"), source_id="other")
+            before = self.files()
+            dry = self.ingest(path, dry=True)
+            self.assertEqual(self.files(), before, "preview wrote something")
+        real = self.ingest(path)
+        self.assertEqual(self.skipped(real), self.skipped(dry))
+        self.assertEqual([m["path"] for m in real["members"]], [m["path"] for m in dry["members"]])
+        self.assertEqual(set(real), {"archive", "members", "skipped", "stored", "present"})
+        again = self.ingest(path)
+        self.assertEqual((again["stored"], again["skipped"]), (0, real["skipped"]))
+        self.assertEqual([m["outcome"] for m in again["members"]], ["present"] * 3)
+        self.assertEqual(self.rows("SELECT count(*) FROM contains"), [(4,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM receipts WHERE original_name LIKE 'mixed.zip/bad%'"), [(0,)])
+        self.cli("status", "--check")
+
+    def test_payload_end_is_not_physical_record_end(self):
+        text = b"streamed payload\n" * 5
+        for method in (8, 12, 14):
+            with self.subTest(method=method):
+                # bytes after an accurately bounded compressed slice (before the next record) are not decoder input
+                module, data, info, start = self.member_bytes(self.unused_entry(method, "s.txt", text, b""))
+                padded = bytearray(data)
+                at = start + info.compress_size
+                padded[at:at] = b"OUTSIDE-SLICE"
+                self.assertEqual(module._member_bytes(bytes(padded), info, start), (text, None))
+        # real stdlib streaming writer and forced ZIP64 members stay accepted
+        for method in (zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA):
+            with self.subTest(streaming=method):
+                class Sink(io.RawIOBase):
+                    def __init__(self):
+                        self.chunks = []
+                    def writable(self):
+                        return True
+                    def write(self, b):
+                        self.chunks.append(bytes(b))
+                        return len(b)
+                sink = Sink()
+                with zipfile.ZipFile(sink, "w", method) as writer:
+                    with writer.open("s.txt", "w", force_zip64=True) as member:
+                        member.write(text)
+                path = self.inbox / f"stream{method}.zip"
+                path.write_bytes(b"".join(sink.chunks))
+                report = self.ingest(path, source_id=f"s{method}")
+                self.assertEqual((report["skipped"], [m["path"] for m in report["members"]]), ([], ["s.txt"]))
+
+    def test_stored_content_and_single_stream_vectors_remain_exact(self):
+        marker = b"UNCONSUMED-MARKER"
+        module, data, info, start = self.member_bytes(("m.bin", marker, {"method": 0}))
+        self.assertEqual(module._member_bytes(data, info, start), (marker, None))
+        for text in (b"a", b"ab", b"x" * 3, bytes(range(256))):
+            for method in (8, 12, 14):
+                module, data, info, start = self.member_bytes(self.unused_entry(method, "v.bin", text, b""))
+                self.assertEqual(module._member_bytes(data, info, start), (text, None))
+
+    def test_bomb_and_prior_skip_precedence_is_unchanged(self):
+        from unittest import mock
+        text = b"q" * 5000
+        for method in (8, 12, 14):
+            with self.subTest(method=method):
+                module, data, info, start = self.member_bytes(
+                    self.unused_entry(method, "c.txt", text, b"UNCONSUMED-MARKER"))
+                with mock.patch.object(module, "MAX_BYTES", 100):
+                    self.assertEqual(module._member_bytes(data, info, start), (None, "too_large"))
+
     def test_integrity_document_is_linked_and_states_its_limits(self):
         document = REPO_ROOT / "docs" / "ZIP-INGEST-INTEGRITY.md"
         self.assertIn("docs/ZIP-INGEST-INTEGRITY.md", (REPO_ROOT / "campaign_tool" / "ingest_zip.py").read_text())
         text = document.read_text()
         for phrase in ("structural", "descriptor", "ZIP64", "original archive"):
+            self.assertIn(phrase, text)
+
+    def test_integrity_document_names_full_payload_consumption(self):
+        text = (REPO_ROOT / "docs" / "ZIP-INGEST-INTEGRITY.md").read_text()
+        for phrase in ("single stream", "unused", "declared compressed payload", "unreadable", "not a migration"):
             self.assertIn(phrase, text)
 
 

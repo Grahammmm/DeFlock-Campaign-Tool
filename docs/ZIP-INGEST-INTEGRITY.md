@@ -22,6 +22,13 @@ makes the same decisions without writing.
 - The header, name, extra field and payload fit before the next distinct local-header offset (or the central
   directory start), so no span reaches into another record. Two central entries pointing at one local header are
   both refused. Archives with a prefix (self-extracting) work because offsets are the ones `zipfile` resolved.
+- A compressed member (deflate, bzip2, ZIP-LZMA) must be a **single stream** that consumes its entire
+  declared compressed payload: any unused bytes after the end of that stream inside the declared range (junk,
+  zeros or a second stream) make the member `unreadable`, so it gets no derived object, receipt or `contains`
+  row, while the original archive and the healthy members are still kept. Stored members are plain content
+  and are never scanned for markers. Bytes outside the declared slice (descriptors, headers, gaps) are not
+  decoder input, and descriptor contents are still not authenticated. This applies to new ingests only; it is
+  not a migration and removes nothing recorded by an earlier import.
 
 ## Archives the runtime cannot open
 If the central directory itself cannot be opened (for example an entry demands an extraction version the
