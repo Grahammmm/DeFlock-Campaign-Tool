@@ -2,6 +2,8 @@
 
 Every row goes through ``kit_track.record_step(..., dry_run=True)`` in file order against the recorded steps plus the
 earlier accepted rows, so the step rules are never copied here. Nothing is fetched or sent; a refusal writes nothing.
+After each new row the whole sent store as it would be written is measured against ``kit_track.MAX_BYTES``, the
+ceiling ``read_sent`` enforces, so no import (preview or apply) may replace a readable store with an unreadable one.
 See docs/KIT-RESPONSE-IMPORT.md for the replay identity, including the extension dispatch date.
 """
 import csv
@@ -109,8 +111,21 @@ def _row(cells):  # (date, kind, record_step keywords, signature); ValueError wh
     return on, kind, keywords, _signature(on, kind, note, amount or None, expected_on, partial == "yes")
 
 
+def _document(requests):  # the complete document the writer persists
+    return {"schema_version": 1, "requests": dict(sorted(requests.items()))}
+
+
+def _check_capacity(requests):  # refuse a store the writer would produce but read_sent would refuse (pure, no I/O)
+    try:
+        size = len((json.dumps(_document(requests), indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    except UnicodeEncodeError:
+        raise ImportRefused("kit/sent.json: import cannot be encoded as UTF-8; nothing was written") from None
+    if size > kit_track.MAX_BYTES:
+        raise ImportRefused("kit/sent.json: import would exceed 1 MiB; nothing was written")
+
+
 def _write(path, requests):  # the existing atomic writer
-    kit._write_json(path, {"schema_version": 1, "requests": dict(sorted(requests.items()))})
+    kit._write_json(path, _document(requests))
 
 
 def import_steps(root, agency_id, csv_path, *, request="main", apply=False, today=None):
@@ -150,6 +165,7 @@ def import_steps(root, agency_id, csv_path, *, request="main", apply=False, toda
                 continue
             requests[key]["steps"].append(step)  # later rows see this one; a refused row is never added
             added.append((line, step))
+            _check_capacity(requests)  # every new row, the last included, before anything is persisted
             _write(working, requests)
     if errors:
         more = f"\nand {len(errors) - SHOWN} more" if len(errors) > SHOWN else ""
