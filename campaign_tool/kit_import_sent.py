@@ -82,8 +82,9 @@ def _agencies(root):  # {agency_id: number of kit/agencies.json entries with tha
         listed = kit._load_existing(path)
     except OSError:
         raise SentImportError("kit/agencies.json cannot be read") from None
-    except ValueError as exc:
-        raise SentImportError(f"kit/agencies.json unreadable: {exc}") from None
+    except ValueError:
+        # Shared loader diagnostics can contain private paths and agency values.
+        raise SentImportError("kit/agencies.json unreadable: invalid agency data") from None
     counts = {}
     for entry in listed:
         counts[entry["agency_id"]] = counts.get(entry["agency_id"], 0) + 1
