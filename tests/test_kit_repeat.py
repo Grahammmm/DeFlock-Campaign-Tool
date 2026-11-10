@@ -338,6 +338,184 @@ class KitRepeatTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("placeholder", err)
 
+    # --- input admission (RF0145-7) ---------------------------------------------------------------
+    @contextlib.contextmanager
+    def payload_probe(self, *, growth=None, read_error=None, after_growth=None):
+        """Forward real stat/open/read calls; inject growth after the real size preflight."""
+        original_stat, original_open = Path.stat, Path.open
+        observed = {"stats": 0, "reads": [], "handles": [], "grew": False}
+        store = self.store
+
+        def checked_stat(path, *args, **kwargs):
+            result = original_stat(path, *args, **kwargs)
+            if path == store and kwargs.get("follow_symlinks", True):
+                observed["stats"] += 1
+                # is_file performs the first stat; the explicit size check is the second.
+                if observed["stats"] == 2 and growth is not None:
+                    self.assertLessEqual(result.st_size, kit_track.MAX_BYTES)
+                    with original_open(store, "wb") as writer:
+                        writer.write(growth)
+                    observed["grew"] = True
+                    if after_growth is not None:
+                        after_growth()
+            return result
+
+        @contextlib.contextmanager
+        def opened(path, *args, **kwargs):
+            with original_open(path, *args, **kwargs) as handle:
+                if path != store or (args[0] if args else kwargs.get("mode")) != "rb":
+                    yield handle
+                    return
+                observed["handles"].append(handle)
+
+                class ForwardingReader:
+                    def read(inner, size=-1):
+                        if read_error is not None:
+                            raise read_error
+                        data = handle.read(size)
+                        observed["reads"].append((size, len(data)))
+                        return data
+
+                yield ForwardingReader()
+
+        with mock.patch.object(Path, "stat", checked_stat), mock.patch.object(Path, "open", opened):
+            yield observed
+        self.assertTrue(all(handle.closed for handle in observed["handles"]))
+
+    def assert_bounded(self, observed, length):
+        self.assertEqual(observed["reads"], [(kit_track.MAX_BYTES + 1, length)])
+        self.assertEqual(len(observed["handles"]), 1)
+        self.assertTrue(observed["handles"][0].closed)
+
+    def test_repeat_reader_bounds_actual_payload_after_real_size_check(self):
+        self.sent_main()
+        large = self.pretty(self.filler(self.LIMIT + 4096, "input"))
+        self.assertGreater(len(large), self.LIMIT)
+        empty = self.pretty({})
+        for payload in (empty + b" " * self.LIMIT, large):
+            with self.subTest(kind="whitespace" if payload.startswith(empty) else "entries"):
+                self.store.write_bytes(empty)
+                with self.payload_probe(growth=payload) as observed:
+                    with self.assertRaisesRegex(ValueError, "unreadable: larger than 1 MiB$"):
+                        kit_repeat.read_repeats(self.root)
+                self.assertTrue(observed["grew"])
+                self.assert_bounded(observed, self.LIMIT + 1)
+
+    def test_repeat_reader_sentinel_precedes_decode_and_json(self):
+        empty = self.pretty({})
+        # A valid truncated JSON prefix must not be accepted; invalid UTF-8 must not mask size.
+        # A multibyte document has fewer characters than bytes, but still exceeds the byte cap.
+        multibyte = ('{"schema_version":1,"requests":{},"' + 'é' * (self.LIMIT // 2) + '":0}').encode()
+        self.assertLess(len(multibyte.decode()), self.LIMIT)
+        for payload in (empty + b" " * self.LIMIT, b"\xff" + b" " * self.LIMIT, multibyte):
+            with self.subTest(prefix=payload[:20]):
+                self.store.write_bytes(empty)
+                with self.payload_probe(growth=payload) as observed, \
+                        mock.patch.object(kit_repeat.json, "loads", wraps=json.loads) as parsed:
+                    with self.assertRaisesRegex(ValueError, "unreadable: larger than 1 MiB$"):
+                        kit_repeat.read_repeats(self.root)
+                    parsed.assert_not_called()
+                self.assert_bounded(observed, self.LIMIT + 1)
+
+    def test_repeat_reader_exact_input_boundaries(self):
+        self.assertEqual(kit_repeat.read_repeats(self.root), {})
+        self.sent_main()
+        self.repeat("bound")
+        requests = kit_repeat.read_repeats(self.root)
+        for entries in ({}, requests):
+            document = self.pretty(entries)
+            for size in (self.LIMIT - 1, self.LIMIT):
+                with self.subTest(populated=bool(entries), size=size):
+                    self.store.write_bytes(document + b" " * (size - len(document)))
+                    with self.payload_probe() as observed:
+                        self.assertEqual(kit_repeat.read_repeats(self.root), entries)
+                    self.assert_bounded(observed, size)
+            self.store.write_bytes(document + b" " * (self.LIMIT + 1 - len(document)))
+            with self.payload_probe() as observed:
+                with self.assertRaisesRegex(ValueError, "larger than 1 MiB"):
+                    kit_repeat.read_repeats(self.root)
+            self.assertEqual(observed["reads"], [])  # static preflight still refuses before open
+            self.assertEqual(observed["handles"], [])
+
+    def test_repeat_reader_closes_binary_handle_on_every_exit(self):
+        cases = ((self.pretty({}), None), (b"\xff", "not JSON without duplicate keys"),
+                 (b"{", "not JSON without duplicate keys"),
+                 (b'{"schema_version":1,"requests":{},"requests":{}}', "not JSON without duplicate keys"),
+                 (b'{"schema_version":true,"requests":{}}', "expected schema_version 1"),
+                 (b'{"schema_version":1,"requests":{"bad":{}}}', "malformed entry"))
+        for payload, error in cases:
+            with self.subTest(payload=payload):
+                self.store.write_bytes(payload)
+                with self.payload_probe() as observed:
+                    if error:
+                        with self.assertRaisesRegex(ValueError, error):
+                            kit_repeat.read_repeats(self.root)
+                    else:
+                        self.assertEqual(kit_repeat.read_repeats(self.root), {})
+                self.assert_bounded(observed, len(payload))
+        failure = OSError("synthetic read failure")
+        with self.payload_probe(read_error=failure) as observed:
+            with self.assertRaises(OSError) as caught:
+                kit_repeat.read_repeats(self.root)
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(len(observed["handles"]), 1)
+        self.assertTrue(observed["handles"][0].closed)
+
+    def growth_cli_refused(self, call):
+        original = self.store.read_bytes()
+        after = {}
+
+        def snapshot_after_injection():
+            after["tree"] = self.snapshot()
+            after["mtimes"] = {p: p.lstat().st_mtime_ns for p in self.tmp.rglob("*")}
+
+        with self.payload_probe(growth=original + b" " * self.LIMIT,
+                                after_growth=snapshot_after_injection) as observed, \
+                mock.patch("socket.socket", side_effect=AssertionError("network used")):
+            code, out, err = call()
+        self.assertTrue(observed["grew"])
+        # Snapshot reads performed by the injector are not metadata acquisition by production.
+        self.assertEqual(observed["reads"][-1], (self.LIMIT + 1, self.LIMIT + 1))
+        self.assertEqual(code, 1, err)
+        self.assertEqual(out, "")
+        self.assertIn("kit/repeat-drafts.json unreadable: larger than 1 MiB", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(self.snapshot(), after["tree"])
+        self.assertEqual({p: p.lstat().st_mtime_ns for p in self.tmp.rglob("*")}, after["mtimes"])
+        self.assertEqual(list(self.kit.glob(".repeat-drafts.*")), [])
+
+    def test_post_stat_growth_refuses_real_repeat_without_outputs(self):
+        self.sent_main()
+        self.store.write_bytes(self.pretty({}))
+        self.growth_cli_refused(lambda: run("kit-repeat", "--directory", self.root, "--agency", self.agency,
+                                          "--request", "main", "--as", "growth", "--through", "2026-11-01"))
+        self.assertFalse(self.draft("growth").exists())
+
+    def test_post_stat_growth_refuses_named_send_before_store_write(self):
+        self.sent_main()
+        self.repeat("bound")
+        self.growth_cli_refused(lambda: self.send("bound", "2026-11-01"))
+        self.assertNotIn(f"{self.agency}#bound", kit_track.read_sent(self.root))
+
+    def test_post_stat_growth_refuses_coverage_without_report(self):
+        self.sent_main()
+        self.repeat("bound")
+        original = self.store.read_bytes()
+        for flags in ((), ("--csv",)):
+            with self.subTest(flags=flags):
+                self.store.write_bytes(original)
+                self.growth_cli_refused(lambda: run("kit-coverage", "--directory", self.root, *flags))
+
+    def test_repeat_reader_nonregular_legacy_refusals(self):
+        for target in (self.tmp / "missing", self.draft()):
+            self.store.symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "not a regular file"):
+                kit_repeat.read_repeats(self.root)
+            self.store.unlink()
+        self.store.mkdir()
+        with self.assertRaisesRegex(ValueError, "not a regular file"):
+            kit_repeat.read_repeats(self.root)
+
     # --- store capacity (RF1635-2): the writer never produces bytes read_repeats refuses -------------------------
     LIMIT = 1 << 20  # the reader's real limit, not patched
     FULL = "would be larger than 1 MiB; no follow-on draft was written; existing requests were kept"

@@ -59,8 +59,12 @@ def read_repeats(root):
         raise bad("not a regular file")
     if path.stat().st_size > kit_track.MAX_BYTES:
         raise bad("larger than 1 MiB")
+    with path.open("rb") as handle:
+        data = handle.read(kit_track.MAX_BYTES + 1)
+    if len(data) > kit_track.MAX_BYTES:
+        raise bad("larger than 1 MiB")
     try:
-        document = json.loads(path.read_bytes().decode("utf-8"), object_pairs_hook=_pairs)
+        document = json.loads(data.decode("utf-8"), object_pairs_hook=_pairs)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
         raise bad("not JSON without duplicate keys") from None
     if not isinstance(document, dict) or set(document) != {"schema_version", "requests"} \
