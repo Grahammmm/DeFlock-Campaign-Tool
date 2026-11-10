@@ -109,7 +109,12 @@ def read_groups(root):
     if _is_real_dir(base, "content"):
         pages = base / "pages"
         if _is_real_dir(pages, "content/pages"):
-            for name in sorted(os.listdir(pages)):
+            try:
+                names = os.listdir(pages)
+            except OSError:
+                # Admission succeeded: a later enumeration failure is not optional absence.
+                raise ContentError("content/pages: could not be read") from None
+            for name in sorted(names):
                 if not name.endswith(".json"):
                     continue
                 label = f"content/pages/{name}"
