@@ -166,6 +166,8 @@ def undo_step(root, agency_id, *, request="main", reason, today=None):
         too_big = serialized_size(candidate) > ARCHIVE_MAX_BYTES  # the reader's own limit, checked before any write
     except UnicodeEncodeError:
         raise ValueError("kit/sent-undone.json cannot be written as UTF-8; nothing was changed") from None
+    except RecursionError:  # a decodable archive need not be re-encodable by the indented writer
+        raise ValueError("kit/sent-undone.json cannot be serialized; nothing was changed") from None
     if too_big:
         raise ValueError("kit/sent-undone.json would exceed 16 MiB; nothing was changed")
     # Active store: the complete prospective kit/sent.json must fit its own reader's cap (independent of the archive).
