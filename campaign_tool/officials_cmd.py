@@ -77,13 +77,22 @@ def _read(folder_fd, name, label):
         raise OfficialsError(f"{label}: must be a regular file")
     if info.st_size > MAX_JSON_BYTES:
         raise OfficialsError(f"{label}: file too large")
+    fd = None
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder_fd)
-        with os.fdopen(fd, "rb") as handle:
+        handle = os.fdopen(fd, "rb")
+        fd = None  # The stream owns the descriptor only after construction succeeds.
+        with handle:
             opened = os.fstat(handle.fileno())
             data = handle.read(MAX_JSON_BYTES + 1)
     except OSError:
         raise OfficialsError(f"{label}: cannot be read") from None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass  # Preserve the construction failure; never retry an uncertain close.
     if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
         raise OfficialsError(f"{label}: changed while it was being read")
     if len(data) > MAX_JSON_BYTES:
@@ -226,13 +235,16 @@ def _install(root, data, loaded, *, expected_folder):
     folder = _content_fd(root)
     temp = f".officials-{os.getpid()}-{os.urandom(4).hex()}.tmp"
     staged = False
+    fd = None
     committed = False  # True once the rename/link has published the new roster: from then on the old bytes are gone
     try:
         if _folder_identity(folder) != expected_folder:
             raise OfficialsError(FOLDER_CHANGED)
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
         staged = True
-        with os.fdopen(fd, "wb") as handle:
+        handle = os.fdopen(fd, "wb")
+        fd = None  # Successful construction transfers ownership to the stream.
+        with handle:
             os.fchmod(handle.fileno(), 0o600 if loaded is None else loaded[1])
             handle.write(data)
             handle.flush()
@@ -262,6 +274,11 @@ def _install(root, data, loaded, *, expected_folder):
                                  "check the file with officials list before relying on it") from None
         raise OfficialsError(f"{LABEL}: write failed; the previous file was kept") from None
     finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass  # Keep the primary failure and still clean the staging name.
         if staged:
             try:
                 os.unlink(temp, dir_fd=folder)
