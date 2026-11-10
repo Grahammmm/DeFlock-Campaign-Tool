@@ -1,0 +1,58 @@
+[
+  {
+    "rank": 1,
+    "kind": "comment_deadline",
+    "what": "Written comment due 2026-03-22T12:00:00-07:00 for Synthetic Council m-week (m-week)",
+    "due": "2026-03-22T12:00:00-07:00",
+    "command": "submit written comment: email the synthetic clerk (agenda: https://agenda.synthetic.example/m-week)"
+  },
+  {
+    "rank": 2,
+    "kind": "request_waiting_on_you",
+    "what": "Grover Beach Police Department (ca-grover-beach-police): the agency asked for clarification on 2026-03-04; reply",
+    "due": "2026-03-04",
+    "command": "kit-clarify-reply --directory <CAMPAIGN> --agency ca-grover-beach-police"
+  },
+  {
+    "rank": 3,
+    "kind": "request_fee_unpaid",
+    "what": "Grover Beach Police Department (ca-grover-beach-police): unpaid fee estimate $1.00 recorded 2026-03-03; review and reply",
+    "due": "2026-03-03",
+    "command": "kit fee-reply --directory <CAMPAIGN> --agency ca-grover-beach-police"
+  },
+  {
+    "rank": 4,
+    "kind": "request_stated_date_passed",
+    "what": "Arroyo Grande Police Department (ca-arroyo-grande-police): stated date passed 2026-03-14 — the agency's own date; provisional, not a legal deadline; follow up",
+    "due": "2026-03-14",
+    "command": "kit-followup --directory <CAMPAIGN> --agency ca-arroyo-grande-police"
+  },
+  {
+    "rank": 5,
+    "kind": "finding_ready",
+    "what": "Finding td-ready is reviewed and ready to publish",
+    "due": null,
+    "command": "finding publish <CAMPAIGN>/private/drafts/td-ready.json --directory <CAMPAIGN> --approved-by NAME"
+  },
+  {
+    "rank": 6,
+    "kind": "finding_blocked",
+    "what": "Finding td-block is blocked: missing_legal_review, missing_privacy_review, missing_summary, need_two_independent_reviewers",
+    "due": null,
+    "command": "finding review-status <CAMPAIGN>/private/drafts/td-block.json --directory <CAMPAIGN>"
+  },
+  {
+    "rank": 7,
+    "kind": "stale_comment_kit",
+    "what": "Comment kit for meeting m-week cites cedar-policy-posted (corrected 2026-02-03) without the latest correction",
+    "due": null,
+    "command": "meetings-stage --directory <CAMPAIGN> --id m-week --replace"
+  },
+  {
+    "rank": 8,
+    "kind": "stale_contact",
+    "what": "Re-check the records contact for ca-arroyo-grande-police on its official site (last checked 2025-01-01, 438 days ago)",
+    "due": "2025-01-01",
+    "command": "kit-verify-agency --directory <CAMPAIGN> --agency-id ca-arroyo-grande-police --source-url OFFICIAL_URL --checked-on YYYY-MM-DD --records-email ADDRESS"
+  }
+]
