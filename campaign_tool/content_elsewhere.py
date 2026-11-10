@@ -143,11 +143,15 @@ def _no_repeats(pairs):
 def _read_strict(path):
     """``content._read_json`` (same size cap, UTF-8 and symlink rules) that refuses a repeated member name at any depth.
 
+    The payload is one binary read of at most ``MAX_JSON_BYTES + 1`` bytes from a handle closed before decoding; the extra
+    byte only proves the file is over the cap, so a larger file is refused without being read further or parsed.
+
     The decoder would otherwise keep the last value, so the file would have two readings: the maintenance commands
     refuse it already. The refusal names neither the repeated key nor either value."""
     if path.is_symlink():
         raise ContentError(f"{path.name}: symlinks are not read")
-    data = path.read_bytes()
+    with path.open("rb") as handle:
+        data = handle.read(MAX_JSON_BYTES + 1)
     if len(data) > MAX_JSON_BYTES:
         raise ContentError(f"{path.name}: file too large")
     try:
