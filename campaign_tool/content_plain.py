@@ -5,14 +5,19 @@ counting and positions) over ``content/pages/*.json`` (title, body_md), ``conten
 answer_md) and ``content/glossary.json`` (each term's definition_md). It reads only those files, never builds or loads
 the whole content, writes nothing and is not a gate: 0 with or without suggestions, 1 only when a checked file cannot
 be read. Nothing in build, publish, review receipts or content hashes imports this module or ``plain_language``.
+
+RF2135-2: each checked file is read through its own read-only descriptor and at most ``MAX_JSON_BYTES + 1`` bytes are
+ever requested from it, so an oversized or growing file is refused at the limit instead of being read whole. The limit
+is per file, not a total-process or whole-directory quota.
 """
+import errno
 import json
 import os
 import stat
 from pathlib import Path
 
 from . import plain_language
-from .content import ContentError, _read_json
+from .content import MAX_JSON_BYTES, ContentError
 
 
 def _fail(label, why):
@@ -32,20 +37,49 @@ def _is_real_dir(path, label):
     return True
 
 
+def _read_bounded(fd, limit):
+    """Up to ``limit`` + 1 bytes from ``fd``; each request is only the remaining allowance, so no more is ever read."""
+    chunks, total = [], 0
+    while total <= limit:
+        chunk = os.read(fd, limit + 1 - total)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
+
+
+NOT_REGULAR = "must be a regular file, not a symlink, folder or special file"
+
+
 def _read(path, label):
     try:
         mode = os.lstat(path).st_mode
     except OSError:
         _fail(label, "could not be read")
     if not stat.S_ISREG(mode):
-        _fail(label, "must be a regular file, not a symlink, folder or special file")
+        _fail(label, NOT_REGULAR)
     try:
-        return _read_json(path)
-    except ContentError as exc:
-        text = str(exc)
-        _fail(label, text.split(": ", 1)[1] if ": " in text else "could not be read")
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        _fail(label, NOT_REGULAR if exc.errno == errno.ELOOP else "could not be read")
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            _fail(label, NOT_REGULAR)
+        if info.st_size > MAX_JSON_BYTES:
+            _fail(label, "file too large")
+        data = _read_bounded(fd, MAX_JSON_BYTES)
     except OSError:
         _fail(label, "could not be read")
+    finally:
+        os.close(fd)
+    if len(data) > MAX_JSON_BYTES:
+        _fail(label, "file too large")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        _fail(label, f"not valid UTF-8 JSON ({exc})")
 
 
 def _string(document, key, label):
