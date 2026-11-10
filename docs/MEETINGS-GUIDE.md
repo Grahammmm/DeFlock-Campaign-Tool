@@ -129,6 +129,25 @@ python3 -m campaign_tool social --directory $D --outcomes [--within-days N] --pl
 
 One private draft per meeting whose recorded outcome date falls in the last N calendar days (1 to 60, default 14, today included), in `kit/social/outcomes/`. It quotes the result token, the vote line you recorded and the official record link exactly, and adds the meeting-page link only when `base_url` is set. A meeting with no outcome gets no draft. If the fixed text cannot fit a platform the run is refused rather than shortening what you recorded. Optional read-only check of staged data: `content-check --directory $D`. Reference: [Social drafts for outcomes](PUBLICATION.md#social-drafts-for-outcomes-never-posted).
 
+## Meeting inventory (meetings-status)
+
+```
+python3 -m campaign_tool meetings-status --directory $D [--as-of YYYY-MM-DD] [--json]
+```
+
+A private, read-only list of every staged meeting in `content/meetings/`, one line each: upcoming first (soonest first, today included), then past (newest first), each with its body, its start exactly as stored (with its own UTC offset, never converted), and its status: `scheduled`, `cancelled` or `continued` (a recorded `continued` outcome; nothing is stored as a third status). Then the fields, as tokens only:
+
+- `participation` `verified` when a participation object from task 4 is staged, else `not_verified`.
+- `kit` `current`, `stale` (a cited finding has a newer correction; re-stage it), `missing` (no comment kit) or `unknown` (a finding file could not be read, so it cannot say current). `current` compares only with your local findings; it says nothing about the published site.
+- `sent` `recorded` only when `kit/comments-sent.json` holds your receipt from task 7; a published comment or an outcome's written count is not a receipt.
+- `speakers` `present` when a speaker plan file exists (even an empty one), else `absent`. It is not coverage, consent or attendance.
+- `outcome` the recorded result token or `not_recorded`; `minutes` and `votes` `recorded` or `not_recorded`.
+- `next` the command for the **first** missing step only, as a template: upcoming meetings verify participation, re-stage a missing or stale kit (pass your verified participation file and the same `--finding`, `--ask` and `--cosign` choices again), record a written comment you already submitted by hand (`CHANNEL` and the date are yours), then optionally look at speakers; past meetings record the outcome, then the approved minutes, then optionally review votes (`meetings-outcome --help`; never a `--replace` that would drop recorded fields). Cancelled and complete meetings show `-`. Capital words are facts you supply from the official source. Nothing is run for you.
+
+After the staged meetings come `unstaged` lines: entries of `kit/meetings.json` and `kit/meetings-manual.json` not yet staged, with a `meetings-stage` command for scheduled ones and none for cancelled ones.
+
+`--as-of` only moves the upcoming/past line; everything recorded stays visible and is still checked against the real date. Comment text, speaker labels, contact details, verifier names, vote lines and member names are never printed. A file that cannot be read safely (bad JSON, wrong shape, too large, a symlink, a folder or pipe where a file belongs, an id that differs from its file name or appears twice) is its own `unreadable | PATH | review input locally` line, never hides other meetings, turns the states it would have decided into `unknown` (`next=repair_input`), and makes the command exit 1; otherwise it exits 0, even with work left. In text mode `\` and `|` and control characters are escaped so each meeting stays one line; `--json` gives the exact values. The command writes, creates, sends and fetches nothing, and its output is private: do not paste it anywhere public. It is an inventory, not proof that anything was submitted or published.
+
 ## 10. Worked example (all synthetic)
 
 Invented body "Synthetic Town Council" (agency `ca-cedar-city-council`), you as "Synthetic Organizer", officials Avery, Blake and Casey Example, and only `example.invalid` links. Copy `examples/fictional-campaign` to a disposable `$D` (it has the published finding `fnd_0000000000000001`). Meeting id `ID` is `manual-synthetic-council-2026-11`. The dates below are one consistent set assuming you start on **2026-11-05**; if you start later, move every date forward in the same order (a start in the past is refused). The fixture replay in step 2 is an alternative way to find a meeting and uses different ids.
