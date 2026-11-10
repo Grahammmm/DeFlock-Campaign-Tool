@@ -7,9 +7,11 @@ and no content or date is changed; an archived_url is only reported beside its o
 """
 import http.client
 import json
+import os
 import re
 import ssl
 import socket
+import stat
 import urllib.error
 import urllib.request
 from html.parser import HTMLParser
@@ -17,7 +19,7 @@ from pathlib import Path
 from urllib.parse import urldefrag, urljoin, urlsplit
 
 from . import agency_actions, markdown_lite
-from .content import ContentError, _read_json, load_content, load_glossary
+from .content import MAX_JSON_BYTES, ContentError, _read_json, load_content, load_glossary
 
 USER_AGENT = "DeFlock-Campaign-Tool/link-check"
 TIMEOUT = 15
@@ -74,17 +76,63 @@ def _anchors(markdown):
     return parser.hrefs
 
 
-def _file_names(content_dir, folder, key):
-    """{document key: file name} for content/<folder>/*.json (read-only; loaders already refused symlinks)."""
-    names = {}
-    directory = content_dir / folder
-    for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
-        try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        names[(document.get(key) if isinstance(document, dict) else None) or path.stem] = path.name
-    return names
+def _read_metadata(directory, name):
+    """The parsed JSON object of one immediate content file, read at most MAX_JSON_BYTES + 1 bytes.
+
+    Refuses (ValueError/OSError) a symlink, non-regular file, oversize or non-UTF-8/JSON/object content. A leaf that
+    is replaced after the loader ran is refused here; this is not complete ancestor-race confinement."""
+    path = directory / name
+    if not stat.S_ISREG(os.lstat(path).st_mode):
+        raise ValueError("not a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("not a regular file")
+        handle = os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    with handle:
+        data = handle.read(MAX_JSON_BYTES + 1)
+    if len(data) > MAX_JSON_BYTES:
+        raise ValueError("too large")
+    document = json.loads(data.decode("utf-8"))
+    if not isinstance(document, dict):
+        raise ValueError("not an object")
+    return document
+
+
+def _file_names(content_dir, folder, expected, *, stem_ids=False):
+    """{document id: file name} for content/<folder>/*.json, fail-closed against the loaded ``expected`` ids.
+
+    ``stem_ids`` (meetings) lets a file without an ``id`` key use its filename stem, as the loader does. An empty
+    ``expected`` reads nothing. Any unsafe, unreadable, malformed, duplicate or mismatching metadata is refused with
+    one content-free message; no file name is ever guessed from the id."""
+    if not expected:
+        return {}
+    refusal = LinkCheckError(f"content/{folder}: cannot resolve stored citation locations")
+    try:
+        directory = content_dir / folder
+        if content_dir.is_symlink() or directory.is_symlink() or not directory.is_dir():
+            raise ValueError("unsafe folder")
+        names = {}
+        for name in sorted(entry for entry in os.listdir(directory) if entry.endswith(".json")):
+            document = _read_metadata(directory, name)
+            if "id" in document:
+                identity = document["id"]
+            elif stem_ids:
+                identity = name[:-len(".json")]
+            else:
+                raise ValueError("missing id")
+            if not isinstance(identity, str) or not identity or identity in names:
+                raise ValueError("unusable or duplicate id")
+            names[identity] = name
+        if set(names) != set(expected):
+            raise ValueError("identities differ from the loaded content")
+        return names
+    except (OSError, ValueError, RecursionError, TypeError):
+        raise refusal from None
 
 
 def _stored_schedule_positions(path):
@@ -237,9 +285,9 @@ def collect_links(root, *, today=None):
     for index, entry in enumerate(model["sources"]):
         cite(entry.get("public_url"), f"content/sources.json[{index}].public_url")
 
-    meeting_files = _file_names(content_dir, "meetings", "id")
+    meeting_files = _file_names(content_dir, "meetings", {m["id"] for m in model["meetings"]}, stem_ids=True)
     for meeting in model["meetings"]:
-        base = f"content/meetings/{meeting_files.get(meeting['id'], meeting['id'] + '.json')}"
+        base = f"content/meetings/{meeting_files[meeting['id']]}"
         cite(meeting.get("agenda_url"), base + ":agenda_url")
         prose(meeting.get("comment_kit_md"), base + ":comment_kit_md")
         cite((meeting.get("participation") or {}).get("source_url"), base + ":participation.source_url")
@@ -269,9 +317,9 @@ def collect_links(root, *, today=None):
         prose(event.get("description_md"), f"content/events.json[{index}].description_md")
         cite(event.get("url"), f"content/events.json[{index}].url")
 
-    finding_files = _file_names(content_dir, "findings", "id")
+    finding_files = _file_names(content_dir, "findings", {f["id"] for f in model["findings"]})
     for finding in model["findings"]:
-        prose(finding.get("body_md"), f"content/findings/{finding_files.get(finding['id'], finding['id'] + '.json')}:body_md")
+        prose(finding.get("body_md"), f"content/findings/{finding_files[finding['id']]}:body_md")
     for page in model["pages"]:
         prose(page.get("body_md"), f"content/pages/{page['slug']}.json:body_md")
     for topic in model.get("topics") or []:
