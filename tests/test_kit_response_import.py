@@ -442,6 +442,217 @@ class KitResponseImportTests(unittest.TestCase):
         self.assertEqual([(s["kind"], s.get("extension_expected_on")) for s in second],
                          [("extension", "2026-03-20"), ("produced", None)])
 
+    # Capacity: the whole prospective sent store must stay within the ceiling read_sent enforces.
+    TODAY = date(2026, 3, 25)
+    OVER = "kit/sent.json: import would exceed 1 MiB; nothing was written"
+    CONTACT = {"on": "2026-03-03", "channel": "phone", "role": "Records clerk", "recorded_at": "2026-03-03T00:00:00+00:00"}
+
+    @staticmethod
+    def encoded(document):
+        return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+    def make_second(self):
+        drafts = self.root / "kit" / "requests"
+        (drafts / f"{self.agency}--second.md").write_text((drafts / f"{self.agency}.md").read_text(encoding="utf-8"),
+                                                          encoding="utf-8")
+        self.assertEqual(run("kit-sent", "--directory", self.root, "--agency", self.agency, "--date", SENT_ON,
+                             "--channel", "email", "--request", "second")[0], 0)
+
+    def calibrate(self, path, request="main"):  # bytes a real apply adds to this store; the store is then restored
+        before = self.sent.read_bytes()
+        kit_import_steps.import_steps(self.root, self.agency, path, request=request, apply=True, today=self.TODAY)
+        delta = self.sent.stat().st_size - len(before)
+        self.sent.write_bytes(before)
+        return delta
+
+    def fill_to(self, target, key=None, wide=0, keep_bytes=False):  # synthetic contacts make the store exactly target bytes
+        document = json.loads(self.sent.read_text(encoding="utf-8"))
+        entry = document["requests"][key or self.agency]
+
+        def build(lengths):
+            entry["contacts"] = [dict(self.CONTACT, note="X" * n) for n in lengths]
+            return len(self.encoded(document))
+        first, step = build([1]), build([1, 1]) - build([1])
+        count = 1
+        while target - first - (count - 1) * step > 499 * count:
+            count += 1
+        extra, lengths = target - first - (count - 1) * step, [1] * count
+        for i in range(count):
+            lengths[i] += min(499, extra)
+            extra -= min(499, extra)
+        self.assertEqual(build(lengths), target)
+        if wide:  # the same number of characters in more UTF-8 bytes, or the same bytes in fewer characters
+            note = entry["contacts"][0]["note"]
+            entry["contacts"][0]["note"] = "é" * wide + "X" * (len(note) - (2 if keep_bytes else 1) * wide)
+            self.assertEqual(len(self.encoded(document)), target if keep_bytes else target + wide)
+        self.sent.write_bytes(self.encoded(document))
+        kit_track.read_sent(self.root)  # the starting store is readable
+        return document
+
+    def snapshot(self, *paths):
+        out = []
+        for path in paths:
+            info = path.stat()
+            out.append((path.read_bytes(), info.st_mode, info.st_ino, info.st_mtime_ns))
+        return out
+
+    def import_refused(self, path, apply, request="main", message=None):
+        with mock.patch.object(kit, "_write_json", wraps=kit._write_json) as write:
+            with self.assertRaises(kit_import_steps.ImportRefused) as raised:
+                kit_import_steps.import_steps(self.root, self.agency, path, request=request, apply=apply,
+                                              today=self.TODAY)
+        self.assertEqual(str(raised.exception), message or self.OVER)
+        self.assertEqual([c for c in write.call_args_list if c.args[0] == self.sent], [])
+        return write
+
+    def test_final_new_row_over_reader_cap_refuses_preview_and_apply(self):
+        path = self.write("2026-03-05,acknowledged,,,,")
+        delta = self.calibrate(path)
+        self.fill_to(kit_track.MAX_BYTES - delta + 1)  # the real ceiling: the one new row ends one byte over
+        before = self.snapshot(self.sent, path)
+        for apply in (False, True):
+            with self.subTest(apply=apply):
+                self.import_refused(path, apply)
+                self.assertEqual(self.snapshot(self.sent, path), before)
+                self.assertEqual(kit_track.read_sent(self.root)[self.agency]["steps"], [])
+
+    def test_actual_cli_capacity_refusal_is_exit_two_without_success(self):
+        path = self.write("2026-03-05,acknowledged,PRIVATE-MARKER,,,")
+        delta = self.calibrate(path)
+        self.fill_to(kit_track.MAX_BYTES - delta + 1)
+        before = self.snapshot(self.sent, path)
+        for extra in ((), ("--apply",)):
+            with self.subTest(extra=extra):
+                code, out, err = self.do(path, *extra)
+                self.assertEqual((code, out), (2, ""))
+                self.assertEqual(err, "Stopped: " + self.OVER + "\n")
+                for leaked in ("Traceback", "PRIVATE-MARKER", "XXXX", str(self.tmp), "Recorded only", "Checked only"):
+                    self.assertNotIn(leaked, out + err)
+                self.assertEqual(self.snapshot(self.sent, path), before)
+                self.assertEqual(kit_track.read_sent(self.root)[self.agency]["steps"], [])
+
+    def last_row_case(self, request):
+        extra = () if request == "main" else ("--request", request)
+        key = self.agency if request == "main" else f"{self.agency}#second"
+        if request == "second":
+            self.make_second()
+        recorded = self.write("2026-03-04,acknowledged,,,,", name="recorded.csv")
+        kit_import_steps.import_steps(self.root, self.agency, recorded, request=request, apply=True, today=self.TODAY)
+        path = self.write("2026-03-04,acknowledged,,,,", "2026-03-10,extension,Letter received,,,",
+                          "2026-03-20,produced,First batch,,,yes", name="all.csv")  # one skipped row, two new rows
+        one = self.write("2026-03-04,acknowledged,,,,", "2026-03-10,extension,Letter received,,,", name="one.csv")
+        total, first = self.calibrate(path, request), self.calibrate(one, request)
+        self.assertGreater(total, first)
+        self.fill_to(kit_track.MAX_BYTES - total + 1)  # only the last new row crosses the ceiling
+        before, stored = self.snapshot(self.sent, path), kit_track.read_sent(self.root)
+        for apply in (False, True):
+            write = self.import_refused(path, apply, request)
+            # the working copy took the initial store and the first new row, never the overflowing last row
+            self.assertEqual(len(write.call_args_list), 2)
+            self.assertEqual(self.snapshot(self.sent, path), before)
+            self.assertEqual(kit_track.read_sent(self.root), stored)
+        self.assertEqual(self.do(path, "--apply", *extra)[0], 2)
+        self.assertEqual(self.snapshot(self.sent, path), before)
+        self.assertEqual(self.do(one, "--apply", *extra)[0], 0)  # the first new row alone fits and is recorded
+        self.assertEqual([s["kind"] for s in kit_track.read_sent(self.root)[key]["steps"]],
+                         ["acknowledged", "extension"])
+        self.assertLessEqual(self.sent.stat().st_size, kit_track.MAX_BYTES)
+
+    def test_last_row_capacity_refusal_discards_all_earlier_new_rows(self):
+        self.last_row_case("main")
+
+    def test_last_row_capacity_refusal_in_a_named_request(self):
+        self.last_row_case("second")
+
+    def test_prospective_exact_byte_limit_includes_final_newline(self):
+        path = self.write("2026-03-05,acknowledged,,,,")
+        self.make_second()
+        delta, empty = self.calibrate(path), self.sent.read_bytes()
+        for final, ok in ((kit_track.MAX_BYTES - 1, True), (kit_track.MAX_BYTES, True),
+                          (kit_track.MAX_BYTES + 1, False)):
+            with self.subTest(final=final):
+                self.sent.write_bytes(empty)  # no step recorded yet
+                self.fill_to(final - delta, key=f"{self.agency}#second")  # padding lives in the other request
+                before = self.snapshot(self.sent, path)
+                for apply in (False, True):
+                    if ok:
+                        report = kit_import_steps.import_steps(self.root, self.agency, path, apply=apply,
+                                                               today=self.TODAY)
+                        self.assertEqual((report["added"], report["applied"]), (1, apply))
+                    else:
+                        self.import_refused(path, apply)
+                if ok:
+                    self.assertEqual(self.sent.stat().st_size, final)
+                    self.assertTrue(self.sent.read_bytes().endswith(b"}\n"))
+                    self.assertEqual(len(kit_track.read_sent(self.root)[self.agency]["steps"]), 1)
+                    self.assertEqual(kit_track.read_sent(self.root)[f"{self.agency}#second"]["contacts"][0]["note"][0], "X")
+                else:
+                    self.assertEqual(self.snapshot(self.sent, path), before)
+                    self.assertEqual(len(self.sent.read_bytes()) + delta, final)
+
+    def test_utf8_bytes_and_unrelated_requests_count_toward_capacity(self):
+        path = self.write("2026-03-05,acknowledged,,,,")
+        self.make_second()
+        delta = self.calibrate(path)
+        second = f"{self.agency}#second"
+        cap = kit_track.MAX_BYTES
+        self.fill_to(cap - delta, key=second, wide=10, keep_bytes=True)  # fewer characters, same bytes: fits exactly
+        unrelated = kit_track.read_sent(self.root)[second]
+        self.assertEqual(kit_import_steps.import_steps(self.root, self.agency, path, apply=True,
+                                                       today=self.TODAY)["applied"], True)
+        self.assertEqual(self.sent.stat().st_size, cap)
+        after = kit_track.read_sent(self.root)
+        self.assertEqual(after[second], unrelated)
+        self.assertTrue(after[second]["contacts"][0]["note"].startswith("é" * 10))
+        self.sent.write_bytes(self.encoded({"schema_version": 1, "requests": {**after, self.agency: dict(
+            after[self.agency], steps=[])}}))
+        self.fill_to(cap - delta, key=second, wide=10)  # as many characters as the fitting store, 10 more bytes
+        document = json.loads(self.sent.read_text(encoding="utf-8"))
+        self.assertLessEqual(len(self.sent.read_bytes()), cap - delta + 10)
+        self.assertLess(sum(len(c["note"]) for c in document["requests"][second]["contacts"]), cap)
+        before = self.snapshot(self.sent, path)
+        for apply in (False, True):
+            self.import_refused(path, apply)
+            self.assertEqual(self.snapshot(self.sent, path), before)
+
+    def test_skipped_only_import_does_not_add_capacity_or_rewrite_refusal(self):
+        path = self.write("2026-03-05,acknowledged,,,,")
+        self.assertEqual(self.do(path, "--apply")[0], 0)
+        document = json.loads(self.sent.read_text(encoding="utf-8"))
+        document["requests"][self.agency]["contacts"] = []
+
+        def compact():
+            return (json.dumps(document, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+        contacts = document["requests"][self.agency]["contacts"]
+        full = dict(self.CONTACT, note="X" * 500)
+        while True:
+            contacts.append(dict(full))
+            if len(compact()) > kit_track.MAX_BYTES:
+                contacts.pop()
+                break
+        self.assertGreater(len(self.encoded(document)), kit_track.MAX_BYTES)  # its canonical rewrite is too big
+        self.sent.write_bytes(compact())
+        kit_track.read_sent(self.root)  # yet the compact file itself is readable
+        before = self.snapshot(self.sent, path)
+        for extra in ((), ("--apply",)):
+            code, out, err = self.do(path, *extra)
+            self.assertEqual((code, err), (0, ""))
+            report = json.loads(out.split("Checked only")[0].split("Recorded only")[0])
+            self.assertEqual((report["added"], report["skipped"], report["applied"]), (0, 1, False))
+            self.assertEqual(self.snapshot(self.sent, path), before)
+        twice = self.write("2026-03-05,acknowledged,,,,", "2026-03-05,acknowledged,,,,", name="twice.csv")
+        self.refused_untouched(twice, "line 3:", "same as line 2")
+
+    def test_encoding_boundary_refusal_is_fixed_and_value_free(self):
+        for tree in ({"a": {"note": "\ud800PRIVATE"}}, {"\udfff": {"steps": []}}):
+            with self.assertRaises(kit_import_steps.ImportRefused) as raised:
+                kit_import_steps._check_capacity(tree)
+            self.assertEqual(str(raised.exception),
+                             "kit/sent.json: import cannot be encoded as UTF-8; nothing was written")
+            self.assertIsNone(raised.exception.__cause__)
+            self.assertTrue(raised.exception.__suppress_context__)
+        self.assertIsNone(kit_import_steps._check_capacity({"a": {"steps": [], "note": "é"}}))
+
 
 if __name__ == "__main__":
     unittest.main()
