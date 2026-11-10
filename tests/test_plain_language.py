@@ -409,5 +409,147 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(plain_language.preview_lines(self.root, self.root / "missing.json"), [])
 
 
+# Frozen from original main before the RF2205-4 optimization; never generated at test runtime.
+BOUNDARY_TEXT = '"skip lead" ... Visible?! “skip inside” Source ABC end. Source ABC\n\n“fully skipped”\n\n!!! ??? "lead again" Next. final "tail"'
+BOUNDARY_TOKENS = [
+    {'field': 'body_md', 'paragraph': 1, 'word': 1, 'start': 1, 'end': 5, 'text': 'skip', 'skipped': True, 'sentence': None, 'sentence_key': (1, 0)},
+    {'field': 'body_md', 'paragraph': 1, 'word': 2, 'start': 6, 'end': 10, 'text': 'lead', 'skipped': True, 'sentence': None, 'sentence_key': (1, 0)},
+    {'field': 'body_md', 'paragraph': 1, 'word': 3, 'start': 16, 'end': 23, 'text': 'Visible', 'skipped': False, 'sentence': 1, 'sentence_key': (1, 1)},
+    {'field': 'body_md', 'paragraph': 1, 'word': 4, 'start': 27, 'end': 31, 'text': 'skip', 'skipped': True, 'sentence': None, 'sentence_key': (1, 2)},
+    {'field': 'body_md', 'paragraph': 1, 'word': 5, 'start': 32, 'end': 38, 'text': 'inside', 'skipped': True, 'sentence': None, 'sentence_key': (1, 2)},
+    {'field': 'body_md', 'paragraph': 1, 'word': 6, 'start': 40, 'end': 46, 'text': 'Source', 'skipped': True, 'sentence': None, 'sentence_key': (1, 2)},
+    {'field': 'body_md', 'paragraph': 1, 'word': 7, 'start': 47, 'end': 50, 'text': 'ABC', 'skipped': True, 'sentence': None, 'sentence_key': (1, 2)},
+    {'field': 'body_md', 'paragraph': 1, 'word': 8, 'start': 51, 'end': 54, 'text': 'end', 'skipped': False, 'sentence': 2, 'sentence_key': (1, 2)},
+    {'field': 'body_md', 'paragraph': 1, 'word': 9, 'start': 56, 'end': 62, 'text': 'Source', 'skipped': True, 'sentence': None, 'sentence_key': (1, 3)},
+    {'field': 'body_md', 'paragraph': 1, 'word': 10, 'start': 63, 'end': 66, 'text': 'ABC', 'skipped': True, 'sentence': None, 'sentence_key': (1, 3)},
+    {'field': 'body_md', 'paragraph': 2, 'word': 11, 'start': 69, 'end': 74, 'text': 'fully', 'skipped': True, 'sentence': None, 'sentence_key': (2, 0)},
+    {'field': 'body_md', 'paragraph': 2, 'word': 12, 'start': 75, 'end': 82, 'text': 'skipped', 'skipped': True, 'sentence': None, 'sentence_key': (2, 0)},
+    {'field': 'body_md', 'paragraph': 3, 'word': 13, 'start': 94, 'end': 98, 'text': 'lead', 'skipped': True, 'sentence': None, 'sentence_key': (3, 2)},
+    {'field': 'body_md', 'paragraph': 3, 'word': 14, 'start': 99, 'end': 104, 'text': 'again', 'skipped': True, 'sentence': None, 'sentence_key': (3, 2)},
+    {'field': 'body_md', 'paragraph': 3, 'word': 15, 'start': 106, 'end': 110, 'text': 'Next', 'skipped': False, 'sentence': 3, 'sentence_key': (3, 2)},
+    {'field': 'body_md', 'paragraph': 3, 'word': 16, 'start': 112, 'end': 117, 'text': 'final', 'skipped': False, 'sentence': 4, 'sentence_key': (3, 3)},
+    {'field': 'body_md', 'paragraph': 3, 'word': 17, 'start': 119, 'end': 123, 'text': 'tail', 'skipped': True, 'sentence': None, 'sentence_key': (3, 3)},
+]
+FROZEN_CORPUS = [
+    ([('title', 'ALPR first.'), ('summary', 'Automated license plate readers (ALPR).'), ('body_md', 'ALPR and HSI.')], (), (), [
+        {'rule': 'unexplained_abbreviation', 'field': 'title', 'paragraph': 1, 'sentence': 1, 'word': 1, 'start': 0, 'end': 4, 'word_count': None, 'limit': None, 'abbreviation': 'ALPR'},
+        {'rule': 'unexplained_abbreviation', 'field': 'body_md', 'paragraph': 1, 'sentence': 1, 'word': 3, 'start': 9, 'end': 12, 'word_count': None, 'limit': None, 'abbreviation': 'HSI'},
+    ]),
+    ([('title', 'ALPR (automated license plate readers)'), ('summary', 'ALPR.'), ('body_md', 'ALPR XYZ.')], (), ('XYZ',), [
+    ]),
+    ([('title', '... !!!'), ('body_md', 'Ünï 😀 ABC.\r\n\r\n[link](https://example.test/a_b-c) don’t well-known “QQQ” DEF')], (), (), [
+        {'rule': 'unexplained_abbreviation', 'field': 'body_md', 'paragraph': 1, 'sentence': 1, 'word': 2, 'start': 6, 'end': 9, 'word_count': None, 'limit': None, 'abbreviation': 'ABC'},
+        {'rule': 'unexplained_abbreviation', 'field': 'body_md', 'paragraph': 2, 'sentence': 2, 'word': 12, 'start': 72, 'end': 75, 'word_count': None, 'limit': None, 'abbreviation': 'DEF'},
+    ]),
+    ([('summary', 'alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha.'), ('body_md', 'beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta')], (), (), [
+        {'rule': 'long_sentence', 'field': 'summary', 'paragraph': 1, 'sentence': 1, 'word': 1, 'start': 0, 'end': 365, 'word_count': 61, 'limit': 30, 'abbreviation': None},
+        {'rule': 'long_summary', 'field': 'summary', 'paragraph': 1, 'sentence': 1, 'word': 1, 'start': 0, 'end': 365, 'word_count': 61, 'limit': 60, 'abbreviation': None},
+        {'rule': 'long_sentence', 'field': 'body_md', 'paragraph': 1, 'sentence': 1, 'word': 1, 'start': 0, 'end': 754, 'word_count': 151, 'limit': 30, 'abbreviation': None},
+        {'rule': 'long_paragraph', 'field': 'body_md', 'paragraph': 1, 'sentence': 1, 'word': 1, 'start': 0, 'end': 754, 'word_count': 151, 'limit': 150, 'abbreviation': None},
+    ]),
+    ([('body_md', '"skip lead" ... Visible?! “skip inside” Source ABC end. Source ABC\n\n“fully skipped”\n\n!!! ??? "lead again" Next. final "tail"')], ('Source ABC',), (), [
+    ]),
+    ([('body_md', '"lead" alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha "inside" beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta "tail"')], (), (), [
+        {'rule': 'long_sentence', 'field': 'body_md', 'paragraph': 1, 'sentence': 1, 'word': 2, 'start': 7, 'end': 806, 'word_count': 152, 'limit': 30, 'abbreviation': None},
+        {'rule': 'long_paragraph', 'field': 'body_md', 'paragraph': 1, 'sentence': 1, 'word': 2, 'start': 7, 'end': 806, 'word_count': 152, 'limit': 150, 'abbreviation': None},
+    ]),
+    ([('title', 'Automated license plate'), ('summary', 'readers (ALPR).'), ('body_md', 'ABC (another basic concept). ABC XYZ.')], (), (), [
+        {'rule': 'unexplained_abbreviation', 'field': 'summary', 'paragraph': 1, 'sentence': 1, 'word': 2, 'start': 9, 'end': 13, 'word_count': None, 'limit': None, 'abbreviation': 'ALPR'},
+        {'rule': 'unexplained_abbreviation', 'field': 'body_md', 'paragraph': 1, 'sentence': 2, 'word': 6, 'start': 33, 'end': 36, 'word_count': None, 'limit': None, 'abbreviation': 'XYZ'},
+    ]),
+    ([('body_md', '___ 😀\n\n???\n\n')], (), (), [
+    ]),
+]
+
+
+class ScalingTests(unittest.TestCase):
+    def test_sentence_boundary_comparisons_are_linear(self):
+        real = plain_language._SENTENCE_END
+        for size in (256, 512):
+            with self.subTest(size=size):
+                comparisons = []
+
+                class Offset(int):
+                    def __le__(self, other):
+                        comparisons.append(1)
+                        return super().__le__(other)
+
+                    def __lt__(self, other):
+                        comparisons.append(1)
+                        return super().__lt__(other)
+
+                    def __add__(self, other):
+                        return Offset(int(self) + other)
+
+                class End:
+                    def __init__(self, match):
+                        self.match = match
+
+                    def end(self):
+                        return Offset(self.match.end())
+
+                class Pattern:
+                    def finditer(self, text):
+                        return (End(match) for match in real.finditer(text))
+
+                with mock.patch.object(plain_language, '_SENTENCE_END', Pattern()):
+                    tokens = plain_language._tokens('body_md', 'word. ' * size, ())
+                self.assertEqual(len(tokens), size)
+                self.assertEqual((tokens[0]['sentence'], tokens[0]['word']), (1, 1))
+                self.assertEqual((tokens[-1]['sentence'], tokens[-1]['word']), (size, size))
+                self.assertLessEqual(len(comparisons), 4 * size)
+
+    def test_sentence_and_paragraph_grouping_reads_are_linear(self):
+        real = plain_language._tokens
+        for size in (256, 512):
+            for separator in (' ', '\n\n'):
+                with self.subTest(size=size, separator=separator):
+                    reads = []
+
+                    class Token(dict):
+                        def __getitem__(self, key):
+                            if key in ('sentence_key', 'paragraph'):
+                                reads.append(1)
+                            return super().__getitem__(key)
+
+                    def counted(*args):
+                        return [Token(token) for token in real(*args)]
+
+                    with mock.patch.object(plain_language, '_tokens', side_effect=counted):
+                        rows = plain_language.check_fields([('body_md', ('word.' + separator) * size)])
+                    expected = [] if separator != ' ' else [{
+                        'rule': 'long_paragraph', 'field': 'body_md', 'paragraph': 1, 'sentence': 1,
+                        'word': 1, 'start': 0, 'end': 6 * size - 2, 'word_count': size,
+                        'limit': 150, 'abbreviation': None}]
+                    self.assertEqual(rows, expected)
+                    self.assertLessEqual(len(reads), 32 * size)
+
+    def test_boundary_cursor_preserves_skipped_and_wordless_fragments(self):
+        tokens = plain_language._tokens('body_md', BOUNDARY_TEXT, ('Source ABC',))
+        self.assertEqual(tokens, BOUNDARY_TOKENS)
+        self.assertTrue(all(list(a) == list(b) for a, b in zip(tokens, BOUNDARY_TOKENS)))
+
+    def test_optimized_engine_matches_frozen_mixed_corpus(self):
+        for items, titles, aliases, expected in FROZEN_CORPUS:
+            with self.subTest(items=items):
+                rows = plain_language.check_fields(items, titles, aliases, summary_rule=True)
+                self.assertEqual(rows, expected)
+                self.assertTrue(all(list(row) == KEYS for row in rows))
+
+
+class LargeCommandTests(Case):
+    def test_large_short_sentence_cli_report(self):
+        draft = self.draft(id='syn-scale', title='Synthetic', summary='Short.', body_md='word. ' * 16000)
+        result = self.cli(draft, '--json', returncode=3)
+        self.assertEqual(result.stderr, '')
+        self.assertEqual(result.stdout.count('\n'), 1)
+        self.assertEqual(json.loads(result.stdout), {'advisory': True, 'finding_id': 'syn-scale', 'warnings': [{
+            'rule': 'long_paragraph', 'field': 'body_md', 'paragraph': 1, 'sentence': 1, 'word': 1,
+            'start': 0, 'end': 95998, 'word_count': 16000, 'limit': 150, 'abbreviation': None}]})
+        clean = self.draft('clean-scale.json', title='', summary='', body_md='')
+        self.assertEqual(json.loads(self.cli(clean, '--json', returncode=0).stdout),
+                         {'advisory': True, 'finding_id': 'syn-plain-1', 'warnings': []})
+
+
 if __name__ == "__main__":
     unittest.main()

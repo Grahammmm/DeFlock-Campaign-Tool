@@ -519,5 +519,17 @@ class IsolationTests(Case):
             self.assertEqual(flags & (os.O_NOFOLLOW | os.O_NONBLOCK), os.O_NOFOLLOW | os.O_NONBLOCK)
 
 
+class LargePageTests(Case):
+    def test_large_page_uses_shared_engine_without_truncation(self):
+        self.page('scale', title='Synthetic', body='word. ' * 16000)
+        result = self.cli('--json', returncode=0)
+        self.assertEqual(result.stderr, '')
+        self.assertEqual(result.stdout.count('\n'), 1)
+        self.assertEqual(json.loads(result.stdout), {'advisory': True, 'warnings': [{
+            'file': 'content/pages/scale.json', 'entry': 'scale', 'rule': 'long_paragraph',
+            'field': 'body_md', 'paragraph': 1, 'sentence': 1, 'word': 1, 'start': 0,
+            'end': 95998, 'word_count': 16000, 'limit': 150, 'abbreviation': None}]})
+
+
 if __name__ == "__main__":
     unittest.main()

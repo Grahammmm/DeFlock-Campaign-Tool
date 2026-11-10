@@ -72,11 +72,13 @@ def _tokens(field, text, titles):
     found, sentence, number = [], 0, 0
     for paragraph, (begin, end) in enumerate(_paragraphs(text), 1):
         ends = [match.end() + begin for match in _SENTENCE_END.finditer(shown[begin:end])]
-        current = None
+        current, index = None, 0
         for match in _WORD.finditer(text, begin, end):
             number += 1
             skipped = shown[match.start():match.end()] != match.group()
-            index = sum(1 for boundary in ends if boundary <= match.start())
+            # Word starts and sentence ends are ordered; consume each boundary once.
+            while index < len(ends) and ends[index] <= match.start():
+                index += 1
             if not skipped and (current is None or current[0] != (paragraph, index)):
                 sentence += 1
                 current = ((paragraph, index), sentence)
@@ -137,14 +139,17 @@ def check_fields(items, titles=(), aliases=frozenset(), summary_rule=False):
         tokens = _tokens(field, text, titles)
         counted = [token for token in tokens if not token["skipped"]]
         found = []
-        for key in sorted({token["sentence_key"] for token in counted}):
-            words = [token for token in counted if token["sentence_key"] == key]
+        sentences, paragraphs = {}, {}
+        # Token order also orders both group keys; each token joins each group once.
+        for token in counted:
+            sentences.setdefault(token["sentence_key"], []).append(token)
+            paragraphs.setdefault(token["paragraph"], []).append(token)
+        for words in sentences.values():
             if len(words) > SENTENCE_LIMIT:
                 found.append(_warning("long_sentence", words, len(words), SENTENCE_LIMIT))
         if summary_rule and field == "summary" and len(counted) > SUMMARY_LIMIT:
             found.append(_warning("long_summary", counted, len(counted), SUMMARY_LIMIT))
-        for paragraph in sorted({token["paragraph"] for token in counted}):
-            words = [token for token in counted if token["paragraph"] == paragraph]
+        for words in paragraphs.values():
             if len(words) > PARAGRAPH_LIMIT:
                 found.append(_warning("long_paragraph", words, len(words), PARAGRAPH_LIMIT))
         for position, token in enumerate(tokens):
