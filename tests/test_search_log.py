@@ -1,5 +1,6 @@
 """kit-search-log: private streamed counts of a locally saved ALPR search log. Synthetic fixtures only; nothing is fetched."""
 import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -308,6 +309,213 @@ class SearchLogTests(unittest.TestCase):
                 self.assertNotIn("SENTPURPOSE", err)
         os.symlink(self.files / "bad.json", self.files / "cats-link.json")
         self.refused("--csv", self.csv(), "--agency", AID, "--categories", self.files / "cats-link.json", words=("symlink",))
+
+    # ---- RF0415-5: custom-category I/O failures stay value-free ----------------------------------------------------
+
+    CATEGORY_ERROR = "--categories file could not be read"
+    GOOD_TERMS = {"blank_or_na": ["n/a"], "vague": ["inv"], "immigration_related": ["ice"]}
+
+    def category_file(self, terms=None):
+        path = self.files / "PRIVATE-CATEGORY-PATH.json"
+        path.write_text(json.dumps(self.GOOD_TERMS if terms is None else terms), encoding="utf-8")
+        return path
+
+    def faulty_open(self, cats, *, fail_read=None, fail_exit=False, prefix=0):
+        """A _open_regular replacement whose category handle raises a sentinel-bearing OSError; returns (patch, state)."""
+        real, state = search_log._open_regular, {"calls": [], "inner": None}
+
+        def boom():
+            return OSError(errno.EIO, "SYNTHETIC-PRIVATE-ERROR", str(cats))
+
+        class Faulty:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def read(self, size=-1):
+                if fail_read:
+                    self.inner.read(prefix)
+                    raise fail_read() if isinstance(fail_read, type) else boom()
+                return self.inner.read(size)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.inner.close()
+                if fail_exit and exc[0] is None:
+                    raise boom()
+
+        def opener(path, what, limit):
+            state["calls"].append(what)
+            handle, info = real(path, what, limit)
+            if what != "--categories file":
+                return handle, info
+            state["inner"] = handle
+            return Faulty(handle), info
+        return mock.patch.object(search_log, "_open_regular", opener), state
+
+    def assert_value_free(self, text):
+        for leak in ("SYNTHETIC-PRIVATE-ERROR", "PRIVATE-CATEGORY-PATH", str(self.files), "Errno", "Traceback", "Fix"):
+            self.assertNotIn(leak, text)
+
+    def test_categories_read_oserror_is_fixed_before_cli_output(self):
+        cats, path = self.category_file(), self.csv()
+        before = tree(self.base)
+        for label, kwargs in (("no progress", {"fail_read": True}), ("after a prefix", {"fail_read": True, "prefix": 5})):
+            with self.subTest(label):
+                patcher, state = self.faulty_open(cats, **kwargs)
+                with patcher:
+                    with self.assertRaises(ValueError) as caught:
+                        search_log.load_terms(cats)
+                    self.assertEqual(str(caught.exception), self.CATEGORY_ERROR)
+                    self.assertIsNone(caught.exception.__cause__)
+                    self.assertTrue(caught.exception.__suppress_context__)
+                    with self.assertRaises(ValueError) as caught:
+                        search_log.summarize_csv(path, {"agency_id": AID, "name": "x"}, categories_path=cats)
+                    self.assertEqual(str(caught.exception), self.CATEGORY_ERROR)
+                    for extra in ((), ("--json",)):
+                        formatted = mock.Mock(side_effect=AssertionError("formatter reached"))
+                        with mock.patch.object(search_log, "format_summary", formatted):
+                            code, out, err = self.run_cli("--csv", path, "--agency", AID, "--categories", cats, *extra)
+                        self.assertEqual((code, out, err), (1, "", f"Stopped: {self.CATEGORY_ERROR}\n"))
+                        self.assert_value_free(err)
+                        formatted.assert_not_called()
+                self.assertTrue(state["inner"].closed)
+                self.assertNotIn("csv", state["calls"])  # the CSV is never admitted after a category failure
+        self.assertEqual(tree(self.base), before)
+
+    def test_categories_admission_metadata_error_uses_category_boundary(self):
+        cats, path = self.category_file(), self.csv()
+        real_open, real_fstat, real_fdopen, real_close = os.open, os.fstat, os.fdopen, os.close
+        tracked, closes = [], []
+
+        def opener(target, *a, **k):
+            fd = real_open(target, *a, **k)
+            if str(target) == str(cats):
+                tracked.append(fd)
+            return fd
+
+        def fstat(fd):
+            if fd in tracked and mode == "fstat":
+                raise OSError(errno.EIO, "SYNTHETIC-PRIVATE-ERROR", str(cats))
+            return real_fstat(fd)
+
+        def fdopen(fd, *a, **k):
+            if fd in tracked and mode == "fdopen":
+                raise OSError(errno.EMFILE, "SYNTHETIC-PRIVATE-ERROR", str(cats))
+            return real_fdopen(fd, *a, **k)
+
+        def closer(fd):
+            if fd in tracked:
+                closes.append(fd)
+            return real_close(fd)
+        for mode in ("fstat", "fdopen"):
+            with self.subTest(mode):
+                tracked.clear()
+                closes.clear()
+                with mock.patch.object(os, "open", opener), mock.patch.object(os, "fstat", fstat), \
+                        mock.patch.object(os, "fdopen", fdopen), mock.patch.object(os, "close", closer):
+                    with self.assertRaises(ValueError) as caught:
+                        search_log.load_terms(cats)
+                    self.assertEqual(str(caught.exception), self.CATEGORY_ERROR)
+                    self.assertEqual(len(tracked), 1)  # no retry: one admission, one descriptor
+                    self.assertEqual(closes, tracked)  # closed exactly once
+                    code, out, err = self.run_cli("--csv", path, "--agency", AID, "--categories", cats)
+                self.assertEqual((code, out, err), (1, "", f"Stopped: {self.CATEGORY_ERROR}\n"))
+
+    def test_categories_context_exit_oserror_refuses_and_closes(self):
+        cats, path = self.category_file(), self.csv()
+        patcher, state = self.faulty_open(cats, fail_exit=True)
+        with patcher:
+            with self.assertRaises(ValueError) as caught:  # complete valid bytes were read, yet the terms are not accepted
+                search_log.load_terms(cats)
+            self.assertEqual(str(caught.exception), self.CATEGORY_ERROR)
+            self.assertTrue(state["inner"].closed)
+            code, out, err = self.run_cli("--csv", path, "--agency", AID, "--categories", cats, "--json")
+        self.assertEqual((code, out, err), (1, "", f"Stopped: {self.CATEGORY_ERROR}\n"))
+        self.assertNotIn("csv", state["calls"])
+
+    def test_categories_io_refusal_does_not_open_csv_or_mutate_campaign(self):
+        cats, path = self.category_file(), self.csv()
+        (self.root / "content").mkdir()
+        (self.root / "content" / "agencies.json").write_text(json.dumps([{
+            "agency_id": AID, "name": "Synthetic Police Department", "kind": "police", "profile": {"sharing": {
+                "checked_on": "2026-02-01", "source_url": "https://transparency.flocksafety.com/synthetic",
+                "recipients": [{"name": "Alpha PD", "state": "CA", "kind": "local"}]}}}]), encoding="utf-8")
+        before = {p: (b, p.stat().st_mode, p.stat().st_mtime_ns) for p, b in
+                  ((p, p.read_bytes() if p.is_file() else None) for p in sorted(self.base.rglob("*")))}
+        patcher, state = self.faulty_open(cats, fail_read=True)
+        with patcher, mock.patch.object(socket.socket, "connect", side_effect=AssertionError("network")):
+            for extra in ((), ("--against-sharing",), ("--against-sharing", "--json")):
+                code, out, err = self.run_cli("--csv", path, "--agency", AID, "--categories", cats, *extra)
+                self.assertEqual((code, out, err), (1, "", f"Stopped: {self.CATEGORY_ERROR}\n"))
+        self.assertEqual(set(state["calls"]), {"--categories file"})
+        after = {p: (b, p.stat().st_mode, p.stat().st_mtime_ns) for p, b in
+                 ((p, p.read_bytes() if p.is_file() else None) for p in sorted(self.base.rglob("*")))}
+        self.assertEqual(after, before)
+        self.assertFalse((self.root / "private").exists())
+
+    def test_existing_category_valueerrors_and_interrupts_remain_distinct(self):
+        os.mkfifo(self.files / "pipe.json")
+        os.symlink(self.category_file(), self.files / "link.json")
+        for name, word in (("missing.json", "cannot be opened"), ("link.json", "symlink"), ("pipe.json", "regular file"),
+                           (".", "regular file")):
+            with self.subTest(name):
+                with self.assertRaises(ValueError) as caught:
+                    search_log.load_terms(self.files / name)
+                self.assertIn(word, str(caught.exception))
+                self.assertNotEqual(str(caught.exception), self.CATEGORY_ERROR)
+        big = self.files / "big.json"
+        big.write_bytes(b" " * (search_log.CATEGORIES_MAX_BYTES + 1))
+        with self.assertRaisesRegex(ValueError, "larger than 64 KiB"):  # fstat size refusal
+            search_log.load_terms(big)
+        with mock.patch.object(search_log, "CATEGORIES_MAX_BYTES", 8):  # actual cap-plus-one read
+            small = self.files / "small.json"
+            small.write_bytes(b" " * 8)
+            real, grown = search_log._open_regular, []
+
+            def grow(path, what, limit):
+                handle, info = real(path, what, limit)
+                small.write_bytes(b" " * 9)
+                grown.append(1)
+                return handle, info
+            with mock.patch.object(search_log, "_open_regular", grow):
+                with self.assertRaisesRegex(ValueError, "larger than 64 KiB"):
+                    search_log.load_terms(small)
+            self.assertTrue(grown)
+        valid = self.files / "invalid.json"
+        valid.write_text("{SENTPURPOSE")
+        with self.assertRaisesRegex(ValueError, "valid UTF-8 JSON"):  # a completed read is never relabelled as an I/O failure
+            search_log.load_terms(valid)
+        cats = self.category_file()
+        for interrupt in (KeyboardInterrupt, SystemExit):
+            with self.subTest(interrupt.__name__):
+                patcher, state = self.faulty_open(cats, fail_read=interrupt)
+                with patcher, self.assertRaises(interrupt):
+                    search_log.load_terms(cats)
+                self.assertTrue(state["inner"].closed)
+
+    def test_valid_categories_and_default_reports_keep_exact_bytes(self):
+        path = self.csv()
+        with mock.patch.object(search_log, "_open_regular", side_effect=AssertionError("opened")):
+            self.assertEqual(search_log.load_terms(None), (search_log.DEFAULT_TERMS, None))
+        cats = self.category_file()
+        terms, sha = search_log.load_terms(cats)
+        self.assertEqual((terms, sha), (self.GOOD_TERMS, hashlib.sha256(cats.read_bytes()).hexdigest()))
+        summary = self.report(path, "--categories", cats)
+        self.assertEqual(summary["input"]["categories_sha256"], sha)
+        # hand-counted: n/a and the empty purpose are blank; ICE hold is immigration; the custom vague term is the whole
+        # word "inv", so "investigation" is no longer vague; robbery, investigation and office visit are other
+        self.assertEqual(summary["purposes"]["counts"],
+                         {"blank_or_na": 2, "immigration_related": 1, "vague": 0, "other": 3})
+        exact = self.files / "exact.json"
+        padded = json.dumps({**self.GOOD_TERMS, "vague": [f"{i:03d}" + "x" * 67 for i in range(100)]}).encode()
+        exact.write_bytes(padded.ljust(search_log.CATEGORIES_MAX_BYTES))
+        self.assertEqual(exact.stat().st_size, search_log.CATEGORIES_MAX_BYTES)
+        self.assertEqual(len(search_log.load_terms(exact)[0]["vague"]), 100)  # exactly the cap still succeeds
+        code, out, err = self.run_cli("--csv", path, "--agency", AID)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("blank_or_na", out)
 
     def test_long_fields_and_deeply_nested_categories(self):
         big = "x" * (300 * 1024)  # above csv's default 128 KiB field limit, far below 100 MiB

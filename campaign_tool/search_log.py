@@ -102,12 +102,19 @@ def _term_regex(terms):
 
 
 def load_terms(categories_path=None):
-    """-> (terms dict, sha256 of the custom file or None). The custom file replaces all three default lists."""
+    """-> (terms dict, sha256 of the custom file or None). The custom file replaces all three default lists.
+
+    Any filesystem OSError while admitting, reading or closing the custom file becomes one fixed ValueError, so the
+    organizer's path and the operating system's message never reach a diagnostic.
+    """
     if categories_path is None:
         return DEFAULT_TERMS, None
-    handle, _ = _open_regular(categories_path, "--categories file", CATEGORIES_MAX_BYTES)
-    with handle:
-        data = handle.read(CATEGORIES_MAX_BYTES + 1)
+    try:
+        handle, _ = _open_regular(categories_path, "--categories file", CATEGORIES_MAX_BYTES)
+        with handle:
+            data = handle.read(CATEGORIES_MAX_BYTES + 1)
+    except OSError:
+        raise ValueError("--categories file could not be read") from None
     if len(data) > CATEGORIES_MAX_BYTES:
         raise ValueError("--categories file is larger than 64 KiB")
 
