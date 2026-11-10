@@ -59,15 +59,18 @@ class DescriptorOwnership(unittest.TestCase):
         primary = primary if primary is not None else OSError(errno.EIO, 'synthetic constructor failure')
         real_open, real_close, real_fdopen = os.open, os.close, os.fdopen
         acquired, closed, failed, identity = [], [], [], []
+        generations = {}
 
         def opening(*args, **kwargs):
             fd = real_open(*args, **kwargs)
             acquired.append(fd)
+            # Both descriptor numbers and deleted inodes can be reused within one action.
+            generations[fd] = len(acquired)
             return fd
 
         def closing(fd):
             info = os.fstat(fd)
-            current = (fd, info.st_dev, info.st_ino)
+            current = (fd, info.st_dev, info.st_ino, generations[fd])
             closed.append(current)
             real_close(fd)
             if secondary and identity and current == identity[0]:
@@ -78,7 +81,7 @@ class DescriptorOwnership(unittest.TestCase):
             if select(path, mode):
                 failed.append(fd)
                 info = os.fstat(fd)
-                identity.append((fd, info.st_dev, info.st_ino))
+                identity.append((fd, info.st_dev, info.st_ino, generations[fd]))
                 if on_fault:
                     on_fault(path)
                 raise primary
