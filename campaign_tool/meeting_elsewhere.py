@@ -8,6 +8,7 @@ missing entry or a changed cited fact by name. Nothing is fetched, ranked or sen
 from .content import ContentError
 
 MAX_CITED = 3
+DISPLAY_LIMIT = 999999  # integers beyond this are omitted from refusals, not shown (not a selection range)
 FILE = "content/elsewhere.json"
 CITED = ("place", "body", "decided_on", "kind")  # identity: exact text, no fuzzy or case matching
 SHOWN = ("state", "as_stated", "source_url")  # the facts printed in the kit line
@@ -25,14 +26,18 @@ def choose(entries, indices):
     """Snapshots of the entries at the 1-based ``indices`` (flag order). Refuses by flag and value, never deduplicates."""
     if (not isinstance(indices, (list, tuple)) or not 1 <= len(indices) <= MAX_CITED
             or any(type(i) is not int for i in indices)):
-        raise ContentError(f"--elsewhere: give 1 to {MAX_CITED} whole numbers (got {indices!r})")
+        # RF1155-1: never format the rejected operand (it may be deeply nested, huge or self-referential)
+        raise ContentError(f"--elsewhere: give 1 to {MAX_CITED} whole numbers")
     if entries is None:
         raise ContentError(f"--elsewhere: {FILE} not found; nothing to cite")
     for position, index in enumerate(indices):
-        if index in indices[:position]:
+        if index in indices[:position]:  # an earlier equal index passed the range check below, so it is small
             raise ContentError(f"--elsewhere {index}: given more than once")
         if not 1 <= index <= len(entries):
-            raise ContentError(f"--elsewhere {index}: out of range ({FILE} has {len(entries)} entries)")
+            if -DISPLAY_LIMIT <= index <= DISPLAY_LIMIT:  # numeric comparison only: no decimal conversion of a huge int
+                raise ContentError(f"--elsewhere {index}: out of range ({FILE} has {len(entries)} entries)")
+            raise ContentError(f"--elsewhere: index out of range ({FILE} has {len(entries)} entries; "
+                               "supplied integer omitted)")
     return [dict(entries[index - 1]) for index in indices]
 
 
