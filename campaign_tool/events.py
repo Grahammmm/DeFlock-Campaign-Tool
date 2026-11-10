@@ -246,7 +246,7 @@ def list_events(root, as_of=None):
     00:00:00 UTC is upcoming). Reads with the build's reader; writes nothing."""
     as_of = as_of or date.today()
     try:
-        _content(root)
+        _load(_content(root))  # the same regular, single-link store check add and remove make (a hardlink is refused)
         rows = read_events(root) or []
     except EventError:
         raise
