@@ -115,11 +115,11 @@ def build_press(root, finding_ids, day=None):
                 raise ValueError(f'{rel} already exists and is not an unedited generated suggestion; '
                                  'move it aside (rename or copy it elsewhere), then run press draft again. '
                                  'Nothing was written.')
+    prepared = _prepare_record(write_record, name, text, write_path.relative_to(root).as_posix())
     for directory in ((kit, suggested) if edited else (kit, folder)):
         _kit_folder(directory, 0o700)
     _write_text(target, text)
-    write_record[name] = _sha(text.encode('utf-8'))
-    _write_json(write_path, dict(sorted(write_record.items())))
+    _write_json(write_path, prepared)
     return {'path': target.relative_to(root).as_posix(), 'findings': ids, 'kept_edited': edited, 'sent': False}
 
 
@@ -269,6 +269,19 @@ def _letter_record(path, action='writing a letter'):
     return record
 
 
+def _prepare_record(record, name, text, rel):
+    """The sorted record to install, refused before any write when its exact _write_json bytes exceed the reader limit.
+
+    Builds a fresh mapping (every entry kept, only ``name`` set to the new hash) and measures the same serialization
+    kit._write_json produces, final newline included. Writes nothing and creates nothing.
+    """
+    prepared = dict(sorted({**record, name: _sha(text.encode('utf-8'))}.items()))
+    if len((json.dumps(prepared, indent=2, ensure_ascii=False) + '\n').encode('utf-8')) > _RECORD_LIMIT:
+        raise ValueError(f'{rel} would exceed the 1 MiB record limit if updated, so no draft was generated. '
+                         'Nothing was written. Preserve or move that record aside for manual review, then try again.')
+    return prepared
+
+
 def build_letter(root, finding_ids, day=None, *, words=LETTER_DEFAULT_WORDS, outlet=None, now=None):
     """Write one private letter-to-the-editor draft from published findings; preserve edits and never send it."""
     root = Path(root)
@@ -329,10 +342,10 @@ def build_letter(root, finding_ids, day=None, *, words=LETTER_DEFAULT_WORDS, out
             if current is None or _sha(current) != record.get(name):
                 raise ValueError(f'kit/press/letters.suggested/{name} was edited or is not a regular file; '
                                  'move it aside to get a fresh suggestion')
+    prepared = _prepare_record(record, name, text, record_path.relative_to(root).as_posix())
     for folder in (kit, press_dir, letters) + ((suggested,) if edited else ()):
         _kit_folder(folder, 0o700)
     _write_text(target, text)
-    record[name] = _sha(text.encode('utf-8'))
-    _write_json(record_path, dict(sorted(record.items())))
+    _write_json(record_path, prepared)
     return {'path': target.relative_to(root).as_posix(), 'findings': ids[:kept], 'dropped_findings': ids[kept:],
             'words': count, 'word_limit': words, 'kept_edited': edited, 'sent': False, 'review_flags': flags}
