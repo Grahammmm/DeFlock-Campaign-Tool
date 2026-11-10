@@ -14,11 +14,36 @@ def _directory(path):
     return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 
 
+_ROLLBACK_ERROR = "export failed; partial local output remains"
+
+
 def _write(fd, name, data):
-    with os.fdopen(os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                           0o600, dir_fd=fd), "wb") as stream:
-        os.fchmod(stream.fileno(), 0o600)
-        stream.write(data)
+    raw = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                  0o600, dir_fd=fd)
+    identity = None
+    try:
+        info = os.fstat(raw)
+        identity = (info.st_dev, info.st_ino)
+        stream = os.fdopen(raw, "wb")
+        raw = None  # The stream now owns the descriptor, including on close failure.
+        with stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(data)
+        return identity
+    except Exception as exc:
+        try:
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != identity:
+                raise OutboxError(_ROLLBACK_ERROR)
+            os.unlink(name, dir_fd=fd)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            raise OutboxError(_ROLLBACK_ERROR) from exc
+        raise
+    finally:
+        if raw is not None:
+            os.close(raw)
 
 
 def _masked(row):
@@ -35,17 +60,28 @@ def export(box, out_dir, agencies=None):
     rows = sorted((r for r in box.rows("proposed") if agencies is None or r["agency_id"] in agencies),
                   key=lambda r: (r["agency_id"], r["idempotency_key"]))
     path = Path(out_dir)
+    fd = None
+    created = None
+    original = None
+    owned = {}
+    started = False
     try:
         if not path.exists() and not path.is_symlink():
             if not rows:
                 return {"written": 0}
             path.mkdir(mode=0o700)
+            info = path.lstat()
+            created = (info.st_dev, info.st_ino)
         fd = _directory(path)
+        original = os.fstat(fd)
+        if created is not None and created != (original.st_dev, original.st_ino):
+            raise OutboxError(_ROLLBACK_ERROR)
         try:
             if os.listdir(fd):
                 raise OutboxError("output directory must be empty")
             if not rows:
                 return {"written": 0}
+            started = True
             os.fchmod(fd, 0o700)
             index = ["Read every file before signing. Signing a file approves exactly that letter.", "",
                      "| Agency | Kind | Channel | Fee cap (cents) | Payload sha256 | File |",
@@ -55,7 +91,7 @@ def export(box, out_dir, agencies=None):
                 if len(key) != 64 or any(c not in "0123456789abcdef" for c in key):
                     raise OutboxError("invalid outbox key")
                 data = box.approval_payload(key)
-                _write(fd, key + ".txt", data)
+                owned[key + ".txt"] = _write(fd, key + ".txt", data)
                 cells = [row["agency_id"], row["kind"], row["channel"], str(row["fee_cap_cents"]),
                          hashlib.sha256(data).hexdigest()[:12], key + ".txt"]
                 index.append("| " + " | ".join(c.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
@@ -69,11 +105,49 @@ def export(box, out_dir, agencies=None):
                 if len(diff) > 200:
                     index.append(f"… {len(diff) - 200} more lines; read the file")
             index += ["", "ssh-keygen -Y sign -n deflock-approval -f <your key> *.txt"]
-            _write(fd, "INDEX.md", ("\n".join(index) + "\n").encode("utf-8"))
-        finally:
+            owned["INDEX.md"] = _write(fd, "INDEX.md", ("\n".join(index) + "\n").encode("utf-8"))
+        except Exception as exc:
+            incomplete = False
+            for name, identity in owned.items():
+                try:
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    if stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == identity:
+                        os.unlink(name, dir_fd=fd)
+                    else:
+                        incomplete = True
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    incomplete = True
+            if started:
+                try:
+                    info = path.lstat()
+                    if (info.st_dev, info.st_ino) != (original.st_dev, original.st_ino):
+                        incomplete = True
+                    elif created is None:
+                        os.fchmod(fd, stat.S_IMODE(original.st_mode))
+                    if os.listdir(fd):
+                        incomplete = True
+                except Exception:
+                    incomplete = True
+            if incomplete:
+                raise OutboxError(_ROLLBACK_ERROR) from exc
+            raise
+    except Exception as exc:
+        if created is not None:
+            try:
+                info = path.lstat()
+                if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != created:
+                    raise OutboxError(_ROLLBACK_ERROR)
+                path.rmdir()  # Empty only; never traverse or remove foreign entries.
+            except Exception:
+                raise OutboxError(_ROLLBACK_ERROR) from exc
+        if isinstance(exc, OSError):
+            raise OutboxError(str(exc)) from exc
+        raise
+    finally:
+        if fd is not None:
             os.close(fd)
-    except OSError as exc:
-        raise OutboxError(str(exc)) from exc
     return {"written": len(rows), "dir": str(path)}
 
 
