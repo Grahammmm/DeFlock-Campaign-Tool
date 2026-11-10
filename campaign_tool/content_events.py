@@ -63,7 +63,11 @@ def _has_surrogate(value):
 
 
 def _key_label(key):
-    return key if isinstance(key, str) and KEY_NAME.fullmatch(key) else f"{len(str(key))} chars"
+    """An unknown field's name for a diagnostic: literal only when it is a short ASCII name the shared privacy lint does not
+    match (a plate-shaped key must not be echoed); every other key is named by its length alone."""
+    if isinstance(key, str) and KEY_NAME.fullmatch(key) and not categories(key):
+        return key
+    return f"{len(str(key))} chars"
 
 
 def load_events(document, problems=None):
