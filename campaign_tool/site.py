@@ -209,12 +209,52 @@ try{Promise.all([load("/data/findings.json","findings"),load("/data/sources.json
 try{docs=build(r[0],r[1]);}catch(err){broken();return;}ready();},broken);}catch(err){broken();}
 })();
 """
-SEARCH_LABELS = {key: text for key, text in JS_DEFAULTS.items() if key.startswith("js.search_")}
+# The two-kind script's label keys, frozen (DF1109-09) so a later js.search_* key never changes its bytes.
+SEARCH_LABELS = {key: JS_DEFAULTS[key] for key in ("js.search_hint", "js.search_none", "js.search_count_one",
+                                                    "js.search_count_many", "js.search_unavailable",
+                                                    "js.search_finding", "js.search_source")}
+# DF1109-09: a site with an agency page or a staged meeting also searches data/agencies.json and data/meetings.json.
+# Each optional file is fetched only when its kind is published; a missing or malformed one is an empty kind.
+SEARCH_EXTRA_FILES = {"agency": ("/data/agencies.json", "agencies"), "meeting": ("/data/meetings.json", "meetings")}
+SEARCH_EXTRA_LABELS = dict(SEARCH_LABELS, **{key: JS_DEFAULTS[key] for key in
+                                             ("js.search_agency", "js.search_meeting", "js.search_none_all")})
+SEARCH_EXTRA_JS = r"""
+var extra={};try{extra=JSON.parse(form.getAttribute("data-search-extra")||"{}")||{};}catch(err){extra={};}
+function pick(map,id){return map&&typeof map==="object"&&typeof id==="string"&&Object.prototype.hasOwnProperty.call(map,id)?map[id]:null;}"""
+SEARCH_EXTRA_BUILD = r"""for(i=0;i<agencyRows.length;i++){s=agencyRows[i];if(!s||typeof s!=="object")continue;x=pick(extra.agencies,s.agency_id);
+if(!Array.isArray(x))x=["",""];
+out.push({kind:"agency",title:String(s.name||""),url:safe(s.url)||safe(x[0])||"/agencies.html",text:fold([s.name,s.kind,x[1]].join(" "))});}
+for(i=0;i<meetingRows.length;i++){s=meetingRows[i];if(!s||typeof s!=="object")continue;item=pick(extra.meetings,s.id);
+item=typeof item==="string"?item:"";
+out.push({kind:"meeting",title:String(s.body||"")+(item?" \u2014 "+item:""),url:safe(s.url),text:fold([s.body,item,s.starts_at].join(" "))});}
+return out;}"""
 
 
-def search_js():
-    """search.js: the same bytes for every site; ``LABELS`` (site-data.js, when loaded) overrides the English defaults."""
-    return SEARCH_JS.replace("__LABELS__", js_json(SEARCH_LABELS))
+def search_js(kinds=()):
+    """search.js: ``LABELS`` (site-data.js, when loaded) overrides the English defaults. Without extra ``kinds`` the
+    same bytes for every site; with ``"agency"``/``"meeting"`` (DF1109-09) it also fetches those files, each optional."""
+    if not kinds:
+        return SEARCH_JS.replace("__LABELS__", js_json(SEARCH_LABELS))
+    files = " and ".join(SEARCH_EXTRA_FILES[k][0][1:] for k in kinds)
+    optional = ",".join(f'opt("{SEARCH_EXTRA_FILES[k][0]}","{SEARCH_EXTRA_FILES[k][1]}")' if k in kinds else "[]"
+                        for k in SEARCH_EXTRA_FILES)
+    script = SEARCH_JS
+    for old, new in (
+            ("data/findings.json and data/sources.json;", f"data/findings.json, data/sources.json, optionally {files};"),
+            ('catch(err){agencies={};}', 'catch(err){agencies={};}' + SEARCH_EXTRA_JS),
+            ("function build(findings,sources){var out=[],i,j,f,s,hay;",
+             "function build(findings,sources,agencyRows,meetingRows){var out=[],i,j,f,s,hay,x,item;"),
+            ("return out;}", SEARCH_EXTRA_BUILD),
+            ('T["js.search_none"]', 'T["js.search_none_all"]'),
+            ('T[hits[i].kind==="finding"?"js.search_finding":"js.search_source"]', 'T["js.search_"+hits[i].kind]'),
+            ("return d[key];});}", "return d[key];});}\nfunction opt(url,key){try{return load(url,key).then(null,function(){return [];});}"
+                                   "catch(err){return [];}}"),
+            ('load("/data/sources.json","sources")]', f'load("/data/sources.json","sources"),{optional}]'),
+            ("docs=build(r[0],r[1]);", "docs=build(r[0],r[1],r[2],r[3]);")):
+        if script.count(old) != 1:
+            raise RuntimeError(f"search.js template changed: {old!r}")
+        script = script.replace(old, new)
+    return script.replace("__LABELS__", js_json(SEARCH_EXTRA_LABELS))
 # data/findings.json emits only these keys, built field by field (DF2237-09); anything else refuses the build.
 PUBLIC_FINDING_FIELDS = ("id", "slug", "title", "summary", "body_md", "classification", "confidence",
                          "event_date", "published_at", "updated_at", "agency_id", "sources", "limitations",
@@ -1758,6 +1798,11 @@ class Site:
                          ["/site-data.js", "/findings/filter.js"] if form and self.js_labels else
                          ["/findings/filter.js"] if form else [])
 
+    def search_kinds(self):
+        """DF1109-09: the extra kinds search.js also finds: ``"agency"`` once an agency has a page (what
+        data/agencies.json lists), ``"meeting"`` once a meeting is staged; ``()`` keeps today's two-kind search."""
+        return tuple(kind for kind, on in (("agency", self.agency_pages()), ("meeting", self.model["meetings"])) if on)
+
     def search_html(self):
         """/search.html (DF1207-15): the form and fallback; search.js reveals the form and fills the results."""
         known = {aid: [self.agencies_by_id[aid]["name"], self.fragment_for_agency.get(aid, "")]
@@ -1765,14 +1810,28 @@ class Site:
         data = json.dumps(known, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         fallback = self.t("search.fallback", findings=f'<a href="/findings/">{self.t("nav.findings")}</a>',
                           sources=f'<a href="/sources.html">{self.t("nav.sources")}</a>')
+        kinds, attrs, suffix = self.search_kinds(), "", ""
+        if kinds:  # DF1109-09: each agency's agencies.html anchor and kind label; each staged meeting's agenda item
+            extra = {}
+            if "agency" in kinds:
+                extra["agencies"] = {aid: ["/agencies.html#" + self.agencies_by_id[aid]["slug"],
+                                           self.labels["kind." + self.agencies_by_id[aid]["kind"]]]
+                                     for aid in self.agency_pages() if aid in self.agencies_by_id}
+            if "meeting" in kinds:
+                extra["meetings"] = {m["id"]: m["agenda_item"] for m in self.model["meetings"] if m["agenda_item"]}
+            attrs = f' data-search-extra="{e(json.dumps(extra, ensure_ascii=False, sort_keys=True, separators=(",", ":")))}"'
+            links = [f'<a href="/{page}.html">{self.t("nav." + page)}</a>'
+                     for kind, page in (("agency", "agencies"), ("meeting", "meetings")) if kind in kinds]
+            fallback += " " + self.t("search.fallback_more", links=" · ".join(links))
+            suffix = "_all"
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><h2>{self.t("search.title")}</h2></div>'
-                f'<p>{self.t("search.intro")}</p></div>'
-                f'<form class="site-search" id="search-form" role="search" data-agencies="{e(data)}" hidden>'
-                f'<label for="q">{self.t("search.label")}</label> <input type="search" id="q" name="q" autocomplete="off"></form>'
+                f'<p>{self.t("search.intro" + suffix)}</p></div>'
+                f'<form class="site-search" id="search-form" role="search" data-agencies="{e(data)}"{attrs} hidden>'
+                f'<label for="q">{self.t("search.label" + suffix)}</label> <input type="search" id="q" name="q" autocomplete="off"></form>'
                 '<p id="search-count" aria-live="polite" hidden></p><p id="search-message" role="status" hidden></p>'
                 '<ol class="search-results" id="search-results" aria-live="polite"></ol>'
                 f'<p id="search-fallback">{fallback}</p></section>\n')
-        return self.page("search", self.labels["search.title"], self.labels["search.description"], "/search.html", main,
+        return self.page("search", self.labels["search.title"], self.labels["search.description" + suffix], "/search.html", main,
                          ["/site-data.js", "/search.js"] if self.js_labels else ["/search.js"])
 
     def packet_html(self):
@@ -3635,7 +3694,7 @@ def _plan(root, today=None, notes=None):
     files.update({
         "style.css": css, "_headers": site.headers(), "robots.txt": site.robots_txt(),
         **({"sitemap.xml": site.sitemap_xml()} if site.base else {}), "feed.xml": site.feed_xml(),
-        "meetings.ics": site.meetings_ics(), "site-data.js": site.site_data_js(), "search.js": search_js(),
+        "meetings.ics": site.meetings_ics(), "site-data.js": site.site_data_js(), "search.js": search_js(site.search_kinds()),
         "agency-cards.js": agency_cards.render(site.cards_config(), relabel=bool(site.js_labels)),
         "app.js": site.app_js(), "data/findings.json": site.findings_json(), "data/findings.csv": site.findings_csv(),
         "data/sources.json": site.sources_json(), "data/sources.csv": site.sources_csv(), "data/meetings.json": meetings_text,
