@@ -257,12 +257,18 @@ def _speakers(root, meeting_id, kit_ok, errors):
         return "unknown"
 
 
+def _period(wall, as_of):
+    """upcoming/past from the parsed meeting-local calendar day (any admitted ISO spelling), never a text prefix."""
+    return "upcoming" if wall.date().isoformat() >= as_of else "past"
+
+
 def _staged_row(root, rel, stem, meeting, as_of, sent, stale, findings_ok, kit_ok, errors):
+    wall = _wall(meeting["starts_at"])
     outcome = meeting["outcome"] or {}
     kit = meeting["comment_kit_md"]
     row = {
         "kind": "staged", "path": _label(rel), "id": stem, "body": _plain(meeting["body"]),
-        "starts_at": meeting["starts_at"], "period": "upcoming" if meeting["starts_at"][:10] >= as_of else "past",
+        "starts_at": meeting["starts_at"], "period": _period(wall, as_of),
         "status": ("cancelled" if meeting["status"] == "cancelled"
                    else "continued" if outcome.get("result") == "continued" else "scheduled"),
         "participation": "verified" if meeting["participation"] is not None else "not_verified",
@@ -276,7 +282,7 @@ def _staged_row(root, rel, stem, meeting, as_of, sent, stale, findings_ok, kit_o
     }
     written = bool((meeting["participation"] or {}).get("written_comment"))
     row["next_step"] = _staged_step(row, written)
-    return row, _wall(meeting["starts_at"])
+    return row, wall
 
 
 def _leads(root, kit_ok, today, errors):
@@ -332,10 +338,11 @@ def _leads(root, kit_ok, today, errors):
 
 
 def _unstaged_row(lead, rel, as_of):
+    wall = _wall(lead["starts_at"])
     row = {"kind": "unstaged", "path": rel, "id": lead["id"], "body": _plain(lead["body"]),
-           "starts_at": lead["starts_at"], "period": "upcoming" if lead["starts_at"][:10] >= as_of else "past",
+           "starts_at": lead["starts_at"], "period": _period(wall, as_of),
            "status": lead["status"], "next_step": None if lead["status"] == "cancelled" else "stage_meeting"}
-    return row, _wall(lead["starts_at"])
+    return row, wall
 
 
 def _calendar(pairs):
