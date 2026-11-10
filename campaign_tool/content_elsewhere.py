@@ -160,6 +160,10 @@ def _read_strict(path):
         raise ContentError(f"{path.name}: a JSON object repeats a key") from None
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ContentError(f"{path.name}: not valid UTF-8 JSON ({exc})") from None
+    except ValueError:
+        # Parser-conversion boundary: the decoder's own refusal to convert a number (e.g. an integer token over the
+        # interpreter's digit ceiling). Fixed text only: no exception text, number, digit count or tuning advice.
+        raise ContentError(f"{path.name}: not valid UTF-8 JSON (value cannot be decoded)") from None
 
 
 def read_elsewhere(root, today=None, problems=None):
