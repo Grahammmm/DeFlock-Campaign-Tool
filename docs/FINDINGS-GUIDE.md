@@ -178,6 +178,17 @@ python3 -m campaign_tool finding review "$DRAFT" --directory "$CAMPAIGN" --role 
 
 Run `finding review-status` again: until `review_blockers` is empty you will see `missing_factual_review`, `missing_legal_review`, `missing_privacy_review` or `need_two_independent_reviewers`. An edit to any reviewed field, including the agency reply, makes every earlier receipt stale.
 
+When a reviewer leaves, retire their role (`--role`) or every role they hold (no `--role`) from a day; do not edit `private/reviewers.json` by hand. Retiring keeps the roster entry, its declared interests, every assignment and every receipt. From that day (UTC, inclusive) `finding assign`, `finding review` and `review-payload` refuse that person in that role; an approval they recorded before that day still counts, one recorded on or after it does not, and their challenges still block. `finding reviewers list` shows `retired_on` with the date. An open assignment to a retired role shows as `needs_reassignment` (needs reassignment) in `review-status` and in `today`: ask an active reviewer and move it with `finding assign ... --replace`. `finding reviewers add` with the same `--role` reinstates that role only (other retired roles stay retired); this keeps only the current cutoff, not a history of earlier ones.
+
+```bash
+python3 -m campaign_tool finding reviewers retire --directory "$CAMPAIGN" --name "Reviewer B" --role legal --on "$TODAY"
+python3 -m campaign_tool finding reviewers add --directory "$CAMPAIGN" --name "Reviewer C" --role legal
+python3 -m campaign_tool finding assign "$DRAFT" --directory "$CAMPAIGN" --role legal --reviewer "Reviewer C" --on "$TODAY" --replace
+python3 -m campaign_tool finding reviewers retire --directory "$CAMPAIGN" --name "Reviewer B" --on "$TODAY"
+python3 -m campaign_tool finding reviewers list --directory "$CAMPAIGN"
+python3 -m campaign_tool finding reviewers add --directory "$CAMPAIGN" --name "Reviewer B" --role legal
+```
+
 ## 8. Publish locally
 
 Reference: [PUBLICATION.md, offline review receipts](PUBLICATION.md#offline-review-receipts-cli), [PUBLICATION.md, evidence check](PUBLICATION.md#before-publishing-evidence-check) and [PUBLICATION.md, publication gate](PUBLICATION.md#publication-gate-one-check-at-every-publishing-path).

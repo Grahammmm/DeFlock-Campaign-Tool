@@ -403,15 +403,26 @@ def _review_waiting(root, as_of, directory, days):
             draft = findings.load_draft(row["draft_path"])
             assigned, states = findings.load_assignments(root, draft), None
             if assigned:
-                states = findings.assignment_states(root, draft)
+                states = findings.assignment_states(root, draft, as_of)
         except ValueError as exc:  # one bad assignment or receipt file never hides another draft's items
             items.append(_unreadable(f"private/review-assignments/{row['id']}.json", exc))
             continue
         for role, entry in sorted(assigned.items()):
-            if states[role]["state"] == "assigned" and (as_of - date.fromisoformat(entry["on"])).days >= days:
+            state = states[role]
+            if state["state"] not in ("assigned", "needs_reassignment") \
+                    or (as_of - date.fromisoformat(entry["on"])).days < days:
+                continue
+            if state["state"] == "assigned":
                 items.append(_item("review_waiting", f"Review ({role}) of {row['id']} assigned to "
                                    f"{entry['reviewer']} since {entry['on']}",
                                    f"finding review-status {shlex.quote(row['draft_path'])} --directory {directory}",
+                                   entry["on"], f"{row['id']} {role}"))
+            else:  # DF1109B-14: the assignee's role is retired; ask another person, never the retired one
+                items.append(_item("review_waiting", f"Review ({role}) of {row['id']} assigned to "
+                                   f"{entry['reviewer']} since {entry['on']} needs reassignment: their {role} role "
+                                   f"was retired on {state['retired_on']}",
+                                   f"finding assign {shlex.quote(row['draft_path'])} --directory {directory} "
+                                   f"--role {role} --reviewer 'ACTIVE REVIEWER' --on {as_of} --replace",
                                    entry["on"], f"{row['id']} {role}"))
     return items
 

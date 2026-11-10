@@ -1596,6 +1596,12 @@ def main():
     roster_add.add_argument("--interest-note", metavar="T", help="Private note (1-200 characters); never printed or published")
     roster_add.add_argument("--clear-interests", action="store_true", help="Remove the declared agencies and note")
     roster_cmds.add_parser("list", help="Print the roster (read-only)")
+    roster_retire = roster_cmds.add_parser("retire", help="Retire one role (or every role) of a reviewer from a day; "
+                                           "keeps the entry and every receipt (add --role reinstates)")
+    roster_retire.add_argument("--name", required=True)
+    roster_retire.add_argument("--role", help="factual, legal or privacy; omit to retire every role they hold")
+    roster_retire.add_argument("--on", required=True, metavar="YYYY-MM-DD",
+                               help="First day (UTC) the role takes no new assignment or review; not after today")
     for sub in roster_cmds.choices.values():
         sub.add_argument("--directory", required=True)
     new_p = finding_cmds.add_parser("new", help="Write a private/drafts/fnd_<id>.json skeleton with [EDIT ME: ...] markers")
@@ -2041,12 +2047,14 @@ def main():
             from . import findings
             read_config(root)
             add = args.reviewers_command == "add"
+            retire = args.reviewers_command == "retire"
             print(json.dumps(findings.add_reviewer(root, args.name, args.role, ssh_key=args.ssh_key,
                                                    interest_agencies=args.interest_agency,
                                                    interest_note=args.interest_note,
                                                    clear_interests=args.clear_interests) if add
+                             else findings.retire_reviewer(root, args.name, args.on, args.role) if retire
                              else findings.list_reviewers(root), indent=2, ensure_ascii=False))
-            if add:
+            if add or retire:
                 print("Private roster updated; nothing was published.")
         elif args.command == "finding" and args.finding_command == "preview":
             try:
