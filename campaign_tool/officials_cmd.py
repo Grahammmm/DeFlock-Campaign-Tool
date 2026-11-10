@@ -15,7 +15,9 @@ with the build's own ``content.load_officials`` before one atomic write in ``con
 Listing and re-checking read the roster without the 365-day limit (``require_fresh=False``) so a stale roster can be
 repaired one person at a time; the build itself stays strict. Nothing is fetched: a source address is the organizer's
 record of where they checked, never verified here. Refusals name the flag or stored place, never a supplied value.
-One organizer writes at a time; there is no concurrent-writer promise.
+One organizer writes at a time; there is no concurrent-writer promise. Each write is bound to the content/ folder (device and
+inode) its roster, site and agencies were read from, checked before staging and again before publishing: a folder
+replaced by another one is refused, never published into.
 """
 import json
 import os
@@ -111,11 +113,21 @@ def _identity(info):
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
 
 
-def _state(root, today):
-    """-> (agencies, roster document or None, loaded (identity, mode) or None) for a campaign with a valid site.json."""
+def _folder_identity(fd):
+    """The (device, inode) of an open folder: what stays the same while staging changes its size and mtime."""
+    info = os.fstat(fd)
+    return (info.st_dev, info.st_ino)
+
+
+def _state(root, today, *, with_folder_identity=False):
+    """-> (agencies, roster document or None, loaded (identity, mode) or None) for a campaign with a valid site.json.
+
+    With ``with_folder_identity`` a fourth item is the identity of the very content/ folder those files were read from,
+    so a writer can refuse to publish into a different folder later (statements.py keeps the three-item default)."""
     root = Path(root)
     folder = _content_fd(root)
     try:
+        folder_identity = _folder_identity(folder)
         site = _read(folder, "site.json", "content/site.json")
         if site is None:
             raise OfficialsError("content/site.json is required; " + UNTOUCHED)
@@ -127,8 +139,10 @@ def _state(root, today):
     finally:
         os.close(folder)
     if roster is None:
-        return agencies, None, None
-    return agencies, _parse(roster[0], LABEL), (_identity(roster[1]), stat.S_IMODE(roster[1].st_mode))
+        state = (agencies, None, None)
+    else:
+        state = (agencies, _parse(roster[0], LABEL), (_identity(roster[1]), stat.S_IMODE(roster[1].st_mode)))
+    return (*state, folder_identity) if with_folder_identity else state
 
 
 def _validate(document, agencies, today, *, fresh):
@@ -138,13 +152,14 @@ def _validate(document, agencies, today, *, fresh):
         raise OfficialsError(f"{exc}; {UNTOUCHED}") from None
 
 
-def _existing(root, today):
+def _existing(root, today, *, with_folder_identity=False):
     """The state of a roster that must already exist, validated without the age limit."""
-    agencies, document, loaded = _state(root, today)
+    state = _state(root, today, with_folder_identity=with_folder_identity)
+    agencies, document, loaded = state[:3]
     if loaded is None:
         raise OfficialsError(f"{LABEL}: does not exist; add an official first ({UNTOUCHED})")
     _validate(document, agencies, today, fresh=False)
-    return agencies, document, loaded
+    return state
 
 
 def _day(value, flag):
@@ -186,14 +201,35 @@ def _dump(document):
     return data
 
 
-def _install(root, data, loaded):
+FOLDER_CHANGED = "content/: changed while it was being edited; " + UNTOUCHED
+
+
+def _folder_changed(root, expected_folder):
+    """Refuse unless root/content is still, as a real folder, the one whose files were read (never follows a link)."""
+    try:
+        check = os.open(Path(root) / "content", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        raise OfficialsError(FOLDER_CHANGED) from None
+    try:
+        same = _folder_identity(check) == expected_folder
+    finally:
+        os.close(check)
+    if not same:
+        raise OfficialsError(FOLDER_CHANGED)
+
+
+def _install(root, data, loaded, *, expected_folder):
     """Stage ``data`` beside the roster, fsync, then publish it with one rename (or a no-replace link for the first
-    file). The target must still be the very file read, or still absent; every ordinary failure keeps the old bytes."""
+    file). The folder must still be the very content/ folder that was read (device and inode, checked before staging
+    and again before publishing), and the target must still be the very file read, or still absent; every ordinary
+    failure keeps the old bytes. Not a promise against a namespace change after the final check."""
     folder = _content_fd(root)
     temp = f".officials-{os.getpid()}-{os.urandom(4).hex()}.tmp"
     staged = False
     committed = False  # True once the rename/link has published the new roster: from then on the old bytes are gone
     try:
+        if _folder_identity(folder) != expected_folder:
+            raise OfficialsError(FOLDER_CHANGED)
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
         staged = True
         with os.fdopen(fd, "wb") as handle:
@@ -201,6 +237,7 @@ def _install(root, data, loaded):
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        _folder_changed(root, expected_folder)
         try:
             current = os.stat(FILE, dir_fd=folder, follow_symlinks=False)
         except FileNotFoundError:
@@ -238,7 +275,7 @@ def _install(root, data, loaded):
 def add_official(root, *, agency_id, name, role, source_url, checked_on, profile_url=None, today=None):
     """Append one organizer-checked official to a body. -> {"agency_id", "position" (1-based), "created"}."""
     today = today or date.today()
-    agencies, document, loaded = _state(root, today)
+    agencies, document, loaded, folder = _state(root, today, with_folder_identity=True)
     if loaded is not None:  # a stored JSON null is a broken file, never an absent one
         _validate(document, agencies, today, fresh=False)
     if agency_id not in {agency["agency_id"] for agency in agencies}:
@@ -261,7 +298,7 @@ def add_official(root, *, agency_id, name, role, source_url, checked_on, profile
         document["bodies"].append(body)
     body["officials"].append(person)
     _validate(document, agencies, today, fresh=True)
-    _install(root, _dump(document), loaded)
+    _install(root, _dump(document), loaded, expected_folder=folder)
     return {"agency_id": agency_id, "position": len(body["officials"]), "created": loaded is None}
 
 
@@ -269,7 +306,7 @@ def recheck_official(root, *, agency_id, name, checked_on, today=None):
     """Move one official's ``checked_on`` forward after the organizer re-checked the official source.
     -> {"agency_id", "position", "changed", "still_stale"} (still_stale counts the others older than 365 days)."""
     today = today or date.today()
-    agencies, document, loaded = _existing(root, today)
+    agencies, document, loaded, folder = _existing(root, today, with_folder_identity=True)
     new = _day(checked_on, "--checked-on")
     if new > today:
         raise OfficialsError(f"--checked-on: must not be after today; {UNTOUCHED}")
@@ -289,7 +326,7 @@ def recheck_official(root, *, agency_id, name, checked_on, today=None):
     _validate(document, agencies, today, fresh=False)
     _validate({"schema_version": 1, "bodies": [{"agency_id": agency_id, "officials": [person]}]}, agencies, today,
               fresh=True)
-    _install(root, _dump(document), loaded)
+    _install(root, _dump(document), loaded, expected_folder=folder)
     return result
 
 
@@ -334,7 +371,7 @@ def remove_official(root, *, agency_id, name, today=None):
     """Drop one official, refused while a recorded vote or statement names them. -> {"agency_id", "body_dropped"}."""
     from .content_statements import check_statements, read_statements  # local: content_statements imports content
     today = today or date.today()
-    agencies, document, loaded = _existing(root, today)
+    agencies, document, loaded, folder = _existing(root, today, with_folder_identity=True)
     body, index = _target(document, agency_id, name)
     meetings = _meetings(root, today)
     try:
@@ -359,7 +396,7 @@ def remove_official(root, *, agency_id, name, today=None):
     problems += check_statements(statements, prospective, today)[1]
     if problems:
         raise OfficialsError(f"after the removal {problems[0]}; {UNTOUCHED}")
-    _install(root, _dump(document), loaded)
+    _install(root, _dump(document), loaded, expected_folder=folder)
     return {"agency_id": agency_id, "body_dropped": dropped}
 
 
