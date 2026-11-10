@@ -360,31 +360,73 @@ def reply(root, request_id):
     text = _render_reply(request, finding, base)
     target = _reply_target(root, request_id)
     rel = f"kit/corrections/replies/{request_id}.md"
-    root = Path(root)
-    made = []
+    name = target.name
+    # Every directory is held by descriptor from the root down, so cleanup acts on the directory this call
+    # wrote into, never on whatever now sits at the original pathname; links are never followed below the root.
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    held, parent, owned, created, ok, status, residual = [], None, None, False, False, "ok", False
     try:
-        current = root
+        parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        held.append(parent)
         for part in REPLY_DIR:
-            current = current / part
-            if not _exists(current):
-                os.mkdir(current, 0o700)
-                os.chmod(current, 0o700)
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        made.append(target)
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as out:
+            fresh = False
+            try:
+                child = os.open(part, dir_flags, dir_fd=parent)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=parent)
+                    fresh = True
+                except FileExistsError:
+                    pass  # a component arrived meanwhile: admitted below as a real directory or refused
+                child = os.open(part, dir_flags, dir_fd=parent)
+            held.append(child)
+            if fresh:
+                os.fchmod(child, 0o700)  # only a directory made here; existing modes are never changed
+            parent = child
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+        created = True
+        try:
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode):
+                owned = (info.st_dev, info.st_ino)
+            out = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        with out:
             os.fchmod(out.fileno(), 0o600)
             out.write(text)
             out.flush()
             os.fsync(out.fileno())
-        made.clear()
+        ok = True
     except FileExistsError:
-        raise ValueError(f"{rel} already exists; edit it by hand (an existing draft is never replaced)") from None
+        status = "exists"
     except OSError:
-        raise ValueError(f"{rel} could not be written safely; nothing was sent") from None
+        status = "plain"
     finally:
-        for partial in made:
+        if created and not ok:
+            residual = True  # until the entry is shown absent or removed as this call's own file
+            if owned is not None:
+                try:
+                    seen = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    if stat.S_ISREG(seen.st_mode) and (seen.st_dev, seen.st_ino) == owned:
+                        os.unlink(name, dir_fd=parent)
+                        residual = False
+                except FileNotFoundError:
+                    residual = False
+                except OSError:
+                    pass
+        for opened in reversed(held):
             try:
-                os.unlink(partial)
+                os.close(opened)
             except OSError:
                 pass
+    if status == "exists":
+        raise ValueError(f"{rel} already exists; edit it by hand (an existing draft is never replaced)")
+    if status == "plain":
+        raise ValueError(f"{rel} could not be written safely; "
+                         + ("partial draft cleanup could not be completed; " if residual else "") + "nothing was sent")
     return {"written": rel, "id": request_id, "state": request["state"]}
