@@ -59,9 +59,9 @@ class AddStarterTests(unittest.TestCase):
         self.outside = self.work / "outside"
         self.outside.mkdir()
 
-    def older(self, state="CA"):
+    def older(self, state="CA", tag=""):
         """A campaign whose content/ predates the starters: no faq.json and no pages/."""
-        root = self.work / ("campaign-" + state)
+        root = self.work / ("campaign-" + state + tag)
         shutil.copytree(self.fresh[state], root, symlinks=True)
         (root / "content" / "faq.json").unlink()
         shutil.rmtree(root / "content" / "pages")
@@ -269,6 +269,188 @@ class AddStarterTests(unittest.TestCase):
             with self.assertRaises(StarterError):
                 add_starter(root, "background")
         self.assertEqual(snapshot(root), before)
+
+    # RF2235-3: site.json is validated whole and bounded at 256 KiB (descriptor size and returned bytes)
+    LIMIT = 256 * 1024
+    SITE_REFUSAL = "content/site.json is missing or not valid (run content-check); nothing was written"
+
+    def sized(self, root, size=None, suffix=b"", document=None):
+        """Write a valid site.json padded with trailing whitespace to exactly ``size`` bytes, then ``suffix``."""
+        site = root / "content" / "site.json"
+        document = document if document is not None else json.loads(site.read_text(encoding="utf-8"))
+        data = json.dumps(document, ensure_ascii=False).encode("utf-8")
+        if size is not None:
+            self.assertLessEqual(len(data), size)
+            data += b" " * (size - len(data))
+        site.write_bytes(data + suffix)
+        return site
+
+    def assert_site_refused(self, root, name, snapshot_root=None, ignore=None):
+        """add_starter/starter_status refuse with the one private message; nothing appears anywhere (bar ``ignore``)."""
+        def state():
+            entries = snapshot(snapshot_root or root.parent)
+            entries.pop(ignore, None)
+            return entries
+        before = state()
+        with self.assertRaises(StarterError) as caught:
+            starter_status(root) if name is None else add_starter(root, name)
+        self.assertEqual(str(caught.exception), self.SITE_REFUSAL)
+        self.assertEqual(state(), before)
+
+    def spy_site_read(self, hook=None, fail=False):
+        """Record every read of the site.json stream; ``hook`` runs after the real fstat, just before the read."""
+        log = {"reads": [], "returned": [], "streams": []}
+        real_fdopen = os.fdopen
+
+        class Stream:
+            def __init__(self, stream):
+                self.stream = stream
+                log["streams"].append(stream)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.stream.close()
+
+            def fileno(self):
+                return self.stream.fileno()
+
+            def read(self, size=-1):
+                log["reads"].append(size)
+                if hook:
+                    hook()
+                if fail:
+                    raise OSError(5, "I/O error")
+                data = self.stream.read(size)
+                log["returned"].append(len(data))
+                return data
+
+        def fdopen(fd, mode="r", *args, **kwargs):
+            stream = real_fdopen(fd, mode, *args, **kwargs)
+            return Stream(stream) if mode == "rb" else stream
+
+        patch = mock.patch.object(content_init.os, "fdopen", fdopen)
+        return log, patch
+
+    def test_valid_prefix_with_malformed_suffix_is_refused_by_list_and_all_starters(self):
+        suffix = b"!PRIVATE_SUFFIX_SENTINEL"
+        for action in ("list", *TARGETS):
+            root = self.older(tag="-" + action)
+            self.sized(root, self.LIMIT + 1, suffix=suffix)  # a valid object filling the whole old read window
+            site_size = (root / "content" / "site.json").stat().st_size
+            self.assertGreater(site_size, self.LIMIT)
+            before = snapshot(self.work)
+            with self.subTest(action=action):
+                self.assert_site_refused(root, None if action == "list" else action, self.work)
+                args = ("--list",) if action == "list" else (action,)
+                result = cli("content", "add-starter", *args, "--directory", root)
+                self.assertEqual((result.returncode, result.stdout), (2, ""))
+                self.assertIn("Stopped: " + self.SITE_REFUSAL, result.stderr)
+                self.assertNotIn("PRIVATE_SUFFIX_SENTINEL", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(snapshot(self.work), before)
+                self.assertFalse((root / "content" / "pages").exists())
+
+    def test_site_byte_boundary_includes_trailing_whitespace(self):
+        for size, admitted in ((self.LIMIT - 1, True), (self.LIMIT, True), (self.LIMIT + 1, False), (self.LIMIT * 4, False)):
+            for action in ("list", "faq"):
+                with self.subTest(size=size, action=action):
+                    root = self.older(tag=f"-{size}-{action}")  # an independent campaign per case: a write never contaminates a refusal
+                    self.sized(root, size)
+                    if admitted and action == "list":
+                        self.assertEqual([row[2] for row in starter_status(root)], [False, False, False])
+                    elif admitted:
+                        self.assertEqual(add_starter(root, "faq")["written"], "content/faq.json")
+                    else:
+                        self.assert_site_refused(root, None if action == "list" else action, self.work)
+
+    def test_site_limit_is_utf8_bytes_not_characters(self):
+        document = json.loads((self.fresh["CA"] / "content" / "site.json").read_text(encoding="utf-8"))
+        document["county_profile"] = {"facts": ["é" * 20000] * 6}  # 2 bytes per character; a text field holds 20000
+        root = self.older(tag="-exact")
+        site = self.sized(root, self.LIMIT, document=document)
+        self.assertEqual(site.stat().st_size, self.LIMIT)
+        self.assertLess(len(site.read_text(encoding="utf-8")), self.LIMIT)
+        self.assertEqual(add_starter(root, "faq")["written"], "content/faq.json")  # exactly the limit in bytes
+        document["county_profile"] = {"facts": ["é" * 20000] * 7}  # fewer characters than the limit, more bytes than the limit
+        root = self.older(tag="-over")
+        site = self.sized(root, None, document=document)
+        self.assertLess(len(site.read_text(encoding="utf-8")), self.LIMIT)
+        self.assertGreater(site.stat().st_size, self.LIMIT)
+        self.assert_site_refused(root, "faq", self.work)
+        self.assert_site_refused(root, None, self.work)
+
+    def test_oversized_site_fstat_refuses_before_any_read_or_parse(self):
+        root = self.older()
+        self.sized(root, self.LIMIT + 1)
+        log, patch = self.spy_site_read()
+        with patch, mock.patch.object(content_init, "load_site") as loaded, \
+                mock.patch.object(content_init, "starter_text") as text:
+            self.assert_site_refused(root, "faq", self.work)
+            self.assert_site_refused(root, None, self.work)
+        self.assertEqual(log["reads"], [])
+        loaded.assert_not_called()
+        text.assert_not_called()
+        self.assertTrue(log["streams"] and all(stream.closed for stream in log["streams"]))
+
+    def test_site_growth_after_real_fstat_is_refused_before_parse(self):
+        for name in (None, "faq", "help-map", "background"):
+            root = self.older(tag=f"-{name}")
+            site = self.sized(root)  # a small valid site: its real fstat is in bound
+
+            def grow(site=site):
+                with open(site, "ab") as handle:  # the same inode, after the real fstat, before the read
+                    handle.write(b" " * (self.LIMIT + 10) + b"!PRIVATE_SUFFIX_SENTINEL")
+
+            log, patch = self.spy_site_read(hook=grow)
+            with self.subTest(name=name), patch, mock.patch.object(content_init, "load_site") as loaded, \
+                    mock.patch.object(content_init, "starter_text") as text:
+                self.assert_site_refused(root, name, self.work, ignore=str(site.relative_to(self.work)))  # only the grown site differs
+                self.assertEqual(log["reads"], [self.LIMIT + 1])
+                self.assertEqual(log["returned"], [self.LIMIT + 1])
+                loaded.assert_not_called()
+                text.assert_not_called()
+                self.assertTrue(all(stream.closed for stream in log["streams"]))
+
+    def test_site_admission_failure_closes_descriptor_and_preserves_private_refusal(self):
+        document = json.loads((self.fresh["CA"] / "content" / "site.json").read_text(encoding="utf-8"))
+        broken = dict(document, schema_version=2)
+        good = json.dumps(document).encode("utf-8")
+        cases = {"invalid-utf8": b"\xff\xfe" + good, "truncated": good[:-5], "extra-data": good + b" {}",
+                 "schema": json.dumps(broken).encode("utf-8"), "empty": b"", "oversize": good + b" " * self.LIMIT}
+        for label, data in cases.items():
+            for name in (None, "background"):
+                root = self.older(tag=f"-{label}-{name}")
+                (root / "content" / "site.json").write_bytes(data)
+                log, patch = self.spy_site_read()
+                with self.subTest(case=label, name=name), patch:
+                    self.assert_site_refused(root, name, self.work)
+                    self.assertTrue(all(stream.closed for stream in log["streams"]))
+                    self.assertFalse((root / "content" / "pages").exists())
+        root = self.older(tag="-readerror")  # a read error is the same refusal, descriptor closed
+        log, patch = self.spy_site_read(fail=True)
+        with patch:
+            self.assert_site_refused(root, "faq", self.work)
+        self.assertTrue(log["streams"] and all(stream.closed for stream in log["streams"]))
+        for kind in ("symlink", "fifo"):  # the no-follow, regular-file-only open is kept
+            root = self.older(tag="-" + kind)
+            site = root / "content" / "site.json"
+            original = site.read_bytes()
+            site.unlink()
+            if kind == "symlink":
+                (self.outside / "site.json").write_bytes(original)
+                site.symlink_to(self.outside / "site.json")
+            else:
+                os.mkfifo(site)
+            with self.subTest(kind=kind):
+                self.assert_site_refused(root, "faq", self.work)
+        root = self.older(tag="-accepted")  # in-bound valid input is still accepted and its descriptor closed
+        log, patch = self.spy_site_read()
+        with patch:
+            self.assertEqual(add_starter(root, "faq")["written"], "content/faq.json")
+        self.assertEqual(log["reads"], [self.LIMIT + 1])
+        self.assertTrue(all(stream.closed for stream in log["streams"]))
 
     def test_no_command_no_public_byte_change(self):
         root = self.older()

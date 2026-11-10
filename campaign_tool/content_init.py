@@ -105,6 +105,7 @@ class StarterError(ValueError):
 STARTERS = (("faq", ("faq.json",)), ("help-map", ("pages", "help-map.json")), ("background", ("pages", "background.json")))
 PUBLISHED_WARNING = "This content is published by the next build until edited or deleted. Nothing was built, sent or deployed."
 _DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+_SITE_MAX_BYTES = 256 * 1024  # RF2235-3: add-starter's own site.json admission bound, in encoded bytes
 _FAILED = (OSError, ValueError, UnicodeError, RuntimeError, KeyError, TypeError, AttributeError, RecursionError)
 
 
@@ -150,9 +151,13 @@ def _open_campaign(root, fds):
         try:
             fd = os.open("site.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fds[1])
             with os.fdopen(fd, "rb") as stream:
-                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                    raise ValueError("site.json: not a regular file")
-                load_site(json.loads(stream.read(256 * 1024 + 1).decode("utf-8")))
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > _SITE_MAX_BYTES:
+                    raise ValueError("site.json: not a regular file or over the size limit")
+                data = stream.read(_SITE_MAX_BYTES + 1)  # one byte past the limit: a file that grew after fstat is caught
+                if len(data) > _SITE_MAX_BYTES:
+                    raise ValueError("site.json: over the size limit")
+                load_site(json.loads(data.decode("utf-8")))  # the whole bounded file; a valid prefix never hides a suffix
         except _FAILED:
             raise StarterError("content/site.json is missing or not valid (run content-check); nothing was written") from None
         fds.append(_open_dir("pages", fds[1], "content/pages/"))
