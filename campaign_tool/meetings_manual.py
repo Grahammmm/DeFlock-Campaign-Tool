@@ -159,6 +159,23 @@ def _read_bytes(path, label):
     return data
 
 
+class _RepeatedKey(Exception):
+    """A JSON object repeated a decoded member name; carries no key or value."""
+
+
+def _unique_members(pairs):
+    """object_pairs_hook for every JSON object at every depth: a repeated decoded name is ambiguous, never last-wins.
+
+    Without this a later successful add or correction would rewrite the collapsed reading and silently drop history.
+    """
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _RepeatedKey
+        result[key] = value
+    return result
+
+
 def read_manual(root):
     """Validated entries of kit/meetings-manual.json ([] when missing); any fault refuses, nothing is reset."""
     root = Path(root)
@@ -168,7 +185,9 @@ def read_manual(root):
     if data is None:
         return []
     try:
-        document = json.loads(data.decode("utf-8"))
+        document = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_members)
+    except _RepeatedKey:
+        raise ManualMeetingError(f"{MANUAL}: a JSON object repeats a key") from None
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise ManualMeetingError(f"{MANUAL}: not UTF-8 JSON") from None
     return _manual_document(document)
