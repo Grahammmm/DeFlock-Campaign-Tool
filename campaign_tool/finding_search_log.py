@@ -37,9 +37,14 @@ def _pairs(items):
 
 
 def _load_summary(path):
-    handle, _ = search_log._open_regular(path, "--search-log file", MAX_SUMMARY_BYTES)
-    with handle:
-        data = handle.read(MAX_SUMMARY_BYTES + 1)
+    """The summary object. A filesystem OSError after the path was named (admission fstat/fdopen, read, close) becomes
+    one fixed ValueError, so the caller never prints the path or an OS message; existing fixed ValueErrors pass through."""
+    try:
+        handle, _ = search_log._open_regular(path, "--search-log file", MAX_SUMMARY_BYTES)
+        with handle:
+            data = handle.read(MAX_SUMMARY_BYTES + 1)
+    except OSError:
+        raise ValueError("--search-log file could not be read") from None
     if len(data) > MAX_SUMMARY_BYTES:
         raise ValueError("--search-log file is larger than 4 MiB")
     try:
