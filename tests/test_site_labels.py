@@ -2,7 +2,6 @@
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -238,8 +237,6 @@ class LabelsTest(unittest.TestCase):
                     page = data.decode()
                     if path == "data.html":  # DF0237-12: the catalogue's fixed description of the camera CSV (not a label)
                         page = page.replace("Community-mapped camera points; ownership unconfirmed.", "")
-                    if path == "timeline.html":  # DF1109-07: frozen English coverage prefix; the DF1109-16 labels sweep converts it
-                        page = re.sub(r"In the news: Zq outlet \w+", "", page)
                     seen |= {key for key in DEFAULTS if f"X{key}X" in page}
                     left = [p for p in phrases if p in page or html_text(p) in page]
                     self.assertEqual(left, [], f"{name}: {path}")
@@ -342,7 +339,18 @@ class LabelsTest(unittest.TestCase):
                   "supporters.kind.civil_liberties", "supporters.kind.community", "supporters.kind.faith",
                   "supporters.kind.labor", "supporters.kind.neighborhood", "supporters.kind.other", "supporters.title",
                   "vote.absent", "vote.abstain", "vote.no", "vote.recused", "vote.yes"]
-        self.assertEqual(sorted(set(DEFAULTS) - set(JS_DEFAULTS) - seen), absent)  # js.*: the script tests below
+        # DF1109-16 page labels the fixture does not reach, or that a bare marker hides (a marker without {month},
+        # {kinds} or {methods} drops the nested label): tests/test_site_label_completion.py observes every one.
+        completion = ["footer.newsletters", "legal.duty", "legal.exceptions", "legal.exceptions_text", "legal.heading",
+                      "legal.rule_version", "methods.index_link", *[f"month.{n:02}" for n in range(1, 13)],
+                      "newsletters.all_issues", "newsletters.description", "newsletters.heading",
+                      "newsletters.issue_description", "newsletters.lead", "newsletters.sent", "newsletters.title",
+                      "outcome.official_record", "packet.source_rule", "timeline.actions_note",
+                      "timeline.event_agency_action", "timeline.event_decision", "timeline.event_finding_update",
+                      "timeline.event_records_requested", "timeline.event_request_update", "timeline.event_statement",
+                      "timeline.join_three", "timeline.join_two", "timeline.kind_coverage", "timeline.kind_finding_update",
+                      "timeline.kind_statement", "timeline.source_link", "timeline.unknown_agency"]
+        self.assertEqual(sorted(set(DEFAULTS) - set(JS_DEFAULTS) - seen), sorted(absent + completion))  # js.*: the script tests below
 
     def test_supporters_labels_replace_every_fixed_string_when_organizations_are_listed(self):
         root = self.root("rich", labels={key: f"X{key}X" for key in DEFAULTS})

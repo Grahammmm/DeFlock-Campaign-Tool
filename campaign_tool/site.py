@@ -35,6 +35,8 @@ from .content_statements import newest_first as newest_statements
 from .content_events import build_cutoff, parse_moment, partition as partition_events
 from .corrections_policy import policy_html
 from .timeline import render_timeline, timeline_events
+from .labels import CLASSIFICATION_DEFINITIONS as LABEL_CLASSIFICATION_DEFINITIONS
+from .labels import CONFIDENCE_DEFINITIONS as LABEL_CONFIDENCE_DEFINITIONS
 from .labels import CLASSIFICATION_LABELS, CONFIDENCE_LABELS, DEFAULTS, JS_DEFAULTS, KIND_LABELS, html_text
 from .markdown_lite import render as markdown
 from .privacy_patterns import refusal
@@ -67,25 +69,7 @@ PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources"
     "data/cameras.geojson", "data/officials.json", "data/officials.csv", DESCRIPTOR)  # DF1622-11: the roster exports, only when emitted
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
-CLASSIFICATION_DEFINITIONS = {
-    "documented_fact": "A record states this directly. We report what the record says, not our interpretation of it.",
-    "apparent_conflict": "A record appears to differ from a stated rule or policy; not a finding that anyone broke a "
-                         "law. The agency may have an explanation the records we hold do not show.",
-    "confirmed_conflict": "The conflict was checked against the rule in force on the event date and passed legal-role "
-                          "review. It describes a difference between records and a rule, not a court's judgment.",
-    "information_gap": "Records we expected were not provided, not found, or do not answer the question asked. A gap is "
-                       "not evidence that something did or did not happen.",
-    "redaction": "Part of a record was withheld or blacked out by the agency. We note what was withheld and the reason "
-                 "given, if any.",
-    "agency_assertion": "The agency says this in a record or a reply. We report the statement; we have not "
-                        "independently confirmed it.",
-    "no_conflict": "We compared the records with the applicable rule or policy and found no difference. This covers "
-                   "only the records we hold.",
-}
-CONFIDENCE_DEFINITIONS = {
-    "verified": "Each statement was checked against the cited source records by a reviewer other than the author.",
-    "likely": "The cited records support this reading, but records we have asked for or expect could change it.",
-}
+CLASSIFICATION_DEFINITIONS, CONFIDENCE_DEFINITIONS = LABEL_CLASSIFICATION_DEFINITIONS, LABEL_CONFIDENCE_DEFINITIONS
 
 
 def check_definitions():
@@ -522,7 +506,7 @@ def meeting_outcome_html(meeting, t=None):
         recording = (f' · <a href="{e(outcome["recording_url"])}" rel="noopener noreferrer">{t("meeting.recording")}</a>'
                      + start)
     return (f'<p class="meeting-outcome">Outcome: {e(OUTCOME_LABELS[outcome["result"]])} on {time_tag(outcome["on"])}{vote}'
-            f' · <a href="{e(outcome["source_url"])}" rel="noopener noreferrer">Official record</a>'
+            f' · <a href="{e(outcome["source_url"])}" rel="noopener noreferrer">{t("outcome.official_record")}</a>'
             f' · verified by {e(outcome["verified_by"])}{recording}</p>' + _minutes_html(outcome, t))
 
 
@@ -910,7 +894,7 @@ class Site:
         links += "".join(  # content pages with nav: true (DF2237-07), after About, labelled by their own title
             f'<a href="/{page["slug"]}.html"' + (' aria-current="page"' if current == "page:" + page["slug"] else "")
             + f'>{e(page["title"])}</a>' for page in self.model.get("pages", []) if page["nav"])
-        links += '<a href="/timeline.html"' + (' aria-current="page"' if current == "timeline" else "") + ">Timeline</a>"
+        links += '<a href="/timeline.html"' + (' aria-current="page"' if current == "timeline" else "") + f'>{self.t("nav.timeline")}</a>'
         if self.topics:  # DF1952-06: after every fixed item
             links += ('<a href="/topics/"' + (' aria-current="page"' if current == "topics" else "")
                       + f'>{self.t("nav.topics")}</a>')
@@ -938,7 +922,7 @@ class Site:
                                for link in self.site["social"])
             parts.append(f'<p>{links}</p>')
         if self.map:
-            parts.append(f'<p>{e(self.map["attribution"])} · <a href="/cameras.html">Mapped points</a></p>')
+            parts.append(f'<p>{e(self.map["attribution"])} · <a href="/cameras.html">{self.t("footer.cameras")}</a></p>')
         if self.license:  # DF1422-13: one paragraph, only when site.json.license is set
             attribution = f', {e(self.license["attribution"])}' if "attribution" in self.license else ""
             parts.append(f'<p>{self.t("footer.license")} <a href="{e(self.license["url"])}" rel="license">{e(self.license["name"])}</a>{attribution}</p>')
@@ -956,11 +940,11 @@ class Site:
         meetings_feed = f' · <a href="/meetings.xml">{self.t("meeting.feed")}</a>' if self.model["meetings"] else ""  # DF1103-10
         meetings_feed += f' · <a href="/events.ics">{self.t("footer.events_calendar")}</a>' if self.events else ""  # DF1107-10
         corrections_feed = f' · <a href="/corrections.xml">{self.t("corrections.feed")}</a>' if self.correction_entries() else ""  # DF0237-09
-        archive = ' · <a href="/newsletters.html">Newsletter archive</a>' if self.model.get("newsletters") else ""  # DF1952-09
+        archive = f' · <a href="/newsletters.html">{self.t("footer.newsletters")}</a>' if self.model.get("newsletters") else ""  # DF1952-09
         parts.append(f'<p><a href="/feed.xml">{self.t("footer.feed")}</a>{meetings_feed} · <a href="/search.html">{self.t("footer.search")}</a>'
                      f' · <a href="/requests.html">{self.t("footer.requests")}</a>'  # DF1103-13: between the feed and Corrections
                      f' · <a href="/corrections.html">{self.t("nav.corrections")}</a>{corrections_feed}{sitemap}{archive}'
-                     ' · <a href="/methods.html">How to read our findings</a></p>')
+                     f' · <a href="/methods.html">{self.t("footer.methods")}</a></p>')
         if self.faq:  # DF0022-01: appended last, so every earlier footer paragraph is unchanged
             parts.append(f'<p><a href="/faq.html">{self.t("footer.faq")}</a></p>')
         if self.coverage is not None:  # DF0022-03: appended after every other footer paragraph; no top-nav entry
@@ -1450,7 +1434,7 @@ class Site:
 
     # -- pages ---------------------------------------------------------------
     def timeline_html(self):
-        return self.page("timeline", "Timeline", "Public campaign dates", "/timeline.html", render_timeline(self, self.timeline))
+        return self.page("timeline", self.labels["title.timeline"], self.labels["title.timeline_description"], "/timeline.html", render_timeline(self, self.timeline))
 
     def index_html(self):
         mission = self.md(self.site["mission_md"]) if self.site["mission_md"] else ('<div class="mission-grid">' + "".join(
@@ -1787,13 +1771,14 @@ class Site:
 
     def findings_index_html(self):
         form = self.finding_filter()
+        methods = '<a href="/methods.html">' + self.t("methods.index_link") + "</a>"
         empty = (f'<p class="filter-empty" id="filter-empty" hidden>{self.t("notice.no_filter_match")}</p>'
                  if form else "")
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.findings")}</p>'
                 f'<h2>{self.t("heading.findings")}</h2></div><p>{self.t("intro.findings")} <a href="/feed.xml">{self.t("intro.atom_feed")}</a> · '
                 f'<a href="/data/findings.json" type="application/json">{self.t("intro.open_data")}</a> · '
-                f'{self.csv_link("/data/findings.csv")} · <a href="/findings/packet-all.html">Printable packet</a>.</p>'
-                '<p><a href="/methods.html">How to read our findings</a> defines each classification and confidence label.</p></div>'
+                f'{self.csv_link("/data/findings.csv")} · <a href="/findings/packet-all.html">{self.t("packet.link")}</a>.</p>'
+                f'<p>{self.t("methods.index_sentence", methods=methods)}</p></div>'
                 f'{form}{self.findings_list(self.model["findings"], filter_attrs=True)}{empty}'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
         return self.page("findings", self.labels["title.findings"], self.labels["title.findings_description"], "/findings/", main,
@@ -1847,14 +1832,14 @@ class Site:
                 title = e(source["title"])
                 if fragment:
                     title = f'<a href="/sources.html#{e(fragment)}">{title}</a>'
-                rule = f' · rule {e(source["rule_id"])}' if source.get("rule_id") else ''
+                rule = f' · {self.t("packet.source_rule", rule=e(source["rule_id"]))}' if source.get("rule_id") else ''
                 sources.append(f'<li>{title} · sha256 {e(short_hash(source["sha256"]))} · {e(source["locator"])}{rule}{self.source_quote(source)}</li>')
             links = self.agency_links(f)
-            agency_line = f'<p>Agency: {links}</p>' if links else ''  # DF1952-07: primary first, then each extra agency
-            limits = ''.join(f'<li>{e(item)}</li>' for item in f["limitations"]) or '<li>None stated.</li>'
+            agency_line = f'<p>{self.t("finding.agency")} {links}</p>' if links else ''  # DF1952-07: primary first, then each extra agency
+            limits = ''.join(f'<li>{e(item)}</li>' for item in f["limitations"]) or f'<li>{self.t("finding.none_stated")}</li>'
             corrections = ''.join(f'<li>{time_tag(c["date"])}: {e(c["note"])}</li>' for c in sorted(f["corrections"], key=lambda c: c["date"]))
             corrections = f'<ul>{corrections}</ul>' if corrections else f'<p>{self.t("notice.no_corrections")}</p>'
-            updated = f' · Updated {date_label(f["updated_at"])}' if f["updated_at"] else ''
+            updated = f' · {self.t("finding.updated", date=date_label(f["updated_at"]))}' if f["updated_at"] else ''
             url = self.base + f'/findings/{f["slug"]}.html'
             # DF1109-08: what the finding page states, through its own helpers; body_md stays out (DF1507-17).
             counter = f'<h4>{self.t("finding.counterevidence")}</h4><ul>{self.counterevidence_items_html(f)}</ul>'
@@ -1862,14 +1847,14 @@ class Site:
             updates = self.updates_html(f, heading_level=4, section_id=f'packet-updates-{f["slug"]}')
             articles.append(f'<article class="packet-finding" id="f-{e(f["slug"])}"><h3>{e(f["title"])}</h3>'
                 f'<p>{self.pill(f["classification"])} · {self.confidence_link(f["confidence"])} · {time_tag(f["event_date"])} · '
-                f'Published {date_label(f["published_at"])}{updated}</p><p>{e(f["summary"])}</p>{agency_line}'
-                f'<h4>Sources</h4><ul>{"".join(sources)}</ul><h4>Limitations</h4><ul>{limits}</ul>{counter}{reply}'
-                f'<h4>Corrections</h4>{corrections}{updates}<p>Finding {e(f["id"])} · <a href="{e(url)}">{e(url)}</a></p></article>')
-        main = (f'<section class="section" id="content"><h2>Findings packet</h2><p>As of {e(self.today.isoformat())} · '
-                f'{len(findings)} published findings · print or save as PDF</p>'
+                f'{self.t("finding.published", date=date_label(f["published_at"]))}{updated}</p><p>{e(f["summary"])}</p>{agency_line}'
+                f'<h4>{self.t("finding.sources")}</h4><ul>{"".join(sources)}</ul><h4>{self.t("finding.limitations")}</h4><ul>{limits}</ul>{counter}{reply}'
+                f'<h4>{self.t("finding.corrections")}</h4>{corrections}{updates}<p>{self.t("packet.finding_id", id=e(f["id"]))} · <a href="{e(url)}">{e(url)}</a></p></article>')
+        main = (f'<section class="section" id="content"><h2>{self.t("packet.heading")}</h2>'
+                f'<p>{self.t("packet.intro", date=e(self.today.isoformat()), count=len(findings))}</p>'
                 + (f'<ol>{contents}</ol>{"".join(articles)}' if findings else f'<p>{self.t("notice.no_findings")}</p>')
                 + f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
-        return self.page("findings", "Findings packet", "Every published finding on one printable page", "/findings/packet-all.html", main)
+        return self.page("findings", self.labels["packet.title"], self.labels["packet.description"], "/findings/packet-all.html", main)
 
     def press_license(self, path):
         """DF2207-10: the licence text beside one open-data link. cameras.geojson is always ODbL with the OpenStreetMap
@@ -2041,15 +2026,15 @@ class Site:
         version, duty, exceptions = (finding.get(key) for key in ("rule_version", "duty", "exceptions"))
         if not cited and not version and not duty and not exceptions:
             return ""
-        parts = ['<section class="legal-basis"><h3 id="legal-basis">Legal basis</h3>']
+        parts = [f'<section class="legal-basis"><h3 id="legal-basis">{self.t("legal.heading")}</h3>']
         if version:
-            parts.append(f'<p>Rule version: {e(version)}</p>')
+            parts.append(f'<p>{self.t("legal.rule_version", version=e(version))}</p>')
         if duty:
-            parts.append(f'<p>Duty: {e(duty)}</p>')
+            parts.append(f'<p>{self.t("legal.duty", duty=e(duty))}</p>')
         if isinstance(exceptions, list) and exceptions:
-            parts.append("<p>Exceptions:</p><ul>" + "".join(f"<li>{e(item)}</li>" for item in exceptions) + "</ul>")
+            parts.append(f'<p>{self.t("legal.exceptions")}</p><ul>' + "".join(f"<li>{e(item)}</li>" for item in exceptions) + "</ul>")
         elif exceptions and not isinstance(exceptions, list):
-            parts.append(f"<p>Exceptions: {e(exceptions)}</p>")
+            parts.append(f'<p>{self.t("legal.exceptions_text", exceptions=e(exceptions))}</p>')
         if cited:
             local = {rule["rule_id"] for rule in self.local_rules}
             parts.append("<ul>" + "".join(self.rule_item(finding, rule_id, rule_id in local) for rule_id in cited) + "</ul>")
@@ -2154,7 +2139,7 @@ class Site:
                 f'<span>{self.t("finding.event_date", date=when(finding))}</span>'
                 f'<span>{self.t("finding.published", date=date_label(finding["published_at"]))}{updated}</span></div>'
                 f'<h2>{e(finding["title"])}</h2><p><strong>{e(finding["summary"])}</strong></p>{agency_line}{self.part_of_html(finding)}'
-                f'<p><a href="{e(finding_path(finding))}">Share this finding</a></p>'
+                f'<p><a href="{e(finding_path(finding))}">{self.t("finding.share")}</a></p>'
                 + self.cite_html(finding)
                 + (self.md(finding["body_md"]) if finding["body_md"] else "")
                 + self.updates_html(finding)
@@ -2711,19 +2696,21 @@ class Site:
         rows = "".join(f'<li><a href="/newsletters/{issue["sent_on"]}.html">{e(issue["title"])}</a> '
                        f'<time datetime="{issue["sent_on"]}">{issue["sent_on"]}</time></li>'
                        for issue in reversed(self.model["newsletters"]))
-        main = ('    <section class="section finding-body" id="content"><h2>Newsletter archive</h2>'
-                f'<p>Past issues of our email newsletter, as sent.</p><ul>{rows}</ul>'
+        main = (f'    <section class="section finding-body" id="content"><h2>{self.t("newsletters.heading")}</h2>'
+                f'<p>{self.t("newsletters.lead")}</p><ul>{rows}</ul>'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
-        return self.page("newsletters", "Newsletter archive", "Past issues of our email newsletter", "/newsletters.html", main)
+        return self.page("newsletters", self.labels["newsletters.title"], self.labels["newsletters.description"], "/newsletters.html", main)
 
     def newsletter_html(self, issue):
         """/newsletters/<day>.html (DF1952-09): one issue's public Markdown through markdown_lite."""
         day = issue["sent_on"]
+        sent = f'<time datetime="{day}">{day}</time>'
         main = (f'    <article class="section finding-body" id="content"><h2>{e(issue["title"])}</h2>'
-                f'<p>Sent <time datetime="{day}">{day}</time></p>{self.md(issue["body_md"])}'
-                f'<p><a href="/newsletters.html">All newsletter issues</a></p>'
+                f'<p>{self.t("newsletters.sent", date=sent)}</p>{self.md(issue["body_md"])}'
+                f'<p><a href="/newsletters.html">{self.t("newsletters.all_issues")}</a></p>'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></article>\n')
-        return self.page("newsletters", issue["title"], f"Newsletter issue sent {day}", f"/newsletters/{day}.html", main)
+        return self.page("newsletters", issue["title"], self.labels["newsletters.issue_description"].format(date=day),
+                         f"/newsletters/{day}.html", main)
 
     def methods_html(self):
         """/methods.html (DF2037-14): label definitions from the badge tables, the record-number explainer and the
@@ -2731,24 +2718,20 @@ class Site:
         check_definitions()
         tables = "".join(
             f'<h3>{heading}</h3><dl>' + "".join(
-                f'<dt id="{name}-{e(code)}">{self.t(name + "." + code)}</dt><dd>{e(definitions[code])}</dd>'
+                f'<dt id="{name}-{e(code)}">{self.t(name + "." + code)}</dt><dd>{e(self.labels[f"methods.{name}_{code}"])}</dd>'
                 for code in labels) + '</dl>'
             for name, heading, labels, definitions in (
-                ("classification", "Classifications", CLASSIFICATION_LABELS, CLASSIFICATION_DEFINITIONS),
-                ("confidence", "Confidence", CONFIDENCE_LABELS, CONFIDENCE_DEFINITIONS)))
+                ("classification", self.t("methods.classifications"), CLASSIFICATION_LABELS, CLASSIFICATION_DEFINITIONS),
+                ("confidence", self.t("methods.confidence"), CONFIDENCE_LABELS, CONFIDENCE_DEFINITIONS)))
         roles = sorted(ROLES)
-        gate = (f'Before a finding is published it needs {", ".join(roles[:-1])} and {roles[-1]} review by at least two '
-                'people other than the author. Until then the build refuses to publish it.')
-        interests = ('Reviewers declare agency interests privately. A declared interest excludes their review from '
-                     'findings about that agency.')
-        main = ('    <section class="section finding-body" id="content"><h2>How to read our findings</h2>'
-                f'{tables}<h3 id="record-numbers">Record numbers</h3><p class="provenance-note">{e(EXPLAINER)}</p>'
-                f'<h3 id="review">Review before publication</h3><p>{e(gate)}</p>'
+        gate = self.labels["methods.gate"].format(roles=", ".join(roles[:-1]), last=roles[-1])
+        interests = self.labels["methods.interests"]
+        main = (f'    <section class="section finding-body" id="content"><h2>{self.t("methods.heading")}</h2>'
+                f'{tables}<h3 id="record-numbers">{self.t("methods.record_numbers")}</h3><p class="provenance-note">{e(EXPLAINER)}</p>'
+                f'<h3 id="review">{self.t("methods.review")}</h3><p>{e(gate)}</p>'
                 f'<p>{e(interests)}</p>'
                 f'<p class="notice">{e(self.site["not_legal_advice"])}</p></section>\n')
-        return self.page("findings", "How to read our findings",
-                         "What each finding label means, what record numbers show and how findings are reviewed",
-                         "/methods.html", main)
+        return self.page("findings", self.labels["methods.title"], self.labels["methods.description"], "/methods.html", main)
 
     def check_cell(self, items):
         """DF1422-11: the newest organizer check as ``status · date · source`` (+ ``and N earlier``), or a dash."""
@@ -2828,11 +2811,11 @@ class Site:
         """No-JS list of mapped points (DF1507-13): each point in the first picker city (by name) whose boundary holds it,
         by the counts' own half-open test, else in the group section. Over 2 000 points: 500 rows per section."""
         if not self.map:  # DF1952-10: the strip's link target; the same disclaimer, no points
-            main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Mapped points</p>'
-                    '<h2>Community-mapped points; ownership unconfirmed.</h2></div>'
-                    '<p>Points are community reports from OpenStreetMap, not confirmed agency ownership.</p></div>'
+            main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("cameras.page_eyebrow")}</p>'
+                    f'<h2>{self.t("cameras.page_heading")}</h2></div>'
+                    f'<p>{self.t("cameras.page_lead")}</p></div>'
                     f'<p>{self.t("standings.none_yet").capitalize()}. {self.t("cameras.empty")}</p></section>\n')
-            return self.page("cameras", "Mapped points", "List of community-mapped points by city; ownership unconfirmed",
+            return self.page("cameras", self.labels["cameras.page_title"], self.labels["cameras.page_description"],
                              "/cameras.html", main)
         self.mapped_counts()
         cameras, boundaries = self._map_docs
@@ -2889,12 +2872,12 @@ class Site:
             history = (f'<section class="camera-history"><h3>{self.t("map.history_title")}</h3>'
                        f'<p>{self.t("map.history_note")}</p><table><thead><tr>{head}</tr></thead>'
                        f'<tbody>{body}</tbody></table></section>')
-        main = ('    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">Mapped points</p>'
-                '<h2>Community-mapped points; ownership unconfirmed.</h2></div>'
-                '<p>Points are community reports from OpenStreetMap, not confirmed agency ownership.</p></div>'
+        main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("cameras.page_eyebrow")}</p>'
+                f'<h2>{self.t("cameras.page_heading")}</h2></div>'
+                f'<p>{self.t("cameras.page_lead")}</p></div>'
                 f'<p>{e(self.map["attribution"])}</p><p class="map-date">{self.map_date_line()}</p>{sections}'
                 f'{history}</section>\n')
-        return self.page("cameras", "Mapped points", "List of community-mapped points by city; ownership unconfirmed",
+        return self.page("cameras", self.labels["cameras.page_title"], self.labels["cameras.page_description"],
                          "/cameras.html", main)
 
     # -- scripts and data ----------------------------------------------------
