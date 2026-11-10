@@ -88,11 +88,33 @@ def _validate_document(document, today=None):
     return document
 
 
+class _DuplicateKey(ValueError):
+    """A JSON object repeated a key; fixed text only, never the key or a value."""
+
+
+def _no_repeats(pairs):
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):  # decoded strings: a literal and an escaped spelling collide
+        raise _DuplicateKey("duplicate object key")
+    return dict(pairs)
+
+
+def _no_constant(name):
+    raise ValueError("non-finite number")
+
+
+def _strict_loads(text, finite=False):
+    """json.loads that refuses a repeated key at any depth; ``finite`` also refuses NaN and Infinity."""
+    return json.loads(text, object_pairs_hook=_no_repeats, parse_constant=_no_constant if finite else None)
+
+
 def _load(path):
     if not path.exists():
         return None
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = _strict_loads(path.read_text(encoding="utf-8"))
+    except _DuplicateKey:
+        raise _unreadable("duplicate object key") from None
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise _unreadable(f"not valid JSON ({exc.__class__.__name__})") from None
     except OSError as exc:
@@ -222,7 +244,8 @@ def quarterly_counts(root, today=None):
         path = _counts_path(root)
         if path is None:
             return []
-        document = _validate_document(_read_json(path, 4 * 1024 * 1024, "correction request log"), today)
+        text = _read_json(path, 4 * 1024 * 1024, "correction request log", raw=True)
+        document = _validate_document(_strict_loads(text, finite=True), today)
         cohorts = {}
         for item in document["requests"]:
             day = date.fromisoformat(item["received_on"])
@@ -252,7 +275,8 @@ def _reply_request(root, request_id):
         path = private / NAME
         if os.path.islink(private) or not private.is_dir() or not _exists(path):
             raise ValueError
-        document = _validate_document(_read_json(path, 4 * 1024 * 1024, "correction request log"))
+        text = _read_json(path, 4 * 1024 * 1024, "correction request log", raw=True)
+        document = _validate_document(_strict_loads(text, finite=True))
     except Exception:  # fixed text only: no path, key or private value from the log
         raise ValueError(_LOG_REFUSAL) from None
     for item in document["requests"]:

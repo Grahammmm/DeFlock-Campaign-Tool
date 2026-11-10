@@ -306,6 +306,35 @@ class ReplyTests(base.CorrectionRequestTests):
         self.assertNotIn("denied", message)
         self.assertFalse(self.replies.exists())
 
+    def test_duplicate_log_creates_no_output(self):
+        self.add(received="2026-03-06")
+        self.reply()  # a valid log first writes a draft (control)
+        (self.replies / "1.md").write_text("hand edited", encoding="utf-8")
+        self.file.write_text('{"schema_version": 1, "requests": [{"id": 1, "finding_id": "%s", "received_on": "2026-03-06", '
+                             '"summary": "%s", "state": "declined", "state": "open"}]}' % (FID, UNIQUE), encoding="utf-8")
+        before = {str(p.relative_to(self.root)): p.read_bytes() for p in sorted(self.root.rglob("*")) if p.is_file()}
+        message = self.refuses("is missing, unreadable or invalid; no draft was written")
+        self.assertNotIn("duplicate", message)
+        self.assertNotIn(UNIQUE, message)
+        self.assertEqual({str(p.relative_to(self.root)): p.read_bytes() for p in sorted(self.root.rglob("*")) if p.is_file()},
+                         before)
+        (self.replies / "1.md").unlink()
+        (self.replies).rmdir()
+        (self.root / "kit" / "corrections").rmdir()
+        (self.root / "kit").rmdir()
+        self.refuses("no draft was written")  # no kit tree is created on refusal
+        self.assertFalse((self.root / "kit").exists())
+        result = self.cli("correction-request", "reply", "--directory", self.root, "--id", "1", returncode=3)
+        self.assertEqual(result.stdout, "")
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_reply_preflight_still_accepts_a_duplicate_free_log_and_refuses_non_finite(self):
+        self.add(received="2026-03-06")
+        self.assertEqual(self.reply()["state"], "open")
+        (self.replies / "1.md").unlink()
+        self.file.write_text(self.file.read_text().replace('"id": 1', '"id": NaN', 1), encoding="utf-8")
+        self.refuses("no draft was written")
+
 
 for _name in [n for n in dir(base.CorrectionRequestTests) if n.startswith("test_")]:
     setattr(ReplyTests, _name, None)  # inherited tests belong to tests.test_correction_requests

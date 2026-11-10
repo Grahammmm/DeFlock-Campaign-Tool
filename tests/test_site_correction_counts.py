@@ -315,6 +315,50 @@ class CorrectionCountsTests(unittest.TestCase):
         with mock.patch.object(socket, "socket", side_effect=AssertionError("network")):
             self.build()
 
+    def test_duplicate_log_refuses_counts_and_default_build_never_reads_it(self):
+        text = ('{"schema_version": 1, "requests": [{"id": 1, "finding_id": "%s-f", "received_on": "2026-01-05", '
+                '"summary": "%s-s", "state": "declined", "state": "open"}]}' % (SENTINEL, SENTINEL))
+        variants = [text, text.replace('"state": "declined", "state": "open"', '"state": "open", "st\\u0061te": "open"'),
+                    '{"schema_version": 1, "schema_version": 1, "requests": []}']
+        self.log.parent.mkdir(exist_ok=True)
+        self.enable()
+        for variant in variants:
+            with self.subTest(variant=variant[:60]):
+                self.log.write_text(variant, encoding="utf-8")
+                before = self.log.read_bytes()
+                with self.assertRaises(ContentError) as caught:
+                    cr.quarterly_counts(self.root, TODAY)
+                self.assertEqual(str(caught.exception), REFUSAL)
+                self.assertIsNone(caught.exception.__cause__)
+                self.assertNotIn(SENTINEL, str(caught.exception))
+                with self.assertRaises(ContentError) as built:
+                    build_site(self.root, today=TODAY)
+                self.assertEqual(str(built.exception), REFUSAL)
+                self.assertFalse(self.public.exists())
+                self.assertEqual(self.log.read_bytes(), before)
+        # counts disabled: the build never opens the duplicate-bearing log
+        self.log.write_text(text, encoding="utf-8")
+        for setting in ("absent", {}, {"show_request_counts": False}):
+            self.setting(setting)
+            opened = []
+            real = {"io.open": io.open, "os.open": os.open}
+
+            def guard(kind):
+                def inner(path, *a, **k):
+                    if "correction-requests" in str(path):
+                        opened.append(str(path))
+                    return real[kind](path, *a, **k)
+                return inner
+            with mock.patch("io.open", guard("io.open")), mock.patch("os.open", guard("os.open")):
+                self.build()
+            self.assertEqual(opened, [])
+
+    def test_duplicate_free_log_keeps_counts(self):
+        self.enable()
+        self.write_log([request(1, "2026-01-05", "declined", "2026-01-06"), request(2, "2026-02-02")])
+        self.assertEqual(self.rows(), [{"quarter": "2026-Q1", "received": 2, "accepted": 0, "declined": 1, "still_open": 1}])
+        self.build()
+
 
 if __name__ == "__main__":
     unittest.main()
