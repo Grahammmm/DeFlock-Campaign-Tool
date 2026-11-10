@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 from unittest import mock
@@ -24,6 +25,9 @@ from campaign_tool.site import build_site, preview_site
 from campaign_tool.site_check import check_accessibility, check_data_catalogue, check_links
 from campaign_tool.site_data_catalogue import (DATASETS, GEOJSON_SCHEMA, SCHEMA_BASE, csv_columns, resource_records,
                                                verify_data_package)
+from tests.test_doc_assets import pdf
+from tests.test_site_officials import official
+from tests.test_source_bundle import BASE, entry
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
@@ -562,6 +566,246 @@ class StagingTests(Case):
         for path, size in planned.items():
             self.assertEqual((self.public / path).stat().st_size, size, path)
         self.assertEqual(sorted(planned), sorted(p for p in self.snapshot()))
+
+
+# DF1109-10: every data/ file the build plans is catalogued, or named here with the reason it is not.
+CATALOGUE_PLAN_EXCLUSIONS = {"data/datapackage.json": "self-descriptor; hashing itself is circular"}
+CITY_EXCLUSION = "dynamic resource registered by CITY_META"
+DAY = date(2026, 10, 20)
+OFFICIALS = ("data/officials.json", "data/officials.csv")
+SHERIFF = "ca-cedar-county-sheriff"  # a body with no agency page of its own in the example
+OFFICIALS_CSV_HEADER = ["agency_id", "agency_name", "name", "role", "profile_url", "source_url", "checked_on"]
+
+
+def planned_data_paths(root):
+    """Every data/ path the real build plan writes: generated texts plus copy destinations, before any DATASETS filter."""
+    files, plan = site_module._plan_site(root, DAY)
+    return sorted(path for path in {*files, *(Path(relative).as_posix() for _, relative, _ in plan)} if path.startswith("data/"))
+
+
+def unregistered(paths, exclusions):
+    return [path for path in paths if path not in DATASETS and path not in exclusions]
+
+
+class OfficialsCatalogueTests(Case):
+    def roster(self, bodies=None):
+        if bodies is None:
+            bodies = [{"agency_id": SHERIFF, "officials": [official(name='Zo\u00eb "Q" \u00c9xample'), official(name="Ann Example")]}]
+        (self.content / "officials.json").write_text(json.dumps({"schema_version": 1, "bodies": bodies}), encoding="utf-8")
+
+    def build(self):
+        return build_site(self.root, today=DAY)
+
+    def metadata(self):
+        return tuple((self.public / name).read_bytes() for name in ("data.html", "data/datapackage.json"))
+
+    def main_registry(self):
+        """The registry as main had it (no officials entries), to compare outputs byte for byte."""
+        patcher = mock.patch.dict(DATASETS)
+        patcher.start()
+        for path in OFFICIALS:
+            del DATASETS[path]
+        return patcher
+
+    def test_officials_catalogue_exact_bytes_schema_and_licence(self):
+        self.roster()
+        for license_id in (None, *LICENSES):
+            with self.subTest(license_id):
+                self.set_license({"id": license_id, "attribution": "Cedar Records Project"} if license_id else None)
+                self.build()
+                resources, rows = self.resources(), self.rows()
+                page = (self.public / "data.html").read_text(encoding="utf-8")
+                for path, name, title, media, description in (
+                        ("data/officials.json", "officials-json", "Officials (JSON)", "application/json",
+                         "The organizer-checked public roster of decision makers, with roles and official source links."),
+                        ("data/officials.csv", "officials-csv", "Officials (CSV)", "text/csv",
+                         "The public roster as one flat row per official; every cell is text.")):
+                    data = (self.public / path).read_bytes()
+                    digest = hashlib.sha256(data).hexdigest()  # independent of resource_records
+                    resource = resources[path]
+                    self.assertEqual((resource["name"], resource["title"], resource["mediatype"]), (name, title, media))
+                    self.assertEqual((resource["bytes"], resource["hash"]), (len(data), "sha256:" + digest))
+                    self.assertEqual((rows[path]["bytes"], rows[path]["sha256"]), (str(len(data)), digest))
+                    self.assertIn(description, rows[path]["text"])
+                    self.assertEqual(resource["description"], description)
+                    if license_id:
+                        self.assertEqual(resource["licenses"], [{"name": license_id, "path": LICENSES[license_id][1]}])
+                        self.assertEqual(resource["attribution"], "Cedar Records Project")
+                    else:
+                        self.assertEqual(resource["licenses"], [])
+                        self.assertNotIn("attribution", resource)
+                self.assertIn('"Zo\u00eb ""Q"" \u00c9xample"'.encode("utf-8"), (self.public / "data/officials.csv").read_bytes())  # real UTF-8, CSV-quoted
+                self.assertEqual(resources["data/officials.json"]["schema"], SCHEMA_BASE + "officials-open-data.schema.json")
+                self.assertEqual(resources["data/officials.csv"]["schema"],
+                                 {"fields": [{"name": column, "type": "string"} for column in OFFICIALS_CSV_HEADER]})
+                self.assertTrue((REPO_ROOT / "schemas" / "officials-open-data.schema.json").is_file())
+                self.assertEqual(page.count(f'href="{SCHEMA_BASE}officials-open-data.schema.json"'), 2)  # JSON row + CSV source schema
+                self.assertEqual(verify_data_package(self.public), [])
+
+    def test_build_plan_data_paths_are_registered_or_explicitly_excluded(self):
+        for path, reason in CATALOGUE_PLAN_EXCLUSIONS.items():
+            self.assertTrue(reason.strip(), path)
+            self.assertFalse(path.startswith("data/officials"), path)
+        self.assertNotIn("*", "".join(CATALOGUE_PLAN_EXCLUSIONS))
+
+        def add_zip():
+            self.roster()
+            sources = json.loads((self.content / "sources.json").read_text(encoding="utf-8"))
+            (self.content / "sources.json").write_text(json.dumps(sources + [entry(1, BASE + "/docs/a.pdf")]), encoding="utf-8")
+            (self.content / "public-assets" / "docs").mkdir(parents=True, exist_ok=True)
+            (self.content / "public-assets" / "docs" / "a.pdf").write_bytes(pdf())
+
+        def rename_city():
+            (self.content / "map/city-boundaries.geojson").rename(self.content / "map/renamed-city.json")
+            self.edit_json(self.content / "map/map-config.json", lambda d: d.update(city_boundaries_url="data/renamed-city.json"))
+
+        variants = [  # cumulative: (label, change, officials planned, sources.zip planned, city copy)
+            ("default mapped campaign", lambda: None, False, False, CITY),
+            ("county present", self.add_county, False, False, CITY),
+            ("roster present", self.roster, True, False, CITY),
+            ("roster empty", lambda: self.roster([]), False, False, CITY),
+            ("roster and sources.zip present", add_zip, True, True, CITY),
+            ("renamed .json city copy", rename_city, True, True, "data/renamed-city.json"),
+            ("map removed", lambda: shutil.rmtree(self.content / "map"), True, True, None),
+        ]
+        self.edit_json(self.content / "site.json", lambda site: site.update(base_url=BASE))
+        for label, change, officials_on, zip_on, city in variants:
+            with self.subTest(label):
+                change()
+                paths = planned_data_paths(self.root)
+                exclusions = dict(CATALOGUE_PLAN_EXCLUSIONS, **({city: CITY_EXCLUSION} if city else {}))
+                self.assertEqual(unregistered(paths, exclusions), [])
+                self.assertEqual(set(OFFICIALS) <= set(paths), officials_on)
+                self.assertEqual("data/sources.zip" in paths, zip_on)
+                self.assertEqual(city in paths, city is not None)
+                self.build()
+                resources = self.resources()
+                self.assertEqual(sorted(resources), sorted(set(paths) - {"data/datapackage.json"}))  # the city copy is kept
+                if city:
+                    self.assertEqual(resources[city]["name"], "city-boundary-geojson")
+                self.assertEqual(verify_data_package(self.public), [])
+        real = site_module._plan
+
+        def with_new_export(*args, **kwargs):
+            files, plan, site = real(*args, **kwargs)
+            return {**files, "data/new-export.json": "{}\n"}, plan, site
+        with mock.patch.object(site_module, "_plan", with_new_export):  # a future export nobody registered is caught
+            paths = planned_data_paths(self.root)
+        self.assertEqual(unregistered(paths, CATALOGUE_PLAN_EXCLUSIONS), ["data/new-export.json"])
+
+    def test_officials_absent_empty_and_removed_restore_catalogue_bytes(self):
+        for label, site_changes in (("plain", {}), ("press", {"press": {"contact_role": "Press lead", "contact_email": "press@example.invalid"}}),
+                                    ("no base_url", {"base_url": None}), ("no map", "no map")):
+            with self.subTest(label):
+                if site_changes == "no map":
+                    shutil.rmtree(self.content / "map", ignore_errors=True)
+                else:
+                    self.edit_json(self.content / "site.json", lambda site: site.update(site_changes))
+                (self.content / "officials.json").unlink(missing_ok=True)
+                patcher = self.main_registry()
+                try:
+                    self.build()
+                    on_main = self.metadata()
+                finally:
+                    patcher.stop()
+                self.build()
+                self.assertEqual(self.metadata(), on_main)  # absent roster: byte-identical to the registry without officials
+                self.build()
+                self.assertEqual(self.metadata(), on_main)
+                self.roster([])
+                self.build()
+                self.assertEqual(self.metadata(), on_main)  # an empty roster is the same as none
+                self.roster()
+                self.build()
+                self.assertTrue(set(OFFICIALS) <= set(self.resources()))
+                self.assertTrue(set(OFFICIALS) <= set(self.rows()))
+                self.assertNotEqual(self.metadata()[0], on_main[0])
+                self.assertNotEqual(self.metadata()[1], on_main[1])
+                (self.content / "officials.json").unlink()
+                self.build()
+                self.assertEqual(self.metadata(), on_main)  # removing the roster removes both rows and resources
+                self.assertFalse(set(OFFICIALS) & set(self.resources()))
+
+    def test_officials_omission_tampering_and_missing_bytes_refuse(self):
+        self.roster()
+        patcher = self.main_registry()
+        try:
+            self.build()  # a tree built before DF1109-10: the exports are written but not catalogued
+        finally:
+            patcher.stop()
+        legacy = verify_data_package(self.public)
+        self.assertEqual(legacy, [(path, "present but not listed in the data package") for path in sorted(OFFICIALS)])
+        before = self.snapshot()
+        message, _ = self.check_cli()
+        self.assertIn("data catalogue check failed", message)
+        self.assertIn("data/officials.csv", message)
+        self.assertTrue(self.snapshot() == before, "a refused precheck must not repair or change the tree")
+        self.build()  # an ordinary build repairs it
+        self.assertEqual(verify_data_package(self.public), [])
+        self.assertEqual(self.check_cli()[0], None)
+        self.build()
+        pristine = self.snapshot()
+        page, officials = self.public / "data.html", self.public / "data" / "officials.csv"
+
+        def tamper_descriptor(change):
+            path = self.public / "data" / "datapackage.json"
+            document = json.loads(path.read_text(encoding="utf-8"))
+            change(document)
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+        def omitted():
+            tamper_descriptor(lambda d: d.update(resources=[r for r in d["resources"] if r["name"] != "officials-json"]))
+            page.write_text(re.sub(r'<tr data-path="data/officials\.json".*?</tr>', "", page.read_text(encoding="utf-8"), flags=re.S), encoding="utf-8")
+
+        def same_size():
+            data = officials.read_bytes()
+            officials.write_bytes(data[:-3] + bytes([data[-3] ^ 1]) + data[-2:])
+
+        cases = [
+            ("descriptor and row omitted", omitted, ("data/officials.json", "present but not listed in the data package")),
+            ("same-length edit", same_size, ("data/officials.csv", "sha256 changed")),
+            ("schema", lambda: tamper_descriptor(lambda d: [r.update(schema=SCHEMA_BASE + "findings-open-data.schema.json")
+                                                             for r in d["resources"] if r["name"] == "officials-json"]),
+             ("data/officials.json", "schema does not match the file")),
+            ("missing export", officials.unlink, ("data/officials.csv", "listed file is missing")),
+            ("malformed descriptor", lambda: (self.public / "data" / "datapackage.json").write_text("{", encoding="utf-8"),
+             ("data/datapackage.json", "is not valid JSON without duplicate keys")),
+        ]
+        for label, tamper, problem in cases:
+            with self.subTest(label):
+                shutil.rmtree(self.public)
+                for name, data in pristine.items():
+                    (self.public / name).parent.mkdir(parents=True, exist_ok=True)
+                    (self.public / name).write_bytes(data)
+                tamper()
+                self.assertIn(problem, verify_data_package(self.public))
+                with self.assertRaises(ContentError):
+                    check_data_catalogue(self.public)
+                before = self.snapshot()
+                self.assertIn("data catalogue check failed", self.check_cli()[0])
+                self.assertTrue(self.snapshot() == before, label)
+        self.build()
+        self.assertTrue(self.snapshot() == pristine)
+        self.assertEqual(verify_data_package(self.public), [])
+
+    def test_officials_preview_agrees_without_writes(self):
+        self.build()
+        first = self.snapshot()
+        self.roster()
+        report = preview_site(self.root, today=DAY)
+        self.assertTrue(self.snapshot() == first, "preview must not write")
+        added = {row["path"]: row["bytes"] for row in report["added"]}
+        self.assertEqual(sorted(added), sorted(OFFICIALS))
+        changed = {row["path"] for row in report["changed"]}
+        self.assertTrue({"data.html", "data/datapackage.json"} <= changed, changed)
+        self.build()
+        for path, size in added.items():
+            self.assertEqual((self.public / path).stat().st_size, size, path)
+        after = self.snapshot()
+        self.build()
+        self.assertTrue(self.snapshot() == after, "repeated builds must be identical")
+        report = preview_site(self.root, today=DAY)
+        self.assertEqual((report["added"], report["removed"], report["changed"]), ([], [], []))
 
 
 if __name__ == "__main__":
