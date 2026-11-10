@@ -37,12 +37,12 @@ class LinkCheckError(ContentError):
     """The content cannot be inventoried (no content/ or invalid content); nothing was fetched or written."""
 
 
-def _safe(text, limit=300):
-    """Terminal-safe one-line text: controls and escapes shown as \\xNN."""
+def _safe(text, limit: int | None = 300):
+    """Terminal-safe one-line text: controls and escapes shown as \\xNN. ``limit=None`` escapes completely, never truncating."""
     text = str(text)
     out = "".join(c if c.isprintable() and c not in "\x7f" else "\\x%02x" % ord(c) if ord(c) < 256 else "\\u%04x" % ord(c)
                   for c in text)
-    return out if len(out) <= limit else out[:limit] + "..."
+    return out if limit is None or len(out) <= limit else out[:limit] + "..."
 
 
 def _external(url):
@@ -483,9 +483,9 @@ def render(groups, note, results=None):
         lines.append("")
         lines.append(f"{group['url']}")
         for locator in group["citations"]:
-            lines.append(f"  cited by {locator}")
+            lines.append(f"  cited by {_safe(locator, limit=None)}")  # stored filenames may hold terminal controls
         for archive in group["archives"]:
-            lines.append(f"  archive recorded at {archive['locator']}: {archive['archived_url']} "
+            lines.append(f"  archive recorded at {_safe(archive['locator'], limit=None)}: {archive['archived_url']} "
                          f"(archived_on {archive['archived_on']})")
         if results is not None:
             result = results[number]
