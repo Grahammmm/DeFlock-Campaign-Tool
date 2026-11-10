@@ -2,7 +2,9 @@
 
 Synthetic data only. Run from the repository root: python3 -B -m unittest tests.test_content_plain -v
 """
+import contextlib
 import errno
+import io
 import json
 import os
 import socket
@@ -260,6 +262,195 @@ class ReadTests(Case):
         self.page("a", body="The ALPR.")
         self.write(self.root / "content" / "glossary.json", b"{")
         self.refused("content/glossary.json: not valid UTF-8 JSON")
+
+
+class EnumerationTests(Case):
+    REFUSAL = "content/pages: could not be read"
+
+    def sources(self):
+        self.page("warning", body="The ALPR.")
+        self.faq(("Q", "The XYZ."))
+        self.glossary(("T", "The ABC.", None))
+        return self.root / "content" / "pages"
+
+    def assert_private_refusal(self, caught):
+        self.assertIs(type(caught.exception), content_plain.ContentError)
+        self.assertEqual(str(caught.exception), self.REFUSAL)
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertTrue(caught.exception.__suppress_context__)
+
+    @contextlib.contextmanager
+    def admitted_race(self, pages, replacement=False):
+        real_lstat = os.lstat
+        held = pages.with_name("held-pages")
+        actor_state = []
+
+        def lstat(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            if Path(path) == pages and not actor_state:
+                # Return genuine pre-mutation directory metadata; listdir is not mocked.
+                actor_state.append(None)
+                pages.rename(held)
+                if replacement:
+                    pages.write_bytes(b"synthetic replacement")
+                actor_state[0] = self.snapshot()
+            return info
+
+        try:
+            with mock.patch.object(content_plain.os, "lstat", side_effect=lstat):
+                yield
+            self.assertEqual(len(actor_state), 1)
+            self.assertEqual(self.snapshot(), actor_state[0], "scanner must not undo or add to the actor's mutation")
+        finally:
+            if held.exists():
+                if replacement:
+                    pages.unlink()
+                held.rename(pages)
+
+    def test_pages_renamed_after_real_lstat_refuses_with_relative_label(self):
+        pages = self.sources()
+        with self.admitted_race(pages):
+            with self.assertRaises(content_plain.ContentError) as caught:
+                content_plain.check_content(self.root)
+            self.assert_private_refusal(caught)
+
+    def test_pages_replaced_by_regular_file_before_enumeration_is_named_refusal(self):
+        pages = self.sources()
+        with self.admitted_race(pages, replacement=True):
+            with self.assertRaises(content_plain.ContentError) as caught:
+                content_plain.check_content(self.root)
+            self.assert_private_refusal(caught)
+
+    def test_enumeration_errno_variants_never_expose_private_values(self):
+        pages = self.sources()
+        before = self.snapshot()
+        for number in (errno.EACCES, errno.ENOENT, errno.ENOTDIR, errno.EIO):
+            error = OSError(number, "PRIVATE-MESSAGE\nPRIVATE-LINE", str(self.base / "PRIVATE-FILENAME"),
+                            None, str(self.base / "PRIVATE-FILENAME2"))
+            with self.subTest(number=number), \
+                    mock.patch.object(content_plain.os, "listdir", side_effect=error) as listing, \
+                    mock.patch.object(content_plain, "_read") as reading, \
+                    mock.patch.object(content_plain.json, "loads") as parsing, \
+                    mock.patch.object(plain_language, "check_fields") as checking, \
+                    mock.patch.object(content_plain, "render_report") as rendering:
+                with self.assertRaises(content_plain.ContentError) as caught:
+                    content_plain.run_cli(self.root)
+                self.assert_private_refusal(caught)
+                listing.assert_called_once_with(pages)
+                for operation in (reading, parsing, checking, rendering):
+                    operation.assert_not_called()
+            self.assertEqual(self.snapshot(), before)
+
+    def test_real_cli_enumeration_refusal_text_json_has_no_fix_or_partial_report(self):
+        from campaign_tool import cli
+
+        pages = self.sources()
+        for as_json in (False, True):
+            for failure in ("rename", "permission"):
+                with self.subTest(as_json=as_json, failure=failure):
+                    before = self.snapshot()
+                    seam = (self.admitted_race(pages) if failure == "rename" else
+                            mock.patch.object(content_plain.os, "listdir", side_effect=PermissionError(
+                                errno.EACCES, "PRIVATE-MESSAGE\nPRIVATE-LINE", str(self.base / "PRIVATE-FILENAME"))))
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    argv = ["campaign_tool", "content", "check-plain", "--directory", str(self.root)]
+                    if as_json:
+                        argv.append("--json")
+                    with seam, mock.patch.object(sys, "argv", argv), \
+                            contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), \
+                            mock.patch.object(plain_language, "check_fields") as checking, \
+                            mock.patch.object(content_plain, "render_report") as rendering:
+                        with self.assertRaises(SystemExit) as stopped:
+                            cli.main()
+                        self.assertEqual(stopped.exception.code, 1)
+                    self.assertEqual(stdout.getvalue(), "")
+                    self.assertEqual(stderr.getvalue(), "Stopped: " + self.REFUSAL + "\n")
+                    checking.assert_not_called()
+                    rendering.assert_not_called()
+                    if failure == "permission":
+                        self.assertEqual(self.snapshot(), before)
+
+    def test_initial_missing_pages_is_optional_but_admitted_disappearance_is_not(self):
+        content = self.root / "content"
+        content.rmdir()
+        for state in ("missing-content", "missing-pages", "empty-pages", "faq-glossary"):
+            if state == "missing-pages":
+                content.mkdir()
+            elif state == "empty-pages":
+                (content / "pages").mkdir()
+            elif state == "faq-glossary":
+                (content / "pages").rmdir()
+                self.faq(("Q", "Plain."))
+                self.glossary(("T", "Plain.", None))
+            with self.subTest(state=state), mock.patch.object(content_plain.os, "listdir", wraps=os.listdir) as listing:
+                for as_json in (False, True):
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        self.assertEqual(content_plain.run_cli(self.root, as_json), 0)
+                    expected = ('{"advisory": true, "warnings": []}\n' if as_json else f"{FIRST}\n0 {LAST}\n")
+                    self.assertEqual(out.getvalue(), expected)
+                if state == "empty-pages":
+                    self.assertEqual(listing.call_count, 2)
+                else:
+                    listing.assert_not_called()
+        pages = self.sources()
+        with self.admitted_race(pages):
+            with self.assertRaises(content_plain.ContentError) as caught:
+                content_plain.check_content(self.root)
+            self.assert_private_refusal(caught)
+
+    def test_enumeration_normalization_is_local(self):
+        self.sources()
+        for error in (RuntimeError("enumeration bug"), MemoryError("enumeration memory")):
+            with self.subTest(error=type(error)), mock.patch.object(content_plain.os, "listdir", side_effect=error):
+                with self.assertRaises(type(error)) as caught:
+                    content_plain.check_content(self.root)
+                self.assertIs(caught.exception, error)
+        error = OSError(errno.EIO, "checker failure")
+        with mock.patch.object(plain_language, "check_fields", side_effect=error):
+            with self.assertRaises(OSError) as caught:
+                content_plain.check_content(self.root)
+            self.assertIs(caught.exception, error)
+        with mock.patch.object(content_plain.os, "open", side_effect=PermissionError("file failure")):
+            with self.assertRaises(content_plain.ContentError) as caught:
+                content_plain.check_content(self.root)
+        self.assertEqual(str(caught.exception), "content/pages/warning.json: could not be read")
+
+    def test_enumeration_failure_is_read_only_and_success_order_is_unchanged(self):
+        self.page("z", title="ABC", body="XYZ")
+        self.page("A", title="ABC", body="XYZ")
+        self.page("a", title="CCTV", body="Plain.")
+        self.write(self.root / "content" / "pages" / "ignored.JSON", "invalid JSON")
+        self.write(self.root / "content" / "pages" / "notes.txt", "invalid JSON")
+        self.faq(("ABC", "XYZ"), ("XYZ", "ABC"))
+        self.glossary(("Z", "XYZ", ["CCTV"]), ("A", "ABC", None))
+        # Independent literal rows pin field/key order, positions, stored entry order and alias suppression.
+        locations = [("content/pages/A.json", "A", "title", "ABC"),
+                     ("content/pages/A.json", "A", "body_md", "XYZ"),
+                     ("content/pages/z.json", "z", "title", "ABC"),
+                     ("content/pages/z.json", "z", "body_md", "XYZ"),
+                     ("content/faq.json", "entries[0]", "question", "ABC"),
+                     ("content/faq.json", "entries[0]", "answer_md", "XYZ"),
+                     ("content/faq.json", "entries[1]", "question", "XYZ"),
+                     ("content/faq.json", "entries[1]", "answer_md", "ABC"),
+                     ("content/glossary.json", "terms[0]", "definition_md", "XYZ"),
+                     ("content/glossary.json", "terms[1]", "definition_md", "ABC")]
+        rows = [{"file": file, "entry": entry, "rule": "unexplained_abbreviation", "field": field,
+                 "paragraph": 1, "sentence": 1, "word": 1, "start": 0, "end": 3,
+                 "word_count": None, "limit": None, "abbreviation": abbreviation}
+                for file, entry, field, abbreviation in locations]
+        expected_text = "\n".join([FIRST, *[
+            f"{file} {entry}: {field} paragraph 1, sentence 1, word 1: unexplained_abbreviation "
+            f"{abbreviation} (not spelled out earlier)" for file, entry, field, abbreviation in locations],
+            f"10 {LAST}"]) + "\n"
+        expected_json = json.dumps({"advisory": True, "warnings": rows}, ensure_ascii=False) + "\n"
+        for as_json, expected in ((False, expected_text), (True, expected_json)):
+            before = self.snapshot()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(content_plain.run_cli(self.root, as_json), 0)
+            self.assertEqual(out.getvalue(), expected)
+            self.assertEqual(self.snapshot(), before)
 
 
 CAP = content_plain.MAX_JSON_BYTES
