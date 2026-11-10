@@ -190,6 +190,20 @@ class Outreach(unittest.TestCase):
         self.assertEqual(kinds, [("outreach_stale", "press"), ("unreadable", "fix kit/newsletter-draft.json"),
                                  ("unreadable", "fix kit/social/")])
 
+    def test_a_hazardous_kit_parent_is_reported_by_every_tool_not_treated_as_absent(self):
+        shutil.rmtree(self.root / "kit", ignore_errors=True)
+        for make in (lambda kit: kit.write_text("not a folder", encoding="utf-8"),
+                     lambda kit: os.symlink(self.root / "nowhere", kit),  # dangling link
+                     lambda kit: os.symlink(self.root / "content", kit)):  # link to a real folder
+            kit = self.root / "kit"
+            make(kit)
+            got = self.items()
+            self.assertEqual(got[0], self.press_item(1), got)
+            labels = {i[1].split(":")[0] for i in got if i[0] == "unreadable"}  # other kit/ sources may add their own
+            self.assertTrue({"fix kit/newsletter-draft.json", "fix kit/social/"} <= labels, got)
+            kit.unlink()
+        self.assertEqual(self.items(), [])  # kit/ truly absent: nothing
+
     def test_day_boundary_owner_and_read_only(self):
         self.meeting("cedar-dawn", "2026-05-01T00:00:00+00:00")  # starts exactly at the as-of UTC day start
         self.newsletter()

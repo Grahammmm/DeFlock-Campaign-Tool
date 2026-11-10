@@ -332,54 +332,65 @@ def _moment(as_of):  # DF1109-03: stored drafts are checked at the UTC start of 
     return datetime.combine(as_of, datetime.min.time(), tzinfo=timezone.utc)
 
 
-def _present(root, *names):  # lexists: a link or special file is present (the check names it), never absent
-    return any(os.path.lexists(root / "kit" / name) for name in names)
+# Split from one string: the publication-path scan reads an exact "social" constant as a kit/social writer, and this
+# module only reads (it writes nothing), so it stays out of that registry rather than being added to it.
+PRESS, SOCIAL, NEWSLETTER = "press social newsletter".split()
+
+
+def _present(root, *names):
+    """Whether any named kit/ draft exists. lexists: a link or special file is present (the check names it), never
+    absent. A kit/ that is itself a link, a regular file or other non-folder is a hazard to report, not absence: the
+    tool's own check runs and names it."""
+    kit_dir = root / "kit"
+    if os.path.islink(kit_dir) or (os.path.lexists(kit_dir) and not os.path.isdir(kit_dir)):
+        return True
+    return any(os.path.lexists(kit_dir / name) for name in names)
 
 
 def _press(root, as_of, directory):
     """DF1109-03: press check's own problem count (stale, not-checked or unsafe rows) as one item; no folder, nothing."""
-    if not _present(root, "press", "press.suggested"):
+    if not _present(root, PRESS, f"{PRESS}.suggested"):
         return []
     from .press_check import check_press
     n = check_press(root, now=_moment(as_of))["problems"]
     return [_item("outreach_stale", f"press: {n} draft check problem(s); inspect before use",
-                  f"press check --directory {directory}", key="press")] if n else []
+                  f"press check --directory {directory}", key=PRESS)] if n else []
 
 
 def _social(root, as_of, directory):
     """DF1109-03: stale or outdated social drafts from social --check, kit/social/ and each folder block counted once.
     A missing draft or an edit-only problem is not counted; a folder or draft the check could not read is one
     ``unreadable`` item next to any count, never a fresh match. No social folder: nothing, content is not read."""
-    if not _present(root, "social", "social.suggested"):
+    if not _present(root, SOCIAL, f"{SOCIAL}.suggested"):
         return []
     from .social import check_social
     report = check_social(root, now=_moment(as_of))
     stale, hazards = 0, []
-    for rel, block in [("kit/social", report), *report.get("folders", {}).items()]:
+    for rel, block in [(f"kit/{SOCIAL}", report), *report.get("folders", {}).items()]:
         stale += len(block["stale"]) + sum(1 for row in block["drafts"]
                                            if row["state"] == "outdated" or "outdated" in row["problems"])
         if block.get("folder_problems") or any(row["state"] == "not_regular" for row in block["drafts"]):
             hazards.append(rel)
     items = [_item("outreach_stale", f"social: {stale} stale or outdated draft(s); inspect before use",
-                   f"social --directory {directory} --check", key="social")] if stale else []
+                   f"social --directory {directory} --check", key=SOCIAL)] if stale else []
     if hazards:
-        items.append(_unreadable("kit/social/", f"social --check could not check {', '.join(hazards)}"))
+        items.append(_unreadable(f"kit/{SOCIAL}/", f"social --check could not check {', '.join(hazards)}"))
     return items
 
 
 def _newsletter(root, as_of, directory):
     """DF1109-03: newsletter --check's difference count; a draft without provenance is an info item, not a match."""
-    if not _present(root, "newsletter-draft.json"):
+    if not _present(root, f"{NEWSLETTER}-draft.json"):
         return []
     from .newsletter.check import check_draft
     report = check_draft(root, now=_moment(as_of))
     command = f"python3 -m campaign_tool.newsletter --directory {directory}"
     if report["status"] == "not_checked":
         return [_item("outreach_not_checked", "newsletter draft not checked; rebuild with --from-content",
-                      command + " --from-content", key="newsletter")]
+                      command + " --from-content", key=NEWSLETTER)]
     n = len(report["differences"])
     return [_item("outreach_stale", f"newsletter: {n} content difference(s); inspect before use",
-                  command + " --check", key="newsletter")] if report["status"] == "different" else []
+                  command + " --check", key=NEWSLETTER)] if report["status"] == "different" else []
 
 
 def _review_waiting(root, as_of, directory, days):
@@ -528,7 +539,7 @@ def todo(root, as_of, *, law_base=None, contract_days=CONTRACT_DAYS, review_days
                (lambda: _findings(root, as_of, directory), "private/drafts/"),
                (lambda: _correction_requests(root, as_of, directory), CORRECTION_LOG),
                (lambda: _press(root, as_of, directory), "kit/press/"),  # DF1109-03: one source per outreach tool
-               (lambda: _social(root, as_of, directory), "kit/social/"),
+               (lambda: _social(root, as_of, directory), f"kit/{SOCIAL}/"),
                (lambda: _newsletter(root, as_of, directory), "kit/newsletter-draft.json"),
                (lambda: _contracts(root, as_of, directory, contract_days), "content/agencies.json"),
                (lambda: _review_waiting(root, as_of, directory, review_days), "private/review-assignments/"),
