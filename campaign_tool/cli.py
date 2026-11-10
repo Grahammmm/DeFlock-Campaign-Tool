@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import fixes, registry
 from .agency_actions import ACTION_KINDS
+from .content_elsewhere import KINDS as ELSEWHERE_KINDS
 from .supporters import HOWS as SUPPORTER_HOWS, KINDS as SUPPORTER_KINDS
 
 MAX_BYTES = 50 * 1024 * 1024
@@ -1485,6 +1486,28 @@ def main():
     action_remove.add_argument("--directory", required=True, help="Campaign directory (required)")
     action_remove.add_argument("--agency", required=True)
     action_remove.add_argument("--index", required=True, help="1-based position among that agency's actions in the file, not the page order")
+    elsewhere_cmds = content_cmds.add_parser(  # DF1109B-07
+        "elsewhere", help="Maintain content/elsewhere.json, decisions by other governments you read off their official "
+        "record (nothing is fetched, built, sent or deployed)").add_subparsers(dest="elsewhere_command", required=True)
+    elsewhere_add = elsewhere_cmds.add_parser("add", allow_abbrev=False, help="Append one decision; the whole file is "
+                                              "validated first and the first add creates it")
+    for flag, text in (("--directory", "Campaign directory (required)"), ("--place", "Place as the official source names it"),
+                       ("--state", "Two-letter uppercase state code, for example CA"),
+                       ("--body", "Deciding body as the official source names it"),
+                       ("--decided-on", "YYYY-MM-DD of the decision"),
+                       ("--as-stated", "1-200 plain-text characters as the official source states the decision"),
+                       ("--source-url", "https:// address of the deciding body's own record (recorded, never fetched)"),
+                       ("--checked-on", "YYYY-MM-DD you re-read that record (not before --decided-on, not in the future)")):
+        elsewhere_add.add_argument(flag, required=True, help=text)
+    elsewhere_add.add_argument("--kind", required=True, choices=ELSEWHERE_KINDS, help="What the body decided")
+    elsewhere_add.add_argument("--news-url", default=None, help="Optional https:// news coverage (never replaces --source-url)")
+    elsewhere_remove = elsewhere_cmds.add_parser("remove", allow_abbrev=False, help="Remove the entry at a 1-based stored "
+                                                 "position and name the staged meetings citing the same place, body and date")
+    elsewhere_remove.add_argument("--directory", required=True, help="Campaign directory (required)")
+    elsewhere_remove.add_argument("--index", required=True, help="1-based stored position from content elsewhere list, not the page order")
+    elsewhere_list = elsewhere_cmds.add_parser("list", allow_abbrev=False, help="Print each entry with the N meetings-stage "
+                                               "--elsewhere takes (stored order; read-only)")
+    elsewhere_list.add_argument("--directory", required=True, help="Campaign directory (required)")
     sharing_p = content_cmds.add_parser("agency-sharing", help="Record the agencies the vendor transparency portal names as receiving data, "
                                         "as the organizer transcribed them (CSV header name,state,kind; 1-2000 rows, all or none; never fetched)")
     sharing_p.add_argument("--directory", required=True)
@@ -2212,6 +2235,13 @@ def main():
                 done = agency_actions.remove_action(root, args.agency, agency_actions.parse_index(args.index))
                 print(f"Agency action removed: {done['agency_id']}, index {done['index']}.")
             print("Content only; nothing was built, sent or deployed.")
+        elif args.command == "content" and args.content_command == "elsewhere":  # DF1109B-07
+            from .elsewhere_cmd import run_cli as elsewhere_cli
+            read_config(root)
+            text, notes = elsewhere_cli(root, args)
+            for note in notes:  # alert-only legal-claim notes: stderr, never the supplied text, exit unchanged
+                print(note, file=sys.stderr)
+            print(text)
         elif args.command == "content" and args.content_command == "link-check":
             from .content_links import run_cli as link_check_cli
             report, code = link_check_cli(root, args.online)
