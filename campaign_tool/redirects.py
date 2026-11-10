@@ -23,9 +23,16 @@ def _key(path):
     return path.rstrip("/") or "/"
 
 
+def _safe(text):
+    """Diagnostic text only (RF1025-2): printable characters stay verbatim; every other one (line breaks, terminal
+    controls, bidi marks, lone surrogates) becomes its visible ASCII escape, so a malformed ``to`` stays one
+    terminal-safe, UTF-8-encodable problem line. Never applied to values the build compares or writes."""
+    return "".join(c if c.isprintable() else ascii(c)[1:-1] for c in text)
+
+
 def _refuse(problems):
     if problems:
-        raise ContentError("\n".join(dict.fromkeys("redirects.json: " + line for line in problems)))
+        raise ContentError("\n".join(dict.fromkeys("redirects.json: " + _safe(line) for line in problems)))
 
 
 def redirect_rows(document):
