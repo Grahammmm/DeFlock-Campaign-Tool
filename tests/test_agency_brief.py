@@ -180,6 +180,128 @@ class BriefCase(unittest.TestCase):
         return build_rows(model, next(a for a in model["agencies"] if a["agency_id"] == POLICE), NOW)
 
 
+class SelectorAdmissionTests(BriefCase):
+    SAFE = "--agency must be a valid agency ID"
+    MALFORMED = (
+        "jane.doe@example.invalid", "805-555-0142", "7ABC123", "", " \t", " " + POLICE,
+        POLICE + " ", POLICE + "\n", POLICE + "\r\n", "ca-a\tb", "ca-a\x00b", "../ca-a",
+        "ca-a/b", "CA-cedar-police", "ca-cédar", "ca-" + "a" * 81, "--private-selector",
+    )
+
+    def snapshot(self):
+        # Include directories, modes, identity and mtimes, not access times changed by reads.
+        result = {}
+        for path in [self.root, *sorted(self.root.rglob("*"))]:
+            info = path.lstat()
+            result[path.relative_to(self.root).as_posix()] = (
+                info.st_mode, info.st_dev, info.st_ino, info.st_mtime_ns,
+                path.read_bytes() if path.is_file() else None,
+            )
+        return result
+
+    def safe_refusal(self, value, **kwargs):
+        with self.assertRaises(BriefError) as raised:
+            self.brief(agency=value, **kwargs)
+        self.assertEqual(str(raised.exception), self.SAFE)
+
+    def cli_selector(self, value, replace=False):
+        with mock.patch.object(agency_brief, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = NOW
+            return run("agency-brief", "--directory", self.root, "--agency=" + value,
+                       *(["--replace"] if replace else []))
+
+    def test_malformed_private_selectors_have_fixed_api_diagnostic(self):
+        before = self.snapshot()
+        for value in self.MALFORMED:
+            with self.subTest(value=value):
+                self.safe_refusal(value)
+                self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.root / "kit").exists())
+
+    def test_malformed_selector_real_cli_has_one_safe_refusal(self):
+        before = self.snapshot()
+        for value in self.MALFORMED:
+            for replace in (False, True):
+                with self.subTest(value=value, replace=replace):
+                    self.assertEqual(self.cli_selector(value, replace), (1, "", "Stopped: " + self.SAFE + "\n"))
+                    self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.root / "kit").exists())
+
+    def test_nonstring_selector_is_rejected_without_formatting(self):
+        class Unformattable:
+            def __str__(self):
+                raise AssertionError("selector was stringified")
+
+            def __repr__(self):
+                raise AssertionError("selector was represented")
+
+        before = self.snapshot()
+        for value in (None, True, False, 8055550142, [SENTINEL], {"private": SENTINEL}, Unformattable()):
+            self.safe_refusal(value)
+            self.assertEqual(self.snapshot(), before)
+
+    def test_invalid_selector_stops_before_content_or_output_work(self):
+        absent = self.tmp / "absent-content"
+        absent.mkdir()
+        for root in (self.root, absent):
+            with self.subTest(root=root), contextlib.ExitStack() as stack:
+                seams = [stack.enter_context(mock.patch.object(agency_brief, name,
+                         side_effect=AssertionError(name + " called"))) for name in (
+                             "_check_inputs", "load_content", "build_rows", "gate", "_preflight", "_subdir", "_write_file")]
+                seams += [stack.enter_context(mock.patch.object(os, name,
+                          side_effect=AssertionError(name + " called"))) for name in (
+                              "open", "mkdir", "chmod", "fchmod", "fsync")]
+                with self.assertRaises(BriefError) as raised:
+                    build_brief(root, "jane.doe@example.invalid", now=NOW)
+                self.assertEqual(str(raised.exception), self.SAFE)
+                for seam in seams:
+                    seam.assert_not_called()
+        self.assertEqual(list(absent.iterdir()), [])
+        with self.assertRaisesRegex(BriefError, "timezone-aware"):
+            self.brief(agency="jane.doe@example.invalid", now=datetime(2026, 11, 4))
+        # Syntax-first is deliberate, but valid selectors still validate content before lookup.
+        with self.assertRaisesRegex(BriefError, "content/ must be a real directory"):
+            build_brief(absent, "ca-nowhere", now=NOW)
+
+    def test_refusal_preserves_existing_pair_and_unrelated_tree(self):
+        self.brief()
+        (self.root / "unrelated.txt").write_bytes(b"keep unrelated data")
+        before = self.snapshot()
+        for replace in (False, True):
+            for value in self.MALFORMED:
+                self.safe_refusal(value, replace=replace)
+                self.assertEqual(self.cli_selector(value, replace), (1, "", "Stopped: " + self.SAFE + "\n"))
+                self.assertEqual(self.snapshot(), before)
+
+    def test_valid_id_grammar_and_named_refusals_are_unchanged(self):
+        for value in ("ca-a", "ca-" + "a" * 80, "ca--", "ca-805-555-0142", "ca-7abc123", "ca-nowhere"):
+            with self.subTest(value=value), self.assertRaises(BriefError) as raised:
+                self.brief(agency=value)
+            self.assertEqual(str(raised.exception),
+                             f"agency {value[:80]!r} is not a selected agency in content/agencies.json")
+        agencies = self.agencies_document()
+        agencies.append({"agency_id": "ca-hidden", "name": "Hidden (fictional)", "selected": False, "verified": False})
+        self.write("agencies.json", agencies)
+        self.assertEqual(self.cli_selector("ca-hidden"),
+                         (1, "", "Stopped: agency 'ca-hidden' is not a selected agency in content/agencies.json\n"))
+        self.assertEqual(self.cli_selector(SHERIFF), (1, "", f"Stopped: agency {SHERIFF} is not organizer-verified "
+                                                    "in content/agencies.json; no brief was written\n"))
+
+    def test_valid_brief_output_and_required_flag_are_unchanged(self):
+        result = self.brief()
+        self.assertEqual(result, {"written": ["kit/briefs/" + HTML, "kit/briefs/" + TXT], "flags": []})
+        original = self.pair()
+        self.assertEqual(self.cli_selector(POLICE)[0], 1)
+        self.assertEqual(self.pair(), original)
+        self.assertEqual(self.cli_selector(POLICE, True),
+                         (0, "kit/briefs/" + HTML + "\nkit/briefs/" + TXT +
+                          "\nPrivate brief written. Nothing was sent or published.\n", ""))
+        self.assertEqual(self.pair(), original)
+        for name in (HTML, TXT):
+            self.assertEqual(stat.S_IMODE((self.root / "kit" / "briefs" / name).stat().st_mode), 0o600)
+        self.assertEqual(run("agency-brief", "--directory", self.root)[0], 2)
+
+
 class ProjectionTests(BriefCase):
     def test_public_projection_and_provenance(self):
         result = self.brief()
