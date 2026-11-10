@@ -536,13 +536,14 @@ _MODULES = {
         records.understanding.cli records.understanding.digest records.worker_lifecycle""",
     "backup archives and keys": "backup backup_crypt",
     "generated drafts, exports and public content, no catalog store": """
-        agency_brief content_init content_sharing coverage events flyer kit_calendar kit_copy kit_export kit_fees kit_preserve kit_timing
+        agency_brief content_init content_profile content_sharing coverage events flyer kit_calendar kit_copy kit_export kit_fees kit_preserve kit_timing
         map_survey meeting_comment_publish meeting_outcome meeting_pack meeting_stage meetings meetings_manual newsletter.__main__ newsletter.archive
         newsletter.draft newsletter.sent outbox outbox_batch press recent search_log site site_check social social_threads source_bundle""",
     "other local files with no catalog store": """
         agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
         finding_search_log kit_fee_reply kit_preserve kit_repeat search_log law law_packet launch_check git_exposure map_controller registry setup_cmd shell sources_cmd records.ask_parity""",
     "organizer-maintained public roster content/officials.json (built by the site), no catalog store": "officials_cmd",
+    "organizer-maintained public statements content/statements.json (built by the site), no catalog store": "statements",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -555,6 +556,7 @@ MODULE_FUNCTIONS = {
     'agency_brief': ('_write_file', 'build_brief',),  # private kit/briefs html+txt from published content; kept unless --replace
     'agency_actions': ('_install',),
     'officials_cmd': ('_install',),  # content/officials.json only: staged in content/, fsync, one rename; never a private store
+    'statements': ('_install',),  # content/statements.json only: staged in content/, fsync, one rename; never a private store
     'agency_brief': ('_write_file', 'build_brief',),
     'agency_cards': ('main',),
     'approval': ('verify',),
@@ -568,6 +570,7 @@ MODULE_FUNCTIONS = {
         'readiness', 'weight_budget'
     ),
     'content_init': ('_rename_noreplace', '_write', 'add_starter', 'faq_document', 'init_content', 'init_from', 'starter_text',),
+    'content_profile': ('_install',),  # content/agencies.json one checked_on: temp in content/, fsync, identity check, one rename
     'content_sharing': ('import_sharing',),
     'coverage': ('_write', 'add_coverage', 'remove_coverage',),
     'events': ('_install',),  # DF1109-14: content/events.json (organizer-typed public events); one atomic replace

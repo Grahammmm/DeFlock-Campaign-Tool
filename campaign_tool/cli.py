@@ -864,6 +864,23 @@ def _campaign_option(parser):
         group.add_argument("--campaign", metavar="NAME", action=registry.CampaignAction, help="A registered campaign, not --directory")
 
 
+def _content_list(load, as_json, line, refusal):
+    """DF1109B-05: print a read-only list whole (text lines, ``none recorded`` when empty, or a JSON array) or, with no
+    stdout, one fixed stderr line and exit 2. ContentError is a ValueError; nothing raised here names a supplied value."""
+    from .agency_actions import SelectorError
+    try:
+        rows = load()
+        text = (json.dumps(rows, indent=2, ensure_ascii=False) + "\n" if as_json
+                else "".join(line(row) + "\n" for row in rows) or "none recorded\n")
+    except SelectorError as exc:
+        print(f"Stopped: {exc}", file=sys.stderr)
+        sys.exit(2)
+    except (ValueError, OSError, RecursionError):
+        print(refusal, file=sys.stderr)
+        sys.exit(2)
+    print(text, end="")
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1003,6 +1020,10 @@ def main():
     supporters_remove = supporters.add_parser("remove", help="Drop one organization's public entry and private record")
     supporters_remove.add_argument("--directory", required=True)
     supporters_remove.add_argument("--id", required=True)
+    supporters_list = supporters.add_parser("list", help="Print each organization's id, listing, consent dates, co-sign "
+                                            "grant and staged meetings; private, read-only")
+    supporters_list.add_argument("--directory", required=True)
+    supporters_list.add_argument("--json", action="store_true", dest="as_json", help="Print JSON only")
     press_check = press_commands.add_parser("check", help="Check private press drafts and letters against current findings and meetings; read-only")
     press_check.add_argument("--directory", required=True)
     press_check.add_argument("--json", action="store_true", dest="as_json", help="Print JSON only")
@@ -1076,6 +1097,12 @@ def main():
     stage_p.add_argument("--location")
     stage_p.add_argument("--participation", help="Organizer-verified participation JSON (docs/MEETINGS.md)")
     stage_p.add_argument("--replace", action="store_true", help="Overwrite an existing content/meetings/<id>.json")
+    status_p = commands.add_parser("meetings-status", help="Private read-only inventory: every staged meeting's workflow "
+                                   "state and first missing step, then unstaged matches; writes and sends nothing")
+    status_p.add_argument("--directory", required=True)
+    status_p.add_argument("--as-of", metavar="YYYY-MM-DD", help="Day that splits upcoming from past (default today); "
+                          "recorded facts stay visible")
+    status_p.add_argument("--json", dest="as_json", action="store_true", help="JSON instead of text")
     add_p = commands.add_parser("meetings-add", help="Record an organizer-entered meeting for a body on no supported agenda platform "
                                 "(private kit/meetings-manual.json; nothing is fetched, sent or published)")
     add_p.add_argument("--directory", required=True)
@@ -1485,6 +1512,11 @@ def main():
     action_remove.add_argument("--directory", required=True, help="Campaign directory (required)")
     action_remove.add_argument("--agency", required=True)
     action_remove.add_argument("--index", required=True, help="1-based position among that agency's actions in the file, not the page order")
+    action_list = action_cmds.add_parser("list", help="Print the stored actions, per agency in file order, with the 1-based "
+                                         "index remove --index takes (reads only; writes and fetches nothing)")
+    action_list.add_argument("--directory", required=True, help="Campaign directory (required)")
+    action_list.add_argument("--agency", default=None, help="Only this agency's actions (indices are not renumbered)")
+    action_list.add_argument("--json", dest="as_json", action="store_true", help="A JSON array instead of text lines")
     sharing_p = content_cmds.add_parser("agency-sharing", help="Record the agencies the vendor transparency portal names as receiving data, "
                                         "as the organizer transcribed them (CSV header name,state,kind; 1-2000 rows, all or none; never fetched)")
     sharing_p.add_argument("--directory", required=True)
@@ -1493,6 +1525,25 @@ def main():
     sharing_p.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD", help="Day the organizer read the portal")
     sharing_p.add_argument("--source-url", required=True, help="https URL of the portal page (transparency.flocksafety.com)")
     sharing_p.add_argument("--replace", action="store_true", help="Overwrite an existing sharing list")
+    profile_cmds = content_cmds.add_parser(
+        "agency-profile", help="List every dated agency-profile check, or record the day you re-read one source "
+        "(content/agencies.json only; nothing is fetched, built or published)").add_subparsers(
+        dest="agency_profile_command", required=True)
+    profile_list = profile_cmds.add_parser("list", help="Each recorded checked_on with its age in days, oldest first (read-only)")
+    profile_list.add_argument("--directory", required=True)
+    profile_list.add_argument("--agency", default=None, help="Only this selected agency_id")
+    profile_list.add_argument("--json", dest="as_json", action="store_true", help="One JSON array of rows")
+    profile_recheck = profile_cmds.add_parser("recheck", help="Set one existing checked_on after you re-read its source; "
+                                              "only that date changes, and only if the whole file still loads")
+    profile_recheck.add_argument("--directory", required=True)
+    profile_recheck.add_argument("--agency", required=True, help="agency_id in content/agencies.json")
+    profile_recheck.add_argument("--field", required=True, choices=("alpr_policy", "policy_check", "contract", "contract_check",
+                                                                   "pre_implementation_meeting", "sharing", "funding",
+                                                                   "transparency", "reports"))
+    profile_recheck.add_argument("--index", default=None, help="funding, transparency and reports only: the 1-based stored "
+                                 "position that list prints (doctor names the same entry zero-based in brackets)")
+    profile_recheck.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD",
+                                 help="Day you re-read the source: not after today, not before the stored date")
     links_p = content_cmds.add_parser("link-check", help="List every external https URL the public content cites; with --online "
                                       "also request each once (GET, first 64 KiB, no cookies, 15 s, 5 redirects). Writes nothing")
     links_p.add_argument("--directory", required=True)
@@ -1512,6 +1563,10 @@ def main():
     coverage_remove = coverage_cmds.add_parser("remove", help="Drop the one entry with exactly this URL")
     coverage_remove.add_argument("--directory", required=True)
     coverage_remove.add_argument("--url", required=True)
+    coverage_list = coverage_cmds.add_parser("list", help="Print the entries in file order with the exact URL remove --url "
+                                             "takes (reads only; writes and fetches nothing)")
+    coverage_list.add_argument("--directory", required=True)
+    coverage_list.add_argument("--json", dest="as_json", action="store_true", help="A JSON array instead of text lines")
     event_cmds = commands.add_parser("event", help="Edit the campaign's own events in content/events.json from local "
                                      "times (offline; nothing is fetched, built or published)"
                                      ).add_subparsers(dest="event_command", required=True)
@@ -1675,6 +1730,32 @@ def main():
             verb_p.add_argument(flag, required=True, help=officials_flags[flag])
         if verb == "add":
             verb_p.add_argument("--profile-url", help="Optional https:// page of this official on the official site")
+    from .content_statements import CONTEXTS as statement_contexts
+    statement_cmds = commands.add_parser(
+        "statement", help="Maintain content/statements.json, organizer-verified public statements of listed officials "
+        "(nothing is fetched, built, published or sent)").add_subparsers(dest="statement_command", required=True)
+    st_add = statement_cmds.add_parser("add", allow_abbrev=False, help="Append one statement after checking the whole "
+                                       "file; refuses an exact duplicate. The first add creates the file")
+    for flag, text in (("--directory", "Campaign directory (required)"),
+                       ("--agency-id", "agency_id of the body in content/officials.json"),
+                       ("--official", "The official's name exactly as content/officials.json lists it"),
+                       ("--said-on", "YYYY-MM-DD the statement was made"),
+                       ("--quote-file", "UTF-8 file holding the quote exactly as the official source has it (1 to 400 "
+                                        "characters, one line, no final line break; nothing is trimmed)"),
+                       ("--source-url", "https:// address of the official minutes, video or release (recorded, never "
+                                        "fetched)"),
+                       ("--checked-on", "YYYY-MM-DD you checked that source (not in the future)")):
+        st_add.add_argument(flag, required=True, help=text)
+    st_add.add_argument("--context", required=True, choices=statement_contexts, help="Where it was said")
+    st_add.add_argument("--recording-time", help="Optional H:MM:SS into the recording")
+    st_add.add_argument("--context-note", help="Optional plain-text campaign context, at most 200 characters")
+    st_remove = statement_cmds.add_parser("remove", allow_abbrev=False, help="Remove one statement by the 1-based "
+                                          "index statement list prints (its position in stored order)")
+    st_remove.add_argument("--directory", required=True, help="Campaign directory (required)")
+    st_remove.add_argument("--index", required=True, help="1-based stored position, as statement list prints it")
+    statement_cmds.add_parser("list", allow_abbrev=False, help="Print the statements newest first as JSON, each with "
+                              "its stored index (read-only)").add_argument("--directory", required=True,
+                                                                           help="Campaign directory (required)")
     today_p = commands.add_parser("today", help="One ranked to-do list with the command for each item (read-only)")
     today_p.add_argument("--directory", required=True)
     today_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
@@ -1866,6 +1947,19 @@ def main():
             sys.exit(1)
         print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
         sys.exit(exit_code(report))
+    if args.command == "supporters" and args.supporters_command == "list":  # unresolved: the reader refuses links
+        from .supporters import format_supporters_list, list_supporters
+        try:
+            rows = list_supporters(Path(args.directory).expanduser())
+        except (OSError, ValueError, RecursionError):  # SupporterError and ContentError are ValueErrors
+            print("Stopped: supporters list: cannot read valid supporter and staged meeting files", file=sys.stderr)
+            sys.exit(2)
+        sys.stdout.write(json.dumps(rows, indent=2, ensure_ascii=False) + "\n" if args.as_json
+                         else format_supporters_list(rows))
+        return
+    if args.command == "meetings-status":  # read-only; the folder is not resolved, so a symlinked root is refused
+        from .meetings_status import run_cli as meetings_status
+        sys.exit(meetings_status(args, Path(args.directory).expanduser()))
     root = Path(args.directory).expanduser()
     if not (args.command == "content" and args.content_command == "add-starter"):  # add-starter refuses a symlinked root itself
         root = root.resolve()
@@ -2187,6 +2281,14 @@ def main():
             except (OSError, ValueError) as exc:  # one Stopped: line, never a traceback or a supplied value
                 fixes.emit(exc)
                 sys.exit(2)
+        elif args.command == "statement":
+            from .statements import run_cli as statement_cli
+            try:
+                read_config(root)
+                sys.stdout.write(statement_cli(root, args))
+            except (OSError, ValueError) as exc:  # one Stopped: line, never a traceback or a supplied value
+                fixes.emit(exc)
+                sys.exit(2)
         elif args.command == "content-check":
             from .content_check import run_cli as content_check_cli
             content_check_cli(root, as_json=args.as_json)
@@ -2224,6 +2326,17 @@ def main():
         elif args.command == "content" and args.content_command == "strip-metadata":
             from .image_meta import strip_file
             print(json.dumps(strip_file(args.file, args.out), indent=2))
+        elif args.command == "content" and args.content_command == "agency-action" and args.agency_action_command == "list":
+            from .agency_actions import list_actions
+            _content_list(lambda: list_actions(root, args.agency), args.as_json,
+                          lambda r: f"{r['agency_id']} | {r['index']} | {r['on']} | {r['kind_label']} | {r['as_stated']} | "
+                                    f"{r['source_url']} | checked {r['checked_on']}",
+                          "Stopped: content/agency-actions.json: cannot list; fix the file and its agency references.")
+        elif args.command == "content" and args.content_command == "coverage" and args.coverage_command == "list":
+            from .coverage import list_coverage
+            _content_list(lambda: list_coverage(root), args.as_json,
+                          lambda r: f"{r['published_on']} | {r['outlet']} | {r['headline']} | {r['url']}",
+                          "Stopped: content/coverage.json: cannot list; fix the file and its published finding references.")
         elif args.command == "content" and args.content_command == "agency-action":
             from . import agency_actions
             if args.agency_action_command == "add":
@@ -2247,6 +2360,14 @@ def main():
             print(json.dumps(import_sharing(root, args.agency, Path(args.csv).expanduser(), args.checked_on, args.source_url,
                                             replace=args.replace), indent=2))
             print("Recorded only. Nothing was fetched or published.")
+        elif args.command == "content" and args.content_command == "agency-profile":
+            from . import content_profile
+            if args.agency_profile_command == "list":
+                sys.stdout.write(content_profile.format_profile_checks(
+                    content_profile.list_profile_checks(root, args.agency), as_json=args.as_json))
+            else:
+                sys.stdout.write(content_profile.format_recheck(content_profile.recheck_profile(
+                    root, args.agency, args.field, args.checked_on, index=args.index)))
         elif args.command == "content" and args.content_command == "coverage":
             from .coverage import add_coverage, remove_coverage
             if args.coverage_command == "remove":
