@@ -1,0 +1,44 @@
+[
+  {
+    "rank": 1,
+    "kind": "comment_deadline",
+    "what": "Written comment due 2026-03-22T12:00:00-07:00 for Synthetic Council m-week (m-week)",
+    "due": "2026-03-22T12:00:00-07:00",
+    "command": "submit written comment: email the synthetic clerk (agenda: https://agenda.synthetic.example/m-week)"
+  },
+  {
+    "rank": 2,
+    "kind": "request_past_due",
+    "what": "Follow up with Grover Beach Police Department (ca-grover-beach-police): request sent 2026-03-02 passed its provisional determination date 2026-03-12 3 day(s) ago",
+    "due": "2026-03-12",
+    "command": "kit-status --directory <CAMPAIGN>"
+  },
+  {
+    "rank": 3,
+    "kind": "finding_ready",
+    "what": "Finding td-ready is reviewed and ready to publish",
+    "due": null,
+    "command": "finding publish <CAMPAIGN>/private/drafts/td-ready.json --directory <CAMPAIGN> --approved-by NAME"
+  },
+  {
+    "rank": 4,
+    "kind": "finding_blocked",
+    "what": "Finding td-block is blocked: missing_legal_review, missing_privacy_review, missing_summary, need_two_independent_reviewers",
+    "due": null,
+    "command": "finding review-status <CAMPAIGN>/private/drafts/td-block.json --directory <CAMPAIGN>"
+  },
+  {
+    "rank": 5,
+    "kind": "stale_comment_kit",
+    "what": "Comment kit for meeting m-week cites cedar-policy-posted (corrected 2026-02-03) without the latest correction",
+    "due": null,
+    "command": "meetings-stage --directory <CAMPAIGN> --id m-week --replace"
+  },
+  {
+    "rank": 6,
+    "kind": "stale_contact",
+    "what": "Re-check the records contact for ca-arroyo-grande-police on its official site (last checked 2025-01-01, 438 days ago)",
+    "due": "2025-01-01",
+    "command": "kit-verify-agency --directory <CAMPAIGN> --agency-id ca-arroyo-grande-police --source-url OFFICIAL_URL --checked-on YYYY-MM-DD --records-email ADDRESS"
+  }
+]
