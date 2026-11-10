@@ -1205,6 +1205,43 @@ JSON array of 0 to 50 objects, kept in the order written:
   `rel="alternate"` and a visible subscribe link, and the footer feed line names it. Without events there is no feed or link;
   `events.ics` is a reserved top-level name either way. `meetings.ics` is unchanged.
 
+#### Editing events from local times (`event add|remove|list`, DF1109-14)
+
+Instead of typing offsets by hand, give the local wall-clock time and the IANA zone it is in:
+
+```sh
+python3 -m campaign_tool event add --directory D --id records-teach-in --title "Public records teach-in" \
+  --starts 2026-11-09T18:00 --ends 2026-11-09T20:00 --tz America/Los_Angeles \
+  --venue "Cedar Library, meeting room B" --description-file teach-in.md \
+  [--url https://example.com/teach-in] [--accessibility-note "Step-free entrance."]
+python3 -m campaign_tool event add ... --online ...        # instead of --venue
+python3 -m campaign_tool event remove --directory D --id records-teach-in
+python3 -m campaign_tool event list --directory D [--as-of YYYY-MM-DD]
+```
+
+- `--starts`/`--ends` are local times `YYYY-MM-DDTHH:MM` or `YYYY-MM-DDTHH:MM:SS` (no offset, `Z`, fraction or space);
+  `--tz` is required (no default zone) and names both. Each is stored as `YYYY-MM-DDTHH:MM:SS` plus the offset that zone
+  has at that moment, e.g. `2026-11-09T18:00:00-08:00` (`+00:00` for UTC). The zone name itself is not stored.
+- A local time the zone skips at a daylight-saving change (a gap, such as 02:30 on 2026-03-08 in Los Angeles) is refused as
+  `nonexistent local time in --tz`; one it passes twice (an overlap, such as 01:30 on 2026-11-01) is refused as
+  `ambiguous local time in --tz`. Neither is moved or guessed and there is no override: pick a time outside the change.
+  An unknown zone is refused; a computer without a time zone database is told to install `tzdata` (nothing is fetched).
+- `--ends` may equal `--starts` but not be earlier, compared as real instants (so an evening that crosses the change is
+  measured correctly). Exactly one of `--venue` or `--online` is required. `--description-file` is read as UTF-8 exactly
+  as written (nothing trimmed or rewritten; a symbolic link or non-regular file is refused).
+- `remove` drops the one event whose `id` is exactly `--id` (an unknown id is refused); removing the last one leaves `[]`,
+  which publishes no events output. There is no edit command: remove the event and add it again.
+- `list` prints JSON `{"as_of", "upcoming", "past"}` split exactly as the build splits the page: upcoming starts at or after
+  `--as-of` (default today) at 00:00:00 UTC, earliest first; past newest first; ties by id. It writes nothing.
+- Every command needs an existing `content/` with a valid `site.json`. The whole current file is checked with the same
+  reader the build uses and a file the build would refuse is refused by every command, `remove` included (fix it by
+  hand); a duplicate `id` is refused. The whole new list is checked again, then written once: a temporary file beside it,
+  fsync, a check that `events.json` was not changed meanwhile, one rename. A failure keeps the old bytes and mode. Run one
+  writer at a time. Success prints only `{"action": "added"|"removed", "id": ...}`; refusals name the option or
+  `events.json[N].field`, never the text, and exit 2.
+- Hand-written files keep working unchanged: existing rows and their offsets are never converted again (a successful
+  write keeps their values and order, re-indented). Nothing is built, fetched or published: rebuild the site afterwards.
+
 ## Regular meeting schedules (`content/body-schedules.json`, optional)
 
 A source-backed rule for when a body usually meets, for bodies with or without a Legistar feed. Organizers write it by
