@@ -30,6 +30,9 @@ ROW_KEYS = ("agency_id", "on", "kind", "as_stated", "source_url", "checked_on")
 PARTS = ("content", "agency-actions.json")
 LABEL = "/".join(PARTS)
 MAX_BYTES = 2 * 1024 * 1024
+# Bound at import: descriptor-relative opens need the keyword-only dir_fd, which other modules'
+# positional-only os.open test doubles do not forward.
+_open = os.open
 MAX_PER_AGENCY = 50
 MAX_STATEMENT = 200
 MAX_URL = 500
@@ -226,7 +229,7 @@ def _load(root):
     with ExitStack() as stack:
         try:
             try:
-                root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+                root_fd = _open(root, os.O_RDONLY | os.O_DIRECTORY)
             except FileNotFoundError:
                 return None
             stack.callback(os.close, root_fd)
@@ -235,7 +238,7 @@ def _load(root):
                 _check_content(root_fd, None)
                 return None
             try:
-                content_fd = os.open("content", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                content_fd = _open("content", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                      dir_fd=root_fd)
             except OSError:
                 _check_content(root_fd, admitted)
@@ -247,7 +250,7 @@ def _load(root):
             if _entry(content_fd, PARTS[1], LABEL) is None:
                 _check_content(root_fd, admitted)
                 return None
-            fd = os.open(PARTS[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=content_fd)
+            fd = _open(PARTS[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=content_fd)
             stack.callback(os.close, fd)
             with os.fdopen(fd, "rb", closefd=False) as handle:
                 info = os.fstat(fd)

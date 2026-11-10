@@ -212,10 +212,10 @@ class ReplyTests(base.CorrectionRequestTests):
         (self.replies / "1.md").unlink()
         real = os.open
 
-        def racing(path, flags, *rest, **kwargs):
+        def racing(path, flags, *rest):
             if str(path).endswith("1.md"):
                 real(path, os.O_WRONLY | os.O_CREAT, 0o600)
-            return real(path, flags, *rest, **kwargs)
+            return real(path, flags, *rest)
 
         with mock.patch.object(os, "open", racing):
             self.refuses("already exists")

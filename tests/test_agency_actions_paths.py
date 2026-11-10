@@ -58,7 +58,7 @@ class PathTests(Base):
                 swap()
             return result
 
-        with mock.patch.object(actions.os, "open", side_effect=opening), \
+        with mock.patch.object(actions, "_open", side_effect=opening), \
                 mock.patch.object(actions.os, "stat", side_effect=inspecting), \
                 mock.patch.object(actions, "_install", side_effect=AssertionError("writer called")), \
                 mock.patch("urllib.request.urlopen", side_effect=AssertionError("network called")):
@@ -114,7 +114,7 @@ class PathTests(Base):
                 (self.path.parent / "unrelated").write_bytes(b"synthetic")
             return real_open(path, flags, *args, **kwargs)
 
-        with mock.patch.object(actions.os, "open", side_effect=opening):
+        with mock.patch.object(actions, "_open", side_effect=opening):
             self.assertEqual(actions.read_actions(self.root, self.agencies), [])
         self.path.parent.rename(self.tmp / "detached")
         self.assertIsNone(actions._load(self.root))
@@ -157,7 +157,7 @@ class PathTests(Base):
                         self.path.write_bytes(actions._dump([row(text="Replacement café")]))
                 return real_open(path, flags, *args, **kwargs)
 
-            with self.subTest(kind=kind), mock.patch.object(actions.os, "open", side_effect=opening):
+            with self.subTest(kind=kind), mock.patch.object(actions, "_open", side_effect=opening):
                 if kind == "regular":
                     self.assertEqual(actions.read_actions(self.root, self.agencies, today=TODAY),
                                      [row(text="Replacement café")])
@@ -270,7 +270,7 @@ class PathTests(Base):
                     handle.read = mock.Mock(side_effect=OSError("SYNTHETIC-PRIVATE /outside/path"))
                 return handle
 
-            with self.subTest(failure=failure), mock.patch.object(actions.os, "open", side_effect=opening), \
+            with self.subTest(failure=failure), mock.patch.object(actions, "_open", side_effect=opening), \
                     mock.patch.object(actions.os, "fstat", side_effect=inspecting), \
                     mock.patch.object(actions.os, "stat", side_effect=entry), \
                     mock.patch.object(actions.os, "fdopen", side_effect=stream):
