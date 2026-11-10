@@ -536,7 +536,7 @@ _MODULES = {
         records.understanding.cli records.understanding.digest records.worker_lifecycle""",
     "backup archives and keys": "backup backup_crypt",
     "generated drafts, exports and public content, no catalog store": """
-        agency_brief content_init content_sharing coverage flyer kit_calendar kit_copy kit_export kit_fees kit_preserve kit_timing
+        agency_brief content_init content_profile content_sharing coverage flyer kit_calendar kit_copy kit_export kit_fees kit_preserve kit_timing
         map_survey meeting_comment_publish meeting_outcome meeting_pack meeting_stage meetings meetings_manual newsletter.__main__ newsletter.archive
         newsletter.draft newsletter.sent outbox outbox_batch press recent search_log site site_check social social_threads source_bundle""",
     "other local files with no catalog store": """
@@ -570,6 +570,7 @@ MODULE_FUNCTIONS = {
         'readiness', 'weight_budget'
     ),
     'content_init': ('_rename_noreplace', '_write', 'add_starter', 'faq_document', 'init_content', 'init_from', 'starter_text',),
+    'content_profile': ('_install',),  # content/agencies.json one checked_on: temp in content/, fsync, identity check, one rename
     'content_sharing': ('import_sharing',),
     'coverage': ('_write', 'add_coverage', 'remove_coverage',),
     'finding_packet': ('_copy_hash', '_create', 'build_packet',),
