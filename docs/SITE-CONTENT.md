@@ -720,7 +720,9 @@ newest `checked_on` and its source link. Labels: `officials.*`.
 **Officials as open data (DF1622-11).** When `content/officials.json` lists at least one person (a missing file or
 `"bodies": []` lists nobody), the build also writes `data/officials.json` (`schemas/officials-open-data.schema.json`) and
 `data/officials.csv`; with nobody listed neither file exists, a rebuild removes stale ones, and every other file is
-byte-identical. Every loaded body with people is exported, also one without an agency page, sorted by agency `name` then
+byte-identical. When the files exist, `data.html` and `data/datapackage.json` also list them (DF1109-10, `officials-json` and
+`officials-csv`, campaign licence), so those two catalogue files change too; with nobody listed they are byte-identical as well.
+Every loaded body with people is exported, also one without an agency page, sorted by agency `name` then
 `agency_id`. Top level: `schema_version` 1, `campaign`, `generated_from` (`content/officials.json`), `base_url` (or null),
 `url_kind`, `bodies`, plus `license` and `license_url` only when `site.json` sets a licence. Each body has `agency_id`, `name`
 and `officials`; each official has exactly `name`, `role`, `profile_url` (null when absent), `source_url` and `checked_on`,
@@ -1352,7 +1354,8 @@ JSON (`{"checked_on":"2026-10-20","url":"..."}`), never spread over more columns
 `findings.csv`: UTF-8 without a byte-order mark, CRLF line ends, standard quoting, and a cell that begins with `=`, `+`, `-`, `@`,
 a tab or a carriage return is written with a leading `'` (interior characters are not touched; the JSON is not changed).
 `data.html` and `data/datapackage.json` (DF2207-12) are the open-data catalogue: the page lists, for each file the build
-wrote among the four JSON and four CSV documents, `data/cameras.geojson`, `data/county.geojson` and the city-boundary copy
+wrote among the four JSON and four CSV documents, the optional `data/officials.json` and `data/officials.csv` (DF1109-10),
+`data/cameras.geojson`, `data/cameras.csv`, `data/county.geojson`, `data/sources.zip` and the city-boundary copy
 (files the build did not write are not listed; vendor files, assets, schemas and the two catalogue files never are), a fixed one-line
 description, the byte length, all 64 characters of the SHA-256 of the final written bytes, a schema link and the licence; the
 descriptor is a generic Frictionless Data Package (`profile: data-package`, name `campaign-open-data`, each resource with
