@@ -119,7 +119,7 @@ python3 -m campaign_tool meetings-outcome --directory $D --id ID \
   [--vote TEXT] [--votes FILE] [--recording-url URL [--recording-start H:MM:SS]] [--replace]
 ```
 
-`--on` runs from the meeting day to today. `--vote` is the vote line exactly as the record states it; it is never computed. `--votes FILE` is a CSV with the header `name,vote` (`yes`, `no`, `abstain`, `absent`, `recused`), and each name must already be listed for the meeting's agency in `content/officials.json` (see [SITE-CONTENT.md](SITE-CONTENT.md)); this guide adds no officials command. A recording is only a link and goes in with the outcome (never alone), at most `12:00:00` for the start. `--replace` drops votes and recording unless you pass them again. The command prints `Recorded only. Nothing was published.` Continued items, staff directions, counts and approved minutes have their own flags: see [Recording an outcome](MEETINGS.md#recording-an-outcome).
+`--on` runs from the meeting day to today. `--vote` is the vote line exactly as the record states it; it is never computed. `--votes FILE` is a CSV with the header `name,vote` (`yes`, `no`, `abstain`, `absent`, `recused`), and each name must already be listed for the meeting's agency in `content/officials.json` (add them with `officials add`, below; see [SITE-CONTENT.md](SITE-CONTENT.md)). A recording is only a link and goes in with the outcome (never alone), at most `12:00:00` for the start. `--replace` drops votes and recording unless you pass them again. The command prints `Recorded only. Nothing was published.` Continued items, staff directions, counts and approved minutes have their own flags: see [Recording an outcome](MEETINGS.md#recording-an-outcome).
 
 ## 9. Draft the outcome post (never posted)
 
@@ -181,7 +181,19 @@ You get the staged kit with a 3-minute spoken section, a private pack (with 0 fi
 python3 -m campaign_tool meetings-comment-sent --directory $D --id manual-synthetic-council-2026-11 --on 2026-11-10 --channel email
 ```
 
-**After the meeting**, with the minutes in hand. First add the voting members for the body to `$D/content/officials.json` in the shape described in [SITE-CONTENT.md](SITE-CONTENT.md) (`agency_id` `ca-cedar-city-council`, officials Avery, Blake and Casey Example), and save `votes.csv`:
+**After the meeting**, with the minutes in hand. First list the voting members for the body, as the body's official site shows them on the day you checked it (one `officials add` per person; the first add creates `$D/content/officials.json`, nothing is fetched):
+
+```
+python3 -m campaign_tool officials add --directory $D --agency ca-cedar-city-council --name "Avery Example" \
+  --role "Council member" --source-url https://example.invalid/synthetic-council/members --checked-on 2026-11-12
+python3 -m campaign_tool officials add --directory $D --agency ca-cedar-city-council --name "Blake Example" \
+  --role "Council member" --source-url https://example.invalid/synthetic-council/members --checked-on 2026-11-12
+python3 -m campaign_tool officials add --directory $D --agency ca-cedar-city-council --name "Casey Example" \
+  --role "Mayor" --source-url https://example.invalid/synthetic-council/members --checked-on 2026-11-12
+python3 -m campaign_tool officials list --directory $D
+```
+
+Then save `votes.csv`:
 
 ```
 name,vote

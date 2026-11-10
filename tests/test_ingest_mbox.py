@@ -71,6 +71,15 @@ def bad_message():
     return (head + part.format("ok", first) + part.format("bad", "AP8BAgM") + "--B--\r\n").encode()
 
 
+def deep(depth, leaf="leaf"):
+    """A complete message of `depth` nested multiparts around one text leaf; each level has its own boundary `D<n>`,
+    opened and closed (RF1355-1: deeper than the stdlib email parser can follow at depth 1200)."""
+    part = f"Content-Type: text/plain\r\n\r\n{leaf}\r\n"
+    for n in range(depth):
+        part = f'Content-Type: multipart/mixed; boundary="D{n}"\r\n\r\n--D{n}\r\n{part}\r\n--D{n}--\r\n'
+    return (f"Subject: {HEADER_VALUES[0]}\r\nFrom: {HEADER_VALUES[1]}\r\nMIME-Version: 1.0\r\n" + part).encode()
+
+
 class IngestMboxTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="synthetic-ingest-mbox-")
@@ -477,6 +486,75 @@ class IngestMboxTests(unittest.TestCase):
                     report = json.loads(out.getvalue().rsplit("Dry run", 1)[0])
                     self.assertEqual(report["skipped"], [{"number": 1, "code": code}] if code else [])
                     self.assertEqual([m["sha256"] for m in report["messages"]], [] if code else [sha(payload)])
+
+    # RF1355-1: a MIME tree nested deeper than the stdlib parser can follow skips only its own message
+    def snapshot(self):
+        return {str(p.relative_to(self.base)): (p.stat().st_mode, p.stat().st_mtime_ns, p.read_bytes())
+                for p in self.base.rglob("*") if p.is_file()}
+
+    def test_deep_mbox_skips_only_offending_message_preserves_links(self):
+        m1, m3 = message((PDF, "application", "pdf", "a.pdf")), message((CSV, "text", "csv", "b.csv"))
+        data = mbox(m1, deep(1200), m3)
+        path = self.write(data)
+        report = self.ingest(path)
+        box = sha(data)
+        self.assertEqual((report["mailbox"]["sha256"], report["skipped"], report["count"]),
+                         (box, [{"number": 2, "code": "malformed"}], 3))
+        self.assertEqual([(m["number"], m["sha256"], m["outcome"], m["attachments"]) for m in report["messages"]], [
+            (1, sha(m1), "stored", [{"name": "a.pdf", "sha256": sha(PDF), "outcome": "stored"}]),
+            (3, sha(m3), "stored", [{"name": "b.csv", "sha256": sha(CSV), "outcome": "stored"}])])
+        objects = self.root / "private" / "objects"
+        self.assertEqual(set(os.listdir(objects)), {box, sha(m1), sha(m3), sha(PDF), sha(CSV)})
+        self.assertEqual([(objects / h).read_bytes() for h in (box, sha(m1), sha(m3))], [data, m1, m3])
+        self.assertEqual(self.counts(), [(5, 5, 4)])
+        self.assertEqual(sorted(self.rows("SELECT * FROM contains")), sorted([
+            (box, sha(m1), "message-1.eml"), (box, sha(m3), "message-3.eml"),
+            (sha(m1), sha(PDF), "a.pdf"), (sha(m3), sha(CSV), "b.csv")]))
+        self.assertEqual(sorted(r[0] for r in self.rows("SELECT original_name FROM receipts")),
+                         sorted(["replies.mbox", "replies.mbox/message-1.eml", "replies.mbox/message-1.eml/a.pdf",
+                                 "replies.mbox/message-3.eml", "replies.mbox/message-3.eml/b.csv"]))
+        self.assertEqual(path.read_bytes(), data)
+        self.cli("status", "--check")
+
+    def test_all_deep_mbox_preserves_only_mailbox(self):
+        data = mbox(deep(1200), deep(1200, "other leaf"))
+        report = self.ingest(self.write(data, "every.mbox"))
+        self.assertEqual((report["skipped"], report["messages"], report["count"]),
+                         ([{"number": 1, "code": "malformed"}, {"number": 2, "code": "malformed"}], [], 2))
+        objects = self.root / "private" / "objects"
+        self.assertEqual(os.listdir(objects), [sha(data)])
+        self.assertEqual((objects / sha(data)).read_bytes(), data)
+        self.assertEqual((self.counts(), self.rows("SELECT * FROM contains")), ([(1, 1, 0)], []))
+
+    def test_deep_mbox_preview_and_replay_preserve_accounting(self):
+        bad = deep(1200)
+        cases = {"mixed": (mbox(message((PDF, "application", "pdf", "a.pdf")), bad, message(body="Plain reply.\n")),
+                           [{"number": 2, "code": "malformed"}]),
+                 "all-deep": (mbox(bad, bad), [{"number": 1, "code": "malformed"}, {"number": 2, "code": "malformed"}])}
+        shape = lambda r: (r["mailbox"]["sha256"], r["skipped"], r["count"], [
+            (m["number"], m["sha256"], [(a["name"], a["sha256"]) for a in m["attachments"]]) for m in r["messages"]])
+        for case, (data, skipped) in cases.items():
+            for populated in (False, True):
+                with self.subTest(case=case, populated=populated):
+                    self.root = self.base / f"campaign-{case}-{populated}"
+                    self.cli("init", "--name", "Synthetic Campaign", "--county", "Synthetic County", "--state", "ca")
+                    if populated:
+                        self.ingest(self.write(mbox(message((CSV, "text", "csv", "seed.csv"))), "seed.mbox"))
+                    path = self.write(data, f"{case}.mbox")
+                    before = self.snapshot()
+                    preview = self.ingest(path, dry=True)
+                    self.assertEqual(self.snapshot(), before)
+                    self.assertEqual(preview["skipped"], skipped)
+                    real = self.ingest(path)
+                    self.assertEqual(shape(preview), shape(real))
+                    stored, objects = self.counts(), sorted(os.listdir(self.root / "private" / "objects"))
+                    self.assertNotIn(sha(bad), objects)
+                    self.assertIn(sha(data), objects)
+                    again = self.ingest(path)
+                    self.assertEqual(shape(again), shape(real))
+                    self.assertEqual(set(self.outcomes(again)), {"present"})
+                    self.assertEqual((self.counts(), sorted(os.listdir(self.root / "private" / "objects"))),
+                                     (stored, objects))
 
 
 if __name__ == "__main__":
