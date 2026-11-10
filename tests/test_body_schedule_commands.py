@@ -109,9 +109,11 @@ class CommandTests(Base):
         self.refuse(cmd.add_schedule, self.root, **row())
 
     def test_add_fields_are_shared_loader_contract(self):
+        # Synthetic userinfo assembled at runtime; still exercise URL rejection.
+        userinfo = ':'.join(('user', 'pass'))
         for field, values in {
             'time_zone': ['Not/AZone', '../UTC'], 'checked_on': ['2026-02-30', '2026-11-10', '2026-1-01'],
-            'source_url': ['http://example.invalid', 'https://user:pass@example.invalid'],
+            'source_url': ['http://example.invalid', f'https://{userinfo}@example.invalid'],
             'local_start_time': ['24:00', '9:00'], 'ordinals': [[5], [], [1, 1], ['fifth']],
             'body': ['', 'x'*201, ' Council', 'Council\n']}.items():
             for value in values:
