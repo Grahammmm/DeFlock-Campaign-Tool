@@ -48,6 +48,16 @@ today (exactly N is fresh); a later date is `future`; a present object without a
 An unreadable or malformed file is one `unknown` entry named `content/agencies.json`. The refresh is always
 "recheck the source and update checked_on", done by an organizer; nothing is fetched or changed. Readiness counts
 these entries inside `stale_inputs` and still lists none of them.
+Each `reports[i]` check in a profile is named the same way (`content/agencies.json:<agency_id>.reports[i]`, aged by
+its `checked_on`, not by the period it covers or `published_on`). Three more public files are aged the same way when
+they exist, each row by its own `checked_on` and named by stored zero-based position: every official in
+`content/officials.json` as `content/officials.json:bodies[B].officials[I]` ("re-check the official's page and update
+checked_on"; build refuses an official checked more than 365 days ago), every schedule in
+`content/body-schedules.json` as `content/body-schedules.json:schedules[I]` ("re-check the body's calendar page and
+update checked_on") and every `public_copy` check in `content/sources.json` as `content/sources.json:[I].public_copy`
+("re-download the public copy and run sources verify-copy"). A missing file adds nothing; an unreadable or malformed
+one is a single `unknown` entry named after the file. Historical records (agency actions, statements, coverage and
+elsewhere decisions) are left out on purpose: they describe what happened on a date, not a present fact to re-check.
 Add `content/` (see `docs/SITE-CONTENT.md` and `examples/fictional-campaign/content/`) to turn
 the starter into a real site.
 `python3 -m campaign_tool content init --directory ../my-campaign` writes a minimal valid `content/`
