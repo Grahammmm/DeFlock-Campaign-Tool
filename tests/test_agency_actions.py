@@ -488,7 +488,7 @@ class PublishTests(Base):
         # timeline.html: kind agency_action, text AGENCY: KIND: T, the agency page and the official source
         model = load_content(self.root, today=TODAY)
         from campaign_tool.timeline import KINDS, LEAD, timeline_events
-        self.assertEqual(KINDS[-1], "agency_action")
+        self.assertEqual(KINDS[7], "agency_action")  # DF1109-07 appends finding_update, statement and coverage after it
         events = [ev for ev in timeline_events(model, TODAY, {"ca-cedar-police": "/agencies/cedar.html"}) if ev["kind"] == "agency_action"]
         self.assertEqual([(ev["date"], ev["text"]) for ev in events], [
             ("2026-09-20", "Cedar Police Department (fictional): Contract paused: Contract paused"),

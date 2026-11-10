@@ -238,6 +238,8 @@ class LabelsTest(unittest.TestCase):
                     page = data.decode()
                     if path == "data.html":  # DF0237-12: the catalogue's fixed description of the camera CSV (not a label)
                         page = page.replace("Community-mapped camera points; ownership unconfirmed.", "")
+                    if path == "timeline.html":  # DF1109-07: frozen English coverage prefix; the DF1109-16 labels sweep converts it
+                        page = re.sub(r"In the news: Zq outlet \w+", "", page)
                     seen |= {key for key in DEFAULTS if f"X{key}X" in page}
                     left = [p for p in phrases if p in page or html_text(p) in page]
                     self.assertEqual(left, [], f"{name}: {path}")
