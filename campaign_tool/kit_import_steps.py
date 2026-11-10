@@ -30,17 +30,22 @@ def _read_rows(csv_path):  # [(physical line, cells)] of the non-blank data rows
         fd = os.open(csv_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as exc:  # O_NOFOLLOW: a symlink fails here with ELOOP
         raise ImportRefused(f"csv cannot be opened as a regular file (symlinks are refused): {exc.strerror}") from None
+    # Own the raw fd until wrapping succeeds; parse only after read AND close succeed.
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise ImportRefused("csv must be a regular file")
-        if info.st_size > MAX_BYTES:
-            raise ImportRefused("csv is larger than 256 KiB")
-    except BaseException:
-        os.close(fd)
-        raise
-    with os.fdopen(fd, "rb") as handle:
-        data = handle.read(MAX_BYTES + 1)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ImportRefused("csv must be a regular file")
+            if info.st_size > MAX_BYTES:
+                raise ImportRefused("csv is larger than 256 KiB")
+            handle = os.fdopen(fd, "rb")
+        except BaseException:
+            os.close(fd)  # still ours; never retry an uncertain close
+            raise
+        with handle:  # ownership transferred: only the stream closes this fd
+            data = handle.read(MAX_BYTES + 1)
+    except OSError:
+        raise ImportRefused("csv cannot be read; nothing was written") from None
     if len(data) > MAX_BYTES:
         raise ImportRefused("csv is larger than 256 KiB")
     try:
