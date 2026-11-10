@@ -19,13 +19,15 @@ from . import body_schedules, correction_requests, findings, kit, kit_assign, ki
 from .body_schedules import read_body_schedules
 from .content import (CONTINUATION_KEYS, _agency_response, _read_json, continuation_issues, continuation_targets,
                       load_agencies, load_meeting)
+from .meetings_manual import ManualMeetingError, _read_scan
 
 KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_waiting_on_you", "request_fee_unpaid",
          "request_stated_date_passed", "request_installment_passed",
          "request_installment_due", "request_stated_extension_date_passed", "request_download_pending", "request_download_expired",
          "finding_reply_due", "correction_request_open", "finding_ready",
          "finding_blocked", "outreach_stale", "outreach_not_checked",
-         "contract_ending", "minutes_pending", "continued_pending", "direction_pending", "stale_comment_kit", "stale_contact", "review_waiting",
+         "contract_ending", "outcome_missing", "participation_unverified", "meeting_not_staged",
+         "minutes_pending", "continued_pending", "direction_pending", "stale_comment_kit", "stale_contact", "review_waiting",
          "stale_body_schedule", "expected_regular_meeting", "backup_due", "unreadable")
 WINDOW_DAYS, CONTACT_MAX_AGE_DAYS, ERROR_CHARS, REVIEW_DAYS = 7, 180, 120, 7
 BACKUP_DAYS = 7
@@ -93,6 +95,9 @@ def _meetings(root, as_of, selector):
             items.append(later)
         if (report := _direction_item(meeting, staged, as_of, selector)) is not None:
             items.append(report)
+        if sum(1 for other in staged if other["id"] == ident) == 1 and (
+                pending := _meeting_work(meeting, ident, as_of, selector)) is not None:  # a duplicate id is already unreadable
+            items.append(pending)
         if meeting["status"] != "scheduled" or day is None or not as_of <= day <= as_of + timedelta(WINDOW_DAYS):
             continue
         if ident in submitted:
@@ -100,6 +105,57 @@ def _meetings(root, as_of, selector):
         agenda = f" (agenda: {meeting['agenda_url']})" if meeting["agenda_url"] else ""
         items.append(_item("comment_deadline", f"Written comment due {due} for {meeting['body']} ({ident})",
                            f"submit written comment: {written['how']}{agenda}", due, ident))
+    items.extend(_unstaged_meetings(root, as_of, selector, {entry[1]["id"] for entry in loaded}))
+    return items
+
+
+def _meeting_work(meeting, ident, as_of, selector):
+    """DF1109B-02: a scheduled staged meeting whose day has passed with no outcome (a recording cue, not proof it was
+    held), or one starting within 14 days with no organizer-verified participation. Read-only; nothing is invented."""
+    if meeting["status"] != "scheduled":
+        return None
+    start, quoted = meeting["starts_at"][:10], shlex.quote(ident)
+    if meeting["outcome"] is None and start < as_of.isoformat():
+        return _item("outcome_missing", f"{meeting['body']} met on {start} ({ident}): record what happened",
+                     f"meetings-outcome {selector} --id {quoted} --result RESULT --on YYYY-MM-DD "
+                     "--source OFFICIAL_URL --verified-by NAME", start, ident)
+    if meeting["participation"] is None and as_of.isoformat() <= start <= (as_of + timedelta(14)).isoformat():
+        return _item("participation_unverified", f"Verify how the public may take part in {meeting['body']} on {start} "
+                     f"({ident})", f"verify how the public may take part, then meetings-stage {selector} --id {quoted} "
+                     "--participation FILE --replace", start, ident)
+    return None
+
+
+def _unstaged_meetings(root, as_of, selector, staged_ids):
+    """DF1109B-02: agenda matches in kit/meetings.json starting within 14 days that have no staged meeting. Reads only
+    that scan file; a bad one is exactly one unreadable item and no partial rows."""
+    label = "kit/meetings.json"
+    try:
+        path = root / "kit" / "meetings.json"
+        if os.path.lexists(path) and not path.is_file() and not os.path.islink(path):
+            raise ValueError(f"{label}: is not a regular file")
+        rows = _read_scan(root)
+        found, seen = [], set()
+        for n, raw in enumerate(rows or []):
+            if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
+                raise ValueError(f"{label}: meetings[{n}] needs an id")
+            meeting = load_meeting({k: raw[k] for k in ("id", "body", "starts_at", "status", "agenda_url", "agenda_item",
+                                                        "location") if k in raw}, f"{label} meetings[{n}]", today=as_of)
+            if meeting["id"] in seen:
+                raise ValueError(f"{label}: duplicate meeting id")
+            seen.add(meeting["id"])
+            found.append(meeting)
+    except (ValueError, OSError, ManualMeetingError) as exc:
+        return [_unreadable(label, exc)]
+    items, folder = [], root / "content" / "meetings"
+    for meeting in found:
+        ident, start = meeting["id"], meeting["starts_at"][:10]
+        if (meeting["status"] != "scheduled" or not as_of.isoformat() <= start <= (as_of + timedelta(14)).isoformat()
+                or ident in staged_ids or os.path.lexists(folder / f"{ident}.json")):
+            continue
+        items.append(_item("meeting_not_staged", f"Agenda match for {meeting['body']} on {start} ({ident}): verify the "
+                           f"posted agenda and stage the meeting", f"meetings-stage {selector} --id {shlex.quote(ident)}",
+                           start, ident))
     return items
 
 
