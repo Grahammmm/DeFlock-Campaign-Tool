@@ -10,7 +10,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -186,6 +186,43 @@ def status_lines():
     return (lines or ["campaign | (none registered) | private; review-required"]), current
 
 
+def today_rows(as_of):
+    """DF1109-15: every registered campaign's `today` items in name order, each keeping its own rank, with
+    ``--campaign NAME`` selectors; ``(rows, current)``. Each campaign is read alone, confined exactly as for
+    ``campaigns status`` (and already before its campaign.json is read); a campaign that cannot be read, or whose
+    `today` names an unreadable source, is one type-only ``not_current`` row, its partial items dropped. Read-only."""
+    from . import today
+    entries = _load(register_path())  # read once; no lock is held while any campaign is read
+    registered = [e["directory"] for e in entries]
+    rows, current = [], True
+    for entry in sorted(entries, key=lambda e: e["name"]):
+        name = entry["name"]
+        try:
+            confine(entry["directory"], registered)  # before _root reads campaign.json
+            root = _root(entry["directory"])
+            confine(root, registered)
+            items = today.todo(root, as_of, campaign_name=name)
+            if any(item["kind"] == "unreadable" for item in items):
+                raise ValueError("a source of this campaign could not be read")  # normalised type; text never shown
+            found = [{"campaign": name, **item} for item in items] or [{"campaign": name, "_nothing": True}]
+        except Exception as exc:  # one broken campaign must not hide the others; the type name only, never its text
+            found, current = [{"campaign": name, "rank": None, "kind": "not_current",
+                               "what": f"NOT CURRENT: {type(exc).__name__}", "due": None, "command": None}], False
+        finally:
+            release()
+        rows.extend(found)
+    return rows, current
+
+
+def today_text(rows, day):
+    if not rows:
+        return "campaign | (none registered) | private; review-required"
+    return "\n".join(f"campaign | {row['campaign']} | " + (
+        f"Nothing due on {day.isoformat()}." if row.get("_nothing") else row["what"] if row["kind"] == "not_current"
+        else f"{row['rank']}. [{row['kind']}] {row['what']} — {row['command']}") + " | private; review-required"
+        for row in rows)
+
+
 class CampaignAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         try:
@@ -207,6 +244,15 @@ def run(args):
         elif args.campaigns_command == "list":
             for e in sorted(_load(register_path()), key=lambda e: e["name"]):
                 print(f"campaign | {e['name']} | {e['directory']} | added {e['added_at']}")
+        elif args.campaigns_command == "today":  # DF1109-15: the date is checked, and fixed once, before any read
+            from .kit_track import _day
+            day = date.today() if args.as_of is None else _day(args.as_of)
+            if day is None:
+                raise ValueError("--as-of must be a real YYYY-MM-DD date")
+            rows, current = today_rows(day)
+            print(json.dumps([r for r in rows if not r.get("_nothing")], indent=2, ensure_ascii=False)
+                  if args.as_json else today_text(rows, day))
+            return 0 if current else 3
         else:
             lines, current = status_lines()
             print("\n".join(lines))
