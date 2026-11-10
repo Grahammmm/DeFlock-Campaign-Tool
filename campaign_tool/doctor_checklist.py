@@ -82,7 +82,9 @@ def checklist(report, directory, agency_list_exists=False, *, git_row=None):
     """Rows in RULES order, then unknown keys as info, then the derived production_ready row.
 
     agency_list_exists: kit/agencies.json is present, so the agencies_selected fix is a kit-agency selection."""
-    d = shlex.quote(str(directory))
+    raw = str(directory)
+    # Shell quoting alone does not keep argparse from treating a leading '-' as an option.
+    d = shlex.quote("./" + raw if raw.startswith("-") else raw)
     facts = dict(report, agency_list_exists=agency_list_exists)
     rows = []
     for key, ok, label, todo, owner in RULES:
