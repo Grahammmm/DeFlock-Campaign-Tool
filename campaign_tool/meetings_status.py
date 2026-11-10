@@ -17,7 +17,7 @@ from collections import Counter
 from datetime import date, datetime
 
 from .content import MAX_JSON_BYTES, SLUG, load_finding, load_meeting
-from .meeting_comments import read as read_sent
+from .meeting_comments import _entry as sent_entry
 from .meeting_speakers import read_plan
 from .meetings import _clean
 from .meetings_manual import MAX_BYTES as KIT_BYTES, ManualMeetingError, _stored_entry
@@ -235,9 +235,13 @@ def _sent(root, kit_ok, errors):
     if kind is None:
         return {}
     try:
-        if kind != "file" or os.lstat(os.path.join(root, "kit", "comments-sent.json")).st_size > MAX_JSON_BYTES:
+        if kind != "file":
             raise _Bad
-        return read_sent(root)
+        document = _read(os.path.join(root, "kit", "comments-sent.json"), MAX_JSON_BYTES)
+        if (not isinstance(document, dict) or document.get("schema_version") != 1
+                or set(document) != {"schema_version", "comments"} or not isinstance(document["comments"], dict)):
+            raise _Bad
+        return {str(key): sent_entry(value, key) for key, value in document["comments"].items()}
     except (_Bad, *FAULTS):
         errors.append(_error("kit/comments-sent.json"))
         return None
