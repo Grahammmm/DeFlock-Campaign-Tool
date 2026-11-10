@@ -18,6 +18,8 @@ class CategoryScanTest(unittest.TestCase):
         return self.put("d/req.md", f"To: {EMAIL} {SENTINEL}\nSeen plate {PLATE} {SENTINEL}\n")
 
     def assert_quiet(self, out):
+        # The random temporary root can contain "555" by chance; exclude only that known root (as the JSON test does).
+        out = out.replace(str(self.tmp), "<temporary-root>")
         for secret in SECRETS:
             self.assertNotIn(secret, out)
 
