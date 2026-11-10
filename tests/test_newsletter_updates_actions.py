@@ -314,6 +314,23 @@ class ValidationTests(unittest.TestCase):
                 self.assertIn(f"[Official source]({linked})", draft["text"])
                 self.assertIn(f'<a href="{linked}" rel="noopener noreferrer">Official source</a>', draft["html"])
 
+    def test_embedded_host_query_or_fragment_is_never_rewritten(self):
+        """DF1109-06 return 2: only a bare leading authority gets ``/``; an embedded ``https://host?``/``#`` stays exact."""
+        for url, linked in (
+                ("https://city.example/records?ref=https://state.example?doc=1", None),
+                ("https://city.example/records?ref=https://state.example#top", None),
+                ("https://city.example/page#https://other.example?x=1", None),
+                ("https://city.example:8443/a?b=https://c.example#d", None),
+                ("https://city.example?ref=https://state.example?doc=1", "https://city.example/?ref=https://state.example?doc=1"),
+                ("https://city.example#https://state.example?doc=1", "https://city.example/#https://state.example?doc=1"),
+                ("https://city.example:8443?u=https://x.example#y", "https://city.example:8443/?u=https://x.example#y")):
+            with self.subTest(url=url):
+                draft = build_draft({"schema_version": 1, "campaign": {"name": "Synthetic"}, "since": SINCE,
+                                     "actions": [{**self.ACTION, "source_url": url}]}, NOW)
+                linked = linked or url
+                self.assertIn(f"[Official source]({linked})", draft["text"])
+                self.assertIn(f'<a href="{linked}" rel="noopener noreferrer">Official source</a>', draft["html"])
+
     def test_url_one_character_over_the_content_limit_is_refused(self):
         too_long = "https://a.co/" + "q" * 488
         self.assertEqual(len(too_long), 501)

@@ -300,13 +300,14 @@ ACTION_KIND_LABELS = frozenset(v for k, v in LABEL_DEFAULTS.items() if k.startsw
 # may start at ``/``, ``?`` or ``#``. The length is capped by ``_source_url``, never by a regex repeat count.
 _SOURCE_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::\d{1,5})?(?:[/?#][A-Za-z0-9._~/?#&=%+:-]*)?")
 SOURCE_URL_MAX = 500
-_BARE_QUERY = re.compile(r"(https://[A-Za-z0-9.-]+(?::\d{1,5})?)([?#])")
+_BARE_QUERY = re.compile(r"\A(https://[A-Za-z0-9.-]+(?::\d{1,5})?)([?#])")
 
 
 def _source_url(url):
     """The link target for an action's ``source_url``, or None when it is not a content-valid https URL.
 
-    An empty path before ``?``/``#`` is written as ``/`` (the same address) so the renderer links it."""
+    An empty path before ``?``/``#`` is written as ``/`` (the same address) so the renderer links it; only the leading
+    authority is touched, never a ``https://host?`` that appears later in the path or query."""
     if not isinstance(url, str) or len(url) > SOURCE_URL_MAX or not _SOURCE_URL.fullmatch(url):
         return None
     return _BARE_QUERY.sub(r"\1/\2", url, count=1)
