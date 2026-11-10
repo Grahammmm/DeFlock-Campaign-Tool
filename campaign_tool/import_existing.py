@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import secrets
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,22 +60,45 @@ def _write_receipt(root, stamp, label, receipt):
     directory = root / "private" / "imports"
     directory.mkdir(mode=0o700, exist_ok=True)
     fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    stage = None
     try:
         os.fchmod(fd, 0o700)
-        index = 1
-        while True:
-            name = f"{stamp}-{label}" + (f"-{index}" if index > 1 else "") + ".json"
+        # Complete the document under a hidden, exclusively created name that never matches *.json.
+        while stage is None:
+            candidate = f".receipt-{secrets.token_hex(8)}.tmp"
             try:
-                out_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=fd)
-                break
+                out_fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
             except FileExistsError:
-                index += 1
+                continue
+            stage = candidate
         with os.fdopen(out_fd, "w", encoding="utf-8") as out:
             os.fchmod(out.fileno(), 0o600)
             json.dump(receipt, out, indent=2)
             out.write("\n")
+            out.flush()
+            os.fsync(out.fileno())
+        # Publish by atomic no-replace link; only an existing name advances the suffix.
+        index = 1
+        while True:
+            name = f"{stamp}-{label}" + (f"-{index}" if index > 1 else "") + ".json"
+            try:
+                os.link(stage, name, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+                break
+            except FileExistsError:
+                index += 1
+        os.fsync(fd)
+        os.unlink(stage, dir_fd=fd)
+        stage = None
+        os.fsync(fd)
     finally:
-        os.close(fd)
+        try:
+            if stage is not None:  # Remove only this invocation's own stage; a published name stays.
+                try:
+                    os.unlink(stage, dir_fd=fd)
+                except OSError:
+                    pass
+        finally:
+            os.close(fd)
     return f"private/imports/{name}"
 
 

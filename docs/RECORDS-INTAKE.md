@@ -20,6 +20,15 @@ The JSON summary names a private `private/imports/` receipt listing each attempt
 path, outcome and extension-only kind hint. Keep these receipts private; successful
 preservation is not substantive review, redaction, publication or authenticity verification.
 
+A receipt is written completely under a hidden name in `private/imports/` and then linked
+to its final `<stamp>-<label>[-N].json` name without replacing anything, so a completed
+receipt name always holds a full document and an earlier receipt is never overwritten.
+If a run is interrupted (or the receipt cannot be written) the preserved objects and ledger
+rows stay, and an opaque hidden `.receipt-*.tmp` file may remain; it is never read or
+removed by later runs and may be deleted by hand. Rerun the same command: it reuses the
+preserved bytes (reported as `present`) and writes a new complete receipt, but does not
+recreate the interrupted run's original report.
+
 This is the second M0 code-port slice, independent of the gate PR. It brings the
 existing intake, preservation, extraction, quarantine and repair implementation
 into the public engine. It does not activate a live campaign or scan a corpus.
