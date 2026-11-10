@@ -21,6 +21,8 @@ DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 SINCE_ERROR = "--since: use YYYY-MM-DD or an ISO timestamp with offset"
 SIDECARS = ("journal", "wal", "shm")
 SIDECAR_ERROR = "private/ledger.sqlite has a journal or WAL file beside it; list again when no ingest is running"
+MAX_LEDGER_BYTES = 64 * 1024 * 1024  # physical file size, trailing bytes included; no override
+LEDGER_SIZE_ERROR = "private/ledger.sqlite exceeds the 64 MiB snapshot limit"
 
 
 def _since(value):
@@ -51,17 +53,27 @@ def _snapshot(path):
 
     Even mode=ro creates -wal/-shm sidecars beside a WAL-mode database, so the bytes are read once (no link
     followed) and deserialized. A journal or WAL sidecar means the file alone may not hold the committed state:
-    refused. A WAL header with no sidecar is a complete, checkpointed file and is read as a rollback database."""
+    refused. A WAL header with no sidecar is a complete, checkpointed file and is read as a rollback database.
+    A file over MAX_LEDGER_BYTES (by fstat, or by what a bounded read actually returns) is refused before any copy."""
     if any(os.path.lexists(f"{path}-{suffix}") for suffix in SIDECARS):
         raise ValueError(SIDECAR_ERROR)
     db = None
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
                 raise OSError
+            if info.st_size > MAX_LEDGER_BYTES:
+                raise ValueError(LEDGER_SIZE_ERROR)
             with os.fdopen(os.dup(fd), "rb") as handle:
-                data = bytearray(handle.read())
+                raw = handle.read(MAX_LEDGER_BYTES + 1)  # the file may have grown since fstat
+            if len(raw) > MAX_LEDGER_BYTES:
+                raise ValueError(LEDGER_SIZE_ERROR)
+            if not raw:
+                raise OSError  # deserialize(b"") raises MemoryError, not sqlite3.Error
+            data = bytearray(raw)
+            del raw
         finally:
             os.close(fd)
         if any(os.path.lexists(f"{path}-{suffix}") for suffix in SIDECARS):

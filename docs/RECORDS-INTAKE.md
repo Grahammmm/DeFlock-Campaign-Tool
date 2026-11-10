@@ -183,3 +183,5 @@ received_at) from an in-memory copy of the ledger (no `-wal`/`-shm` file is crea
 WAL file beside it is refused); `--source-id S`, `--since YYYY-MM-DD` (or an ISO timestamp with
 offset) and `--not-in-sources` (ingested but not yet in `content/sources.json`) narrow it. Nothing is written.
 Prefixes are 12 chars; give `sources add` more characters if it reports an ambiguous prefix.
+
+The in-memory ledger copy used by listing, source batches and reviewer packets has a 64 MiB physical-file limit, including any trailing bytes. A larger `private/ledger.sqlite` is refused (`private/ledger.sqlite exceeds the 64 MiB snapshot limit`) without modifying the ledger. This bounds the file read, not total process memory or query time.

@@ -236,6 +236,20 @@ class FindingPacketTests(unittest.TestCase):
         self.packet()  # the CLI path too
         self.assertEqual(trees(self.root), before)
 
+    def test_packet_oversize_refuses_before_staging(self):
+        from campaign_tool import ledger_list
+        size = self.ledger.stat().st_size
+        with mock.patch.object(ledger_list, "MAX_LEDGER_BYTES", size - 1):
+            self.refused(ledger_list.LEDGER_SIZE_ERROR)  # no target, no staging folder, stores and inputs unchanged
+        self.assertFalse(os.path.lexists(self.out))
+        with open(self.ledger, "r+b") as handle:
+            handle.truncate(ledger_list.MAX_LEDGER_BYTES + 1)  # sparse: the production limit plus one byte
+        stamp, siblings = self.ledger.stat().st_mtime_ns, sorted(os.listdir(self.base))
+        self.assertIn(ledger_list.LEDGER_SIZE_ERROR, self.packet(returncode=2).stderr)
+        self.assertEqual((self.ledger.stat().st_size, self.ledger.stat().st_mtime_ns, sorted(os.listdir(self.base))),
+                         (ledger_list.MAX_LEDGER_BYTES + 1, stamp, siblings))
+        self.assertFalse(os.path.lexists(self.out))
+
     def test_no_network_imports(self):
         tree = ast.parse((REPO_ROOT / "campaign_tool" / "finding_packet.py").read_text(encoding="utf-8"))
         names = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
