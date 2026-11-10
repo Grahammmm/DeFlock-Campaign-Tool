@@ -166,6 +166,36 @@ def _roll_back(parent_fd, name, out_fd, created):
         pass
 
 
+_CHANGED = "--out directory changed before writing; nothing written"
+
+
+def _identity(info):
+    return (info.st_dev, info.st_ino) if stat.S_ISDIR(info.st_mode) else None
+
+
+def _admit_output(parent_fd, name):
+    """Open the folder just made and return its descriptor only if it is the directory first seen there.
+
+    Bounded guarantee: the entry observed (no-follow) right after mkdir is compared with the opened descriptor
+    and with the entry seen again before any member is created. An observable substitution in that interval
+    is refused and nothing in either folder is touched. A change before the first observation, or after the
+    last check, is not excluded. The returned descriptor, never the name, then anchors writes and rollback.
+    """
+    seen = _identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+    if seen is None:
+        raise ValueError(_CHANGED)
+    candidate = os.open(name, _DIR_FLAGS, dir_fd=parent_fd)  # untrusted until admitted below
+    try:
+        if _identity(os.fstat(candidate)) != seen:
+            raise ValueError(_CHANGED)
+        if _identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != seen:
+            raise ValueError(_CHANGED)
+    except BaseException:
+        os.close(candidate)
+        raise
+    return candidate
+
+
 def build(jurisdiction, out, as_of=None, base=None):
     """Write the four files into a new 0700 folder; everything is built in memory first."""
     path = _checked_out(out)
@@ -181,7 +211,7 @@ def build(jurisdiction, out, as_of=None, base=None):
     created = []
     try:
         os.mkdir(path.name, 0o700, dir_fd=parent_fd)
-        out_fd = os.open(path.name, _DIR_FLAGS, dir_fd=parent_fd)
+        out_fd = _admit_output(parent_fd, path.name)
         for name in NAMES:
             fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=out_fd)
             created.append((name, fd))  # owned from here: the descriptor is closed in the final cleanup
