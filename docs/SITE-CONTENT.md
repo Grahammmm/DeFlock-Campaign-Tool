@@ -350,6 +350,29 @@ absent shows nothing. `agencies.html` shows "Posted ALPR usage policy (checked
 <date>, where we found it)" on that agency's card only; neither URL is fetched.
 Linking a policy says only that it was posted; it is not a finding about compliance.
 
+### Rechecking agency-profile dates (`content agency-profile`)
+
+`python3 -m campaign_tool content agency-profile list --directory D [--agency ID] [--json]` prints every recorded
+`checked_on` of the nine dated profile families (`alpr_policy`, `policy_check`, `contract`, `contract_check`,
+`pre_implementation_meeting`, `sharing`, and each `funding`, `transparency` and `reports` entry) of the selected
+agencies, oldest first, one line `AGENCY | FIELD[N] | checked_on=DATE | age_days=N` (`[N]` only for list fields), or
+with `--json` one array of `{agency_id, field, index, checked_on, age_days}` (`index` null for a single record). Every
+transparency snapshot is listed, not only the newest. It reads `content/agencies.json` through the same loader as
+`build` and writes nothing; no file prints `No recorded profile checks.`, a broken file or an unknown or deselected
+`--agency` is a one-line `Stopped:` refusal (exit 1).
+
+`python3 -m campaign_tool content agency-profile recheck --directory D --agency ID --field F [--index N] --checked-on
+YYYY-MM-DD` records that you re-read one existing source on that day. It changes only that `checked_on`: no URL,
+reading, archive copy or other date, and it never creates a field or entry. `--index` is required for `funding`,
+`transparency` and `reports` and refused otherwise; it is the 1-based stored position that `list` prints, while
+`doctor --stale-days` names the same entry zero-based (`reports[0]` is `--index 1`). The date may not be after today or
+before the stored date; the same date changes nothing. The whole prospective file must still pass the build's loader,
+so advancing `alpr_policy` past `policy_check` (or `contract` past `contract_check`) is refused with `Recheck
+policy_check first ...`, and an older transparency snapshot may not reach the date of the one above it (record a fresh
+reading as a new snapshot instead). Every refusal writes nothing; a success replaces the file atomically from the
+`content/` directory it read, and refuses if that directory or the file changed meanwhile. Nothing is fetched, built
+or published, and the tool cannot tell whether you actually re-read the source.
+
 ### Archived copies of agency sources (optional)
 
 Five organizer-verified link objects may carry a manually checked archive copy: `profile.alpr_policy`,

@@ -36,8 +36,9 @@ meeting data, map data, the agency seed, the law package's source dates, each da
 see LAUNCH.md), each official in `content/officials.json`, each schedule in `content/body-schedules.json` and each
 `public_copy` check in `content/sources.json`. Historical records (agency actions, statements, coverage and elsewhere
 decisions) are left out on purpose: they record a past event, not a present fact to re-check. It only reads and
-names; it never fetches a source or changes a date, so rechecking a policy or contract and updating `checked_on` stays
-a manual step (task 12 below). `doctor` also reports from a profile `contracts_ending`: contracts whose `end` is within
+names; it never fetches a source or changes a date. Re-reading a policy or contract stays your manual step; `content
+agency-profile list` shows every recorded profile date oldest first and `content agency-profile recheck` records the
+day you re-read one of them (task 12 below). `doctor` also reports from a profile `contracts_ending`: contracts whose `end` is within
 90 days (see the contract term section of [AGENCY-CARDS.md](AGENCY-CARDS.md#agency-contract-term)).
 
 ## Practice setup
@@ -271,16 +272,37 @@ python3 -m campaign_tool build --directory $CAMPAIGN --check
 ```
 
 `content-check` lists every problem in the content. `doctor --stale-days 90` names old meeting, map, seed and law inputs
-(not profile dates, see above); `--json` only works together with `--checklist`. `build` writes the local public files
+and every dated profile object, report, official, schedule and public copy (see above); `--json` only works together
+with `--checklist`. `build` writes the local public files
 under the campaign directory and `build --check` validates an existing tree; neither deploys or publishes anything
-([SITE-CONTENT.md, generated pages and files](SITE-CONTENT.md#generated-pages-and-files)). Known limit on this version: an
-agency page that shows a recorded agency action (task 10) makes `build --check` report `heading-skip h2→h4` for that
-page. That is the page layout, not your data, and `content-check` still passes; leave the content as it is and tell the
-maintainers.
+([SITE-CONTENT.md, generated pages and files](SITE-CONTENT.md#generated-pages-and-files)). Known limit on this version:
+once this practice agency has its own page (here because of the agency action recorded in task 10), the posted-policy
+reading from task 3 is shown under an `h4` heading directly after the agency name (`h2`), so `build --check` reports
+`heading-skip h2→h4` for `agencies/example-profile.html`. That is the page layout, not your data, and `content-check`
+still passes; leave the content as it is and tell the maintainers.
 
-Recheck by hand: list every date you have recorded with `grep -n checked_on content/agencies.json` and, for each source
-older than you are comfortable with, open it again. If it still says the same thing, set `checked_on` to today; if it
-changed, update the fields first. Do not advance a date to silence a reminder.
+Recheck later. List every profile date you have recorded, oldest first, with its age in days (add `--json` for one
+array, `--agency ID` for one agency):
+
+```sh
+python3 -m campaign_tool content agency-profile list --directory $CAMPAIGN
+python3 -m campaign_tool content agency-profile list --directory $CAMPAIGN --agency ca-example-profile-pd --json
+```
+
+For each source older than you are comfortable with, open it again. If it changed, update the fields by hand first. If
+it still says the same thing, record the day you re-read it; only that `checked_on` changes. A reading may not be older
+than its document, so recheck `policy_check` before `alpr_policy` (and `contract_check` before `contract`). The
+practice run repeats the dates already recorded, which changes nothing; use the day you actually re-read the source:
+
+```sh
+python3 -m campaign_tool content agency-profile recheck --directory $CAMPAIGN --agency ca-example-profile-pd --field policy_check --checked-on 2026-10-22
+python3 -m campaign_tool content agency-profile recheck --directory $CAMPAIGN --agency ca-example-profile-pd --field alpr_policy --checked-on 2026-10-21
+```
+
+`funding`, `transparency` and `reports` take `--index N`, the 1-based position `list` prints (`doctor` names the same
+entry zero-based). A future date, one before the stored date, or one the build would refuse is refused and nothing is
+written. Do not advance a date to silence a reminder. Reference:
+[SITE-CONTENT.md, rechecking agency-profile dates](SITE-CONTENT.md#rechecking-agency-profile-dates-content-agency-profile).
 
 ## Checklist for one agency
 
@@ -292,4 +314,5 @@ changed, update the fields first. Do not advance a date to silence a reminder.
 - [ ] Funding, transparency snapshot, sharing list, reports and agency actions each carry their own source and date.
 - [ ] Archive copies carry `archived_on`, separate from `checked_on`.
 - [ ] Absent means not checked; a zero or `not_found` is a recorded reading, never a conclusion.
-- [ ] `content-check` exits 0; `doctor` run; a recheck date set in your own calendar, since profile dates are not reminded.
+- [ ] `content-check` exits 0; `doctor --stale-days` run; old dates re-read and recorded with `content agency-profile
+      recheck`, never advanced without reading the source.

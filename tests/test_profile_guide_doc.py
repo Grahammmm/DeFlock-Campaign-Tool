@@ -172,6 +172,9 @@ class GuideTests(unittest.TestCase):
         self.assertEqual(check_links(README, read(README)), [])
         self.assertIn("(docs/PROFILE-GUIDE.md)", read(README))
         self.assertIn("heading-skip", text)  # the known build --check limit is stated, not hidden
+        self.assertIn("posted-policy\nreading from task 3 is shown under an `h4` heading directly after the agency name", text)
+        for stale in ("grep -n checked_on", "not profile dates", "profile dates are not reminded"):
+            self.assertNotIn(stale, text)  # recheck is a command now, and doctor names profile dates
         headings = re.findall(r"^## (\d+)\. (.*)$", text, re.M)
         self.assertEqual([int(n) for n, _ in headings], list(range(1, 13)))
         keywords = ["identify", "policy", "posted policy", "contract term", "contract against", "paid for", "transparency",
@@ -182,7 +185,8 @@ class GuideTests(unittest.TestCase):
         required = {2: ["alpr_policy"], 3: ["policy_check"], 4: ["profile.contract", "amount_usd"],
                     5: ["contract_check"], 6: ["profile.funding"], 7: ["profile.transparency", "flock_transparency_slug"],
                     8: ["agency-sharing", "profile.sharing"], 9: ["profile.reports"], 10: ["agency-action add"],
-                    11: ["archived_url", "archived_on"], 12: ["--stale-days", "build"]}
+                    11: ["archived_url", "archived_on"],
+                    12: ["--stale-days", "build", "agency-profile list", "agency-profile recheck", "`policy_check` before"]}
         for number, title in headings:
             body = parts[f"{number}. {title}"]
             self.assertIn("SITE-CONTENT.md#", body, f"task {number} links its SITE-CONTENT section")
@@ -197,14 +201,20 @@ class GuideTests(unittest.TestCase):
         self.assertGreaterEqual(len(results), 8)
         for command, code, err in results:
             if command.startswith("build ") and command.endswith("--check") and code != 0:
-                # the one limit the guide states: the agency page with a recorded action skips a heading level
-                self.assertIn("heading-skip", err, f"{command}: {err}")
+                # the one limit the guide states: on this agency's page the policy reading (h4) follows the name (h2)
+                self.assertIn("public/agencies/example-profile.html: heading-skip h2→h4", err, f"{command}: {err}")
+                self.assertIn("found 1 accessibility issue(s)", err, f"{command}: {err}")
                 continue
             self.assertEqual(code, 0, f"{command}: {err}")
         names = [command.split()[0] for command, _, _ in results]
         for needed in ("content-check", "doctor", "build", "content"):
             self.assertIn(needed, names)
+        for needed in ("content agency-profile list", "content agency-profile recheck"):
+            self.assertTrue(any(command.startswith(needed) for command, _, _ in results), needed)
         stored = next(a for a in json.loads(read(self.agencies)) if a["agency_id"] == AGENCY)
+        # the practice rechecks repeat the recorded dates, so nothing moved
+        self.assertEqual((stored["profile"]["alpr_policy"]["checked_on"], stored["profile"]["policy_check"]["checked_on"]),
+                         ("2026-10-21", "2026-10-22"))
         self.assertEqual(len(stored["profile"]["sharing"]["recipients"]), 2)
         for field in ("alpr_policy", "policy_check", "contract", "contract_check", "funding", "transparency", "reports"):
             self.assertIn(field, stored["profile"])
@@ -241,7 +251,7 @@ class GuideTests(unittest.TestCase):
         self.install(good)
         self.assertEqual(self.check()[0], 0)
 
-    def test_profile_dates_are_not_named_by_doctor_and_missing_is_not_zero(self):
+    def test_profile_dates_are_named_by_doctor_and_listed_and_missing_is_not_zero(self):
         agency = self.profile_from(self.guide)
         agency["profile"]["alpr_policy"]["checked_on"] = "2026-01-02"
         agency["profile"]["policy_check"]["checked_on"] = "2026-01-03"
@@ -253,6 +263,18 @@ class GuideTests(unittest.TestCase):
         self.assertIn(f"content/agencies.json:{AGENCY}.alpr_policy", out + err)
         self.assertIn(f"content/agencies.json:{AGENCY}.policy_check", out + err)
         self.assertIn("each dated object in the public", self.guide)
+        # the same dates, oldest first, from the list command; the document cannot outrun its reading
+        code, out, _ = run("content", "agency-profile", "list", "--directory", self.root, "--agency", AGENCY, "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual([(r["field"], r["checked_on"]) for r in json.loads(out)][:2],
+                         [("alpr_policy", "2026-01-02"), ("policy_check", "2026-01-03")])
+        recheck = ["content", "agency-profile", "recheck", "--directory", self.root, "--agency", AGENCY, "--checked-on",
+                   "2026-01-04", "--field"]
+        code, _, err = run(*recheck, "alpr_policy")
+        self.assertEqual(code, 1)
+        self.assertIn("Recheck policy_check first with --checked-on 2026-01-04 (or later), then retry alpr_policy.", err)
+        self.assertEqual([run(*recheck, field)[0] for field in ("policy_check", "alpr_policy")], [0, 0])
+        self.assertEqual(self.check()[0], 0)
         # a transparency number the portal did not show stays out of the record instead of becoming 0
         snapshot = self.profile_from(self.guide)["profile"]["transparency"][0]
         self.assertNotIn("hotlist_alerts", snapshot)
