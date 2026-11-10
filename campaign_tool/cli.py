@@ -1597,6 +1597,22 @@ def main():
                 leaf.add_argument("--fiscal-year")
             else:
                 leaf.add_argument("--published-on")
+    transparency_cmds = profile_cmds.add_parser(
+        "transparency", help="Record a vendor-portal snapshot (content only; nothing is fetched)").add_subparsers(
+        dest="profile_transparency_command", required=True)
+    snapshot = transparency_cmds.add_parser(
+        "add", help="Put one snapshot you transcribed from the vendor portal at the top of profile.transparency; the source "
+        "URL is built from the agency's verified flock_transparency_slug. A number you leave out stays 'not shown'; a "
+        "typed 0 is stored as 0. The portal is the vendor's report, not verified transfers")
+    snapshot.add_argument("--directory", required=True)
+    snapshot.add_argument("--agency", required=True, help="agency_id in content/agencies.json")
+    snapshot.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD",
+                          help="Day you read the portal: not after today, after the newest stored snapshot")
+    for flag in ("cameras", "retention-days", "searches-last-30-days", "hotlist-alerts", "shared-with-agencies"):
+        snapshot.add_argument(f"--{flag}", default=None, metavar="N", help="As the portal showed it (digits only; leave "
+                              "the flag out if the portal did not show it)" + (", at most 3650" if flag == "retention-days" else ""))
+    snapshot.add_argument("--drop-oldest", action="store_true",
+                          help="When 24 snapshots are stored, discard the oldest (only then) to make room")
     for verb, about in (("policy", "profile.alpr_policy: the posted ALPR policy document and the page you found it on"),
                         ("contract", "profile.contract: the signed agreement's vendor, term and optional stated cost")):
         writer = profile_cmds.add_parser(verb, help=f"Record {about} (the whole document; nothing is fetched)")
@@ -2499,6 +2515,11 @@ def main():
                 else:
                     result = content_profile.remove_profile_entry(root, args.agency, field, args.index)
                 sys.stdout.write(content_profile.format_profile_entry(result, added))
+            elif args.agency_profile_command == "transparency":
+                numbers = {key: content_profile.parse_snapshot_number(key, getattr(args, key))
+                           for key in content_profile.TRANSPARENCY_FIELDS if getattr(args, key) is not None}
+                sys.stdout.write(content_profile.format_transparency_snapshot(content_profile.add_transparency_snapshot(
+                    root, args.agency, args.checked_on, numbers, drop_oldest=args.drop_oldest)))
             elif args.agency_profile_command == "policy":
                 sys.stdout.write(content_profile.format_document(content_profile.write_policy(
                     root, args.agency, url=args.url, source_url=args.source_url, checked_on=args.checked_on,
