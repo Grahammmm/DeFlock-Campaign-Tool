@@ -3,6 +3,8 @@
 Run from the repository root: python3 -B -m unittest tests.test_finding_packet -v
 """
 import ast
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -371,6 +373,196 @@ class FindingPacketTests(unittest.TestCase):
         self.assertIn(ledger_list.LEDGER_SIZE_ERROR, self.packet(returncode=2).stderr)
         self.assertEqual((self.ledger.stat().st_size, self.ledger.stat().st_mtime_ns, sorted(os.listdir(self.base))),
                          (ledger_list.MAX_LEDGER_BYTES + 1, stamp, siblings))
+        self.assertFalse(os.path.lexists(self.out))
+
+    def arriving(self, make):
+        """Seam: ``make(target)`` runs after staging is complete, just before the real native no-replace rename."""
+        real = finding_packet._noreplace_rename()
+        self.assertIsNotNone(real)
+        calls = []
+
+        def seam():
+            def rename(source, target):
+                calls.append((source, target, sorted(os.listdir(source))))
+                make(Path(target))
+                return real(source, target)
+            return rename
+        return mock.patch.object(finding_packet, "_noreplace_rename", seam), calls
+
+    def failing(self, code):
+        calls = []
+
+        def seam():
+            def rename(source, target):
+                calls.append((source, target))
+                ctypes.set_errno(code)
+                return -1
+            return rename
+        return mock.patch.object(finding_packet, "_noreplace_rename", seam), calls
+
+    def test_arriving_empty_destination_is_preserved_at_native_install(self):
+        arrived = []
+
+        def make(target):
+            target.mkdir(mode=0o750)
+            os.chmod(target, 0o750)
+            arrived.append(os.lstat(target))
+        patch, calls = self.arriving(make)
+        before = trees(self.root)
+        with patch:
+            with self.assertRaises(ValueError) as caught:
+                finding_packet.build_packet(self.root, self.draft, self.out)
+        self.assertIn(f"{self.out} exists; choose a new folder", str(caught.exception))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][2], FILES)  # staging was complete when the install was attempted
+        now = os.lstat(self.out)
+        self.assertEqual((now.st_dev, now.st_ino, stat.S_IMODE(now.st_mode)),
+                         (arrived[0].st_dev, arrived[0].st_ino, 0o750))
+        self.assertEqual(os.listdir(self.out), [])
+        self.assertEqual(sorted(os.listdir(self.base))[:2], ["campaign", "draft.json"])
+        self.assertFalse([n for n in os.listdir(self.base) if n.startswith(".packet-x")])
+        self.assertEqual(trees(self.root), before)
+
+    def test_arriving_destination_types_never_replaced_or_followed(self):
+        (self.base / "referent").mkdir()
+        kinds = {
+            "dir": lambda t: t.mkdir(),
+            "nonempty": lambda t: (t.mkdir(), (t / "sentinel").write_bytes(b"keep")),
+            "file": lambda t: t.write_bytes(b"keep"),
+            "link": lambda t: t.symlink_to(self.base / "referent"),
+            "dangling": lambda t: t.symlink_to(self.base / "nowhere"),
+        }
+        for name, make in kinds.items():
+            with self.subTest(name):
+                patch, calls = self.arriving(make)
+                with patch, self.assertRaises(ValueError) as caught:
+                    finding_packet.build_packet(self.root, self.draft, self.out)
+                self.assertIn("exists; choose a new folder", str(caught.exception))
+                self.assertEqual(len(calls), 1)
+                mode = os.lstat(self.out).st_mode
+                if name in ("link", "dangling"):
+                    self.assertTrue(stat.S_ISLNK(mode))
+                    self.assertEqual(os.listdir(self.base / "referent"), [])
+                    self.assertFalse(os.path.lexists(self.base / "nowhere"))
+                elif name == "file":
+                    self.assertEqual(self.out.read_bytes(), b"keep")
+                elif name == "nonempty":
+                    self.assertEqual(os.listdir(self.out), ["sentinel"])
+                else:
+                    self.assertEqual(os.listdir(self.out), [])
+                self.assertFalse([n for n in os.listdir(self.base) if n.startswith(".packet-x")])
+                if os.path.isdir(self.out) and not os.path.islink(self.out):
+                    shutil.rmtree(self.out)
+                else:
+                    os.unlink(self.out)
+        self.out.mkdir()  # initially existing: the early diagnostic still wins, no native call
+        self.refused("exists; choose a new folder")
+
+    def test_absent_destination_atomic_install_retains_exact_packet(self):
+        seen = []
+        patch, calls = self.arriving(lambda t: seen.append(os.path.lexists(t)))
+        before = trees(self.root)
+        with patch:
+            result = finding_packet.build_packet(self.root, self.draft, self.out)
+        self.assertEqual(seen, [False])
+        self.assertEqual(calls[0][2], FILES)
+        self.assertEqual(result, {"written": str(self.out), "files": 9, "records": 2})
+        self.assertEqual(sorted(os.listdir(self.out)), FILES)
+        self.assertEqual((self.out / "draft.json").read_bytes(), self.draft.read_bytes())
+        for line in (self.out / "MANIFEST.sha256").read_text(encoding="ascii").splitlines():
+            digest, name = line.split("  ", 1)
+            self.assertEqual(sha((self.out / name).read_bytes()), digest, name)
+        for path in [self.out, *self.out.rglob("*")]:
+            self.assertEqual(stat.S_IMODE(os.lstat(path).st_mode), 0o700 if path.is_dir() else 0o600, path)
+        self.assertEqual(sorted(os.listdir(self.base)), ["campaign", "draft.json", "packet-x"] +
+                         sorted(f"record-{sha(d)[:8]}.txt" for d in RECORDS))
+        self.assertEqual(trees(self.root), before)
+
+    def test_no_replace_capability_unavailable_refuses_before_staging(self):
+        with mock.patch.object(finding_packet, "_noreplace_rename", lambda: None), \
+                mock.patch.object(os, "rename") as plain, mock.patch.object(os, "replace") as replace, \
+                mock.patch.object(os, "mkdir") as mkdir, mock.patch.object(tempfile, "mkdtemp") as staging:
+            self.refused(finding_packet._UNSUPPORTED)
+        for fake in (plain, replace, mkdir, staging):
+            fake.assert_not_called()
+        with mock.patch.object(sys, "platform", "darwin"):
+            self.assertIsNone(finding_packet._noreplace_rename())
+        self.assertFalse(os.path.lexists(self.out))
+
+    def test_native_unsupported_filesystem_refuses_and_cleans_only_staging(self):
+        (self.base / "sibling").write_bytes(b"keep")
+        for code in (errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP):
+            with self.subTest(code=code):
+                patch, calls = self.failing(code)
+                with patch, mock.patch.object(os, "rename") as plain:
+                    self.refused(finding_packet._UNSUPPORTED)
+                plain.assert_not_called()
+                self.assertEqual(len(calls), 1)
+        self.assertEqual((self.base / "sibling").read_bytes(), b"keep")
+        self.assertFalse(os.path.lexists(self.out))
+        patch, _ = self.failing(errno.EINVAL)
+        with patch:
+            result = self.cli_in_process(2)
+        self.assertEqual(result, ("", f"Stopped: {finding_packet._UNSUPPORTED}\n"))
+
+    def test_native_errors_are_not_retried_as_replacing_rename(self):
+        for code in (errno.EEXIST, errno.ENOTEMPTY):
+            with self.subTest(code=code):
+                patch, calls = self.failing(code)
+                with patch:
+                    self.refused("exists; choose a new folder")
+                self.assertEqual(len(calls), 1)
+        for code in (errno.EACCES, errno.EXDEV, errno.EIO):
+            with self.subTest(code=code):
+                patch, calls = self.failing(code)
+                before, siblings = trees(self.root), sorted(os.listdir(self.base))
+                with patch, mock.patch.object(os, "rename") as plain:
+                    with self.assertRaises(OSError) as caught:
+                        finding_packet.build_packet(self.root, self.draft, self.out)
+                self.assertEqual(caught.exception.errno, code)
+                plain.assert_not_called()
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(Path(calls[0][1]), self.out)
+                self.assertTrue(Path(calls[0][0]).name.startswith(".packet-x."))
+                self.assertEqual((trees(self.root), sorted(os.listdir(self.base))), (before, siblings))
+
+    def test_real_native_primitive_flags_and_conflict(self):
+        rename = finding_packet._noreplace_rename()
+        self.assertIsNotNone(rename)
+        source, target = self.base / "src", self.base / "dst"
+        source.mkdir()
+        (source / "f").write_bytes(b"x")
+        target.mkdir()
+        self.assertEqual(rename(source, target), -1)
+        self.assertEqual(ctypes.get_errno(), errno.EEXIST)
+        self.assertEqual((os.listdir(source), os.listdir(target)), (["f"], []))
+        target.rmdir()
+        self.assertEqual(rename(source, target), 0)
+        self.assertEqual(os.listdir(target), ["f"])
+
+    def cli_in_process(self, returncode):
+        """Real cli.main dispatch; returns (stdout, stderr)."""
+        import contextlib
+        import io
+        from campaign_tool import cli
+        out, err = io.StringIO(), io.StringIO()
+        argv = ["campaign_tool", "finding", "packet", str(self.draft), "--directory", str(self.root), "--out", str(self.out)]
+        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as code:
+                cli.main()
+        self.assertEqual(code.exception.code, returncode)
+        return out.getvalue(), err.getvalue()
+
+    def test_cli_conflict_and_support_refusal_emit_no_success(self):
+        patch, _ = self.arriving(lambda t: t.mkdir())
+        with patch:
+            stdout, stderr = self.cli_in_process(2)
+        self.assertEqual((stdout, stderr), ("", f"Stopped: {self.out} exists; choose a new folder\n"))
+        self.assertEqual(os.listdir(self.out), [])
+        with mock.patch.object(finding_packet, "_noreplace_rename", lambda: None):
+            self.out.rmdir()
+            stdout, stderr = self.cli_in_process(2)
+        self.assertEqual((stdout, stderr), ("", f"Stopped: {finding_packet._UNSUPPORTED}\n"))
         self.assertFalse(os.path.lexists(self.out))
 
     def test_no_network_imports(self):

@@ -1,12 +1,20 @@
 """DF2037-13: `finding packet DRAFT --directory D --out DIR`: a private folder for an outside reviewer.
 
 DIR must be new and outside D's public/, content/ and private/. Every check (records re-hashed) runs before anything
-is written into a temporary sibling folder, renamed to DIR at the end. Nothing is zipped, uploaded or sent."""
+is written into a temporary sibling folder, renamed to DIR at the end. Nothing is zipped, uploaded or sent.
+
+RF0345-3: the final install is one atomic renameat2(RENAME_NOREPLACE), so a DIR that appears (even empty) after the
+last check is refused and left untouched; only the builder's own staging folder is cleaned. This needs Linux with a
+filesystem supporting no-replace rename; elsewhere the command refuses before writing anything. There is no
+replacing-rename, mkdir or entry-by-entry fallback."""
+import ctypes
+import errno
 import hashlib
 import json
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from pathlib import Path
 
@@ -15,6 +23,8 @@ from .content import load_content, load_finding_preview
 from .evidence import PREFIX
 from .ledger_list import _snapshot
 
+_AT_FDCWD, _RENAME_NOREPLACE = -100, 1
+_UNSUPPORTED = "finding packet needs atomic no-replace directory rename support; nothing was written"
 MAX_RECORD_BYTES = 500 * 1024 * 1024
 CHUNK = 1024 * 1024
 README = """Finding review packet - CONFIDENTIAL WORKING MATERIAL
@@ -45,6 +55,21 @@ def _target(root, out):
         if target == protected or protected in target.parents:
             raise ValueError(f"{out}: --out is inside {name}/; choose a new folder outside public/, content/, private/")
     return target
+
+
+def _noreplace_rename():
+    """Linux renameat2(2) as a function (source, target) -> 0 or -1 (errno via ctypes.get_errno), or None."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        rename = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    except OSError:
+        return None
+    if rename is None:
+        return None
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    return lambda source, target: rename(_AT_FDCWD, os.fsencode(source), _AT_FDCWD, os.fsencode(target), _RENAME_NOREPLACE)
 
 
 def _preview_html(root, draft, label):
@@ -118,6 +143,9 @@ def build_packet(root, draft_path, out):
     """Write the packet; returns {"written": DIR, "files": n, "records": n}. Refusals raise before any write."""
     root = Path(root)
     target = _target(root, out)
+    rename = _noreplace_rename()
+    if rename is None:
+        raise ValueError(_UNSUPPORTED)
     draft = findings.load_draft(draft_path)
     raw = findings._read_json(draft_path, findings.MAX_DRAFT_BYTES, "draft", raw=True).encode("utf-8")
     if json.loads(raw) != draft:
@@ -167,9 +195,13 @@ def build_packet(root, draft_path, out):
         _create(staging / "MANIFEST.sha256", "".join(f"{manifest[p]}  {p}\n" for p in sorted(manifest)).encode())
         for folder in (staging / "records", staging):
             os.chmod(folder, 0o700)
-        if os.path.lexists(target):
-            raise ValueError(f"{target} exists; choose a new folder")
-        os.rename(staging, target)
+        if rename(staging, target) != 0:  # one call; never retried as a replacing rename
+            code = ctypes.get_errno()
+            if code in (errno.EEXIST, errno.ENOTEMPTY):
+                raise ValueError(f"{target} exists; choose a new folder")
+            if code in (errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP):
+                raise ValueError(_UNSUPPORTED)
+            raise OSError(code, os.strerror(code), str(target))
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
