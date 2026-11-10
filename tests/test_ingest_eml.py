@@ -526,6 +526,184 @@ class IngestEmlTests(unittest.TestCase):
         self.assertEqual((report["parts"], report["attachments"]), (200, []))
         self.assertEqual(report["message"]["outcome"], "would_store")
 
+    # RF0825-5: the saved file's own basename must be strict UTF-8 before anything is extracted or preserved
+    NAME_REFUSAL = "Message filename cannot be represented as UTF-8; nothing was imported"
+    RAW_LEAVES = (b"canary-name-9r-\xff.eml", b"canary-name-9r-\xc3(.eml")
+
+    def raw_file(self, leaf, data, parent=None):
+        """A real file whose exact POSIX name is the given bytes (optionally below a raw-byte directory)."""
+        directory = os.fsencode(self.inbox) + (b"/" + parent if parent else b"")
+        os.makedirs(directory, exist_ok=True)
+        fd = os.open(directory + b"/" + leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        return os.fsdecode(directory + b"/" + leaf)
+
+    def assert_name_refused(self, path, dry):
+        result = self.ingest(path, dry=dry, returncode=1)
+        self.assertEqual((result.stdout, result.stderr), ("", f"Stopped: {self.NAME_REFUSAL}\n"))
+        for value in ("canary-name-9r", "codec", "utf-8", "surrogate", "Dry run"):
+            self.assertNotIn(value, result.stdout + result.stderr)
+
+    def test_raw_eml_basename_refuses_before_preview_and_store(self):
+        from campaign_tool import ingest_eml
+        data = message((PDF, "application", "pdf", "a.pdf")).as_bytes()
+        paths = [self.raw_file(leaf, data) for leaf in self.RAW_LEAVES]
+        for populated in (False, True):
+            if populated:
+                self.ingest(self.write(message((CSV, "text", "csv", "good.csv")), "good.eml"), source_id="synthetic-0")
+            before = self.snapshot()
+            for path in paths:
+                for dry in (False, True):
+                    with self.subTest((populated, path, dry)):
+                        self.assert_name_refused(path, dry)
+                        self.assertEqual(self.snapshot(), before)
+            self.assertEqual((self.root / "private" / "ledger.sqlite").exists(), populated)
+        # the fixed refusal comes from the single guard, before any extract/lookup/database/preview/store seam
+        seams = {name: mock.patch.object(ingest_eml, name, side_effect=AssertionError(name))
+                 for name in ("_extract", "_ledger_lookup", "database", "_previewer", "_store_bytes")}
+        for dry in (False, True):
+            args = types.SimpleNamespace(eml=paths[0], source_id="synthetic-1", dry_run=dry)
+            with self.subTest(("seams", dry)), contextlib.ExitStack() as stack:
+                for patch in seams.values():
+                    stack.enter_context(patch)
+                with self.assertRaises(ValueError) as caught:
+                    ingest_eml.ingest_eml(args, self.root)
+            self.assertEqual(str(caught.exception), self.NAME_REFUSAL)
+            self.assertTrue(caught.exception.__suppress_context__)
+        # the apply defect: no message object may exist without a ledger row
+        self.cli("status", "--check")
+
+    def test_eml_filename_refusal_precedes_mime_processing(self):
+        from campaign_tool import ingest_eml
+        bad_encoding = mixed(("base64", "AP8B*gM="))
+        no_boundary = raw('Content-Type: multipart/mixed', "--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n")
+        over_limit = deep(200)
+        for number, (label, data, text) in enumerate((("encoding", bad_encoding, REFUSAL), ("boundary", no_boundary, None),
+                                                      ("parts", over_limit, None))):
+            for dry in (False, True):
+                with self.subTest((label, dry)):
+                    self.assert_name_refused(self.raw_file(self.RAW_LEAVES[0] + b"-%d-%d" % (number, dry), data), dry)
+            # representable leaf: the existing MIME refusal is unchanged
+            with self.subTest((label, "valid leaf")):
+                result = self.ingest(self.write(data, f"{label}.eml"), returncode=1)
+                self.assertTrue(result.stderr.startswith("Stopped: ") and "nothing was imported" in result.stderr)
+                self.assertNotIn(self.NAME_REFUSAL, result.stderr)
+                if text:
+                    self.assertEqual(result.stderr.strip(), f"Stopped: {text}")
+        # reader-first: a missing, symlinked, directory, FIFO or oversized input keeps its existing refusal
+        leaf = self.RAW_LEAVES[0]
+        missing = os.fsdecode(os.fsencode(self.inbox) + b"/" + leaf)
+        link = os.fsdecode(os.fsencode(self.inbox) + b"/link-" + leaf)
+        os.symlink(self.write(message(), "target.eml"), link)
+        folder = os.fsdecode(os.fsencode(self.inbox) + b"/dir-" + leaf)
+        os.mkdir(folder)
+        fifo = os.fsdecode(os.fsencode(self.inbox) + b"/fifo-" + leaf)
+        os.mkfifo(fifo)
+        args = lambda path: types.SimpleNamespace(eml=path, source_id="synthetic-1", dry_run=True)
+        for label, path in (("missing", missing), ("symlink", link), ("fifo", fifo)):
+            with self.subTest(label), self.assertRaises(ValueError) as caught:
+                ingest_eml.ingest_eml(args(path), self.root)
+            self.assertEqual(str(caught.exception), "--eml must be a regular, non-symlink file")
+        with self.assertRaises(OSError):  # a directory keeps the reader's own failure, never the filename refusal
+            ingest_eml.ingest_eml(args(folder), self.root)
+        big = self.raw_file(b"big-\xff.eml", b"x" * 100)
+        with mock.patch.object(ingest_eml, "MAX_BYTES", 10), self.assertRaises(ValueError) as caught:
+            ingest_eml.ingest_eml(args(big), self.root)
+        self.assertEqual(str(caught.exception), "Alpha limit: 50 MiB per message; nothing was imported")
+
+    def test_eml_unicode_leaf_and_raw_ancestor_are_supported(self):
+        base = message((PDF, "application", "pdf", "a.pdf"), (CSV, "text", "csv", "a.pdf")).as_bytes()
+        leaves = ["café-😀.eml", "cafe\u0301.eml", "記録.eml"]
+        stored, number = {}, 0
+        for leaf in leaves:
+            for parent in (None, b"anc-\xff/inner-\xc3("):
+                number += 1
+                data = base + f"\nsynthetic case {number}\n".encode()  # a distinct message per case
+                with self.subTest((leaf, parent)):
+                    path = self.raw_file(leaf.encode(), data, parent) if parent else self.write(data, leaf + "-plain")
+                    expected = leaf if parent else leaf + "-plain"
+                    preview = self.ingest(path, source_id=f"synthetic-{number}", dry=True)
+                    self.assertEqual(preview["message"]["outcome"], "would_store")
+                    report = self.ingest(path, source_id=f"synthetic-{number}")
+                    self.assertEqual(report["message"]["sha256"], hashlib.sha256(data).hexdigest())
+                    self.assertEqual(self.names(report), ["a.pdf", "a-2.pdf"])
+                    self.assertEqual(self.ingest(path, source_id=f"synthetic-{number}")["message"]["outcome"], "present")
+                    self.assertEqual((self.root / "private" / "objects" / report["message"]["sha256"]).read_bytes(), data)
+                    stored[expected] = report["message"]["sha256"]
+                    members = self.rows(f"SELECT member_path FROM contains WHERE container_sha256 = '{stored[expected]}'")
+                    self.assertEqual(sorted(r[0] for r in members), ["a-2.pdf", "a.pdf"])
+        names = {r[0] for r in self.rows("SELECT original_name FROM receipts")}
+        for expected in stored:  # the receipt is the exact leaf: no ancestor text, no normalization
+            self.assertEqual({n for n in names if n.split("/")[0] == expected},
+                             {expected, f"{expected}/a.pdf", f"{expected}/a-2.pdf"})
+        self.assertEqual(len(names), 3 * len(stored))
+        self.assertTrue(all("anc-" not in n and "inner-" not in n for n in names), names)
+        self.cli("status", "--check")
+
+    def test_bad_eml_retry_preserves_existing_same_digest_object_and_rows(self):
+        data = message((PDF, "application", "pdf", "a.pdf")).as_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        self.ingest(self.write(data, "valid.eml"))
+        bad = self.raw_file(b"raw-\xff.eml", data)
+        before = self.snapshot()
+        for dry in (False, True):
+            self.assert_name_refused(bad, dry)
+            self.assertEqual(self.snapshot(), before)
+        # a deliberate organizer rename uses ordinary intake: the existing object is simply present
+        renamed = os.fsdecode(os.fsencode(self.inbox) + b"/renamed.eml")
+        os.rename(bad, renamed)
+        self.assertEqual(self.ingest(renamed, source_id="synthetic-2")["message"]["outcome"], "present")
+        # a historical orphan (object without a ledger row) is neither adopted nor removed
+        orphan = b"synthetic orphan message\r\n"
+        orphan_digest = hashlib.sha256(orphan).hexdigest()
+        object_path = self.root / "private" / "objects" / orphan_digest
+        object_path.write_bytes(orphan)
+        bad2 = self.raw_file(b"orphan-\xff.eml", orphan)
+        before = self.snapshot()
+        for dry in (False, True):
+            self.assert_name_refused(bad2, dry)
+            self.assertEqual(self.snapshot(), before)
+        self.assertEqual(object_path.read_bytes(), orphan)
+        self.assertEqual(self.rows(f"SELECT count(*) FROM objects WHERE sha256 = '{orphan_digest}'"), [(0,)])
+        self.assertEqual(self.rows(f"SELECT count(*) FROM objects WHERE sha256 = '{digest}'"), [(1,)])
+
+    def test_eml_basename_error_is_fixed_and_value_free(self):
+        from campaign_tool import ingest_eml
+        for name in ("canary-9r-\udcff.eml", "x\udc80", "\ud800"):
+            with self.subTest(name), self.assertRaises(ValueError) as caught:
+                ingest_eml._require_receipt_name(name)
+            self.assertEqual(str(caught.exception), self.NAME_REFUSAL)
+            self.assertIsNone(caught.exception.__cause__)
+            self.assertTrue(caught.exception.__suppress_context__)
+        for name in ("m.eml", "café-😀.eml", "cafe\u0301.eml", "記録.eml"):
+            ingest_eml._require_receipt_name(name)
+        # unrelated failures are not masked as a filename problem
+        with self.assertRaises(AttributeError):
+            ingest_eml._require_receipt_name(None)
+        distinct = self.raw_file(b"basename-canary-9r-\xff.eml", message(html=False).as_bytes(),
+                                 b"ancestor-canary-9r")
+        for dry in (False, True):
+            result = self.ingest(distinct, dry=dry, returncode=1)
+            for value in ("basename-canary", "ancestor-canary", "Synthetic body"):
+                self.assertNotIn(value, result.stdout + result.stderr)
+
+    def test_representable_eml_retains_existing_reports_and_mail_contracts(self):
+        data = self.forward_eml("8bit", first=True)
+        path = self.write(data, "fwd-ok.eml")
+        preview = self.ingest(path, dry=True)
+        report = self.ingest(path)
+        self.assertEqual(self.names(report), ["first.bin", "fwd.eml"])
+        self.assertEqual(preview["attachments"], [{**item, "outcome": "would_store"} for item in report["attachments"]])
+        self.assertEqual((self.root / "private" / "objects" / report["message"]["sha256"]).read_bytes(), data)
+        self.assertEqual(self.ingest(path)["message"]["outcome"], "present")
+        # the documentation names the refusal and keeps the existing encoding and deep-tree wording
+        doc = (REPO_ROOT / "docs" / "INGEST-MAIL.md").read_text(encoding="utf-8")
+        self.assertIn(f"Stopped: {self.NAME_REFUSAL}", doc)
+        self.assertIn("rename the file to a\nvalid UTF-8 name", doc)
+        self.assertIn("Stopped: malformed MIME (InvalidAttachmentEncoding); nothing was imported", doc)
+        self.assertIn("Stopped: malformed MIME (RecursionError); nothing was imported", doc)
+
 
 if __name__ == "__main__":
     unittest.main()
