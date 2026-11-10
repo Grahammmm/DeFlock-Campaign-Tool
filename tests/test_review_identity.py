@@ -5,6 +5,7 @@ import json
 import shutil
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from campaign_tool import review
@@ -155,6 +156,53 @@ class ContentPathTests(unittest.TestCase):
                 self.assertIn("NaN", self.path.read_text())
                 with self.assertRaisesRegex(ContentError, r"review blockers \['unhashable_finding'\]"):
                     load_content(self.root)
+
+
+class RetiredRoleGateTests(unittest.TestCase):
+    """DF1109B-14: an approval in a retired role counts only when reviewed strictly before 00:00:00Z of that day."""
+
+    def roster(self, retired=None):
+        b = {"name": "synthetic-reviewer-b", "roles": ["legal"], "added_on": "2026-01-01"}
+        return {"reviewers": [{"name": "synthetic-reviewer-a", "roles": ["factual", "privacy"],
+                               "added_on": "2026-01-01"}, {**b, **({"retired_on": retired} if retired else {})}]}
+
+    def blockers(self, reviewed_at, roster):
+        item = finding()
+        found = receipts(item)
+        found[1]["reviewed_at"] = reviewed_at
+        return review.review_blockers(item, found, None, roster)
+
+    def test_retirement_midnight_boundary_offsets_and_bad_timestamps(self):
+        roster = self.roster({"legal": "2026-03-04"})
+        for counted in ("2026-03-03T23:59:59Z", "2026-03-03T23:59:59+00:00", "2026-03-04T01:59:59+02:00",
+                        "2026-01-01T00:00:00+00:00"):
+            with self.subTest(counted=counted):
+                self.assertEqual(self.blockers(counted, roster), [])
+        for refused in ("2026-03-04T00:00:00Z", "2026-03-03T19:00:00-05:00", "2026-03-04T02:00:00+02:00",
+                        "2026-03-03T23:59:59", "2026-03-03", "not a time", 20260303, ["2026-03-03T00:00:00Z"],
+                        "0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-23:59", "2026-03-03T00:00:00Z" + " " * 64):
+            with self.subTest(refused=refused):
+                self.assertEqual(self.blockers(refused, roster), ["missing_legal_review", "need_two_independent_reviewers"])
+        legacy = self.roster()  # no cutoff: legacy timestamp admission, even for a naive time
+        self.assertEqual(self.blockers("2026-03-03T23:59:59", legacy), [])
+        self.assertEqual(self.blockers("2026-03-03T23:59:59", None), [])
+        self.assertEqual(self.blockers("2026-03-03T23:59:59", {"reviewers": []}), [])
+
+    def test_role_cutoff_changes_person_count_not_other_roles(self):
+        item = finding()
+        both = [receipt(item, "factual", "synthetic-reviewer-a"), receipt(item, "legal", " Synthetic-Reviewer-B "),
+                receipt(item, "privacy", "synthetic-reviewer-b")]
+        roster = {"reviewers": [{"name": "synthetic-reviewer-a", "roles": ["factual"], "added_on": "2025-01-01"},
+                                {"name": "synthetic-reviewer-b", "roles": ["legal", "privacy"], "added_on": "2025-01-01",
+                                 "retired_on": {"privacy": "2025-12-31"}}]}
+        self.assertEqual(review.review_blockers(item, both, None, roster), ["missing_privacy_review"])
+        roster["reviewers"][1]["retired_on"] = {"legal": "2025-12-31", "privacy": "2025-12-31"}
+        self.assertEqual(review.review_blockers(item, both, None, roster),
+                         ["missing_legal_review", "missing_privacy_review", "need_two_independent_reviewers"])
+        roster["reviewers"][1]["retired_on"] = {"legal": "2026-01-02", "privacy": "2026-01-02"}
+        self.assertEqual(review.review_blockers(item, both, None, roster), [])
+        for role in ("factual", "privacy"):  # a retired role is checked against its own cutoff only
+            self.assertTrue(review.role_active_on(roster["reviewers"][1], role, date(2026, 1, 2)) is (role == "factual"))
 
 
 if __name__ == "__main__":

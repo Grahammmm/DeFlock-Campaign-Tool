@@ -451,7 +451,8 @@ class GuideTests(unittest.TestCase):
             ("campaign_tool", ("finding", "review-status")), ("campaign_tool", ("finding", "preview")),
             ("campaign_tool", ("finding", "packet")), ("campaign_tool", ("finding", "reply-request")),
             ("campaign_tool", ("finding", "reply")), ("campaign_tool", ("finding", "reviewers", "add")),
-            ("campaign_tool", ("finding", "reviewers", "list")), ("campaign_tool", ("finding", "assign")),
+            ("campaign_tool", ("finding", "reviewers", "list")), ("campaign_tool", ("finding", "reviewers", "retire")),
+            ("campaign_tool", ("finding", "assign")),
             ("campaign_tool", ("finding", "review")), ("campaign_tool", ("finding", "publish")),
             ("campaign_tool", ("content-check",)), ("campaign_tool", ("evidence",)),
             ("campaign_tool", ("kit-search-log",)), ("campaign_tool", ("build",)),
@@ -905,6 +906,43 @@ class GuideTests(unittest.TestCase):
             self.assertIsNone(re.search(pattern, text), label)
         for rationale in re.findall(r"--rationale \"([^\"]*)\"", text):
             self.assertLessEqual(len(rationale), 2000)
+
+    def test_retire_guide_examples_parse_and_replay_separately(self):
+        """DF1109B-14: the optional retirement block of task 7, run after the guide's own roster and assignment
+        lines against a synthetic campaign (the main walk never runs it)."""
+        guide = read(GUIDE)
+        retire = next([shlex.split(line) for line in command_lines(body)] for kind, body, _ in fences(guide)
+                      if kind == "bash" and "retire" in body)
+        setup = [shlex.split(line) for kind, body, _ in fences(guide) if kind == "sh" and "reviewers add" in body
+                 for line in command_lines(body)]
+        self.assertEqual([argv[3:6] for argv in setup], [["finding", "reviewers", "add"]] * 2
+                         + [["finding", "reviewers", "list"]] + [["finding", "assign", "$DRAFT"]] * 3)
+        with tempfile.TemporaryDirectory(prefix="synthetic-findings-guide-retire-") as temporary:
+            base = Path(temporary).resolve()
+            mapping = {"CAMPAIGN": base / "campaign", "DRAFT": base / "draft.json",  # a day both clocks accept
+                       "TODAY": min(datetime.now().date(), datetime.now(timezone.utc).date())}
+            self.assertEqual(run("init", "--directory", mapping["CAMPAIGN"], "--name", "Synthetic", "--county",
+                                 "Synthetic County", "--state", "ca")[0], 0)
+            mapping["DRAFT"].write_text(json.dumps({
+                "id": "syn-guide-1", "title": "Synthetic", "slug": "synthetic", "summary": "Synthetic.",
+                "classification": "documented_fact", "sources": [{"locator": "p. 1", "sha256": "a" * 64}],
+                "state": "draft", "author": "Author Z", "limitations": "None.", "counterevidence": "None."}),
+                encoding="utf-8")
+            for argv in setup + retire:
+                code, out, err = run(*substitute(argv[3:], mapping))
+                self.assertEqual(code, 0, f"{argv}: {err}")
+            roster = {e["name"]: e for e in findings.list_reviewers(mapping["CAMPAIGN"])["reviewers"]}
+            self.assertEqual(roster["Reviewer B"]["roles"], ["legal", "privacy"])  # nothing removed
+            self.assertEqual(roster["Reviewer B"]["retired_on"], {"privacy": str(mapping["TODAY"])})  # legal reinstated
+            self.assertNotIn("retired_on", roster["Reviewer A"])
+            draft = findings.load_draft(mapping["DRAFT"])
+            states = findings.assignment_states(mapping["CAMPAIGN"], draft)
+            self.assertEqual((states["legal"]["reviewer"], states["privacy"]["state"]),
+                             ("Reviewer C", "needs_reassignment"))
+            code, _, err = run("finding", "reviewers", "retire", "--directory", mapping["CAMPAIGN"], "--name",
+                               "Reviewer A")
+            self.assertEqual(code, 2)
+            self.assertIn("--on", err)
 
 
 if __name__ == "__main__":
