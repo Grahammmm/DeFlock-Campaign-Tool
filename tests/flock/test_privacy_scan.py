@@ -44,8 +44,10 @@ class PrivacyScanTest(unittest.TestCase):
         name = f"{f.parent}/story.md"
         self.assertEqual(out.splitlines(), [f"{name}:2: email", f"{name}:3: phone", f"{name}:4: plate",
                                             "files=1 scanned=1 skipped=0 findings=3 allowed=0"])
+        # The random temporary root can contain "555" by chance; the exact paths are asserted above, so exclude only that root.
+        shown = (out + err).replace(str(self.tmp), "<temporary-root>")
         for secret in (EMAIL, PHONE, PLATE, "555", "7ABC", "clerk", SENTINEL):
-            self.assertNotIn(secret, out + err)
+            self.assertNotIn(secret, shown)
 
     def test_two_categories_one_line_in_category_order(self):
         f = self.put("one.txt", f"{PLATE} then {EMAIL} then {PHONE} and other@x.example.org\n")
