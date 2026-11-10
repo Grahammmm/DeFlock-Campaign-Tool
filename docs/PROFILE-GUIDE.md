@@ -234,12 +234,19 @@ Reference: [SITE-CONTENT.md, reports the agency has published](SITE-CONTENT.md#r
 
 File: `content/agency-actions.json`, written by command. One dated action at a time, in the agency's own words
 (`--as-stated`, up to 200 characters), with the official source and the day you checked it; `--on` may not be after
-`--checked-on`. `add` has no update form; `remove --index N` takes the 1-based position in the file, which `add` prints.
-Meeting decisions stay in the meetings workflow, not here.
+`--checked-on`. `add` has no update form; `remove --index N` takes the 1-based position among that agency's actions in the
+file, which `add` prints and `list` shows. Meeting decisions stay in the meetings workflow, not here.
 
 ```sh
 python3 -m campaign_tool content agency-action add --directory $CAMPAIGN --agency ca-example-profile-pd --on 2026-09-01 --kind policy_posted --as-stated "Use policy posted on the department website" --source-url https://example.invalid/example-profile/policies --checked-on 2026-10-29
+python3 -m campaign_tool content agency-action list --directory $CAMPAIGN --agency ca-example-profile-pd
 ```
+
+`list` writes nothing and prints `AGENCY_ID | INDEX | ON | KIND LABEL | AS_STATED | SOURCE_URL | checked CHECKED_ON`, one
+line per action in file order (`none recorded` when there are none; `--json` for a JSON array). To drop a mistaken entry,
+list again immediately before removing (indices shift after every removal), then pass the printed `INDEX`, for example
+`python3 -m campaign_tool content agency-action remove --directory $CAMPAIGN --agency ca-example-profile-pd --index 1`.
+Listing is not a check of the source.
 
 Reference: [SITE-CONTENT.md, agency actions outside a meeting](SITE-CONTENT.md#agency-actions-outside-a-meeting-contentagency-actionsjson).
 
