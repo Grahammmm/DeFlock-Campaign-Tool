@@ -473,6 +473,251 @@ class PreserveTests(unittest.TestCase):
         self.history([{"on": "2026-03-02", "kind": "acknowledged"}, {"on": "2026-03-02", "kind": "extension"}])
         self.assertEqual(self.letter(self.make()), ref)  # valid history leaves the letter bytes unchanged
 
+    def tree(self):
+        return {str(p.relative_to(self.root)): (p.lstat().st_mode, p.lstat().st_mtime_ns,
+                p.read_bytes() if p.is_file() and not p.is_symlink() else None)
+                for p in (self.root, *self.root.rglob("*"))}
+
+    def source(self, data, request="main"):
+        path = self.root / "kit" / "requests" / f"{kit_track._stem(A, request)}.md"
+        path.write_bytes(data)
+        self.sent[kit_track._key(A, request)]["draft_sha256"] = hashlib.sha256(data).hexdigest()
+        self.save_sent()
+        return path
+
+    @contextlib.contextmanager
+    def source_io(self, path, *, before_open=None, after_open=None, after_stat=None,
+                  chunk=None, failure=None):
+        real_open, real_stat, real_read, real_close = os.open, os.fstat, os.read, os.close
+        events = {"fds": [], "reads": [], "closed": []}
+
+        def opening(name, flags, *args, **kwargs):
+            if Path(name) != path:
+                return real_open(name, flags, *args, **kwargs)
+            self.assertEqual(flags & (os.O_NOFOLLOW | os.O_NONBLOCK), os.O_NOFOLLOW | os.O_NONBLOCK)
+            if before_open:
+                before_open()
+            if failure == "open":
+                raise OSError("synthetic open failure")
+            fd = real_open(name, flags, *args, **kwargs)
+            events["fds"].append(fd)
+            if after_open:
+                after_open()
+            return fd
+
+        def inspecting(fd):
+            result = real_stat(fd)
+            if fd in events["fds"]:
+                if failure == "fstat":
+                    raise OSError("synthetic fstat failure")
+                if after_stat:
+                    after_stat()
+            return result
+
+        def reading(fd, count):
+            if fd not in events["fds"]:
+                return real_read(fd, count)
+            self.assertGreater(count, 0)
+            self.assertLessEqual(count, kit_preserve.MAX_DRAFT + 1 - sum(events["reads"]))
+            if failure == "read":
+                raise OSError("synthetic read failure")
+            data = real_read(fd, min(count, chunk) if chunk else count)
+            events["reads"].append(len(data))
+            return data
+
+        def closing(fd):
+            if fd in events["fds"]:
+                events["closed"].append(fd)
+            return real_close(fd)
+
+        with mock.patch("os.open", side_effect=opening), mock.patch("os.fstat", side_effect=inspecting), \
+                mock.patch("os.read", side_effect=reading), mock.patch("os.close", side_effect=closing):
+            yield events
+        self.assertEqual(events["closed"], events["fds"])
+        for fd in events["fds"]:
+            with self.assertRaises(OSError):
+                real_stat(fd)
+
+    def test_growth_after_real_fstat_refuses_before_hash_and_output(self):
+        for size in (kit_preserve.MAX_DRAFT + 1, kit_preserve.MAX_DRAFT * 3):
+            with self.subTest(size=size):
+                grown = b"\xff" + b"x" * (size - 1)
+                path = self.source(grown)
+                path.write_bytes(grown[:5])
+                state = []
+
+                def grow():
+                    with path.open("ab") as handle:
+                        handle.write(grown[5:])
+                    state.append(self.tree())
+
+                with self.source_io(path, after_stat=grow) as events, \
+                        mock.patch.object(kit_preserve.hashlib, "sha256", side_effect=AssertionError("hash before admission")), \
+                        mock.patch.object(kit_preserve, "_retention") as retention, \
+                        mock.patch.object(kit_preserve, "legal_notes") as notes:
+                    with self.assertRaisesRegex(ValueError, "larger than 1 MiB"):
+                        self.make()
+                self.assertEqual(sum(events["reads"]), kit_preserve.MAX_DRAFT + 1)
+                self.assertEqual(self.tree(), state[0])
+                retention.assert_not_called()
+                notes.assert_not_called()
+
+    def test_short_reads_exact_cap_and_utf8_byte_accounting(self):
+        for size in (0, kit_preserve.MAX_DRAFT - 1, kit_preserve.MAX_DRAFT, kit_preserve.MAX_DRAFT + 1):
+            with self.subTest(size=size):
+                data = b"x" * (size % 2) + "é".encode() * (size // 2)
+                path = self.source(data)
+                with self.source_io(path, chunk=7919) as events:
+                    if size > kit_preserve.MAX_DRAFT:
+                        with self.assertRaisesRegex(ValueError, "larger than 1 MiB"):
+                            self.make()
+                    else:
+                        self.assertEqual(self.make()["written"], f"kit/preservation/{A}--main.md")
+                self.assertEqual(sum(events["reads"]), size if size <= kit_preserve.MAX_DRAFT else 0)
+                if size <= kit_preserve.MAX_DRAFT:
+                    self.assertEqual(events["reads"][-1], 0)
+                    self.unlink()
+
+    def test_leaf_replaced_before_open_is_not_followed_or_blocked(self):
+        outside = self.root.parent / "outside.md"
+        for kind in ("live", "dangling", "directory", "fifo"):
+            with self.subTest(kind=kind):
+                path = self.source(b"same bytes")
+                outside.write_bytes(b"same bytes")
+                outside_before = (outside.read_bytes(), outside.stat().st_mtime_ns)
+                state = []
+
+                def replace():
+                    path.unlink()
+                    if kind == "directory":
+                        path.mkdir()
+                    elif kind == "fifo":
+                        os.mkfifo(path)
+                    else:
+                        path.symlink_to(outside if kind == "live" else self.root.parent / "missing")
+                    state.append(self.tree())
+
+                with self.source_io(path, before_open=replace) as events:
+                    with self.assertRaises((ValueError, OSError)):
+                        self.make()
+                self.assertEqual(events["reads"], [])
+                self.assertEqual(self.tree(), state[0])
+                self.assertEqual((outside.read_bytes(), outside.stat().st_mtime_ns), outside_before)
+                if path.is_dir():
+                    path.rmdir()
+                else:
+                    path.unlink()
+
+    def test_open_descriptor_remains_bound_after_pathname_replacement(self):
+        for replacement in ("file", "link"):
+            for matches in (True, False):
+                with self.subTest(replacement=replacement, matches=matches):
+                    path = self.source(b"original" if matches else b"replacement")
+                    path.write_bytes(b"original")
+                    outside = self.root.parent / "replacement.md"
+                    outside.write_bytes(b"replacement")
+                    moved = self.root.parent / "original.md"
+
+                    def replace():
+                        path.rename(moved)
+                        if replacement == "link":
+                            path.symlink_to(outside)
+                        else:
+                            path.write_bytes(b"replacement")
+
+                    with self.source_io(path, after_open=replace) as events:
+                        if matches:
+                            self.assertTrue(self.make()["written"])
+                        else:
+                            with self.assertRaisesRegex(ValueError, "differs from the draft recorded as sent"):
+                                self.make()
+                    self.assertEqual(sum(events["reads"]), len(b"original"))
+                    self.assertEqual(outside.read_bytes(), b"replacement")
+                    path.unlink()
+                    self.unlink()
+
+    def test_descriptor_closed_on_failures_and_no_unowned_close(self):
+        for failure, data, message in (("open", b"ok", "open failure"),
+                                       ("fstat", b"ok", "fstat failure"),
+                                       ("read", b"ok", "read failure"),
+                                       (None, b"\xff", "not UTF-8"),
+                                       (None, b"changed", "differs from the draft")):
+            with self.subTest(failure=failure, message=message):
+                path = self.source(b"ok")
+                path.write_bytes(data)
+                before = self.tree()
+                with self.source_io(path, failure=failure), \
+                        self.assertRaisesRegex((ValueError, OSError), message):
+                    self.make()
+                self.assertEqual(self.tree(), before)
+
+    def test_valid_letter_bytes_match_prechange_main_and_named(self):
+        # Captured from origin/main's verifier using these same synthetic inputs.
+        expected = {"main": "2d44822b224ef4df624a8ae6f70904b198304b23f004a7b55dae12b1edc6cf6f",  # pragma: allowlist secret
+                    "named": "a720e6cc7c2b6572336787dbd542ad282fd997a52bf7354932eb11b85adae94e"}  # pragma: allowlist secret
+        self.send(A, "named", "2026-03-02")
+        for request, digest in expected.items():
+            result = self.make(A, request)
+            self.assertEqual(result, {"written": f"kit/preservation/{A}--{request}.md", "agency_id": A,
+                                      "request": request, "note": "Draft only. Nothing was sent."})
+            self.assertEqual(hashlib.sha256((self.root / result["written"]).read_bytes()).hexdigest(), digest)
+
+    def test_replaced_named_source_cli_has_normal_error_boundary(self):
+        self.send(A, "named", "2026-03-02")
+        path = self.root / "kit" / "requests" / f"{A}--named.md"
+        outside = self.root.parent / "outside.md"
+        outside.write_bytes(path.read_bytes())
+        state = []
+
+        def replace():
+            path.unlink()
+            path.symlink_to(outside)
+            state.append(self.tree())
+
+        with self.source_io(path, before_open=replace):
+            code, out, err = run("kit-preserve", "--directory", self.root, "--agency", A, "--request", "named")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertTrue(err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(self.tree(), state[0])
+
+    def test_source_refusal_api_cli_preserves_private_tree(self):
+        for request in ("main", "named"):
+            self.send(A, request, "2026-03-02")
+            for existing in (False, True):
+                folder = self.root / "kit" / "preservation"
+                if existing:
+                    folder.mkdir(mode=0o700)
+                    (folder / "old.md").write_bytes(b"old private letter")
+                for use_cli in (False, True):
+                    with self.subTest(request=request, existing=existing, cli=use_cli):
+                        data = b"x" * (kit_preserve.MAX_DRAFT + 1)
+                        path = self.source(data, request)
+                        path.write_bytes(b"x")
+                        state = []
+
+                        def grow():
+                            path.write_bytes(data)
+                            state.append(self.tree())
+
+                        with self.source_io(path, after_stat=grow), \
+                                mock.patch("socket.socket", side_effect=AssertionError("network used")):
+                            if use_cli:
+                                code, out, err = run("kit-preserve", "--directory", self.root,
+                                                     "--agency", A, "--request", request)
+                                self.assertNotEqual(code, 0)
+                                self.assertEqual(out, "")
+                                self.assertIn("larger than 1 MiB", err)
+                                self.assertNotIn("Traceback", err)
+                            else:
+                                with self.assertRaisesRegex(ValueError, "larger than 1 MiB"):
+                                    self.make(A, request)
+                        self.assertEqual(self.tree(), state[0])
+                if existing:
+                    (folder / "old.md").unlink()
+                    folder.rmdir()
+
 
 if __name__ == "__main__":
     unittest.main()
