@@ -11,7 +11,7 @@ import re
 import stat
 from datetime import date, datetime, timezone
 
-from .content import FINDING_ID, ContentError, load_finding, load_meeting, utc_moment
+from .content import FINDING_ID, SLUG, ContentError, load_finding, load_meeting, utc_moment
 
 MAX_MARKDOWN_BYTES = 1 << 20
 MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -135,10 +135,12 @@ class _Index:
     def _invalid(self, path, message):
         self.rows.append(_row(path, 'input', 'unreadable', reasons=[{'code': 'invalid_input', 'message': message}]))
 
-    def _duplicates(self, seen, prefix):
+    def _duplicates(self, seen, prefix, skip=()):
         dup = {ident for ident, names in seen.items() if len(names) > 1}
         for ident in sorted(dup):
             for name in seen[ident]:
+                if name in skip:
+                    continue  # already reported once as failing its own checks
                 self._invalid(f'{prefix}/{name}', 'duplicate id')
         return dup
 
@@ -212,7 +214,7 @@ class _Index:
         if self._meetings is not None:
             return self._meetings
         state = {'ok': True, 'by_id': {}, 'uncertain': set()}
-        seen = {}
+        seen, failed_names = {}, set()
         fd, listed = self._folder(('content', 'meetings'))
         if not listed:
             state['ok'] = False
@@ -229,6 +231,14 @@ class _Index:
                     except (ContentError, KeyError, TypeError, ValueError):
                         self._invalid(f'content/meetings/{name}', 'meeting fails the staging checks')
                         state['uncertain'].add(stem)
+                        failed_names.add(name)
+                        # a malformed document still claims the identity it names, so it cannot be ignored
+                        claim = document.get('id') if isinstance(document, dict) else None
+                        if claim is None and isinstance(document, dict) and 'id' not in document:
+                            claim = stem
+                        if isinstance(claim, str) and SLUG.fullmatch(claim):
+                            seen.setdefault(claim, []).append(name)
+                            state['uncertain'].add(claim)
                         continue
                     ident = meeting['id'] or stem
                     seen.setdefault(ident, []).append(name)
@@ -238,7 +248,7 @@ class _Index:
                 state['ok'] = False
             finally:
                 os.close(fd)
-        state['uncertain'] |= self._duplicates(seen, 'content/meetings')
+        state['uncertain'] |= self._duplicates(seen, 'content/meetings', failed_names)
         self._meetings = state
         return state
 
