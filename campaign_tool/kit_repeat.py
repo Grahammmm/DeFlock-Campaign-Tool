@@ -4,10 +4,12 @@ The follow-on is a private, unsent named draft kit/requests/<agency>--<NEW>.md w
 and an explicit date range; kit/repeat-drafts.json (0600) binds it to its predecessor until kit-sent records it.
 Nothing is sent or published from this module.
 """
+import errno
 import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 from datetime import date, timedelta
 from pathlib import Path
@@ -59,7 +61,25 @@ def read_repeats(root):
         raise bad("not a regular file")
     if path.stat().st_size > kit_track.MAX_BYTES:
         raise bad("larger than 1 MiB")
-    with path.open("rb") as handle:
+    # The pathname checks above are only an early refusal. The object actually read is the one opened here without
+    # following a final-component symlink (leaf only; ancestors are not anchored) and re-checked on its descriptor.
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise bad("not a regular file") from None
+        raise
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise bad("not a regular file")
+        if opened.st_size > kit_track.MAX_BYTES:
+            raise bad("larger than 1 MiB")
+        handle = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    with handle:
         data = handle.read(kit_track.MAX_BYTES + 1)
     if len(data) > kit_track.MAX_BYTES:
         raise bad("larger than 1 MiB")

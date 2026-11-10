@@ -341,44 +341,52 @@ class KitRepeatTests(unittest.TestCase):
     # --- input admission (RF0145-7) ---------------------------------------------------------------
     @contextlib.contextmanager
     def payload_probe(self, *, growth=None, read_error=None, after_growth=None):
-        """Forward real stat/open/read calls; inject growth after the real size preflight."""
-        original_stat, original_open = Path.stat, Path.open
-        observed = {"stats": 0, "reads": [], "handles": [], "grew": False}
+        """Forward real open/fstat/fdopen/read calls on the metadata descriptor; inject growth after the real fstat."""
+        original_open, original_fstat, original_fdopen = os.open, os.fstat, os.fdopen
+        observed = {"reads": [], "handles": [], "grew": False, "descriptors": []}
         store = self.store
 
-        def checked_stat(path, *args, **kwargs):
-            result = original_stat(path, *args, **kwargs)
-            if path == store and kwargs.get("follow_symlinks", True):
-                observed["stats"] += 1
-                # is_file performs the first stat; the explicit size check is the second.
-                if observed["stats"] == 2 and growth is not None:
-                    self.assertLessEqual(result.st_size, kit_track.MAX_BYTES)
-                    with original_open(store, "wb") as writer:
-                        writer.write(growth)
-                    observed["grew"] = True
-                    if after_growth is not None:
-                        after_growth()
+        def checked_open(path, flags, *args, **kwargs):
+            fd = original_open(path, flags, *args, **kwargs)
+            if os.fspath(path) == str(store):
+                observed["descriptors"].append(fd)
+            return fd
+
+        def checked_fstat(fd):
+            result = original_fstat(fd)
+            if fd in observed["descriptors"] and growth is not None and not observed["grew"]:
+                self.assertLessEqual(result.st_size, kit_track.MAX_BYTES)
+                with open(store, "wb") as writer:
+                    writer.write(growth)
+                observed["grew"] = True
+                if after_growth is not None:
+                    after_growth()
             return result
 
-        @contextlib.contextmanager
-        def opened(path, *args, **kwargs):
-            with original_open(path, *args, **kwargs) as handle:
-                if path != store or (args[0] if args else kwargs.get("mode")) != "rb":
-                    yield handle
-                    return
-                observed["handles"].append(handle)
+        def checked_fdopen(fd, *args, **kwargs):
+            handle = original_fdopen(fd, *args, **kwargs)
+            if fd not in observed["descriptors"]:
+                return handle
+            observed["handles"].append(handle)
 
-                class ForwardingReader:
-                    def read(inner, size=-1):
-                        if read_error is not None:
-                            raise read_error
-                        data = handle.read(size)
-                        observed["reads"].append((size, len(data)))
-                        return data
+            class ForwardingReader:
+                def __enter__(inner):
+                    return inner
 
-                yield ForwardingReader()
+                def __exit__(inner, *exc):
+                    return handle.__exit__(*exc)
 
-        with mock.patch.object(Path, "stat", checked_stat), mock.patch.object(Path, "open", opened):
+                def read(inner, size=-1):
+                    if read_error is not None:
+                        raise read_error
+                    data = handle.read(size)
+                    observed["reads"].append((size, len(data)))
+                    return data
+
+            return ForwardingReader()
+
+        with mock.patch.object(os, "open", checked_open), mock.patch.object(os, "fstat", checked_fstat), \
+                mock.patch.object(os, "fdopen", checked_fdopen):
             yield observed
         self.assertTrue(all(handle.closed for handle in observed["handles"]))
 
