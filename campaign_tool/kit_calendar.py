@@ -41,8 +41,20 @@ def fold(line):
     return "\r\n ".join(parts)
 
 
+def _to_utc(moment):
+    """``moment`` in UTC (the usual ``astimezone`` semantics). A UTC instant outside datetime's year 1..9999 range
+    raises a fixed ValueError that names no value, so the command stops before anything is written."""
+    try:
+        return moment.astimezone(timezone.utc)
+    except OverflowError:
+        raise ValueError("kit-calendar timestamp is outside the supported UTC calendar; nothing was written") from None
+
+
 def _utc(moment):
-    return moment.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    """RFC 5545 UTC DATE-TIME ``YYYYMMDDTHHMMSSZ``. The year is padded to four digits explicitly: platform strftime
+    ``%Y`` leaves years below 1000 unpadded, which would make a malformed seven-digit date."""
+    utc = _to_utc(moment)
+    return f"{utc.year:04d}{utc.month:02d}{utc.day:02d}T{utc.hour:02d}{utc.minute:02d}{utc.second:02d}Z"
 
 
 def _label(row):
@@ -115,7 +127,7 @@ def _meeting_events(root, as_of):
         if deadline.date() < as_of:
             continue
         events.append({"uid": f"meeting-comment-{meeting['id']}@{DOMAIN}", "moment": deadline,
-                       "day": deadline.astimezone(timezone.utc).date().isoformat(),
+                       "day": _to_utc(deadline).date().isoformat(),
                        "summary": "Written comment deadline — " + meeting["body"], "url": part["source_url"]})
     return events
 
