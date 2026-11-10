@@ -197,10 +197,21 @@ def preserve_request(root, agency_id, *, request="main", today=None):
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
         raise ValueError(f"{relative} already exists (or is a link); nothing was overwritten") from None
+    # Ownership: this call owns the raw fd from the open above until os.fdopen returns; the stream owns it after.
+    raw = fd
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle = os.fdopen(fd, "w", encoding="utf-8")
+        raw = None
+        with handle:
             handle.write(text)
     except BaseException:
-        os.unlink(target)  # only the file this call just created
+        try:
+            if raw is not None:
+                try:
+                    os.close(raw)  # one attempt, only while still raw-owned; the primary failure is kept
+                except OSError:
+                    pass
+        finally:
+            os.unlink(target)  # only the file this call just created
         raise
     return {"written": relative, "agency_id": agency_id, "request": request, "note": NOTE}
