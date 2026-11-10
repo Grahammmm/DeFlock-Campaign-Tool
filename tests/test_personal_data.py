@@ -567,7 +567,7 @@ MODULE_FUNCTIONS = {
         '_meetings_multi', '_store_bytes', 'backup_drill_cmd', 'finding_preview', 'initialize', 'main', 'meetings_cmd',
         'readiness', 'weight_budget'
     ),
-    'content_init': ('_rename_noreplace', '_write', 'faq_document', 'init_content', 'init_from',),
+    'content_init': ('_rename_noreplace', '_write', 'add_starter', 'faq_document', 'init_content', 'init_from', 'starter_text',),
     'content_sharing': ('import_sharing',),
     'coverage': ('_write', 'add_coverage', 'remove_coverage',),
     'events': ('_install',),  # DF1109-14: content/events.json (organizer-typed public events); one atomic replace

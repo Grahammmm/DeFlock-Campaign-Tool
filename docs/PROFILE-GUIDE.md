@@ -31,8 +31,11 @@ source that day. A field you have not checked is *absent*, which is different fr
 found": absent means "not looked at yet", never "none".
 
 **How old dates are named today.** `doctor --stale-days N` names inputs dated more than N days ago, and it covers
-meeting data, map data, the agency seed, the law package's source dates and each dated object in the public
-`content/agencies.json` profile (named `content/agencies.json:<agency_id>.<field>`, see LAUNCH.md). It only reads and
+meeting data, map data, the agency seed, the law package's source dates, each dated object in the public
+`content/agencies.json` profile including each `reports[i]` check (named `content/agencies.json:<agency_id>.<field>`,
+see LAUNCH.md), each official in `content/officials.json`, each schedule in `content/body-schedules.json` and each
+`public_copy` check in `content/sources.json`. Historical records (agency actions, statements, coverage and elsewhere
+decisions) are left out on purpose: they record a past event, not a present fact to re-check. It only reads and
 names; it never fetches a source or changes a date, so rechecking a policy or contract and updating `checked_on` stays
 a manual step (task 12 below). `doctor` also reports from a profile `contracts_ending`: contracts whose `end` is within
 90 days (see the contract term section of [AGENCY-CARDS.md](AGENCY-CARDS.md#agency-contract-term)).

@@ -1453,6 +1453,13 @@ def main():
     )
     content_init.add_argument("--directory", required=True)
     content_init.add_argument("--from", dest="source_campaign")
+    add_starter_p = content_cmds.add_parser(
+        "add-starter", help="Add one packaged starter a fresh content init writes (faq, help-map or background) to an "
+                            "existing content/; refuses an existing target. --list shows which are present")
+    add_starter_p.add_argument("starter", nargs="?", choices=("faq", "help-map", "background"), metavar="NAME")
+    add_starter_p.add_argument("--directory", required=True)
+    add_starter_p.add_argument("--list", dest="list_starters", action="store_true",
+                               help="Print each starter, its target and present or absent; writes nothing")
     content_plain_p = content_cmds.add_parser("check-plain", help="Advisory plain-language check of content/pages, faq.json and "
                                               "glossary.json (read-only, never a gate; exit 0 with suggestions)")
     content_plain_p.add_argument("--directory", required=True)
@@ -1777,6 +1784,8 @@ def main():
             kit_cmd.error(", ".join(fee_only) + " only work with fee-reply")
     if args.command == "today" and args.backup_days is not None and args.backups is None:
         parser.error("--backup-days requires --backups")
+    if args.command == "content" and args.content_command == "add-starter" and (args.starter is None) != args.list_starters:
+        add_starter_p.error("give one starter NAME to add it, or --list alone to see them")
     if getattr(args, "contact_max_age_days", None) is not None and args.contact_max_age_days < 1:
         parser.error("--contact-max-age-days must be at least 1")
     if getattr(args, "stale_days", None) is not None and not 1 <= args.stale_days <= 3650:
@@ -1857,7 +1866,11 @@ def main():
             sys.exit(1)
         print(json.dumps(report, ensure_ascii=True) if args.as_json else render_text(report))
         sys.exit(exit_code(report))
-    root = Path(args.directory).expanduser().resolve()
+    root = Path(args.directory).expanduser()
+    if not (args.command == "content" and args.content_command == "add-starter"):  # add-starter refuses a symlinked root itself
+        root = root.resolve()
+    elif not root.is_absolute():
+        root = Path.cwd() / root
     try:
         if args.command == "init":
             initialize(args, root)
@@ -2255,6 +2268,16 @@ def main():
                     root, event_id=args.id, title=args.title, starts=args.starts, ends=args.ends, tz=args.tz,
                     venue=args.venue, online=args.online, description_file=Path(args.description_file).expanduser(),
                     url=args.url, accessibility_note=args.accessibility_note)))
+        elif args.command == "content" and args.content_command == "add-starter":
+            from .content_init import PUBLISHED_WARNING, add_starter, starter_status
+            if args.list_starters:
+                sys.stdout.write("".join(f"{name}\t{target}\t{'present' if present else 'absent'}\n"
+                                         for name, target, present in starter_status(root)))
+            else:
+                done = add_starter(root, args.starter)
+                print(f"{done['written']} written from the packaged {args.starter} starter. Replace every "
+                      f"\"[EDIT ME: ...]\" ({done['placeholders']}) before you publish.")
+                print(PUBLISHED_WARNING)
         elif args.command == "content":
             from .content_init import init_content
             print(json.dumps(init_content(root, args.source_campaign), indent=2))

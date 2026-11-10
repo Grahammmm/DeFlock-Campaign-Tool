@@ -99,31 +99,35 @@ def _law(jurisdiction, stale_days, today):
 
 
 PROFILE_FILE = "content/agencies.json"
-_MISSING = object()  # no content/agencies.json at all (distinct from a file holding JSON null)
+_MISSING = object()  # no such public file at all (distinct from a file holding JSON null)
+_BAD = object()  # present but unreadable: never echoed
 PROFILE_REFRESH = "recheck the source and update checked_on"
 PROFILE_SINGLETONS = ("alpr_policy", "contract", "policy_check", "contract_check", "pre_implementation_meeting",
                       "sharing")
+OFFICIALS_FILE, OFFICIAL_REFRESH = "content/officials.json", "re-check the official's page and update checked_on"
+SCHEDULES_FILE, SCHEDULE_REFRESH = "content/body-schedules.json", "re-check the body's calendar page and update checked_on"
+SOURCES_FILE, COPY_REFRESH = "content/sources.json", "re-download the public copy and run sources verify-copy"
 
 
-def _profile_document(root):
-    """The parsed public content/agencies.json: _MISSING when absent (a JSON null file is a document), "bad" when unreadable (never echoed)."""
+def _public_document(root, name):
+    """The parsed public content/<name>: _MISSING when absent (a JSON null file is a document), _BAD when unreadable."""
     import json
     import os
     import stat
     from .content import MAX_JSON_BYTES
-    path = root / "content" / "agencies.json"
+    path = root / "content" / name
     try:
         if not stat.S_ISREG(os.lstat(path).st_mode):  # symlink (even dangling), directory or FIFO: never opened
-            return "bad"
+            return _BAD
         with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                return "bad"
+                return _BAD
             data = handle.read(MAX_JSON_BYTES + 1)
-        return json.loads(data.decode("utf-8")) if len(data) <= MAX_JSON_BYTES else "bad"
+        return json.loads(data.decode("utf-8")) if len(data) <= MAX_JSON_BYTES else _BAD
     except FileNotFoundError:
         return _MISSING
     except (OSError, ValueError, RecursionError):
-        return "bad"
+        return _BAD
 
 
 def _profile_day(value):
@@ -137,22 +141,27 @@ def _profile_day(value):
     return None
 
 
+def _check(found, name, obj, refresh, stale_days, today):
+    """Append the entry for one dated object; False (nothing appended) when the object is not a JSON object."""
+    if not isinstance(obj, dict):
+        return False
+    entry = _dated(name, _profile_day(obj.get("checked_on")), refresh, stale_days, today)
+    if entry:
+        found.append(entry)
+    return True
+
+
 def _profiles(root, stale_days, today):
     """One entry per dated profile object in content/agencies.json (public file only; no private fallback)."""
     from .content import AGENCY_ID
-    document = _profile_document(root)
+    document = _public_document(root, "agencies.json")
     if document is _MISSING:
         return []
-    found, bad = [], document == "bad" or not isinstance(document, list)
+    found, bad = [], not isinstance(document, list)
 
     def check(name, obj):
         nonlocal bad
-        if not isinstance(obj, dict):
-            bad = True
-            return
-        entry = _dated(name, _profile_day(obj.get("checked_on")), PROFILE_REFRESH, stale_days, today)
-        if entry:
-            found.append(entry)
+        bad |= not _check(found, name, obj, PROFILE_REFRESH, stale_days, today)
 
     for entry in [] if bad else document:
         if not isinstance(entry, dict) or not isinstance(entry.get("agency_id"), str) \
@@ -169,16 +178,16 @@ def _profiles(root, stale_days, today):
         for field in PROFILE_SINGLETONS:
             if profile.get(field) is not None:
                 check(base + field, profile[field])
-        for field in ("funding", "transparency"):
+        for field in ("funding", "reports", "transparency"):
             items = profile.get(field)
             if items is None:
                 continue
             if not isinstance(items, list):
                 bad = True
                 continue
-            if field == "funding":
+            if field != "transparency":  # each funding source and each report's check is its own clock
                 for index, item in enumerate(items):
-                    check(f"{base}funding[{index}]", item)
+                    check(f"{base}{field}[{index}]", item)
                 continue
             newest = None  # the newest valid snapshot (first wins a tie); invalid ones are unknown
             for index, item in enumerate(items):
@@ -196,6 +205,51 @@ def _profiles(root, stale_days, today):
     return found
 
 
+def _rows(root, name, refresh, rows_of, stale_days, today):
+    """One entry per dated object ``rows_of(document)`` yields as (input id, object) from public content/<name>.
+
+    A missing file adds nothing; an unreadable file or a bad envelope or row shape adds one file-level ``unknown``
+    (valid sibling rows are still dated). Ids use stored zero-based positions, never the row's own text."""
+    document = _public_document(root, name)
+    if document is _MISSING:
+        return []
+    found, label, bad = [], "content/" + name, False
+    try:
+        for input_id, obj in rows_of(document):
+            bad |= obj is _BAD or not _check(found, f"{label}:{input_id}", obj, refresh, stale_days, today)
+    except (TypeError, KeyError, AttributeError):  # wrong envelope (including _BAD): nothing more to iterate
+        bad = True
+    return found + [_entry(label, "unknown", refresh)] * bad
+
+
+def _official_rows(document):
+    if document["schema_version"] != 1 or not isinstance(document["bodies"], list):
+        raise TypeError
+    for b, body in enumerate(document["bodies"]):
+        people = body.get("officials") if isinstance(body, dict) else None
+        if not isinstance(people, list):
+            yield f"bodies[{b}]", _BAD
+            continue
+        yield from ((f"bodies[{b}].officials[{i}]", person) for i, person in enumerate(people))
+
+
+def _schedule_rows(document):
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1 \
+            or not isinstance(document["schedules"], list):
+        raise TypeError
+    yield from ((f"schedules[{i}]", row) for i, row in enumerate(document["schedules"]))
+
+
+def _copy_rows(document):
+    if not isinstance(document, list):
+        raise TypeError
+    for i, source in enumerate(document):  # each present public_copy is its own check, even for a repeated digest
+        if not isinstance(source, dict):
+            yield f"[{i}]", _BAD
+        elif source.get("public_copy") is not None:
+            yield f"[{i}].public_copy", source["public_copy"]
+
+
 def stale_inputs(root, cfg, stale_days, today=None):
     """Stale, future-dated, unknown and absent inputs sorted by input name; fresh inputs are not listed."""
     today = today or date.today()
@@ -203,4 +257,7 @@ def stale_inputs(root, cfg, stale_days, today=None):
     found = [_meetings(root, stale_days, today), _map(root, stale_days, today), _seed(jurisdiction, stale_days, today)]
     found += _law(jurisdiction, stale_days, today)
     found += _profiles(root, stale_days, today)
+    found += _rows(root, "officials.json", OFFICIAL_REFRESH, _official_rows, stale_days, today)
+    found += _rows(root, "body-schedules.json", SCHEDULE_REFRESH, _schedule_rows, stale_days, today)
+    found += _rows(root, "sources.json", COPY_REFRESH, _copy_rows, stale_days, today)
     return sorted((e for e in found if e), key=lambda e: (e["input"], e.get("title", "")))
