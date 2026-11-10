@@ -216,6 +216,162 @@ class FindingSearchLogTests(unittest.TestCase):
             with self.subTest(name):
                 self.refused("no longer match a fresh read", tamper(function))
 
+    def tampered(self, function, name="tampered.json"):
+        summary = self.summary()
+        function(summary)
+        return self.write_summary(summary, name)
+
+    def test_schema_version_requires_exact_integer_before_object_read(self):
+        text = self.summary_path.read_text()
+        self.assertIn('"schema_version": 1,', text)
+        raw = {"1e0": '"schema_version": 1e0,', "1.0": '"schema_version": 1.0,', "true": '"schema_version": true,',
+               "false": '"schema_version": false,', "0": '"schema_version": 0,', "string": '"schema_version": "1",',
+               "null": '"schema_version": null,'}
+        for name, replacement in raw.items():
+            with self.subTest(name):
+                path = self.base / "version.json"
+                path.write_text(text.replace('"schema_version": 1,', replacement))
+                with mock.patch.object(finding_search_log, "_verified_object", side_effect=AssertionError("read")), \
+                        mock.patch.object(finding_search_log, "_write_draft", side_effect=AssertionError("write")):
+                    self.refused("not a version 1 kit-search-log", path)
+        self.assertEqual(self.written(self.draft())["agency_id"], AID)  # the real integer 1 still succeeds
+
+    def test_equal_valued_bool_and_float_counts_refuse_in_every_family(self):
+        def org_rows(s):
+            return s["organizations"]["rows"]
+        families = {
+            "rows.read float": lambda s: s["rows"].__setitem__("read", 23.0),
+            "rows.read exponent float": lambda s: s["rows"].__setitem__("read", 2.3e1),
+            "rows.counted float": lambda s: s["rows"].__setitem__("counted", 20.0),
+            "skip blank_row bool": lambda s: s["rows"]["skipped"].__setitem__("blank_row", True),
+            "skip column_count bool": lambda s: s["rows"]["skipped"].__setitem__("column_count", True),
+            "skip invalid_time bool": lambda s: s["rows"]["skipped"].__setitem__("invalid_time", True),
+            "skip invalid_time float": lambda s: s["rows"]["skipped"].__setitem__("invalid_time", 1.0),
+            "purpose vague bool": lambda s: s["purposes"]["counts"].__setitem__("vague", True),
+            "purpose other float": lambda s: s["purposes"]["counts"].__setitem__("other", 12.0),
+            "month first float": lambda s: s["months"]["rows"][0].__setitem__("count", 4.0),
+            "month last float": lambda s: s["months"]["rows"][-1].__setitem__("count", 9.0),
+            "org top float": lambda s: org_rows(s)[0].__setitem__("count", 5.0),
+            "org count bool": lambda s: org_rows(s)[3].__setitem__("count", True),
+            "eleventh org bool": lambda s: org_rows(s)[-1].__setitem__("count", True),
+            "unattributed bool": lambda s: s["organizations"].__setitem__("unattributed", False),
+            "unattributed float zero": lambda s: s["organizations"].__setitem__("unattributed", 0.0),
+            "unattributed negative zero": lambda s: s["organizations"].__setitem__("unattributed", -0.0),
+        }
+        for name, function in families.items():
+            with self.subTest(name):
+                path = self.tampered(function)
+                claimed, honest = json.loads(path.read_text()), self.summary()
+                self.assertEqual(dict(claimed, agency_name=None), dict(honest, agency_name=None))  # equal under ==
+                with mock.patch.object(finding_search_log, "_write_draft", side_effect=AssertionError("write")):
+                    self.refused("no longer match a fresh read", path)
+
+    def test_type_preserving_tree_equality_covers_containers_and_all_nodes(self):
+        same = finding_search_log._same_json
+        nested = {"a": [1, {"b": [0, 2.5, None, "x"]}], "c": {"d": True}}
+        before = copy.deepcopy(nested)
+        self.assertTrue(same(nested, copy.deepcopy(nested)))
+        self.assertTrue(same({"x": 1, "y": 2}, {"y": 2, "x": 1}))
+        self.assertEqual(nested, before)
+        for other in ({"a": [True, {"b": [0, 2.5, None, "x"]}], "c": {"d": True}},
+                      {"a": [1, {"b": [0.0, 2.5, None, "x"]}], "c": {"d": True}},
+                      {"a": [1, {"b": [0, 2.5, None, "x"]}], "c": {"d": 1}},
+                      {"a": [1, {"b": [False, 2.5, None, "x"]}], "c": {"d": True}},
+                      {"a": [1, {"b": [0, 2.5, 0, "x"]}], "c": {"d": True}},
+                      {"a": [1, {"b": [0, 2.5, None, "y"]}], "c": {"d": True}},
+                      {"a": [1, {"b": [0, 2.5, None]}], "c": {"d": True}},
+                      {"a": [1, {"b": [2.5, 0, None, "x"]}], "c": {"d": True}},
+                      {"a": [1, {"b": (0, 2.5, None, "x")}], "c": {"d": True}},
+                      {"a": [1, {"b": [0, 2.5, None, "x"], "extra": 1}], "c": {"d": True}},
+                      {"a": [1, {"b": [0, 2.5, None, "x"]}]},
+                      {"a": [1, [0, 2.5, None, "x"]], "c": {"d": True}}):
+            self.assertFalse(same(nested, other))
+            self.assertFalse(same(other, nested))
+        late = [list(range(50)) + [1]], [list(range(50)) + [True]]
+        self.assertFalse(same(*late))
+        self.assertFalse(same(1, True))
+        self.assertFalse(same("1", 1))
+        self.assertFalse(same(None, 0))
+        self.assertFalse(same("", None))
+        deep_a, deep_b = [], []
+        for _ in range(5000):
+            deep_a, deep_b = [deep_a], [deep_b]
+        self.assertTrue(same(deep_a, deep_b))  # an explicit stack, not Python recursion
+
+    def test_real_cli_refuses_type_only_tampering_without_output_or_draft(self):
+        cases = {"version true": lambda s: s.__setitem__("schema_version", True),
+                 "version float": lambda s: s.__setitem__("schema_version", 1.0),
+                 "rows.read float": lambda s: s["rows"].__setitem__("read", 23.0),
+                 "skip bool": lambda s: s["rows"]["skipped"].__setitem__("blank_row", True),
+                 "org float": lambda s: s["organizations"]["rows"][0].__setitem__("count", 5.0)}
+        for name, function in cases.items():
+            with self.subTest(name):
+                result = self.cli("finding", "new", "--directory", self.root, "--agency", AID, "--search-log",
+                                  self.tampered(function), returncode=2)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("Stopped:", result.stderr)
+                self.assertNotIn("Nothing was published", result.stderr)
+                for echoed in ("true", "True", "23.0", "5.0", "Org01"):
+                    self.assertNotIn(echoed, result.stderr)
+                self.assertFalse(self.drafts.exists())
+
+    def snapshot(self):
+        def stat_of(path):
+            info = path.stat()
+            return (path.read_bytes() if path.is_file() else None, stat.S_IMODE(info.st_mode), info.st_mtime_ns)
+        return {str(p.relative_to(self.root)): stat_of(p) for p in sorted(self.root.rglob("*"))
+                if "ledger.sqlite" not in p.name}
+
+    def test_type_refusal_preserves_absent_and_existing_private_outputs(self):
+        path = self.tampered(lambda s: s["rows"].__setitem__("read", 23.0))
+        self.assertFalse(self.drafts.exists())
+        before = self.snapshot()
+        with mock.patch.object(finding_search_log, "_write_draft", side_effect=AssertionError("write")):
+            self.refused("no longer match a fresh read", path)
+        self.cli("finding", "new", "--directory", self.root, "--agency", AID, "--search-log", path, returncode=2)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.drafts.exists())
+        self.draft()  # now an existing private/drafts directory
+        before = self.snapshot()
+        self.assertEqual(len(list(self.drafts.iterdir())), 1)
+        for function in (lambda s: s.__setitem__("schema_version", True),
+                         lambda s: s["purposes"]["counts"].__setitem__("vague", True)):
+            bad = self.tampered(function, "bad2.json")  # written beside, not inside, the campaign root
+            with mock.patch.object(finding_search_log, "_write_draft", side_effect=AssertionError("write")):
+                with self.assertRaises(ValueError):
+                    self.draft(bad)
+            self.cli("finding", "new", "--directory", self.root, "--agency", AID, "--search-log", bad, returncode=2)
+            self.assertEqual(self.snapshot(), before)
+
+    def test_valid_summary_json_reformatting_and_display_name_exception_remain_compatible(self):
+        def reverse(node):
+            if isinstance(node, dict):
+                return {key: reverse(node[key]) for key in reversed(list(node))}
+            return [reverse(item) for item in node] if isinstance(node, list) else node
+        summary = self.summary()
+        baseline = self.written(self.draft())
+        variants = {"compact sorted": json.dumps(summary, sort_keys=True, separators=(",", ":")),
+                    "reversed keys": json.dumps(reverse(summary), indent=4),
+                    "escape-only change": json.dumps(summary).replace("Org01", r"Org\u0030\u0031"),
+                    "other agency name": json.dumps(dict(summary, agency_name="Some Other Display Name")),
+                    "null agency name": json.dumps(dict(summary, agency_name=None))}
+        escaped = variants["escape-only change"]
+        self.assertIn("Org\\u0030\\u0031", escaped)  # one backslash at runtime, i.e. a JSON escape
+        self.assertNotIn("Org01", escaped)
+        self.assertEqual(json.loads(escaped), summary)  # decodes to the very same summary
+        for name, text in variants.items():
+            with self.subTest(name):
+                path = self.base / "variant.json"
+                path.write_text(text)
+                draft = self.written(self.draft(path))
+                self.assertEqual((draft["body_md"], draft["sources"], draft["title"]),
+                                 (baseline["body_md"], baseline["sources"], baseline["title"]))
+        no_org = b"Timestamp,Search Purpose\r\n2026-01-05,x\r\n2026-01-06,\r\n"
+        digest = self.ingest(no_org)
+        self.register(digest)
+        path = self.make_summary(no_org, "noorg.json", columns={"time": "Timestamp", "reason": "Search Purpose"})
+        self.assertIn("| organization column not available | n/a | 2 unattributed |", self.written(self.draft(path))["body_md"])
+
     def test_summary_structure_agency_and_custom_categories_refuse(self):
         def tamper(function):
             summary = self.summary()
