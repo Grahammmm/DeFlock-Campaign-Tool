@@ -4,13 +4,14 @@ An optional JSON array of 1-100 entries. The organizer reads each decision off t
 the date; this module checks syntax only. It never fetches a URL, infers a place, ranks, counts or reconciles anything.
 Build raises the first problem; content-check collects every independent problem with the same messages.
 """
+import json
 import os
 import re
 import unicodedata
 from datetime import date
 from pathlib import Path
 
-from .content import ContentError, _https, _read_json, plain_text
+from .content import MAX_JSON_BYTES, ContentError, _https, plain_text
 
 FILE = "elsewhere.json"
 KINDS = ("ended_contract", "paused", "declined", "adopted_ordinance", "restricted_sharing", "audit_ordered", "other")
@@ -126,10 +127,42 @@ def load_elsewhere(document, *, today=None, problems=None):
     return None
 
 
+class _RepeatedMember(Exception):
+    """A JSON object repeated a member name (private; translated to ``ContentError`` without the name)."""
+
+
+def _no_repeats(pairs):
+    found = {}
+    for key, value in pairs:
+        if key in found:
+            raise _RepeatedMember
+        found[key] = value
+    return found
+
+
+def _read_strict(path):
+    """``content._read_json`` (same size cap, UTF-8 and symlink rules) that refuses a repeated member name at any depth.
+
+    The decoder would otherwise keep the last value, so the file would have two readings: the maintenance commands
+    refuse it already. The refusal names neither the repeated key nor either value."""
+    if path.is_symlink():
+        raise ContentError(f"{path.name}: symlinks are not read")
+    data = path.read_bytes()
+    if len(data) > MAX_JSON_BYTES:
+        raise ContentError(f"{path.name}: file too large")
+    try:
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_no_repeats)
+    except _RepeatedMember:
+        raise ContentError(f"{path.name}: a JSON object repeats a key") from None
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ContentError(f"{path.name}: not valid UTF-8 JSON ({exc})") from None
+
+
 def read_elsewhere(root, today=None, problems=None):
     """``load_elsewhere`` of ``<root>/content/elsewhere.json``; None when the file is absent.
 
-    A symlink (even dangling), folder or other non-regular path is refused, never skipped."""
+    A symlink (even dangling), folder or other non-regular path is refused, never skipped.
+    A JSON object that repeats a member name (identical or conflicting values) is refused as one file-level problem."""
     path = Path(root) / "content" / FILE
     try:
         if path.is_symlink():
@@ -139,7 +172,7 @@ def read_elsewhere(root, today=None, problems=None):
         if not path.is_file():
             raise ContentError(f"{FILE}: must be a regular file, not a symlink or folder")
         try:
-            document = _read_json(path)
+            document = _read_strict(path)
         except OSError:
             raise ContentError(f"{FILE}: could not be read") from None
         except RecursionError:
