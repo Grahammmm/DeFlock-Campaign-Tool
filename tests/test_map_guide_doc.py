@@ -349,7 +349,7 @@ class GuideTests(unittest.TestCase):
             else:
                 scopes.add(next(name for name in ("bbox", "relation", "from_file") if getattr(args, name)))
         self.assertEqual(seen, {("content-check", None), ("build", None), ("map", "survey-sheet"),
-                                ("map", "survey-import"), ("content", "init")})
+                                ("map", "survey-import"), ("content", "init"), ("content", "add-starter")})
         self.assertEqual(scopes, {"bbox", "relation", "from_file"})  # every scope alternative is shown
         city = [argv for kind, argv, fence in commands if "survey-sheet" in argv and fence == "sh"][0]
         self.assertEqual(city[city.index("--city") + 1], CITY)  # the quoted city survives shlex as one argument
@@ -574,6 +574,8 @@ class GuideTests(unittest.TestCase):
                                   "--state", "ca"])[0], 0)
         box.play(7)
         page = fresh / "content" / "pages" / "help-map.json"
+        # the existing-campaign recipe ran as written: $CAMPAIGN had no pages/, now holds the same packaged bytes
+        self.assertEqual((box.root / "content" / "pages" / "help-map.json").read_bytes(), page.read_bytes())
         document = json.loads(read(page))
         self.assertEqual(document, json.loads(read(REPO_ROOT / "examples" / "pages" / "help-map.json")))
         self.assertGreaterEqual(document["body_md"].count("[EDIT ME: verify for this campaign]"), 6)
