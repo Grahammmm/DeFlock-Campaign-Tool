@@ -146,11 +146,15 @@ class GuideTests(unittest.TestCase):
                 argv = shlex.split(line)
                 if argv[:3] != ["python3", "-m", "campaign_tool"]:
                     raise AssertionError(f"not a campaign_tool command: {line}")
-                writer = argv[3:5] == ["content", "agency-profile"] and argv[5] in ("policy", "contract", "policy-check", "contract-check")
+                writer = argv[3:5] == ["content", "agency-profile"] and argv[5] in ("policy", "contract", "policy-check", "contract-check", "funding", "report")
                 if writers_only and not writer:
                     continue
                 arguments = [re.sub(r"\$([A-Z]+)", lambda m: mapping[m.group(1)], token) for token in argv[3:]]
-                code, _, err = run(*arguments)
+                code, out, err = run(*arguments)
+                if writer:
+                    self.assertEqual(run("content-check", "--directory", root)[0], 0, line)
+                    if argv[5:7] == ["funding", "add"]:
+                        self.assertIn("Reminder: check that the name is not a person.\n", out)
                 if writers_only:
                     self.assertEqual(code, 0, f"{line}: {err}")
                 results.append((" ".join(argv[3:]), code, err))
@@ -231,6 +235,18 @@ class GuideTests(unittest.TestCase):
         # the practice rechecks repeat the recorded dates, so nothing moved
         self.assertEqual((stored["profile"]["alpr_policy"]["checked_on"], stored["profile"]["policy_check"]["checked_on"]),
                          ("2026-10-21", "2026-10-22"))
+        for field, expected in (("funding", {"kind": "grant", "name": "Synthetic Safety Program",
+                                              "as_stated_in": "Synthetic grant award letter", "amount_usd": "50000",
+                                              "period": "total", "fiscal_year": "2026",
+                                              "source_url": "https://example.invalid/example-profile/award",
+                                              "checked_on": "2026-10-25"}),
+                                ("reports", {"title": "2025 Annual ALPR Report", "kind": "annual_report",
+                                             "period_start": "2025-01-01", "period_end": "2025-12-31",
+                                             "source_url": "https://example.invalid/example-profile/reports/2025",
+                                             "checked_on": "2026-10-28", "published_on": "2026-02-01"})):
+            self.assertEqual(stored["profile"][field], [expected])
+        for number in ("6. Record how the agency is paid for", "9. Record reports the agency has published"):
+            self.assertFalse([kind for kind, _ in fences(sections(self.guide)[number]) if kind == "json"])
         self.assertEqual(len(stored["profile"]["sharing"]["recipients"]), 2)
         for field in ("alpr_policy", "policy_check", "contract", "contract_check", "funding", "transparency", "reports"):
             self.assertIn(field, stored["profile"])

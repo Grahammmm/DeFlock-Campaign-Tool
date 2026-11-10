@@ -106,7 +106,7 @@ def _read_all(fd, limit, offset=0):
     return data
 
 
-def _read_target(content_fd):
+def _read_target(content_fd, *, single_link=False):
     """-> (fd, fstat, bytes) of content/agencies.json opened relative to the admitted directory; the fd stays open."""
     try:
         fd = os.open(TARGET, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=content_fd)
@@ -118,6 +118,8 @@ def _read_target(content_fd):
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise SharingImportError("content/agencies.json: must be a regular file")
+        if single_link and info.st_nlink != 1:
+            raise SharingImportError("content/agencies.json: must not have hard links")
         data = _read_all(fd, MAX_JSON_BYTES)
         if len(data) > MAX_JSON_BYTES:
             raise SharingImportError("content/agencies.json: file too large")
