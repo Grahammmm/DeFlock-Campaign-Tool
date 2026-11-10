@@ -53,6 +53,18 @@ def _store(root, today):
     return [] if document is COVERAGE_ABSENT else coverage_entries(document, today=today)
 
 
+def list_coverage(root, *, today=None):
+    """DF1109B-05, read only: the entries in stored order with their exact URLs, checked by the build's reader, schema and
+    published-finding reference check (no site.json needed); [] when there is no file."""
+    today = today or date.today()
+    document = read_coverage_document(root)
+    if document is COVERAGE_ABSENT:
+        return []
+    findings = _published_findings(Path(root) / "content", coverage_entries(document, today=today))
+    return [{key: entry[key] for key in ("published_on", "outlet", "headline", "url", "kind", "findings")}
+            for entry in load_coverage(document, findings, today=today)]
+
+
 def _write(content, document):
     try:
         data = (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
