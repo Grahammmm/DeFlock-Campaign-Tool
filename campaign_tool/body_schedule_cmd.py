@@ -6,7 +6,7 @@ import functools
 import json
 import os
 import stat
-import tempfile
+import secrets
 from datetime import date
 from pathlib import Path
 
@@ -42,13 +42,11 @@ def _content_dir(root):
     return content
 
 
-def _target_mode(content):
-    if content.is_symlink() or not content.is_dir():
-        raise BodyScheduleError("content/ must be an existing real directory")
-    target = content / schedules.FILE
-    if not os.path.lexists(target):
+def _target_mode(dir_fd):
+    try:
+        info = os.stat(schedules.FILE, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
         return 0o644
-    info = target.lstat()
     if not stat.S_ISREG(info.st_mode):
         raise BodyScheduleError("body-schedules.json: must be a regular non-symlink file")
     return stat.S_IMODE(info.st_mode)
@@ -60,7 +58,7 @@ _UNCONFIRMED = ("body-schedules.json: the change was installed, but directory sy
 
 
 def _open_directory(content):
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     fd = os.open(content, flags)
     try:
         if not stat.S_ISDIR(os.fstat(fd).st_mode):
@@ -71,12 +69,26 @@ def _open_directory(content):
     return fd
 
 
+def _check_directory(content, dir_fd):
+    current = content.lstat()
+    held = os.fstat(dir_fd)
+    if (not stat.S_ISDIR(current.st_mode)
+            or (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino)):
+        raise OSError("content directory changed")
+
+
+def _temp_name():
+    return f".body-schedules-{secrets.token_hex(16)}.tmp"
+
+
 def _write(content, rows, day):
     """Persist rows as: file fsync -> atomic replace -> content/ directory fsync -> return.
 
     Before the replacement succeeds, any OSError means the previous file was kept. After it,
     a directory-sync failure means the new store IS installed but its durability is unconfirmed;
     that state is never rolled back and never reported as ordinary success.
+    Namespace operations stay relative to the acquired directory, even if it is renamed
+    after the final identity observation. These observations are not a writer lock.
     """
     rows = schedules.load_body_schedules({"schema_version": 1, "schedules": rows}, today=day)
     try:
@@ -85,21 +97,36 @@ def _write(content, rows, day):
         raise BodyScheduleError("body-schedules.json: text is not valid UTF-8") from None
     if len(data) > MAX_JSON_BYTES:
         raise BodyScheduleError(f"body-schedules.json: would exceed {MAX_JSON_BYTES} bytes; nothing was changed")
-    mode = _target_mode(content)
     name = None
+    handle = None
     dir_fd = None
     installed = False
     try:
         try:
             dir_fd = _open_directory(content)
-            handle, name = tempfile.mkstemp(dir=content, prefix=".body-schedules-", suffix=".tmp")
-            with os.fdopen(handle, "wb") as out:
+            _check_directory(content, dir_fd)
+            mode = _target_mode(dir_fd)
+            for _ in range(10):
+                candidate = _temp_name()
+                try:
+                    handle = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                     0o600, dir_fd=dir_fd)
+                except FileExistsError:
+                    continue
+                name = candidate  # ownership begins only after exclusive creation succeeds
+                break
+            else:
+                raise OSError("temporary name collisions")
+            out = os.fdopen(handle, "wb")
+            handle = None  # the stream now owns the descriptor
+            with out:
                 os.fchmod(out.fileno(), mode)
                 out.write(data)
                 out.flush()
                 os.fsync(out.fileno())
-            _target_mode(content)  # refuse a changed entry type before replacement; not a writer lock
-            os.replace(name, content / schedules.FILE)
+            _target_mode(dir_fd)  # refuse a changed store type; not a writer lock
+            _check_directory(content, dir_fd)
+            os.replace(name, schedules.FILE, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
             installed = True
         except OSError:
             raise BodyScheduleError(_KEPT) from None
@@ -108,14 +135,19 @@ def _write(content, rows, day):
         except OSError:
             raise BodyScheduleError(_UNCONFIRMED) from None
     finally:
-        if dir_fd is not None:
+        if handle is not None:
             try:
-                os.close(dir_fd)
+                os.close(handle)
             except OSError:
                 pass
         if name is not None and not installed:
             try:
-                os.unlink(name)
+                os.unlink(name, dir_fd=dir_fd)
+            except OSError:
+                pass
+        if dir_fd is not None:
+            try:
+                os.close(dir_fd)
             except OSError:
                 pass
 
