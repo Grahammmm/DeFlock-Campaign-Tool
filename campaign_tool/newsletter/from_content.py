@@ -17,11 +17,30 @@ group label and the cameras page path (nothing else from the map); without histo
 agency page's own state sentence (``site.asked_sentence``) and the agency page path.
 ``events`` (DF1107-09) is added only when ``content/events.json`` holds events: id, title, starts_at, ends_at, venue or
 online and the ``/events.html#event-<id>`` path; never the description, accessibility note or details URL.
+``updates`` (DF1109-06) is added only when a published finding has an Update dated in the draft window (the since day
+through ``now``'s day): ``{title, path, date, note}``, every such Update, the note in full. ``actions`` likewise, from
+each agency's public actions: ``{agency, kind, as_stated, date, source_url}`` with the agency name, the English kind label
+and ``date`` = the action's ``on``; never ``agency_id``, ``checked_on`` or anything under ``kit/``.
 """
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from ..content import load_content, utc_moment
+from ..labels import DEFAULTS
 from ..site import asked_sentence
+from .draft import action_order, in_window, update_order
+
+
+def _updates(model, since, now):
+    rows = [{"title": f["title"], "path": f"/findings/{f['slug']}.html", "date": u["date"], "note": u["note"]}
+            for f in model["findings"] for u in f.get("updates", ()) if in_window(date.fromisoformat(u["date"]), since, now)]
+    return {"updates": update_order(rows)} if rows else {}
+
+
+def _actions(model, since, now):
+    rows = [{"agency": agency["name"], "kind": DEFAULTS["agency.action_kind_" + a["kind"]], "as_stated": a["as_stated"],
+             "date": a["on"], "source_url": a["source_url"]}
+            for agency in model["agencies"] for a in agency.get("actions", ()) if in_window(date.fromisoformat(a["on"]), since, now)]
+    return {"actions": action_order(rows)} if rows else {}
 
 
 def _requests(model, today):
@@ -84,8 +103,10 @@ def manifest_from_content(root, cfg, since=None, now=None):
                   "meeting_path": f"/meetings/{m['id']}.html"} for m in recorded]
     history = (model.get("map") or {}).get("history")
     camera_map = {"map": {"records": history, "label": model["map"]["group_label"], "path": "/cameras.html"}} if history else {}
+    now = now or datetime.now(timezone.utc)
+    start = datetime.fromisoformat(since.replace("Z", "+00:00")) if since else None
     return {"schema_version": 1,
             "campaign": {"name": cfg["name"], "base_url": model["site"]["base_url"], "county_name": cfg["county"]},
             "since": since, "findings": findings, "meetings": meetings, "decisions": decisions,
-            "requests": _requests(model, (now or datetime.now(timezone.utc)).date()), "records": _records(model), **camera_map,
-            **_events(model)}
+            "requests": _requests(model, now.date()), "records": _records(model), **camera_map,
+            **_events(model), **_updates(model, start, now), **_actions(model, start, now)}

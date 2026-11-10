@@ -14,7 +14,9 @@ The manifest shape matches ``newsletterManifest`` in the workspace Worker::
      "requests": [{"agency", "topic", "asked_on", "updated_on", "state", "sentence", "path"}],  # optional, --from-content
      "records": [{"title", "agency", "received_at", "prefix", "public_url", "path"}],  # optional, --from-content
      "map": {"records": [{"recorded_on", "osm_base", "source", "total", "by_city", "added", "removed"}],
-             "label": "...", "path": "/cameras.html"}}  # optional, --from-content, only with map history
+             "label": "...", "path": "/cameras.html"},  # optional, --from-content, only with map history
+     "updates": [{"title", "path", "date": "YYYY-MM-DD", "note"}],  # optional, --from-content, only when nonempty
+     "actions": [{"agency", "kind", "as_stated", "date": "YYYY-MM-DD", "source_url"}]}  # likewise (DF1109-06)
 
 ``corrections`` is optional (``--from-content`` sets it; Worker manifests omit it).
 ``participation`` likewise: an object adds a "How to take part" line, null the
@@ -34,7 +36,9 @@ from html import escape
 from pathlib import Path
 
 from ..agency_cards import text as plain_text
+from ..finding_updates import NOTE_MAX as UPDATE_NOTE_MAX, UpdateError, validate_update_note
 from ..kit import _kit_folder
+from ..labels import DEFAULTS as LABEL_DEFAULTS
 from ..legal_claims import legal_notes as legal_claim_notes
 from ..markdown_lite import render
 from ..privacy_patterns import EMAIL, categories
@@ -288,6 +292,111 @@ def _map(doc, since, now, base_url):
     return lines
 
 
+# DF1109-06: optional public finding Updates and agency actions. Exact row keys; the English action kind labels only.
+UPDATE_ROW_KEYS = frozenset(("title", "path", "date", "note"))
+ACTION_ROW_KEYS = frozenset(("agency", "kind", "as_stated", "date", "source_url"))
+ACTION_KIND_LABELS = frozenset(v for k, v in LABEL_DEFAULTS.items() if k.startswith("agency.action_kind_"))
+# Exactly what content ``_https`` accepts (agency_actions.MAX_URL = 500 characters overall): the rest after the host
+# may start at ``/``, ``?`` or ``#``. The length is capped by ``_source_url``, never by a regex repeat count.
+_SOURCE_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::\d{1,5})?(?:[/?#][A-Za-z0-9._~/?#&=%+:-]*)?")
+SOURCE_URL_MAX = 500
+_BARE_QUERY = re.compile(r"\A(https://[A-Za-z0-9.-]+(?::\d{1,5})?)([?#])")
+
+
+def _source_url(url):
+    """The link target for an action's ``source_url``, or None when it is not a content-valid https URL.
+
+    An empty path before ``?``/``#`` is written as ``/`` (the same address) so the renderer links it; only the leading
+    authority is touched, never a ``https://host?`` that appears later in the path or query."""
+    if not isinstance(url, str) or len(url) > SOURCE_URL_MAX or not _SOURCE_URL.fullmatch(url):
+        return None
+    return _BARE_QUERY.sub(r"\1/\2", url, count=1)
+
+
+def in_window(day, since, now):
+    """DF1109-06: True when ``day`` is from the ``since`` day (as written) through ``now``'s day, both inclusive."""
+    return day <= now.date() and (since is None or day >= since.date())
+
+
+def update_order(rows):
+    """Updates newest first, then title and path; equal rows keep their given order."""
+    return sorted(sorted(rows, key=lambda r: (r["title"], r["path"])), key=lambda r: r["date"], reverse=True)
+
+
+def action_order(rows):
+    """Actions newest first, then agency, kind and source link; equal rows keep their given order."""
+    return sorted(sorted(rows, key=lambda r: (r["agency"], r["kind"], r["source_url"])), key=lambda r: r["date"], reverse=True)
+
+
+def _rows(raw, name, keys):
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise DraftError(f"{name} must be a list")
+    for index, item in enumerate(_entries(raw, name)):
+        if set(item) != keys:
+            raise DraftError(f"{name}[{index}]: must have exactly the keys {', '.join(sorted(keys))}")
+    return raw
+
+
+def _row_day(value, label):
+    """``_day`` without repeating the supplied value in the refusal."""
+    try:
+        return _day(value, label)
+    except DraftError:
+        raise DraftError(f"{label}: real YYYY-MM-DD day required") from None
+
+
+def _row_text(value, label, limit):
+    text = _clean(value, label, limit)
+    if not text:
+        raise DraftError(f"{label}: required")
+    found = set(categories(text)) | ({"phone"} if _PHONE.search(text) else set())
+    if found:
+        raise DraftError(f"privacy lint: {label}: {', '.join(sorted(found))}")
+    return text
+
+
+def _updates(raw, since, now, base_url):
+    """Lines for ``updates`` (DF1109-06): every valid row is checked first, then those dated inside the window kept."""
+    rows = []
+    for index, item in enumerate(_rows(raw, "updates", UPDATE_ROW_KEYS)):
+        label = f"updates[{index}]"
+        day = _row_day(item["date"], label + ".date")
+        title = _row_text(item["title"], label + ".title", 200)
+        try:
+            validate_update_note(item["note"], label + ".note")
+        except UpdateError as exc:
+            raise DraftError(str(exc)) from None
+        note = _row_text(item["note"], label + ".note", UPDATE_NOTE_MAX)
+        link = _link(base_url, item["path"], label + ".path")
+        if in_window(day, since, now):
+            rows.append({"title": title, "path": item["path"], "date": day.isoformat(), "note": note, "link": link})
+    return [f"- **{_literal(r['title'])}**, updated {r['date']} — {_literal(r['note'])}"
+            + (f" [Read the finding]({r['link']})" if r["link"].startswith("https://") else f" {r['link']}")
+            for r in update_order(rows)]
+
+
+def _actions(raw, since, now):
+    """Lines for ``actions`` (DF1109-06): an agency's own source-linked statement; nothing is inferred from it."""
+    rows = []
+    for index, item in enumerate(_rows(raw, "actions", ACTION_ROW_KEYS)):
+        label = f"actions[{index}]"
+        day = _row_day(item["date"], label + ".date")
+        agency = _row_text(item["agency"], label + ".agency", 200)
+        if not isinstance(item["kind"], str) or item["kind"] not in ACTION_KIND_LABELS:
+            raise DraftError(f"{label}.kind: must be an agency action kind label")
+        stated = _row_text(item["as_stated"], label + ".as_stated", 200)
+        url = _source_url(item["source_url"])
+        if url is None:
+            raise DraftError(f"{label}.source_url: must be an https:// URL")
+        if in_window(day, since, now):
+            rows.append({"agency": agency, "kind": item["kind"], "as_stated": stated, "date": day.isoformat(),
+                         "source_url": url})
+    return [f"- **{_literal(r['agency'])}**, {r['date']}: {r['kind']} — {_literal(r['as_stated'])}"
+            f" [Official source]({r['source_url']})" for r in action_order(rows)]
+
+
 def _how(value, label, excluded):
     """Organizer ``how`` text, or "see official details" when it holds an email or phone (DF2037-15)."""
     if isinstance(value, str) and (_EMAIL.search(value) or _PHONE.search(value)):
@@ -441,6 +550,8 @@ def build_draft(manifest, now=None, *, archive_public=False, provenance=False):
     records = _records(manifest.get("records"), since, now, base_url)
     camera_map = _map(manifest.get("map"), since, now, base_url)
     events, events_outside, events_upcoming = _events(manifest.get("events"), base_url, since, now)
+    updates = _updates(manifest.get("updates"), since, now, base_url)  # DF1109-06: absent, None or [] add nothing
+    actions = _actions(manifest.get("actions"), since, now)
     # The engine applies the documented window itself: findings published since the
     # last send, meetings that have not started yet (soonest first). Labels keep the
     # manifest index so a bad entry is named where the organizer can find it.
@@ -499,6 +610,9 @@ def build_draft(manifest, now=None, *, archive_public=False, provenance=False):
             entry += f" ([Read the finding]({link}))" if link.startswith("https://") else f" ({link})"
             lines.append(entry)
         lines.append("")
+    for heading, rows in (("Updates to earlier findings", updates), ("What agencies did", actions)):
+        if rows:  # DF1109-06: every eligible entry, no cap; nothing at all without one
+            lines += [f"## {heading}", *rows, ""]
     if requests:
         lines.append("## Records requests")
         lines += requests[:MAX_MEETINGS]
@@ -592,7 +706,9 @@ def build_draft(manifest, now=None, *, archive_public=False, provenance=False):
                          **({"records": len(records)} if records else {}),
                          **({"map": 1} if camera_map else {}),
                          **({"decisions": len(decisions)} if decisions else {}),
-                         **({"events": len(events)} if events else {})}, "excluded": excluded,
+                         **({"events": len(events)} if events else {}),
+                         **({"updates": len(updates)} if updates else {}),
+                         **({"actions": len(actions)} if actions else {})}, "excluded": excluded,
               "consent_footer": "campaign" if isinstance(footer, str) and footer.strip() else "template"}
     if review_flags:  # absent otherwise, so unflagged drafts stay byte-identical (same convention as corrections_listed)
         result["review_flags"] = review_flags
