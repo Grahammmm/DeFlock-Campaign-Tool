@@ -22,6 +22,19 @@ def _origin(value):  # host present, no user or password
     return not _https(value) or (lambda p: p.hostname and not p.username and not p.password)(urlsplit(value))
 
 
+_REFUSED = -1  # sentinel from _utf8_size: not a str, or not strictly encodable (e.g. a lone surrogate)
+
+
+def _utf8_size(value):
+    """Strict UTF-8 byte length of a str, or _REFUSED. Never raises, never repairs the text."""
+    if not isinstance(value, str):
+        return _REFUSED
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        return _REFUSED
+
+
 CHECKS = (  # (field, accepts value, reason); reasons never include the value
     ("schema_version", lambda v: type(v) is int and v == 1, "unsupported schema version"),
     ("group_slug", lambda v: isinstance(v, str) and SLUG.fullmatch(v), "invalid slug"),
@@ -33,6 +46,9 @@ CHECKS = (  # (field, accepts value, reason); reasons never include the value
     ("source_map_url", _origin, "credentials or no host in URL"),
     ("city_boundaries_url", lambda v: isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,160}", v) and ".." not in v.split("/"), "not a local public asset path"),
     ("candidate_count_suffix", lambda v: isinstance(v, str) and 1 <= len(v) <= 200, "must be 1-200 characters"),
+    # the suffix is emitted into UTF-8 JavaScript; judged only when the type/length check above passed
+    ("candidate_count_suffix", lambda v: not (isinstance(v, str) and 1 <= len(v) <= 200) or _utf8_size(v) != _REFUSED,
+     "not valid UTF-8 text"),
 )
 
 
@@ -45,7 +61,8 @@ def problems(config, profile_renderer="", point_context_renderer=""):
               for key in config if key not in KEYS]
     found += [key + ": " + reason for key, ok, reason in CHECKS if key in config and not ok(config[key])]
     for name, value in (("profile_renderer", profile_renderer), ("point_context_renderer", point_context_renderer)):
-        if not isinstance(value, str) or len(value.encode("utf-8")) > MAX_BYTES:
+        size = _utf8_size(value)
+        if size == _REFUSED or size > MAX_BYTES:
             found.append(name + ": invalid trusted renderer")
     return sorted(found)
 
