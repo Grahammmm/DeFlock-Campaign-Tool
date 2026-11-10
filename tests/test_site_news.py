@@ -37,6 +37,7 @@ FINDING_ID, FINDING_SLUG = "fnd_0000000000000001", "cedar-policy-posted"
 NEWS_KEYS = ["news.title", "news.description", "news.empty", "news.findings", "news.kind.news", "news.kind.opinion",
              "news.kind.broadcast", "news.kind.other", "finding.reported_in", "footer.news", "press.news"]
 FOOTER = '<p><a href="/news.html">In the news</a></p>'
+ENABLED_TIMELINE = "304a37df174b5623a2be20da34266ccfda1f7bac91d80c1e95d6fdc16bcdd525"  # pragma: allowlist secret -- public rendered-file SHA-256
 PRESS = {"contact_role": "Media contact", "contact_email": "media@example.invalid"}
 LOC = re.compile(r"<loc>([^<]+)</loc>")
 
@@ -567,7 +568,9 @@ class PageTests(NewsCase):
                 text = data.decode()
                 self.assertEqual(text.count(FOOTER), 1, name)
                 stripped = reported.sub("", text).replace(FOOTER, "", 1)  # then it is the untouched render
-                self.assertEqual(hashlib.sha256(stripped.encode()).hexdigest(), BASELINE[name], name)
+                # DF1109-07: timeline.html now also lists the two coverage rows ("In the news: Example News") by design
+                expected = ENABLED_TIMELINE if name == "timeline.html" else BASELINE[name]
+                self.assertEqual(hashlib.sha256(stripped.encode()).hexdigest(), expected, name)
             else:
                 self.assertEqual(hashlib.sha256(data).hexdigest(), BASELINE[name], name)  # feeds, JSON, CSV, scripts, hashes
         new_loc = "https://cedar-records.example.invalid/news.html"
