@@ -29,6 +29,7 @@ from .outcomes.reading import BANNER, esc
 
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 DRAFT_ID = re.compile(r"[0-9a-f]{64}")
+REVISION = re.compile(r"0|[1-9][0-9]{0,19}")  # canonical ASCII decimal; parsed only after this bound
 MAX_JSON = 8 * 1024 * 1024
 MAX_BODY = 256 * 1024
 ROW_LIMIT = 500
@@ -494,6 +495,11 @@ def _form(action, token, ident, label, field_html, button, back=None):
             % (esc(action), esc(token), esc(ident), ret, field_html, esc(button)))
 
 
+def revision_field(row):
+    """Edit forms carry the revision of the same row whose body they display; a stale save is refused (409)."""
+    return '<input type="hidden" name="expected_revision" value="%d">' % row["revision"]
+
+
 def _next_label(d, approved_word):
     return {"pending": "proposed", "approved": approved_word, "rejected": "denied"}.get(d["status"], d["status"])
 
@@ -631,7 +637,7 @@ def _drafts_section(model, token):
             out.append(_form("/approvals/reject", token, d["id"], "", (
                 '<label for="rej-%s">Rejection reason (required)</label><input type="text" id="rej-%s" '
                 'name="reason" required maxlength="2000">' % (i[:12], i[:12])), "Reject"))
-            out.append(_form("/approvals/edit", token, d["id"], "", (
+            out.append(_form("/approvals/edit", token, d["id"], "", revision_field(d) + (
                 '<label for="ed-%s">Draft text</label><textarea id="ed-%s" name="body" rows="10" required>%s'
                 "</textarea>" % (i[:12], i[:12], esc(d["body"]))), "Save edit"))
         out.append("</article>")
@@ -715,7 +721,7 @@ def check_actor(actor):
 
 ROUTES = {"/approvals/approve": ("approve", ("csrf_token", "id", "signature")),
           "/approvals/reject": ("reject", ("csrf_token", "id", "reason")),
-          "/approvals/edit": ("edit", ("csrf_token", "id", "body"))}
+          "/approvals/edit": ("edit", ("csrf_token", "id", "body", "expected_revision"))}
 SEND_ROUTE = ("send", ("csrf_token", "id", "fingerprint", "signature", "to", "confirm"))
 SECURITY = (("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"),
             ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
@@ -761,6 +767,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self._send(status, '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>%s</title></head>'
                            "<body><h1>%s</h1><p>%s</p><p><a href=\"/\">Back to the dashboard</a></p></body></html>\n"
                    % (esc(text), esc(text), esc(BANNER)))
+
+    def _stale(self, ident):
+        """409 for an edit made from an older page: nothing was saved; the submitted text is not echoed."""
+        self._send(409, '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Draft changed</title>'
+                        "</head><body><h1>Draft changed</h1><p>This draft changed after your page was loaded. "
+                        "Your edit was not saved. Reload the draft and make the edit again.</p>"
+                        '<p><a href="/review?id=%s">Reload the draft</a></p><p>%s</p></body></html>\n'
+                   % (esc(urllib.parse.quote(ident)), esc(BANNER)))
 
     def _host_ok(self):
         return console_origin.request_ok(self, post=False)
@@ -897,6 +911,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         value = fields[names[2]].replace("\r\n", "\n")
         if not value.strip():
             return self._fail(400)
+        if action == "edit" and not REVISION.fullmatch(fields["expected_revision"]):
+            return self._fail(400)
         project, actor = self.server.options["project"], self.server.actor
         hook = False
         try:
@@ -908,10 +924,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 approval_queue.reject(project, ident, actor, value)
                 expected = {"rejected"}
             else:
-                approval_queue.edit(project, ident, actor, value)
+                approval_queue.edit(project, ident, actor, value,
+                                    expected_revision=int(fields["expected_revision"]))
                 expected = {"pending"}
             rows = {r["id"]: r for r in approval_queue.load_queue(project)}
         except approval_queue.ApprovalQueueError as error:
+            if error.code == "stale_revision":
+                return self._stale(ident)
             return self._fail(ACTION_STATUS.get(error.code, 503))
         except OSError:
             return self._fail(503)
