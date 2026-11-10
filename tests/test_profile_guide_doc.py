@@ -146,7 +146,7 @@ class GuideTests(unittest.TestCase):
                 argv = shlex.split(line)
                 if argv[:3] != ["python3", "-m", "campaign_tool"]:
                     raise AssertionError(f"not a campaign_tool command: {line}")
-                writer = argv[3:5] == ["content", "agency-profile"] and argv[5] in ("policy", "contract", "policy-check", "contract-check", "funding", "report")
+                writer = argv[3:5] == ["content", "agency-profile"] and argv[5] in ("policy", "contract", "policy-check", "contract-check", "funding", "report", "transparency")
                 if writers_only and not writer:
                     continue
                 arguments = [re.sub(r"\$([A-Z]+)", lambda m: mapping[m.group(1)], token) for token in argv[3:]]
@@ -245,8 +245,12 @@ class GuideTests(unittest.TestCase):
                                              "source_url": "https://example.invalid/example-profile/reports/2025",
                                              "checked_on": "2026-10-28", "published_on": "2026-02-01"})):
             self.assertEqual(stored["profile"][field], [expected])
-        for number in ("6. Record how the agency is paid for", "9. Record reports the agency has published"):
+        for number in ("6. Record how the agency is paid for", "7. Snapshot the vendor transparency portal",
+                       "9. Record reports the agency has published"):
             self.assertFalse([kind for kind, _ in fences(sections(self.guide)[number]) if kind == "json"])
+        self.assertEqual(stored["profile"]["transparency"],  # DF1109B-13: by command, hotlist/shared never typed
+                         [{"checked_on": "2026-10-26", "source_url": "https://transparency.flocksafety.com/example-profile-pd",
+                           "cameras": 12, "retention_days": 30, "searches_last_30_days": 480}])
         self.assertEqual(len(stored["profile"]["sharing"]["recipients"]), 2)
         for field in ("alpr_policy", "policy_check", "contract", "contract_check", "funding", "transparency", "reports"):
             self.assertIn(field, stored["profile"])
@@ -374,9 +378,27 @@ class GuideTests(unittest.TestCase):
         self.assertIn("Recheck policy_check first with --checked-on 2026-01-04 (or later), then retry alpr_policy.", err)
         self.assertEqual([run(*recheck, field)[0] for field in ("policy_check", "alpr_policy")], [0, 0])
         self.assertEqual(self.check()[0], 0)
-        # a transparency number the portal did not show stays out of the record instead of becoming 0
+        # a transparency number the portal did not show stays out of the stored record (raw, not normalized: the
+        # loader would show it as null) instead of becoming 0, and a typed 0 is stored as the integer 0
         snapshot = self.profile_from(self.guide)["profile"]["transparency"][0]
+        self.assertEqual(set(snapshot), {"checked_on", "source_url", "cameras", "retention_days", "searches_last_30_days"})
         self.assertNotIn("hotlist_alerts", snapshot)
+        self.assertNotIn("shared_with_agencies", snapshot)
+        zero = self.base / "zero-campaign"
+        shutil.copytree(EXAMPLE, zero, ignore=shutil.ignore_patterns("public"))
+        listing = json.loads(read(zero / "content" / "agencies.json"))
+        fresh = copy.deepcopy(self.profile_from(self.guide))  # the practice agency, as a separate fixture without a snapshot
+        del fresh["profile"]["transparency"]
+        (zero / "content" / "agencies.json").write_text(json.dumps(listing + [fresh]), encoding="utf-8")
+        args = ["content", "agency-profile", "transparency", "add", "--directory", zero, "--agency", AGENCY,
+                "--checked-on", "2026-10-26"] + [f"--{flag}=0" for flag in (
+                    "cameras", "retention-days", "searches-last-30-days", "hotlist-alerts", "shared-with-agencies")]
+        self.assertEqual(run(*args)[0], 0)
+        stored = next(a for a in json.loads(read(zero / "content" / "agencies.json")) if a["agency_id"] == AGENCY)
+        self.assertEqual(stored["profile"]["transparency"][0], {
+            "checked_on": "2026-10-26", "source_url": "https://transparency.flocksafety.com/example-profile-pd",
+            "cameras": 0, "retention_days": 0, "searches_last_30_days": 0, "hotlist_alerts": 0, "shared_with_agencies": 0})
+        self.assertEqual(run("content-check", "--directory", zero)[0], 0)
 
     def test_sharing_csv_failures_write_nothing(self):
         self.install(self.profile_from(self.guide))

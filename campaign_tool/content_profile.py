@@ -25,7 +25,8 @@ from datetime import date
 
 from . import law
 from .agency_cards import text as plain_text
-from .content import (ARCHIVE_KEYS, CHECKLIST_JURISDICTION, MAX_JSON_BYTES, ContentError, _calendar_day, load_agencies,
+from .content import (ARCHIVE_KEYS, CHECKLIST_JURISDICTION, MAX_JSON_BYTES, TRANSPARENCY_FIELDS, ContentError, _calendar_day,
+                      _flock_url, load_agencies,
                       load_contract_checklist)
 from .content_sharing import TARGET, _install_problem, _open_content, _parse_target, _read_target
 from .privacy_patterns import categories, refusal
@@ -419,6 +420,11 @@ def _entry_change(root, agency_id, field, entry, index, today):
             _admit_document(document, position, field, today)
         return {"agency_id": agency_id, "field": field, "index": number,
                 "remaining": len(stored), "_document": document}, True
+    return _entry_transaction(root, change)
+
+
+def _entry_transaction(root, change):
+    """The inherited transaction with its one refusal shape: ``<locator>: <rule>; nothing was written``."""
     try:
         return _transaction(root, change, "entry change")
     except OSError:
@@ -450,6 +456,96 @@ def format_profile_entry(result, added):
     if added and result["field"] == "funding":
         text += "Reminder: check that the name is not a person.\n"
     return text
+
+
+# DF1109B-13: one organizer-transcribed vendor-portal snapshot at the top of profile.transparency.
+SNAPSHOT_LIMIT, MAX_RETENTION_DAYS = 24, 3650
+DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+DIGITS = re.compile(r"[0-9]+")
+PORTAL_NOTICE = "The portal is the vendor's report, not verified transfers."
+
+
+def parse_snapshot_number(field, text):
+    """One typed count: ASCII digits only (leading zeros allowed), as an int; a refusal names the flag, never the value."""
+    if field not in TRANSPARENCY_FIELDS:
+        raise ContentProfileError("profile.transparency: unknown number")
+    flag = "--" + field.replace("_", "-")
+    if not isinstance(text, str) or not DIGITS.fullmatch(text):
+        raise ContentProfileError(f"{flag}: must be a whole number of ASCII digits, 0 or more")
+    try:
+        return int(text)
+    except ValueError:  # beyond the interpreter's integer-string limit
+        raise ContentProfileError(f"{flag}: number is too large") from None
+
+
+def _snapshot_numbers(numbers):
+    if not isinstance(numbers, dict) or any(key not in TRANSPARENCY_FIELDS for key in numbers):
+        raise ContentProfileError("profile.transparency: only the five transparency numbers can be supplied")
+    for key, number in numbers.items():
+        flag = "--" + key.replace("_", "-")
+        if type(number) is not int or number < 0:
+            raise ContentProfileError(f"{flag}: must be a whole number, 0 or more")
+        if number.bit_length() > 13000:
+            raise ContentProfileError(f"{flag}: number is too large")
+        if key == "retention_days" and number > MAX_RETENTION_DAYS:
+            raise ContentProfileError(f"--retention-days: at most {MAX_RETENTION_DAYS}")
+    return {key: numbers[key] for key in TRANSPARENCY_FIELDS if key in numbers}
+
+
+def add_transparency_snapshot(root, agency_id, checked_on, numbers, *, drop_oldest=False, today=None):
+    """Put one snapshot first in the agency's raw ``profile.transparency``; -> ``{agency_id, checked_on, count, dropped}``.
+
+    Only supplied numbers are stored (absent is *not shown*, 0 is data); ``source_url`` is built from the verified
+    ``flock_transparency_slug``. The date must be newest and unrecorded; a full list of 24 needs ``drop_oldest``.
+    """
+    today = today or date.today()
+    if not isinstance(checked_on, str) or not DAY.fullmatch(checked_on):
+        raise ContentProfileError("--checked-on: must be a real YYYY-MM-DD date; nothing was written")
+    try:
+        day = date.fromisoformat(checked_on)
+    except ValueError:
+        raise ContentProfileError("--checked-on: must be a real YYYY-MM-DD date; nothing was written") from None
+    if day > today:
+        raise ContentProfileError("--checked-on: must not be after today; nothing was written")
+    numbers = _snapshot_numbers(numbers)
+
+    def change(document):
+        load_agencies(document, "content/agencies.json", today)  # never repair an invalid original
+        position = _agency(document, agency_id)
+        agency = document[position]
+        portal = _flock_url(agency, f"content/agencies.json[{position}]")  # the built URL; None unless verified with a slug
+        if portal is None:
+            raise ContentProfileError("profile.transparency: needs a verified agency with a flock_transparency_slug")
+        profile = agency.get("profile")
+        if profile is None:
+            profile = agency["profile"] = {}
+        if not isinstance(profile, dict):
+            raise ContentProfileError("profile: must be an object")
+        history = profile.get("transparency") or []
+        if any(item["checked_on"] == checked_on for item in history):
+            raise ContentProfileError("profile.transparency: checked_on already recorded")
+        if history and checked_on < history[0]["checked_on"]:
+            raise ContentProfileError("profile.transparency.checked_on: must be after the newest stored snapshot")
+        dropped = None
+        if len(history) >= SNAPSHOT_LIMIT:
+            if not drop_oldest:
+                raise ContentProfileError(f"profile.transparency: already has {SNAPSHOT_LIMIT} snapshots; "
+                                          "use --drop-oldest to discard the oldest")
+            dropped = history[-1]["checked_on"]
+            history = history[:SNAPSHOT_LIMIT - 1]
+        profile["transparency"] = [{"checked_on": checked_on, "source_url": portal, **numbers}] + history
+        load_agencies(document, "content/agencies.json", today)
+        return {"agency_id": agency_id, "checked_on": checked_on, "count": len(profile["transparency"]),
+                "dropped": dropped, "_document": document}, True
+    return _entry_transaction(root, change)
+
+
+def format_transparency_snapshot(result):
+    lines = [f"Transparency snapshot added: {result['agency_id']}, checked {result['checked_on']}; "
+             f"{result['count']} snapshots stored."]
+    if result["dropped"] is not None:
+        lines.append(f"Dropped oldest transparency snapshot: {result['dropped']}.")
+    return "\n".join(lines + ["Content only; nothing was built, sent or deployed.", PORTAL_NOTICE]) + "\n"
 
 
 # DF1109B-18: the organizer's reading of a stored document against the checklist (policy_check / contract_check).
