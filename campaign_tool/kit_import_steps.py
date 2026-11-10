@@ -45,14 +45,15 @@ def _read_rows(csv_path):  # [(physical line, cells)] of the non-blank data rows
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise ImportRefused("csv is not UTF-8") from None
-    reader, rows, start = csv.reader(io.StringIO(text, newline="")), [], 1
+    # strict: broken quoting is refused, never repaired; the whole file is parsed before any row is used
+    reader, rows, start = csv.reader(io.StringIO(text, newline=""), strict=True), [], 1
     try:
         for cells in reader:
             if cells:
                 rows.append((start, [cell.strip() for cell in cells]))
             start = reader.line_num + 1
-    except csv.Error as exc:
-        raise ImportRefused(f"csv line {start}: {exc}") from None
+    except csv.Error:  # start is the record's first physical line; the parser's message may quote the input
+        raise ImportRefused(f"csv line {start}: malformed CSV (quotes or field size)") from None
     if rows:
         _check_header(rows[0][1])
     if len(rows) < 2:

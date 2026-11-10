@@ -340,6 +340,108 @@ class KitResponseImportTests(unittest.TestCase):
         second = kit_track.read_sent(self.root)[f"{self.agency}#second"]["steps"]
         self.assertEqual([(s["kind"], s["extension_expected_on"]) for s in second], [("extension", "2026-03-20")])
 
+    # CSV syntax: broken quoting refuses the whole file before any row is checked or anything is written.
+    SYNTAX = "malformed CSV (quotes or field size)"
+
+    def raw(self, data, name="raw.csv"):
+        path = self.tmp / name
+        path.write_bytes(data.encode("utf-8") if isinstance(data, str) else data)
+        return path
+
+    def tree(self):
+        return sorted((str(p.relative_to(self.root)), p.is_dir() or p.read_bytes(), p.lstat().st_mode,
+                       p.lstat().st_mtime_ns) for p in self.root.rglob("*"))
+
+    def syntax_refused(self, path, line):
+        """Preview and --apply both stop on the record's first line; no writer runs and the campaign is unchanged."""
+        before = self.tree()
+        for extra in ((), ("--apply",)):
+            with mock.patch.object(kit_import_steps, "_write", wraps=kit_import_steps._write) as write:
+                code, out, err = self.do(path, *extra)
+            self.assertEqual((code, out, err), (2, "", f"Stopped: csv line {line}: {self.SYNTAX}\n"))
+            write.assert_not_called()
+        with self.assertRaises(kit_import_steps.ImportRefused) as raised:
+            kit_import_steps._read_rows(path)
+        self.assertEqual(str(raised.exception), f"csv line {line}: {self.SYNTAX}")
+        self.assertEqual(self.tree(), before)
+
+    def test_unclosed_final_partial_field_refuses_preview_and_apply(self):
+        for end in ("", "\n"):  # the reproduced bytes, without and with a final newline
+            with self.subTest(end=repr(end)):
+                self.syntax_refused(self.raw(HEADER + '\n2026-03-05,produced,,,,"no' + end), 2)
+        self.assertEqual(self.steps(), [])
+
+    def test_junk_after_closing_quote_is_not_repaired(self):
+        path = self.raw(HEADER + '\n2026-03-05,acknowledged,"Portal"receipt,,,\n')
+        self.syntax_refused(path, 2)
+        self.assertEqual(self.steps(), [])
+
+    def test_bad_later_record_prevents_entire_timeline_import(self):
+        self.respond("--date", "2026-03-05", "--kind", "acknowledged")  # the first row below is already recorded
+        recorded = self.steps()
+        for first in ("2026-03-05,acknowledged,,,,", "2026-03-06,clarified,,,,"):
+            with self.subTest(first=first):
+                self.syntax_refused(self.raw(f'{HEADER}\n{first}\n2026-03-10,determination,"Denied"x,,,\n'), 3)
+        self.assertEqual(self.steps(), recorded)
+
+    def test_multiline_csv_error_names_record_start(self):
+        legal = '2026-03-05,acknowledged,"two\r\nlines",,,'  # one record on physical lines 2 and 3
+        for bad, line in (('2026-03-06,clarified,"a"b,,,', 4), ('2026-03-06,clarified,"open\r\nstill open', 4),
+                          ('\r\n2026-03-06,clarified,"x"y,,,', 5)):
+            with self.subTest(bad=bad):
+                self.syntax_refused(self.raw(b"\xef\xbb\xbf" + "\r\n".join((HEADER, legal, bad, "")).encode()), line)
+        rows = kit_import_steps._read_rows(self.raw("\r\n".join((HEADER, legal, "2026-03-06,clarified,,,,", ""))))
+        self.assertEqual([(line, cells[2]) for line, cells in rows], [(2, "two\r\nlines"), (4, "")])
+
+    def test_syntax_diagnostic_never_echoes_private_cells(self):
+        marker = "PRIVATE-MARKER-7731 <script>\x1b[2J"
+        for name, row in (("junk", f'2026-03-05,acknowledged,"{marker}"{marker},,,'),
+                          ("open", f'2026-03-05,acknowledged,"{marker}'),
+                          ("size", f'2026-03-05,acknowledged,"{marker}{"A" * 140000}",,,')):
+            with self.subTest(name):
+                path = self.raw(f"{HEADER}\n{row}\n", name=f"{marker[:19]}-{name}.csv")
+                self.syntax_refused(path, 2)
+                code, out, err = self.do(path, "--apply")
+                for leaked in ("PRIVATE-MARKER", "<script>", "\x1b", "expected after", "field limit", str(self.tmp)):
+                    self.assertNotIn(leaked, out + err)
+
+    def test_valid_quoted_csv_and_no_final_newline_keep_semantics(self):
+        rows = ('2026-03-05,acknowledged,"Portal, receipt",,,', '2026-03-10,produced,"Batch ""A""   one",,,yes')
+        for name, data in (("lf", "\n".join((HEADER, *rows))), ("crlf", "\r\n".join((HEADER, *rows, ""))),
+                           ("bom", "\ufeff" + "\n".join((HEADER, *rows, "")))):
+            with self.subTest(name):
+                path = self.raw(data, name=name + ".csv")
+                self.assertEqual([cells[2] for _, cells in kit_import_steps._read_rows(path)],
+                                 ["Portal, receipt", 'Batch "A"   one'])
+                code, out, err = self.do(path)
+                self.assertEqual((code, err, json.loads(out.split("Checked only")[0])["added"]), (0, "", 2))
+        self.assertEqual(self.do(path, "--apply")[0], 0)
+        self.assertEqual([(s["kind"], s["note"], s.get("partial")) for s in self.steps()],
+                         [("acknowledged", "Portal, receipt", None), ("produced", 'Batch "A" one', True)])
+
+    def test_strict_admission_preserves_replay_and_named_request_contracts(self):
+        drafts = self.root / "kit" / "requests"
+        (drafts / f"{self.agency}--second.md").write_text((drafts / f"{self.agency}.md").read_text(encoding="utf-8"),
+                                                          encoding="utf-8")
+        self.assertEqual(run("kit-sent", "--directory", self.root, "--agency", self.agency, "--date", SENT_ON,
+                             "--channel", "email", "--request", "second")[0], 0)
+        quoted = '2026-03-05,extension,"Notice received",,2026-03-20,'
+        path = self.write(quoted, '2026-03-12,produced,"First, batch",,2026-04-15,yes')
+        code, out, err = self.do(path)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(sorted(json.loads(out.split("Checked only")[0])),
+                         ["added", "agency_id", "applied", "lines", "request", "rows", "skipped", "steps"])
+        with mock.patch.object(kit, "_write_json", wraps=kit._write_json) as write:
+            self.assertEqual(self.do(path, "--apply")[0], 0)
+        self.assertEqual(len([c for c in write.call_args_list if c.args[0] == self.sent]), 1)
+        self.replays(path, skipped=2)
+        self.refused_untouched(self.write('2026-03-05,extension,"Notice received",,2026-03-25,', name="moved.csv"),
+                               "1 bad row(s)", "line 2:")  # another dispatch date is not a replay
+        self.assertEqual(self.do(path, "--apply", "--request", "second")[0], 0)
+        second = kit_track.read_sent(self.root)[f"{self.agency}#second"]["steps"]
+        self.assertEqual([(s["kind"], s.get("extension_expected_on")) for s in second],
+                         [("extension", "2026-03-20"), ("produced", None)])
+
 
 if __name__ == "__main__":
     unittest.main()
