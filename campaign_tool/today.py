@@ -422,7 +422,7 @@ def _review_waiting(root, as_of, selector, days):
                 items.append(_item("review_waiting", f"Review ({role}) of {row['id']} assigned to "
                                    f"{entry['reviewer']} since {entry['on']} needs reassignment: their {role} role "
                                    f"was retired on {state['retired_on']}",
-                                   f"finding assign {shlex.quote(row['draft_path'])} --directory {directory} "
+                                   f"finding assign {shlex.quote(row['draft_path'])} {selector} "
                                    f"--role {role} --reviewer 'ACTIVE REVIEWER' --on {as_of} --replace",
                                    entry["on"], f"{row['id']} {role}"))
     return items
