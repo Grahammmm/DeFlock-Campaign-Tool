@@ -141,7 +141,11 @@ def _params_dict(data, at):
         reference = PDF_PARAM_REF.match(data, at)
         value = None if reference else PDF_PARAM_INT.match(data, at)
         if value:
-            seen[name], at = int(value[1]), value.end()
+            try:
+                number = int(value[1])
+            except ValueError:  # the interpreter's integer-digit safeguard refused it: an unreadable PDF, not a crash
+                raise Unreadable() from None
+            seen[name], at = number, value.end()
         elif name in PREDICTOR_KEYS:
             raise Unreadable()  # a reference, real or other value: cannot tell how the stream is predicted
         else:
