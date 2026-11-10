@@ -16,6 +16,7 @@ from tests import outbox_entry_driver
 from tests.approval_signing import Signer
 
 REPO = Path(__file__).resolve().parents[1]
+REAL_FSTAT = os.fstat  # Unpatched, for helpers that run while batch.os.fstat is replaced.
 
 
 class BatchTests(unittest.TestCase):
@@ -444,6 +445,254 @@ class BatchTests(unittest.TestCase):
             results = batch.approve_all(self.box, self.out)
         self.assertEqual([r["state"] for r in results], ["changed", "changed"])
         self.assertFalse(self.box.db.in_transaction)
+
+    BIG = 2 * 1024 * 1024
+
+    @contextmanager
+    def watch(self, max_read=None):
+        """Record every read on opened letter files; optionally force short reads."""
+        names = {p.lstat().st_ino: p.name for p in self.out.iterdir()}
+        log = {"reads": {}, "opened": [], "streams": []}
+        original = os.fdopen
+
+        class Spy:
+            def __init__(inner, real, name):
+                inner.real, inner.name = real, name
+
+            def __enter__(inner):
+                return inner
+
+            def __exit__(inner, *args):
+                inner.real.close()
+
+            def __getattr__(inner, attr):
+                return getattr(inner.real, attr)
+
+            def read(inner, size=-1):
+                entry = log["reads"].setdefault(inner.name, [])
+                if size is None or size < 0:
+                    entry.append("UNBOUNDED")
+                    return inner.real.read()
+                data = inner.real.read(min(size, max_read) if max_read and inner.name.endswith(".txt") else size)
+                entry.append(len(data))
+                return data
+
+        def opened(*args, **kwargs):
+            real = original(*args, **kwargs)
+            name = names.get(REAL_FSTAT(real.fileno()).st_ino, "?")
+            log["opened"].append(name)
+            spy = Spy(real, name)
+            log["streams"].append(real)
+            return spy
+
+        with patch.object(batch.os, "fdopen", side_effect=opened):
+            yield log
+        self.assertTrue(all(stream.closed for stream in log["streams"]))
+
+    def export_signed(self, count, **kwargs):
+        keys = [self.propose(str(n), **kwargs) for n in range(count)]
+        batch.export(self.box, self.out)
+        for key in keys:
+            self.sign(key)
+        return sorted(keys)
+
+    def no_verifier(self):
+        guard = patch.object(approval, "verify", side_effect=AssertionError("must not verify"))
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    def test_oversized_proposed_payload_is_changed_without_unbounded_read(self):
+        key, = self.export_signed(1)
+        expected = len(self.box.approval_payload(key))
+        (self.out / (key + ".txt")).write_bytes(b"x" * self.BIG)
+        (self.out / "stray.txt").write_bytes(b"y" * self.BIG)
+        before = self.snapshot()
+        self.no_verifier()
+        with self.watch() as log:
+            results = batch.approve_all(self.box, self.out)
+        self.assertEqual([(r["idempotency_key"], r["state"]) for r in results],
+                         [(key, "changed"), ("stray", "unknown_key")])
+        for reads in log["reads"].values():
+            self.assertNotIn("UNBOUNDED", reads)
+            self.assertLessEqual(sum(reads), expected + 1)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.box.db.in_transaction)
+
+    def test_unknown_and_not_proposed_regular_payloads_are_never_read(self):
+        keys = self.export_signed(3)
+        for key, state in zip(keys[:2], ("approved", "sent")):
+            self.box._set(key, state=state)
+        for name in (keys[0], keys[1], "unknown"):
+            (self.out / (name + ".txt")).write_bytes(b"z" * self.BIG)
+        (self.out / (keys[2] + ".txt.sig")).unlink()  # The proposed letter stops at no_signature.
+        before = self.snapshot()
+        self.no_verifier()
+        real = ob.Outbox.approval_payload
+        calls = []
+
+        def expected_for_proposed_only(box, key):
+            calls.append(key)
+            if key != keys[2]:
+                raise AssertionError("no expected payload for " + key)
+            return real(box, key)
+
+        with self.watch() as log, patch.object(ob.Outbox, "approval_payload", expected_for_proposed_only), \
+                patch.object(ob.Outbox, "approve", side_effect=AssertionError("no approve")):
+            states = {r["idempotency_key"]: r["state"] for r in batch.approve_all(self.box, self.out)}
+        self.assertEqual(calls, [keys[2]])
+        self.assertEqual(states, {keys[0]: "not_proposed", keys[1]: "not_proposed", keys[2]: "no_signature",
+                                  "unknown": "unknown_key"})
+        self.assertEqual({k + ".txt" for k in (keys[0], keys[1], "unknown")} - set(log["opened"]), set())
+        for name in (keys[0], keys[1], "unknown"):
+            self.assertEqual(log["reads"].get(name + ".txt", []), [])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_payload_growth_after_real_fstat_stays_within_expected_plus_one(self):
+        key, = self.export_signed(1)
+        expected = len(self.box.approval_payload(key))
+        target = self.out / (key + ".txt")
+        inode = target.stat().st_ino
+        real = os.fstat
+
+        def grow(fd):
+            info = real(fd)  # Real metadata, captured before the file grows.
+            if info.st_ino == inode and target.stat().st_size == info.st_size:
+                with open(target, "ab") as stream:
+                    stream.write(b"x" * self.BIG)
+            return info
+
+        self.no_verifier()
+        with self.watch() as log, patch.object(batch.os, "fstat", side_effect=grow):
+            results = batch.approve_all(self.box, self.out)
+        self.assertEqual([r["state"] for r in results], ["changed"])
+        self.assertEqual(target.stat().st_size, expected + self.BIG)
+        reads = log["reads"][key + ".txt"]
+        self.assertNotIn("UNBOUNDED", reads)
+        self.assertTrue(0 < sum(reads) <= expected + 1)
+        self.assertEqual(self.box.row(key)["state"], "proposed")
+
+    def test_exact_payload_eof_short_reads_and_byte_differences(self):
+        multi = self.propose("multi", body="Dear Agência, é ✓ records please.")
+        keys = self.export_signed(6)
+        self.sign(multi)
+        self.assertIn("é ✓".encode("utf-8"), self.box.approval_payload(multi))
+        cases = {
+            keys[0]: lambda d: d[:-1],
+            keys[1]: lambda d: b"X" + d[1:],
+            keys[2]: lambda d: d[:len(d) // 2] + b"X" + d[len(d) // 2 + 1:],
+            keys[3]: lambda d: d[:-1] + b"X",
+            keys[4]: lambda d: d + b"\n",
+            keys[5]: lambda d: d.replace(b"\n", b"\r\n"),
+        }
+        for key, change in cases.items():
+            path = self.out / (key + ".txt")
+            path.write_bytes(change(path.read_bytes()))
+        with patch.object(approval, "verify", side_effect=self.verify), self.watch(max_read=7) as log:
+            results = batch.approve_all(self.box, self.out)
+        states = {r["idempotency_key"]: r["state"] for r in results}
+        self.assertEqual([states[k] for k in keys], ["changed"] * 6)
+        self.assertEqual(states[multi], "approved")
+        for key in keys + [multi]:
+            self.assertLessEqual(sum(log["reads"].get(key + ".txt", [])), len(self.box.approval_payload(key)) + 1)
+
+    def test_payload_exactly_at_chunk_boundary_is_approved(self):
+        probe = ob.Outbox(self.root / "probe" / "outbox.sqlite")
+        self.addCleanup(probe.close)
+        draft = ob.RequestDraft("pad", "Agency A", 1, "email", "Synthetic letter", "a" * 200000,
+                                "records@example.invalid")
+        size = len(probe.approval_payload(probe.propose(draft)["idempotency_key"]))
+        lead = "\n" if size % 2 else ""  # The body appears twice (text and journal record); "\n" adds 3 bytes.
+        size += 3 * len(lead)
+        key = self.propose("pad", body=lead + "a" * (200000 + (-size % batch._CHUNK) // 2))
+        self.assertEqual(len(self.box.approval_payload(key)) % batch._CHUNK, 0)
+        batch.export(self.box, self.out)
+        self.sign(key)
+        with patch.object(approval, "verify", side_effect=self.verify), self.watch() as log:
+            results = batch.approve_all(self.box, self.out)
+        self.assertEqual([r["state"] for r in results], ["approved"])
+        reads = log["reads"][key + ".txt"]
+        self.assertTrue(all(isinstance(n, int) and n <= batch._CHUNK for n in reads))
+        self.assertEqual(sum(reads), len(self.box.approval_payload(key)))
+
+    def test_payload_type_refusal_precedes_unknown_key_and_preserves_targets(self):
+        keys = self.export_signed(2)
+        target = self.root / "target"
+        target.write_bytes(b"t" * 1024)
+        (self.out / "dangling.txt").symlink_to(self.root / "absent")
+        (self.out / "linked.txt").symlink_to(target)
+        os.mkfifo(self.out / "fifo.txt")
+        (self.out / "directory.txt").mkdir()
+        (self.out / (keys[0] + ".txt")).unlink()
+        (self.out / (keys[0] + ".txt")).symlink_to(target)
+        with patch.object(approval, "verify", side_effect=self.verify), self.watch() as log:
+            states = {r["idempotency_key"]: r["state"] for r in batch.approve_all(self.box, self.out)}
+        self.assertEqual({k: states[k] for k in ("dangling", "linked", "fifo", "directory", keys[0])},
+                         {k: "refused" for k in ("dangling", "linked", "fifo", "directory", keys[0])})
+        self.assertEqual(states[keys[1]], "approved")
+        self.assertEqual(target.read_bytes(), b"t" * 1024)
+        self.assertEqual(log["reads"].get("linked.txt", []), [])
+
+    def test_replacement_after_admission_is_not_reopened(self):
+        key, = self.export_signed(1)
+        target = self.out / (key + ".txt")
+        inode = target.stat().st_ino
+        real = os.fstat
+        done = []
+
+        def swap(fd):
+            info = real(fd)
+            if info.st_ino == inode and not done:
+                done.append(True)
+                target.rename(self.root / "original")
+                target.write_bytes(b"replacement")
+            return info
+
+        with patch.object(approval, "verify", side_effect=self.verify), patch.object(
+                batch.os, "fstat", side_effect=swap):
+            results = batch.approve_all(self.box, self.out)
+        self.assertEqual([r["state"] for r in results], ["approved"])
+        self.assertEqual(target.read_bytes(), b"replacement")
+
+    def test_comparison_errors_close_descriptors_and_transactions(self):
+        keys = self.export_signed(2)
+        (self.out / (keys[1] + ".txt")).write_bytes(b"edited")
+        before = self.snapshot()
+        real = ob.Outbox.approval_payload
+        calls = []
+
+        def failing(box, key):
+            calls.append(key)
+            if len(calls) == 1:
+                raise OSError(5, "synthetic expected-payload failure")
+            return real(box, key)
+
+        self.no_verifier()
+        with self.watch() as log, patch.object(ob.Outbox, "approval_payload", failing):
+            results = batch.approve_all(self.box, self.out)
+        self.assertEqual([r["state"] for r in results], ["refused", "changed"])
+        self.assertIn("synthetic expected-payload failure", results[0]["reason"])
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.box.db.in_transaction)
+        with patch.object(ob.Outbox, "approval_payload", side_effect=ValueError("synthetic bug")), \
+                self.watch() as log, self.assertRaisesRegex(ValueError, "synthetic bug"):
+            batch.approve_all(self.box, self.out)
+        self.assertFalse(self.box.db.in_transaction)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_mixed_batch_bounded_refusals_preserve_cli_counts_and_valid_letter(self):
+        keys = self.export_signed(3)
+        (self.out / (keys[0] + ".txt")).write_bytes(b"x" * self.BIG)
+        self.box._set(keys[1], state="approved")
+        (self.out / "stray.txt").write_bytes(b"y" * self.BIG)
+        with patch.object(approval, "verify", side_effect=self.verify), self.watch() as log:
+            code, lines = self.cli("approve-batch", "--dir", str(self.out))
+        self.assertEqual(code, 2)
+        self.assertEqual([(r["idempotency_key"], r["state"]) for r in lines[:-1]],
+                         sorted([(keys[0], "changed"), (keys[1], "not_proposed"), (keys[2], "approved"),
+                                 ("stray", "unknown_key")]))
+        self.assertEqual(lines[-1], {"approved": 1, "skipped": 3})
+        self.assertEqual([self.box.row(k)["state"] for k in keys], ["proposed", "approved", "approved"])
+        self.assertTrue(all(sum(reads) < 1024 * 1024 for reads in log["reads"].values()))
 
 
 class EntryPointTests(unittest.TestCase):

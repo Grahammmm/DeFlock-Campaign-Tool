@@ -1,4 +1,5 @@
 """Private per-letter exports and approvals; never a batch send."""
+from contextlib import contextmanager
 import difflib
 import hashlib
 import json
@@ -14,6 +15,7 @@ def _directory(path):
     return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 
 
+_CHUNK = 64 * 1024
 _ROLLBACK_ERROR = "export failed; partial local output remains"
 
 
@@ -151,17 +153,49 @@ def export(box, out_dir, agencies=None):
     return {"written": len(rows), "dir": str(path)}
 
 
-def _read(fd, name, limit=None):
-    with os.fdopen(os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd), "rb") as stream:
+@contextmanager
+def _admit(fd, name):
+    """Open one file relative to ``fd`` once and require a regular file before any read."""
+    raw = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+    try:
+        stream = os.fdopen(raw, "rb")
+    except BaseException:
+        os.close(raw)
+        raise
+    with stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode):
             raise OutboxError("not a regular file: " + name)
-        if limit is not None and info.st_size > limit:
+        yield stream, info
+
+
+def _read(fd, name, limit):
+    """Read a whole small file; ``limit`` is a required finite byte ceiling."""
+    with _admit(fd, name) as (stream, info):
+        if info.st_size > limit:
             raise OutboxError("file too large: " + name)
-        data = stream.read() if limit is None else stream.read(limit + 1)
-        if limit is not None and len(data) > limit:
+        data = stream.read(limit + 1)
+        if len(data) > limit:
             raise OutboxError("file too large: " + name)
         return data
+
+
+def _matches(stream, info, expected):
+    """True when the opened file is exactly ``expected``, reading at most len(expected)+1 bytes."""
+    if info.st_size > len(expected):
+        return False  # Optimization only; the read budget below is still enforced.
+    view = memoryview(expected)
+    budget = len(expected) + 1  # One byte past the end detects growth.
+    offset = 0
+    while offset < budget:
+        chunk = stream.read(min(_CHUNK, budget - offset))
+        if not chunk:
+            break
+        end = offset + len(chunk)
+        if end > len(expected) or chunk != view[offset:end]:
+            return False
+        offset = end
+    return offset == len(expected)
 
 
 def approve_all(box, directory):
@@ -176,28 +210,30 @@ def approve_all(box, directory):
             key = name[:-4]
             result = {"idempotency_key": key}
             try:
-                data = _read(fd, name)
-                box.db.execute("BEGIN IMMEDIATE")
-                try:
-                    row = box.row(key)
-                    if row is None:
-                        result["state"] = "unknown_key"
-                    elif row["state"] != "proposed":
-                        result["state"] = "not_proposed"
-                    elif data != box.approval_payload(key):
-                        result["state"] = "changed"
-                    else:
-                        try:
-                            signature = _read(fd, name + ".sig", approval.MAX_SIGNATURE).decode("utf-8")
-                        except FileNotFoundError:
-                            result["state"] = "no_signature"
+                # The descriptor stays open through classification; payload bytes are read only
+                # for a proposed row, and only up to the exact expected length plus one.
+                with _admit(fd, name) as (stream, info):
+                    box.db.execute("BEGIN IMMEDIATE")
+                    try:
+                        row = box.row(key)
+                        if row is None:
+                            result["state"] = "unknown_key"
+                        elif row["state"] != "proposed":
+                            result["state"] = "not_proposed"
+                        elif not _matches(stream, info, box.approval_payload(key)):
+                            result["state"] = "changed"
                         else:
-                            approved = box.approve(key, {"kind": "ssh", "signature": signature})
-                            result.update(state="approved", approved_by=approved["approved_by"])
-                    box.db.execute("COMMIT")
-                except BaseException:
-                    box.db.execute("ROLLBACK")
-                    raise
+                            try:
+                                signature = _read(fd, name + ".sig", approval.MAX_SIGNATURE).decode("utf-8")
+                            except FileNotFoundError:
+                                result["state"] = "no_signature"
+                            else:
+                                approved = box.approve(key, {"kind": "ssh", "signature": signature})
+                                result.update(state="approved", approved_by=approved["approved_by"])
+                        box.db.execute("COMMIT")
+                    except BaseException:
+                        box.db.execute("ROLLBACK")
+                        raise
             except (OutboxError, OSError, UnicodeError) as exc:
                 result.update(state="refused", reason=str(exc))
             results.append(result)
