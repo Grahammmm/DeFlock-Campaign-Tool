@@ -26,6 +26,7 @@ from campaign_tool.labels import DEFAULTS, PLACEHOLDER
 from campaign_tool.site import GENERATED_TOP_LEVEL, build_site
 from campaign_tool.site_check import check_accessibility, check_links
 from tests.test_site_faq import BASELINE
+from tests.test_site_packet import strip_packet_counterevidence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
@@ -532,9 +533,9 @@ class PageTests(NewsCase):
         self.assertIn('<p class="notice">No press coverage has been recorded yet.</p>', empty)
         self.assertNotIn('class="news-list"', empty)
 
-    @staticmethod
-    def without_catalogue(files):
-        """DF2207-12 adds exactly two outputs, one footer paragraph and one sitemap URL; remove only those, keep every pinned digest."""
+    def without_catalogue(self, files):
+        """DF2207-12 adds exactly two outputs, one footer paragraph and one sitemap URL; remove only those, keep every pinned digest.
+        DF1109-08: the packet's default counterevidence block is asserted and removed the same way."""
         data_link = b'<p><a href="/data.html">Open data</a></p>'
         data_url = b'<url><loc>https://cedar-records.example.invalid/data.html</loc></url>'
         legacy = {}
@@ -547,7 +548,7 @@ class PageTests(NewsCase):
             if name == "sitemap.xml":
                 assert data.count(data_url) == 1
                 data = data.replace(data_url, b"", 1)
-            legacy[name] = data
+            legacy[name] = strip_packet_counterevidence(self, name, data)
         return legacy
 
     def test_optional_bytes_toggle_reservations_and_public_contracts(self):

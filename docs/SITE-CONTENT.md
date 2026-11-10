@@ -1,6 +1,6 @@
 # Site content model and multi-page build
 
-The findings index links to `/findings/packet-all.html`, a printable summary of all published findings, with source references and corrections. The packet links to each full finding and omits its body. A published finding whose output path conflicts with a generated page causes the build to refuse without changing `public/`.
+The findings index links to `/findings/packet-all.html`, a printable summary of all published findings, with source references, limitations, counterevidence ("None identified at publication." when there is none), the agency's recorded reply in the finding page's own words (nothing while absent or only prepared), corrections and then any dated Updates, newest first. Those sections use the finding page's own wording and labels, under per-finding ids (`packet-response-<slug>`, `packet-updates-<slug>`). The packet links to each full finding and omits its body. A published finding whose output path conflicts with a generated page causes the build to refuse without changing `public/`.
 
 `campaign_tool build --directory D` renders `D/public/` from `D/campaign.json`
 plus a reviewed `D/content/` directory. Without `content/` the command still
