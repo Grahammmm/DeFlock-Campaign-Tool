@@ -19,6 +19,10 @@ from datetime import date
 NOTICE = "Deletion is the organizer's decision. Nothing was changed."
 UNKNOWN_PURPOSE = "Unknown kind; review locally"
 MAX_ENTRIES = 10000
+# Directory nesting budget: kit/ and private/ are depth 0 and each descended unrecognized directory adds one. A
+# directory at depth MAX_DEPTH may hold files; one that would need descent to MAX_DEPTH + 1 refuses the whole
+# inventory (even when empty), before it is opened, so the recursive walk stays far below the interpreter limit.
+MAX_DEPTH = 64
 SETTINGS_CAP, STORE_CAP = 64 * 1024, 4 * 1024 * 1024
 REAL_DIRS = "personal-data requires real campaign directories"
 MISSING_DIR = "personal-data directory does not exist"
@@ -318,6 +322,8 @@ def _walk(dir_fd, parts, state):
                 result = None
             state["known"].append((entry, path, result))
         elif stat.S_ISDIR(st.st_mode):
+            if len(key) - 1 > MAX_DEPTH:  # the child's depth below kit/ or private/; refused before it is opened
+                raise PersonalDataError(INCOMPLETE)
             try:
                 child = os.open(item.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
             except OSError:

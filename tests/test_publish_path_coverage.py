@@ -30,6 +30,7 @@ EXPECTED_EXCEPTIONS = [
 CLAIM_WORDING_BLOCKERS = {"campaign_tool/review.py", "tools/flock_dashboard.py", "tools/flock_state.py", "tools/run_report_review.py"}
 # Modules the walk below flags that were read and emit nothing a member of the public could read (reason each).
 REVIEWED_NOT_PUBLISHING = {
+    "campaign_tool/body_schedule_cmd.py": "writes staged organizer schedule content only; explicit build retains the publication/privacy boundary",
     "campaign_tool/launch_check.py": "doctor --launch rehearsal build into a temp tree, removed in finally; nothing published",
     "campaign_tool/content.py": "loads and validates content; its only writes are the scaffold helpers",
     "campaign_tool/content_events.py": "validates content/events.json (shared privacy lint on every text field); it writes nothing",
