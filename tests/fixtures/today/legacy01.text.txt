@@ -1,0 +1,6 @@
+1. [comment_deadline] Written comment due 2026-03-22T12:00:00-07:00 for Synthetic Council m-week (m-week) — submit written comment: email the synthetic clerk (agenda: https://agenda.synthetic.example/m-week)
+2. [request_past_due] Follow up with Grover Beach Police Department (ca-grover-beach-police): request sent 2026-03-02 passed its provisional determination date 2026-03-12 3 day(s) ago — kit-status --directory <CAMPAIGN>
+3. [finding_ready] Finding td-ready is reviewed and ready to publish — finding publish <CAMPAIGN>/private/drafts/td-ready.json --directory <CAMPAIGN> --approved-by NAME
+4. [finding_blocked] Finding td-block is blocked: missing_legal_review, missing_privacy_review, missing_summary, need_two_independent_reviewers — finding review-status <CAMPAIGN>/private/drafts/td-block.json --directory <CAMPAIGN>
+5. [stale_comment_kit] Comment kit for meeting m-week cites cedar-policy-posted (corrected 2026-02-03) without the latest correction — meetings-stage --directory <CAMPAIGN> --id m-week --replace
+6. [stale_contact] Re-check the records contact for ca-arroyo-grande-police on its official site (last checked 2025-01-01, 438 days ago) — kit-verify-agency --directory <CAMPAIGN> --agency-id ca-arroyo-grande-police --source-url OFFICIAL_URL --checked-on YYYY-MM-DD --records-email ADDRESS

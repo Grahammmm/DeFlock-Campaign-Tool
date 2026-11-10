@@ -13,7 +13,8 @@ from . import body_schedules, findings, kit, kit_assign, kit_track, meeting_comm
 from .body_schedules import read_body_schedules
 from .content import CONTINUATION_KEYS, _read_json, continuation_issues, continuation_targets, load_agencies, load_meeting
 
-KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_installment_passed",
+KINDS = ("comment_deadline", "request_past_due", "request_due_today", "request_waiting_on_you", "request_fee_unpaid",
+         "request_stated_date_passed", "request_installment_passed",
          "request_installment_due", "request_stated_extension_date_passed", "request_download_pending", "request_download_expired", "finding_ready",
          "finding_blocked",
          "contract_ending", "minutes_pending", "continued_pending", "direction_pending", "stale_comment_kit", "stale_contact", "review_waiting",
@@ -151,15 +152,82 @@ def _minutes_item(meeting, ident, as_of, directory):
                  "--minutes-url OFFICIAL_MINUTES_URL --minutes-approved-on YYYY-MM-DD", outcome["on"], ident)
 
 
+def _request_name(row):
+    return f"{row['name'] or row['agency_id']} ({kit_track._label(row['agency_id'], row['request'])})"
+
+
+def _request_item(kind, row, what, command, due, key):
+    """One request item: the owner suffix and the recorded-receipt note exactly as every request kind shows them;
+    ``received_on``/``receipt_evidence`` are copied into the JSON only when the row carries them."""
+    if "owner" in row:
+        what += f" [owner: {row['owner']}]"
+    extra = {k: row[k] for k in ("received_on", "receipt_evidence") if k in row}
+    if extra:  # counted from the recorded agency receipt: say so, never as a legal deadline
+        what += f" ({kit_track.receipt_note(row['received_on'], row['receipt_evidence'])})"
+    return {**_item(kind, what, command, due, key), **extra}
+
+
+def _reply_command(writer, directory, row):  # a private draft writer for this one request; guidance only, never run
+    return (f"{writer} --directory {directory} --agency {shlex.quote(row['agency_id'])}"
+            + ("" if row["request"] == "main" else f" --request {shlex.quote(row['request'])}"))
+
+
+def _request_key(row):  # agency and request, as the provisional-date items are keyed
+    return row["agency_id"] + ("" if row["request"] == "main" else "#" + row["request"])
+
+
+def _unpaid_fees(root, directory, law_base, owner):
+    """DF1109-01: one ``request_fee_unpaid`` item per open (not closed or withdrawn) request whose latest fee estimate
+    (by date, then recorded order) has no ``fee_paid``/``fee_waived`` step after it: kit-status's own amount and the
+    estimate's own date. A zero-dollar estimate still counts. Nothing beyond kit/sent.json is read when no request is
+    recorded; a malformed store raises, so the caller lists no partial request work."""
+    sent = kit_track.read_sent(root)
+    if not sent:
+        return []
+    steps = {kit_track._split(key): [s for s in entry["steps"] if isinstance(s, dict)] for key, entry in sent.items()}
+    items = []
+    for row in kit_track.status(root, law_base=law_base, owner=owner)["requests"]:
+        if row["closed"] or "withdrawn_on" in row or row["fee_state"] != "unpaid":
+            continue
+        listed = steps.get((row["agency_id"], row["request"])) or []
+        last = kit_track._fee(listed)[0]
+        if last is None:  # the file changed between the two reads: list no partial request work
+            raise ValueError("kit/sent.json unreadable: changed while it was read")
+        on = listed[last]["on"]
+        items.append(_request_item("request_fee_unpaid", row, f"{_request_name(row)}: unpaid fee estimate "
+                                   f"{row['fee_estimate']} recorded {on}; review and reply",
+                                   "kit " + _reply_command("fee-reply", directory, row), on, _request_key(row)))
+    return items
+
+
 def _requests(root, as_of, directory, law_base, owner=None):
+    """Request work for the organizer, from kit_track's own readers (read-only; commands are guidance only).
+
+    Besides the provisional determination items, DF1109-01 lists work waiting on the organizer: an open agency
+    clarification request (``request_waiting_on_you``, due its own date; no claim that it pauses any legal period),
+    an unpaid latest fee estimate (``request_fee_unpaid``) and an answered request whose agency-stated production date
+    has passed (``request_stated_date_passed``: the agency's own date, provisional, not a legal deadline). Each is keyed
+    by agency and request, keeps ``--owner`` and the received_on note, and is built in full or not at all."""
     items = []
     try:
         kit_assign.read_assignments(root)
     except ValueError as exc:  # one item naming the bad file; no unfiltered fallback, other sources still listed
         return [_unreadable(kit_assign.FILE, exc)]
     command = f"kit-status --directory {directory}" + (f" --owner {shlex.quote(owner)}" if owner is not None else "")
-    for row in kit_track.due(root, as_of.isoformat(), law_base=law_base, owner=owner)["open"]:
-        name = f"{row['name'] or row['agency_id']} ({kit_track._label(row['agency_id'], row['request'])})"
+    report = kit_track.due(root, as_of.isoformat(), law_base=law_base, owner=owner)
+    for row in report["stated_passed"]:
+        items.append(_request_item("request_stated_date_passed", row, f"{_request_name(row)}: stated date passed "
+                                   f"{row['stated']} — the agency's own date; provisional, not a legal deadline; "
+                                   "follow up", _reply_command("kit-followup", directory, row), row["stated"],
+                                   _request_key(row)))
+    items += _unpaid_fees(root, directory, law_base, owner)
+    for row in report["open"]:
+        name = _request_name(row)
+        if row["state"] == "waiting_on_you":
+            items.append(_request_item("request_waiting_on_you", row, f"{name}: the agency asked for clarification on "
+                                       f"{row['since']}; reply", _reply_command("kit-clarify-reply", directory, row),
+                                       row["since"], _request_key(row)))
+            continue
         if row["state"] == "past_due":
             what = (f"Follow up with {name}: request sent {row['sent_on']} passed its provisional determination "
                     f"date {row['due']} {-row['days']} day(s) ago")
@@ -182,15 +250,9 @@ def _requests(root, as_of, directory, law_base, owner=None):
             what = f"{name}: link expired {row['due']}: {kit_track.DOWNLOAD_ASK}"
         else:
             continue
-        if "owner" in row:
-            what += f" [owner: {row['owner']}]"
-        extra = {k: row[k] for k in ("received_on", "receipt_evidence") if k in row}
-        if extra:  # counted from the recorded agency receipt: say so, never as a legal deadline
-            what += f" ({kit_track.receipt_note(row['received_on'], row['receipt_evidence'])})"
-        item = _item("request_" + row["state"], what, command, row["due"],
-                     row["agency_id"] + (row["request"] if row.get("kind") in ("download", "extension")
-                                         else "" if row["request"] == "main" else "#" + row["request"]))
-        items.append({**item, **extra})
+        items.append(_request_item("request_" + row["state"], row, what, command, row["due"],
+                                   row["agency_id"] + row["request"] if row.get("kind") in ("download", "extension")
+                                   else _request_key(row)))
     return items
 
 
