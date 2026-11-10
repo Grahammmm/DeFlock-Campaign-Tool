@@ -142,6 +142,23 @@ class HandoverGuideTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("--json", out)
 
+    def test_handover_find_examples_parse_and_warn_about_limits(self):
+        finds = [c for c in commands() if c[1][0] == "personal-data" and "--find" in c[1]]
+        self.assertEqual(len(finds), 2)
+        for _module, tokens, number in finds:
+            namespace, path = parse_only("campaign_tool", tokens)
+            self.assertEqual((path, namespace.find, namespace.directory), (("personal-data",), "SYNTHETIC",
+                                                                          MAPPING["NEW_EMPTY_DIR"]), number)
+        self.assertEqual(sorted(parse_only("campaign_tool", t)[0].as_json for _m, t, _n in finds), [False, True])
+        code, out, _ = invoke("campaign_tool", ["personal-data", "--help"])
+        self.assertEqual(code, 0)
+        self.assertIn("--find TEXT", out)
+        body = sections(read(GUIDE))[ORDER[8]]
+        for needed in ("never a value", "lists every file it did not search", "no match is not proof",
+                       "free-text notes, originals, drafts, the ledger, unknown files and backups are not searched",
+                       "shell history", "private"):
+            self.assertIn(needed, body)
+
     def test_backup_exclusions_are_not_full_restore_claims(self):
         with tempfile.TemporaryDirectory(prefix="synthetic-handover-") as tmp:
             root = Path(tmp)

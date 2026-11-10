@@ -23,6 +23,16 @@ date,kind,note,amount,expected_on,partial
 2026-03-12,produced,First batch,,2026-04-15,yes
 ```
 
+## Malformed CSV is refused whole
+
+The file is read with strict CSV quoting before any row is checked. An unclosed quote, text after a closing quote
+(`"note"x`), or a field larger than the parser's limit stops the import with exit 2 and
+`csv line N: malformed CSV (quotes or field size)`, where N is the physical line on which the broken record
+starts (a quoted note may span several lines). The message never repeats the file's contents or path. Nothing
+is repaired, no row is checked, and nothing is written, in preview or `--apply`, even when earlier rows are valid.
+Ordinary quoting still works: quoted commas, doubled quotes `""`, LF or CRLF line endings, a UTF-8 BOM and a
+last line without a newline.
+
 ## Replay identity
 
 A row equals a recorded step of the selected request when all of these match: event day, kind, normalized note,

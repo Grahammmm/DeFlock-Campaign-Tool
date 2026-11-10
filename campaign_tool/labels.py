@@ -403,6 +403,78 @@ DATA_DEFAULTS = {
     "sources.bundle_details": "{bytes} bytes, SHA-256 {sha256}",
     "sources.bundle_scope": "Only public copies hosted by this build are included; external links and private originals are excluded.",
 }
+# methods.html (DF2037-14) definitions; site.py re-exports these as CLASSIFICATION_DEFINITIONS/CONFIDENCE_DEFINITIONS.
+CLASSIFICATION_DEFINITIONS = {
+    "documented_fact": "A record states this directly. We report what the record says, not our interpretation of it.",
+    "apparent_conflict": "A record appears to differ from a stated rule or policy; not a finding that anyone broke a "
+                         "law. The agency may have an explanation the records we hold do not show.",
+    "confirmed_conflict": "The conflict was checked against the rule in force on the event date and passed legal-role "
+                          "review. It describes a difference between records and a rule, not a court's judgment.",
+    "information_gap": "Records we expected were not provided, not found, or do not answer the question asked. A gap is "
+                       "not evidence that something did or did not happen.",
+    "redaction": "Part of a record was withheld or blacked out by the agency. We note what was withheld and the reason "
+                 "given, if any.",
+    "agency_assertion": "The agency says this in a record or a reply. We report the statement; we have not "
+                        "independently confirmed it.",
+    "no_conflict": "We compared the records with the applicable rule or policy and found no difference. This covers "
+                   "only the records we hold.",
+}
+CONFIDENCE_DEFINITIONS = {
+    "verified": "Each statement was checked against the cited source records by a reviewer other than the author.",
+    "likely": "The cited records support this reading, but records we have asked for or expect could change it.",
+}
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+          "November", "December")
+# DF1109-16: the page strings site.py and timeline.py still wrote in English, each its exact old text.
+PAGE_DEFAULTS = {
+    "nav.timeline": "Timeline", "title.timeline": "Timeline", "title.timeline_description": "Public campaign dates",
+    "timeline.heading": "Campaign timeline",
+    "timeline.lead": "Dates from published sources, findings, corrections, records requests, meetings and recorded decisions.",
+    "timeline.actions_note": "Agency actions are transcribed from their cited official sources.",
+    "timeline.also_shown": "Also shown: {kinds}.", "timeline.kind_finding_update": "finding updates",
+    "timeline.kind_statement": "public statements", "timeline.kind_coverage": "press coverage",
+    "timeline.join_two": "{first} and {second}", "timeline.join_three": "{first}, {second} and {third}",
+    "timeline.empty": "Nothing dated has been published yet.", "timeline.source_link": "official record",
+    "timeline.month_year": "{month} {year}", "timeline.unknown_agency": "an agency",
+    "timeline.event_agency_action": "{agency}: {kind}: {statement}",
+    "timeline.event_records_requested": "Records requested from {agency}: {topic}",
+    "timeline.event_request_update": "{agency}: {topic} — {state}",
+    "timeline.event_records_received": "Records received from {agency}: {title}",
+    "timeline.event_finding_published": "Finding published: {title}", "timeline.event_correction": "Correction to {title}",
+    "timeline.event_finding_update": "Update to {title}", "timeline.event_meeting_scheduled": "Scheduled meeting: {body}",
+    "timeline.event_meeting": "Meeting: {body}", "timeline.event_decision": "Decision at {body}: {outcome}",
+    "timeline.event_statement": "{official}, {agency}: public statement", "timeline.event_coverage": "In the news: {outlet}",
+    **{f"month.{n:02}": name for n, name in enumerate(MONTHS, start=1)},
+    "footer.cameras": "Mapped points", "footer.newsletters": "Newsletter archive", "footer.methods": "How to read our findings",
+    "cameras.page_title": "Mapped points", "cameras.page_eyebrow": "Mapped points",
+    "cameras.page_heading": "Community-mapped points; ownership unconfirmed.",
+    "cameras.page_lead": "Points are community reports from OpenStreetMap, not confirmed agency ownership.",
+    "cameras.page_description": "List of community-mapped points by city; ownership unconfirmed",
+    "packet.link": "Printable packet", "packet.heading": "Findings packet", "packet.title": "Findings packet",
+    "packet.description": "Every published finding on one printable page",
+    "packet.intro": "As of {date} · {count} published findings · print or save as PDF",
+    "packet.source_rule": "rule {rule}", "packet.finding_id": "Finding {id}",
+    "finding.share": "Share this finding", "outcome.official_record": "Official record",
+    "legal.heading": "Legal basis", "legal.rule_version": "Rule version: {version}", "legal.duty": "Duty: {duty}",
+    "legal.exceptions": "Exceptions:", "legal.exceptions_text": "Exceptions: {exceptions}",
+    "newsletters.heading": "Newsletter archive", "newsletters.title": "Newsletter archive",
+    "newsletters.description": "Past issues of our email newsletter",
+    "newsletters.lead": "Past issues of our email newsletter, as sent.", "newsletters.sent": "Sent {date}",
+    "newsletters.all_issues": "All newsletter issues", "newsletters.issue_description": "Newsletter issue sent {date}",
+    "methods.index_link": "How to read our findings",
+    "methods.index_sentence": "{methods} defines each classification and confidence label.",
+    "methods.heading": "How to read our findings", "methods.title": "How to read our findings",
+    "methods.description": "What each finding label means, what record numbers show and how findings are reviewed",
+    "methods.classifications": "Classifications", "methods.confidence": "Confidence",
+    "methods.record_numbers": "Record numbers", "methods.review": "Review before publication",
+    "methods.gate": ("Before a finding is published it needs {roles} and {last} review by at least two people other than "
+                     "the author. Until then the build refuses to publish it."),
+    "methods.interests": ("Reviewers declare agency interests privately. A declared interest excludes their review from "
+                          "findings about that agency."),
+    **{f"methods.classification_{code}": text for code, text in CLASSIFICATION_DEFINITIONS.items()},
+    **{f"methods.confidence_{code}": text for code, text in CONFIDENCE_DEFINITIONS.items()},
+}
+DEFAULTS.update(PAGE_DEFAULTS)
 DEFAULTS.update(DATA_DEFAULTS)
 DEFAULTS.update(JS_DEFAULTS)
 DEFAULTS.update(MEETINGS_JS_DEFAULTS)

@@ -1,13 +1,87 @@
 """Optional, memory-only agenda PDF keyword leads; never publication approval."""
+import contextlib
 import hashlib
 import http.client
+import os
+import selectors
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
 
 MAX_BYTES = 10 * 1024 * 1024
+MAX_TEXT_BYTES = 8 * 1024 * 1024
+CONVERT_SECONDS = 30
+_PDFTOTEXT = ("pdftotext", "-layout", "-", "-")
+_CHUNK = 64 * 1024
+
+
+class _TextTooLarge(subprocess.SubprocessError):
+    """The converter wrote more than MAX_TEXT_BYTES; nothing it wrote is used."""
+
+
+def _convert(data, *, seconds=CONVERT_SECONDS, limit=MAX_TEXT_BYTES):
+    """Run pdftotext on in-memory bytes; one deadline, at most limit output bytes.
+
+    Bounds what Python captures, not the converter's own memory. Any refusal kills
+    and reaps the child; only complete output of a zero exit is returned."""
+    if os.name != "posix" or not hasattr(os, "set_blocking"):
+        raise OSError("bounded converter pipes need POSIX")
+    deadline = time.monotonic() + seconds
+    proc = subprocess.Popen(list(_PDFTOTEXT), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL)
+    done = False
+    try:
+        out = bytearray()
+        pending = memoryview(data)
+        with selectors.DefaultSelector() as selector:
+            for pipe in (proc.stdin, proc.stdout):
+                os.set_blocking(pipe.fileno(), False)
+            if pending:
+                selector.register(proc.stdin, selectors.EVENT_WRITE)
+            else:
+                proc.stdin.close()
+            selector.register(proc.stdout, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(_PDFTOTEXT[0], seconds)
+                for key, _ in selector.select(remaining):
+                    try:
+                        if key.fileobj is proc.stdin:
+                            pending = pending[os.write(proc.stdin.fileno(), pending[:_CHUNK]):]
+                            if not pending:
+                                selector.unregister(proc.stdin)
+                                proc.stdin.close()
+                            continue
+                        chunk = os.read(proc.stdout.fileno(), min(_CHUNK, limit + 1 - len(out)))
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        selector.unregister(proc.stdout)
+                        continue
+                    out += chunk
+                    if len(out) > limit:
+                        raise _TextTooLarge(len(out))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(_PDFTOTEXT[0], seconds)
+        code = proc.wait(remaining)
+        done = True
+        if code:
+            raise subprocess.CalledProcessError(code, _PDFTOTEXT[0])
+        return bytes(out)
+    finally:
+        if not done:
+            with contextlib.suppress(OSError):
+                proc.kill()
+        for pipe in (proc.stdin, proc.stdout):
+            with contextlib.suppress(OSError):
+                pipe.close()
+        if not done:
+            proc.wait()
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -41,13 +115,11 @@ def scan(url, opener=None, *, platform_host_rule):
             return dict(result, pdf_scan="not_pdf")
         result["pdf_sha256"] = hashlib.sha256(data).hexdigest()
         try:
-            converted = subprocess.run(["pdftotext", "-layout", "-", "-"], input=data,
-                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                       timeout=30, check=True)
+            converted = _convert(data)
         except FileNotFoundError:
             return dict(result, pdf_scan="unavailable_pdftotext")
         from .meetings import KEYWORDS
-        pages = converted.stdout.decode("utf-8", errors="replace").split("\f")
+        pages = converted.decode("utf-8", errors="replace").split("\f")
         if pages and not pages[-1].strip():
             pages.pop()
         terms = set()

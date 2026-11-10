@@ -373,6 +373,28 @@ reading as a new snapshot instead). Every refusal writes nothing; a success repl
 `content/` directory it read, and refuses if that directory or the file changed meanwhile. Nothing is fetched, built
 or published, and the tool cannot tell whether you actually re-read the source.
 
+### Recording a policy or contract document
+
+`python3 -m campaign_tool content agency-profile policy --directory D --agency ID --url URL --source-url URL
+--checked-on YYYY-MM-DD [--replace [--drop-check]]` writes `profile.alpr_policy`, and `content agency-profile contract
+--directory D --agency ID --vendor TEXT --start D --end D [--renewal-note TEXT] --source-url URL --checked-on
+YYYY-MM-DD [--cost-usd AMOUNT --period annual|total|one_time --as-stated-in TITLE] [--replace [--drop-check]]` writes
+`profile.contract` (the three cost flags together or none; the amount is kept as the typed decimal string). The agency
+must be selected; nothing creates the file or an agency. The new document is the whole value: an existing one needs
+`--replace`, and unsupplied optional fields are then removed. An `archived_url`/`archived_on` pair stays only while the
+document URL (`alpr_policy.url`, `contract.source_url`) is unchanged; otherwise it is removed with a notice.
+
+A reading is never rebound to another document. Changing the document URL while `policy_check` (`contract_check`)
+exists is refused (`... changes while policy_check exists; pass --replace --drop-check, then record a new reading with
+policy-check`); with `--drop-check` the new document and the removal of that reading are one atomic write, and the
+output adds `Dropped profile.policy_check (checked_on D); record a new reading with content agency-profile
+policy-check.` On the same URL, a new `checked_on` later than the reading's is refused (`pass --drop-check or redo
+policy-check first with --checked-on not before D`); an equal date, or a changed policy `--source-url` alone, keeps the
+reading. `--drop-check` without `--replace` is refused. Before anything is written the whole prospective file must pass
+the build's loader, the new document's text the shared privacy lint, and every agency the build's privacy gate; a
+refusal names the place and the rule or category (never the text) and writes nothing. Success replaces the file
+atomically as `recheck` does and ends `Recorded only. Nothing was fetched, built, published or sent.`
+
 ### Archived copies of agency sources (optional)
 
 Five organizer-verified link objects may carry a manually checked archive copy: `profile.alpr_policy`,
@@ -1739,6 +1761,19 @@ Key families: `nav.*`, `header.*`, `footer.*`, `title.*` (page titles and descri
 `intro.*`, `notice.*` (empty states and fixed notices), `finding.*`, `meeting.*`, `sources.*`, `agency.*`, `map.*`,
 `signup.*`, `glossary.*`, `schedule.*`, `js.*` (scripts, below), `handout.*` (the private meeting-pack handout, below), and `classification.<code>`, `confidence.<code>`, `kind.<code>`. A key left out
 keeps its English default.
+Timeline, methods, packet, newsletters, cameras page and legal basis (DF1109-16): `nav.timeline`, `title.timeline*`,
+`timeline.*` (heading, lead, the agency-actions note and "Also shown: {kinds}." without their leading space, which
+the page adds; the three kind names with `timeline.join_two`/`timeline.join_three`; the empty state, the
+"official record" link, `timeline.unknown_agency` and one `timeline.event_<kind>` template per event, whose
+placeholders take the event's name, title, topic, body, outlet or official exactly as stored), `month.01` to
+`month.12` with `timeline.month_year` ("{month} {year}"; the timeline's month headings use these, never the
+computer's locale), `methods.*` (page text and `methods.classification_<code>`/`methods.confidence_<code>`, the label
+definitions), `packet.*`, `newsletters.*`, `cameras.page_*`, `legal.*`, `finding.share`, `outcome.official_record`
+and `footer.cameras`/`footer.newsletters`/`footer.methods`. The packet reuses `finding.agency`, `finding.sources`,
+`finding.limitations`, `finding.none_stated`, `finding.corrections`, `finding.published` and `finding.updated`.
+Still English whatever the labels say: request-state sentences, meeting outcome names, comment deadlines, policy
+and contract checks, local rules, sharing tables and the record-number explainer. Each of these keys allows exactly
+the placeholders its default shows.
 A complete Spanish draft of every key is in [`examples/labels/es.json`](../examples/labels/es.json) ([README](../examples/labels/README.md)).
 Machine-made draft. A fluent Spanish reader must check every line before a campaign uses it; nothing here is reviewed.
 Refused, and the build writes nothing: an unknown key; text that is not 1-300 characters after trimming or that holds

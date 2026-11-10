@@ -430,6 +430,409 @@ class RegisterTests(Base):
         self.assertEqual(run("personal-data", "--directory", self.root, "--json")[1].count(str(self.root)), 0)
 
 
+# --- personal-data --find (DF1109B-15) ---------------------------------------------------------------------------
+
+FIND_KEYS = {"schema_version", "mode", "files", "matches", "notice"}
+FIND_FILE_KEYS = {"kind", "path", "file_position", "status", "searched_fields"}
+FIND_MATCH_KEYS = {"kind", "path", "file_position", "record_position", "field"}
+# Written out independently of personal_data.FIND_FIELDS: the only searched field of each kind.
+FIND_FIELDS = {"requester": ["requester"], "reviewer_roster": ["name"], "review_assignments": ["reviewer"],
+               "comments_sent": [], "correction_requests": [], "contact_log": [], "volunteer_assignments": ["assignee"],
+               "supporters_consent": [], "speaker_plans": ["label"]}
+SHORT = "Stopped: personal-data --find needs at least 3 characters\n"
+CONTROL = "Stopped: personal-data --find text cannot contain control or formatting characters\n"
+MISUSE = "personal-data: error: invalid arguments (not repeated here)"
+FIND_NOTICE = ("Private: keep this output local. Only the listed name and contact fields were searched; free-text notes, "
+               "originals, drafts, the ledger, unknown files, backups and anything outside this folder were not. "
+               "No match is not proof that nothing is held about a person. " + NOTICE)
+
+
+def planted_stores(root):
+    """'Plant' (any case) in every searched field and in every excluded field, key, prose and file name."""
+    put(root, "kit/request-settings.json", {"schema_version": 1, "requester": [
+        "Org PLANT Person", "no match here", "plant.person@example.invalid", "555-0100 Plant Rd"], "fee_cap_usd": 5,
+        "date_from": "2026-01-01"})
+    put(root, "private/reviewers.json", {"schema_version": 1, "reviewers": [
+        {"name": "Rev Plant", "roles": ["legal"], "added_on": "2026-01-05", "interest_note": "plant",
+         "ssh_public_key": "ssh-ed25519 PLANTKEY", "interest_agencies": ["plant-agency"]},
+        {"name": "Other Person", "roles": ["plant"], "added_on": "2026-01-06", "interest_note": "plant"},
+        {"name": "x PLANT y plant", "roles": [], "added_on": "2026-01-07"}]})
+    put(root, "private/review-assignments/a.json", {"schema_version": 1, "assignments": {
+        "plant-role": {"reviewer": "Other Person", "on": "2026-02-10", "recorded_at": "plant"},
+        "legal": {"reviewer": "Plant Rev", "on": "2026-02-10", "recorded_at": STAMP}}})
+    put(root, "private/review-assignments/b.json", {"schema_version": 1, "assignments": {
+        "legal": {"reviewer": "PLANT", "on": "2026-02-11", "recorded_at": STAMP}}})
+    put(root, "private/review-assignments/Plant-Person.json", b"not json Plant")
+    put(root, "kit/comments-sent.json", {"schema_version": 1, "comments": {
+        "plant-meeting": {"on": "2026-02-01", "channel": "plant", "recorded_at": "plant", "letter_sha256": SHA}}})
+    put(root, "private/correction-requests.json", {"schema_version": 1, "requests": [
+        {"id": 1, "finding_id": "plant", "received_on": "2026-02-02", "summary": "Plant Person asked",
+         "state": "accepted", "decided_on": "2026-02-03", "note": "plant"}]})
+    put(root, "kit/sent.json", {"schema_version": 1, "requests": {"plant-agency": {
+        "sent_on": "2026-02-01", "channel": "plant", "recorded_at": STAMP, "steps": [],
+        "contacts": [{"on": "2026-02-03", "channel": "phone", "role": "Plant Clerk", "note": "plant",
+                      "recorded_at": STAMP}]}}})
+    put(root, "kit/assignments.json", {"schema_version": 1, "assignments": {"plant-agency": "other", "b": "Plant Vol"}})
+    put(root, "kit/supporters-consent.json", {"schema_version": 1, "supporters": {"plant-org": {
+        "organization": True, "confirmed_on": "2026-02-04", "how": "Plant Person by email", "public_sha256": SHA,
+        "correspondence": None, "cosign": ["plant-meeting"], "cosign_confirmed_on": "2026-02-05",
+        "cosign_how": "plant", "cosign_correspondence": None}}})
+    put(root, "kit/meetings/speakers/plant-m.json", {"schema_version": 1, "meeting_id": "plant", "kit_sha256": SHA,
+                                                     "assignments": [{"label": "vol plant", "point": "plant"},
+                                                                     {"label": "x", "point": "plant"}]})
+    put(root, "kit/Plant-Person.txt", b"Plant Person, 555-0100")
+    put(root, "private/ledger.sqlite", b"Plant")
+    put(root, "private/drafts/plant.json", b"Plant")
+
+
+def match(kind, file_position, record_position, field):
+    return {"kind": kind, "path": KINDS[kind][0], "file_position": file_position, "record_position": record_position,
+            "field": field}
+
+
+class FindTests(Base):
+    def find(self, *extra, query="plant"):
+        return run("personal-data", "--directory", self.root, "--find", query, *extra)
+
+    def report(self, query="plant"):
+        code, out, err = self.find("--json", query=query)
+        self.assertEqual(err, "")
+        return code, json.loads(out)
+
+    def test_find_all_nine_kinds_exact_field_matrix(self):
+        planted_stores(self.root)
+        code, report = self.report()
+        self.assertEqual(code, 1)  # the malformed review assignment file
+        self.assertEqual(set(report), FIND_KEYS)
+        self.assertEqual((report["schema_version"], report["mode"], report["notice"]), (1, "find", FIND_NOTICE))
+        self.assertEqual(report["matches"], [
+            match("requester", 1, [1, 1], "requester"), match("requester", 1, [1, 3], "requester"),
+            match("requester", 1, [1, 4], "requester"),
+            match("review_assignments", 2, [2], "reviewer"), match("review_assignments", 3, [1], "reviewer"),
+            match("reviewer_roster", 1, [1], "name"), match("reviewer_roster", 1, [3], "name"),
+            match("speaker_plans", 1, [1], "label"), match("volunteer_assignments", 1, [2], "assignee")])
+        files = [(f["kind"], f["path"], f["file_position"], f["status"], f["searched_fields"]) for f in report["files"]]
+        self.assertEqual(files, [
+            ("comments_sent", "kit/comments-sent.json", 1, "no_identity_fields", []),
+            ("contact_log", "kit/sent.json", 1, "no_identity_fields", []),
+            ("correction_requests", "private/correction-requests.json", 1, "no_identity_fields", []),
+            ("requester", "kit/request-settings.json", 1, "searched", ["requester"]),
+            ("review_assignments", "private/review-assignments/*.json", 1, "unreadable", []),  # Plant-Person.json
+            ("review_assignments", "private/review-assignments/*.json", 2, "searched", ["reviewer"]),
+            ("review_assignments", "private/review-assignments/*.json", 3, "searched", ["reviewer"]),
+            ("reviewer_roster", "private/reviewers.json", 1, "searched", ["name"]),
+            ("speaker_plans", "kit/meetings/speakers/*.json", 1, "searched", ["label"]),
+            ("supporters_consent", "kit/supporters-consent.json", 1, "no_identity_fields", []),
+            ("unknown", "kit/<unknown>", 1, "not_searched", []),
+            ("unknown", "private/<unknown>", 1, "not_searched", []), ("unknown", "private/<unknown>", 2, "not_searched", []),
+            ("volunteer_assignments", "kit/assignments.json", 1, "searched", ["assignee"])])
+        for row in report["files"]:
+            self.assertEqual(set(row), FIND_FILE_KEYS)
+            if row["status"] == "searched":
+                self.assertEqual(row["searched_fields"], FIND_FIELDS[row["kind"]])
+        self.assertTrue(all(set(m) == FIND_MATCH_KEYS for m in report["matches"]))
+        self.assertEqual({k: list(v) for k, v in personal_data.FIND_FIELDS.items()}, FIND_FIELDS)
+        self.assertEqual(set(personal_data.FIND_FIELDS), {entry[0] for entry in personal_data.CATALOG})
+
+    def test_find_never_searches_prose_contact_roles_or_hashes(self):
+        planted_stores(self.root)
+        for query in ("plant-agency", "plant-meeting", "Plant Clerk", "plantkey", "Plant Person asked", "c" * 64,
+                      "plant-role", "Plant Person by", "ask:1", "Plant-Person.txt", "2026-02"):
+            with self.subTest(query=query):
+                self.assertEqual(self.report(query)[1]["matches"], [])
+        opened = []
+        real_open = os.open
+
+        def watch(path, flags, *args, **kwargs):
+            opened.append(os.fspath(path))
+            return real_open(path, flags, *args, **kwargs)
+        with mock.patch.object(os, "open", side_effect=watch):
+            self.report()
+        for name in opened:  # unknown files, drafts, the ledger and originals are never opened
+            self.assertFalse(name.endswith((".txt", ".sqlite")) or name == "plant.json", name)
+
+    def hits(self, stored, query):
+        put(self.root, "kit/assignments.json", {"schema_version": 1, "assignments": {"a": stored}})
+        code, report = self.report(query)
+        self.assertEqual(code, 0)
+        return [m["record_position"] for m in report["matches"]]
+
+    def test_find_unicode_casefold_and_literal_boundaries(self):
+        for stored, query in (("Mixed CaSe Name", "mixed case"), ("Straße 9", "STRASSE"), ("STRASSE 9", "straße"),
+                              ("Caf\u00e9 Owner", "cafe\u0301 o"), ("Cafe\u0301 Owner", "CAF\u00c9"),
+                              ("\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3", "\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c2"),
+                              ("\U00010400\U00010401\U00010402", "\U00010428\U00010429\U0001042a"),
+                              ("a.b*c(d)", ".b*c("), ("555-0100", "555-0100"), ("  Ann Lee  ", "  ann lee ")):
+            with self.subTest(stored=stored, query=query):
+                self.assertEqual(self.hits(stored, query), [[1]])
+        for stored, query in (("Caf\u00e9", "cafe"), ("Cafe", "caf\u00e9"), ("\u0130stanbul", "istanbul"),
+                              ("555-0100", "5550100"), ("555 0100", "555-0100"), ("axbc", "a.b"), ("Ann", "^ann")):
+            with self.subTest(stored=stored, query=query):
+                self.assertEqual(self.hits(stored, query), [])
+        put(self.root, "kit/request-settings.json", {"schema_version": 1, "requester": ["Ann", "Lee"]})
+        self.assertEqual(self.report("annlee")[1]["matches"], [])  # never across lines or fields
+        self.assertEqual(self.find(query="ann\nlee")[0], 2)
+        # length counts code points after trimming and NFC, before folding
+        self.assertEqual(personal_data.find_query("  abc  "), "abc")
+        self.assertEqual(personal_data.find_query("e\u0301xy"), "\u00e9xy")
+        for refused in ("\u00dfa", "e\u0301x", " ab "):
+            with self.subTest(refused=refused), self.assertRaises(personal_data.FindQueryError):
+                personal_data.find_query(refused)
+
+    def test_find_query_refusals_do_not_open_or_echo(self):
+        planted_stores(self.root)
+        before = tree(self.root)
+        cases = [(q, SHORT) for q in ("", "   ", "a", "Qz", "\u00dfQ", "e\u0301z")]
+        cases += [(q, CONTROL) for q in ("Qzx\x00name", "Qzx\u202ename", "Qzx\ud800name", "Qzx\tname", "Qzx\u200bname")]
+        with mock.patch.object(personal_data, "_real_root", side_effect=AssertionError("opened")):
+            for query, message in cases:
+                for argv in (("--find", query), ("--find=" + query,)):
+                    with self.subTest(query=query, argv=argv[0][:7]):
+                        self.assertEqual(run("personal-data", "--directory", self.root, *argv), (2, "", message))
+            for argv in (("--find",), ("--find", "Qzx Secret", "--bogus"), ("--find", "Qzx", "Secret"),
+                         ("--find=Qzx Secret", "Extra"), ("--fi", "Qzx Secret", "--json", "--json=x"),
+                         ("--find", "Qzx", "--find")):
+                with self.subTest(argv=argv):
+                    code, out, err = run("personal-data", "--directory", self.root, *argv)
+                    self.assertEqual((code, out), (2, ""))
+                    self.assertEqual(err.splitlines()[-1], MISUSE)
+                    for leaked in ("Qzx", "Secret", "Extra", "bogus", "Traceback"):
+                        self.assertNotIn(leaked, err)
+        self.assertEqual(before, tree(self.root))
+        # other commands keep argparse's own diagnostics
+        self.assertIn("unrecognized arguments: Qzx", run("today", "--directory", self.root, "Qzx")[2])
+
+    def test_find_two_people_no_values_keys_or_filename_leaks(self):
+        planted_stores(self.root)
+        valid = {"schema_version": 1, "requester": ["Target Qq Person", "OTHER-PERSON-Z9", "target-qq@example.invalid",
+                                                    "9 Target Qq Road", "SECRET-CANARY-Z9"]}
+        put(self.root, "kit/request-settings.json", valid)
+        put(self.root, "private/review-assignments/SECRET-CANARY-Z9.json", {"schema_version": 1, "assignments": {
+            "SECRET-KEY-Z9": {"reviewer": "Target Qq Person", "on": "2026-02-10", "recorded_at": STAMP}}})
+        put(self.root, "kit/meetings/speakers/OTHER-PERSON-Z9.json", b'{"label": "Target Qq Person", "x": NaN}')
+        for extra in ((), ("--json",)):
+            code, out, err = self.find(*extra, query="target qq")
+            self.assertEqual((code, err), (1, ""))
+            self.assertTrue(out.isascii())
+            for canary in ("Target", "target", "Qq", "qq", "OTHER-PERSON", "SECRET", "CANARY", "Plant", "plant",
+                           "example.invalid", "Road", "ssh-ed25519", SHA, str(self.root), str(self.tmp), "ledger"):
+                self.assertNotIn(canary, out.replace("the ledger,", ""))
+        report = json.loads(self.find("--json", query="target qq")[1])
+        self.assertEqual([(m["kind"], m["file_position"], m["record_position"]) for m in report["matches"]],
+                         [("requester", 1, [1, 1]), ("requester", 1, [1, 4]),  # not target-qq@: punctuation is literal
+                          ("review_assignments", 2, [1])])  # SECRET-CANARY-Z9.json sorts after Plant-Person.json
+        for row in report["files"] + report["matches"]:
+            self.assertIn(row["path"], {v[0] for v in KINDS.values()} | {"kit/<unknown>", "private/<unknown>"})
+
+    def test_find_stored_positions_deduplicate_and_order(self):
+        put(self.root, "kit/assignments.json", {"schema_version": 1, "assignments": {
+            "z-agency": "Plant", "a-agency": "other", "m-agency": "plant plant PLANT"}})
+        put(self.root, "private/reviewers.json", {"schema_version": 1, "reviewers": [
+            {"name": "x", "roles": [], "added_on": "2026-01-05"}, {"name": "plant", "roles": [], "added_on": "2026-01-05"}]})
+        speakers = {"b.json": [{"label": "plant", "point": "p"}], "a.json": [{"label": "x", "point": "p"}],
+                    "d.json": [{"label": "x", "point": "p"}, {"label": "Plant", "point": "q"}]}
+        for name, items in speakers.items():
+            put(self.root, "kit/meetings/speakers/" + name, {"schema_version": 1, "meeting_id": "m", "kit_sha256": SHA,
+                                                              "assignments": items})
+        os.mkfifo(self.root / "kit/meetings/speakers/c.json")
+        code, report = self.report()
+        self.assertEqual(code, 1)
+        listed = sorted(p.name for p in (self.root / "kit/meetings/speakers").iterdir())  # independent enumeration
+        self.assertEqual(listed, ["a.json", "b.json", "c.json", "d.json"])
+        self.assertEqual([(f["file_position"], f["status"]) for f in report["files"] if f["kind"] == "speaker_plans"],
+                         [(1, "searched"), (2, "searched"), (3, "unreadable"), (4, "searched")])
+        self.assertEqual([(m["kind"], m["file_position"], m["record_position"]) for m in report["matches"]],
+                         [("reviewer_roster", 1, [2]), ("speaker_plans", 2, [1]), ("speaker_plans", 4, [2]),
+                          ("volunteer_assignments", 1, [1]), ("volunteer_assignments", 1, [3])])
+        put(self.root, "kit/assignments.json", {"schema_version": 1, "assignments": {
+            "z-agency": "Plant", "a-agency": "changed value", "m-agency": "plant plant PLANT"}})
+        self.assertEqual(report["matches"], self.report()[1]["matches"])
+        code, text, err = self.find()
+        lines = text.splitlines()
+        self.assertEqual(lines[0].split("\t"), ["kind", "path", "file_position", "record_position", "field"])
+        self.assertEqual(lines[1:6], ["reviewer_roster\tprivate/reviewers.json\t1\t2\tname",
+                                      "speaker_plans\tkit/meetings/speakers/*.json\t2\t1\tlabel",
+                                      "speaker_plans\tkit/meetings/speakers/*.json\t4\t2\tlabel",
+                                      "volunteer_assignments\tkit/assignments.json\t1\t1\tassignee",
+                                      "volunteer_assignments\tkit/assignments.json\t1\t3\tassignee"])
+        self.assertEqual(lines[6:8], ["", "kind\tpath\tfile_position\tstatus\tsearched_fields"])
+        self.assertIn("comments_sent\tkit/comments-sent.json\t-\tabsent\t-", lines)
+        self.assertEqual(len(lines), 8 + len(report["files"]) + 1)
+        self.assertEqual((lines[-1], text.count(NOTICE)), (FIND_NOTICE, 1))
+
+    def test_find_missing_empty_and_no_match_are_not_complete_personal_inventory(self):
+        code, report = self.report()
+        self.assertEqual((code, report["matches"]), (0, []))
+        self.assertEqual([(f["kind"], f["path"], f["file_position"], f["status"], f["searched_fields"])
+                          for f in report["files"]],
+                         sorted((k, v[0], None, "absent", []) for k, v in KINDS.items()))
+        self.assertEqual(list(self.root.iterdir()), [], "a missing kit/ or private/ is reported, never created")
+        put(self.root, "kit/request-settings.json", {"schema_version": 1, "fee_cap_usd": 5})
+        put(self.root, "kit/assignments.json", {"schema_version": 1, "assignments": {}})
+        put(self.root, "private/reviewers.json", {"schema_version": 1, "reviewers": []})
+        put(self.root, "kit/supporters-consent.json", {"schema_version": 1, "supporters": {}})
+        code, report = self.report()
+        self.assertEqual((code, report["matches"], report["notice"]), (0, [], FIND_NOTICE))
+        status = {f["kind"]: f["status"] for f in report["files"]}
+        self.assertEqual((status["requester"], status["volunteer_assignments"], status["reviewer_roster"],
+                          status["supporters_consent"], status["speaker_plans"]),
+                         ("searched", "searched", "searched", "no_identity_fields", "absent"))
+        valid_stores(self.root, text="someone")
+        code, out, err = self.find()
+        self.assertEqual((code, err), (0, ""))
+        self.assertNotRegex(out.replace(FIND_NOTICE, "").lower(), r"nothing (is )?held|all personal data|no personal data")
+
+    def test_find_malformed_file_discards_early_matches_not_siblings(self):
+        good_volunteer = {"schema_version": 1, "assignments": {"a": "plant"}}
+        cases = [
+            ("kit/request-settings.json", {"schema_version": 1, "requester": ["plant", 5]}),
+            ("kit/request-settings.json", {"schema_version": True, "requester": ["plant"]}),
+            ("kit/request-settings.json", b'{"schema_version":1,"requester":["plant"],"requester":["x"]}'),
+            ("kit/request-settings.json", b'{"schema_version":1,"requester":["plant' + b"x" * 70000 + b'"]}'),
+            ("private/reviewers.json", {"schema_version": 1, "reviewers": [
+                {"name": "plant", "roles": [], "added_on": "2026-01-05"}, {"name": "x", "roles": [], "added_on": "2026-02-30"}]}),
+            ("private/reviewers.json", b'{"schema_version":1,"reviewers":[{"name":"plant","roles":[],"added_on":"2026-01-05","x":NaN}]}'),
+            ("private/review-assignments/a.json", {"schema_version": 1, "assignments": {
+                "legal": {"reviewer": "plant", "on": "2026-02-10", "recorded_at": STAMP}, "privacy": {"reviewer": "x"}}}),
+            ("kit/meetings/speakers/m.json", {"schema_version": 1, "meeting_id": "m", "kit_sha256": SHA,
+                                              "assignments": [{"label": "plant", "point": "p"}, {"label": 5, "point": "p"}]}),
+            ("kit/meetings/speakers/m.json", b'{"schema_version":1,"meeting_id":"m","kit_sha256":"' + SHA.encode()
+             + b'","assignments":[{"label":"plant","point":"p"}]' + b'}' + b"\xff"),
+            ("kit/meetings/speakers/m.json", b"[" * 100000),
+            ("kit/supporters-consent.json", {"schema_version": 1, "supporters": {"o": {"confirmed_on": "plant"}}}),
+            ("kit/sent.json", {"schema_version": 2, "requests": {}}),
+            ("kit/comments-sent.json", b"\xff\xfe plant"),
+            ("private/correction-requests.json", {"schema_version": 1, "requests": [{"id": 1, "summary": "plant"}]}),
+        ]
+        for index, (rel, content) in enumerate(cases):
+            with self.subTest(rel=rel, index=index):
+                self.root = self.tmp / f"bad-{index}"
+                put(self.root, rel, content)
+                put(self.root, "kit/assignments.json", good_volunteer)
+                code, out, err = self.find("--json")
+                self.assertEqual((code, err), (1, ""))
+                report = json.loads(out)
+                bad = [f for f in report["files"] if f["status"] == "unreadable"]
+                self.assertEqual([(f["path"], f["searched_fields"]) for f in bad], [(KINDS[bad[0]["kind"]][0], [])])
+                self.assertEqual(report["matches"], [match("volunteer_assignments", 1, [1], "assignee")])
+                self.assertNotIn("plant", out.replace("volunteer", ""))
+
+    def test_find_filesystem_refusals_and_swap_races(self):
+        outside = self.tmp / "outside"
+        put(outside, "kit/assignments.json", {"schema_version": 1, "assignments": {"a": "plant"}})
+        link_root = self.tmp / "link-root"
+        link_root.symlink_to(self.root)
+        refused = "Stopped: personal-data requires real campaign directories\n"
+        self.assertEqual(run("personal-data", "--directory", link_root, "--find", "plant"), (1, "", refused))
+        (self.root / "kit").symlink_to(outside / "kit")
+        self.assertEqual(self.find("--json"), (1, "", refused))
+        (self.root / "kit").unlink()
+        self.assertEqual(run("personal-data", "--directory", self.tmp / "missing", "--find", "plant"),
+                         (1, "", "Stopped: personal-data directory does not exist\n"))
+        put(self.root, "private/reviewers.json", {"schema_version": 1, "reviewers": [
+            {"name": "plant", "roles": [], "added_on": "2026-01-05"}]})
+        kit = self.root / "kit"
+        kit.mkdir()
+        (kit / "assignments.json").symlink_to(outside / "kit" / "assignments.json")
+        os.mkfifo(kit / "sent.json")
+        (kit / "supporters-consent.json").mkdir()
+        put(self.root, "kit/request-settings.json", {"schema_version": 1, "requester": ["plant"]})
+        os.link(kit / "request-settings.json", kit / "copy.json")
+        (kit / "dangling").symlink_to(self.tmp / "nowhere")
+        os.mkfifo(kit / "pipe.bin")
+        code, report = self.report()
+        status = {(f["kind"], f["file_position"]): f["status"] for f in report["files"]}
+        self.assertEqual(code, 1)
+        for kind in ("volunteer_assignments", "contact_log", "supporters_consent", "requester"):
+            self.assertEqual(status[(kind, 1)], "unreadable", kind)
+        self.assertEqual([f["status"] for f in report["files"] if f["kind"] == "unknown"], ["not_searched"] * 3)
+        self.assertEqual(report["matches"], [match("reviewer_roster", 1, [1], "name")])
+        real_open, swapped = os.open, []
+
+        def swap(path, flags, *args, **kwargs):
+            if path == "reviewers.json" and "dir_fd" in kwargs and not swapped:
+                os.unlink(path, dir_fd=kwargs["dir_fd"])
+                os.symlink(str(outside / "kit" / "assignments.json"), path, dir_fd=kwargs["dir_fd"])
+                swapped.append(path)
+            return real_open(path, flags, *args, **kwargs)
+        with mock.patch.object(os, "open", side_effect=swap):
+            code, report = self.report()
+        self.assertEqual((swapped, report["matches"]), (["reviewers.json"], []))
+        (self.root / "private/reviewers.json").unlink()
+        put(self.root, "private/reviewers.json", {"schema_version": 1, "reviewers": [
+            {"name": "plant", "roles": [], "added_on": "2026-01-05"}]})
+        real_read = os.read
+        with mock.patch.object(os, "read", side_effect=lambda fd, n: real_read(fd, n) + b" " * STORE_GROWTH):
+            self.assertEqual(self.report()[1]["matches"], [])  # growing past the cap after fstat is unreadable
+        incomplete = "Stopped: personal-data inventory incomplete; review private folders locally\n"
+        with mock.patch.object(os, "scandir", side_effect=PermissionError(errno.EACCES, "denied")):
+            self.assertEqual(self.find(), (1, "", incomplete))
+        with mock.patch.object(personal_data, "MAX_ENTRIES", 3):
+            self.assertEqual(self.find("--json"), (1, "", incomplete))
+
+    def test_find_unknown_positions_follow_register_path_order_not_walk_order(self):
+        for rel in ("private/drafts.txt", "private/drafts/note.txt", "private/a-b/z.bin", "private/a/y.bin",
+                    "kit/m.bin", "kit/m/x.bin", "kit/m.bin2"):
+            put(self.root, rel, b"x")
+        register = [row["path"] for row in self.register()["files"] if row["kind"] == "unknown"]
+        walked = personal_data._scan(self.root, lambda *_args: None)["unknown"]
+        self.assertNotEqual(["/".join(key) for key in walked if key[0] == "private"],
+                            [path for path in register if path.startswith("private/")])  # the walk order differs
+        by_top = personal_data._unknown_order(personal_data._scan(self.root, lambda *_args: None))
+        for top in ("kit", "private"):  # the k-th not_searched row is the k-th unknown register row of that folder
+            self.assertEqual(["/".join(key) for key in by_top[top]], [p for p in register if p.startswith(top + "/")])
+        self.assertEqual(register[-2:], ["private/drafts.txt", "private/drafts/note.txt"])
+        code, report = self.report()
+        self.assertEqual(code, 0)
+        self.assertEqual([(f["path"], f["file_position"], f["status"]) for f in report["files"]
+                          if f["kind"] == "unknown"],
+                         [("kit/<unknown>", n, "not_searched") for n in (1, 2, 3)]
+                         + [("private/<unknown>", n, "not_searched") for n in (1, 2, 3, 4)])
+
+    def test_find_no_network_no_mutation_and_no_flag_legacy_bytes(self):
+        valid_stores(self.root, text="Synthetic Person")
+        put(self.root, "kit/zz.bin", b"x")
+        self.assertEqual(run("personal-data", "--directory", self.root), (0, LEGACY_TEXT, ""))
+        self.assertEqual(run("personal-data", "--directory", self.root, "--json"), (0, LEGACY_JSON, ""))
+        planted_stores(self.root)
+        os.utime(self.root / "kit" / "sent.json", (1_000_000_000, 1_000_000_000))
+        before, scratch = tree(self.root), sorted(os.listdir(self.tmp))
+        with mock.patch("sqlite3.connect", side_effect=AssertionError("ledger opened")):
+            codes = []
+            for argv in (("--find", "plant"), ("--find", "plant", "--json"), ("--find", "Qzx"), ("--find", "zz"),
+                         ("--find", "Qzx Name", "extra")):
+                with self.subTest(argv=argv):
+                    codes.append(run("personal-data", "--directory", self.root, *argv)[0])
+                    self.assertEqual(before, tree(self.root))
+        self.assertEqual(codes, [1, 1, 1, 2, 2])  # 1: the planted malformed store; 2: refused text or arguments
+        self.assertEqual(sorted(os.listdir(self.tmp)), scratch)
+        for path in self.tmp.rglob("*"):
+            if path.is_file() and not path.is_symlink() and stat.S_ISREG(path.lstat().st_mode):
+                self.assertNotIn(b"Qzx", path.read_bytes())
+
+
+STORE_GROWTH = 4 * 1024 * 1024
+# The pre-DF1109B-15 inventory output for valid_stores(text="Synthetic Person") plus kit/zz.bin, byte for byte.
+_LEGACY_ROWS = [
+    ("comments_sent", "kit/comments-sent.json", "Manually submitted comment log", "present", 1, "2026-02-01", "2026-02-01"),
+    ("contact_log", "kit/sent.json", "Organizer contact notes", "present", 1, "2026-02-03", "2026-02-03"),
+    ("correction_requests", "private/correction-requests.json", "Correction request summaries", "present", 1,
+     "2026-02-02", "2026-02-02"),
+    ("requester", "kit/request-settings.json", "Requester contact block", "present", 1, None, None),
+    ("review_assignments", "private/review-assignments/a.json", "Finding review assignments", "present", 1,
+     "2026-02-10", "2026-02-10"),
+    ("reviewer_roster", "private/reviewers.json", "Reviewer names and roles", "present", 1, "2026-01-05", "2026-01-05"),
+    ("speaker_plans", "kit/meetings/speakers/m1.json", "Private speaker coverage", "present", 1, None, None),
+    ("supporters_consent", "kit/supporters-consent.json", "Supporting organization consent", "present", 1,
+     "2026-02-04", "2026-02-04"),
+    ("unknown", "kit/zz.bin", "Unknown kind; review locally", "unknown_kind", None, None, None),
+    ("volunteer_assignments", "kit/assignments.json", "Private request owners", "present", 1, None, None)]
+LEGACY_TEXT = "\n".join(["kind\tpath\tpurpose\tstatus\trecord_count\toldest_record_date\tnewest_record_date"]
+                        + ["\t".join("-" if v is None else str(v) for v in row) for row in _LEGACY_ROWS] + [NOTICE]) + "\n"
+LEGACY_JSON = json.dumps({"schema_version": 1, "files": [dict(zip(
+    ("kind", "path", "purpose", "status", "record_count", "oldest_record_date", "newest_record_date"), row))
+    for row in _LEGACY_ROWS], "notice": NOTICE}) + "\n"
+
 # --- the writer inventory --------------------------------------------------------------------------------------
 
 _WRITE_FLAGS = {"O_WRONLY", "O_RDWR", "O_CREAT", "O_APPEND", "O_TRUNC"}
@@ -544,6 +947,7 @@ _MODULES = {
         finding_search_log kit_fee_reply kit_preserve kit_repeat search_log law law_packet launch_check git_exposure map_controller registry setup_cmd shell sources_cmd records.ask_parity""",
     "organizer-maintained public roster content/officials.json (built by the site), no catalog store": "officials_cmd",
     "organizer-maintained public statements content/statements.json (built by the site), no catalog store": "statements",
+    "agenda PDF bytes to the converter's stdin pipe only; no file written": "meeting_pdf_scan",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -571,7 +975,9 @@ MODULE_FUNCTIONS = {
         'readiness', 'weight_budget'
     ),
     'content_init': ('_rename_noreplace', '_write', 'add_starter', 'faq_document', 'init_content', 'init_from', 'starter_text',),
-    'content_profile': ('_install',),  # content/agencies.json one checked_on: temp in content/, fsync, identity check, one rename
+    'content_profile': ('_install', 'write_contract', 'write_policy'),  # content/agencies.json only: one checked_on, or
+    # one whole alpr_policy/contract document (with its stale reading removed on request); temp in content/, fsync,
+    # identity check, one rename
     'content_sharing': ('import_sharing',),
     'coverage': ('_write', 'add_coverage', 'remove_coverage',),
     'finding_packet': ('_copy_hash', '_create', 'build_packet',),
@@ -605,6 +1011,7 @@ MODULE_FUNCTIONS = {
     'meeting_stage': ('stage',),
     'meetings': ('write_matters', 'write_meetings',),
     'meetings_manual': ('_save',),  # private kit/meetings-manual.json, 0600 atomic write, organizer-entered meetings only
+    'meeting_pdf_scan': ('_convert',),  # os.write of in-memory PDF bytes to pdftotext's stdin pipe; no file, no store
     'newsletter.__main__': ('main',),
     'newsletter.archive': ('publish_issue',),
     'newsletter.draft': ('write_draft',),
