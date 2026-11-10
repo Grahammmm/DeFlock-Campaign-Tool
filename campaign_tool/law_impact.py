@@ -25,6 +25,10 @@ EDIT_MARKER = "[EDIT ME"
 DRAFT_STATES = ("draft", "in_review", "blocked", "ready", "pending correction")
 MAX_PACKAGE_BYTES = 8 * 1024 * 1024
 OPEN = 1 << 40  # ordinal sentinel for "no end"; windows are half-open [start, end) in date ordinals
+# The last event day a date can name (9999-12-31). An inclusive end on that day gives an exclusive end one past it,
+# which bounds a window but is never itself an event day, so no window may start there.
+LAST_DAY = date.max.toordinal()
+NO_DAYS = "none (no representable event dates)"
 CORRECT = "campaign_tool finding correct {id} --directory {d} --date YYYY-MM-DD --note TEXT --approved-by NAME [--from DRAFT]"
 NOTE = "Read-only: no package marked reviewed and no finding corrected. Not a legal conclusion."
 
@@ -74,10 +78,12 @@ def _symmetric(first, second):
     points = sorted({*first, *second})
     inside = lambda span, day: span[0] <= day < span[1]  # noqa: E731
     return _merge([(lo, hi) for lo, hi in zip(points, points[1:] + [OPEN])
-                   if lo < OPEN and inside(first, lo) != inside(second, lo)])
+                   if lo <= LAST_DAY and inside(first, lo) != inside(second, lo)])
 
 
 def window_text(window):
+    if not window:
+        return NO_DAYS
     day = lambda ordinal: date.fromordinal(ordinal).isoformat()  # noqa: E731
     return ", ".join(f"{day(lo)}..{'open' if hi >= OPEN else day(hi - 1)}" for lo, hi in window)
 

@@ -20,7 +20,7 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from .content import HOST, SLUG, SHA256, ContentError
+from .content import HOST, SLUG, SHA256, ContentError, _slug, load_meeting
 
 KINDS = ("civil_liberties", "community", "faith", "labor", "neighborhood", "business", "other")
 HOWS = ("email", "letter", "meeting", "form")
@@ -698,3 +698,121 @@ def cosign_problems(root, meetings, *, today=None, skip_meeting_id=None):
                 problems.append(f"{label}.cosigners: the written comment does not hold exactly one current "
                                 "co-signed block for these organizations; stage it again with --replace")
     return sorted(set(problems))
+
+
+# --- private inventory (DF1109B-06) -------------------------------------------------------------
+
+ORPHAN = "private record without public entry"
+MAX_MEETING_BYTES = 4 * 1024 * 1024
+
+
+def _real_root(root):
+    """The campaign folder; refused when absent, not a folder, or reached through a symbolic link."""
+    here = Path(os.path.abspath(os.fspath(root)))
+    for part in (here, *here.parents):
+        if os.path.islink(part):
+            raise SupporterError("the campaign folder must not be reached through a symbolic link")
+    info = os.lstat(here)  # FileNotFoundError when absent: the caller refuses
+    if not stat.S_ISDIR(info.st_mode):
+        raise SupporterError("the campaign folder must be a folder")
+    return here
+
+
+def _inventory(root, today):
+    """``({id: row}, {id: record})`` with both stores valid as a whole and every present pair bound; a missing record
+    and an orphan record are kept as states. Any other problem refuses."""
+    problems, rows, records = [], [], {}
+    data = _read(root, PUBLIC_REL, private=False)
+    if data is not None:
+        rows = _public(data, today, problems)
+    data = _read(root, PRIVATE_REL, private=True)
+    if data is not None:
+        records = _consent(data, today, problems)
+    if problems or records is None:
+        raise SupporterError("a supporter store is not valid")
+    for row in rows:
+        record = records.get(row["id"])
+        if record is not None and (record["public_sha256"] != row_hash(row) or record["confirmed_on"] != row["joined_on"]):
+            raise SupporterError("a consent record does not match its public row")
+    return {row["id"]: row for row in rows}, records
+
+
+def _staged(root, today):
+    """``{supporter_id: {meeting_id}}`` from the structured ``cosigners`` of every valid content/meetings/*.json (no
+    recursion; any unsafe, unreadable or invalid file refuses the whole index)."""
+    folder = Path(root)
+    for part in ("content", "meetings"):
+        folder = folder / part
+        try:
+            info = os.lstat(folder)
+        except FileNotFoundError:
+            return {}
+        if not stat.S_ISDIR(info.st_mode):
+            raise SupporterError("content/meetings: must be a real folder")
+    index, seen = {}, set()
+    for name in sorted(entry for entry in os.listdir(folder) if entry.endswith(".json")):
+        path = folder / name
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise SupporterError("meetings: must be a regular file with a single link")
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise SupporterError("meetings: must be a regular file with a single link")
+            data = handle.read(MAX_MEETING_BYTES + 1)
+        if len(data) > MAX_MEETING_BYTES:
+            raise SupporterError("meetings: file too large")
+        label = "meetings/" + name
+        meeting = load_meeting(_parse(data), label, today=today)
+        meeting_id = meeting["id"] or _slug(name[:-len(".json")], label + " filename")
+        if meeting_id in seen:
+            raise SupporterError("meetings: duplicate meeting id")
+        seen.add(meeting_id)
+        for supporter_id in meeting.get("cosigners") or ():
+            index.setdefault(supporter_id, set()).add(meeting_id)
+    return index
+
+
+def list_supporters(root, *, today=None):
+    """Private inventory rows (sorted by id) for every public row and every private record: public facts, whether a
+    consent record exists, the confirmation dates, the recorded co-sign scope and the staged meetings naming the id.
+    Read-only; never returns hashes, ``how`` values or correspondence. Raises on any broken or unsafe input."""
+    today = today or date.today()
+    root = _real_root(root)
+    rows, records = _inventory(root, today)
+    staged = _staged(root, today)
+    listed = []
+    for supporter_id in sorted(set(rows) | set(records)):
+        row, record = rows.get(supporter_id), records.get(supporter_id) or {}
+        scope = record.get("cosign")
+        listed.append({
+            "id": supporter_id, "status": "listed" if row else ORPHAN,
+            "kind": row["kind"] if row else None, "name": row["name"] if row else None,
+            "joined_on": row["joined_on"] if row else None,
+            "consent_present": bool(record), "confirmed_on": record.get("confirmed_on"),
+            "cosign": sorted(scope) if isinstance(scope, list) else scope,
+            "cosign_confirmed_on": record.get("cosign_confirmed_on"),
+            "staged_meetings": sorted(staged.get(supporter_id, ())),
+        })
+    return listed
+
+
+def format_supporters_list(rows):
+    """One labelled line per inventory row; the name is JSON-quoted so it cannot pass for a column."""
+    if not rows:
+        return "none recorded\n"
+    lines = []
+    for row in rows:
+        scope = row["cosign"]
+        tail = [f"co-sign {'none' if scope is None else scope if scope == 'any' else ','.join(scope)}",
+                f"co-sign confirmed {row['cosign_confirmed_on'] or '-'}",
+                f"staged {','.join(row['staged_meetings']) or 'none'}"]
+        if row["status"] == ORPHAN:
+            head = [row["id"], ORPHAN, f"confirmed {row['confirmed_on']}"]
+        else:
+            head = [row["id"], row["kind"], json.dumps(row["name"], ensure_ascii=False), f"joined {row['joined_on']}",
+                    f"consent {'present' if row['consent_present'] else 'missing'}",
+                    f"confirmed {row['confirmed_on'] or '-'}"]
+        lines.append(" | ".join(head + tail))
+    return "\n".join(lines) + "\n"

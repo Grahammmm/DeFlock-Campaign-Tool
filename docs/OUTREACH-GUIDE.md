@@ -58,6 +58,19 @@ python3 -m campaign_tool social --directory "$CAMPAIGN" --meetings --within-days
 
 Reference: [social drafts for meetings](PUBLICATION.md#social-drafts-for-meetings-never-posted) and [participation (organizer-verified)](MEETINGS.md#participation-organizer-verified). Only scheduled, upcoming staged meetings with verified participation get a draft; cancelled, past, unverified and unreadable ones are counted under `skipped`. An empty result is normal. Times use the meeting's own UTC offset. Check the official deadline and any cancellation again before you reuse a draft. This command does not find or stage meetings, register speakers or submit comments.
 
+## Supporting organizations and co-signers (private, read-only)
+
+Before a meeting comment names supporting organizations, look up their ids and what was recorded:
+
+```sh
+python3 -m campaign_tool supporters list --directory "$CAMPAIGN"
+python3 -m campaign_tool supporters list --directory "$CAMPAIGN" --json
+```
+
+Reference: [supporting organizations](SITE-CONTENT.md#supporting-organizations-contentsupportersjson-optional). Each line shows an organization's id, kind, name and joined date, whether its private consent record exists, its co-sign grant (`any`, meeting ids or `none`) with the date, and the staged meetings that already name it; a private record whose public entry is gone is one `private record without public entry` line. `none recorded` is a normal result. The output is private: keep it out of drafts and posts. It writes nothing and prints no hashes or correspondence.
+
+A listing is not co-sign approval, and the staged meetings it names can be past, cancelled or older than a grant that was since narrowed or cleared. `content-check` (task 1) is the gate before any comment kit is built or reused. Recording or changing consent (`supporters consent`) and removing an organization (`supporters remove`) are separate tasks for the person authorised to record consent, described in SITE-CONTENT.md, not steps of this guide.
+
 ## 5. Press release and letter to the editor
 
 ```sh
