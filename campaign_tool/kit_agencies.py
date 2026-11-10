@@ -3,6 +3,12 @@
 Validates the whole list first (duplicate ids, non-boolean ``selected``), writes atomically through
 ``kit._write_json`` and keeps the file mode. ``kit`` keeps an existing agencies.json, so changes survive a re-run.
 Offline; nothing is fetched or sent.
+
+Admission: the ``kit`` entry directly under the caller's campaign folder must be a real directory (never a symlink,
+file or FIFO) before ``agencies.json`` is examined, so a linked ``kit/`` cannot make these commands read or edit
+another folder's roster. This inspects that one immediate entry (lstat) at each ``_path`` call, including the one
+``_save`` repeats; it does not confine concurrent namespace changes after a check, and does not inspect the
+campaign folder's own ancestors.
 """
 import csv
 import io
@@ -17,7 +23,18 @@ KINDS = tuple(kit.LAW_ENFORCEMENT) + kit.GOVERNING + ("other",)
 
 
 def _path(root):
-    path = Path(root) / "kit" / "agencies.json"
+    kit_dir = Path(root) / "kit"
+    try:
+        info = os.lstat(kit_dir)  # the entry itself, never followed
+    except (FileNotFoundError, NotADirectoryError):
+        raise ValueError("run kit first: kit/agencies.json is missing") from None
+    except OSError:
+        raise ValueError("kit/ cannot be inspected") from None
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError("kit/ must not be a symlink")
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError("kit/ is not a folder")
+    path = kit_dir / "agencies.json"
     if path.is_symlink() or not path.is_file():
         raise ValueError("run kit first: kit/agencies.json is missing")
     return path

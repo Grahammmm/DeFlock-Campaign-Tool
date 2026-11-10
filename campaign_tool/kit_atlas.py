@@ -196,8 +196,17 @@ def _city(row):
     return row["city"] if row["city"].strip() else "city not supplied"
 
 
+def _check_text_agency_names(report):
+    """Admit only printed seed and selected-not-listed kit names, using the CSV character policy."""
+    for section in ("listed_seed", "selected_not_listed"):
+        for row in report[section]["rows"]:
+            if _has_control(row["name"]):
+                raise AtlasError("Atlas report: an agency name contains a control or format character")
+
+
 def render_atlas(report):
-    """Plain text only: every value is printed literally; nothing is interpreted."""
+    """Plain text: ordinary admitted values are literal; preflight both printed agency-name sources."""
+    _check_text_agency_names(report)
     lines = [f"Atlas cross-check for {report['county']} County, {report['state']}"]
     for key, heading in SECTIONS:
         section = report[key]

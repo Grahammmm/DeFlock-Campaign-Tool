@@ -38,6 +38,16 @@ def _read_mbox(path):
     return data
 
 
+def _require_receipt_name(name):
+    """The mailbox basename prefixes every receipt name the ledger stores, so it must be strict UTF-8 text.
+    A raw POSIX byte name (surrogate-escaped) cannot be persisted; refusing here, before any object is
+    installed, leaves no orphan. Only the basename is checked: undecodable ancestor directories stay supported."""
+    try:
+        name.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        raise ValueError("Mailbox filename cannot be represented as UTF-8; nothing was imported") from None
+
+
 def _split(data, name):
     """(start, end) of each message body in `data`; refused whole if not an mbox or over 500 messages."""
     if not data.startswith(_SEPARATOR):
@@ -65,6 +75,7 @@ def ingest_mbox(args, root):
     """Store the mailbox, then each message and its attachments; print the listing (dry run: write nothing)."""
     data = _read_mbox(args.mbox)
     name = os.path.basename(os.path.abspath(args.mbox))
+    _require_receipt_name(name)  # RF0345-2: same refusal for preview and apply, before split, lookup or any store
     kept, skipped = [], []
     spans = _split(data, name)
     for number, (start, end) in enumerate(spans, 1):

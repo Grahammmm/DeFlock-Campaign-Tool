@@ -367,3 +367,204 @@ class CommandTests(Base):
         self.assertTrue(self.path.is_symlink())
         self.assertEqual(outside.read_text(), 'synthetic target')
         self.assertFalse(list((self.root/'content').glob('.body-schedules-*.tmp')))
+
+    def trace_sync(self, fail_dir=False, dir_errors=None):
+        """Wrap real fsync/replace/open/close; record order and the real directory descriptor."""
+        events, dirs = [], []
+        real_fsync, real_replace, real_open, real_close = os.fsync, os.replace, os.open, os.close
+
+        def is_dir(fd):
+            return stat.S_ISDIR(os.fstat(fd).st_mode)
+
+        def fsync(fd):
+            if is_dir(fd):
+                events.append('fsync:dir')
+                real_fsync(fd)
+                if fail_dir:
+                    raise OSError('injected dir sync SECRET')
+            else:
+                events.append('fsync:file')
+                real_fsync(fd)
+
+        def replace(src, dst):
+            events.append('replace')
+            real_replace(src, dst)
+
+        def opener(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if is_dir(fd):
+                dirs.append(fd)
+            return fd
+
+        patches = [mock.patch.object(cmd.os, 'fsync', fsync), mock.patch.object(cmd.os, 'replace', replace),
+                   mock.patch.object(cmd.os, 'open', opener)]
+        return events, dirs, patches
+
+    def run_traced(self, function, *args, fail_dir=False, **kwargs):
+        events, dirs, patches = self.trace_sync(fail_dir)
+        for p in patches:
+            p.start()
+        try:
+            return function(*args, **kwargs), events, dirs
+        finally:
+            for p in patches:
+                p.stop()
+
+    def closed(self, fd):
+        try:
+            os.fstat(fd)
+        except OSError:
+            return True
+        return False
+
+    def test_mutations_sync_directory_after_replace_before_success(self):
+        steps = [(cmd.add_schedule, dict(**row(body='É Council')), 0o644),
+                 (cmd.add_schedule, dict(**row(body='Other')), 0o600),
+                 (cmd.recheck_schedule, dict(body='Other', checked_on='2026-11-09'), 0o600),
+                 (cmd.remove_schedule, dict(body='Other'), 0o600),
+                 (cmd.remove_schedule, dict(body='É Council'), 0o600)]
+        for function, kwargs, mode in steps:
+            if mode == 0o600 and self.path.exists():
+                self.path.chmod(0o600)
+            expected = {'add': 'Added', 'recheck': 'Rechecked', 'remove': 'Removed'}[function.__name__.split('_')[0]]
+            message, events, dirs = self.run_traced(function, self.root, today=DAY, **kwargs)
+            self.assertTrue(message.startswith(expected), message)
+            self.assertEqual(events, ['fsync:file', 'replace', 'fsync:dir'])
+            self.assertEqual(len(dirs), 1)
+            self.assertTrue(self.closed(dirs[0]))
+            self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), mode)
+            self.loaded()
+            self.assertFalse(list((self.root/'content').glob('.body-schedules-*.tmp')))
+        self.assertEqual(self.loaded(), [])
+
+    def test_directory_open_failure_preserves_store(self):
+        for exists in (False, True):
+            if exists:
+                self.add()
+            real_open = os.open
+
+            def opener(path, flags, *a, **k):
+                if Path(path) == self.root/'content':
+                    raise OSError('injected')
+                return real_open(path, flags, *a, **k)
+            with mock.patch.object(cmd.os, 'open', opener), mock.patch.object(cmd.tempfile, 'mkstemp') as temp:
+                before = snapshot(self.root)
+                with self.assertRaisesRegex(cmd.BodyScheduleError, 'previous file was kept'):
+                    self.add(body='New')
+                self.assertEqual(snapshot(self.root), before)
+                temp.assert_not_called()
+            self.path.unlink(missing_ok=True)
+
+    def test_preinstall_failures_never_sync_directory_after(self):
+        for exists in (False, True):
+            if exists:
+                self.add()
+            for target in ('fchmod', 'replace', 'fsync'):
+                events, dirs, patches = self.trace_sync()
+                before = snapshot(self.root)
+                real = getattr(os, target)
+                def boom(*a, **k):
+                    raise OSError('injected')
+                for p in patches[2:]:
+                    p.start()
+                try:
+                    with mock.patch.object(cmd.os, target, boom):
+                        with self.assertRaisesRegex(cmd.BodyScheduleError, 'previous file was kept'):
+                            self.add(body='New')
+                finally:
+                    for p in patches[2:]:
+                        p.stop()
+                self.assertNotIn('fsync:dir', events)
+                self.assertTrue(all(self.closed(fd) for fd in dirs))
+                self.assertEqual(snapshot(self.root), before)
+            self.path.unlink(missing_ok=True)
+
+    def test_directory_sync_failure_reports_installed_state_without_rollback(self):
+        self.add()
+        self.add(body='Other')
+        later = (DAY + timedelta(days=0)).isoformat()
+        cases = [(cmd.add_schedule, row(body='Third')),
+                 (cmd.recheck_schedule, dict(body=BODY, checked_on=later)),
+                 (cmd.remove_schedule, dict(body='Other'))]
+        for function, kwargs in cases:
+            before = self.path.read_bytes()
+            try:
+                function(self.root, today=DAY, **kwargs)  # untraced pass only to compute the expected bytes
+                expected = self.path.read_bytes()
+            finally:
+                self.path.write_bytes(before)
+            if expected == before:  # equal-date recheck is a no-op and never reaches the writer
+                continue
+            with self.assertRaises(cmd.BodyScheduleError) as caught:
+                self.run_traced(function, self.root, today=DAY, fail_dir=True, **kwargs)
+            self.assertEqual(str(caught.exception), cmd._UNCONFIRMED)
+            self.assertNotIn('SECRET', str(caught.exception))
+            self.assertEqual(self.path.read_bytes(), expected)
+            self.assertFalse(list((self.root/'content').glob('.body-schedules-*.tmp')))
+            self.path.write_bytes(before)
+
+    def test_directory_sync_failure_on_new_file_and_final_removal(self):
+        with self.assertRaises(cmd.BodyScheduleError) as caught:
+            self.run_traced(cmd.add_schedule, self.root, today=DAY, fail_dir=True, **row())
+        self.assertEqual(str(caught.exception), cmd._UNCONFIRMED)
+        self.assertEqual(len(self.loaded()), 1)
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o644)
+        with self.assertRaises(cmd.BodyScheduleError):
+            self.run_traced(cmd.remove_schedule, self.root, today=DAY, fail_dir=True, body=BODY)
+        self.assertEqual(self.loaded(), [])
+
+    def test_cli_postinstall_uncertainty_has_no_success_or_false_rollback(self):
+        events, dirs, patches = self.trace_sync(fail_dir=True)
+        for p in patches:
+            p.start()
+        try:
+            out, err = io.StringIO(), io.StringIO()
+            argv = ['campaign_tool', 'body-schedule', *self.add_args(), '--directory', str(self.root)]
+            with mock.patch.object(sys, 'argv', argv), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit) as caught:
+                    cli.main()
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertEqual(out.getvalue(), '')
+        self.assertIn('directory sync failed', err.getvalue())
+        self.assertNotIn('previous file was kept', err.getvalue())
+        self.assertNotIn('Added', err.getvalue())
+        self.assertNotIn('SECRET', err.getvalue())
+        self.assertNotIn('Traceback', err.getvalue())
+        self.assertEqual(len(self.loaded()), 1)
+
+    def test_close_failure_keeps_primary_diagnostic(self):
+        real_close = os.close
+        events, dirs, patches = self.trace_sync(fail_dir=True)
+
+        def close(fd):
+            real_close(fd)
+            if fd in dirs:
+                raise OSError('close injected')
+        for p in patches:
+            p.start()
+        try:
+            with mock.patch.object(cmd.os, 'close', close):
+                with self.assertRaises(cmd.BodyScheduleError) as caught:
+                    self.add()
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual(str(caught.exception), cmd._UNCONFIRMED)
+        self.assertTrue(self.closed(dirs[0]))
+        self.assertEqual(len(self.loaded()), 1)
+
+    def test_list_equal_recheck_and_refusals_do_not_reach_writer(self):
+        self.add()
+        before = snapshot(self.root)
+        with mock.patch.object(cmd.os, 'open', side_effect=AssertionError('writer reached')), \
+                mock.patch.object(cmd.os, 'fsync', side_effect=AssertionError('writer reached')):
+            cmd.recheck_schedule(self.root, body=BODY, checked_on=row()['checked_on'], today=DAY)
+            cmd.list_schedules(self.root, today=DAY) if hasattr(cmd, 'list_schedules') else None
+            for function, kwargs in ((cmd.remove_schedule, dict(body='Missing')),
+                                     (cmd.add_schedule, row())):
+                with self.assertRaises(cmd.BodyScheduleError):
+                    function(self.root, today=DAY, **kwargs)
+        self.assertEqual(snapshot(self.root), before)
