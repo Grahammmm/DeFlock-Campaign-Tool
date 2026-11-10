@@ -212,6 +212,46 @@ class MeetingsStatusTests(unittest.TestCase):
             if row["command"] and "--help" not in row["command"]:
                 parse_only("campaign_tool", [fill.get(t, t) for t in shlex.split(row["command"])[3:]])
 
+    def test_continued_meeting_follows_outcome_ladder_in_any_period(self):
+        meetings = self.root / "content" / "meetings"
+        write(meetings / "m-today.json", meeting("m-today", "2026-11-09T18:00:00-08:00",
+                                                 outcome=outcome("continued", "2026-11-09", minutes=False, votes=False),
+                                                 participation=participation()))
+        rows = self.rows()
+        self.assertEqual((rows["m-today"]["period"], rows["m-today"]["status"]), ("upcoming", "continued"))
+        self.assertEqual(rows["m-today"]["next_step"], "record_minutes")
+        self.assertNotIn("--participation", rows["m-today"]["command"])
+        self.assertNotIn("--replace", rows["m-today"]["command"])
+        early = self.rows(self.report("2026-09-01"))  # an earlier as-of regroups the past continued meeting
+        self.assertEqual((early["e-continued"]["period"], early["e-continued"]["status"]), ("upcoming", "continued"))
+        self.assertEqual(early["e-continued"]["next_step"], "record_minutes")
+        self.assertNotIn("--participation", early["e-continued"]["command"])
+        self.assertEqual(early["a-future"]["next_step"], "verify_participation")  # scheduled upcoming rows unchanged
+
+    def test_duplicate_effective_ids_error_every_affected_file(self):
+        meetings = self.root / "content" / "meetings"
+        write(meetings / "alpha.json", meeting("alpha", "2026-11-26T10:00:00-08:00"))
+        write(meetings / "beta.json", meeting("alpha", "2026-11-27T10:00:00-08:00"))
+        write(meetings / "gamma.json", meeting("gamma", "2026-11-28T10:00:00-08:00"))
+        noid = meeting("x", "2026-11-29T10:00:00-08:00")
+        del noid["id"]
+        write(meetings / "delta.json", noid)  # no id: the file name delta is its effective id
+        write(meetings / "epsilon.json", meeting("delta", "2026-11-30T10:00:00-08:00"))
+        report = self.report()
+        rows = self.rows(report)
+        bad = [r["path"] for r in report["rows"] if r["kind"] == "unreadable"]
+        for name in ("alpha", "beta", "delta", "epsilon"):
+            self.assertIn(f"content/meetings/{name}.json", bad)
+        self.assertEqual(len(bad), len(set(bad)))
+        staged = [r for r in report["rows"] if r["kind"] == "staged"]
+        self.assertFalse({"alpha", "beta", "delta", "epsilon"} & {r["id"] for r in staged})
+        for r in report["rows"]:
+            if r["kind"] != "unreadable":
+                self.assertFalse(r.get("command") and ("alpha" in r["command"] or "delta" in r["command"]))
+        self.assertEqual(rows["gamma"]["kind"], "staged")  # a unique neighbor stays
+        self.assertIsNotNone(rows["gamma"]["command"])
+        self.assertNotIn("alpha", rows)
+
     def test_broken_staged_file_never_hides_neighbors(self):
         meetings = self.root / "content" / "meetings"
         (meetings / "0-bad-utf8.json").write_bytes(b"\xff\xfe{")

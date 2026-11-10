@@ -13,6 +13,7 @@ import shlex
 import stat
 import sys
 import unicodedata
+from collections import Counter
 from datetime import date, datetime
 
 from .content import MAX_JSON_BYTES, SLUG, load_finding, load_meeting
@@ -141,7 +142,7 @@ def _hint(row, directory):
 def _staged_step(row, written):
     if row["status"] == "cancelled":
         return None
-    if row["period"] == "past":
+    if row["period"] == "past" or row["status"] == "continued":  # a continued meeting is never given a new date
         return ("record_outcome" if row["outcome"] == "not_recorded" else "record_minutes"
                 if row["minutes"] == "not_recorded" else "review_optional_votes" if row["votes"] == "not_recorded"
                 else None)
@@ -165,7 +166,7 @@ def _staged(root, today, errors):
     else:
         names = None
         errors.append(_error("content"))
-    file_errors, observed, loaded = [], set(), []
+    file_errors, observed, candidates = [], set(), []
     for name in names or []:
         stem, rel = name[:-5], f"content/meetings/{name}"
         observed.add(stem)
@@ -176,8 +177,13 @@ def _staged(root, today, errors):
             continue
         if meeting["id"] is not None:
             observed.add(meeting["id"])
-        if meeting["id"] not in (None, stem) or not SLUG.fullmatch(stem):
-            file_errors.append(_error(rel))  # a mismatched or unsafe identity gets no row and no hint
+        candidates.append((rel, stem, meeting))
+    claims = Counter(stem if meeting["id"] is None else meeting["id"] for _, stem, meeting in candidates)
+    loaded = []
+    for rel, stem, meeting in candidates:
+        effective = stem if meeting["id"] is None else meeting["id"]
+        if claims[effective] > 1 or meeting["id"] not in (None, stem) or not SLUG.fullmatch(stem):
+            file_errors.append(_error(rel))  # a mismatched, duplicated or unsafe identity gets no row and no hint
             continue
         loaded.append((rel, stem, meeting))
     return loaded, file_errors, observed
