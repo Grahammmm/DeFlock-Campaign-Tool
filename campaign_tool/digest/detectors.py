@@ -80,13 +80,24 @@ def units_from_text(text):
 
 
 def _lines(unit):
-    """Yield (locator, line_text) with a line number added to page/row units."""
+    """Yield (locator, line_text) with a source line number added to page/row units.
+
+    A unit whose locator has no ``line`` is split on exactly the boundaries of
+    ``str.splitlines()``: LF, CR, CRLF (one boundary), VT, FF, FS/GS/RS, NEL,
+    U+2028 and U+2029, matching the finer-line contract of ``ModelSources``.
+    Lines are numbered from one, blanks included; only the terminator is
+    removed and a final terminator adds no extra line. Empty and
+    separator-free text keep the original locator and text without a ``line``.
+    A locator that already has ``line`` is authoritative and its text is
+    yielded whole.
+    """
     locator = dict(unit.get("locator") or {})
     text = unit.get("text") or ""
-    if "line" in locator or "\n" not in text:
+    lines = text.splitlines()
+    if "line" in locator or lines == [text] or not lines:
         yield locator, text
         return
-    for n, line in enumerate(text.splitlines(), 1):
+    for n, line in enumerate(lines, 1):
         yield {**locator, "line": n}, line
 
 
