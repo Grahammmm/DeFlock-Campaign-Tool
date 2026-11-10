@@ -638,5 +638,18 @@ class LargePageTests(Case):
             'end': 95998, 'word_count': 16000, 'limit': 150, 'abbreviation': None}]})
 
 
+class DenseQuotePageTests(Case):
+    def test_dense_quote_page_preserves_content_report_contract(self):
+        self.page("synthetic", title="Synthetic", body='word "ABC def" ' * 56000)
+        report = self.report()
+        shared = {"file": "content/pages/synthetic.json", "entry": "synthetic"}
+        tail = {"field": "body_md", "paragraph": 1, "sentence": 1, "word": 1, "start": 0, "end": 839989,
+                "word_count": 56000, "abbreviation": None}
+        self.assertEqual(report, {"advisory": True, "warnings": [
+            {**shared, "rule": "long_sentence", **tail, "limit": 30},
+            {**shared, "rule": "long_paragraph", **tail, "limit": 150}]})
+        self.assertTrue(all(list(row) == ROW_KEYS for row in report["warnings"]))
+
+
 if __name__ == "__main__":
     unittest.main()

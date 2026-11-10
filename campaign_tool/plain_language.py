@@ -39,9 +39,8 @@ def _blank(text):
 
 def _skipped_text(text, titles):
     """``text`` with every quoted span and source-title occurrence blanked to spaces (same length, same newlines)."""
-    kept = text
-    for match in _QUOTED.finditer(text):
-        kept = kept[:match.start()] + _blank(match.group()) + kept[match.end():]
+    # One substitution assembles the result: only matched spans are blanked and no per-quote whole-field copy is made.
+    kept = _QUOTED.sub(lambda match: _blank(match.group()), text)
     for title in sorted(titles, key=len, reverse=True):
         start = kept.find(title)
         while start != -1:
