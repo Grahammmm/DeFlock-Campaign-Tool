@@ -2,8 +2,10 @@
 import contextlib
 import email
 import email.policy
+import errno
 import io
 import json
+import os
 import stat
 import sys
 import tempfile
@@ -232,6 +234,122 @@ class KitCopyTests(unittest.TestCase):
         self.draft.write_bytes((text[:start] + "Subject: x\u2028Bcc: a@b.example" + text[end:]).encode("utf-8"))
         self.assert_refused("email", "subject must be one line")
         self.assertFalse(self.out.exists())
+
+
+class KitWriteCleanupTests(unittest.TestCase):
+    """_write removes only a staging entry it created, and never replaces the primary failure."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="synthetic-kit-write-")
+        self.addCleanup(temporary.cleanup)
+        self.out = Path(temporary.name) / "outgoing"
+        self.out.mkdir(mode=0o700)
+        self.stage = self.out / f".a.txt.{os.getpid()}.tmp"
+        (self.out / "a.txt").write_bytes(b"old")
+
+    def seed_stage(self, kind):
+        if kind == "file":
+            self.stage.write_bytes(b"foreign")
+        elif kind == "symlink":
+            (self.out.parent / "target").write_bytes(b"target")
+            self.stage.symlink_to(self.out.parent / "target")
+        elif kind == "hardlink":
+            (self.out.parent / "other").write_bytes(b"foreign")
+            os.link(self.out.parent / "other", self.stage)
+        else:
+            self.stage.mkdir()
+
+    def test_collision_preserves_unowned_stage(self):
+        for kind in ("file", "symlink", "hardlink", "dir"):
+            with self.subTest(kind=kind):
+                self.seed_stage(kind)
+                before = self.stage.lstat()
+                with self.assertRaises(FileExistsError):
+                    kit_copy._write(self.out, "a.txt", b"new")
+                after = self.stage.lstat()
+                self.assertEqual((before.st_ino, before.st_mode), (after.st_ino, after.st_mode))
+                self.assertEqual((self.out / "a.txt").read_bytes(), b"old")
+                if kind == "file":
+                    self.assertEqual(self.stage.read_bytes(), b"foreign")
+                if kind == "dir":
+                    self.stage.rmdir()
+                else:
+                    self.stage.unlink()
+
+    def test_destination_refusal_does_not_clean_unopened_stage(self):
+        (self.out / "b.txt").mkdir()
+        stage = self.out / f".b.txt.{os.getpid()}.tmp"
+        stage.write_bytes(b"foreign")
+        with self.assertRaises(ValueError):
+            kit_copy._write(self.out, "b.txt", b"new")
+        self.assertEqual(stage.read_bytes(), b"foreign")
+
+    def test_owned_stage_is_cleaned_after_prepublication_failure(self):
+        for target in ("os.fsync", "os.replace"):
+            with self.subTest(target=target), mock.patch(f"campaign_tool.kit_copy.{target}",
+                                                         side_effect=OSError(errno.EIO, "primary")):
+                with self.assertRaises(OSError) as caught:
+                    kit_copy._write(self.out, "a.txt", b"new")
+                self.assertEqual(caught.exception.errno, errno.EIO)
+                self.assertFalse(self.stage.exists())
+                self.assertEqual((self.out / "a.txt").read_bytes(), b"old")
+
+    def test_cleanup_failure_does_not_mask_primary_error(self):
+        with mock.patch("campaign_tool.kit_copy.os.fsync", side_effect=OSError(errno.EIO, "primary")), \
+                mock.patch("campaign_tool.kit_copy.os.unlink", side_effect=OSError(errno.EACCES, "cleanup")):
+            with self.assertRaises(OSError) as caught:
+                kit_copy._write(self.out, "a.txt", b"new")
+        self.assertEqual(caught.exception.errno, errno.EIO)
+        self.assertEqual((self.out / "a.txt").read_bytes(), b"old")
+
+    def test_substituted_or_vanished_stage_is_not_touched(self):
+        for kind in ("file", "symlink", "vanished"):
+            def swap(handle, kind=kind):
+                if kind == "vanished":
+                    self.stage.unlink()
+                else:
+                    self.stage.rename(self.out / "moved")
+                    if kind == "file":
+                        self.stage.write_bytes(b"arrived")
+                    else:
+                        self.stage.symlink_to(self.out / "moved")
+                raise OSError(errno.EIO, "primary")
+
+            with self.subTest(kind=kind), mock.patch("campaign_tool.kit_copy.os.fsync", swap):
+                with self.assertRaises(OSError) as caught:
+                    kit_copy._write(self.out, "a.txt", b"new")
+                self.assertEqual(caught.exception.errno, errno.EIO)
+                if kind == "file":
+                    self.assertEqual(self.stage.read_bytes(), b"arrived")
+                elif kind == "symlink":
+                    self.assertTrue(self.stage.is_symlink())
+                else:
+                    self.assertFalse(self.stage.exists())
+                for leftover in (self.stage, self.out / "moved"):
+                    if leftover.is_symlink() or leftover.exists():
+                        leftover.unlink()
+
+    def test_descriptors_are_not_leaked_and_modes_are_private(self):
+        def open_fds():
+            return len(os.listdir("/proc/self/fd"))
+
+        baseline = open_fds()
+        kit_copy._write(self.out, "a.txt", b"new")
+        self.assertEqual(open_fds(), baseline)
+        self.assertEqual((self.out / "a.txt").read_bytes(), b"new")
+        self.assertEqual(stat.S_IMODE((self.out / "a.txt").stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.out.stat().st_mode), 0o700)
+        for failing in ("os.fdopen", "os.fstat", "os.fsync"):
+            with self.subTest(failing=failing), mock.patch(f"campaign_tool.kit_copy.{failing}",
+                                                           side_effect=OSError(errno.EMFILE, "fault")):
+                with self.assertRaises(OSError):
+                    kit_copy._write(self.out, "a.txt", b"newer")
+                self.assertEqual(open_fds(), baseline)
+                self.assertEqual((self.out / "a.txt").read_bytes(), b"new")
+                if failing == "os.fsync":
+                    self.assertFalse(self.stage.exists())
+                elif self.stage.exists():  # unidentified stage is conservatively left
+                    self.stage.unlink()
 
 
 if __name__ == "__main__":
