@@ -190,7 +190,8 @@ def _open_archive(data, name):
     """Parse the central directory and refuse before any write: not a zip, or more than 2000 entries."""
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, OSError, ValueError):
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, OSError, ValueError,
+            NotImplementedError):
         raise ValueError("not a zip archive") from None
     if len(archive.infolist()) > MAX_MEMBERS:
         archive.close()

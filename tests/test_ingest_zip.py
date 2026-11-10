@@ -40,7 +40,8 @@ def zip_lzma(data):
 
 def build_zip(entries):
     """Zip bytes from (name, data, options); options may set method, flags, mode, raw, size and crc
-    so headers can say what a hostile archive would say. Local-only options (local_name, local_flags,
+    so headers can say what a hostile archive would say. `central_version` sets the central extraction
+    version. Local-only options (local_name, local_flags,
     local_method, local_crc, local_csize, local_usize, extra, local_nlen, local_elen) change only the local
     header; `encoding` is the name codec."""
     body, central = b"", b""
@@ -50,7 +51,7 @@ def build_zip(entries):
         flags = opt.get("flags", 0x800)
         raw = opt.get("raw", deflate(data) if method == 8 else data)
         crc, usize = opt.get("crc", zlib.crc32(data)), opt.get("size", len(data))
-        common = struct.pack("<HHHHHIII", 20, flags, method, 0, 0x21, crc, len(raw), usize)
+        common = struct.pack("<HHHHHIII", opt.get("central_version", 20), flags, method, 0, 0x21, crc, len(raw), usize)
         local_name, extra = opt.get("local_name", encoded), opt.get("extra", b"")
         local = struct.pack("<HHHHHIII", 20, opt.get("local_flags", flags), opt.get("local_method", method), 0, 0x21,
                             opt.get("local_crc", crc), opt.get("local_csize", len(raw)), opt.get("local_usize", usize))
@@ -267,7 +268,7 @@ class IngestZipTests(unittest.TestCase):
         before = self.files()
         report = self.ingest(path, dry=True)
         self.assertEqual(self.files(), before)
-        self.assertFalse((self.root / "private").exists())
+        self.assertFalse((self.root / "private" / "ledger.sqlite").exists())
         self.assertEqual((report["would_store"], report["present"], report["dry_run"]), (3, 0, True))
         self.assertEqual(self.skipped(report), {"../evil": "unsafe_name"})
         (self.root / "private").mkdir(mode=0o700)
@@ -417,6 +418,70 @@ class IngestZipTests(unittest.TestCase):
         self.assertEqual(self.rows("SELECT count(*) FROM receipts"), [(2,)])
         self.assertEqual(real["archive"]["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
         self.cli("status", "--check")
+
+    def test_unsupported_central_extract_version_refuses_without_traceback(self):
+        import campaign_tool.ingest_zip as module
+        for version in (64, 99, 255):
+            data = build_zip([("a.txt", b"a", {"central_version": version})])
+            with self.assertRaises(ValueError) as caught:
+                module._open_archive(data, "a.zip")
+            self.assertEqual(str(caught.exception), "not a zip archive")
+            self.assertTrue(caught.exception.__suppress_context__)
+            path = self.inbox / f"v{version}.zip"
+            path.write_bytes(data)
+            before = self.files()
+            for dry in ([], ["--dry-run"]):
+                result = self.cli("ingest", "--zip", path, "--source-id", "synthetic-1", *dry, returncode=1)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr.strip(), "Stopped: not a zip archive")
+            self.assertEqual(self.files(), before)
+            self.assertFalse((self.root / "private" / "ledger.sqlite").exists())
+
+    def test_unsupported_later_entry_refuses_entire_archive_before_ledger(self):
+        path = self.archive([("good.txt", b"good", {}), ("later.txt", b"later", {"central_version": 99})])
+        before = self.files()
+        for dry in ([], ["--dry-run"]):
+            result = self.cli("ingest", "--zip", path, "--source-id", "synthetic-1", *dry, returncode=1)
+            self.assertIn("Stopped: not a zip archive", result.stderr)
+        self.assertEqual(self.files(), before)
+        self.assertFalse((self.root / "private" / "ledger.sqlite").exists())
+        self.ingest(self.archive([("ok.txt", b"ok", {})], name="ok.zip"))
+        populated = self.files()
+        result = self.cli("ingest", "--zip", path, "--source-id", "synthetic-1", returncode=1)
+        self.assertIn("Stopped: not a zip archive", result.stderr)
+        self.assertEqual(self.files(), populated)
+
+    def test_constructor_refusal_never_echoes_archive_metadata(self):
+        marker = "MARKER-\u00e9\u4e2d"
+        raw = build_zip([(f"{marker}.txt", b"x", {"central_version": 99})])
+        raw = raw[:-2] + struct.pack("<H", 12) + b"COMMENT-SECR"
+        path = self.inbox / "meta.zip"
+        path.write_bytes(raw)
+        result = self.cli("ingest", "--zip", path, "--source-id", "synthetic-1", returncode=1)
+        for text in (result.stdout, result.stderr):
+            for leak in ("MARKER", "COMMENT", "9.9", "version", "NotImplemented"):
+                self.assertNotIn(leak, text)
+
+    def test_supported_directory_versions_keep_preview_apply_replay(self):
+        for version in (10, 20, 45, zipfile.MAX_EXTRACT_VERSION):
+            path = self.archive([("m.txt", b"member %d" % version, {"central_version": version})], name=f"v{version}.zip")
+            dry = self.ingest(path, source_id=f"s{version}", dry=True)
+            real = self.ingest(path, source_id=f"s{version}")
+            self.assertEqual([m["path"] for m in real["members"]], ["m.txt"])
+            self.assertEqual(real["members"][0]["sha256"], hashlib.sha256(b"member %d" % version).hexdigest())
+            self.assertEqual(real["archive"]["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+            self.assertEqual(dry["archive"]["sha256"], real["archive"]["sha256"])
+            again = self.ingest(path, source_id=f"s{version}")
+            self.assertEqual((again["stored"], again["skipped"]), (0, []))
+
+    def test_unsupported_method_remains_member_unreadable(self):
+        path = self.archive([("good.txt", b"good", {}), ("odd.bin", b"odd", {"method": 99, "raw": b"odd"})])
+        dry = self.ingest(path, dry=True)
+        real = self.ingest(path)
+        self.assertEqual(self.skipped(dry), {"odd.bin": "unreadable"})
+        self.assertEqual(self.skipped(real), self.skipped(dry))
+        self.assertEqual([m["path"] for m in real["members"]], ["good.txt"])
+        self.assertEqual(real["archive"]["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
 
     def test_integrity_document_is_linked_and_states_its_limits(self):
         document = REPO_ROOT / "docs" / "ZIP-INGEST-INTEGRITY.md"
