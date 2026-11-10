@@ -51,6 +51,9 @@ def _ledger_rows(path):
 def _check_row(objects, sha, expected):
     if not isinstance(sha, str) or not HEX64.fullmatch(sha):
         return {"sha256": str(sha), "problem": "invalid_ledger_row"}
+    # Exact nonnegative int only (no bool/float/text/bytes; never coerced); the bad value is not echoed.
+    if type(expected) is not int or expected < 0:
+        return {"sha256": sha, "problem": "invalid_ledger_row"}
     path = objects / sha
     try:
         info = os.lstat(path)
