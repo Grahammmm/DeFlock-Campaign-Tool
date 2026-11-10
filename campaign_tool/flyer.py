@@ -229,7 +229,12 @@ def build_event(root, event_id, today=None, *, replace=False):
         descriptor, name = tempfile.mkstemp(prefix=f'.{stem}-logo.', suffix='.tmp', dir=folder)  # exclusive, new regular file
         temporary = Path(name)
         try:
-            with os.fdopen(descriptor, 'wb') as handle:
+            try:
+                handle = os.fdopen(descriptor, 'wb')
+            except BaseException:
+                os.close(descriptor)  # the raw descriptor is ours only until fdopen returns an owning stream
+                raise
+            with handle:
                 handle.write(logo.read_bytes())
             os.replace(temporary, folder / logo_name)
         except BaseException:
