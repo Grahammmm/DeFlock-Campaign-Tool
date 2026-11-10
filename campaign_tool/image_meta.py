@@ -3,8 +3,10 @@
 Stdlib only and bounded (``MAX_BYTES`` per file, ``MAX_PARTS`` segments/chunks). Only kind names ever leave this
 module, never a metadata value. A truncated or malformed structure is ``unreadable image`` and is refused too.
 """
+import errno
 import os
 import struct
+import tempfile
 import zlib
 from pathlib import Path
 
@@ -237,7 +239,11 @@ def check_asset(path, relative, limit=MAX_BYTES):
 
 
 def strip_file(source, out=None):
-    """Write a cleaned copy of ``source`` (default ``<stem>.clean<suffix>`` beside it); never overwrites."""
+    """Write a cleaned copy of ``source`` (default ``<stem>.clean<suffix>`` beside it); never overwrites.
+
+    The copy appears under its final name only once it is completely written, synced and closed, so a failed write
+    leaves no partial file and the same command can be retried. A staging directory may survive an abrupt exit.
+    """
     source = Path(source)
     if source.suffix.lower() not in FORMATS:
         raise ValueError(f"{source.name}: only {', '.join(sorted(FORMATS))} images are stripped; nothing written")
@@ -253,6 +259,23 @@ def strip_file(source, out=None):
         data = stream.read(MAX_BYTES + 1)
     kinds, cleaned = metadata_kinds(data, source.suffix), strip(data, source.suffix)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    with os.fdopen(os.open(target, flags, 0o644), "wb") as stream:
-        stream.write(cleaned)
+    # RF1925-10: stage the cleaned bytes in a private 0700 sibling directory, write, fsync and close them, then publish
+    # with a no-replace hard link. A failure before the link leaves no file under the requested name, so a retry works.
+    with tempfile.TemporaryDirectory(prefix=".strip-metadata-", dir=target.parent) as stage:
+        payload = os.path.join(stage, "payload")
+        descriptor = os.open(payload, flags, 0o644)
+        try:
+            view = memoryview(cleaned)
+            while len(view):
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError(errno.EIO, "short write while staging the cleaned copy")
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(payload, target)  # never replaces: a regular file, symlink or directory that arrived first wins
+        except FileExistsError:
+            raise ValueError(f"{target}: already exists; nothing written") from None
     return {"removed": kinds, "written": str(target)}
