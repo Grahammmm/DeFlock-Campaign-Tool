@@ -221,7 +221,8 @@ def _read_sheet(csv_path):
     path = Path(csv_path)
     if path.is_symlink() or not path.is_file():
         raise SurveyError("--csv: not a regular file")
-    data = path.read_bytes()
+    with path.open("rb") as handle:
+        data = handle.read(MAX_CSV_BYTES + 1)
     if len(data) > MAX_CSV_BYTES:
         raise SurveyError("--csv: file too large")
     try:
