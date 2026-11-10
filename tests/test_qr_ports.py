@@ -26,17 +26,18 @@ MESSAGE = 'QR URL must be an ASCII https:// URL with a valid host.'
 NOW = datetime(2026, 11, 1, tzinfo=timezone.utc)
 BAD_PORTS = ('abc', '12x', '65536', '999999', '-1', '+443', '1:2')
 SUFFIXES = ('', '/path', '/path?q=1', '/path#frag')
-# url -> (matrix size, sha256 prefix of the row-major 0/1 matrix, sha256 prefix of the svg), pre-repair
+# Synthetic fixtures only: url -> (matrix size, 16-hex sha256 prefix of the 0/1 matrix, 16-hex prefix of the svg), pre-repair.
+# Each is a truncated public-output digest of a synthetic URL, not a credential; exact-line pragmas, no detector disabled.
 BASELINE = {
-    'https://x.test/a': (25, 'e59709f23906ed42', '1171d7e3edb9d0e0'),
-    'https://x.test:/a': (25, '24d15c04ae56a10b', 'c9350dd96d6cfc1b'),
-    'https://x.test:0/a': (25, '30f01704971cb1c8', '1861cc772eb3af66'),
-    'https://x.test:1/a': (25, 'ec576cb563944ac5', '7f1c4d5aefaba00c'),
-    'https://x.test:443/a': (25, '51c9e8e249cf08e2', '5cc85d1ce74b84dd'),
-    'https://x.test:65535/a': (25, '27733336066ea1c4', '6c6131fe49d5149e'),
-    'https://x.test:00443/a': (25, '2450b99365c58989', '9ab5445c0af27c9d'),
-    'https://x.test/a?time=12:99#f:1': (29, '1f329ff116390d9a', '5ba1dc7065459677'),
-    'https://x.test:8443/a?time=12:99%3A00': (29, '516ddfaddc33886c', '5a16105717444705'),
+    'https://x.test/a': (25, 'e59709f23906ed42', '1171d7e3edb9d0e0'),  # pragma: allowlist secret
+    'https://x.test:/a': (25, '24d15c04ae56a10b', 'c9350dd96d6cfc1b'),  # pragma: allowlist secret
+    'https://x.test:0/a': (25, '30f01704971cb1c8', '1861cc772eb3af66'),  # pragma: allowlist secret
+    'https://x.test:1/a': (25, 'ec576cb563944ac5', '7f1c4d5aefaba00c'),  # pragma: allowlist secret
+    'https://x.test:443/a': (25, '51c9e8e249cf08e2', '5cc85d1ce74b84dd'),  # pragma: allowlist secret
+    'https://x.test:65535/a': (25, '27733336066ea1c4', '6c6131fe49d5149e'),  # pragma: allowlist secret
+    'https://x.test:00443/a': (25, '2450b99365c58989', '9ab5445c0af27c9d'),  # pragma: allowlist secret
+    'https://x.test/a?time=12:99#f:1': (29, '1f329ff116390d9a', '5ba1dc7065459677'),  # pragma: allowlist secret
+    'https://x.test:8443/a?time=12:99%3A00': (29, '516ddfaddc33886c', '5a16105717444705'),  # pragma: allowlist secret
 }
 
 
