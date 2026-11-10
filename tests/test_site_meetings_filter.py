@@ -20,6 +20,7 @@ from campaign_tool import site as site_module
 from campaign_tool.labels import DEFAULTS, JS_DEFAULTS, MEETINGS_JS_DEFAULTS
 from campaign_tool.site import MEETINGS_FILTER_ASSET, build_site
 from tests.test_site_build import EXPECTED_CSP
+from tests.test_site_packet import strip_packet_counterevidence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
@@ -66,8 +67,9 @@ class MeetingsFilterCase(unittest.TestCase):
         return (self.public / "meetings" / "filter.js").exists()
 
     def digest(self, drop=()):
-        files = {p.relative_to(self.public).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-                 for p in sorted(self.public.rglob("*")) if p.is_file()}
+        # DF1109-08: the main-manifest pins predate the packet's counterevidence block; assert and strip exactly that block.
+        files = {name: hashlib.sha256(strip_packet_counterevidence(self, name, p.read_bytes())).hexdigest()
+                 for p in sorted(self.public.rglob("*")) if p.is_file() for name in [p.relative_to(self.public).as_posix()]}
         for name in drop:
             files.pop(name)
         return hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
