@@ -239,7 +239,7 @@ class CommandTests(Base):
     def test_serialized_size_and_atomic_faults(self):
         value = row(body='É Council')
         payload = (json.dumps(document(value), indent=2, ensure_ascii=False)+'\n').encode()
-        with mock.patch.object(cmd, 'MAX_JSON_BYTES', len(payload)-1), mock.patch.object(cmd.tempfile, 'mkstemp') as temp:
+        with mock.patch.object(cmd, 'MAX_JSON_BYTES', len(payload)-1), mock.patch.object(cmd, '_temp_name') as temp:
             self.refuse(cmd.add_schedule, self.root, **value, today=DAY)
             temp.assert_not_called()
         with mock.patch.object(cmd, 'MAX_JSON_BYTES', len(payload)):
@@ -271,7 +271,7 @@ class CommandTests(Base):
         self.path.chmod(0o600)
         self.add(body='Other')
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
-        with mock.patch.object(cmd.tempfile, 'mkstemp', side_effect=OSError('injected')):
+        with mock.patch.object(cmd, '_temp_name', side_effect=OSError('injected')):
             self.refuse(cmd.remove_schedule, self.root, body=BODY, today=DAY)
 
     def test_stale_hint_quotes_selector_body_and_records_only_after_check(self):
@@ -386,9 +386,9 @@ class CommandTests(Base):
                 events.append('fsync:file')
                 real_fsync(fd)
 
-        def replace(src, dst):
+        def replace(src, dst, **kwargs):
             events.append('replace')
-            real_replace(src, dst)
+            real_replace(src, dst, **kwargs)
 
         def opener(path, flags, *args, **kwargs):
             fd = real_open(path, flags, *args, **kwargs)
@@ -447,7 +447,7 @@ class CommandTests(Base):
                 if Path(path) == self.root/'content':
                     raise OSError('injected')
                 return real_open(path, flags, *a, **k)
-            with mock.patch.object(cmd.os, 'open', opener), mock.patch.object(cmd.tempfile, 'mkstemp') as temp:
+            with mock.patch.object(cmd.os, 'open', opener), mock.patch.object(cmd, '_temp_name') as temp:
                 before = snapshot(self.root)
                 with self.assertRaisesRegex(cmd.BodyScheduleError, 'previous file was kept'):
                     self.add(body='New')
