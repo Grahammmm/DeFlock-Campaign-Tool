@@ -68,7 +68,6 @@
   "--rule 5 is given twice": "kit-denial-reply message that already names the option or the missing denial; not in the table",
   "--rule 5 is not in the law package": "kit-denial-reply message that already names the option or the missing denial; not in the table",
   "--rule 5 is not in force on the denial date 5": "kit-denial-reply message that already names the option or the missing denial; not in the table",
-  "symlink or larger than 64 KB": "internal meeting_stage reason, wrapped by its caller",
   "must be 0-5": "argparse keep-count message; already names the range",
   "5: --out is a symlink; choose a real private folder outside public/ and content/": "finding preview message that already names the option or folder to change; not in the table",
   "5: --out is inside 5/; choose a private folder outside public/ and content/": "finding preview message that already names the option or folder to change; not in the table",
