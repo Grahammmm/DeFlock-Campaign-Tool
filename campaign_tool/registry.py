@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -59,15 +60,27 @@ def _load(path):
     return entries
 
 
-def _store(path, entries):  # same-directory temp (reused under the lock), then an atomic replace
-    temporary = path.with_name(path.name + ".tmp")
-    with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w",
-                   encoding="utf-8") as out:
-        os.fchmod(out.fileno(), 0o600)
-        out.write(json.dumps(entries, indent=2) + "\n")
-        out.flush()
-        os.fsync(out.fileno())
-    os.replace(temporary, path)
+def _store(path, entries):
+    """Same-directory staging file, then an atomic replace. The stage is a fresh, exclusively created 0600 file (mkstemp):
+    a pre-existing entry, such as a hardlink at `<register>.tmp`, is never opened, truncated, chmodded or consumed. Only
+    this call's own stage is ever removed, and only when it did not become the register."""
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        try:
+            out = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
+        with out:
+            os.fchmod(out.fileno(), 0o600)
+            out.write(json.dumps(entries, indent=2) + "\n")
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):  # the primary error wins; cleanup is best effort
+            os.unlink(name)
+        raise
 
 
 def _root(path):
