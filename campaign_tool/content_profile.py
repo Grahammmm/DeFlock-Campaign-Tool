@@ -19,6 +19,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import unicodedata
 from datetime import date
 
@@ -198,6 +199,11 @@ def _install(root_fd, content_fd, content_stat, target_fd, target_stat, original
                 pass
 
 
+def _refuse_hard_link(info):
+    if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+        raise ContentProfileError("content/agencies.json: must not have hard links")
+
+
 def _transaction(root, change, verb):
     """Read content/agencies.json through the admitted descriptors, let ``change(document)`` edit the parsed copy and
     return ``(result, changed)``, then install the whole rewritten file once, or refuse with nothing written."""
@@ -205,8 +211,16 @@ def _transaction(root, change, verb):
     target_fd = None
     try:
         content_stat = os.fstat(content_fd)
-        target_fd, target_stat, original = (_read_target(content_fd, single_link=True) if verb == "entry change"
-                                             else _read_target(content_fd))
+        if verb == "entry change":  # refuse a hard-linked file before any read; content_sharing.py stays unchanged
+            try:
+                named = os.stat(TARGET, dir_fd=content_fd, follow_symlinks=False)
+            except OSError:
+                named = None  # _read_target reports a missing or unreadable file
+            if named is not None:
+                _refuse_hard_link(named)
+        target_fd, target_stat, original = _read_target(content_fd)
+        if verb == "entry change":
+            _refuse_hard_link(target_stat)  # the opened file, in case a link appeared after the check above
         try:
             document = _parse_target(original)
         except ContentError:

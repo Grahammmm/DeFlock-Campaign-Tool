@@ -259,7 +259,7 @@ python3 -m campaign_tool content agency-profile report remove --directory $CAMPA
 python3 -m campaign_tool content agency-profile report add --directory $CAMPAIGN --agency ca-example-profile-pd --title "2025 Annual ALPR Report" --kind annual_report --period-start 2025-01-01 --period-end 2025-12-31 --source-url https://example.invalid/example-profile/reports/2025 --checked-on 2026-10-28 --published-on 2026-02-01
 ```
 
-Repeat `add` to append another entry; an exact duplicate `source_url` within this agency's same list is refused. Amounts stay exact decimal strings, including trailing zeros; they are never added up, ranked or compared.
+Repeat `add` to append another entry; an exact duplicate `source_url` within this agency's same list is refused.
 The `list` index is the 1-based stored position within that field, not its display rank. List again before
 removing because positions shift. Removing the final entry omits the field, not an empty list. The practice
 sequence removes and re-adds the same entry so it remains recorded. Nothing is fetched.
