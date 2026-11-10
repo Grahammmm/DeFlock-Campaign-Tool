@@ -76,12 +76,15 @@ def _regular(path, label):
         raise ValueError(f"{label} must be a regular file, not a symlink")
 
 
-def _sent_entry(root, agency_id, request):
+def _sent_entry(root, agency_id, request, *, today):
     entry = kit_track.read_sent(root).get(kit_track._key(agency_id, request))
     label = kit_track._label(agency_id, request)
     if entry is None:
         raise ValueError(f"no hand-sent request recorded for {label}; record it with kit-sent first")
-    steps = [s for s in entry["steps"] if isinstance(s, dict)]
+    if not kit_track.EARLIEST <= date.fromisoformat(entry["sent_on"]) <= today:
+        raise ValueError(f"kit/sent.json unreadable: sent date for {label} must be between 2000-01-01 and today")
+    kit_track.validate_steps(entry, label, today=today)  # replay the whole target history; refusal writes nothing
+    steps = entry["steps"]
     if any(s.get("kind") == "closed" for s in steps):
         raise ValueError(f"request for {label} is closed")
     if any(s.get("kind") == "withdrawn" for s in steps):
@@ -154,7 +157,7 @@ def preserve_request(root, agency_id, *, request="main", today=None):
     for part in (".", "kit", "kit/requests", "content", "kit/preservation"):  # no link or non-folder on the path
         _folder_ok(root / part if part != "." else root, "the campaign folder" if part == "." else part)
     agency = _agency(root, agency_id)
-    entry, label = _sent_entry(root, agency_id, request)
+    entry, label = _sent_entry(root, agency_id, request, today=today)
     _verify_draft(root, agency_id, request, entry, label)
     name = _escape(_plain(agency.get("name"), "the agency name"))
     first = ""
