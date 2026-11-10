@@ -1480,8 +1480,8 @@ python3 -m campaign_tool event list --directory D [--as-of YYYY-MM-DD]
 
 ## Regular meeting schedules (`content/body-schedules.json`, optional)
 
-A source-backed rule for when a body usually meets, for bodies with or without a Legistar feed. Organizers write it by
-hand from the body's own calendar page and re-check it; the tool never fetches it. Exactly:
+A source-backed rule for when a body usually meets, for bodies with or without a Legistar feed. Organizers record it
+from the body's own calendar page with `body-schedule add` and re-check the source themselves; the tool never fetches it. Exactly:
 
 ```json
 {"schema_version": 1, "schedules": [{"body": "Synthetic Council", "weekday": "tuesday", "ordinals": [1, 3, "last"],
@@ -1512,6 +1512,39 @@ hand from the body's own calendar page and re-check it; the tool never fetches i
   meeting of any status, including a cancelled one, answers the question for its local date. This is a prompt to check
   the official agenda, never a claim that a meeting is scheduled, late or overdue. Holidays, special meetings and
   skipped sessions stay unknown until a verified meeting is staged. Nothing is said about agenda posting deadlines.
+
+### Maintaining regular schedules offline
+
+```sh
+python3 -m campaign_tool body-schedule add --directory ../my-campaign --body "Synthetic Council" \
+  --weekday tuesday --ordinals 1 3 last --local-start-time 18:30 --time-zone America/Los_Angeles \
+  --source-url https://example.invalid/calendar --checked-on 2026-11-09
+python3 -m campaign_tool body-schedule list --directory ../my-campaign
+python3 -m campaign_tool body-schedule recheck --directory ../my-campaign --body "Synthetic Council" --checked-on 2026-11-09
+python3 -m campaign_tool body-schedule remove --directory ../my-campaign --body "Synthetic Council"
+```
+
+- Each command also accepts the standard registered `--campaign NAME` instead of `--directory D`, never both.
+  Body identity is exact text and case; add refuses duplicates, never replaces a row. All seven add fields are required;
+  add-only options are refused on recheck, remove and list. Unknown IANA zones and duplicate ordinals are refused.
+- Recheck records **your attestation after reading the source**, not verification by the tool. It changes only
+  `checked_on`, refuses dates before the stored date or after today, and accepts an equal date without rewriting.
+  A later date may still be stale: age 365 days is fresh, 366 is stale. Today's stale hint names this command with
+  today's planning date; run it only after actually checking the official source.
+- List is read-only, in literal-body order: every rule, its source, checked date and age against 365 days, and its next
+  **three agenda-watch dates** (today still shows two). Same-body staged dates, including cancelled meetings, suppress
+  that date in the schedule's zone. These are not booked meetings or legal posting deadlines; stage only verified meetings.
+  Near year 9999 fewer dates, or `none in supported calendar range`, may be shown.
+- Existing real `content/` and a valid regular `site.json` are required; nothing is scaffolded. Missing store lists
+  `No body schedules recorded.`; recheck/remove of a missing body refuse. Only the first valid add creates the file.
+  Removing the last row keeps a valid empty document rather than deleting the file.
+- Every change uses the existing body-schedule loader on the whole prospective store, sorted by literal body with
+  canonical ordinal order. Malformed/oversized/future-dated stores, links and nonregular entries refuse without writing;
+  stale rows remain maintainable. A nonempty list also refuses broken or linked staged meeting inputs before printing rows.
+- Writes use a capped UTF-8 payload, a same-directory temporary file, flush/fsync and one atomic replacement, preserving
+  the existing mode (new file 0644). A write/replace failure keeps the previous file or absence and cleans its temporary
+  file. Refusals exit 2 with `Stopped:` on stderr and no success output. Nothing is fetched, built, sent or published;
+  no private ledger, meeting file or public output changes. **Single writer only:** no locking or lost-update protection.
 
 ## Generated pages and files
 

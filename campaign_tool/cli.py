@@ -1923,6 +1923,21 @@ def main():
     import_p.add_argument("--csv", required=True, metavar="FILLED")
     import_p.add_argument("--directory", required=True)
     import_p.add_argument("--apply", action="store_true", help="Write the file (default: only print the checks)")
+    schedule_cmds = commands.add_parser("body-schedule", help="Maintain organizer-attested regular schedules offline"
+                                       ).add_subparsers(dest="schedule_command", required=True)
+    for verb in ("add", "recheck", "remove", "list"):
+        leaf = schedule_cmds.add_parser(verb)
+        leaf.add_argument("--directory", required=True)
+        if verb != "list":
+            leaf.add_argument("--body", required=True)
+        if verb in ("add", "recheck"):
+            leaf.add_argument("--checked-on", required=True)
+        if verb == "add":
+            leaf.add_argument("--weekday", required=True)
+            leaf.add_argument("--ordinals", nargs="+", required=True, choices=("1", "2", "3", "4", "last"))
+            leaf.add_argument("--local-start-time", required=True)
+            leaf.add_argument("--time-zone", required=True)
+            leaf.add_argument("--source-url", required=True)
     _campaign_option(parser)
     campaigns = commands.add_parser("campaigns", help="A named register of campaign directories; names and paths only"
                                     ).add_subparsers(dest="campaigns_command", required=True)
@@ -2675,6 +2690,20 @@ def main():
             if args.csv:
                 print(json.dumps(kit_timing.write_csv(root, args.csv, report), indent=2))
             print("Read-only. Nothing was sent.", file=sys.stderr)
+        elif args.command == "body-schedule":
+            from .body_schedule_cmd import add_schedule, recheck_schedule, remove_schedule, list_schedules
+            if args.schedule_command == "add":
+                result = add_schedule(root, body=args.body, weekday=args.weekday,
+                                      ordinals=[int(v) if v != "last" else v for v in args.ordinals],
+                                      local_start_time=args.local_start_time, time_zone=args.time_zone,
+                                      source_url=args.source_url, checked_on=args.checked_on)
+            elif args.schedule_command == "recheck":
+                result = recheck_schedule(root, body=args.body, checked_on=args.checked_on)
+            elif args.schedule_command == "remove":
+                result = remove_schedule(root, body=args.body)
+            else:
+                result = list_schedules(root)
+            print(result)
         elif args.command == "kit-coverage":
             from .kit_track import coverage, format_coverage
             sys.stdout.write(format_coverage(coverage(root), as_csv=args.csv))

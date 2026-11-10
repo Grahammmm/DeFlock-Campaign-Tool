@@ -963,7 +963,7 @@ _MODULES = {
         records.understanding.cli records.understanding.digest records.worker_lifecycle""",
     "backup archives and keys": "backup backup_crypt",
     "generated drafts, exports and public content, no catalog store": """
-        agency_brief content_init content_profile content_sharing coverage elsewhere_cmd events flyer kit_calendar kit_copy kit_export kit_fees kit_preserve kit_timing
+        agency_brief body_schedule_cmd content_init content_profile content_sharing coverage elsewhere_cmd events flyer kit_calendar kit_copy kit_export kit_fees kit_preserve kit_timing
         map_survey meeting_comment_publish meeting_outcome meeting_pack meeting_stage meetings meetings_manual newsletter.__main__ newsletter.archive
         newsletter.draft newsletter.sent outbox outbox_batch press recent search_log site site_check social social_threads source_bundle""",
     "other local files with no catalog store": """
@@ -1003,6 +1003,8 @@ MODULE_FUNCTIONS = {
     # one whole alpr_policy/contract document (with its stale reading removed on request) or one policy_check/contract_check reading; temp in content/, fsync,
     # identity check, one rename
     'content_sharing': ('import_sharing',),
+    # Organizer-maintained public schedule content, not a private-person store.
+    'body_schedule_cmd': ('_write', 'add_schedule', 'recheck_schedule', 'remove_schedule'),
     'coverage': ('_write', 'add_coverage', 'remove_coverage',),
     'events': ('_install',),  # DF1109-14: content/events.json (organizer-typed public events); one atomic replace
     'finding_packet': ('_copy_hash', '_create', 'build_packet',),
