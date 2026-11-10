@@ -55,7 +55,7 @@ def camera_rows(cameras, boundaries, checks):
         props = feature.get("properties")
         props = props if isinstance(props, dict) else {}
         url = props.get("url") if isinstance(props.get("url"), str) else ""
-        node = OSM_NODE_URL.fullmatch(url)
+        node = OSM_NODE_URL.fullmatch(url) if checks else None  # absent enrichment needs no node integer conversion
         newest = (checks.get(int(node.group(1))) or [None])[0] if node else None  # validated: newest first
         rows.append({"osm_url": url, "latitude": _scalar(y), "longitude": _scalar(x),
                      "manufacturer": _scalar(props.get("manufacturer")), "operator": _scalar(props.get("operator")),
