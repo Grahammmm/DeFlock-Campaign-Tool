@@ -92,7 +92,16 @@ def background_document():
 
 def _write(path, text):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as out:
+    # The raw descriptor is ours only until stream construction succeeds.
+    try:
+        out = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass  # Preserve the construction failure; never retry close.
+        raise
+    with out:
         out.write(text)
 
 
@@ -150,7 +159,16 @@ def _open_campaign(root, fds):
             raise StarterError("content/ does not exist; a new campaign runs content init; nothing was written")
         try:
             fd = os.open("site.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fds[1])
-            with os.fdopen(fd, "rb") as stream:
+            # The raw descriptor is ours only until stream construction succeeds.
+            try:
+                stream = os.fdopen(fd, "rb")
+            except BaseException:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass  # Preserve the construction failure; never retry close.
+                raise
+            with stream:
                 info = os.fstat(stream.fileno())
                 if not stat.S_ISREG(info.st_mode) or info.st_size > _SITE_MAX_BYTES:
                     raise ValueError("site.json: not a regular file or over the size limit")
@@ -237,7 +255,16 @@ def add_starter(root, name):
         temp_name = f".{parts[-1]}.new-{os.urandom(6).hex()}"
         fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
         temp = (temp_name, parent, os.fstat(fd))
-        with os.fdopen(fd, "wb") as out:
+        # The raw descriptor is ours only until stream construction succeeds.
+        try:
+            out = os.fdopen(fd, "wb")
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass  # Preserve the construction failure; never retry close.
+            raise
+        with out:
             out.write(data)
             out.flush()
             os.fsync(out.fileno())
@@ -367,7 +394,16 @@ def init_from(root, source_root):
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
     def read(fd, name, limit=256 * 1024):
         file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
-        with os.fdopen(file_fd, "rb") as stream:
+        # The raw descriptor is ours only until stream construction succeeds.
+        try:
+            stream = os.fdopen(file_fd, "rb")
+        except BaseException:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass  # Preserve the construction failure; never retry close.
+            raise
+        with stream:
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
                 raise ValueError(f"{name}: must be a regular file at most {limit} bytes")
