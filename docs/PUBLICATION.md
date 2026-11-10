@@ -148,6 +148,10 @@ receipt rows), `reviews.json`, `review-status.json`, `README.txt` and `MANIFEST.
 A missing or altered record, a ledger with a journal/WAL file beside it, or records over 500 MiB stop it with nothing
 written. The tool never zips, uploads or sends it: hand it over yourself, privately, and treat it as confidential.
 
+The packet is installed with one atomic no-replace rename, so a folder that appears at DIR while the packet is being built
+is refused and left exactly as it was; the refused run installs no partial packet. Packet creation needs Linux with
+filesystem support for no-replace rename and refuses, writing nothing, where that is unavailable.
+
 Signed receipts (optional): `finding reviewers add ... --ssh-key FILE.pub` stores an `ssh-ed25519` or
 `ecdsa-sha2-nistp256` key and rewrites `D/private/reviewers.allowed_signers` (0600; principal = name with
 spaces as `_`). `finding review-payload DRAFT` (same flags as `finding review`) prints the exact bytes; sign
