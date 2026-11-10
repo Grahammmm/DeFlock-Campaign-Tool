@@ -433,7 +433,7 @@ class DefaultBytes(Base):
         "--source OFFICIAL_URL --verified-by NAME\n2. [participation_unverified] Verify how the public may take part in "
         "Cedar Board on 2026-11-12 (soon) — verify how the public may take part, then meetings-stage --directory <ROOT> "
         "--id soon --participation FILE --replace")
-    LEGACY_JSON_SHA = "97386ff706c8895ef05398cd9e7776e014fdfc7a1bcd0834cda023fa23388378"
+    LEGACY_JSON_SHA = "97386ff706c8895ef05398cd9e7776e014fdfc7a1bcd0834cda023fa23388378"  # pragma: allowlist secret
 
     def snapshot(self):
         return {p.relative_to(self.root).as_posix(): (p.read_bytes() if p.is_file() else None, p.lstat().st_mode)
