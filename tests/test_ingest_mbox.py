@@ -556,6 +556,177 @@ class IngestMboxTests(unittest.TestCase):
                     self.assertEqual((self.counts(), sorted(os.listdir(self.root / "private" / "objects"))),
                                      (stored, objects))
 
+    # RF0345-2: a mailbox basename that is not strict UTF-8 is refused before anything is preserved.
+    REFUSAL = "Mailbox filename cannot be represented as UTF-8; nothing was imported"
+    RAW_NAMES = (b"raw-\xff.mbox", b"raw-\xc3\x28-\xe2\x82.mbox")  # lone FF; invalid two- and three-byte sequences
+
+    def raw_write(self, data, raw_name, parent=None):
+        """A real file whose basename is exactly `raw_name` bytes (POSIX); skipped where the platform cannot."""
+        path = os.path.join(os.fsencode(parent or self.inbox), raw_name)
+        try:
+            with open(path, "wb") as handle:
+                handle.write(data)
+        except (OSError, UnicodeError):
+            self.skipTest("this platform cannot create a raw non-UTF-8 file name")
+        return os.fsdecode(path)
+
+    def assert_refused(self, path, dry):
+        result = self.ingest(path, dry=dry, returncode=1)
+        self.assertEqual((result.stdout, result.stderr), ("", f"Stopped: {self.REFUSAL}\n"))
+        for part in ("codec", "surrogate", "\\udcff", "raw-", ".mbox", "message-"):
+            self.assertNotIn(part, result.stderr)
+
+    def test_raw_mailbox_basename_refuses_before_preview_or_persistence(self):
+        valid = mbox(*three())
+        paths = [self.raw_write(valid, raw_name) for raw_name in self.RAW_NAMES]
+        for populated in (False, True):
+            if populated:
+                self.ingest(self.write(mbox(message(body="Populated synthetic.\n")), "seed.mbox"))
+            for path in paths:
+                for dry in (True, False):
+                    with self.subTest(name=path, populated=populated, dry=dry):
+                        before = self.files()
+                        self.assert_refused(path, dry)
+                        self.assertEqual(self.files(), before)
+                        with open(os.fsencode(path), "rb") as handle:
+                            self.assertEqual(handle.read(), valid)
+                        if not populated:
+                            self.assertFalse((self.root / "private" / "ledger.sqlite").exists())
+                            self.assertEqual(os.listdir(self.root / "private" / "objects") if
+                                             (self.root / "private" / "objects").exists() else [], [])
+        self.cli("status", "--check")
+        self.assertEqual(self.rows("SELECT count(*) FROM receipts"), [(2,)])
+
+    def test_direct_refusal_precedes_split_extract_lookup_database_and_store(self):
+        from campaign_tool import ingest_mbox
+        path = self.raw_write(mbox(*three()), self.RAW_NAMES[0])
+        trips = {n: mock.Mock(side_effect=AssertionError(n)) for n in
+                 ("_split", "_extract", "_ledger_lookup", "database", "_store_bytes", "_store_message")}
+        with mock.patch.multiple(ingest_mbox, **trips):
+            for dry in (True, False):
+                args = types.SimpleNamespace(mbox=path, source_id="synthetic-mbox-1", dry_run=dry)
+                with self.assertRaises(ValueError) as caught:
+                    ingest_mbox.ingest_mbox(args, self.root)
+                self.assertEqual(str(caught.exception), self.REFUSAL)
+                self.assertIsNone(caught.exception.__cause__)
+        for trip in trips.values():
+            trip.assert_not_called()
+
+    def test_preview_and_apply_share_filename_admission(self):
+        empty = SEPARATOR + b"\n"  # one separator, no message bytes
+        malformed = mbox(b'Content-Type: multipart/mixed\r\n\r\n--B\r\nbody\r\n--B--\r\n')
+        for index, data in enumerate((mbox(*three()), empty, malformed)):
+            path = self.raw_write(data, self.RAW_NAMES[0] + str(index).encode())
+            for dry in (True, False):
+                with self.subTest(index=index, dry=dry):
+                    before = self.files()
+                    self.assert_refused(path, dry)
+                    self.assertEqual(self.files(), before)
+        self.assertFalse((self.root / "private" / "ledger.sqlite").exists())
+
+    def test_bad_name_retry_does_not_create_or_repair_orphans(self):
+        path = self.raw_write(mbox(*three()), self.RAW_NAMES[0])
+        self.assert_refused(path, False)
+        first = self.files()
+        self.assert_refused(path, False)
+        self.assertEqual(self.files(), first)
+        # A historical orphan object and same-digest preexisting state are left exactly as found.
+        data = mbox(*three())
+        self.ingest(self.write(data, "other.mbox"))
+        objects = self.root / "private" / "objects"
+        orphan = objects / sha(b"historical orphan")
+        orphan.write_bytes(b"historical orphan")
+        seeded, rows = self.files(), self.rows("SELECT original_name FROM receipts ORDER BY 1")
+        self.assert_refused(self.raw_write(data, self.RAW_NAMES[1]), False)
+        self.assertEqual({k: v for k, v in self.files().items() if "raw-" not in k},
+                         {k: v for k, v in seeded.items() if "raw-" not in k})
+        self.assertEqual(self.rows("SELECT original_name FROM receipts ORDER BY 1"), rows)
+        self.assertEqual(orphan.read_bytes(), b"historical orphan")
+        status = self.cli("status", "--check", returncode=3)  # only the deliberately seeded orphan is reported
+        self.assertEqual((status.stdout.count("no_ledger_row"), status.stdout.count(sha(b"historical orphan"))), (1, 1))
+
+    def test_manual_rename_allows_normal_mailbox_import(self):
+        data = mbox(*three())
+        path = self.raw_write(data, self.RAW_NAMES[0])
+        self.assert_refused(path, False)
+        renamed = self.inbox / "ordinary.mbox"
+        os.rename(os.fsencode(path), renamed)
+        preview, real = self.ingest(renamed, dry=True), self.ingest(renamed)
+        self.assertEqual([m["sha256"] for m in preview["messages"]], [m["sha256"] for m in real["messages"]])
+        self.assertEqual((real["mailbox"]["sha256"], set(self.outcomes(real))), (sha(data), {"stored"}))
+        self.assertEqual(sorted(r[0] for r in self.rows("SELECT original_name FROM receipts"))[:2],
+                         ["ordinary.mbox", "ordinary.mbox/message-1.eml"])
+        self.assertTrue(all(not name.startswith("raw") for (name,) in self.rows("SELECT original_name FROM receipts")))
+        counts = self.rows("SELECT (SELECT count(*) FROM objects), (SELECT count(*) FROM contains)")
+        self.assertEqual(set(self.outcomes(self.ingest(renamed))), {"present"})
+        self.assertEqual(self.rows("SELECT (SELECT count(*) FROM objects), (SELECT count(*) FROM contains)"), counts)
+
+    def test_valid_unicode_basename_and_undecodable_parent_remain_supported(self):
+        names = ("caf\u00e9.mbox", "cafe\u0301.mbox", "\u90f5\u4ef6.mbox", "mail-\U0001f4ec.mbox")
+        for number, name in enumerate(names):
+            data = mbox(message(body=f"Unicode name synthetic {number}.\n"))  # distinct bytes: one receipt per name
+            with self.subTest(name=name):
+                path = self.write(data, name)
+                preview, real = self.ingest(path, dry=True), self.ingest(path)
+                self.assertEqual(preview["mailbox"]["sha256"], real["mailbox"]["sha256"])
+                self.assertIn((name,), self.rows("SELECT original_name FROM receipts"))
+                self.assertIn((f"{name}/message-1.eml",), self.rows("SELECT original_name FROM receipts"))
+                self.assertEqual(set(self.outcomes(self.ingest(path))), {"present"})
+        high = os.path.join(os.fsdecode(os.fsencode(self.inbox)), os.fsdecode(b"up-\xfe"))
+        parent = os.path.join(high, os.fsdecode(b"under-\xff"))
+        try:
+            os.makedirs(os.fsencode(parent))
+        except OSError:
+            self.skipTest("this platform cannot create a raw non-UTF-8 directory name")
+        path = os.path.join(parent, "ordinary.mbox")
+        with open(os.fsencode(path), "wb") as handle:
+            handle.write(mbox(message(body="Raw ancestor synthetic.\n")))
+        args = types.SimpleNamespace(mbox=path, source_id="synthetic-mbox-1", dry_run=False)
+        result = self.cli("ingest", "--mbox", path, "--source-id", "synthetic-mbox-1")
+        self.assertEqual(json.loads(result.stdout)["mailbox"]["outcome"], "stored")
+        names_now = [r[0] for r in self.rows("SELECT original_name FROM receipts")]
+        self.assertIn("ordinary.mbox", names_now)
+        self.assertFalse(any("under-" in n or "up-" in n for n in names_now))
+        self.assertIsNotNone(args)
+
+    def test_filename_refusal_precedence_is_explicit(self):
+        raw = self.RAW_NAMES[0]
+        junk = self.raw_write(b"Hello\n" + mbox(*three()), raw)  # not an mbox, readable: name refusal wins
+        self.assert_refused(junk, True)
+        many = self.raw_write(mbox(*[message(body=f"Synthetic reply {n}.\n") for n in range(501)]), raw + b"2")
+        self.assert_refused(many, False)
+        # A representable name keeps the existing content-specific errors.
+        result = self.ingest(self.write(b"Hello\n" + mbox(*three()), "hello.mbox"), returncode=1)
+        self.assertIn("Stopped: not an mbox file (no From line at the start); nothing was imported", result.stderr)
+        # Reader refusals keep precedence over the name check for a raw-named non-regular file.
+        os.symlink(self.write(mbox(*three())), os.fsencode(os.path.join(os.fsdecode(os.fsencode(self.inbox)),
+                                                                         os.fsdecode(b"link-\xff.mbox"))))
+        os.mkdir(os.fsencode(os.path.join(os.fsdecode(os.fsencode(self.inbox)), os.fsdecode(b"dir-\xff.mbox"))))
+        for leaf in (b"link-\xff.mbox", b"dir-\xff.mbox"):
+            result = self.ingest(os.path.join(os.fsdecode(os.fsencode(self.inbox)), os.fsdecode(leaf)), returncode=1)
+            self.assertEqual(result.stderr, "Stopped: --mbox must be a regular, non-symlink file\n")
+        from campaign_tool import ingest_mbox
+        small = self.raw_write(mbox(*three()), raw + b"3")
+        args = types.SimpleNamespace(mbox=small, source_id="synthetic-mbox-1", dry_run=False)
+        with mock.patch.object(ingest_mbox, "MAX_MBOX_BYTES", 10):
+            with self.assertRaisesRegex(ValueError, r"^Alpha limit: 200 MiB per mailbox; nothing was imported$"):
+                ingest_mbox.ingest_mbox(args, self.root)
+
+    def test_refusal_diagnostic_is_fixed_and_value_free(self):
+        from campaign_tool import ingest_mbox
+        data = mbox(message(body="Canary name synthetic.\n"))
+        parent = os.path.join(os.fsdecode(os.fsencode(self.inbox)), f"parent-{CANARY}-\u00e9")
+        os.mkdir(parent)
+        path = self.raw_write(data, f"name-{CANARY}-".encode() + b"\xff.mbox", parent)
+        for dry in (True, False):
+            result = self.ingest(path, dry=dry, returncode=1)  # self.cli() already rejects any canary in output
+            self.assertEqual(result.stderr, f"Stopped: {self.REFUSAL}\n")
+        for value in ("a\udcffb", "\ud800", "x\udfffy"):
+            with self.assertRaises(ValueError) as caught:
+                ingest_mbox._require_receipt_name(value)
+            self.assertEqual(str(caught.exception), self.REFUSAL)
+        ingest_mbox._require_receipt_name("plain-\u00e9\U0001f4ec.mbox")
+
 
 if __name__ == "__main__":
     unittest.main()
