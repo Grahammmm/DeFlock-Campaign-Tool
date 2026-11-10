@@ -182,10 +182,133 @@ class FindingPacketTests(unittest.TestCase):
 
     def test_object_changed_while_copying_leaves_no_folder_or_temp(self):
         real = finding_packet._copy_hash
-        with mock.patch.object(finding_packet, "_copy_hash", lambda source, sink=None: real(source, sink)
-                               if sink is None else (real(source, sink), "0" * 64)[1]):
+        with mock.patch.object(finding_packet, "_copy_hash", lambda source, sink=None, **kw: real(source, sink, **kw)
+                               if sink is None else ("0" * 64, real(source, sink, **kw)[1])):
             self.refused("changed while copying")
         self.assertFalse(os.path.lexists(self.out))
+
+    def grown_objects(self, extra, limit):
+        """Patch the object opener: opens 0-1 are preflight, 2-3 the copy pass; ``extra`` {open index: appended bytes}.
+        Handles report a 1-byte fstat (a stale size) while reading real bytes. Returns (reads, sink_writes)."""
+        tiny = self.base / "tiny"
+        tiny.write_bytes(b"x")
+        fd = os.open(tiny, os.O_RDONLY)
+        self.addCleanup(os.close, fd)
+        reads, writes, opens = [], [], []
+        real = self.__dict__.setdefault("real_open", finding_packet._open_object)  # first, unpatched opener
+        real_create = self.__dict__.setdefault("real_create", finding_packet._create)
+        test = self
+
+        class Handle:
+            def __init__(self, data):
+                self.data, self.pos = data, 0
+
+            def fileno(self):
+                return fd
+
+            def read(self, n):
+                test.assertGreater(n, 0)
+                reads.append((len(opens) - 1, n))
+                chunk = self.data[self.pos:self.pos + n]
+                self.pos += len(chunk)
+                return chunk
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def opener(objects, sha_):
+            with real(objects, sha_) as handle:
+                data = handle.read()
+            opens.append(sha_)
+            return Handle(data + extra.get(len(opens) - 1, b""))
+
+
+        def create(path, data=None):
+            handle = real_create(path, data)
+            if data is None and Path(path).parent.name == "records":
+                inner = handle.write
+                handle.write = lambda chunk: (writes.append(len(chunk)), inner(chunk))[1]
+            return handle
+        patches = (mock.patch.object(finding_packet, "_open_object", opener),
+                   mock.patch.object(finding_packet, "_create", create),
+                   mock.patch.object(finding_packet, "MAX_RECORD_BYTES", limit))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return reads, writes
+
+    def test_growth_after_real_budget_fstat_refuses_before_staging(self):
+        limit = len(RECORDS[0]) + len(RECORDS[1])
+        reads, writes = self.grown_objects({0: b"G" * limit}, limit)  # fits by stat, grows past the budget when read
+        self.refused("packet too large")
+        self.assertEqual((writes, [n for _, n in reads]), ([], [limit + 1]))
+        self.assertFalse(os.path.lexists(self.out))
+
+    def test_copy_growth_stops_before_budget_and_cleans_owned_staging(self):
+        limit = len(RECORDS[0]) + len(RECORDS[1])
+        sentinel = self.base / "sibling.txt"
+        sentinel.write_bytes(b"keep")
+        reads, writes = self.grown_objects({2: b"G" * 50}, limit)  # first copy stream grows after preflight passed
+        self.refused("packet too large")
+        self.assertTrue(all(n <= limit + 1 for _, n in reads), reads)
+        self.assertEqual(writes, [])  # the crossing chunk is never written
+        self.assertEqual(sentinel.read_bytes(), b"keep")
+
+    def test_aggregate_limit_counts_actual_bytes_across_distinct_records(self):
+        limit = len(RECORDS[0]) + len(RECORDS[1])
+        for index, writes_expected in ((1, []), (3, None)):  # later record grows: preflight, then copy pass
+            with self.subTest(open_index=index):
+                reads, writes = self.grown_objects({index: b"G"}, limit)
+                self.refused("packet too large")
+                self.assertFalse(os.path.lexists(self.out))
+                if writes_expected is None:  # first record fully copied, the second's crossing read writes nothing
+                    self.assertEqual(len(writes), 1)
+                self.assertEqual(reads[-1][1], len(RECORDS[1]) + 1)  # remaining is the later record's size, plus one
+
+    def test_exact_limit_eof_and_one_byte_overflow_both_passes(self):
+        limit = len(RECORDS[0]) + len(RECORDS[1])
+        reads, writes = self.grown_objects({}, limit)  # exact fit succeeds in both passes
+        self.assertEqual(finding_packet.build_packet(self.root, self.draft, self.out)["records"], 2)
+        self.assertEqual(sum(writes), limit)
+        self.assertTrue(all(n <= limit + 1 for _, n in reads))
+
+    def reader(self, data, step=None):
+        sizes, state = [], {"pos": 0}
+
+        class Reader:
+            def read(self, n):
+                assert n > 0
+                sizes.append(n)
+                chunk = data[state["pos"]:state["pos"] + min(n, step or n)]
+                state["pos"] += len(chunk)
+                return chunk
+        return Reader(), sizes
+
+    def test_copy_hash_boundaries_short_reads_and_overflow_chunk_not_written(self):
+        data = b"abcdefgh"
+        for limit, ok in ((8, True), (9, True), (7, False), (0, False)):
+            sink = []
+            source, sizes = self.reader(data, step=3)  # short reads are not EOF
+            call = lambda: finding_packet._copy_hash(source, mock.Mock(write=sink.append), limit=limit)  # noqa: E731
+            if ok:
+                self.assertEqual(call(), (sha(data), 8))
+                self.assertEqual(b"".join(sink), data)
+                self.assertEqual(sizes[0], min(finding_packet.CHUNK, limit + 1))
+            else:
+                with self.assertRaises(ValueError):
+                    call()
+                self.assertLessEqual(sum(map(len, sink)), limit)
+        source, sizes = self.reader(b"")
+        self.assertEqual(finding_packet._copy_hash(source, limit=0), (sha(b""), 0))
+        self.assertEqual(sizes, [1])  # zero remaining still does a one-byte EOF check
+        source, sizes = self.reader(b"xyz")
+        sink = []
+        with self.assertRaises(ValueError):
+            finding_packet._copy_hash(source, mock.Mock(write=sink.append), limit=2)
+        self.assertEqual((sink, sizes), ([], [3]))  # whole crossing chunk refused before any sink write
 
     def test_records_over_500_mib_refused(self):
         with mock.patch.object(finding_packet, "MAX_RECORD_BYTES", len(RECORDS[0]) + len(RECORDS[1]) - 1):
