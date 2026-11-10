@@ -1120,10 +1120,40 @@ New labels: `nav.topics`, `heading.topics`, `title.topics`, `title.topics_descri
 An organizer lists an organization only after recording its permission privately:
 
 ```
+supporters list --directory DIR [--json]
 supporters add --directory DIR --name N --kind civil_liberties|community|faith|labor|neighborhood|business|other \
   [--url https://...] --organization --confirmed-on YYYY-MM-DD --how email|letter|meeting|form [--correspondence PREFIX]
 supporters remove --directory DIR --id ID
 ```
+
+**Private inventory (DF1109B-06).** `supporters list` prints the ids that `consent` and `remove` take. It is read-only:
+it creates, changes or repairs nothing (no `kit/`, ledger, lock or cache), fetches nothing and needs no `campaign.json`.
+Its output is private operational output, never a public export. One row per id, sorted by id, for every public row and
+every private record:
+
+```
+ID | KIND | "NAME" | joined DATE | consent present|missing | confirmed DATE|- | co-sign any|ID1,ID2|none | co-sign confirmed DATE|- | staged ID1,ID2|none
+ID | private record without public entry | confirmed DATE | co-sign any|ID1,ID2|none | co-sign confirmed DATE|- | staged ID1,ID2|none
+```
+
+(`a|b` here is a choice, not another column.) The name is JSON-quoted so a `|` or quote in it cannot pass for a column.
+`--json` prints only a JSON array of objects with exactly the keys `id`, `status` (`listed` or `private record without
+public entry`), `kind`, `name`, `joined_on` (null for a private record without a public entry), `consent_present`,
+`confirmed_on`, `cosign` (`"any"`, the sorted meeting ids, or null for no grant), `cosign_confirmed_on` and
+`staged_meetings`, in that order; an empty inventory is `[]` (text: `none recorded`). Dates are the only consent
+details shown: never the hash, `how`, correspondence digest, URL or the private record itself.
+
+`staged_meetings` are the sorted ids of every valid `content/meetings/*.json` (direct files only, at most 4 MiB each;
+the id field, or the file name without `.json`) whose structured `cosigners` list names the organization. They include
+past and cancelled meetings and grants since cleared or narrowed: a staged reference is history, not permission, and a
+listing is not co-sign approval. Run `content-check` before building or reusing a comment kit.
+
+A missing consent record and a private record with no public entry are listed (exit 0) although `build` and the
+`add`/`consent`/`remove` writers still refuse them. Anything malformed is not: an invalid or over-limit store or meeting
+file, a consent record that does not match its public row, a duplicate meeting id, a private store others can read, a
+symbolic link (campaign folder, ancestor, store or meeting) or a hardlinked or special file. Then nothing is printed on
+stdout, stderr holds exactly `Stopped: supporters list: cannot read valid supporter and staged meeting files`, and the
+exit code is 2. An id that is removed and later added again is a new listing that needs its own consent.
 
 `--organization` is required and is an explicit attestation, never inferred from the name or kind: only organizations
 are listed, never individuals. `add` writes the public row to `content/supporters.json` and the consent record to
@@ -1156,8 +1186,9 @@ without a file. Labels: `supporters.title`, `supporters.description`, `supporter
 **Co-sign grant (DF2207-14).** A private record may also carry `cosign` (`"any"` or 1 to 100 meeting ids) with
 `cosign_confirmed_on`, `cosign_how` and `cosign_correspondence`: all four or none. Set it with
 `supporters consent --directory DIR --id ID --cosign any|MEETING_ID ... --confirmed-on D --how HOW [--correspondence PREFIX]`
-or remove it with `--clear-cosign` (see [MEETINGS.md](MEETINGS.md)). It is read only by `meetings-stage --cosign`,
-`load_content` and `content-check`; it never reaches the public file or the site. A listing alone never allows co-signing.
+or remove it with `--clear-cosign` (see [MEETINGS.md](MEETINGS.md)). It is read by `meetings-stage --cosign`,
+`load_content` and `content-check`, and shown (scope and date only) by the private `supporters list`; it never reaches
+the public file or the site. A listing alone never allows co-signing.
 Staged meetings store `cosigners` (1 to 30 supporter ids), shown on the meeting page as `Co-signed by N organizations`
 (labels `meeting.cosigned_one` and `meeting.cosigned_many`, both with `{count}`; Spanish drafts in `examples/labels/es.json`).
 
