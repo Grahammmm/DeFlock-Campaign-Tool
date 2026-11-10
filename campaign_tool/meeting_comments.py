@@ -4,13 +4,14 @@ Offline bookkeeping only: nothing is sent, fetched or published. ``kit/comments-
 letter only its SHA-256 and byte count are kept, never its text or its path.
 """
 import hashlib
+import json
 import os
 import re
 import stat
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from .content import _read_json, load_meeting
+from .content import MAX_JSON_BYTES, _read_json, load_meeting
 from .kit import _kit_folder, _write_json
 
 CHANNELS = ("email", "portal", "mail", "in_person")
@@ -120,10 +121,15 @@ def record(root, meeting_id, on, channel, file=None, replace=False, today=None, 
         entry["letter_sha256"], entry["letter_bytes"] = _letter(file)
     entry["recorded_at"] = (now or datetime.now(timezone.utc)).isoformat(timespec="microseconds")
     comments[meeting_id] = entry
+    document = {"schema_version": 1, "comments": dict(sorted(comments.items()))}
+    # RF0015-6: read() refuses a store over MAX_JSON_BYTES, so refuse, before any output, a write whose exact
+    # serialization (kit._write_json: indent=2, ensure_ascii=False, trailing newline, UTF-8) would exceed it.
+    if len((json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")) > MAX_JSON_BYTES:
+        raise MeetingCommentError(f"{LABEL}: update would exceed 2 MiB; nothing was written")
     kit_dir = root / "kit"
     _kit_folder(kit_dir, 0o700)
     target = kit_dir / "comments-sent.json"
     if os.path.islink(target):
         raise MeetingCommentError(f"{LABEL} must not be a symlink")
-    _write_json(target, {"schema_version": 1, "comments": dict(sorted(comments.items()))})
+    _write_json(target, document)
     return entry
