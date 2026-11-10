@@ -717,6 +717,38 @@ it: re-check and update it. The body's agency page and each meeting page with it
 `agency_id` show a "Who decides" list (names linked to `profile_url` when given) with the
 newest `checked_on` and its source link. Labels: `officials.*`.
 
+**Maintaining the roster (DF1109-12).** `officials add|recheck|remove|list --directory D` edit `content/officials.json`
+so you do not have to. Nothing is fetched: `--source-url` records where you checked, it is never opened or verified.
+Each change validates the whole new file with the build's own loader, then writes it beside the old one and swaps it in
+with one rename (a refusal leaves the old bytes; one organizer edits at a time). The commands only change the file: the
+next explicit build publishes the change. Errors exit 2 with one `Stopped:` line that never repeats what you typed.
+
+```
+python3 -m campaign_tool officials add --directory D --agency ca-cedar-city-council --name "Rowan Example" \
+  --role "Council member, District 2" --source-url https://cedar.example/council --checked-on 2026-09-01 \
+  [--profile-url https://cedar.example/council/rowan]
+python3 -m campaign_tool officials list --directory D
+python3 -m campaign_tool officials recheck --directory D --agency ca-cedar-city-council --name "Rowan Example" --checked-on 2026-10-15
+python3 -m campaign_tool officials remove --directory D --agency ca-cedar-city-council --name "Rowan Example"
+```
+
+- `add` appends one person to the body (or a new body at the end). The first `add` creates the file (mode 0600);
+  `list` on a campaign without it prints `No officials listed.` and creates nothing. A name the body already lists is
+  refused, compared after Unicode NFC and whitespace collapsing but case-sensitive (the rule `meetings-outcome --votes`
+  matches by); the same name in another body is fine. The shared privacy lint runs on name, role and both URLs.
+- `list` prints the roster in stored order as JSON (`agency_id`, `name`, `role`, `profile_url`, `source_url`,
+  `checked_on`, `age_days`, `status`) and a summary. `status` is `current` up to 365 days and `stale` from day 366,
+  the day the build starts refusing. It writes nothing.
+- `recheck` moves one person's `checked_on` forward after you re-checked the official site: not in the future, not
+  more than 365 days ago, never earlier than the stored day; the same day changes nothing. It edits no other field.
+  Listing and re-checking accept a roster with stale people so you can repair them one at a time (it warns how many
+  are still stale); `add`, `remove` and the build stay strict until every person is current.
+- `remove` drops one person, refused while a recorded vote in `content/meetings/*.json` or a row of
+  `content/statements.json` names them for that body (votes and statements are never rewritten). A body left with
+  nobody is dropped; removing the last person leaves `"bodies": []`.
+- A name listed twice in one body by hand stays loadable and is listed, but `recheck` and `remove` refuse it: edit the
+  file to tell the two apart. Links, FIFOs and folders in place of these files are refused, never followed.
+
 **Officials as open data (DF1622-11).** When `content/officials.json` lists at least one person (a missing file or
 `"bodies": []` lists nobody), the build also writes `data/officials.json` (`schemas/officials-open-data.schema.json`) and
 `data/officials.csv`; with nobody listed neither file exists, a rebuild removes stale ones, and every other file is
