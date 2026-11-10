@@ -593,6 +593,12 @@ def ics_fold(line):
     return "\r\n ".join(parts)
 
 
+def meeting_is_upcoming(meeting, day):
+    """DF1109B-16: the one rule for an upcoming meeting, shared by ``build`` and ``today``: the meeting's own typed
+    calendar day (``starts_at[:10]``, no time-zone conversion) is ``day`` or later and it is not cancelled."""
+    return meeting["starts_at"][:10] >= day.isoformat() and meeting["status"] != "cancelled"
+
+
 class Site:
     def __init__(self, root, cfg, model, today=None, correction_counts=None):
         self.root = Path(root)
@@ -602,9 +608,9 @@ class Site:
         self.today = today or date.today()  # build date: contract terms
         # Split on the meeting's own typed calendar date (no time-zone conversion); today counts as upcoming.
         # A cancelled meeting is never upcoming; it stays listed under past meetings.
-        cutoff = (today or date.today()).isoformat()
-        self.upcoming = [m for m in model["meetings"] if m["starts_at"][:10] >= cutoff and m["status"] != "cancelled"]
-        self.past = [m for m in model["meetings"] if m["starts_at"][:10] < cutoff or m["status"] == "cancelled"][::-1]
+        day = today or date.today()
+        self.upcoming = [m for m in model["meetings"] if meeting_is_upcoming(m, day)]
+        self.past = [m for m in model["meetings"] if not meeting_is_upcoming(m, day)][::-1]
         self.site = model["site"]
         self.license = self.site.get("license")  # DF1422-13: None without site.json.license; nothing is rendered then
         self.name = e(cfg["name"])

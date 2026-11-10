@@ -121,8 +121,8 @@ class MeetingWork(unittest.TestCase):
 
     def test_fixed_kind_rank_due_key_and_json_shape(self):
         order = list(today.KINDS)
-        self.assertEqual(order[order.index("contract_ending") + 1:order.index("contract_ending") + 5],
-                         [*NEW, "minutes_pending"])
+        self.assertEqual(order[order.index("contract_ending") + 1:order.index("contract_ending") + 7],
+                         [*NEW, "official_recheck_due", "site_rebuild_due", "minutes_pending"])  # DF1109B-16 kinds sit here
         self.scan([{"id": "zz", "body": "B", "starts_at": "2026-10-11T18:00:00-07:00"},
                    {"id": "aa", "body": "B", "starts_at": "2026-10-11T18:00:00-07:00"}])
         self.stage("zz-old", "2026-10-01T18:00:00-07:00", participation=PART)
