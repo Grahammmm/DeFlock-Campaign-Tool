@@ -4,6 +4,7 @@
 four-module quiet zone. The URL must satisfy the campaign's ASCII ``https://`` contract and is encoded byte for byte:
 nothing is rewritten, shortened, fetched or segment-optimized. An explicit authority port must follow the standard
 library's own rule: absent or empty is allowed, otherwise an integer from 0 to 65535 (spelling is kept as given).
+A hostname label longer than 63 octets (which no DNS resolver or IDNA codec accepts) is refused like any other bad host.
 Nothing here reads or writes a file.
 """
 from urllib.parse import urlsplit
@@ -290,7 +291,10 @@ def _check(url):
         raise QrError(_LENGTH_MESSAGE)
     try:
         _https(url, "QR URL")
-        urlsplit(url).port  # lazy stdlib validation: a non-numeric, out-of-range or multi-colon port raises ValueError
+        parts = urlsplit(url)
+        parts.port  # lazy stdlib validation: a non-numeric, out-of-range or multi-colon port raises ValueError
+        if any(len(label) > 63 for label in parts.hostname.split(".")):  # RFC 1035 label limit; ASCII, so chars == octets
+            raise ValueError
     except (ContentError, ValueError):
         raise QrError("QR URL must be an ASCII https:// URL with a valid host.") from None
     return url.encode("ascii")
