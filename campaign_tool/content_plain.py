@@ -14,7 +14,6 @@ import errno
 import json
 import os
 import stat
-from pathlib import Path
 
 from . import plain_language
 from .content import MAX_JSON_BYTES, ContentError
@@ -24,16 +23,51 @@ def _fail(label, why):
     raise ContentError(f"{label}: {why}")
 
 
-def _is_real_dir(path, label):
-    """True for a real folder, False when absent; a link or other non-folder is refused."""
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+
+def _stat_at(dir_fd, name):
+    return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+
+
+def _open_dir(parent_fd, name, label):
+    """Descriptor for real folder ``name`` below ``parent_fd``, or None when initially absent.
+
+    A link or other non-folder is refused. Once the folder was seen, any later change of identity, type or
+    readability is a fixed ``could not be read``: the pathname is never re-resolved after admission."""
     try:
-        mode = os.lstat(path).st_mode
+        before = _stat_at(parent_fd, name)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        _fail(label, "could not be read")
+    if not stat.S_ISDIR(before.st_mode):
+        _fail(label, "must be a real folder, not a symlink or file")
+    try:
+        fd = os.open(name, DIR_FLAGS, dir_fd=parent_fd)
+    except OSError:
+        raise ContentError(f"{label}: could not be read") from None
+    try:
+        after = os.fstat(fd)
+        if not stat.S_ISDIR(after.st_mode) or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+            raise ContentError(f"{label}: could not be read") from None
+    except OSError:
+        os.close(fd)
+        raise ContentError(f"{label}: could not be read") from None
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _present(dir_fd, name):
+    """True when ``name`` exists below ``dir_fd`` (a dangling link counts); only initial absence is False."""
+    try:
+        _stat_at(dir_fd, name)
     except FileNotFoundError:
         return False
     except OSError:
-        _fail(label, "could not be read")
-    if not stat.S_ISDIR(mode):
-        _fail(label, "must be a real folder, not a symlink or file")
+        raise ContentError(f"content/{name}: could not be read") from None
     return True
 
 
@@ -52,15 +86,15 @@ def _read_bounded(fd, limit):
 NOT_REGULAR = "must be a regular file, not a symlink, folder or special file"
 
 
-def _read(path, label):
+def _read(dir_fd, name, label):
     try:
-        mode = os.lstat(path).st_mode
+        mode = _stat_at(dir_fd, name).st_mode
     except OSError:
         _fail(label, "could not be read")
     if not stat.S_ISREG(mode):
         _fail(label, NOT_REGULAR)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
     except OSError as exc:
         _fail(label, NOT_REGULAR if exc.errno == errno.ELOOP else "could not be read")
     try:
@@ -103,40 +137,64 @@ def _entries(document, key, label):
 def read_groups(root):
     """[(file, entry, [(field, text), ...])] in scan order, and the glossary's capital aliases.
 
-    Every file is read and validated before this returns, so no partial report can follow a read problem."""
-    base = Path(root) / "content"
+    Every file is read and validated before this returns, so no partial report can follow a read problem.
+    RF1315-2: ``content`` and ``pages`` are opened once, relative to their parent descriptor, and every listing and
+    read goes through those descriptors, so renaming or replacing them afterwards cannot redirect the scan. The
+    supplied root and its own ancestors remain the caller's trust anchor."""
     groups, terms = [], []
-    if _is_real_dir(base, "content"):
-        pages = base / "pages"
-        if _is_real_dir(pages, "content/pages"):
+    try:
+        root_fd = os.open(root, DIR_FLAGS & ~os.O_NOFOLLOW)
+    except FileNotFoundError:
+        root_fd = None
+    except OSError:
+        raise ContentError("content: could not be read") from None
+    if root_fd is not None:
+        try:
+            _scan(root_fd, groups, terms)
+        finally:
+            os.close(root_fd)
+    return groups, plain_language._glossary_acronyms({"terms": terms})
+
+
+def _scan(root_fd, groups, terms):
+    base = _open_dir(root_fd, "content", "content")
+    if base is None:
+        return
+    try:
+        pages = _open_dir(base, "pages", "content/pages")
+        if pages is not None:
             try:
-                names = os.listdir(pages)
-            except OSError:
-                # Admission succeeded: a later enumeration failure is not optional absence.
-                raise ContentError("content/pages: could not be read") from None
-            for name in sorted(names):
-                if not name.endswith(".json"):
-                    continue
-                label = f"content/pages/{name}"
-                document = _read(pages / name, label)
-                groups.append((label, name[:-5], [("title", _string(document, "title", label)),
-                                                  ("body_md", _string(document, "body_md", label))]))
-        if os.path.lexists(base / "faq.json"):
+                try:
+                    names = os.listdir(pages)
+                except OSError:
+                    # Admission succeeded: a later enumeration failure is not optional absence.
+                    raise ContentError("content/pages: could not be read") from None
+                for name in sorted(names):
+                    if not name.endswith(".json"):
+                        continue
+                    label = f"content/pages/{name}"
+                    document = _read(pages, name, label)
+                    groups.append((label, name[:-5], [("title", _string(document, "title", label)),
+                                                      ("body_md", _string(document, "body_md", label))]))
+            finally:
+                os.close(pages)
+        if _present(base, "faq.json"):
             label = "content/faq.json"
-            for index, entry in enumerate(_entries(_read(base / "faq.json", label), "entries", label)):
+            for index, entry in enumerate(_entries(_read(base, "faq.json", label), "entries", label)):
                 where = f"{label} entries[{index}]"
                 groups.append((label, f"entries[{index}]", [("question", _string(entry, "question", where)),
                                                             ("answer_md", _string(entry, "answer_md", where))]))
-        if os.path.lexists(base / "glossary.json"):
+        if _present(base, "glossary.json"):
             label = "content/glossary.json"
-            for index, term in enumerate(_entries(_read(base / "glossary.json", label), "terms", label)):
+            for index, term in enumerate(_entries(_read(base, "glossary.json", label), "terms", label)):
                 where = f"{label} terms[{index}]"
                 aliases = term.get("aliases", [])
                 if not isinstance(aliases, list) or not all(isinstance(alias, str) for alias in aliases):
                     _fail(where, "aliases must be a list of strings")
                 terms.append({"aliases": aliases})
                 groups.append((label, f"terms[{index}]", [("definition_md", _string(term, "definition_md", where))]))
-    return groups, plain_language._glossary_acronyms({"terms": terms})
+    finally:
+        os.close(base)
 
 
 def check_content(root):
