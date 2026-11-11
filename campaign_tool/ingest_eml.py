@@ -41,10 +41,13 @@ def _read_message(path):
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         raise ValueError("--eml must be a regular, non-symlink file") from None
-    with os.fdopen(fd, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError("--eml must be a regular, non-symlink file")
-        data = handle.read(MAX_BYTES + 1)
+    try:  # this function owns the raw FD until the finally; the stream below never closes it (closefd=False)
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError("--eml must be a regular, non-symlink file")
+            data = handle.read(MAX_BYTES + 1)
+    finally:
+        os.close(fd)
     if len(data) > MAX_BYTES:
         raise ValueError("Alpha limit: 50 MiB per message; nothing was imported")
     return data
