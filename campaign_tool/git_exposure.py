@@ -4,6 +4,7 @@ Nothing here stages, commits, rewrites or edits a .gitignore: git is only asked 
 """
 import os
 import shutil
+import stat
 import subprocess
 import tomllib
 from pathlib import Path
@@ -68,6 +69,30 @@ def refuse_engine_directory(directory):
         raise GitExposureError(ENGINE_MESSAGE)
 
 
+def _read_marker_prefix(marker, admitted):
+    """First 512 bytes of the regular pointer file that was admitted by lstat, read from the opened descriptor.
+
+    Opens without following a replacement symlink or waiting for a FIFO writer, then requires the descriptor to be the
+    same regular file (device and inode) that was admitted. Anything else is the generic _Unchecked.
+    """
+    flags = getattr(os, "O_NOFOLLOW", None), getattr(os, "O_NONBLOCK", None)
+    if None in flags:
+        raise _Unchecked()
+    try:
+        fd = os.open(marker, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError:
+        raise _Unchecked() from None
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (admitted.st_dev, admitted.st_ino):
+            raise _Unchecked()
+        return os.read(fd, 512)
+    except OSError:
+        raise _Unchecked() from None
+    finally:
+        os.close(fd)
+
+
 def _find_marker(resolved):
     """True when exactly one acceptable .git directory or worktree .git file exists at or above resolved.
 
@@ -78,20 +103,16 @@ def _find_marker(resolved):
     for folder in (resolved, *resolved.parents):
         marker = folder / ".git"
         try:
-            mode = os.lstat(marker).st_mode
+            admitted = os.lstat(marker)
         except FileNotFoundError:
             continue
         except OSError:
             raise _Unchecked() from None
         if not (os.path.isdir(marker) and not os.path.islink(marker)):
-            if mode & 0o170000 != 0o100000:
+            if admitted.st_mode & 0o170000 != 0o100000:
                 raise _Unchecked()
-            try:
-                with marker.open("rb") as handle:
-                    if not handle.read(512).startswith(b"gitdir:"):
-                        raise _Unchecked()
-            except OSError:
-                raise _Unchecked() from None
+            if not _read_marker_prefix(marker, admitted).startswith(b"gitdir:"):
+                raise _Unchecked()
         if found:
             raise _Nested()
         found = True
