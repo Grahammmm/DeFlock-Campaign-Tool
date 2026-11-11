@@ -44,8 +44,7 @@ class QuiescenceAudit(unittest.TestCase):
 
     def units(self, age=0, **states):
         path = self.work / "units.txt"
-        path.write_text(units_text(**states))
-        os.utime(path, (time.time() - age,) * 2)
+        path.write_text("Captured=%d\n\n" % (time.time() - age) + units_text(**states))
         return str(path)
 
     def audit(self, units=None):
@@ -82,8 +81,32 @@ class QuiescenceAudit(unittest.TestCase):
     def test_missing_unit(self):
         self.assert_fails("UNITS_INCOMPLETE", units=self.units(**{"records-arrival.path": "missing"}))
 
-    def test_stale_units_file(self):
+    def test_stale_or_undated_units_file(self):
         self.assert_fails("UNITS_STALE", units=self.units(age=300))
+        undated = self.work / "undated.txt"
+        undated.write_text(units_text())
+        self.assert_fails("UNITS_STALE", units=str(undated))
+
+    def test_out_path_through_symlinked_parent_into_project_is_refused(self):
+        (self.work / "link").symlink_to(self.project)
+        out = self.work / "link" / "e.json"
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            code = qa.main(["--project", str(self.project), "--runtime", str(self.runtime),
+                            "--units-file", self.units(), "--out", str(out)])
+        self.assertEqual((code, stdout.getvalue().split()), (2, ["OUT_INSIDE_PROJECT"]))
+        self.assertFalse((self.project / "e.json").exists())
+
+    def test_symlinked_project_still_sees_open_file(self):
+        (self.work / "plink").symlink_to(self.project)
+        (self.proc / "4242" / "fd").mkdir(parents=True)
+        (self.proc / "4242" / "fd" / "3").symlink_to(self.project / "processing-v1" / "ledger.sqlite")  # as /proc shows it
+        out = self.work / "e.json"
+        with redirect_stdout(io.StringIO()) as stdout:
+            code = qa.main(["--project", str(self.work / "plink"), "--runtime", str(self.runtime),
+                            "--units-file", self.units(), "--out", str(out)])
+        self.assertEqual(code, 1)
+        self.assertIn("OPEN_FILE", stdout.getvalue().split())
 
     def test_open_file_under_project(self):
         for target, name in ((self.project / "processing-v1" / "ledger.sqlite", "fd/3"), (self.project, "cwd")):
@@ -123,11 +146,11 @@ class QuiescenceAudit(unittest.TestCase):
     def test_registered_and_runs_through_module_entry(self):
         self.assertEqual(cli.COMMANDS["quiescence-audit"], ("quiescence_audit", "main"))
         out = self.work / "cli.json"
-        with open(self.units(**{"records-run.service": "active"})) as stdin:
-            done = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "quiescence-audit",
-                                   "--project", str(self.project), "--runtime", str(self.runtime),
-                                   "--units-file", "-", "--out", str(out)], cwd=ROOT, capture_output=True, text=True,
-                                  timeout=120, stdin=stdin)
+        text = Path(self.units(**{"records-run.service": "active"})).read_text()  # fed as a pipe, as docker exec -i does
+        done = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "quiescence-audit",
+                               "--project", str(self.project), "--runtime", str(self.runtime),
+                               "--units-file", "-", "--out", str(out)], cwd=ROOT, capture_output=True, text=True,
+                              timeout=120, input=text)
         self.assertEqual((done.returncode, done.stderr), (1, ""))
         self.assertIn("WRITER_ACTIVE", done.stdout)
         self.assertIn("evidence_sha256=", done.stdout)

@@ -10,7 +10,6 @@ import fcntl
 import hashlib
 import json
 import os
-import stat
 import sys
 import time
 from datetime import datetime, timezone
@@ -25,19 +24,21 @@ WRITER_UNITS = (
 
 
 def _units(path):
-    """(check, codes). stdin must be a regular file so its age is known."""
-    check, codes = {"listed": len(WRITER_UNITS), "missing": 0, "active": 0, "stale": False}, []
-    fd = 0 if path == "-" else os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    try:
-        info = os.fstat(fd)
-        check["stale"] = not stat.S_ISREG(info.st_mode) or not 0 <= time.time() - info.st_mtime <= MAX_AGE
-        raw = os.read(fd, MAX_UNITS + 1)
-    finally:
-        if fd:
+    """(check, codes). The capture is stale unless its ``Captured=<epoch>`` line is at most MAX_AGE old."""
+    check, codes = {"listed": len(WRITER_UNITS), "missing": 0, "active": 0, "stale": True}, []
+    if path == "-":  # a pipe (docker exec -i) carries no file age, so the capture time travels in the data
+        raw = sys.stdin.buffer.read(MAX_UNITS + 1)
+    else:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            raw = os.read(fd, MAX_UNITS + 1)
+        finally:
             os.close(fd)
     states = {}
     for block in raw[:MAX_UNITS].decode("utf-8", "replace").split("\n\n"):
         pairs = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+        if pairs.get("Captured", "").isdigit():
+            check["stale"] = not 0 <= time.time() - int(pairs["Captured"]) <= MAX_AGE
         if "Id" in pairs:
             states[pairs["Id"]] = pairs.get("ActiveState")
     check["missing"] = sum(1 for unit in WRITER_UNITS if unit not in states)
@@ -51,7 +52,7 @@ def _units(path):
 
 def _open_files(root):
     held = unreadable = 0
-    prefix = root.rstrip("/") + "/"
+    roots = {root, os.path.realpath(root)}  # /proc reports resolved paths
     for pid in os.listdir(PROC_ROOT):
         if not pid.isdigit() or int(pid) == os.getpid():
             continue
@@ -69,7 +70,7 @@ def _open_files(root):
                     pass
         except OSError as error:
             unreadable += error.errno not in (errno.ENOENT, errno.ESRCH)
-        held += sum(1 for target in targets if target == root or target.startswith(prefix))
+        held += sum(1 for target in targets for r in roots if target == r or target.startswith(r + "/"))
     return {"count": held, "proc_unreadable": unreadable}
 
 
@@ -116,11 +117,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="records quiescence-audit", description="Check every known records writer at one moment; write quiescence evidence.")
     parser.add_argument("--project", required=True)
     parser.add_argument("--runtime", required=True)
-    parser.add_argument("--units-file", required=True, help="captured systemctl output, or - for a redirected file")
+    parser.add_argument("--units-file", required=True, help="captured units (first line Captured=<epoch>), or - for stdin")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
-    project, out = os.path.abspath(args.project), os.path.abspath(args.out)
-    if out.startswith(project + "/"):
+    project, out = os.path.abspath(args.project), os.path.realpath(args.out)  # out resolved through symlinks
+    if out.startswith(os.path.realpath(project) + "/"):
         print("OUT_INSIDE_PROJECT")
         return 2
     try:

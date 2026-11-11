@@ -64,8 +64,9 @@ The evidence is an attestation the operator makes. The library does not authenti
 1. Stop every writer unit: `records-run.{service,timer}`, `records-arrival.{path,service}`,
    `deflockslo-daily-mail.{service,timer}`, `records-console.service`, `records-analysis.{service,timer}`. End any ad-hoc
    `docker exec` session.
-2. Capture states (the same unit list as `quiescence_audit.WRITER_UNITS`) into a regular file:
-   `systemctl --user show -p Id,ActiveState,SubState <units> > units.txt`. It is stale after 120 s.
+2. Capture states (the same unit list as `quiescence_audit.WRITER_UNITS`) with a capture-time first line:
+   `{ echo "Captured=$(date +%s)"; echo; systemctl --user show -p Id,ActiveState,SubState <units>; } > units.txt`.
+   A capture without `Captured=` or older than 120 s is `UNITS_STALE`. A pipe has no file age, so the time travels in the data.
 3. Audit inside the records container, as the project owner (so every process is inspectable):
    `docker exec -i CONTAINER records quiescence-audit --project P --runtime R --units-file - --out E < units.txt`.
    Exit 0 prints `evidence_sha256=<hex>`; exit 1 prints the failing codes (`WRITER_ACTIVE`, `UNITS_INCOMPLETE`,
