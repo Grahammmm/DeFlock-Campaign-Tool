@@ -16,7 +16,7 @@ from campaign_tool.meetings_status import MeetingsStatusError, inventory
 from tests.test_meetings_status import AS_OF, TODAY, build, cli, snapshot
 
 FIXED = "Stopped: campaign directory does not exist or is not a directory\n"
-SECRET = "SYNTHETIC-PRIVATE-ROOT-DETAIL"
+PRIVATE_DETAIL = "SYNTHETIC-PRIVATE-ROOT-DETAIL"
 FAULTS = (FileNotFoundError, NotADirectoryError, PermissionError, OSError)
 
 
@@ -82,20 +82,20 @@ class RootErrorTests(unittest.TestCase):
     def test_root_metadata_oserror_matrix_is_value_free(self):
         for kind in FAULTS:
             with self.subTest(kind=kind.__name__):
-                patch, seen = fail_second_lstat(str(self.root), lambda: kind(13, SECRET, str(self.root)))
+                patch, seen = fail_second_lstat(str(self.root), lambda: kind(13, PRIVATE_DETAIL, str(self.root)))
                 with patch, mock.patch.object(meetings_status, "_staged", side_effect=AssertionError("scan")):
                     with self.assertRaises(MeetingsStatusError) as ctx:
                         inventory(str(self.root), AS_OF, today=TODAY)
                 self.assertEqual(len(seen), 2)
                 self.assertEqual(str(ctx.exception), meetings_status.BAD_ROOT)
-                self.assertNotIn(SECRET, "".join(traceback.format_exception(ctx.exception)))
+                self.assertNotIn(PRIVATE_DETAIL, "".join(traceback.format_exception(ctx.exception)))
 
     def test_real_cli_text_and_json_root_faults_have_empty_stdout(self):
         before = snapshot(self.root)
         for kind in FAULTS:
             for extra in ((), ("--json",)):
                 with self.subTest(kind=kind.__name__, extra=extra):
-                    patch, _ = fail_second_lstat(str(self.root), lambda: kind(13, SECRET, str(self.root)))
+                    patch, _ = fail_second_lstat(str(self.root), lambda: kind(13, PRIVATE_DETAIL, str(self.root)))
                     with patch:
                         code, out, err = run_main("meetings-status", "--directory", str(self.root),
                                                   "--as-of", AS_OF, *extra)
@@ -104,7 +104,7 @@ class RootErrorTests(unittest.TestCase):
 
     def test_invalid_as_of_wins_before_any_root_observation(self):
         for extra in ((), ("--json",)):
-            patch, seen = fail_second_lstat(str(self.root), lambda: PermissionError(SECRET))
+            patch, seen = fail_second_lstat(str(self.root), lambda: PermissionError(PRIVATE_DETAIL))
             with patch:
                 code, out, err = run_main("meetings-status", "--directory", str(self.root),
                                           "--as-of", "2026-13-40", *extra)
