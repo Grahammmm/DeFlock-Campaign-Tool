@@ -72,7 +72,16 @@ def _snapshot(path):
                 raise OSError
             if info.st_size > MAX_LEDGER_BYTES:
                 raise ValueError(LEDGER_SIZE_ERROR)
-            with os.fdopen(os.dup(fd), "rb") as handle:
+            dup = os.dup(fd)
+            try:
+                handle = os.fdopen(dup, "rb")
+            except BaseException:
+                try:
+                    os.close(dup)  # fdopen failed before taking ownership of the duplicate
+                except OSError:
+                    pass  # a real constructor may already have closed it; keep the original exception
+                raise
+            with handle:  # the stream now owns (and closes) the duplicate
                 raw = handle.read(MAX_LEDGER_BYTES + 1)  # the file may have grown since fstat
             if len(raw) > MAX_LEDGER_BYTES:
                 raise ValueError(LEDGER_SIZE_ERROR)
