@@ -155,3 +155,5 @@ The optional GitHub Actions section shows the latest run of each workflow (defau
 read-only token in `DEFLOCK_GITHUB_READ_TOKEN`, or an owner-only (0600) regular file named by
 `DEFLOCK_GITHUB_READ_TOKEN_FILE`. Without them it shows "not configured" and makes no network call. The token is never
 rendered, and a failed call shows only "GitHub unavailable". Tests inject a fake fetcher and never use the network.
+
+Home, Agencies (Board) and Calendar name any source they could not load in a banner at the top and show "unknown" instead of a count that depends on it; an unknown count is never printed as 0.
