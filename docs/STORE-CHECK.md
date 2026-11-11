@@ -45,8 +45,26 @@ It covers substitution of the object file itself (the last path component) and a
 that file that the check can observe while it runs. It is not an atomic snapshot of the
 store, a defence against replacing a parent directory (`private/` and `private/objects/`
 must be trusted and stay in place), proof against a deliberately malicious writer, a read
-timeout on a stalled disk, full hardening of the ledger, or a repair of races in
-`status --fix-modes`.
+timeout on a stalled disk, or full hardening of the ledger. Verification does not
+cover `status --fix-modes`; its narrower guarantee is described next.
+
+## Explicit mode repair
+
+`status --fix-modes` (never `--check`, which stays read-only) tightens loose private modes to
+0700 (directories) or 0600 (files). Each candidate is looked at without following links, then
+opened read-only with no-follow, non-blocking flags, and `fchmod` is applied to that open
+descriptor only if it is a regular file or directory of the same kind with the same device and
+inode as the look. A link, pipe, socket, vanished entry, other kind or other inode put in
+place after the look is skipped and listed under `skipped`; no pathname `chmod` is ever used,
+so a late link cannot change a file outside the store.
+
+Limits: only the last path component is covered; `private/` and `private/objects/` must be
+trusted and stay in place, and the candidate list is not an atomic snapshot. If the admitted
+file is renamed after it is opened, that original file (not the new name) is tightened. A
+candidate the owner cannot read is refused with an error rather than repaired by pathname,
+and a platform without `O_NOFOLLOW` or `fchmod` stops with `Private mode repair needs
+no-follow descriptor support` before any change. An unexpected permission or I/O error stops
+the repair; it does not roll back repairs already made.
 
 ## Byte counts in the ledger
 
