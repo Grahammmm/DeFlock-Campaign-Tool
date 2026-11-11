@@ -526,7 +526,7 @@ class PreserveTests(unittest.TestCase):
             return data
 
         def closing(fd):
-            if fd in events["fds"]:
+            if fd in events["fds"] and events["closed"].count(fd) < events["fds"].count(fd):  # a later output fd may reuse the number
                 events["closed"].append(fd)
             return real_close(fd)
 
@@ -863,7 +863,7 @@ class PreserveTests(unittest.TestCase):
                         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
                         path.unlink()
                 self.assertEqual(len(events["fds"]), 1)
-                self.assertEqual((events["fdopen"], events["raw_closed"]), (events["fds"], []))
+                self.assertEqual((events["fdopen"], events["raw_closed"]), (events["fds"], events["fds"]))
                 outer.assert_closed(events["fds"][0])
                 os.fstat(sentinel)
         self.assertEqual(self.make(), baseline)  # retry after the failures
