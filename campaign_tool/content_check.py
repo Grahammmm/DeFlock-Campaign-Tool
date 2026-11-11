@@ -302,7 +302,9 @@ def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today
 
     from .agency_actions import action_problems  # local: agency_actions imports content
     problems.extend(action_problems(root, agencies))  # DF0237-01: the build's own reader; None agencies skips only the id check
-    _statements(problems, root, agencies, statements_out, today or date.today())  # DF1107-07
+    day = today or date.today()
+    officials = _officials(problems, root, agencies, day)  # RF0440-4: checked whether or not statements.json exists
+    _statements(problems, root, officials, statements_out, day)  # DF1107-07
 
     # DF1952-01: the law check follows agency loading so a local overlay's agency_ids are judged against loaded agencies
     # (None, when agencies are themselves refused and named, skips only that scope check).
@@ -338,20 +340,24 @@ def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today
     return _cap(sorted(set(problems)), limit)
 
 
-def _statements(problems, root, agencies, out, today):
-    """DF1107-07: content/statements.json with the build's own reader. Its roster is content/officials.json, loaded with the
-    build's validator and reported here only when statements exist; a roster that failed (named once) or agencies that
-    failed skip only the impossible membership check, never the independent structural checks."""
+def _officials(problems, root, agencies, today):
+    """content/officials.json with the build's own strict validator, independent of statements.json (RF0440-4).
+    Returns the validated roster, ``{}`` when the file is absent, or ``None`` when the roster is refused (named once) or
+    the agencies it depends on failed (already named; no invented unknown-body lines)."""
+    if agencies is None:
+        return None
+    officials_path = root / "content" / "officials.json"
+    if officials_path.is_file() or officials_path.is_symlink():  # build's own presence rule
+        return _attempt(problems, "officials.json", lambda: load_officials(_read_json(officials_path), agencies, today))
+    return {}
+
+
+def _statements(problems, root, officials, out, today):
+    """DF1107-07: content/statements.json with the build's own reader, given the roster already resolved by ``_officials``
+    (``None`` skips only the impossible membership check, never the independent structural checks)."""
     from .content_statements import FILE, read_statements
     if not os.path.lexists(root / "content" / FILE):
         return
-    officials = None
-    officials_path = root / "content" / "officials.json"
-    if agencies is not None:
-        if officials_path.is_file() or officials_path.is_symlink():
-            officials = _attempt(problems, "officials.json", lambda: load_officials(_read_json(officials_path), agencies, today))
-        else:
-            officials = {}
     rows = read_statements(root, officials, today, problems)
     if out is not None and rows:
         out.extend(rows)
