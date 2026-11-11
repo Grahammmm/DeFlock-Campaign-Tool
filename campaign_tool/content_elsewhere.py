@@ -7,6 +7,7 @@ Build raises the first problem; content-check collects every independent problem
 import json
 import os
 import re
+import stat
 import unicodedata
 from datetime import date
 from pathlib import Path
@@ -143,6 +144,7 @@ def _no_repeats(pairs):
 def _read_strict(path):
     """``content._read_json`` (same size cap, UTF-8 and symlink rules) that refuses a repeated member name at any depth.
 
+    The leaf is opened O_NOFOLLOW|O_NONBLOCK and that descriptor must be a regular file before any read.
     The payload is one binary read of at most ``MAX_JSON_BYTES + 1`` bytes from a handle closed before decoding; the extra
     byte only proves the file is over the cap, so a larger file is refused without being read further or parsed.
 
@@ -150,7 +152,17 @@ def _read_strict(path):
     refuse it already. The refusal names neither the repeated key nor either value."""
     if path.is_symlink():
         raise ContentError(f"{path.name}: symlinks are not read")
-    with path.open("rb") as handle:
+    # Leaf-only admission: opened without following a link or waiting on a FIFO; the opened descriptor (not the
+    # pathname) is proven regular and is the only payload source. Parent directories are not confined.
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ContentError(f"{path.name}: must be a regular file, not a symlink or folder")
+        handle = os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    with handle:
         data = handle.read(MAX_JSON_BYTES + 1)
     if len(data) > MAX_JSON_BYTES:
         raise ContentError(f"{path.name}: file too large")

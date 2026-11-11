@@ -54,7 +54,7 @@ class Case(unittest.TestCase):
             guard = mock.patch(target, side_effect=AssertionError("network access attempted"))
             guard.start()
             self.addCleanup(guard.stop)
-        real_open, case = Path.open, self
+        real_fdopen, case = os.fdopen, self
 
         class Stream:
             def __init__(self, handle):
@@ -83,11 +83,16 @@ class Case(unittest.TestCase):
             def __getattr__(self, key):
                 return getattr(self.handle, key)
 
-        def opened(target, *args, **kwargs):
-            handle = real_open(target, *args, **kwargs)
-            return Stream(handle) if target == case.path else handle
+        def opened(descriptor, *args, **kwargs):
+            # scoped to the target: only the descriptor that is the elsewhere.json file is wrapped
+            try:
+                target = os.path.samestat(os.fstat(descriptor), os.stat(case.path))
+            except OSError:
+                target = False
+            handle = real_fdopen(descriptor, *args, **kwargs)
+            return Stream(handle) if target else handle
 
-        patcher = mock.patch.object(Path, "open", opened)
+        patcher = mock.patch.object(os, "fdopen", opened)
         patcher.start()
         self.addCleanup(patcher.stop)
 
