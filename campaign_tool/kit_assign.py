@@ -20,7 +20,9 @@ DIGITS_MAX = 6  # seven or more decimal digits make a label phone-like
 FILE = "kit/assignments.json"
 LEAF = "assignments.json"
 TEMP_TRIES = 8
-_DIR_FD = os.open in os.supports_dir_fd
+# Asked by name, not by identity: this module can be first imported lazily while a test has replaced os.open, and an
+# identity check would then record "no dir_fd support" for the whole process.
+_DIR_FD = "open" in {getattr(function, "__name__", "") for function in os.supports_dir_fd}
 
 
 def owner_label(value, flag="--to"):

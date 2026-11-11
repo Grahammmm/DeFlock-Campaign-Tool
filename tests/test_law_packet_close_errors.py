@@ -71,8 +71,10 @@ class Faults:
         self.real_close(fd)  # the descriptor really is released before any error is reported
         if role in self.reuse:
             new = self.real_open(__file__, os.O_RDONLY)
-            assert new == fd, "the freed descriptor number was not reused"
-            self.sentinels[fd] = new
+            if new != fd:  # a lower number was free (an earlier test in this process): place the new owner on ``fd``
+                os.dup2(new, fd)
+                self.real_close(new)
+            self.sentinels[fd] = fd
         if role in self.fail:
             raise OSError(errno.EIO, "synthetic close failure " + role)
 
