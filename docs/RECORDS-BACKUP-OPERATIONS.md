@@ -53,3 +53,23 @@ unreadable database is refused with the fixed reason `database_unreadable`.
 1 MiB manifest, 10,000 references per database, 60 s operation budget. A live project over a limit is refused; measure
 it with `--check-profile` first. A project with no `mail_checkpoints` table, no `approvals/queue.jsonl` or no
 `public-packets.jsonl` is incomplete because the library requires the cursor and review_bundle roles.
+
+## Attended backup: stop, audit, backup, restart (operator, weekly and before any engine re-pin)
+
+`run-records.lock` is never quiescence: it covers only the run wrapper, while the arrival path, the daily mail, the console
+and any `docker exec` session also write. `records quiescence-audit` checks all of them at one moment and writes the
+`records-quiescence-v1` evidence `records backup` requires. It never calls `systemctl`; the operator captures unit states.
+The evidence is an attestation the operator makes. The library does not authenticate it.
+
+1. Stop every writer unit: `records-run.{service,timer}`, `records-arrival.{path,service}`,
+   `deflockslo-daily-mail.{service,timer}`, `records-console.service`, `records-analysis.{service,timer}`. End any ad-hoc
+   `docker exec` session.
+2. Capture states (the same unit list as `quiescence_audit.WRITER_UNITS`) into a regular file:
+   `systemctl --user show -p Id,ActiveState,SubState <units> > units.txt`. It is stale after 120 s.
+3. Audit inside the records container, as the project owner (so every process is inspectable):
+   `docker exec -i CONTAINER records quiescence-audit --project P --runtime R --units-file - --out E < units.txt`.
+   Exit 0 prints `evidence_sha256=<hex>`; exit 1 prints the failing codes (`WRITER_ACTIVE`, `UNITS_INCOMPLETE`,
+   `UNITS_STALE`, `OPEN_FILE`, `PROC_UNREADABLE`, `RUN_LOCK_HELD`, `ARRIVAL_PENDING`) and E records `false`. For
+   `ARRIVAL_PENDING` drain it with one records run, then repeat from step 1. E must be outside P.
+4. Within 120 s: `records backup --project P --into DIR --quiescence E --quiescence-sha256 <hex>`.
+5. Restart the units and keep `DIR/backup-digests.jsonl` apart from the sets.
