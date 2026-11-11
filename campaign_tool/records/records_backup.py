@@ -178,7 +178,10 @@ def check_main(argv=None):
     now = datetime.now(timezone.utc)
     code, fields = _check(into, args.max_age_days, now)
     alerts = Path(os.path.abspath(args.alerts_dir)) if args.alerts_dir else into.with_name(into.name + "-alerts")
-    if code != "BACKUP_OK" or alerts.is_dir():  # an OK run only clears an earlier alert, it creates nothing
+    real_into, real_alerts = os.path.realpath(into), os.path.realpath(alerts)
+    if real_alerts == real_into or real_alerts.startswith(real_into.rstrip(os.sep) + os.sep):
+        fields["alert"] = "unwritten"  # never write into the read-only backup tree
+    elif code != "BACKUP_OK" or alerts.is_dir():  # an OK run only clears an earlier alert, it creates nothing
         state = "ok" if code == "BACKUP_OK" else "stop"
         report = {"now": now.isoformat(), "checks": [{"check": "backup", "state": state, "reason_code": code.lower()}]}
         try:

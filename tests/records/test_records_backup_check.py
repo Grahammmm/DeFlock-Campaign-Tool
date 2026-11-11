@@ -119,6 +119,17 @@ class BackupCheckCli(unittest.TestCase):
         self.assertEqual(list(self.into.iterdir()), [])
         self.assertEqual(self.alert_names(), ["health-backup-backup_none.json"])
 
+    def test_alerts_dir_inside_backup_is_refused_and_tree_unchanged(self):
+        shutil.rmtree(self.into)
+        self.into.mkdir()
+        alias = Path(self.tmp.name) / ("alias-%s" % self.id().rsplit(".", 1)[1])
+        alias.symlink_to(self.into)
+        for target in (self.into, self.into / "child", alias, alias / "child"):
+            before = tree_state(self.into)
+            self.assertEqual(self.check("--alerts-dir", str(target)), (1, "BACKUP_NONE"))
+            self.assertEqual(tree_state(self.into), before)
+            self.assertEqual(list(self.into.iterdir()), [])
+
     def test_unreadable_digest_list_is_invalid(self):
         (self.into / "backup-digests.jsonl").write_text("not json\n")
         self.assertEqual(self.check(), (1, "DIGESTS_INVALID"))
