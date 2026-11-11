@@ -57,7 +57,7 @@ class ConsoleExportTests(unittest.TestCase):
         for journal in ("approvals/queue.jsonl", "public-packets.jsonl", "public-updates.jsonl", "mail/outbox.json"):
             path = self.project / journal
             path.parent.mkdir(exist_ok=True)
-            path.write_text('{"secret": "journal"}\n')
+            path.write_text('{"entry": "journal"}\n')
         self.dest = self.tmp / "dest"
         self.dest.mkdir(mode=0o700)
 
@@ -193,6 +193,27 @@ class ConsoleExportTests(unittest.TestCase):
 
     def test_export_refuses_symlink_in_run_outputs(self):
         os.symlink(self.project / "approvals" / "queue.jsonl", self.project / "run-outputs" / RUN / "link.json")
+        result = self.cli("console-export", "--project", str(self.project), "--run-id", RUN, "--stdout")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"SYMLINK_REFUSED", result.stderr)
+        self.assertEqual(result.stdout, b"")
+
+    def test_export_refuses_symlinked_source_parents(self):
+        outside = self.tmp / "outside"
+        (outside / RUN).mkdir(parents=True)
+        (outside / RUN / "f.json").write_text("{}")
+        shutil.rmtree(self.project / "run-outputs")
+        os.symlink(outside, self.project / "run-outputs")
+        result = self.cli("console-export", "--project", str(self.project), "--run-id", RUN, "--stdout")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"SYMLINK_REFUSED", result.stderr)
+        self.assertEqual(result.stdout, b"")
+
+    def test_export_refuses_symlinked_ledger_parent(self):
+        self.db.close()
+        moved = self.tmp / "ledger-outside"
+        os.rename(self.project / "processing-v1", moved)
+        os.symlink(moved, self.project / "processing-v1")
         result = self.cli("console-export", "--project", str(self.project), "--run-id", RUN, "--stdout")
         self.assertEqual(result.returncode, 1)
         self.assertIn(b"SYMLINK_REFUSED", result.stderr)

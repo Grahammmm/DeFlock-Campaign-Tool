@@ -52,6 +52,14 @@ def _sha256_file(path):
     return digest.hexdigest()
 
 
+def _no_symlink_path(project, rel):
+    """Refuse a symlink at any component of rel below project."""
+    current = project
+    for part in rel.split(os.sep):
+        current = os.path.join(current, part)
+        _need(not os.path.islink(current), "SYMLINK_REFUSED")
+
+
 def _copy_plain(src, dst):
     """Copy one regular file without following a symlink at any step."""
     _need(not os.path.islink(src), "SYMLINK_REFUSED")
@@ -79,6 +87,7 @@ def _backup_ledger(src, dst):
 
 def latest_run(project):
     base = Path(project) / "run-outputs"
+    _need(not os.path.islink(base), "SYMLINK_REFUSED")
     found = [(entry.stat(follow_symlinks=False).st_mtime, entry.name) for entry in os.scandir(base)
              if entry.is_dir(follow_symlinks=False) and RUN_ID.fullmatch(entry.name)]
     _need(found, "RUN_NOT_FOUND")
@@ -90,6 +99,7 @@ def build(project, run_id, dest):
     _need(isinstance(run_id, str) and RUN_ID.fullmatch(run_id) and run_id not in (".", ".."), "RUN_ID_INVALID")
     project = os.path.abspath(project)
     run_dir = os.path.join(project, "run-outputs", run_id)
+    _no_symlink_path(project, os.path.join("run-outputs", run_id))
     _need(os.path.isdir(run_dir) and not os.path.islink(run_dir), "RUN_NOT_FOUND")
     rels = []
     for base, dirs, names in os.walk(run_dir, followlinks=False):
@@ -100,6 +110,7 @@ def build(project, run_id, dest):
         _copy_plain(os.path.join(project, rel), os.path.join(dest, rel))
     for rel in FILES:
         src = os.path.join(project, rel)
+        _no_symlink_path(project, rel)
         if os.path.lexists(src):
             (_backup_ledger if rel == LEDGER else _copy_plain)(src, os.path.join(dest, rel))
     files = {}
