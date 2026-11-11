@@ -422,7 +422,7 @@ class Calendars(Base):
             return real(path, *args, **kwargs)
         with mock.patch("os.open", spy):
             self.counts(date(2026, 11, 14))
-        self.assertEqual(sorted({p for p in opened if not p.startswith("/")}), ["events.ics", "meetings.ics", "public"])
+        self.assertEqual(sorted({p for p in opened if not p.startswith("/")}), ["events.ics", "kit", "meetings.ics", "public"])
 
 
 class DefaultBytes(Base):
