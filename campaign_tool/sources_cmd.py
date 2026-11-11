@@ -13,6 +13,7 @@ of its library hash (+ `--fragment`); `remove` deletes one, refused while a publ
 no other entry for it remains. Writers validate the whole new list with the content loader, then replace the file
 atomically. The ledger and private/objects/ are never touched. Nothing is fetched, uploaded or published.
 """
+import errno
 import hashlib
 import json
 import os
@@ -51,16 +52,45 @@ def resolve_hash(root, prefix):
 
 
 def _read_existing(path):
-    """Return (raw text or None, parsed list) for content/sources.json."""
-    if path.is_symlink():
-        raise ContentError("sources.json: symlinks are not read or replaced")
-    if not path.exists():
+    """Return (raw text or None, parsed list) for content/sources.json.
+
+    Only an absent leaf or a regular file of at most MAX_JSON_BYTES bytes is admitted: symlinks and other
+    special files (FIFO, directory, ...) are refused before any payload read, and at most MAX_JSON_BYTES + 1
+    bytes are ever read from the opened descriptor, so a file that grows after inspection is still bounded.
+    """
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
         return None, []
-    data = path.read_bytes()
+    if stat.S_ISLNK(st.st_mode):
+        raise ContentError("sources.json: symlinks are not read or replaced")
+    if not stat.S_ISREG(st.st_mode):
+        raise ContentError("sources.json: must be a regular file")
+    if st.st_size > MAX_JSON_BYTES:
+        raise ContentError("sources.json: file too large")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ContentError("sources.json: symlinks are not read or replaced") from None
+        raise
+    try:
+        stream = os.fdopen(fd, "rb", buffering=0)
+    except BaseException:
+        os.close(fd)
+        raise
+    with stream:
+        fst = os.fstat(stream.fileno())
+        if not stat.S_ISREG(fst.st_mode):
+            raise ContentError("sources.json: must be a regular file")
+        if fst.st_size > MAX_JSON_BYTES:
+            raise ContentError("sources.json: file too large")
+        data = stream.read(MAX_JSON_BYTES + 1)
     if len(data) > MAX_JSON_BYTES:
         raise ContentError("sources.json: file too large")
     try:
-        return data.decode("utf-8"), json.loads(data.decode("utf-8"))
+        text = data.decode("utf-8")
+        return text, json.loads(text)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ContentError(f"sources.json: not valid UTF-8 JSON ({exc})") from None
     except RecursionError:
