@@ -27,3 +27,28 @@ values stay unchanged, missing dates stay UNKNOWN, and naive timestamps remain
 invalid. Pacific wording, stable row identities and review warnings are retained.
 Other clocks are not migrated. A timezone is not a law package and enables no
 new state's legal rules; sending and publication approvals remain unchanged.
+
+## Campaign names and law package
+
+`campaign_config.load(project)` returns the validated v1 fields below. `load_timezone` is unchanged and still ignores
+unknown keys; `load` refuses them (`campaign_config_invalid`), as it does any invalid field. A missing file gives the
+neutral defaults (display name "Records project", `us-ca`, no SLO text).
+
+| key | rule | default |
+| --- | --- | --- |
+| `campaign_id` | `^[a-z0-9-]{2,40}$` | none |
+| `display_name` | 1-80 printable chars, trimmed | `Records project` |
+| `law_package` | `^[a-z]{2}-[a-z]{2}$` | `us-ca` |
+| `public_base_url` | https, host only (no path, query, userinfo) | none |
+| `records_mailbox_label` | 1-80 printable chars, trimmed | none |
+| `timezone` | as above | `America/Los_Angeles` |
+
+```json
+{"schema_version": 1, "campaign_id": "cedar-civic", "display_name": "Cedar Civic Records",
+ "law_package": "us-ca", "public_base_url": "https://records.cedar.example",
+ "records_mailbox_label": "Cedar records inbox", "timezone": "UTC"}
+```
+
+The board shows the campaign line only when `campaign_id` is set; a package other than `us-ca` is named by its id in the
+computed-dates legend. `write_change` adds a `campaign` block to the site-change file only when `campaign_id` is set, and
+refuses (`campaign_config_invalid`) when the file is invalid. Unconfigured output is byte-identical to before.

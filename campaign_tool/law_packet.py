@@ -121,14 +121,54 @@ def _checked_out(out):
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
+def _release(fd):
+    """Close ``fd`` once; return the OSError a failing close reports, else None.
+
+    A close that reports an error may already have released the descriptor, and its number may have been
+    reused: it is never closed again, and a reported error is not proof that the descriptor is still open.
+    """
+    try:
+        os.close(fd)
+    except OSError as exc:
+        return exc
+    return None
+
+
+def _release_all(fds):
+    """Attempt one close of every descriptor in order; return the first OSError reported, else None.
+
+    A failing close never stops the later ones. Anything that is not an OSError (a process-control or
+    programming exception raised by a close) is raised after every release was attempted.
+    """
+    first = other = None
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError as exc:
+            if first is None:
+                first = exc
+        except BaseException as exc:
+            if other is None:
+                other = exc
+    if other is not None:
+        raise other
+    return first
+
+
 def _open_parent(path):
     """Open ``path`` one component at a time from the root, refusing a symlink at any level; returns its fd."""
-    fd = os.open("/", _DIR_FLAGS)
+    fd = os.open("/", _DIR_FLAGS)  # one owned descriptor from here; a failed open below leaves exactly one
     for part in path.parts[1:]:
         try:
             nxt = os.open(part, _DIR_FLAGS, dir_fd=fd)
-        finally:
-            os.close(fd)
+        except BaseException:
+            _release(fd)  # one close attempt; the open failure stays the reported error
+            raise
+        try:
+            os.close(fd)  # one close attempt for the predecessor, whatever it reports
+        except BaseException:
+            _release(nxt)  # ownership has not moved yet: release the successor once, report the close error
+            raise
         fd = nxt
     return fd
 
@@ -191,7 +231,7 @@ def _admit_output(parent_fd, name):
         if _identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != seen:
             raise ValueError(_CHANGED)
     except BaseException:
-        os.close(candidate)
+        _release(candidate)  # one attempt; the admission failure stays the reported error
         raise
     return candidate
 
@@ -218,14 +258,14 @@ def build(jurisdiction, out, as_of=None, base=None):
             with os.fdopen(fd, "w", encoding="utf-8", newline="", closefd=False) as stream:
                 stream.write(files[name])
     except BaseException:
-        _roll_back(parent_fd, path.name, out_fd, created)
-        raise
-    finally:
-        for _, fd in created:  # kept open until now so an inode in use for ownership checks is never recycled
-            os.close(fd)
-        if out_fd is not None:
-            os.close(out_fd)
-        os.close(parent_fd)
+        try:
+            _roll_back(parent_fd, path.name, out_fd, created)
+        finally:  # kept open until now so an inode in use for ownership checks is never recycled
+            _release_all([fd for _, fd in created] + ([out_fd] if out_fd is not None else []) + [parent_fd])
+        raise  # the original error; a cleanup close error never replaces it
+    closing = _release_all([fd for _, fd in created] + [out_fd, parent_fd])
+    if closing is not None:  # nothing else failed: the first close error is a refusal; the packet is left as is
+        raise closing
     return {"status": "review_required", "jurisdiction": jurisdiction, "package_status": package["status"],
             "as_of": as_of.isoformat(), "out": str(path), "files": list(NAMES), "review_counts": counts,
             "note": "A packet for a human reviewer, not a review; the package is unchanged."}
