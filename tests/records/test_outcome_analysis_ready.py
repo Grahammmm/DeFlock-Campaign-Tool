@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import stat
 import tempfile
@@ -120,6 +121,65 @@ class AnalysisReadyTests(unittest.TestCase):
         self.assertEqual((code, line["status"], line["error_code"]), (0, "ok", None))
         report = json.loads((self.project / "run-outputs" / "r2" / "outcomes" / "analysis-ready.json").read_text())
         self.assertEqual(report["agencies"], [])
+
+    def test_symlinked_run_outputs_or_run_directory_or_outcomes_is_refused(self):
+        outside = Path(self.temp.name + "-outside")
+        outside.mkdir(mode=0o700)
+        self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
+        for kind in ("run-outputs", "run", "outcomes"):
+            with self.subTest(kind=kind):
+                project = Path(tempfile.mkdtemp(prefix=f"ar-{kind}-", dir=self.temp.name))
+                target = outside / kind
+                target.mkdir(mode=0o700, parents=True)
+                (target / "text-state.json").write_text(json.dumps({"run_id": "r1", "records": []}))
+                if kind == "run-outputs":
+                    (project / "run-outputs").symlink_to(target)
+                else:
+                    (project / "run-outputs").mkdir()
+                    if kind == "run":
+                        (project / "run-outputs" / "r1").symlink_to(target)
+                    else:
+                        (project / "run-outputs" / "r1").mkdir()
+                        (project / "run-outputs" / "r1" / "outcomes").symlink_to(target)
+                before = sorted(p.name for p in target.iterdir())
+                with self.assertRaises(OSError):
+                    ar.write_run_analysis_ready(project, "r1")
+                self.assertEqual(sorted(p.name for p in target.iterdir()), before)
+                self.assertEqual(sorted(p.name for p in outside.rglob("analysis-ready.json")), [])
+
+    def test_preexisting_loose_temp_is_replaced_and_result_is_0600(self):
+        directory = self.fixture_run("r1", [self.item(1)])
+        temporary = directory / ".analysis-ready.json.tmp"
+        temporary.write_text("stale" * 100)
+        os.chmod(temporary, 0o644)
+        ar.write_run_analysis_ready(self.project, "r1")
+        target = directory / "analysis-ready.json"
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+        self.assertNotIn(b"stale", target.read_bytes())
+        self.assertFalse(temporary.exists())
+
+    def test_symlinked_temp_is_not_followed(self):
+        directory = self.fixture_run("r1", [self.item(1)])
+        victim = Path(self.temp.name) / "victim.txt"
+        victim.write_text("keep")
+        (directory / ".analysis-ready.json.tmp").symlink_to(victim)
+        ar.write_run_analysis_ready(self.project, "r1")
+        self.assertEqual(victim.read_text(), "keep")
+        self.assertFalse((directory / "analysis-ready.json").is_symlink())
+
+    def test_report_matches_the_published_schema_file(self):
+        schema = json.loads((Path(__file__).parents[2] / "schemas" / "records-analysis-ready-v1.json").read_text())
+        self.assertEqual(schema["title"], ar.SCHEMA)
+        self.fixture_run("r1", [self.item(1)])
+        report = ar.write_run_analysis_ready(self.project, "r1")
+        self.assertEqual(set(schema["required"]), set(report))
+        self.assertEqual(set(schema["properties"]), set(report))
+        entry_schema = schema["properties"]["agencies"]["items"]
+        self.assertEqual(set(entry_schema["required"]), set(report["agencies"][0]))
+        self.assertEqual(set(entry_schema["properties"]["records"]["items"]["required"]), set(report["agencies"][0]["records"][0]))
+        self.assertEqual(set(entry_schema["properties"]["law_package"]["required"]), set(report["agencies"][0]["law_package"]))
+        self.assertEqual(set(schema["properties"]["inputs"]["properties"]), set(report["inputs"]))
+        self.assertEqual(schema["properties"]["schema"]["const"], report["schema"])
 
 
 if __name__ == "__main__":

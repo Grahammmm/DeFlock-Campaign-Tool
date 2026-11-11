@@ -12,7 +12,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import stat
 
@@ -23,10 +22,45 @@ HASH = re.compile(r"[0-9a-f]{64}")
 JURISDICTION = "us-ca"
 
 
-def _read(path):
-    """Bounded, no-follow regular-file read; (None, None) when absent."""
+def _open_dir(parent, name, create=False):
+    """Descriptor for a child directory, never through a symlink; None when absent and not created."""
+    for attempt in (0, 1):
+        try:
+            return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        except FileNotFoundError:
+            if not create or attempt:
+                return None
+            os.mkdir(name, 0o700, dir_fd=parent)
+        except OSError:
+            raise OSError("analysis_ready_unsafe_path") from None
+
+
+def _chain(project, run_id, create):
+    """Descriptors for run-outputs, run-outputs/<run> and its outcomes directory, in that order.
+
+    Each step is opened relative to its parent with O_NOFOLLOW, so a symlinked
+    run-outputs, run directory or outcomes directory is refused and nothing is read or
+    written through it. A missing step ends the chain early (reads) or is created (writes)."""
+    fds = [os.open(os.path.abspath(project), os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)]
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        for name in ("run-outputs", run_id, "outcomes"):
+            child = _open_dir(fds[-1], name, create)
+            if child is None:
+                break
+            fds.append(child)
+        return fds[1:], fds[0]
+    except BaseException:
+        for fd in fds:
+            os.close(fd)
+        raise
+
+
+def _read(directory_fd, name):
+    """Bounded, no-follow regular-file read; (None, None) when absent."""
+    if directory_fd is None:
+        return None, None
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory_fd)
     except FileNotFoundError:
         return None, None
     with os.fdopen(fd, "rb") as handle:
@@ -73,39 +107,59 @@ def build(run_id, received, proposals, states, inputs):
     return {"schema": SCHEMA, "run_id": run_id, "review_required": True, "agencies": ordered, "inputs": inputs}
 
 
-def write_run_analysis_ready(project, run_id):
-    """Outputs-stage hook, called last. Raises OSError on any refusal; returns the report."""
-    if not isinstance(run_id, str) or RUN_ID.fullmatch(run_id) is None:
-        raise OSError("analysis_ready_run_id")
-    outcomes = Path(os.path.abspath(project)) / "run-outputs" / run_id / "outcomes"
-    run_dir = outcomes.parent
+def _load_inputs(project, run_id):
+    fds, root = _chain(project, run_id, False)
     try:
+        run_fd = fds[1] if len(fds) > 1 else None
+        out_fd = fds[2] if len(fds) > 2 else None
         inputs, loaded = {}, {}
-        for name, base in (("received-items.json", outcomes), ("gap-proposals.json", outcomes),
-                           ("text-state.json", run_dir)):
-            data, digest = _read(base / name)
+        for name, base in (("received-items.json", out_fd), ("gap-proposals.json", out_fd), ("text-state.json", run_fd)):
+            data, digest = _read(base, name)
             if data is not None:
                 if not isinstance(data, dict) or data.get("run_id") != run_id:
                     raise OSError("analysis_ready_input_stale")
                 inputs[name], loaded[name] = digest, data
+        return inputs, loaded
+    finally:
+        for fd in (*fds, root):
+            os.close(fd)
+
+
+def write_run_analysis_ready(project, run_id):
+    """Outputs-stage hook, called last. Raises OSError on any refusal; returns the report."""
+    if not isinstance(run_id, str) or RUN_ID.fullmatch(run_id) is None:
+        raise OSError("analysis_ready_run_id")
+    try:
+        inputs, loaded = _load_inputs(project, run_id)
         states = {r["sha256"]: r["state"] for r in loaded.get("text-state.json", {}).get("records", [])
                   if isinstance(r, dict) and "sha256" in r and "state" in r}
         report = build(run_id, loaded.get("received-items.json"), loaded.get("gap-proposals.json"), states, inputs)
         encoded = (json.dumps(report, sort_keys=True, ensure_ascii=False) + "\n").encode()
-        outcomes.mkdir(mode=0o700, parents=True, exist_ok=True)
-        temporary = outcomes / ".analysis-ready.json.tmp"
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        fds, root = _chain(project, run_id, True)
         try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, outcomes / "analysis-ready.json")
-        finally:
+            # Fresh 0600 temp (a leftover one is removed, never reused), fsync, atomic rename.
+            temporary = ".analysis-ready.json.tmp"
             try:
-                os.unlink(temporary)
+                os.unlink(temporary, dir_fd=fds[2])
             except FileNotFoundError:
                 pass
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
+                         dir_fd=fds[2])
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    os.fchmod(stream.fileno(), 0o600)
+                    stream.write(encoded)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, "analysis-ready.json", src_dir_fd=fds[2], dst_dir_fd=fds[2])
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=fds[2])
+                except FileNotFoundError:
+                    pass
+        finally:
+            for fd in (*fds, root):
+                os.close(fd)
         return report
     except (ValueError, KeyError, TypeError) as error:
         raise OSError("ANALYSIS_READY_UNAVAILABLE") from error
