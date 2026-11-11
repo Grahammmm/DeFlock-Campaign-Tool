@@ -210,37 +210,6 @@ def _unchanged(parent, identity):
         raise ValueError(CHANGED)
 
 
-def _stage_and_publish(parent, parent_fd, identity, target, data):
-    """Stage ``data`` under a private random name in the admitted directory, publish it by an exclusive link and
-    remove the staging name; every operation is relative to ``parent_fd`` and uses basenames only."""
-    _unchanged(parent, identity)
-    stage = ".kit-calendar." + secrets.token_hex(8) + ".tmp"
-    fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
-    try:
-        try:
-            handle = os.fdopen(fd, "wb")
-        except BaseException:
-            os.close(fd)
-            raise
-        with handle:
-            os.fchmod(handle.fileno(), 0o600)
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        _unchanged(parent, identity)
-        try:  # the commit point: creates the name only if absent, never replaces
-            os.link(stage, target.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
-        except FileExistsError:
-            raise ValueError(f"{target} exists; nothing was overwritten") from None
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(stage, dir_fd=parent_fd)  # only this call's staging name; the target is never touched
-        raise
-    with contextlib.suppress(FileNotFoundError):
-        os.unlink(stage, dir_fd=parent_fd)  # after the commit: a real failure here is raised, the complete target stays
-    _unchanged(parent, identity)  # complete target stays in the admitted directory; never claim a clean export
-
-
 def calendar(root, out, as_of=None, *, now=None, law_base=None, today=None):
     """Write the private calendar to ``out`` (new file, 0600); return ``{"written", "events"}``.
 
@@ -268,7 +237,34 @@ def calendar(root, out, as_of=None, *, now=None, law_base=None, today=None):
         requests, package_status = _request_events(root, law_base)
         events = requests + _meeting_events(root, day)
         data = render(events, now or datetime.now(timezone.utc)).encode("utf-8")
-        _stage_and_publish(parent, parent_fd, identity, target, data)
+        # Stage the complete bytes under a private random name in the admitted directory, then publish by an
+        # exclusive hard link; every operation uses basenames relative to parent_fd.
+        _unchanged(parent, identity)
+        stage = ".kit-calendar." + secrets.token_hex(8) + ".tmp"
+        fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+        try:
+            try:
+                handle = os.fdopen(fd, "wb")
+            except BaseException:
+                os.close(fd)
+                raise
+            with handle:
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            _unchanged(parent, identity)
+            try:  # the commit point: creates the name only if absent, never replaces
+                os.link(stage, target.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
+            except FileExistsError:
+                raise ValueError(f"{target} exists; nothing was overwritten") from None
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(stage, dir_fd=parent_fd)  # only this call's staging name; the target is never touched
+            raise
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(stage, dir_fd=parent_fd)  # after the commit: a real failure here is raised, the target stays
+        _unchanged(parent, identity)  # the complete target stays in the admitted directory; never claim a clean export
     finally:
         os.close(parent_fd)
     report = {"written": str(target), "events": len(events)}
