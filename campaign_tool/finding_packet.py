@@ -93,14 +93,21 @@ def _preview_html(root, draft, label):
 
 
 def _open_object(objects, sha):
+    """An open binary handle to a stored regular object. The raw descriptor is owned here until fdopen returns."""
     try:
         fd = os.open(objects / sha, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         raise ValueError(f"{sha[:PREFIX]} object_missing") from None
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        os.close(fd)
-        raise ValueError(f"{sha[:PREFIX]} object_missing")
-    return os.fdopen(fd, "rb")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"{sha[:PREFIX]} object_missing")
+        return os.fdopen(fd, "rb")  # ownership passes to the returned handle
+    except BaseException:
+        try:
+            os.close(fd)  # one attempt, never retried; a close error must not hide the primary failure
+        except OSError:
+            pass
+        raise
 
 
 def _too_large():
@@ -127,8 +134,15 @@ def _copy_hash(source, sink=None, *, limit):
 def _create(path, data=None):
     """A new 0600 file (O_EXCL, no link followed); bytes ``data`` or an open binary handle to fill."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    os.fchmod(fd, 0o600)
-    handle = os.fdopen(fd, "wb")
+    try:  # the raw descriptor is owned here until fdopen returns; the created entry is left to the caller's cleanup
+        os.fchmod(fd, 0o600)
+        handle = os.fdopen(fd, "wb")
+    except BaseException:
+        try:
+            os.close(fd)  # one attempt, never retried; a close error must not hide the primary failure
+        except OSError:
+            pass
+        raise
     if data is None:
         return handle
     with handle:
