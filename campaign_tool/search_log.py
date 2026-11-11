@@ -259,57 +259,60 @@ def _summarize_csv(csv_path, agency, *, columns=None, categories_path=None):
     """The v1 summary object (see docs/SEARCH-LOG.md) for the CSV at csv_path; ValueError with fixed text on any refusal."""
     terms, categories_sha = load_terms(categories_path)
     classify = _classifier(terms)
-    handle, before = _open_regular(csv_path, "csv", MAX_BYTES)
-    raw = _Reader(handle, MAX_BYTES, "csv")
-    months, orgs, purposes = {}, {}, dict.fromkeys(PURPOSES, 0)
-    skipped, read, first, last = dict.fromkeys(SKIP_REASONS, 0), 0, None, None
-    unattributed = 0
-    with handle:
-        buffered = io.BufferedReader(raw, CHUNK)
-        text = io.TextIOWrapper(buffered, encoding="utf-8-sig", newline="")
-        reader = csv.reader(text, strict=True)
-        try:
-            header = next(reader, None)
-            if header is None:
-                raise ValueError("csv has no header row")
-            chosen, labels = _resolve_columns(header, columns)
-            t_i, r_i, o_i, s_i = chosen["time"], chosen["reason"], chosen["org"], chosen["state"]
-            for cells in reader:
-                read += 1
-                if not any(c.strip() for c in cells):
-                    skipped["blank_row"] += 1
-                    continue
-                if len(cells) != len(header):
-                    skipped["column_count"] += 1
-                    continue
-                stamp = parse_date(cells[t_i])
-                if stamp is None:
-                    skipped["invalid_time"] += 1
-                    continue
-                org = state = None
-                if o_i is not None:
-                    org = cells[o_i] if cells[o_i].strip() else None
-                    state = cells[s_i] if s_i is not None and cells[s_i].strip() else None
-                    for value, what in ((org, "organization"), (state, "state")):
-                        if value is not None:
-                            _check_label(value, read, what)
-                purposes[classify(cells[r_i])] += 1
-                key = "%04d-%02d" % stamp[:2]
-                months[key] = months.get(key, 0) + 1
-                first, last = min(first or stamp, stamp), max(last or stamp, stamp)
-                if org is None:
-                    unattributed += 1
-                else:
-                    orgs[(org, state)] = orgs.get((org, state), 0) + 1
-            while buffered.read(CHUNK):  # the digest covers every byte through EOF
-                pass
-        except csv.Error:
-            raise ValueError(f"csv is malformed near line {reader.line_num}") from None
-        except UnicodeDecodeError:
-            raise ValueError("csv is not valid UTF-8") from None
-        except OSError:
-            raise ValueError("csv could not be read") from None
-        after = os.fstat(handle.fileno())
+    # Every filesystem OSError from admitting the CSV, building its readers, reading it, the final fstat or closing
+    # the handle becomes the one fixed refusal below, so the organizer's path and the OS message never surface.
+    try:
+        handle, before = _open_regular(csv_path, "csv", MAX_BYTES)
+        raw = _Reader(handle, MAX_BYTES, "csv")
+        months, orgs, purposes = {}, {}, dict.fromkeys(PURPOSES, 0)
+        skipped, read, first, last = dict.fromkeys(SKIP_REASONS, 0), 0, None, None
+        unattributed = 0
+        with handle:
+            buffered = io.BufferedReader(raw, CHUNK)
+            text = io.TextIOWrapper(buffered, encoding="utf-8-sig", newline="")
+            reader = csv.reader(text, strict=True)
+            try:
+                header = next(reader, None)
+                if header is None:
+                    raise ValueError("csv has no header row")
+                chosen, labels = _resolve_columns(header, columns)
+                t_i, r_i, o_i, s_i = chosen["time"], chosen["reason"], chosen["org"], chosen["state"]
+                for cells in reader:
+                    read += 1
+                    if not any(c.strip() for c in cells):
+                        skipped["blank_row"] += 1
+                        continue
+                    if len(cells) != len(header):
+                        skipped["column_count"] += 1
+                        continue
+                    stamp = parse_date(cells[t_i])
+                    if stamp is None:
+                        skipped["invalid_time"] += 1
+                        continue
+                    org = state = None
+                    if o_i is not None:
+                        org = cells[o_i] if cells[o_i].strip() else None
+                        state = cells[s_i] if s_i is not None and cells[s_i].strip() else None
+                        for value, what in ((org, "organization"), (state, "state")):
+                            if value is not None:
+                                _check_label(value, read, what)
+                    purposes[classify(cells[r_i])] += 1
+                    key = "%04d-%02d" % stamp[:2]
+                    months[key] = months.get(key, 0) + 1
+                    first, last = min(first or stamp, stamp), max(last or stamp, stamp)
+                    if org is None:
+                        unattributed += 1
+                    else:
+                        orgs[(org, state)] = orgs.get((org, state), 0) + 1
+                while buffered.read(CHUNK):  # the digest covers every byte through EOF
+                    pass
+            except csv.Error:
+                raise ValueError(f"csv is malformed near line {reader.line_num}") from None
+            except UnicodeDecodeError:
+                raise ValueError("csv is not valid UTF-8") from None
+            after = os.fstat(handle.fileno())
+    except OSError:
+        raise ValueError("csv could not be read") from None
     if raw.total != before.st_size or (after.st_size, after.st_mtime_ns, after.st_ino, after.st_dev) != (
             before.st_size, before.st_mtime_ns, before.st_ino, before.st_dev):
         raise ValueError("csv changed while it was being read (best-effort detection, not a snapshot guarantee)")
