@@ -246,8 +246,11 @@ def sync_main(argv=None):
         try:
             if args.dir:
                 found = {p.name: _load(p) for p in sorted(Path(args.dir).iterdir()) if ae.RUN.fullmatch(p.name)}
+            elif args.tar == "-":
+                found = _read_tar(sys.stdin.buffer)
             else:
-                found = _read_tar(sys.stdin.buffer if args.tar == "-" else open(args.tar, "rb"))
+                with open(args.tar, "rb") as handle:
+                    found = _read_tar(handle)
         except (tarfile.TarError, ValueError, OSError):
             print("EXPORT_INVALID")
             return 1
