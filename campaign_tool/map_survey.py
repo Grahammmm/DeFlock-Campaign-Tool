@@ -247,11 +247,44 @@ def survey_sheet(root, city, *, today=None):
             "points": len(rows), "note": NOTE}
 
 
-def _read_sheet(csv_path):
-    path = Path(csv_path)
-    if path.is_symlink() or not path.is_file():
+def _open_inspected(csv_path):
+    """Binary stream of the regular file inspected by one ``lstat``; refuses any other inode before a byte is read.
+
+    The pathname is opened ``O_NOFOLLOW | O_NONBLOCK`` and the descriptor must be a regular file with the inspected
+    device/inode. This binds the open to the inspection; it is not a snapshot of concurrent content or a path sandbox."""
+    refused = "--csv: cannot safely read the inspected regular file"
+    try:
+        before = os.lstat(csv_path)
+    except FileNotFoundError:
+        raise SurveyError("--csv: not a regular file") from None
+    except OSError:
+        raise SurveyError(refused) from None
+    if not stat.S_ISREG(before.st_mode):
         raise SurveyError("--csv: not a regular file")
-    with path.open("rb") as handle:
+    nofollow, nonblock = getattr(os, "O_NOFOLLOW", 0), getattr(os, "O_NONBLOCK", 0)
+    if not nofollow or not nonblock:
+        raise SurveyError(refused)
+    fd = None
+    try:
+        fd = os.open(csv_path, os.O_RDONLY | nofollow | nonblock)
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise SurveyError(refused)
+        handle = os.fdopen(fd, "rb")
+        fd = None  # the stream owns the descriptor now
+        return handle
+    except OSError:
+        raise SurveyError(refused) from None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _read_sheet(csv_path):
+    with _open_inspected(csv_path) as handle:
         data = handle.read(MAX_CSV_BYTES + 1)
     if len(data) > MAX_CSV_BYTES:
         raise SurveyError("--csv: file too large")

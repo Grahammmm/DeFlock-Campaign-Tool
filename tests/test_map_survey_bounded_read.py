@@ -1,5 +1,6 @@
 """RF0115-4: real-file survey read budgets and offline import preservation."""
 import io
+import os
 import sys
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -54,29 +55,27 @@ class SurveyBoundedReadTests(unittest.TestCase):
 
     @contextmanager
     def trace(self, *, grow=False, fail=False):
-        original_open, original_is_file = Path.open, Path.is_file
+        original_fdopen, original_lstat = os.fdopen, os.lstat
         handles, admitted = [], []
 
-        def opening(path, *args, **kwargs):
-            handle = original_open(path, *args, **kwargs)
-            mode = args[0] if args else kwargs.get("mode", "r")
-            if path == self.csv and mode == "rb":
+        def opening(fd, *args, **kwargs):
+            handle = original_fdopen(fd, *args, **kwargs)
+            if args[:1] == ("rb",):
                 handle = ReadTrace(handle, fail)
                 handles.append(handle)
             return handle
 
-        def regular(path):
-            result = original_is_file(path)
-            if path == self.csv and result and grow and not admitted:
-                # Grow only after the real successful admission check, without timing races.
-                with original_open(path, "ab") as handle:
+        def inspecting(path, *args, **kwargs):
+            result = original_lstat(path, *args, **kwargs)
+            if Path(path) == self.csv and grow and not admitted:
+                # Grow only after the real successful inspection, without timing races.
+                with open(path, "ab") as handle:
                     handle.write(b"\n" * (LIMIT * 3))
                 admitted.append(None)
-                with mock.patch.object(Path, "open", original_open):
-                    admitted[0] = snapshot(self.root.parent)
+                admitted[0] = snapshot(self.root.parent)
             return result
 
-        with mock.patch.object(Path, "open", opening), mock.patch.object(Path, "is_file", regular):
+        with mock.patch.object(os, "fdopen", opening), mock.patch.object(os, "lstat", inspecting):
             yield handles, admitted
 
     def assert_read(self, handles, returned):
