@@ -40,11 +40,26 @@ def _path(root):
     return path
 
 
+def _check_rows(path, agencies):
+    """Same list/row/id/name checks as ``kit._load_existing``, without mutating the rows."""
+    if not isinstance(agencies, list):
+        raise ValueError(f"{path} must be a JSON list of agencies")
+    for entry in agencies:
+        if not isinstance(entry, dict) or not kit.AGENCY_ID.match(str(entry.get("agency_id", ""))):
+            raise ValueError(f"{path}: every entry needs an agency_id like 'ca-example-police'")
+        if not isinstance(entry.get("name"), str):
+            raise ValueError(f"{path}: entry {entry.get('agency_id')} needs a name")
+
+
 def load_agencies(root):
-    """Return the raw agency list after kit's own checks plus duplicate and ``selected`` checks. Read-only."""
+    """Return the raw agency list after kit's own checks plus duplicate and ``selected`` checks. Read-only.
+
+    The roster is read once; every check runs on that same object, which is what callers get back. The checks
+    mirror ``kit._load_existing`` but never add its ``selected``/``kind`` defaults, so absent keys stay absent.
+    """
     path = _path(root)
-    kit._load_existing(path)
     agencies = kit._read_json(path)
+    _check_rows(path, agencies)
     seen = set()
     for entry in agencies:
         if entry["agency_id"] in seen:
