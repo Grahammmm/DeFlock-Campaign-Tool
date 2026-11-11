@@ -41,8 +41,11 @@ included) through `Profile.directories`; the library still refuses an undeclared
 Closure queries: ledger `originals.storage_path` and `extraction_adapter_imports.receipt_sha256` (evidence file), the
 intake `preservations`, portal `portal_versions`, and `original_resolutions` through the library's fixed reader. The
 two journals have no database row, so the profile binds each with a constant closure row holding its digest at profile
-build time. The schema hash is read from the database at profile build time, with a fixed list of required tables; it
-is not a pinned migration constant.
+build time. Supported schemas are pinned from the reviewed migration modules (ledger, intake and portal), never taken
+from the source database: a missing, changed or extra table, trigger or index is refused as `schema_drift`, and optional
+migration groups are accepted only exactly or absent. The schema hash handed to the library is computed over the
+reviewed reference rows built from those modules, not over the source database's `sqlite_master`. A corrupt or
+unreadable database is refused with the fixed reason `database_unreadable`.
 
 ## Limits (library, unchanged)
 
