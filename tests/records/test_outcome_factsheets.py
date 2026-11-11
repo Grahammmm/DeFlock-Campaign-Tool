@@ -170,8 +170,8 @@ class FactSheetsTests(unittest.TestCase):
         for path in output.iterdir():
             if path.name == "outcomes":  # received-items directory (REC-AUTO-3)
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
-                self.assertEqual(sorted(p.name for p in path.iterdir()), ["analysis-ready.json", "gap-proposals.json", "received-items.json", "release-links.json", "response-items.json", "timeline.json"])
-                for name in ("received-items.json", "release-links.json", "response-items.json", "timeline.json"):
+                self.assertEqual(sorted(p.name for p in path.iterdir()), ["analysis-ready.json", "gap-proposals.json", "received-items.json", "release-links.json", "response-items.json", "timeline.json", "unmatched-messages.json"])
+                for name in ("received-items.json", "release-links.json", "response-items.json", "timeline.json", "unmatched-messages.json"):
                     self.assertEqual(stat.S_IMODE((path / name).stat().st_mode), 0o600)
                     json.loads((path / name).read_text())
                 continue

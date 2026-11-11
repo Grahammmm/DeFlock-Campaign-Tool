@@ -87,7 +87,7 @@ def refusal_panel(project, row, run_id):
     return "\n".join(out + ['</ul></section>'])
 
 
-def render_link(row, token, payload):
+def render_link(row, token, payload, refusal=None):
     """A message_link row: the plain question, one choice per candidate, then the usual signed approve / reject."""
     from . import admin_panel as ap
 
@@ -95,6 +95,9 @@ def render_link(row, token, payload):
     out = ["<h1>Tie this message to a request</h1>", "<p role=\"status\">%s</p>" % esc(
         "Pending" if pending else row["status"].capitalize() + (": " + str(row.get("reason") or "") if row.get("reason") else "")),
            "<pre>%s</pre>" % esc(row["body"])]
+    message, field_name, typed = refusal or (None, None, None)
+    if message:
+        out.append('<p role="alert" class="diag">%s. Nothing was saved or decided.</p>' % esc(message.rstrip(".")))
     if pending:
         options = "".join('<label><input type="radio" name="choice" value="%s" required> %s (agency %s)</label><br>' % (
             esc(c["request_id"]), esc(c["request_id"]), esc(c["agency_id"])) for c in row["evidence"].get("candidates", []))
@@ -104,11 +107,13 @@ def render_link(row, token, payload):
         if options:
             out.append(ap._form("/approvals/approve", token, row["id"], "", options +
                                 '<label for="signature">Detached SSH signature</label>'
-                                '<textarea id="signature" name="signature" required></textarea>',
+                                '<textarea id="signature" name="signature" required>%s</textarea>' % esc(
+                                    typed if field_name == "signature" else ""),
                                 "Approve: tie to the chosen request", back="review"))
         out.append(ap._form("/approvals/reject", token, row["id"], "",
                             '<label for="reason">Why is it not a response?</label>'
-                            '<input id="reason" name="reason" required maxlength="2000">', "Not a response", back="review"))
+                            '<input id="reason" name="reason" required maxlength="2000" value="%s">' % esc(
+                                typed if field_name == "reason" else ""), "Not a response", back="review"))
     out.append('<p><a href="/">Back</a></p>')
     return console_layout.shell("Tie this message to a request", "\n".join(out), active="Approvals")
 
@@ -220,7 +225,7 @@ def _show(handler, ident, status, refusal):
         ids = [ident]
         if row["kind"] == draft_templates.MESSAGE_LINK:
             payload = approval_queue.approval_payload(project, ids[0]) if row["status"] == "pending" else None
-            handler._send(200, render_link(row, handler.server.csrf_token, payload))
+            handler._send(status, render_link(row, handler.server.csrf_token, payload, refusal))
             return True
         history = approval_queue.history(project, ids[0])
         preview = mail_preview.preview(project, row, handler.server.mail_drafts_config)
