@@ -3,8 +3,10 @@
 An owner is an alias the volunteer team chose, not a verified identity. Assigning never changes a due date, a response
 step or any other store, and nothing is sent or published from this module.
 """
+import errno
 import json
 import os
+import stat
 import unicodedata
 from pathlib import Path
 
@@ -59,6 +61,36 @@ def _label_ok(label):
         return False
 
 
+def _read_leaf(path, bad):
+    """Up to MAX_BYTES + 1 bytes of the regular file opened once, nonblocking and without following a symlink."""
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):  # no unsafe fallback
+        raise bad("file changed or could not be read")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:  # a symlink, dangling or not, swapped in after the pathname checks
+            raise bad("not a regular file") from None
+        raise bad("file changed or could not be read") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise bad("not a regular file")
+        if info.st_size > MAX_BYTES:
+            raise bad("larger than 1 MiB")
+        handle = os.fdopen(fd, "rb")  # on success the stream owns the descriptor
+    except OSError:
+        os.close(fd)
+        raise bad("file changed or could not be read") from None
+    except BaseException:  # includes the ValueError refusals above, and MemoryError from the constructor
+        os.close(fd)
+        raise
+    try:
+        with handle:
+            return handle.read(MAX_BYTES + 1)
+    except OSError:
+        raise bad("file changed or could not be read") from None
+
+
 def read_assignments(root):
     """``{sent.json key: owner label}`` from kit/assignments.json; {} when absent. Never resets a bad file.
 
@@ -75,8 +107,9 @@ def read_assignments(root):
         raise bad("not a regular file")
     if path.stat().st_size > MAX_BYTES:
         raise bad("larger than 1 MiB")
-    with path.open("rb") as handle:
-        raw = handle.read(MAX_BYTES + 1)
+    # The pathname checks above are only an early refusal. The bytes come from the object opened here without
+    # following a final-component symlink (leaf only; ancestors are not anchored) and re-checked on its descriptor.
+    raw = _read_leaf(path, bad)
     if len(raw) > MAX_BYTES:
         raise bad("larger than 1 MiB")
     try:
