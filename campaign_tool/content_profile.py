@@ -250,7 +250,12 @@ def _transaction(root, change, verb):
         result, changed = change(document)
         if not changed:
             return result
-        text = (json.dumps(result.pop("_document"), indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        serialized = json.dumps(result.pop("_document"), indent=2, ensure_ascii=False) + "\n"
+        try:  # only the strict UTF-8 encode of the prospective file; other errors propagate unchanged
+            text = serialized.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ContentProfileError("content/agencies.json: rewritten profile data cannot be encoded as UTF-8; "
+                                      "nothing was written") from None
         if len(text) > MAX_JSON_BYTES:
             raise ContentProfileError(f"content/agencies.json: the rewritten file would exceed {MAX_JSON_BYTES} bytes; "
                                       "nothing was written")

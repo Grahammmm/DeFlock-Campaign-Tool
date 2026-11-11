@@ -302,7 +302,7 @@ def read_weights(path):
             raise ValueError(f"{label}: must be a regular file of at most {WEIGHTS_MAX_BYTES} bytes")
     try:
         data = json.loads(raw.decode("utf-8"))
-    except ValueError:  # includes UnicodeDecodeError
+    except (ValueError, RecursionError):  # includes UnicodeDecodeError; RecursionError = decoder nesting exhaustion
         raise ValueError(f"{label}: not valid JSON") from None
     pages = data.get("pages") if isinstance(data, dict) else None
     if not isinstance(data, dict) or data.get("schema") != WEIGHTS_SCHEMA or not isinstance(pages, list):
