@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from campaign_tool.records import approval_queue, cli, console_export, public_packets
@@ -218,6 +219,52 @@ class ConsoleExportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn(b"SYMLINK_REFUSED", result.stderr)
         self.assertEqual(result.stdout, b"")
+
+    def swap_to_outside(self, name, outside):
+        """Replace project/<name> with a symlink to outside (the original is moved away)."""
+        os.rename(self.project / name, self.tmp / (name + "-moved"))
+        os.symlink(outside, self.project / name)
+
+    def test_parent_swapped_after_check_still_reads_pinned_run_outputs(self):
+        outside = self.tmp / "outside"
+        (outside / RUN).mkdir(parents=True)
+        (outside / RUN / "text-state.json").write_text('{"external": true}')
+        real_copy, swapped = console_export._copy_file, []
+
+        def copy_after_swap(dir_fd, name, dst):
+            if not swapped:
+                swapped.append(True)
+                self.swap_to_outside("run-outputs", outside)
+            return real_copy(dir_fd, name, dst)
+
+        with mock.patch.object(console_export, "_copy_file", copy_after_swap):
+            console_export.build(str(self.project), RUN, str(self.dest))
+        self.assertTrue(swapped)
+        self.assertEqual((self.dest / "run-outputs" / RUN / "text-state.json").read_text(), "{}")
+        for path in self.dest.rglob("*"):
+            self.assertNotIn("external", path.read_text(errors="ignore") if path.is_file() else "")
+
+    def test_ledger_parent_swapped_after_check_still_reads_pinned_ledger(self):
+        outside = self.tmp / "ledger-outside"
+        outside.mkdir()
+        other = sqlite3.connect(outside / "ledger.sqlite")
+        other.execute("create table ext (a)")
+        other.commit()
+        other.close()
+        real_backup, swapped = console_export._backup_ledger, []
+
+        def backup_after_swap(dir_fd, name, dst):
+            swapped.append(True)
+            self.swap_to_outside("processing-v1", outside)
+            return real_backup(dir_fd, name, dst)
+
+        with mock.patch.object(console_export, "_backup_ledger", backup_after_swap):
+            console_export.build(str(self.project), RUN, str(self.dest))
+        self.assertTrue(swapped)
+        copy = sqlite3.connect(self.dest / "processing-v1" / "ledger.sqlite")
+        tables = [row[0] for row in copy.execute("select name from sqlite_master")]
+        copy.close()
+        self.assertEqual(tables, ["t"])
 
 
 if __name__ == "__main__":

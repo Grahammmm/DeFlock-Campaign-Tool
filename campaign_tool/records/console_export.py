@@ -8,6 +8,7 @@ public-update journals, blobs and credentials are never copied: the existing jou
 copy, and their writers must keep failing closed on it.
 """
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -52,18 +53,40 @@ def _sha256_file(path):
     return digest.hexdigest()
 
 
-def _no_symlink_path(project, rel):
-    """Refuse a symlink at any component of rel below project."""
-    current = project
-    for part in rel.split(os.sep):
-        current = os.path.join(current, part)
-        _need(not os.path.islink(current), "SYMLINK_REFUSED")
+def _open_dir(parent_fd, name):
+    """Open directory name below the pinned parent_fd without following a symlink; None when absent."""
+    try:
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        try:
+            info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError:
+            raise ExportError("SOURCE_UNREADABLE")
+        raise ExportError("SYMLINK_REFUSED" if stat.S_ISLNK(info.st_mode) else "NOT_REGULAR")
 
 
-def _copy_plain(src, dst):
-    """Copy one regular file without following a symlink at any step."""
-    _need(not os.path.islink(src), "SYMLINK_REFUSED")
-    fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+def _open_chain(root_fd, parts):
+    """Walk parts from the pinned root_fd one no-follow openat at a time; return the pinned fd or None."""
+    current = os.dup(root_fd)
+    for part in parts:
+        try:
+            nxt = _open_dir(current, part)
+        finally:
+            os.close(current)
+        if nxt is None:
+            return None
+        current = nxt
+    return current
+
+
+def _copy_file(dir_fd, name, dst):
+    """Copy one regular file opened relative to the pinned dir_fd; a symlink leaf is refused."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError as error:
+        raise ExportError("SYMLINK_REFUSED" if error.errno == errno.ELOOP else "SOURCE_UNREADABLE")
     with os.fdopen(fd, "rb") as handle:
         _need(stat.S_ISREG(os.fstat(handle.fileno()).st_mode), "NOT_REGULAR")
         os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -71,10 +94,30 @@ def _copy_plain(src, dst):
             shutil.copyfileobj(handle, out)
 
 
-def _backup_ledger(src, dst):
-    _need(not os.path.islink(src), "SYMLINK_REFUSED")
+def _copy_tree(dir_fd, rel, dest):
+    """Copy every regular file below the pinned dir_fd; any symlink or special file is refused."""
+    with os.scandir(dir_fd) as scan:
+        entries = sorted(scan, key=lambda entry: entry.name)
+    for entry in entries:
+        info = entry.stat(follow_symlinks=False)
+        _need(not stat.S_ISLNK(info.st_mode), "SYMLINK_REFUSED")
+        target = os.path.join(rel, entry.name)
+        if stat.S_ISDIR(info.st_mode):
+            child = _open_dir(dir_fd, entry.name)
+            _need(child is not None, "SOURCE_UNREADABLE")
+            try:
+                _copy_tree(child, target, dest)
+            finally:
+                os.close(child)
+        else:
+            _copy_file(dir_fd, entry.name, os.path.join(dest, target))
+
+
+def _backup_ledger(dir_fd, name, dst):
+    """Back up the ledger through the pinned directory (/proc/self/fd keeps -wal/-shm beside it)."""
+    _need(not stat.S_ISLNK(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode), "SYMLINK_REFUSED")
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    source = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=30)
+    source = sqlite3.connect(f"file:/proc/self/fd/{dir_fd}/{name}?mode=ro", uri=True, timeout=30)
     target = sqlite3.connect(dst)
     try:
         source.backup(target)
@@ -86,10 +129,18 @@ def _backup_ledger(src, dst):
 
 
 def latest_run(project):
-    base = Path(project) / "run-outputs"
-    _need(not os.path.islink(base), "SYMLINK_REFUSED")
-    found = [(entry.stat(follow_symlinks=False).st_mtime, entry.name) for entry in os.scandir(base)
-             if entry.is_dir(follow_symlinks=False) and RUN_ID.fullmatch(entry.name)]
+    root = os.open(os.path.abspath(project), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        base = _open_dir(root, "run-outputs")
+    finally:
+        os.close(root)
+    _need(base is not None, "RUN_NOT_FOUND")
+    try:
+        with os.scandir(base) as scan:
+            found = [(entry.stat(follow_symlinks=False).st_mtime, entry.name) for entry in scan
+                     if entry.is_dir(follow_symlinks=False) and RUN_ID.fullmatch(entry.name)]
+    finally:
+        os.close(base)
     _need(found, "RUN_NOT_FOUND")
     return max(found)[1]
 
@@ -98,21 +149,29 @@ def build(project, run_id, dest):
     """Write the export tree for run_id into dest (an empty directory) and return the manifest."""
     _need(isinstance(run_id, str) and RUN_ID.fullmatch(run_id) and run_id not in (".", ".."), "RUN_ID_INVALID")
     project = os.path.abspath(project)
-    run_dir = os.path.join(project, "run-outputs", run_id)
-    _no_symlink_path(project, os.path.join("run-outputs", run_id))
-    _need(os.path.isdir(run_dir) and not os.path.islink(run_dir), "RUN_NOT_FOUND")
-    rels = []
-    for base, dirs, names in os.walk(run_dir, followlinks=False):
-        for name in dirs + names:
-            _need(not os.path.islink(os.path.join(base, name)), "SYMLINK_REFUSED")
-        rels += [os.path.relpath(os.path.join(base, name), project) for name in names]
-    for rel in rels:
-        _copy_plain(os.path.join(project, rel), os.path.join(dest, rel))
-    for rel in FILES:
-        src = os.path.join(project, rel)
-        _no_symlink_path(project, rel)
-        if os.path.lexists(src):
-            (_backup_ledger if rel == LEDGER else _copy_plain)(src, os.path.join(dest, rel))
+    root = os.open(project, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        run_fd = _open_chain(root, ["run-outputs", run_id])
+        _need(run_fd is not None, "RUN_NOT_FOUND")
+        try:
+            _copy_tree(run_fd, os.path.join("run-outputs", run_id), dest)
+        finally:
+            os.close(run_fd)
+        for rel in FILES:
+            parts = rel.split("/")
+            parent = _open_chain(root, parts[:-1])
+            if parent is None:
+                continue
+            try:
+                try:
+                    os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                (_backup_ledger if rel == LEDGER else _copy_file)(parent, parts[-1], os.path.join(dest, rel))
+            finally:
+                os.close(parent)
+    finally:
+        os.close(root)
     files = {}
     for base, _, names in os.walk(dest):
         for name in names:
